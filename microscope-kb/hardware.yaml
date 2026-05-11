@@ -1,0 +1,43 @@
+# Hardware Inventory
+#
+# Document all hardware devices, their interfaces, and connections.
+# AI agents reference this to understand the physical system.
+
+hardware:
+  microscope_name: null  # TODO: Fill in
+  location: null  # TODO: Fill in
+
+  lasers: []
+    # - name: "488nm"
+    #   type: "diode"
+    #   interface: "serial"  # serial, USB, analog
+    #   port: "COM3"
+    #   max_power_mw: 50
+    #   modulation: "analog"  # analog, digital, AOTF
+
+  detectors: []
+    # - name: "Camera1"
+    #   type: "sCMOS"
+    #   model: "Hamamatsu ORCA-Flash4.0"
+    #   interface: "USB3"
+    #   pixel_size_um: 6.5
+
+  stages: []
+    # - name: "XY Stage"
+    #   type: "piezo"
+    #   axes: ["x", "y"]
+    #   interface: "serial"
+    #   controller: "PI E-727"
+
+  daq_devices: []
+    # - name: "NI DAQ"
+    #   model: "NI PCIe-6353"
+    #   interface: "PCIe"
+    #   analog_outputs: 4
+    #   digital_outputs: 48
+    #   max_sample_rate_hz: 1250000
+
+  other_devices: []
+    # - name: "Filter Wheel"
+    #   model: "Thorlabs FW102C"
+    #   interface: "serial"

@@ -1,0 +1,32 @@
+# Software Configuration Schema
+#
+# Documents the expected configuration format, defaults, and constraints.
+# Agents should reference this when working on config parsing code.
+
+software_config:
+  config_format: "JSON"  # or YAML, TOML — whatever ImSwitch uses
+  config_location: null  # TODO: Path to default config file
+
+  schema_notes:
+    - "Configuration files define the hardware setup for a specific microscope"
+    - "Each device type has its own configuration section"
+    - "Invalid configurations should fail fast with clear error messages"
+
+  required_sections: []
+    # - "detectors"
+    # - "lasers"
+    # - "positioners"
+    # - "rs232devices"
+    # - "scan"
+
+  defaults: {}
+    # scan:
+    #   dwell_time_us: 10
+    #   pixels_x: 256
+    #   pixels_y: 256
+    #   bidirectional: true
+
+  validation_rules: []
+    # - "All referenced devices must exist in the hardware section"
+    # - "Scan ranges must be within stage/galvo limits"
+    # - "Detector exposure must be positive"

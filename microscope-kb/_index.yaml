@@ -1,0 +1,38 @@
+# ImSwitch2 Microscope Knowledge Base — Index
+#
+# This knowledge base provides structured context for AI agents and developers
+# working on hardware-related code. Agents MUST consult relevant files before
+# modifying hardware control code.
+#
+# Fill in each file with your specific microscope configuration.
+
+knowledge_base:
+  version: "1.0"
+  description: >
+    Structured knowledge base for ImSwitch2 microscope configurations.
+    Required reading for any hardware-related modifications.
+
+  files:
+    safety.yaml:
+      description: "Safety rules, interlocks, and emergency procedures"
+      required_for: ["laser", "stage", "DAQ", "all hardware changes"]
+
+    hardware.yaml:
+      description: "Hardware inventory — devices, connections, interfaces"
+      required_for: ["hardware initialization", "device configuration"]
+
+    limits.yaml:
+      description: "Physical limits and safe operating ranges for all hardware"
+      required_for: ["any parameter change", "calibration", "scan setup"]
+
+    procedures.yaml:
+      description: "Standard operating procedures for common tasks"
+      required_for: ["workflow changes", "acquisition sequences"]
+
+    software_config.yaml:
+      description: "Software configuration schemas and defaults"
+      required_for: ["config parsing", "setup changes"]
+
+    troubleshooting.yaml:
+      description: "Known issues, workarounds, and diagnostic procedures"
+      required_for: ["bug fixes", "error handling changes"]

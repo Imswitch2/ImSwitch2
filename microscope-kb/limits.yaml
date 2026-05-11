@@ -1,0 +1,38 @@
+# Physical Limits and Safe Operating Ranges
+#
+# These values define the absolute boundaries for hardware parameters.
+# Code must enforce these limits — agents must never generate values outside them.
+
+limits:
+  lasers: {}
+    # "488nm":
+    #   power_range_mw: [0, 50]
+    #   modulation_freq_hz: [0, 100000]
+
+  stages: {}
+    # "XY Stage":
+    #   x_range_um: [0, 100]
+    #   y_range_um: [0, 100]
+    #   max_velocity_um_s: 1000
+    #   max_acceleration_um_s2: 10000
+    # "Z Piezo":
+    #   z_range_um: [0, 200]
+    #   max_velocity_um_s: 500
+
+  daq: {}
+    # "NI DAQ":
+    #   analog_output_range_v: [-10, 10]
+    #   max_sample_rate_hz: 1250000
+    #   max_digital_rate_hz: 10000000
+
+  scan_parameters: {}
+    # galvo:
+    #   voltage_range_v: [-5, 5]
+    #   max_scan_rate_hz: 1000
+    #   pixel_dwell_time_us: [0.5, 1000]
+
+  timing: {}
+    # ttl:
+    #   min_pulse_width_us: 1
+    #   max_pulse_width_us: 1000000
+    #   clock_rate_hz: 100000000
