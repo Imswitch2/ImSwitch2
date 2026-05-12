@@ -86,9 +86,9 @@ class ImConMainView(QtWidgets.QMainWindow):
             'LeicaStand': _DockInfo(name='Stand', yPosition=0),
             'Settings': _DockInfo(name='Detector Settings', yPosition=1),
             'View': _DockInfo(name='Image Controls', yPosition=2),
-            'ViewerTools': _DockInfo(name='Viewer Tools', yPosition=2),
-            'Recording': _DockInfo(name='Recording', yPosition=3),
-            'Console': _DockInfo(name='Console', yPosition=4)
+            'ViewerTools': _DockInfo(name='Viewer Tools', yPosition=3),
+            'Recording': _DockInfo(name='Recording', yPosition=4),
+            'Console': _DockInfo(name='Console', yPosition=5)
         }
         otherDockKeys = ['Image']
         allDockKeys = list(rightDockInfos.keys()) + list(leftDockInfos.keys()) + otherDockKeys
@@ -105,6 +105,7 @@ class ImConMainView(QtWidgets.QMainWindow):
             self.widgets['Image'] = self.factory.createWidget(widgets.ImageWidget)
             self.docks['Image'].addWidget(self.widgets['Image'])
             self.factory.setArgument('napariViewer', self.widgets['Image'].napariViewer)
+            self.factory.setArgument('imageToolManager', self.widgets['Image'].toolManager)
 
         rightDocks = self._addDocks(
             {k: v for k, v in rightDockInfos.items() if k in enabledDockKeys},
