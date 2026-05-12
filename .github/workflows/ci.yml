@@ -35,7 +35,7 @@ jobs:
                       dataclasses-json colour-science \
                       pyserial requests Pyro5 luddite \
                       coloredlogs fastapi uvicorn \
-                      scikit-image Send2Trash \
+                      scikit-image Send2Trash matplotlib \
                       nidaqmx Pillow scipy \
                       pytest pytest-qt
           pip install -e . --no-deps
