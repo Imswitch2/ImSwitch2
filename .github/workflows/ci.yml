@@ -43,7 +43,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          pytest imswitch/imcontrol/_test/unit/test_stores.py -v --import-mode=importlib
+          pytest imswitch/imcontrol/_test/unit/test_stores.py -v
 
   build:
     name: Package Build

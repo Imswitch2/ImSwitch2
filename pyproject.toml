@@ -22,3 +22,7 @@ select = ["E9", "F63", "F7", "F82"]
 
 [tool.ruff.lint.per-file-ignores]
 "imswitch/imreconstruct/model/Denoiser.py" = ["F821"]  # torch/transforms imported conditionally inside __init__
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = ["imswitch"]
