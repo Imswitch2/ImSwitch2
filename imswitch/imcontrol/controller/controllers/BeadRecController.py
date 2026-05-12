@@ -5,7 +5,7 @@ import numpy as np
 from imswitch.imcommon.framework import Thread, Worker, Signal
 from ..basecontrollers import ImConWidgetController
 from skimage.transform import rescale
-from tifffile import imsave,imread
+from tifffile import imwrite, imread
 from imswitch.imcontrol.view import guitools
 import  matplotlib.pyplot as plt 
 from skimage import measure, morphology
@@ -196,7 +196,7 @@ class BeadRecController(ImConWidgetController):
         self.lastDir = os.path.dirname(path)
         if path.split('.')[-1] not in ['tif', 'tiff']:
             path = path + ".tiff"
-        imsave(path,self.imDisplay)
+        imwrite(path,self.imDisplay)
     
     def saveAll(self):
         """ Saves all images that are in self.listRecs, with file names from the list panel."""
@@ -214,7 +214,7 @@ class BeadRecController(ImConWidgetController):
             item = self._widget.imageListWidget.item(idx + name_offset)
             name = item.text() + ".tif"
             path = os.path.join(folder, name)
-            imsave(path, rec)
+            imwrite(path, rec)
 
     def roiToggled(self, enabled):
         """ Show or hide ROI."""
@@ -335,7 +335,7 @@ class BeadRecController(ImConWidgetController):
             # self.scale_x = px_x / min(px_x, px_y)
             # self.scale_y = px_y / min(px_x, px_y)
             # rescaled_im = rescale(im, (self.scale_y, self.scale_x), anti_aliasing=False, mode='reflect', preserve_range=True)  
-            # imsave(r"C:\Users\MonaLisa\Documents\rescaled.tiff",rescaled_im) #to debug scaling
+            # imwrite(r"C:\Users\MonaLisa\Documents\rescaled.tiff",rescaled_im) #to debug scaling
             return rescaled_im
         else:
             return im

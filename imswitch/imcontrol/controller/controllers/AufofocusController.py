@@ -127,7 +127,7 @@ class ProcessDataThread(Thread):
         allfocusimages=np.array(allfocusimages)
         np.save('allfocusimages.npy', allfocusimages)
         import tifffile as tif
-        tif.imsave("llfocusimages.tif", allfocusimages)
+        tif.imwrite("llfocusimages.tif", allfocusimages)
         np.save('allfocuspositions.npy', allfocuspositions)
         np.save('allfocusvals.npy', allfocusvals)
 
