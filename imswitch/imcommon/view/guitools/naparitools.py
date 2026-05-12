@@ -498,9 +498,9 @@ class VispyROIVisual(VispyBaseVisual):
 
         self._nodes = [self.rect_node, self.handle_node]
 
-        canvas.connect(self.on_mouse_press)
-        canvas.connect(self.on_mouse_move)
-        canvas.connect(self.on_mouse_release)
+        canvas.events.mouse_press.connect(self.on_mouse_press)
+        canvas.events.mouse_move.connect(self.on_mouse_move)
+        canvas.events.mouse_release.connect(self.on_mouse_release)
         self._viewer.camera.events.zoom.connect(self._on_zoom_change)
         self._viewer.dims.events.ndisplay.connect(self._on_data_change)
 
@@ -659,9 +659,9 @@ class VispyLineVisual(VispyBaseVisual):
 
         self._nodes = [self.node]
 
-        canvas.connect(self.on_mouse_press)
-        canvas.connect(self.on_mouse_move)
-        canvas.connect(self.on_mouse_release)
+        canvas.events.mouse_press.connect(self.on_mouse_press)
+        canvas.events.mouse_move.connect(self.on_mouse_move)
+        canvas.events.mouse_release.connect(self.on_mouse_release)
         self._viewer.camera.events.zoom.connect(self._on_zoom_change)
         self._viewer.dims.events.ndisplay.connect(self._on_data_change)
 
@@ -873,9 +873,9 @@ class VispyCrosshairVisual(VispyBaseVisual):
 
         self._nodes = [self.node]
 
-        canvas.connect(self.on_mouse_press)
-        canvas.connect(self.on_mouse_move)
-        canvas.connect(self.on_mouse_release)
+        canvas.events.mouse_press.connect(self.on_mouse_press)
+        canvas.events.mouse_move.connect(self.on_mouse_move)
+        canvas.events.mouse_release.connect(self.on_mouse_release)
         self._viewer.camera.events.zoom.connect(self._on_zoom_change)
         self._viewer.dims.events.ndisplay.connect(self._on_data_change)
 
