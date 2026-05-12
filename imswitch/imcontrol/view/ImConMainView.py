@@ -49,8 +49,13 @@ class ImConMainView(QtWidgets.QMainWindow):
         # Window
         self.setWindowTitle('ImSwitch')
 
+        # Hide the QMainWindow status bar — it is unused and wastes vertical
+        # space when this window is embedded inside MultiModuleWindow's tab widget.
+        self.statusBar().hide()
+
         self.cwidget = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         self.cwidget.setLayout(layout)
         self.setCentralWidget(self.cwidget)
 
@@ -81,6 +86,7 @@ class ImConMainView(QtWidgets.QMainWindow):
             'LeicaStand': _DockInfo(name='Stand', yPosition=0),
             'Settings': _DockInfo(name='Detector Settings', yPosition=1),
             'View': _DockInfo(name='Image Controls', yPosition=2),
+            'ViewerTools': _DockInfo(name='Viewer Tools', yPosition=2),
             'Recording': _DockInfo(name='Recording', yPosition=3),
             'Console': _DockInfo(name='Console', yPosition=4)
         }
