@@ -152,7 +152,7 @@ class SettingsWidget(Widget):
         # Graphical elements
         detectorTitle = QtWidgets.QLabel('<h2><strong>Detector settings</strong></h2>')
         detectorTitle.setTextFormat(QtCore.Qt.RichText)
-        self.ROI = naparitools.VispyROIVisual(rect_color='yellow', handle_color='orange')
+        self.ROI = naparitools.NapariROIOverlay()
         self.stack = QtWidgets.QStackedWidget()
         self.trees = {}
 
