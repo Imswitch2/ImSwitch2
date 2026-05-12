@@ -2,25 +2,27 @@
 
 This roadmap tracks the major milestones for the ImSwitch2 migration. Each milestone should be created as a GitHub Milestone with associated issues.
 
-## Milestone 1: Stabilization
+## Milestone 1: Stabilization ✅
 
 **Goal:** Establish a stable, tested baseline from the imported ImSwitch code.
 
-- Import existing ImSwitch codebase and tag baseline
-- Ensure the application launches without errors
-- Document current state and known issues
-- Set up CI pipeline (linting, tests, build)
-- Create initial smoke tests for core imports
+- ✅ Import existing ImSwitch codebase and tag baseline
+- ✅ Set up CI pipeline (linting, tests, build)
+- ✅ Critical lint errors resolved (`E9/F63/F7/F82` clean)
+- ✅ First unit tests passing in CI (`test_stores.py`)
+- ⬜ Ensure the application launches without errors on a clean install
+- ⬜ Document current state and known issues
 
-## Milestone 2: Packaging Cleanup
+## Milestone 2: Packaging Cleanup 🔄
 
-**Goal:** Clean up the project structure and packaging.
+**Goal:** Clean up the project structure and packaging for easy installation.
 
-- Consolidate `setup.py` / `pyproject.toml`
-- Clean up unused dependencies
-- Remove dead code and unused imports
-- Establish clear package boundaries
-- Add dependency pinning for reproducible builds
+- ✅ Modernize `setup.cfg`: `python_requires = >=3.10`, relaxed version pins
+- ✅ Split hardware packages into optional extras (`[hardware]`, `[full]`)
+- ✅ Core install (`pip install imswitch`) no longer requires NI-DAQ, Lantz, napari
+- ⬜ Remove dead code and unused imports (bare-except / blank-import cleanup deferred)
+- ⬜ Establish clear package boundaries
+- ⬜ Consolidate or remove `setup.py` in favour of `pyproject.toml` only
 
 ## Milestone 3: Hardware Abstraction Cleanup
 
