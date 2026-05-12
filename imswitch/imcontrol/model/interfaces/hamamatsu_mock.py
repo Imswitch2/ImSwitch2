@@ -3,7 +3,10 @@ import ctypes.util
 import time
 
 import numpy as np
-from lantz import Q_
+try:
+    from lantz import Q_
+except ImportError:
+    Q_ = None
 
 from imswitch.imcommon.model import initLogger
 

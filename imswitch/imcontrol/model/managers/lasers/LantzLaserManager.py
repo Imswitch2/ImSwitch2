@@ -1,5 +1,5 @@
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.interfaces import LantzLaser
+from imswitch.imcontrol.model.interfaces.lantzlasers import LantzLaser
 from .LaserManager import LaserManager
 
 
