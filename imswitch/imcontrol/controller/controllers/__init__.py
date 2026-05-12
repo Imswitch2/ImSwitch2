@@ -11,6 +11,7 @@ from .FocusLockController import FocusLockController
 from .ImageController import ImageController
 from .LaserController import LaserController
 from .LeicaStandController import LeicaStandController
+from .LineProfileController import LineProfileController
 from .MotCorrController import MotCorrController
 from .PositionerController import PositionerController
 from .RecordingController import RecordingController
@@ -26,6 +27,7 @@ from .SLMController import SLMController
 from .TilingController import TilingController
 from .ULensesController import ULensesController
 from .ViewController import ViewController
+from .ViewerToolsController import ViewerToolsController
 from .WatcherController import WatcherController
 from .BFTimelapseController import BFTimelapseController
 # from .EtController import EtController # Current prototype on old Monalisa machine needs rework and is not tracked currently.

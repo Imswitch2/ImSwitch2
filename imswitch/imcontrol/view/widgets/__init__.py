@@ -12,6 +12,7 @@ from .FocusLockWidget import FocusLockWidget
 from .ImageWidget import ImageWidget
 from .LaserWidget import LaserWidget
 from .LeicaStandWidget import LeicaStandWidget
+from .LineProfileWidget import LineProfileWidget
 from .MotCorrWidget import MotCorrWidget
 from .PositionerWidget import PositionerWidget
 from .RecordingWidget import RecordingWidget
@@ -27,6 +28,7 @@ from .SLMWidget import SLMWidget
 from .TilingWidget import TilingWidget
 from .ULensesWidget import ULensesWidget
 from .ViewWidget import ViewWidget
+from .ViewerToolsWidget import ViewerToolsWidget
 from .WatcherWidget import WatcherWidget
 from .BFTimelapseWidget import BFTimelapseWidget
 # from .EtWidget import EtWidget # Current prototype on old Monalisa machine needs rework, hardcoded paths, not tracked, etc. for now commented!

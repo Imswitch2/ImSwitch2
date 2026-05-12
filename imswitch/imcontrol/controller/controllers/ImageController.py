@@ -24,8 +24,6 @@ class ImageController(LiveUpdatedController):
         # Connect CommunicationChannel signals
         self._commChannel.sigUpdateImage.connect(self.update)
         self._commChannel.sigAdjustFrame.connect(self.adjustFrame)
-        self._commChannel.sigGridToggled.connect(self.gridToggle)
-        self._commChannel.sigCrosshairToggled.connect(self.crosshairToggle)
         self._commChannel.sigAddItemToVb.connect(self.addItemToVb)
         self._commChannel.sigRemoveItemFromVb.connect(self.removeItemFromVb)
         self._commChannel.sigMemorySnapAvailable.connect(self.memorySnapAvailable)
@@ -72,7 +70,6 @@ class ImageController(LiveUpdatedController):
         if shape is None:
             shape = self._lastShape
 
-        self._widget.updateGrid(shape)
         if instantResetView:
             self._widget.resetView()
             self._shouldResetView = False
@@ -84,14 +81,6 @@ class ImageController(LiveUpdatedController):
     def getCenterViewbox(self):
         """ Returns center of viewbox to center a ROI. """
         return self._widget.getCenterViewbox()
-
-    def gridToggle(self, enabled):
-        """ Shows or hides grid. """
-        self._widget.setGridVisible(enabled)
-
-    def crosshairToggle(self, enabled):
-        """ Shows or hides crosshair. """
-        self._widget.setCrosshairVisible(enabled)
 
     def memorySnapAvailable(self, name, image, _, __):
         """ Adds captured image to widget. """

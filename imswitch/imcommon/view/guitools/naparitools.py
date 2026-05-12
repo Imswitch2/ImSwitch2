@@ -19,16 +19,20 @@ from .imagetools import minmaxLevels
 
 
 def addNapariGrayclipColormap():
-    if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, 'grayclip'):
-        return
+    try:
+        if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, 'grayclip'):
+            return
 
-    grayclip = []
-    for i in range(255):
-        grayclip.append([i / 255, i / 255, i / 255])
-    grayclip.append([1, 0, 0])
-    napari.utils.colormaps.AVAILABLE_COLORMAPS['grayclip'] = napari.utils.Colormap(
-        name='grayclip', colors=grayclip
-    )
+        grayclip = []
+        for i in range(255):
+            grayclip.append([i / 255, i / 255, i / 255])
+        grayclip.append([1, 0, 0])
+        napari.utils.colormaps.AVAILABLE_COLORMAPS['grayclip'] = napari.utils.Colormap(
+            name='grayclip', colors=grayclip
+        )
+    except (AttributeError, TypeError):
+        # AVAILABLE_COLORMAPS API changed or is not a dict - skip silently
+        pass
 
 
 class EmbeddedNapari(napari.Viewer):
@@ -372,6 +376,117 @@ class NapariShiftWidget(NapariBaseWidget):
 
     def _get_shift_distance(self):
         return self.shiftDistanceInput.value()
+
+
+class NapariROIOverlay(QtCore.QObject):
+    """Napari Shapes-layer based draggable ROI rectangle.
+
+    Drop-in replacement for VispyROIVisual — uses only public napari API.
+    attach() is called automatically by ImageWidget.addItem().
+    position / size use (x, y) = (col, row) convention to match detector
+    x0/y0/width/height parameters.
+    """
+
+    sigROIChanged = QtCore.Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._viewer = None
+        self._layer = None
+        self._position = np.array([0.0, 0.0])   # (col, row) = (x, y)
+        self._size = np.array([64.0, 64.0])      # (width, height)
+        self._visible = False
+        self._updating = False
+
+    def attach(self, viewer, canvas=None, view=None, parent=None, order=0):
+        """Called by ImageWidget.addItem(); canvas/view/parent are ignored."""
+        self._viewer = viewer
+        self._layer = viewer.add_shapes(
+            name='_det_roi',
+            edge_color='yellow',
+            face_color=[1, 1, 0, 0.08],
+            edge_width=2,
+        )
+        self._layer.visible = False
+        self._layer.events.data.connect(self._on_data_changed)
+
+    def detach(self):
+        if self._layer is not None and self._viewer is not None:
+            try:
+                self._viewer.layers.remove(self._layer)
+            except Exception:
+                pass
+        self._layer = None
+        self._viewer = None
+
+    @property
+    def position(self):
+        return self._position.copy()
+
+    @position.setter
+    def position(self, value):
+        self._position = np.array(value, dtype=float)
+        self._update_layer()
+
+    @property
+    def size(self):
+        return self._size.copy()
+
+    @size.setter
+    def size(self, value):
+        self._size = np.array(value, dtype=float)
+        self._update_layer()
+
+    @property
+    def bounds(self):
+        c0, r0 = self._position
+        c1, r1 = c0 + self._size[0], r0 + self._size[1]
+        return int(c0), int(r0), int(c1), int(r1)
+
+    def _update_layer(self):
+        if self._layer is None or self._updating:
+            return
+        c0, r0 = float(self._position[0]), float(self._position[1])
+        c1 = c0 + float(self._size[0])
+        r1 = r0 + float(self._size[1])
+        self._updating = True
+        try:
+            self._layer.data = []
+            self._layer.add_rectangles(
+                [[[r0, c0], [r1, c1]]],
+                edge_color='yellow',
+                face_color=[1, 1, 0, 0.08],
+                edge_width=2,
+            )
+        finally:
+            self._updating = False
+
+    def _on_data_changed(self, event):
+        if self._updating or self._layer is None or not self._layer.data:
+            return
+        coords = np.array(self._layer.data[0])  # (4, 2) in (row, col)
+        r_min = coords[:, 0].min()
+        c_min = coords[:, 1].min()
+        r_max = coords[:, 0].max()
+        c_max = coords[:, 1].max()
+        self._position = np.array([c_min, r_min])
+        self._size = np.array([c_max - c_min, r_max - r_min])
+        self.sigROIChanged.emit()
+
+    def show(self):
+        self._visible = True
+        if self._layer is not None:
+            self._layer.visible = True
+            self._update_layer()
+            try:
+                self._layer.mode = 'select'
+            except Exception:
+                pass
+
+    def hide(self):
+        self._visible = False
+        if self._layer is not None:
+            self._layer.visible = False
 
 
 class VispyBaseVisual(QtCore.QObject):
@@ -1015,6 +1130,7 @@ class ViewerToolManager(QtCore.QObject):
         self._viewer = napari_viewer
         self._shapes_layer = None
         self._current_mode = 'pan'
+        self._processing_data_change = False
         
     def _ensure_shapes_layer(self):
         """Lazily create the Shapes layer if it doesn't exist."""
@@ -1031,7 +1147,48 @@ class ViewerToolManager(QtCore.QObject):
             self._shapes_layer.events.mode.connect(self._on_mode_changed)
     
     def _on_shapes_data_changed(self, event):
-        """Handle shapes data change events."""
+        """Handle shapes data change events and enforce single rectangle/line constraint."""
+        # Prevent recursion when we modify data ourselves
+        if self._processing_data_change:
+            return
+        
+        if self._shapes_layer is None:
+            self.sigShapesChanged.emit()
+            return
+        
+        try:
+            self._processing_data_change = True
+            
+            # Get current data and shape types
+            data = list(self._shapes_layer.data)
+            shape_types = list(self._shapes_layer.shape_type)
+            
+            if len(data) != len(shape_types):
+                self.sigShapesChanged.emit()
+                return
+            
+            # Find all rectangles and lines
+            rectangle_indices = [i for i, stype in enumerate(shape_types) if stype == 'rectangle']
+            line_indices = [i for i, stype in enumerate(shape_types) if stype == 'line']
+            
+            # Determine which shapes to remove (keep only the last of each type)
+            indices_to_remove = set()
+            
+            if len(rectangle_indices) > 1:
+                indices_to_remove.update(rectangle_indices[:-1])
+            
+            if len(line_indices) > 1:
+                indices_to_remove.update(line_indices[:-1])
+            
+            # Remove shapes if needed
+            if indices_to_remove:
+                indices_to_keep = [i for i in range(len(data)) if i not in indices_to_remove]
+                new_data = [data[i] for i in indices_to_keep]
+                self._shapes_layer.data = new_data
+        
+        finally:
+            self._processing_data_change = False
+        
         self.sigShapesChanged.emit()
     
     def _on_mode_changed(self, event):
@@ -1099,6 +1256,19 @@ class ViewerToolManager(QtCore.QObject):
             return 0
         return len(self._shapes_layer.data)
     
+    def get_shape_types(self):
+        """
+        Get the shape types for all shapes in the layer.
+        
+        Returns
+        -------
+        list of str
+            List of shape types ('line', 'rectangle', etc.), empty list if no layer.
+        """
+        if self._shapes_layer is None:
+            return []
+        return list(self._shapes_layer.shape_type)
+    
     def get_rectangle_bounds(self, shape_index):
         """
         Get bounds of a rectangle shape.
@@ -1155,6 +1325,42 @@ class ViewerToolManager(QtCore.QObject):
         """Remove all shapes from the layer."""
         if self._shapes_layer is not None:
             self._shapes_layer.data = []
+
+    # Large enough that the lines always extend well beyond any viewport, even
+    # at extreme zoom-in.  1e6 image pixels is ~500× a typical 2048-px sensor.
+    _CROSSHAIR_SPAN = 1e6
+    _GRID_FRACTIONS = [0.25, 0.375, 0.50, 0.625, 0.75]
+
+    def place_crosshair(self, row, col):
+        """Draw a full-extent crosshair centred at (row, col) in the Shapes layer."""
+        self._ensure_shapes_layer()
+        s = self._CROSSHAIR_SPAN
+        # Suppress the single-shape enforcement callback while we add two lines.
+        self._processing_data_change = True
+        try:
+            self._shapes_layer.data = []
+            self._shapes_layer.add_lines(
+                [[[row - s, col], [row + s, col]],
+                 [[row, col - s], [row, col + s]]],
+                edge_color='yellow', edge_width=2,
+            )
+        finally:
+            self._processing_data_change = False
+
+    def draw_grid(self, H, W):
+        """Draw a reference grid for an H×W image in the Shapes layer."""
+        self._ensure_shapes_layer()
+        s = self._CROSSHAIR_SPAN
+        lines = []
+        for f in self._GRID_FRACTIONS:
+            lines.append([[f * H, -s],        [f * H, W + s]])   # horizontal
+            lines.append([[-s,    f * W],      [H + s, f * W]])   # vertical
+        self._processing_data_change = True
+        try:
+            self._shapes_layer.data = []
+            self._shapes_layer.add_lines(lines, edge_color='yellow', edge_width=1)
+        finally:
+            self._processing_data_change = False
     
     def remove_shape(self, shape_index):
         """
@@ -1193,3 +1399,117 @@ class ViewerToolManager(QtCore.QObject):
         """
         self._ensure_shapes_layer()
         return self._shapes_layer
+
+
+class NapariCrosshairOverlay:
+    """Crosshair overlay using a dedicated napari Shapes layer.
+
+    Drop-in replacement for VispyCrosshairVisual without private napari APIs.
+    Position is set via place_at(row, col) on each click; defaults to image centre.
+    """
+
+    def __init__(self, viewer, color='yellow'):
+        self._viewer = viewer
+        self._layer = None
+        self._color = color
+        self._shape = np.array([1.0, 1.0])
+        self._cy = None  # None → centred on image
+        self._cx = None
+
+    def _ensure_layer(self):
+        if self._layer is not None and self._layer in self._viewer.layers:
+            return
+        self._layer = self._viewer.add_shapes(
+            name='_crosshair_overlay', edge_color=self._color,
+            face_color=[0, 0, 0, 0], edge_width=2)
+        self._layer.mode = 'pan_zoom'
+
+    def _redraw(self):
+        H, W = float(self._shape[0]), float(self._shape[1])
+        cy = self._cy if self._cy is not None else H / 2.0
+        cx = self._cx if self._cx is not None else W / 2.0
+        span = max(H, W) * 10.0
+        self._layer.data = []
+        self._layer.add_lines(
+            [[[cy - span, cx], [cy + span, cx]],
+             [[cy, cx - span], [cy, cx + span]]],
+            edge_color=self._color, edge_width=2)
+
+    def place_at(self, row, col):
+        """Position the crosshair at (row, col) in image data coordinates."""
+        self._cy = float(row)
+        self._cx = float(col)
+        if self._layer is not None and self._layer in self._viewer.layers \
+                and self._layer.visible:
+            self._redraw()
+
+    def update(self, shape):
+        """Update the known image shape (used to compute span); redraws if visible."""
+        self._shape = np.array(shape, dtype=float)
+        if self._layer is not None and self._layer in self._viewer.layers \
+                and self._layer.visible:
+            self._redraw()
+
+    def setVisible(self, value):
+        if value:
+            self._ensure_layer()
+            self._redraw()
+        if self._layer is not None and self._layer in self._viewer.layers:
+            self._layer.visible = value
+
+    def hide(self):
+        self.setVisible(False)
+
+    def show(self):
+        self.setVisible(True)
+
+
+class NapariGridOverlay:
+    """Grid overlay using a dedicated napari Shapes layer.
+
+    Drop-in replacement for VispyGridVisual without private napari APIs.
+    """
+
+    _FRACTIONS = [0.25, 0.375, 0.50, 0.625, 0.75]
+
+    def __init__(self, viewer, color='yellow'):
+        self._viewer = viewer
+        self._layer = None
+        self._color = color
+        self._shape = np.array([1.0, 1.0])
+
+    def _ensure_layer(self):
+        if self._layer is not None and self._layer in self._viewer.layers:
+            return
+        self._layer = self._viewer.add_shapes(
+            name='_grid_overlay', edge_color=self._color,
+            face_color=[0, 0, 0, 0], edge_width=2)
+        self._layer.mode = 'pan_zoom'
+
+    def _redraw(self):
+        H, W = float(self._shape[0]), float(self._shape[1])
+        lines = []
+        for f in self._FRACTIONS:
+            lines.append([[f * H, 0], [f * H, W]])
+            lines.append([[0, f * W], [H, f * W]])
+        self._layer.data = []
+        self._layer.add_lines(lines, edge_color=self._color, edge_width=2)
+
+    def update(self, shape):
+        self._shape = np.array(shape, dtype=float)
+        if self._layer is not None and self._layer in self._viewer.layers \
+                and self._layer.visible:
+            self._redraw()
+
+    def setVisible(self, value):
+        if value:
+            self._ensure_layer()
+            self._redraw()
+        if self._layer is not None and self._layer in self._viewer.layers:
+            self._layer.visible = value
+
+    def hide(self):
+        self.setVisible(False)
+
+    def show(self):
+        self.setVisible(True)

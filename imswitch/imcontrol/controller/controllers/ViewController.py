@@ -9,29 +9,15 @@ class ViewController(ImConWidgetController):
         super().__init__(*args, **kwargs)
         self._acqHandle = None
 
-        self._widget.setViewToolsEnabled(False)
-
-        # Connect ViewWidget signals
-        self._widget.sigGridToggled.connect(self.gridToggle)
-        self._widget.sigCrosshairToggled.connect(self.crosshairToggle)
         self._widget.sigLiveviewToggled.connect(self.liveview)
 
     def liveview(self, enabled):
         """ Start liveview and activate detector acquisition. """
         if enabled and self._acqHandle is None:
             self._acqHandle = self._master.detectorsManager.startAcquisition(liveView=True)
-            self._widget.setViewToolsEnabled(True)
         elif not enabled and self._acqHandle is not None:
             self._master.detectorsManager.stopAcquisition(self._acqHandle, liveView=True)
             self._acqHandle = None
-
-    def gridToggle(self, enabled):
-        """ Connect with grid toggle from Image Widget through communication channel. """
-        self._commChannel.sigGridToggled.emit(enabled)
-
-    def crosshairToggle(self, enabled):
-        """ Connect with crosshair toggle from Image Widget through communication channel. """
-        self._commChannel.sigCrosshairToggled.emit(enabled)
 
     def closeEvent(self):
         if self._acqHandle is not None:
@@ -47,16 +33,6 @@ class ViewController(ImConWidgetController):
     def setLiveViewActive(self, active: bool) -> None:
         """ Sets whether the LiveView is active and updating. """
         self._widget.setLiveViewActive(active)
-
-    @APIExport(runOnUIThread=True)
-    def setLiveViewGridVisible(self, visible: bool) -> None:
-        """ Sets whether the LiveView grid is visible. """
-        self._widget.setLiveViewGridVisible(visible)
-
-    @APIExport(runOnUIThread=True)
-    def setLiveViewCrosshairVisible(self, visible: bool) -> None:
-        """ Sets whether the LiveView crosshair is visible. """
-        self._widget.setLiveViewCrosshairVisible(visible)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -21,18 +21,13 @@ class ImageWidget(QtWidgets.QWidget):
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
         self.NapariShiftWidget = naparitools.NapariShiftWidget.addToViewer(self.napariViewer)
         self.imgLayers = {}
+        
+        # ViewerToolManager for napari Shape-based tools (ROI, line, etc.)
+        self.toolManager = naparitools.ViewerToolManager(self.napariViewer)
 
         self.viewCtrlLayout = QtWidgets.QVBoxLayout()
         self.viewCtrlLayout.addWidget(self.napariViewer.get_widget())
         self.setLayout(self.viewCtrlLayout)
-
-        self.grid = naparitools.VispyGridVisual(color='yellow')
-        self.grid.hide()
-        self.addItem(self.grid)
-
-        self.crosshair = naparitools.VispyCrosshairVisual(color='yellow')
-        self.crosshair.hide()
-        self.addItem(self.crosshair)
 
     def setLiveViewLayers(self, names):
         for name, img in self.imgLayers.items():
@@ -79,25 +74,23 @@ class ImageWidget(QtWidgets.QWidget):
         center = self.napariViewer.camera.center
         return (center[2], center[1])
 
-    def updateGrid(self, imShape):
-        self.grid.update(imShape)
-
-    def setGridVisible(self, visible):
-        self.grid.setVisible(visible)
-
-    def setCrosshairVisible(self, visible):
-        self.crosshair.setVisible(visible)
-
     def resetView(self):
         self.napariViewer.reset_view()
 
     def addItem(self, item):
-        _canvas = self.napariViewer.window.qt_viewer.canvas
-        _view = getattr(_canvas, 'view', None) or getattr(self.napariViewer.window.qt_viewer, 'view', None)
+        try:
+            _canvas = self.napariViewer.window.qt_viewer.canvas
+            _view = (getattr(_canvas, 'view', None)
+                     or getattr(self.napariViewer.window.qt_viewer, 'view', None))
+            _parent = _view.scene if _view else None
+        except AttributeError:
+            _canvas = None
+            _view = None
+            _parent = None
         item.attach(self.napariViewer,
                     canvas=_canvas,
                     view=_view,
-                    parent=_view.scene,
+                    parent=_parent,
                     order=1e6 + 8000)
 
     def removeItem(self, item):

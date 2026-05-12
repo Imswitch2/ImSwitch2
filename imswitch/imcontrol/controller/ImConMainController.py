@@ -52,8 +52,10 @@ class ImConMainController(MainController):
 
         # Extra kwargs forwarded to specific controllers that need view-layer objects
         _imageWidget = self.__mainView.widgets.get('Image')
+        _toolManager = _imageWidget.toolManager if _imageWidget else None
         _extraKwargs = {
-            'ViewerTools': {'imageToolManager': _imageWidget.toolManager if _imageWidget else None},
+            'ViewerTools': {'imageWidget': _imageWidget},
+            'LineProfile': {'imageToolManager': _toolManager},
         }
 
         for widgetKey, widget in self.__mainView.widgets.items():
