@@ -2,7 +2,11 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.signal import find_peaks
-import cv2
+try:
+    import cv2
+    _CV2_AVAILABLE = True
+except ImportError:
+    _CV2_AVAILABLE = False
 
 def refine_frequency_1D(profile, f_expected, search_width=0.5):
     N = len(profile)
@@ -250,6 +254,9 @@ def crop_with_preview(arr, kernel_size=3, threshold=0.3,crop_coord=None):
         binary = (arr > arr.max() * threshold).astype("uint8")
 
         kernel = np.ones((kernel_size, kernel_size), dtype="uint8")
+        if not _CV2_AVAILABLE:
+            raise ImportError('opencv-python is required for SLM pattern design. '
+                              'Install with: pip install "imswitch[full]"')
         arr_dilation = cv2.dilate(binary, kernel, iterations=1)
 
         nonzero_y, nonzero_x = np.nonzero(arr_dilation)

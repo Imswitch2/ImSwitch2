@@ -1,7 +1,10 @@
 from logging import raiseExceptions
 import numpy as np
 import time
-import cv2
+try:
+    import cv2
+except ImportError:
+    pass
 from imswitch.imcommon.model import initLogger
 
 import collections

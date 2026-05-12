@@ -4,7 +4,10 @@ from .cghUtils import fft_constrained_frequency_estimation, refine_foci_position
 from .cghUtils import fft_frequency_estimation, estimate_lattice_offset
 from .registries import register_target
 import matplotlib.pyplot as plt
-import cv2
+try:
+    import cv2
+except ImportError:
+    pass
 
 @register_target("multi_foci", feedback=True,
 params=[
