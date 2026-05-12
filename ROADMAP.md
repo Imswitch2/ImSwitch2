@@ -24,7 +24,18 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ⬜ Establish clear package boundaries
 - ⬜ Consolidate or remove `setup.py` in favour of `pyproject.toml` only
 
-## Milestone 3: Hardware Abstraction Cleanup
+## Milestone 3: Code-Level Bug Fixes
+
+**Goal:** Resolve known structural bugs and naming inconsistencies found during codebase analysis.
+
+- ⬜ Fix duplicate `EtSTEDInfo` class in `imswitch/imcontrol/model/SetupInfo.py` (defined at lines 275 and 299 — second silently overwrites first, likely a merge artifact)
+- ⬜ Rename `SQUIDLaserManager.py` → `ESP32LEDLaserManager.py` to match the class it contains
+- ⬜ Remove dead `SLMController`/`slmManager` layer (superseded by `SLMsController`/`slmsManager`; the old one is commented out in `MasterController`)
+- ⬜ Move `__test_Manager.py` from `imcontrol/` root into `_test/` (currently requires live hardware; not part of CI)
+- ⬜ Separate driver mocks from real interfaces in `model/interfaces/` (currently mixed with no clear pattern)
+- ⬜ Remove bare `except:` blocks and blank imports (deferred from Milestone 2 cleanup)
+
+## Milestone 4: Hardware Abstraction Cleanup
 
 **Goal:** Improve the hardware abstraction layer for clarity and safety.
 
@@ -34,7 +45,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - Improve error handling in hardware communication
 - Add timeout mechanisms where missing
 
-## Milestone 4: Detector Manager Refactor
+## Milestone 5: Detector Manager Refactor
 
 **Goal:** Modernize and simplify detector management.
 
@@ -44,7 +55,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - Add comprehensive tests
 - Document the new architecture
 
-## Milestone 5: DAQ Safety Layer
+## Milestone 6: DAQ Safety Layer
 
 **Goal:** Add a safety layer around all DAQ operations.
 
@@ -54,12 +65,12 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - Add logging for all DAQ operations
 - Create integration tests with mock hardware
 
-## Milestone 6: Documentation Improvements
+## Milestone 7: Documentation Improvements
 
 **Goal:** Comprehensive documentation for developers, agents, and users.
 
-- Generate architecture diagrams from codebase analysis
-- Document all configuration options
-- Write developer onboarding guide
-- Fill in microscope knowledge base with real hardware values
-- Create agent task templates for common operations
+- ✅ Architecture map (`docs/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
+- ⬜ Document all configuration options in `SetupInfo`
+- ⬜ Write developer onboarding guide
+- ⬜ Fill in microscope knowledge base with real hardware values
+- ⬜ Create agent task templates for common operations
