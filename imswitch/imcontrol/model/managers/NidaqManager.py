@@ -2,9 +2,14 @@ import operator
 import traceback
 import warnings
 
-import nidaqmx
-import nidaqmx._lib
-import nidaqmx.constants
+try:
+    import nidaqmx
+    import nidaqmx._lib
+    import nidaqmx.constants
+    _NIDAQMX_AVAILABLE = True
+except ImportError:
+    _NIDAQMX_AVAILABLE = False
+
 import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
@@ -21,6 +26,11 @@ class NidaqManager(SignalInterface):
     sigScanBuildFailed = Signal()
 
     def __init__(self, setupInfo):
+        if not _NIDAQMX_AVAILABLE:
+            raise ImportError(
+                'nidaqmx is required for NI-DAQ hardware. '
+                'Install it with: pip install "imswitch[hardware]"'
+            )
         super().__init__()
         self.__logger = initLogger(self)
 
