@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 import os
 from imswitch.imcommon.model.dirtools import getSystemUserDir
-from imswitch.imcommon.model.logging import initLogger
+from imswitch.imcommon.model import initLogger
 
 class Denoiser:
     def __init__(self) -> None:
