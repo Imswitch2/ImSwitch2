@@ -28,8 +28,9 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 
 **Goal:** Resolve known structural bugs and naming inconsistencies found during codebase analysis.
 
-- ⬜ Fix duplicate `EtSTEDInfo` class in `imswitch/imcontrol/model/SetupInfo.py` (defined at lines 275 and 299 — second silently overwrites first, likely a merge artifact)
-- ⬜ Rename `SQUIDLaserManager.py` → `ESP32LEDLaserManager.py` to match the class it contains
+- ✅ Fix duplicate `EtSTEDInfo` class in `imswitch/imcontrol/model/SetupInfo.py` (renamed first to `EtSTEDDeviceInfo`)
+- ✅ Rename `SQUIDLaserManager.py` → `ESP32LEDLaserManager.py` to match the class it contains
+- ✅ Delete redundant `setup.py` shim (build metadata fully covered by `setup.cfg` + `pyproject.toml`)
 - ⬜ Remove dead `SLMController`/`slmManager` layer (superseded by `SLMsController`/`slmsManager`; the old one is commented out in `MasterController`)
 - ⬜ Move `__test_Manager.py` from `imcontrol/` root into `_test/` (currently requires live hardware; not part of CI)
 - ⬜ Separate driver mocks from real interfaces in `model/interfaces/` (currently mixed with no clear pattern)
