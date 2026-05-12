@@ -272,7 +272,7 @@ class ScanInfo:
 
 
 @dataclass(frozen=True)
-class EtSTEDInfo:
+class EtSTEDDeviceInfo:
     detectorFast: str
     """ Name of the STED detector to use. """ #comment from Simone, should this be "widefield detector to use?"
 
