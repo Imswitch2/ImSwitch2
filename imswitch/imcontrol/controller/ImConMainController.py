@@ -50,11 +50,19 @@ class ImConMainController(MainController):
 
         self.controllers = {}
 
+        # Extra kwargs forwarded to specific controllers that need view-layer objects
+        _imageWidget = self.__mainView.widgets.get('Image')
+        _extraKwargs = {
+            'ViewerTools': {'imageToolManager': _imageWidget.toolManager if _imageWidget else None},
+        }
+
         for widgetKey, widget in self.__mainView.widgets.items():
             self.controllers[widgetKey] = self.__factory.createController(
                 (getattr(controllers, f'{widgetKey}Controller')
                 if widgetKey != 'Scan' else
-                getattr(controllers, f'{widgetKey}Controller{self.__setupInfo.scan.scanWidgetType}')), widget
+                getattr(controllers, f'{widgetKey}Controller{self.__setupInfo.scan.scanWidgetType}')),
+                widget,
+                **_extraKwargs.get(widgetKey, {})
             )
 
         # Generate API

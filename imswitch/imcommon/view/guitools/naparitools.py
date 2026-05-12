@@ -1036,8 +1036,11 @@ class ViewerToolManager(QtCore.QObject):
     
     def _on_mode_changed(self, event):
         """Handle mode change events."""
-        # Napari mode might be changed externally, keep track
         mode = event.value if hasattr(event, 'value') else event
+        # napari 0.4.18+ uses Mode enum; coerce to string
+        if hasattr(mode, 'value'):
+            mode = mode.value
+        mode = str(mode)
         if mode.startswith('add_'):
             self._current_mode = mode.replace('add_', '')
         elif mode == 'select':
