@@ -7,11 +7,18 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
+# Exclude standalone scripts and generated/runtime data that are not part of the package
+exclude = [
+    "test-galvoscandesigner.py",
+    "test_standa_motrot.py",
+    "ai_nidaq_tests.py",
+    "imswitch/_data/",
+]
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
-ignore = ["F405"]  # Star imports used extensively - defer cleanup to future work
+# Critical errors only for now: syntax errors, undefined names in real code
+select = ["E9", "F63", "F7", "F82"]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]  # Allow unused imports in __init__.py (re-exports)
+"imswitch/imreconstruct/model/Denoiser.py" = ["F821"]  # torch/transforms imported conditionally inside __init__

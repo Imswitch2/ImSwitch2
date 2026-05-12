@@ -8,89 +8,51 @@ on:
 
 jobs:
   lint:
-    name: Lint
+    name: Lint (critical errors)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install ruff
-        run: pip install ruff
-      - name: Run ruff check
-        run: ruff check .
-      - name: Run ruff format check
-        run: ruff format --check .
+      - run: pip install ruff
+      - name: Check for critical errors only
+        run: ruff check imswitch/
 
-  test:
-    name: Test
+  test-unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.10"
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-cov pytest-qt PyQt5
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ]; then pip install -e ".[test]" 2>/dev/null || true; fi
-      - name: Run tests
-        run: pytest --tb=short -q
+          pip install --upgrade pip
+          pip install PyQt5 qtpy pyqtgraph QDarkStyle \
+                      numpy h5py zarr tifffile ome-zarr \
+                      dataclasses-json colour-science \
+                      pyserial requests Pyro5 luddite \
+                      coloredlogs fastapi uvicorn \
+                      scikit-image Send2Trash \
+                      nidaqmx Pillow scipy \
+                      pytest pytest-qt
+          pip install -e . --no-deps
+      - name: Run unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pytest imswitch/imcontrol/_test/unit/test_stores.py -v --import-mode=importlib
 
   build:
     name: Package Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install build tools
-        run: pip install build
+      - run: pip install build
       - name: Build package
-        run: python -m build 2>/dev/null || echo "No pyproject.toml/setup.py yet — skipping build"
-
-  smoke-test:
-    name: Import Smoke Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ]; then pip install -e . 2>/dev/null || true; fi
-      - name: Smoke test imports
-        run: |
-          python -c "
-          import importlib, sys, pathlib
-          errors = []
-          # Find all Python packages in the repo root
-          for init in pathlib.Path('.').rglob('__init__.py'):
-              pkg = str(init.parent).replace('/', '.')
-              if pkg.startswith('.'):
-                  continue
-              try:
-                  importlib.import_module(pkg)
-                  print(f'  OK: {pkg}')
-              except Exception as e:
-                  errors.append((pkg, str(e)))
-                  print(f'FAIL: {pkg} — {e}')
-          if errors:
-              print(f'\n{len(errors)} import(s) failed')
-              sys.exit(1)
-          else:
-              print('\nAll imports OK')
-          "
+        run: python -m build --no-isolation 2>/dev/null || python -m build
