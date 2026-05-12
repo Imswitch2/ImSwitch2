@@ -26,13 +26,20 @@ class NidaqManager(SignalInterface):
     sigScanBuildFailed = Signal()
 
     def __init__(self, setupInfo):
-        if not _NIDAQMX_AVAILABLE:
-            raise ImportError(
-                'nidaqmx is required for NI-DAQ hardware. '
-                'Install it with: pip install "imswitch[hardware]"'
-            )
         super().__init__()
         self.__logger = initLogger(self)
+
+        if not _NIDAQMX_AVAILABLE:
+            hasNidaqDevices = any(
+                info.getAnalogChannel() is not None or info.getDigitalLine() is not None
+                for info in setupInfo.getAllDevices().values()
+            )
+            if hasNidaqDevices:
+                raise ImportError(
+                    'nidaqmx is required for NI-DAQ hardware in this setup. '
+                    'Install it with: pip install "imswitch[hardware]"'
+                )
+            self.__logger.warning('nidaqmx not installed; NI-DAQ operations disabled.')
 
         self.__setupInfo = setupInfo
         self.tasks = {}

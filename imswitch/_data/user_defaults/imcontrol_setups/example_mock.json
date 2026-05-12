@@ -1,0 +1,28 @@
+{
+    "detectors": {
+        "Camera": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "AVManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "avcam": {
+                    "exposure": 100,
+                    "gain": 1
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {},
+    "positioners": {},
+    "rs232devices": {},
+    "slms": {},
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image"
+    ]
+}
