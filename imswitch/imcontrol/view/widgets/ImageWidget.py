@@ -76,10 +76,8 @@ class ImageWidget(QtWidgets.QWidget):
 
     def getCenterViewbox(self):
         """ Returns the center point of the viewbox, as an (x, y) tuple. """
-        return (
-            self.napariViewer.window.qt_viewer.camera.center[2],
-            self.napariViewer.window.qt_viewer.camera.center[1]
-        )
+        center = self.napariViewer.camera.center
+        return (center[2], center[1])
 
     def updateGrid(self, imShape):
         self.grid.update(imShape)
@@ -94,10 +92,12 @@ class ImageWidget(QtWidgets.QWidget):
         self.napariViewer.reset_view()
 
     def addItem(self, item):
+        _canvas = self.napariViewer.window.qt_viewer.canvas
+        _view = getattr(_canvas, 'view', None) or getattr(self.napariViewer.window.qt_viewer, 'view', None)
         item.attach(self.napariViewer,
-                    canvas=self.napariViewer.window.qt_viewer.canvas,
-                    view=self.napariViewer.window.qt_viewer.view,
-                    parent=self.napariViewer.window.qt_viewer.view.scene,
+                    canvas=_canvas,
+                    view=_view,
+                    parent=_view.scene,
                     order=1e6 + 8000)
 
     def removeItem(self, item):

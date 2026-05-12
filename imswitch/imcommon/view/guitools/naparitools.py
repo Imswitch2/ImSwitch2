@@ -113,10 +113,12 @@ class NapariBaseWidget(QtWidgets.QWidget):
         return widget
 
     def addItemToViewer(self, item):
+        _canvas = self.viewer.window.qt_viewer.canvas
+        _view = getattr(_canvas, 'view', None) or getattr(self.viewer.window.qt_viewer, 'view', None)
         item.attach(self.viewer,
-                    canvas=self.viewer.window.qt_viewer.canvas,
-                    view=self.viewer.window.qt_viewer.view,
-                    parent=self.viewer.window.qt_viewer.view.scene,
+                    canvas=_canvas,
+                    view=_view,
+                    parent=_view.scene,
                     order=1e6 + 8000)
 
 
@@ -976,3 +978,215 @@ class VispyScatterVisual(VispyBaseVisual):
 
         self.node.set_data(self._markers_data, edge_color=self._color, face_color=self._color,
                            symbol=self._symbol)
+
+
+class ViewerToolManager(QtCore.QObject):
+    """
+    Manages napari Shapes layer for interactive viewer tools (ROI, line, etc.).
+    
+    Provides a unified interface for mode switching and shape data access,
+    while maintaining backward compatibility with existing Vispy overlay system.
+    
+    Examples
+    --------
+    >>> manager = ViewerToolManager(napari_viewer)
+    >>> manager.set_mode('rectangle')  # Enable rectangle drawing
+    >>> manager.set_mode('line')       # Switch to line drawing
+    >>> manager.set_mode('pan')        # Return to pan/zoom
+    >>> 
+    >>> # Access shape data
+    >>> bounds = manager.get_rectangle_bounds(0)
+    >>> endpoints = manager.get_line_endpoints(0)
+    """
+    
+    sigShapesChanged = QtCore.Signal()  # Emitted when shapes data changes
+    sigModeChanged = QtCore.Signal(str)  # Emitted when mode changes (mode_name)
+    
+    def __init__(self, napari_viewer):
+        """
+        Initialize the ViewerToolManager.
+        
+        Parameters
+        ----------
+        napari_viewer : napari.Viewer
+            The napari viewer instance to manage tools for.
+        """
+        super().__init__()
+        self._viewer = napari_viewer
+        self._shapes_layer = None
+        self._current_mode = 'pan'
+        
+    def _ensure_shapes_layer(self):
+        """Lazily create the Shapes layer if it doesn't exist."""
+        if self._shapes_layer is None:
+            self._shapes_layer = self._viewer.add_shapes(
+                name='Viewer Tools',
+                edge_color='yellow',
+                face_color=[0, 0, 0, 0],  # Transparent fill
+                edge_width=2,
+                ndim=2
+            )
+            # Connect to data change events
+            self._shapes_layer.events.data.connect(self._on_shapes_data_changed)
+            self._shapes_layer.events.mode.connect(self._on_mode_changed)
+    
+    def _on_shapes_data_changed(self, event):
+        """Handle shapes data change events."""
+        self.sigShapesChanged.emit()
+    
+    def _on_mode_changed(self, event):
+        """Handle mode change events."""
+        # Napari mode might be changed externally, keep track
+        mode = event.value if hasattr(event, 'value') else event
+        if mode.startswith('add_'):
+            self._current_mode = mode.replace('add_', '')
+        elif mode == 'select':
+            self._current_mode = 'select'
+        elif mode == 'pan_zoom':
+            self._current_mode = 'pan'
+        self.sigModeChanged.emit(self._current_mode)
+    
+    def set_mode(self, mode):
+        """
+        Set the interaction mode.
+        
+        Parameters
+        ----------
+        mode : str
+            One of: 'pan', 'select', 'rectangle', 'line', 'ellipse', 'polygon', 'path'
+        """
+        self._ensure_shapes_layer()
+        
+        # Map simplified mode names to napari Shape layer modes
+        mode_map = {
+            'pan': 'pan_zoom',
+            'select': 'select',
+            'rectangle': 'add_rectangle',
+            'line': 'add_line',
+            'ellipse': 'add_ellipse',
+            'polygon': 'add_polygon',
+            'path': 'add_path'
+        }
+        
+        napari_mode = mode_map.get(mode, mode)
+        self._shapes_layer.mode = napari_mode
+        self._current_mode = mode
+        self.sigModeChanged.emit(mode)
+    
+    def get_mode(self):
+        """Get the current interaction mode."""
+        return self._current_mode
+    
+    def get_shapes_data(self):
+        """
+        Get all shapes data.
+        
+        Returns
+        -------
+        list of np.ndarray
+            List of shape vertex arrays. Each shape is an Nx2 array of (x, y) coordinates.
+        """
+        if self._shapes_layer is None:
+            return []
+        return list(self._shapes_layer.data)
+    
+    def get_shape_count(self):
+        """Get the number of shapes."""
+        if self._shapes_layer is None:
+            return 0
+        return len(self._shapes_layer.data)
+    
+    def get_rectangle_bounds(self, shape_index):
+        """
+        Get bounds of a rectangle shape.
+        
+        Parameters
+        ----------
+        shape_index : int
+            Index of the shape in the shapes list.
+        
+        Returns
+        -------
+        tuple or None
+            (x0, y0, x1, y1) bounds of the rectangle, or None if invalid index.
+        """
+        if self._shapes_layer is None or shape_index >= len(self._shapes_layer.data):
+            return None
+        
+        shape_data = self._shapes_layer.data[shape_index]
+        # Rectangle is stored as 4 vertices
+        x_coords = shape_data[:, 0]
+        y_coords = shape_data[:, 1]
+        
+        x0, x1 = x_coords.min(), x_coords.max()
+        y0, y1 = y_coords.min(), y_coords.max()
+        
+        return (x0, y0, x1, y1)
+    
+    def get_line_endpoints(self, shape_index):
+        """
+        Get endpoints of a line shape.
+        
+        Parameters
+        ----------
+        shape_index : int
+            Index of the shape in the shapes list.
+        
+        Returns
+        -------
+        tuple or None
+            ((x0, y0), (x1, y1)) endpoints of the line, or None if invalid index.
+        """
+        if self._shapes_layer is None or shape_index >= len(self._shapes_layer.data):
+            return None
+        
+        shape_data = self._shapes_layer.data[shape_index]
+        # Line is stored as 2 vertices
+        if len(shape_data) >= 2:
+            p0 = tuple(shape_data[0])
+            p1 = tuple(shape_data[1])
+            return (p0, p1)
+        return None
+    
+    def clear_shapes(self):
+        """Remove all shapes from the layer."""
+        if self._shapes_layer is not None:
+            self._shapes_layer.data = []
+    
+    def remove_shape(self, shape_index):
+        """
+        Remove a specific shape.
+        
+        Parameters
+        ----------
+        shape_index : int
+            Index of the shape to remove.
+        """
+        if self._shapes_layer is not None and shape_index < len(self._shapes_layer.data):
+            data = list(self._shapes_layer.data)
+            data.pop(shape_index)
+            self._shapes_layer.data = data
+    
+    def set_visible(self, visible):
+        """
+        Show or hide the shapes layer.
+        
+        Parameters
+        ----------
+        visible : bool
+            True to show, False to hide.
+        """
+        if self._shapes_layer is not None:
+            self._shapes_layer.visible = visible
+    
+    def get_layer(self):
+        """
+        Get the underlying napari Shapes layer.
+        
+        Returns
+        -------
+        napari.layers.Shapes
+            The shapes layer (created if it doesn't exist).
+        """
+        self._ensure_shapes_layer()
+        return self._shapes_layer
