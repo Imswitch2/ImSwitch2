@@ -293,28 +293,28 @@ class NapariShiftWidget(NapariBaseWidget):
         # Title label
         self.titleLabel = QtWidgets.QLabel('<h3>Image shift controls</h3>')
 
+        # The Qt resource path :/themes/<theme>/*.svg used by older napari
+        # versions is no longer registered, so we use Unicode arrow glyphs
+        # as button text instead — same affordance without the warnings.
+
         # Shift up button
-        self.upButton = QtWidgets.QPushButton()
+        self.upButton = QtWidgets.QPushButton('↑')
         self.upButton.setToolTip('Shift selected layer up')
-        self.upButton.setIcon(QtGui.QIcon(f':/themes/{self.viewer.theme}/up_arrow.svg'))
         self.upButton.clicked.connect(self._on_up)
 
         # Shift right button
-        self.rightButton = QtWidgets.QPushButton()
+        self.rightButton = QtWidgets.QPushButton('→')
         self.rightButton.setToolTip('Shift selected layer right')
-        self.rightButton.setIcon(QtGui.QIcon(f':/themes/{self.viewer.theme}/right_arrow.svg'))
         self.rightButton.clicked.connect(self._on_right)
 
         # Shift down button
-        self.downButton = QtWidgets.QPushButton()
+        self.downButton = QtWidgets.QPushButton('↓')
         self.downButton.setToolTip('Shift selected layer down')
-        self.downButton.setIcon(QtGui.QIcon(f':/themes/{self.viewer.theme}/down_arrow.svg'))
         self.downButton.clicked.connect(self._on_down)
 
         # Shift left button
-        self.leftButton = QtWidgets.QPushButton()
+        self.leftButton = QtWidgets.QPushButton('←')
         self.leftButton.setToolTip('Shift selected layer left')
-        self.leftButton.setIcon(QtGui.QIcon(f':/themes/{self.viewer.theme}/left_arrow.svg'))
         self.leftButton.clicked.connect(self._on_left)
 
         # Reset button
