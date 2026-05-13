@@ -7,10 +7,10 @@ from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcommon.model import initLogger
 
 
-# NOTE: dll is expected to be in "imswitch\imcontrol\model\interfaces" so we define the "_dll_base_directory" like this.
+# NOTE: dll is expected to be in "imswitch/imcontrol/model/interfaces" so we define the "_dll_base_directory" like this.
 # But it can be override by providing "dll_base_directory" in the config file under "managerProperties"
 cwd = os.getcwd()
-_dll_base_directory = os.path.join(cwd,r"imswitch\imcontrol\model\interfaces")
+_dll_base_directory = os.path.join(cwd, "imswitch", "imcontrol", "model", "interfaces")
 
 class HamamatsuSLMusbManager(SignalInterface):
     """Manager for communication with Hamamatsu SLM with USB connection"""
@@ -30,27 +30,36 @@ class HamamatsuSLMusbManager(SignalInterface):
         self.height = slmInfo.height
         self.pixel_size = slmInfo.pixelSize
 
+        self.mockermode = False
         if slmInfo.managerProperties is not None:
             self.mockermode = slmInfo.managerProperties.get("mockermode", False)
+        
+        # Initialize connection state variables
+        self.bID = None
+        self.num_devices = 0
+        self.connected = False
         
         if self.mockermode:
             self.__logger.info(f"SLM Manager {self.slmName} running in MOCKER MODE. No actual connection to SLM will be made.")
             self.dll = None
         else:
             try:
-                if slmInfo.managerProperties.get("dll_base_directory") is not None:
+                if slmInfo.managerProperties is not None and slmInfo.managerProperties.get("dll_base_directory") is not None:
                     baseDir = slmInfo.managerProperties.get("dll_base_directory")
                 else:
                     baseDir = _dll_base_directory
-                dll_path = os.path.join(baseDir,slmInfo.managerProperties.get("dll"))
+                
+                if slmInfo.managerProperties is not None and slmInfo.managerProperties.get("dll") is not None:
+                    dll_name = slmInfo.managerProperties.get("dll")
+                else:
+                    raise ValueError("DLL name not provided in managerProperties")
+                    
+                dll_path = os.path.join(baseDir, dll_name)
                 self.dll = ctypes.CDLL(dll_path)
             except Exception as e:
-                self.__logger.error(f"Could not load Hamamatsu SLM DLL, using MockerMode")
+                self.__logger.error(f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode")
                 self.mockermode = True
                 self.dll = None
-                self.bID = None
-                self.num_devices = 0
-                self.connected = False
 
         if self.dll is not None:
             self.define_dll_prototypes()
@@ -146,7 +155,7 @@ class HamamatsuSLMusbManager(SignalInterface):
             self.dll.Change_DispSlot(self.bID, slot_no)
             self.currently_displayed = pattern
         else:
-            print("Failed to upload array")
+            self.__logger.error("Failed to upload array")
 
     def close_device(self):
         """Close USB connection with SLM """

@@ -69,7 +69,7 @@ Classification legend (for issues found):
 ## SLM Managers
 
 - [x] `imswitch/imcontrol/model/managers/slms/HamamatsuSLMdviManager.py` — 4 instant fixes applied (lazy import, PyQt abstraction, dead code, uninitialized var)
-- [ ] `imswitch/imcontrol/model/managers/slms/HamamatsuSLMusbManager.py`
+- [x] `imswitch/imcontrol/model/managers/slms/HamamatsuSLMusbManager.py` — 6 instant fixes applied (platform path, uninitialized vars, print, exception logging, guard checks)
 
 ## Infrastructure Managers (audit for robustness only)
 
@@ -1027,3 +1027,13 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Lines 5-6 — Replaced direct PyQt5 imports with qtpy abstraction. Changed `from PyQt5.QtWidgets import QLabel, QApplication` to `from qtpy.QtWidgets import QLabel, QApplication`. The file was already using qtpy for other imports (line 4), so this makes it consistent and allows using different Qt bindings (PyQt5, PySide2, etc.).
 - Line 8 — Removed unused import `from matplotlib import pyplot as plt`. This import was never referenced in the code (dead code), and matplotlib is a heavy dependency.
 - Line 29 — Initialized `self.mockermode = False` before the conditional check. Previously, if `slmInfo.managerProperties` was None, `self.mockermode` was never initialized, causing an AttributeError at line 33 when checking `if self.mockermode:`.
+
+### HamamatsuSLMusbManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 13 — Fixed hard-coded Windows path separator. Changed `r"imswitch\imcontrol\model\interfaces"` to `os.path.join(cwd, "imswitch", "imcontrol", "model", "interfaces")` using proper os.path.join with individual path components. This makes the code platform-independent (works on Windows, Linux, Mac).
+- Line 33 — Initialized `self.mockermode = False` before the conditional check. Previously, if `slmInfo.managerProperties` was None, `self.mockermode` was never initialized, causing an AttributeError at line 36.
+- Lines 38-40 — Moved initialization of `self.bID`, `self.num_devices`, and `self.connected` to before the mocker mode check. Previously these were only initialized in the exception handler (lines 51-53), meaning they were undefined in the normal DLL load success path, causing AttributeError in methods like `connect_to_device()` and `close_device()`.
+- Line 54 — Changed log message from `f"Could not load Hamamatsu SLM DLL, using MockerMode"` to `f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode"` to include the actual exception details for debugging.
+- Line 152 — Replaced `print("Failed to upload array")` with `self.__logger.error("Failed to upload array")` to use proper logging.
+- Lines 47-58 — Added guard checks for `slmInfo.managerProperties` being None before calling `.get()` on it. Previously would crash with AttributeError if managerProperties was None and mocker mode was False. Now checks if managerProperties is not None before accessing dll_base_directory and dll properties. If dll name is not provided, raises ValueError which gets caught by the exception handler and falls back to mocker mode.
