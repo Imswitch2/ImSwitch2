@@ -77,7 +77,9 @@ class MockHamamatsu:
         self.mock_acquisiton_running = False
         self.mock_start_time = time.time_ns()
 
-        self.s = Q_(1, 's')
+        # Only construct a Pint Quantity if Lantz is available; self.s is
+        # only referenced from commented-out code below so it is optional.
+        self.s = Q_(1, 's') if Q_ is not None else None
 
         # Open the camera.
         # self.camera_handle = ctypes.c_void_p(0)
