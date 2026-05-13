@@ -47,7 +47,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py` — 2 instant fixes (style, validation); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/positioners/PIStageManager.py` — 5 instant fixes (exception handling, dead code)
 - [x] `imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py` — 2 instant fixes; 2 moderate proposals; 1 hard issue
-- [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py` — 3 instant fixes applied (logger)
 - [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py`
@@ -697,3 +697,11 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
   - If initialization fails (line 28), all subsequent method calls will raise AttributeError
   - Need systematic None-checking or mock device pattern across all 10+ methods
   - Affects: `homeAll()`, `homing()`, `move()`, `setPosition()`, `move_relative_mm()`, `setJogPars()`, `jog()`
+
+### PiezoconceptZManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 1 — Removed unused import `import time` (dead import)
+- Line 1, 23 — Added logger import and initialization in `__init__` (was missing)
+- Line 40 — Replaced `print(f"Set position to: {value}")` with `self.__logger.debug()` for proper logging
+- Line 60 — Replaced `print(f"PiezoZManager get abs error: {e}")` with `self.__logger.warning()` for proper error reporting

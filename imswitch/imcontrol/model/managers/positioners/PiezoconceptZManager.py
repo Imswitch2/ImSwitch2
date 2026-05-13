@@ -1,5 +1,4 @@
-import time
-
+from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
 
 
@@ -21,6 +20,7 @@ class PiezoconceptZManager(PositionerManager):
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
+        self.__logger = initLogger(self, instanceName=name)
         self._rs232Manager = lowLevelManagers['rs232sManager'][
             positionerInfo.managerProperties['rs232device']
         ]
@@ -37,7 +37,7 @@ class PiezoconceptZManager(PositionerManager):
         self._position[self.axes[0]] = self._position[self.axes[0]] + value
 
     def setPosition(self, value, _):
-        print(f"Set position to: {value}")
+        self.__logger.debug(f"Set position to: {value}")
         cmd = 'MOVEZ ' + str(round(float(value), 3)) + 'u'
         _ = self._rs232Manager.query(cmd)
 
@@ -57,8 +57,8 @@ class PiezoconceptZManager(PositionerManager):
             try:
                 reply = float(reply.split(' ')[0])
             except Exception as e:
-                print(f"PiezoZManager get abs error: {e}")
-                return  self._position[self.axes[0]]
+                self.__logger.warning(f"PiezoZManager get abs error: {e}")
+                return self._position[self.axes[0]]
         self._position[self.axes[0]] = reply
         return reply
 
