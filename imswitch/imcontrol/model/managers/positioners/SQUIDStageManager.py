@@ -4,17 +4,16 @@ from .PositionerManager import PositionerManager
 
 
 class SQUIDStageManager(PositionerManager):
-    SPEED=1000
     PHYS_FACTOR = 1
 
     def __init__(self, positionerInfo, name, **lowLevelManagers):
+        self.__logger = initLogger(self, instanceName=name)
         super().__init__(positionerInfo, name, initialPosition={
             axis: 0 for axis in positionerInfo.axes
         })
         self._rs232manager = lowLevelManagers['rs232sManager'][
             positionerInfo.managerProperties['rs232device']
         ]
-        self.__logger = initLogger(self, instanceName=name)
 
     def move(self, value, axis):
         if axis == 'X':
@@ -24,7 +23,7 @@ class SQUIDStageManager(PositionerManager):
         elif axis == 'Z':
             self._rs232manager._squid.move_z_usteps(int(value*self.PHYS_FACTOR))
         else:
-            print('Wrong axis, has to be "X" "Y" or "Z".')
+            self.__logger.error('Wrong axis, has to be "X" "Y" or "Z".')
             return
         self._position[axis] = self._position[axis] + value
 

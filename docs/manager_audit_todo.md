@@ -51,7 +51,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py` — 4 instant fixes applied (critical syntax error fixed, logger added)
 - [x] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py` — 4 instant fixes applied (bare except, logger); 1 hard
 - [x] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py` — 1 instant fix applied (exception handling); 1 moderate
-- [ ] `imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py` — 3 instant fixes applied (dead code, logger order, print); 2 moderate
 - [ ] `imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py`
 
@@ -755,4 +755,47 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           name=positionerInfo.managerProperties.get('rs232device', 'mock'),
           settings={'port': 'Mock'}
       )
+  ```
+
+### SQUIDStageManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 7 — Removed unused SPEED=1000 constant (dead code, never referenced in the file)
+- Line 10 — Moved logger initialization before super().__init__() call to ensure logger is available if errors occur during initialization
+- Line 26 — Replaced print('Wrong axis...') with self.__logger.error() for proper error reporting
+
+**Moderate proposals**
+- Lines 14-16 — Add try/except with mock fallback for RS232 manager initialization to prevent crash when hardware is unavailable
+  ```python
+  # current
+  self._rs232manager = lowLevelManagers['rs232sManager'][
+      positionerInfo.managerProperties['rs232device']
+  ]
+  
+  # proposed
+  try:
+      self._rs232manager = lowLevelManagers['rs232sManager'][
+          positionerInfo.managerProperties['rs232device']
+      ]
+  except (KeyError, Exception):
+      self.__logger.error('Failed to access SQUID stage RS232 connection, loading mock.')
+      from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
+      self._rs232manager = MockRS232Driver(
+          name=positionerInfo.managerProperties.get('rs232device', 'mock'),
+          settings={'port': 'Mock'}
+      )
+  ```
+
+- Lines 33-35 — Add exception handling to closeEvent() to prevent crash if device is disconnected
+  ```python
+  # current
+  def closeEvent(self):
+      self._rs232manager._squid.close()
+  
+  # proposed
+  def closeEvent(self):
+      try:
+          self._rs232manager._squid.close()
+      except Exception as e:
+          self.__logger.warning(f"Error closing SQUID stage: {e}")
   ```
