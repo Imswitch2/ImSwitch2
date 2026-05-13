@@ -94,8 +94,8 @@ class APDManager(DetectorManager):
             self._scanWorker.close()
             self.__currSlice[-1] += 1
             self.__newFrameReady = True
-        except Exception:
-            pass
+        except Exception as e:
+            self.__logger.warning(f'Failed to stop acquisition cleanly: {e}')
 
     def stopAcquisitionLocal(self):
         try:
@@ -107,8 +107,8 @@ class APDManager(DetectorManager):
                 self._renewImage()
             self.__currSlice[-1] += 1
             self.__newFrameReady = True
-        except Exception:
-            pass
+        except Exception as e:
+            self.__logger.warning(f'Failed to stop acquisition locally: {e}')
         if self._debug_mode:
             plt.show()
 

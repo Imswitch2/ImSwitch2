@@ -72,8 +72,8 @@ class PMTManager(DetectorManager):
             if self._scanThread is not None:
                 self._scanThread.quit()
                 self._scanThread.wait()
-        except Exception:
-            pass
+        except Exception as e:
+            self.__logger.warning(f'Failed to clean up scan thread: {e}')
         if hasattr(super(), "__del__"):
             super().__del__()
 
@@ -508,8 +508,8 @@ class ScanWorker(Worker):
     def close(self):
         try:
             self._manager._nidaqManager.inputTaskDone(self._name)
-        except Exception:
-            pass
+        except Exception as e:
+            self.__logger.warning(f'Failed to close input task: {e}')
 
     def randomInput(self, datalen):
         return np.random.randint(100, size=datalen)
