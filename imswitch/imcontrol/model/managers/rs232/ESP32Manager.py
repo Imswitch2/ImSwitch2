@@ -1,4 +1,3 @@
-import uc2rest as uc2  # pip install UC2-REST
 from imswitch.imcommon.model import initLogger
 
 
@@ -12,22 +11,27 @@ class ESP32Manager:
         self._name = name
         try:
             self._host = rs232Info.managerProperties['host']
-        except:
+        except KeyError:
             self._host = None
 
         try:
             self._serialport = rs232Info.managerProperties['serialport']
-        except:
+        except KeyError:
             self._serialport = None
 
         try:
             self._identity = rs232Info.managerProperties['identity']
-        except:
+        except KeyError:
             self._identity = "UC2_Feather"
 
         # initialize the ESP32 device adapter
-        self._esp32 = uc2.UC2Client(host=self._host, port=80, identity=self._identity, serialport=self._serialport,
-                                    baudrate=115200)
+        try:
+            import uc2rest as uc2  # pip install UC2-REST
+            self._esp32 = uc2.UC2Client(host=self._host, port=80, identity=self._identity, serialport=self._serialport,
+                                        baudrate=115200)
+        except ImportError:
+            self.__logger.warning('uc2rest library not installed. Install with: pip install UC2-REST')
+            self._esp32 = None
 
     def finalize(self):
         pass

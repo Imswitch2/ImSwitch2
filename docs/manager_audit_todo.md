@@ -62,7 +62,7 @@ Classification legend (for issues found):
 ## RS232 / Board Managers
 
 - [x] `imswitch/imcontrol/model/managers/rs232/RS232Manager.py` — 1 instant fix applied (exception logging); 1 moderate
-- [ ] `imswitch/imcontrol/model/managers/rs232/ESP32Manager.py`
+- [x] `imswitch/imcontrol/model/managers/rs232/ESP32Manager.py` — 4 instant fixes applied (lazy import, bare excepts); 1 moderate
 - [ ] `imswitch/imcontrol/model/managers/rs232/GRBLManager.py`
 - [ ] `imswitch/imcontrol/model/managers/rs232/SQUIDManager.py`
 
@@ -926,3 +926,36 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
       self.__logger.warning(f'Failed to initialize RS232 port {port}: {e}. Initializing mock RS232 port')
   ```
   This prevents catching programming errors like NameError, TypeError, KeyError which should fail fast for debugging.
+
+### ESP32Manager — 2026-05-13
+
+**Instant fixes applied**
+- Line 1 — Removed module-level hardware import `import uc2rest as uc2`. Moved to lazy import inside `__init__` at line 29 within try/except block. This prevents ImportError on startup if the UC2-REST library is not installed.
+- Lines 14, 19, 24 — Replaced three bare `except:` clauses with `except KeyError:`. Bare except catches all exceptions including SystemExit and KeyboardInterrupt, making debugging impossible. KeyError is the specific exception when accessing missing dictionary keys.
+- Lines 28-34 — Added try/except wrapper around UC2Client initialization to catch ImportError and warn user. Sets `self._esp32 = None` when library is not available instead of crashing.
+
+**Moderate proposals**
+- Lines 28-34 — Add proper mock fallback for when hardware connection fails (not just import failure)
+  ```python
+  # current
+  try:
+      import uc2rest as uc2
+      self._esp32 = uc2.UC2Client(host=self._host, port=80, identity=self._identity, 
+                                  serialport=self._serialport, baudrate=115200)
+  except ImportError:
+      self.__logger.warning('uc2rest library not installed. Install with: pip install UC2-REST')
+      self._esp32 = None
+  
+  # proposed
+  try:
+      import uc2rest as uc2
+      self._esp32 = uc2.UC2Client(host=self._host, port=80, identity=self._identity, 
+                                  serialport=self._serialport, baudrate=115200)
+  except ImportError:
+      self.__logger.warning('uc2rest library not installed. Install with: pip install UC2-REST')
+      self._esp32 = None
+  except Exception as e:
+      self.__logger.warning(f'Failed to initialize ESP32 device: {e}. Using None fallback.')
+      self._esp32 = None
+  ```
+  This catches hardware connection failures (not just missing library) and provides a graceful fallback. However, the manager needs to be refactored to handle `self._esp32 = None` in all methods that use it.
