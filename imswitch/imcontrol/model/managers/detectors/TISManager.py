@@ -23,6 +23,7 @@ class TISManager(DetectorManager):
         
         self._running = False
         self._adjustingParameters = False
+        self.__image = None
 
         for propertyName, propertyValue in detectorInfo.managerProperties['tis'].items():
             self._camera.setPropertyValue(propertyName, propertyValue)
