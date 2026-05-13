@@ -73,7 +73,7 @@ Classification legend (for issues found):
 
 ## Infrastructure Managers (audit for robustness only)
 
-- [ ] `imswitch/imcontrol/model/managers/NidaqManager.py`
+- [x] `imswitch/imcontrol/model/managers/NidaqManager.py` — 3 instant fixes applied (uninitialized var, logger usage)
 - [ ] `imswitch/imcontrol/model/managers/RecordingManager.py`
 - [ ] `imswitch/imcontrol/model/managers/PulseStreamerManager.py`
 
@@ -1037,3 +1037,10 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 54 — Changed log message from `f"Could not load Hamamatsu SLM DLL, using MockerMode"` to `f"Could not load Hamamatsu SLM DLL: {e}. Using MockerMode"` to include the actual exception details for debugging.
 - Line 152 — Replaced `print("Failed to upload array")` with `self.__logger.error("Failed to upload array")` to use proper logging.
 - Lines 47-58 — Added guard checks for `slmInfo.managerProperties` being None before calling `.get()` on it. Previously would crash with AttributeError if managerProperties was None and mocker mode was False. Now checks if managerProperties is not None before accessing dll_base_directory and dll properties. If dll name is not provided, raises ValueError which gets caught by the exception handler and falls back to mocker mode.
+
+### NidaqManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 50 — Initialized `self.signalSent = False` in `__init__` method. Previously, this attribute was only set in `runScan()` at line 275, but was referenced in `inputTaskDone()` (line 409) and `taskDone()` (line 415) which could be called via callbacks before `runScan()` was ever invoked, causing an AttributeError.
+- Line 218 — Fixed `self.__logger.exception(Exception)` in `setDigital()` method. The `exception()` method should be called with a message string, not the Exception class. Combined with the warning message below it into a single `exception()` call that includes the message and automatically captures the exception traceback.
+- Line 253 — Fixed `self.__logger.error(e, 'message')` in `setAnalog()` method. Changed to proper format string syntax: `self.__logger.error('message: %s', e)` to correctly log the exception with the error message.

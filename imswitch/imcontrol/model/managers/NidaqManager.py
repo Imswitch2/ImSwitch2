@@ -47,6 +47,7 @@ class NidaqManager(SignalInterface):
         self.aoTaskWaiter = None
         self.timerTaskWaiter = None
         self.busy = False
+        self.signalSent = False
         self.__simulating = setupInfo.nidaq.simulation
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
@@ -214,8 +215,7 @@ class NidaqManager(SignalInterface):
                         try:
                             dotask.write(signal, auto_start=True)
                         except Exception:
-                            self.__logger.exception(Exception)
-                            self.__logger.warning(
+                            self.__logger.exception(
                                 'Attempted writing digital data that is too large or too small, or other'
                                 ' error when writing the task.'
                             )
@@ -250,9 +250,9 @@ class NidaqManager(SignalInterface):
                         try:
                             aotask.write(signal, auto_start=True)
                         except Exception as e:
-                            self.__logger.error(e,
+                            self.__logger.error(
                                 'Attempted writing analog data that is too large or too small, or other'
-                                ' error when writing the task.'
+                                ' error when writing the task: %s', e
                             )
                         aotask.wait_until_done()
                         aotask.stop()
