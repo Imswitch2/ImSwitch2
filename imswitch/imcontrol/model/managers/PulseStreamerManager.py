@@ -1,8 +1,14 @@
-from pulsestreamer import PulseStreamer, OutputState
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import initLogger
 import sys
 import io
+
+# Lazy import to avoid ImportError if pulsestreamer library not installed
+try:
+    from pulsestreamer import PulseStreamer, OutputState
+except ImportError:
+    PulseStreamer = None
+    OutputState = None
 
 DIG_CH_MAX_NUMBER = 8
 ANG_CH_MAX_NUMBER = 2
@@ -33,10 +39,12 @@ class PulseStreamerManager(SignalInterface):
             self.__pulseStreamer = PulseStreamer(self.__ipAddress)
             msg = self.__stdOut.getvalue()
             msg = msg.split("\n")
-            (self.__logger.info(m) for m in msg if len(m) > 1)
-        except:
-            # todo: fill exception
-            pass       
+            for m in msg:
+                if len(m) > 1:
+                    self.__logger.info(m)
+        except Exception as e:
+            self.__logger.error(f'Failed to connect to PulseStreamer at {self.__ipAddress}: {e}')
+            self.__pulseStreamer = None       
 
     def setDigital(self, channel, enable):
         """Function to set a digital channel output level.
@@ -45,6 +53,9 @@ class PulseStreamerManager(SignalInterface):
             channel (int): channel to set.
             enable (int, bool): 0/False to disable output, 1/True to enable output.
         """
+        if self.__pulseStreamer is None:
+            self.__logger.warning('PulseStreamer not connected, setDigital ignored')
+            return
         if channel is None:
             raise PulseStreamerManagerError('Target has no digital channel assigned to it')
         elif not self._areChannelsOk(channel, DIG_CH_MAX_NUMBER):
@@ -65,9 +76,12 @@ class PulseStreamerManager(SignalInterface):
         Args:
             channel (int, list): channel/list of channels to set.
             voltage (float): voltage level to set
-            min_val (float, optional): minimum output voltage; defaults to -1.0.
+            min_val (float, optional): minimum output voltage; defaults to 0.0.
             max_val (float, optional): maximum output voltage; defaults to 1.0.
         """
+        if self.__pulseStreamer is None:
+            self.__logger.warning('PulseStreamer not connected, setAnalog ignored')
+            return
         if channel is None:
             raise PulseStreamerManagerError('Target has no analog channel assigned to it')
         elif not self._areChannelsOk(channel, ANG_CH_MAX_NUMBER):

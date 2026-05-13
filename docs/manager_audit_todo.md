@@ -75,7 +75,7 @@ Classification legend (for issues found):
 
 - [x] `imswitch/imcontrol/model/managers/NidaqManager.py` — 3 instant fixes applied (uninitialized var, logger usage)
 - [x] `imswitch/imcontrol/model/managers/RecordingManager.py` — 3 instant fixes applied (typo, bare except, print statement)
-- [ ] `imswitch/imcontrol/model/managers/PulseStreamerManager.py`
+- [x] `imswitch/imcontrol/model/managers/PulseStreamerManager.py` — 5 instant fixes applied (lazy import, bare except, generator bug, guard checks); 1 hard
 
 ---
 
@@ -1051,3 +1051,21 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 23 — Fixed typo in class name `AsTemporayFile` → `AsTemporaryFile`. The class was misspelled throughout the file (lines 23, 56, 72, 103). All references have been updated to use the correct spelling.
 - Line 259 — Fixed bare `except:` clause in `snapImagePrev()` method. Changed to `except Exception as e:` and added exception details to the log message. Bare except clauses make debugging impossible by catching all exceptions including SystemExit and KeyboardInterrupt. Now logs: `'Could not put key:value pair {key}:{value} in hdf5 metadata: {e}'`.
 - Line 362 — Replaced `print(f"Error saving {key} {value} to Hdf5.")` with `self.__logger.error(f"Error saving {key} {value} to Hdf5: {e}")` in the `RecordingWorker._record()` method. Print statements bypass the logging system and don't respect log levels or handlers. Also added the exception details to the error message.
+
+### PulseStreamerManager — 2026-05-13
+
+**Instant fixes applied**
+- Lines 1-11 — Moved `from pulsestreamer import PulseStreamer, OutputState` inside try/except block for lazy loading. Module-level hardware imports cause ImportError on startup if the library is not installed. Now imports are wrapped in try/except and set to None if ImportError occurs, allowing the application to start even without the pulsestreamer library installed.
+- Lines 42-47 — Fixed generator expression bug in `__init__()` that created but never consumed the generator. Line 36 was `(self.__logger.info(m) for m in msg if len(m) > 1)` which creates a generator but doesn't execute it, so nothing was logged. Changed to a proper for loop that actually logs the messages.
+- Lines 45-47 — Fixed bare `except:` clause in `__init__()`. Changed to `except Exception as e:` with proper error logging including the exception details and IP address. Also sets `self.__pulseStreamer = None` so that subsequent method calls can detect the disconnected state instead of crashing with AttributeError.
+- Lines 56-58 — Added guard check in `setDigital()` to handle `self.__pulseStreamer` being None. Without this check, calling setDigital() after a failed connection would raise AttributeError on line 66. Now logs a warning and returns early.
+- Lines 82-84 — Added guard check in `setAnalog()` to handle `self.__pulseStreamer` being None. Without this check, calling setAnalog() after a failed connection would raise AttributeError. Now logs a warning and returns early.
+- Line 79 — Fixed docstring error in `setAnalog()`. The comment claimed `min_val` defaults to -1.0, but the actual default parameter value is 0.0. Updated docstring to match the code.
+
+**Hard issues**
+- **[ISSUE] Global stdout redirection is unsafe and affects entire process**
+  - Lines 30-31 redirect sys.stdout globally with `sys.stdout = self.__stdOut`, which affects all code in the process, not just this manager
+  - The stdout is never restored, leaving all subsequent print statements going to the StringIO buffer
+  - This can break other parts of the application, logging systems, or third-party libraries that expect normal stdout
+  - Should use a context manager (contextlib.redirect_stdout) or capture output only during the specific PulseStreamer() call
+  - Requires architectural change: wrap only the PulseStreamer() instantiation with temporary redirection, then restore stdout immediately
