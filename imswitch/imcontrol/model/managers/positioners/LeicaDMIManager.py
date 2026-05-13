@@ -10,7 +10,7 @@ class LeicaDMIManager(PositionerManager):
         self.__logger = initLogger(self)
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][positionerInfo.managerProperties['rs232device']]
-        except:
+        except KeyError:
             self.__logger.error(f'Failed to access Leica DMI stand RS232 connection with name {positionerInfo.managerProperties["rs232device"]}, define it in your setup .json. Loading mocker.')
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name=positionerInfo.managerProperties['rs232device'], settings={'port': 'Mock'})
@@ -28,10 +28,10 @@ class LeicaDMIManager(PositionerManager):
         except KeyError:
             pass  # Calib file not specified, managerProperties does exist but calib is missing
         except Exception as e:
-            print(f"creating lut for {positionerInfo} from calib failed due to: {e}")
+            self.__logger.warning(f"creating lut for {positionerInfo} from calib failed due to: {e}")
 
         cmd = '71003'
-        print(self._rs232Manager.query(cmd))  # print serial no of dmi stand
+        self.__logger.info(f"DMI stand serial no: {self._rs232Manager.query(cmd)}")
 
     def move(self, value, *args):
         """
@@ -40,7 +40,7 @@ class LeicaDMIManager(PositionerManager):
         if not int(value) == 0:
             cmd = '71024 ' + str(int(value))
             if int(value) > 132:
-                print('Warning: Step bigger than 500nm.')
+                self.__logger.warning('Step bigger than 500nm.')
             self._rs232Manager.write(cmd)
 
         self._position = self._position + value

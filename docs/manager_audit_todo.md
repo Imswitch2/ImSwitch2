@@ -49,7 +49,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py` — 2 instant fixes; 2 moderate proposals; 1 hard issue
 - [x] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py` — 3 instant fixes applied (logger)
 - [x] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py` — 4 instant fixes applied (critical syntax error fixed, logger added)
-- [ ] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py` — 4 instant fixes applied (bare except, logger); 1 hard
 - [ ] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py`
@@ -713,3 +713,19 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 1, 23 — Added logger import and initialization in `__init__` (was missing)
 - Line 31-32 — **CRITICAL**: Fixed syntax error with mismatched parentheses `except Exception as e:(` → `except Exception as e:` and `print(...))` → `self.__logger.warning(...)`
 - Line 67 — Replaced `print(f"PiezoZManager get abs error: {e}")` with `self.__logger.warning()` for proper error reporting
+
+### LeicaDMIManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 13 — Replaced bare `except:` with `except KeyError:` to make exception handling specific and debuggable
+- Line 31 — Replaced `print(f"creating lut for {positionerInfo} from calib failed due to: {e}")` with `self.__logger.warning()` for proper error reporting
+- Line 34 — Replaced `print(self._rs232Manager.query(cmd))` with `self.__logger.info(f"DMI stand serial no: {self._rs232Manager.query(cmd)}")` for proper logging
+- Line 43 — Replaced `print('Warning: Step bigger than 500nm.')` with `self.__logger.warning()` for proper warning logging
+
+**Hard issues**
+- **[ISSUE] LeicaDMIManager missing base class initialization**
+  - Class does not call `super().__init__()` which is required by PositionerManager abstract base class
+  - This causes `self._position` to never be initialized (base class sets this in __init__)
+  - Lines 46 and 57 use `self._position` which will raise AttributeError on first use
+  - Requires understanding what `initialPosition` dict should contain for this device
+  - May need to query device for current position or use a default value
