@@ -170,21 +170,6 @@ class _DCAMAPI_INIT(ctypes.Structure):
     ]
 
 
-class _DCAMDEV_OPEN(ctypes.Structure):
-    """Parameter struct for dcamdev_open() — DCAM4 API.
-
-    The legacy dcam_open in DCAM-API 18.x is a no-op compat stub:
-    calling it with the 3-arg signature returns success but leaves
-    the handle null; calling it with 2 args misaligns the stdcall
-    stack and hangs. dcamdev_open is the real DCAM4 entry point.
-    """
-    _fields_ = [
-        ('size',  ctypes.c_int32),
-        ('index', ctypes.c_int32),
-        ('hdcam', ctypes.c_void_p),
-    ]
-
-
 def initDcam():
     """Initialize the DCAM API.
 
@@ -350,30 +335,24 @@ class HamamatsuCamera:
         self.max_backlog = 0
         self.number_image_buffers = 0
 
-        # Open the camera. In DCAM4 (initialised via dcamapi_init) the
-        # legacy dcam_open is a no-op compat stub — the real entry point
-        # is dcamdev_open with a parameter struct. The legacy 3-arg
-        # dcam_open is used only when initDcam took the legacy path.
+        # Open the camera. DCAM4 dropped the third (GUID*) argument from
+        # dcam_open; calling it with the legacy 3-arg signature against
+        # the DCAM4 entry point misaligns the stdcall stack and hangs.
         self.camera_handle = ctypes.c_void_p(0)
-        if _dcam4 and hasattr(dcam, 'dcamdev_open'):
-            open_param = _DCAMDEV_OPEN()
-            open_param.size = ctypes.sizeof(_DCAMDEV_OPEN)
-            open_param.index = int(self.camera_id)
-            ret = dcam.dcamdev_open(ctypes.byref(open_param))
-            self.camera_handle = ctypes.c_void_p(open_param.hdcam)
-            open_fn_name = "dcamdev_open"
+        if _dcam4:
+            ret = dcam.dcam_open(ctypes.byref(self.camera_handle),
+                                 ctypes.c_int32(self.camera_id))
         else:
             ret = dcam.dcam_open(ctypes.byref(self.camera_handle),
                                  ctypes.c_int32(self.camera_id),
                                  None)
-            open_fn_name = "dcam_open"
         if not self.camera_handle.value:
             raise DCAMException(
-                f"{open_fn_name} did not return a valid camera handle "
+                f"dcam_open did not return a valid camera handle "
                 f"(ret=0x{ret & 0xFFFFFFFF:08X}, index={self.camera_id}, "
                 f"n_cameras={n_cameras})."
             )
-        self.checkStatus(ret, open_fn_name)
+        self.checkStatus(ret, "dcam_open")
         # Get camera properties.
         self.properties = self.getCameraProperties()
         # Get camera max width, height.
