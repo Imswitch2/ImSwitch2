@@ -20,7 +20,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py` — 2 instant fixes applied (attribute name bug; bare except → logged); 1 moderate proposal (trigger mapping)
 - [x] `imswitch/imcontrol/model/managers/detectors/GXPIPYManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/TISManager.py` — 1 instant fix applied (uninitialized variable); 1 moderate proposal (dead code)
-- [ ] `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py`
+- [x] `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py` — 3 instant fixes applied (bare except → logged)
 - [ ] `imswitch/imcontrol/model/managers/detectors/AVManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/JetsonCamManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/PiCamManager.py`
@@ -216,3 +216,10 @@ Classification legend (for issues found):
   value = self._camera.setPropertyValue(name, value)
   ```
   Rationale: The `super().setParameter()` call already validates the parameter name and raises AttributeError if it doesn't exist (DetectorManager.py line 129-130), so the subsequent check is unreachable dead code that adds confusion.
+
+### SwabianTimeTaggerManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 140-141 — Bare `except Exception: pass` in `__del__()` replaced with logged exception. Silent failures when stopping acquisition during cleanup prevented debugging; now logs "Failed to stop acquisition during cleanup: {e}".
+- Line 147-148 — Bare `except Exception: pass` in `__del__()` replaced with logged exception. Silent failures when cleaning up TimeTagger objects prevented debugging; now logs "Failed to clean up TimeTagger objects: {e}".
+- Line 382-383 — Bare `except Exception: pass` in `stopAcquisition()` replaced with logged exception. Silent failures when stopping scan thread prevented debugging; now logs "Failed to stop scan thread: {e}".

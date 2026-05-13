@@ -137,15 +137,15 @@ class SwabianTimeTaggerManager(DetectorManager):
     def __del__(self):
         try:
             self.stopAcquisition()
-        except Exception:
-            pass
+        except Exception as e:
+            self._logger.warning(f'Failed to stop acquisition during cleanup: {e}')
         try:
             self._ev_pix_begin = None
             self._ev_pix_end = None
             self._flim = None
             self._tt = None
-        except Exception:
-            pass
+        except Exception as e:
+            self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
         if hasattr(super(), '__del__'):
             super().__del__()
 
@@ -379,8 +379,8 @@ class SwabianTimeTaggerManager(DetectorManager):
             if getattr(self, '_scanThread', None) is not None:
                 self._scanThread.quit()
                 self._scanThread.wait()
-        except Exception:
-            pass
+        except Exception as e:
+            self._logger.warning(f'Failed to stop scan thread: {e}')
         self._newFrameReady = True
 
     # ------------------------------------------------------------------ #
