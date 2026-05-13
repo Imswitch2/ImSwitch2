@@ -37,7 +37,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py` — 1 instant fix applied (getValue returns numeric value)
 - [x] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py` � 1 instant fix applied (None comparison style); 1 moderate proposal (mock mode)
 - [x] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py` � 1 instant fix applied (docstring formatting); 2 moderate proposals (mock mode, setValue guard)
-- [ ] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py` — 3 moderate proposals (mock mode, driver validation, division by zero)
 - [ ] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py`
@@ -445,5 +445,72 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           channel=self._analogChannels, voltage=voltage,
           min_val=self.valueRangeMin, max_val=self.valueRangeMax
       )
+  ```
+
+### PyMicroscopeLaserManager — 2026-05-13
+
+**Moderate proposals**
+- Lines 16-26 — Add mock/fallback mode with try/except wrapper around hardware initialization
+  ```python
+  # current
+  def __init__(self, laserInfo, name, **_lowLevelManager) -> None:
+      self.__logger = initLogger(self, instanceName=name)
+      self.__port = laserInfo.managerProperties["digitalPorts"]
+      self.__driver = str(laserInfo.managerProperties["pyMicroscopeDriver"])
+      driver = self.__driver.split(".")
+      package = importlib.import_module(
+          pythontools.joinModulePath("microscope.lights", driver[0])
+      )
+      self.__laser = getattr(package, driver[1])(self.__port)
+  
+  # proposed
+  def __init__(self, laserInfo, name, **_lowLevelManager) -> None:
+      self.__logger = initLogger(self, instanceName=name)
+      self.__port = laserInfo.managerProperties["digitalPorts"]
+      self.__driver = str(laserInfo.managerProperties["pyMicroscopeDriver"])
+      self._isMock = False
+      try:
+          driver = self.__driver.split(".")
+          package = importlib.import_module(
+              pythontools.joinModulePath("microscope.lights", driver[0])
+          )
+          self.__laser = getattr(package, driver[1])(self.__port)
+      except Exception as e:
+          self._isMock = True
+          self.__logger.warning(f'PyMicroscope laser not available, mock mode: {e}')
+      # Then add early returns in setEnabled() and setValue() if self._isMock
+  ```
+
+- Lines 20-24 — Validate driver string format before splitting and accessing indices
+  ```python
+  # current
+  driver = self.__driver.split(".")
+  package = importlib.import_module(
+      pythontools.joinModulePath("microscope.lights", driver[0])
+  )
+  self.__laser = getattr(package, driver[1])(self.__port)
+  
+  # proposed
+  driver = self.__driver.split(".")
+  if len(driver) != 2:
+      raise ValueError(f"Invalid driver format: {self.__driver}. Expected 'module.class'")
+  package = importlib.import_module(
+      pythontools.joinModulePath("microscope.lights", driver[0])
+  )
+  self.__laser = getattr(package, driver[1])(self.__port)
+  ```
+
+- Line 37 — Add guard against division by zero if maxPower is 0 or invalid
+  ```python
+  # current
+  def setValue(self, value) -> None:
+      self.__laser.power = float(value) / self.__maxPower
+  
+  # proposed
+  def setValue(self, value) -> None:
+      if self.__maxPower == 0:
+          self.__logger.error(f"Cannot set power: maxPower is 0")
+          return
+      self.__laser.power = float(value) / self.__maxPower
   ```
 
