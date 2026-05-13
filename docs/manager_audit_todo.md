@@ -32,7 +32,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py` — 2 instant fixes applied (lazy import; print → logger)
 - [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py` — 5 instant fixes applied (lazy imports; mock assignment bug; spacing/style)
 - [x] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py` — no issues found
-- [ ] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py` — no issues found
 - [ ] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py`
@@ -347,4 +347,13 @@ Classification legend (for issues found):
 ### CoboltLaserManager — 2026-05-13
 
 No issues found. This is a simple backwards compatibility alias that inherits from `Cobolt0601LaserManager` with no additional implementation. All robustness concerns are addressed in the parent class (which was audited separately).
+
+### LantzLaserManager — 2026-05-13
+
+No issues found. This base class for Lantz-based lasers is clean and follows good patterns:
+- The `LantzLaser` import at line 2 is an interface wrapper (not a hardware library), which lazily loads actual hardware drivers with proper try/except handling
+- Mock/fallback logic is properly delegated to the `LantzLaser` interface (lantzlasers.py)
+- No bare except blocks
+- No hard-coded paths, magic numbers, or platform-specific assumptions
+- No Python errors or deprecated API calls
 
