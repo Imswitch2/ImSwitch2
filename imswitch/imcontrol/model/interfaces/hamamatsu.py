@@ -173,11 +173,12 @@ class _DCAMAPI_INIT(ctypes.Structure):
 def initDcam():
     """Initialize the DCAM API.
 
-    Tries the legacy ``dcam_init`` entry point first (timed) and falls
-    back to ``dcamapi_init`` (DCAM4) if the legacy call hangs or fails.
-    This keeps the code working across the historical Python 3.9 + older
-    SDK combination and newer Python 3.12 + DCAM 18.x, and is robust to
-    SDK updates that drop or break either entry point.
+    Prefers the DCAM4 ``dcamapi_init`` entry point because the legacy
+    ``dcam_init`` stub in DCAM-API 18.x can return success without
+    actually initializing the device list (observed on CPython 3.12,
+    where a subsequent ``dcam_open`` then hangs). Falls back to the
+    legacy entry point only if ``dcamapi_init`` is not exported by the
+    DLL (very old DCAM3 SDKs).
     """
     global dcam
     global n_cameras
@@ -187,18 +188,18 @@ def initDcam():
 
     lib = ctypes.windll.dcamapi
 
-    if _tryLegacyDcamInit(lib):
-        dcam = lib
-        return
-
     if hasattr(lib, 'dcamapi_init'):
         _doDcam4Init(lib)
         dcam = lib
         return
 
+    if _tryLegacyDcamInit(lib):
+        dcam = lib
+        return
+
     raise DCAMException(
-        "DCAM initialization failed: dcam_init did not complete and "
-        "dcamapi_init is not available."
+        "DCAM initialization failed: neither dcamapi_init nor "
+        "dcam_init succeeded."
     )
 
 
@@ -241,6 +242,11 @@ def _doDcam4Init(lib):
         )
     n_cameras = param.iDeviceCount
     _dcam4 = True
+    if n_cameras <= 0:
+        raise DCAMException(
+            "dcamapi_init reported 0 connected devices. "
+            "Check that the camera is connected and powered on."
+        )
 
 
 # ## HCamData
