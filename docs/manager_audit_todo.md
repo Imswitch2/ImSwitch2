@@ -34,7 +34,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py` — no issues found
 - [x] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py` — no issues found
 - [x] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py` — 2 instant fixes applied (added logger; print → logger)
-- [ ] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py` — 1 instant fix applied (getValue returns numeric value)
 - [ ] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py`
@@ -363,4 +363,9 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 4 — Added `from imswitch.imcommon.model import initLogger` to enable proper logging
 - Line 27 — Added `self.__logger = initLogger(self, instanceName=name)` to initialize logger in `__init__`
 - Line 67 — Changed `print(f"creating lut for {laserInfo} from calib failed due to: {e}")` to `self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")` for proper error logging instead of print statement
+
+### MPBLaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 59-60 — Fixed `getValue()` to parse and return numeric value instead of raw string. The method now splits the RS232 response format (e.g., 'D >100') and extracts the numeric value, converting it to float for proper use in calculations and comparisons.
 

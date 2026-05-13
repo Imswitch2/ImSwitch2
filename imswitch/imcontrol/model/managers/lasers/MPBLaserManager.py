@@ -56,7 +56,8 @@ class MPBLaserManager(LaserManager):
         if self._isMock:
             return 0
         # Channel 0 = forward power monitor (what the laser is actually emitting)
-        return self._rs232manager.query("POWER 0")
+        raw = self._rs232manager.query("POWER 0")
+        return float(raw.split('>')[-1].strip())
 
     def setMode(self, mode):
         if self._isMock:
