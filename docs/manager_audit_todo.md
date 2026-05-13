@@ -64,7 +64,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/rs232/RS232Manager.py` — 1 instant fix applied (exception logging); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/rs232/ESP32Manager.py` — 4 instant fixes applied (lazy import, bare excepts); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/rs232/GRBLManager.py` — 3 instant fixes applied (lazy import, bare except, Python error); 1 moderate
-- [ ] `imswitch/imcontrol/model/managers/rs232/SQUIDManager.py`
+- [x] `imswitch/imcontrol/model/managers/rs232/SQUIDManager.py` — 2 instant fixes applied (lazy import, bare except); 1 moderate
 
 ## SLM Managers
 
@@ -996,3 +996,26 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
       self._board = None  # or a proper mock object
   ```
   This catches hardware connection failures (serial port not found, device not responding, etc.) and provides a graceful fallback. However, all methods that use `self._board` (query, finalize) need to be refactored to handle the None/mock case.
+
+### SQUIDManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 2 — Removed module-level hardware import `from imswitch.imcontrol.model.interfaces.squid import SQUID`. Moved to lazy import inside `__init__` at line 17. This prevents ImportError on startup if the SQUID interface or its dependencies (pyserial) are not installed.
+- Line 13 — Replaced bare `except:` with `except KeyError:`. Bare except catches all exceptions including SystemExit and KeyboardInterrupt, making debugging impossible. KeyError is the specific exception when accessing missing dictionary keys.
+
+**Moderate proposals**
+- Lines 17-18 — Add try/except wrapper around SQUID initialization with mock/fallback support
+  ```python
+  # current
+  from imswitch.imcontrol.model.interfaces.squid import SQUID
+  self._squid = SQUID(port=self._serialport)
+  
+  # proposed
+  from imswitch.imcontrol.model.interfaces.squid import SQUID
+  try:
+      self._squid = SQUID(port=self._serialport)
+  except Exception as e:
+      self.__logger.warning(f'Failed to initialize SQUID device on {self._serialport}: {e}. Using mock fallback.')
+      self._squid = None  # or a proper mock object
+  ```
+  This catches hardware connection failures (serial port not found, device not responding, etc.) and provides a graceful fallback. However, all methods that use `self._squid` (send, finalize) need to be refactored to handle the None/mock case.

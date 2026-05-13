@@ -1,5 +1,4 @@
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.interfaces.squid import SQUID
 
 
 class SQUIDManager:
@@ -11,10 +10,11 @@ class SQUIDManager:
 
         try:
             self._serialport = rs232Info.managerProperties['serialport']
-        except:
+        except KeyError:
             self._serialport = None
 
-        # initialize the SQUID board 
+        # initialize the SQUID board
+        from imswitch.imcontrol.model.interfaces.squid import SQUID
         self._squid = SQUID(port=self._serialport)
         
     def send(self, arg: str) -> str:
