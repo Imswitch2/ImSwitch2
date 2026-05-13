@@ -52,7 +52,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py` — 4 instant fixes applied (bare except, logger); 1 hard
 - [x] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py` — 1 instant fix applied (exception handling); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py` — 3 instant fixes applied (dead code, logger order, print); 2 moderate
-- [ ] `imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py` — 5 instant fixes applied (logging config, logger, duplicate method, dead code); 2 moderate
 - [ ] `imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py`
 
 ## Rotator Managers
@@ -798,4 +798,68 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           self._rs232manager._squid.close()
       except Exception as e:
           self.__logger.warning(f"Error closing SQUID stage: {e}")
+  ```
+
+### SmarACTPositionerManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 5 — Removed `logging.basicConfig(level=logging.DEBUG)` which was setting global logging configuration and affecting all modules
+- Line 12 — Removed `print('Could not import smaract interface!')` statement in import error handler (improper error reporting)
+- Lines 68-70 — Replaced custom `logging.getLogger(name)` with ImSwitch's `initLogger(self, instanceName=name)` and moved before `super().__init__()` for consistency with other managers
+- Lines 82-92 — Removed duplicate `ExitIfError` method definition (identical method was already defined at lines 281-291)
+- Line 214 — Removed dead code `self.axis_lookup_table.items()` which had no effect (result not assigned or used)
+
+**Moderate proposals**
+- Lines 8-11 — Add mock fallback for hardware library import instead of re-raising ImportError
+  ```python
+  # current
+  try:
+      from imswitch.imcontrol.model.interfaces.SmarACT import *
+  except ImportError:
+      raise
+  
+  # proposed
+  try:
+      from imswitch.imcontrol.model.interfaces.SmarACT import *
+      HARDWARE_AVAILABLE = True
+  except ImportError:
+      HARDWARE_AVAILABLE = False
+      # Define mock constants and functions
+      SA_OK = 0
+      SA_STOPPED_STATUS = 0
+      SA_HOLDING_STATUS = 1
+      # ... (define other needed constants and mock functions)
+  ```
+
+- Lines 80-93 — Add try/except with mock fallback in `__setup_connection_and_buffers()` to allow manager to initialize when hardware is not available
+  ```python
+  # current
+  def __setup_connection_and_buffers(self):
+      """ Internal use only. Connect to the device and set up a buffer to receive replies.
+      """
+      self.mcsHandle = ct.c_ulong()
+      self.outBuffer = ct.create_string_buffer(17)
+      self.ioBufferSize = ct.c_ulong(18)
+      self.ExitIfError(
+          SA_FindSystems("", self.outBuffer, self.ioBufferSize)
+      )
+      # ... rest of connection code
+  
+  # proposed
+  def __setup_connection_and_buffers(self):
+      """ Internal use only. Connect to the device and set up a buffer to receive replies.
+      """
+      try:
+          self.mcsHandle = ct.c_ulong()
+          self.outBuffer = ct.create_string_buffer(17)
+          self.ioBufferSize = ct.c_ulong(18)
+          self.ExitIfError(
+              SA_FindSystems("", self.outBuffer, self.ioBufferSize)
+          )
+          # ... rest of connection code
+          self._mock = False
+      except Exception as e:
+          self.__logger__.warning(f"Failed to connect to SmarACT hardware: {e}. Using mock mode.")
+          self._mock = True
+          self.mcsHandle = None
   ```

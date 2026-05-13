@@ -1,15 +1,13 @@
 import time
 from typing import Dict
 import numpy as np
-import logging
-logging.basicConfig(level=logging.DEBUG)
+from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
 from ..detectors.DetectorManager import DetectorNumberParameter
 
 try:
     from imswitch.imcontrol.model.interfaces.SmarACT import *
 except ImportError:
-    print('Could not import smaract interface!')
     raise
 
 
@@ -67,10 +65,10 @@ class SmarACTPositionerManager(PositionerManager):
         for key, value in self.axis_lookup_table.items():
             self.reverse_axis_lookup_table[value] = key
 
+        self.__logger__ = initLogger(self, instanceName=name)
+        
         super().__init__(positionerInfo, name, initialPosition={'X': 0, 'Y':0, 'Z':0})
 
-        self.__logger__ = logging.getLogger(name)
-        self.__logger__.setLevel(logging.DEBUG)
         self.__logger__.debug('Connecting to stage')
         self.__setup_connection_and_buffers()
         self.__logger__.debug('Connected to stage')
@@ -78,18 +76,6 @@ class SmarACTPositionerManager(PositionerManager):
 
 
         self._position = self.position
-
-    def ExitIfError(self, status):
-        # init error_msg variable
-        error_msg = ct.c_char_p()
-        if status != SA_OK:
-            SA_GetStatusInfo(status, error_msg)
-            error_message = (
-                f"MCS error: {error_msg.value[:].decode('utf-8')} \n Err code {status}"
-            )
-            self.__logger__.error(error_message)
-            raise StageStatusException(error_message)
-        return status
 
     def __setup_connection_and_buffers(self):
         """ Internal use only. Connect to the device and set up a buffer to receive replies.
@@ -225,7 +211,6 @@ class SmarACTPositionerManager(PositionerManager):
 
     @property
     def position(self) -> Dict[str, float]:
-        self.axis_lookup_table.items()
         pos = np.array([self.getPosition(a) for a in 'XYZ'])
         positions = {}
         for ax, p in zip(self.axes, pos):
