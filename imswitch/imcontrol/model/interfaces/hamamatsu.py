@@ -43,7 +43,6 @@
 
 import ctypes
 import ctypes.util
-import threading
 
 import numpy as np
 
@@ -150,94 +149,19 @@ class DCAMException(Exception):
 dcam = None
 n_cameras = -1
 
-# How long to wait for the legacy dcam_init entry point before giving up
-# and falling back to dcamapi_init. The legacy entry point can block
-# indefinitely on some Python/SDK combinations (observed with CPython 3.12
-# against DCAM-API 18.x), while the DCAM4 entry point returns promptly.
-_DCAM_LEGACY_INIT_TIMEOUT_S = 3.0
-
-
-class _DCAMAPI_INIT(ctypes.Structure):
-    """Parameter struct for dcamapi_init() — DCAM4 API."""
-    _fields_ = [
-        ('size',            ctypes.c_int32),
-        ('iDeviceCount',    ctypes.c_int32),
-        ('reserved',        ctypes.c_int32),
-        ('initoptionbytes', ctypes.c_int32),
-        ('initoption',      ctypes.c_void_p),
-        ('guid',            ctypes.c_void_p),
-    ]
-
 
 def initDcam():
-    """Initialize the DCAM API.
-
-    Tries the legacy ``dcam_init`` entry point first (timed) and falls
-    back to ``dcamapi_init`` (DCAM4) if the legacy call hangs or fails.
-    This keeps the code working across the historical Python 3.9 + older
-    SDK combination and newer Python 3.12 + DCAM 18.x, and is robust to
-    SDK updates that drop or break either entry point.
-    """
     global dcam
     global n_cameras
 
     if dcam is not None:
         return
 
-    lib = ctypes.windll.dcamapi
-
-    if _tryLegacyDcamInit(lib):
-        dcam = lib
-        return
-
-    if hasattr(lib, 'dcamapi_init'):
-        _doDcam4Init(lib)
-        dcam = lib
-        return
-
-    raise DCAMException(
-        "DCAM initialization failed: dcam_init did not complete and "
-        "dcamapi_init is not available."
-    )
-
-
-def _tryLegacyDcamInit(lib):
-    """Run dcam_init in a daemon thread; return True on success.
-
-    On Python/SDK combinations where dcam_init hangs, the thread is
-    abandoned (still daemon, so it does not block process exit) and
-    we return False so the caller can try the DCAM4 entry point.
-    """
-    global n_cameras
+    dcam = ctypes.windll.dcamapi
     temp = ctypes.c_int32(0)
-    result = [None]
-
-    def _run():
-        try:
-            result[0] = lib.dcam_init(None, ctypes.byref(temp), None)
-        except Exception:
-            result[0] = None
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=_DCAM_LEGACY_INIT_TIMEOUT_S)
-    if t.is_alive() or result[0] != DCAMERR_NOERROR:
-        return False
+    if (dcam.dcam_init(None, ctypes.byref(temp), None) != DCAMERR_NOERROR):
+        raise DCAMException("DCAM initialization failed.")
     n_cameras = temp.value
-    return True
-
-
-def _doDcam4Init(lib):
-    """Initialize via dcamapi_init (DCAM4)."""
-    global n_cameras
-    param = _DCAMAPI_INIT()
-    param.size = ctypes.sizeof(_DCAMAPI_INIT)
-    ret = lib.dcamapi_init(ctypes.byref(param))
-    if ret != DCAMERR_NOERROR:
-        raise DCAMException(
-            f"dcamapi_init failed (err=0x{ret & 0xFFFFFFFF:08X})."
-        )
-    n_cameras = param.iDeviceCount
 
 
 # ## HCamData
