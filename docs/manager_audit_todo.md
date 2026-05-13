@@ -21,7 +21,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/detectors/GXPIPYManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/TISManager.py` — 1 instant fix applied (uninitialized variable); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py` — 3 instant fixes applied (bare except → logged)
-- [ ] `imswitch/imcontrol/model/managers/detectors/AVManager.py`
+- [x] `imswitch/imcontrol/model/managers/detectors/AVManager.py` — 1 instant fix applied (wrong attribute name); 1 moderate proposal (dead code)
 - [ ] `imswitch/imcontrol/model/managers/detectors/JetsonCamManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/PiCamManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/ESP32CamManager.py`
@@ -223,3 +223,25 @@ Classification legend (for issues found):
 - Line 140-141 — Bare `except Exception: pass` in `__del__()` replaced with logged exception. Silent failures when stopping acquisition during cleanup prevented debugging; now logs "Failed to stop acquisition during cleanup: {e}".
 - Line 147-148 — Bare `except Exception: pass` in `__del__()` replaced with logged exception. Silent failures when cleaning up TimeTagger objects prevented debugging; now logs "Failed to clean up TimeTagger objects: {e}".
 - Line 382-383 — Bare `except Exception: pass` in `stopAcquisition()` replaced with logged exception. Silent failures when stopping scan thread prevented debugging; now logs "Failed to stop scan thread: {e}".
+
+### AVManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 89 — Fixed incorrect attribute reference `self._parameters` (which doesn't exist) to `self.parameters` (the property from base class). This bug would have caused AttributeError with wrong message when checking if parameter exists in `getParameter()`.
+
+**Moderate proposals**
+- Line 77-78 — Remove unreachable dead code in `setParameter()` method
+  ```python
+  # current
+  super().setParameter(name, value)
+  
+  if name not in self._DetectorManager__parameters:
+      raise AttributeError(f'Non-existent parameter "{name}" specified')
+  
+  value = self._camera.setPropertyValue(name, value)
+  
+  # proposed
+  super().setParameter(name, value)
+  value = self._camera.setPropertyValue(name, value)
+  ```
+  Rationale: The `super().setParameter()` call already validates the parameter name and raises AttributeError if it doesn't exist (DetectorManager.py line 129-130), so the subsequent check is unreachable dead code that adds confusion.
