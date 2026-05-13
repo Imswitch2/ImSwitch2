@@ -83,7 +83,7 @@ class BaslerManager(DetectorManager):
         contain a key with the specified parameter name, an error will be
         raised."""
 
-        if name not in self._parameters:
+        if name not in self.parameters:
             raise AttributeError(f'Non-existent parameter "{name}" specified')
 
         value = self._camera.getPropertyValue(name)
@@ -96,7 +96,8 @@ class BaslerManager(DetectorManager):
     def getChunk(self):
         try:
             return np.expand_dims(self._camera.getLastChunk(),0)
-        except:
+        except Exception as e:
+            self.__logger.warning(f'Failed to get chunk from camera: {e}')
             return None
 
     def flushBuffers(self):
