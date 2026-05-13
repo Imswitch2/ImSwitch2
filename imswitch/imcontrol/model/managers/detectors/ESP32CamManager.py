@@ -1,7 +1,6 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model.interfaces.esp32camera import CameraESP32Cam
 from .DetectorManager import DetectorManager, DetectorAction, DetectorNumberParameter
 
 
@@ -87,7 +86,7 @@ class ESP32CamManager(DetectorManager):
         contain a key with the specified parameter name, an error will be
         raised."""
 
-        if name not in self._parameters:
+        if name not in self.parameters:
             raise AttributeError(f'Non-existent parameter "{name}" specified')
 
         value = self._camera.getPropertyValue(name)
@@ -166,7 +165,7 @@ class ESP32CamManager(DetectorManager):
             self.__logger.debug(f'Trying to initialize ESP32Camera {host}')
             camera = CameraESP32Cam(host, port)
         except Exception as e:
-            self.__logger.warning(f'Failed to initialize PiCamera {e}, loading TIS mocker')
+            self.__logger.warning(f'Failed to initialize ESP32Camera {e}, loading TIS mocker')
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
 

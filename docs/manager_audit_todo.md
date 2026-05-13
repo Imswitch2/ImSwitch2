@@ -24,7 +24,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/detectors/AVManager.py` — 1 instant fix applied (wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/JetsonCamManager.py` — 1 instant fix applied (wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/PiCamManager.py` — 1 instant fix applied (wrong attribute name); 1 moderate proposal (dead code)
-- [ ] `imswitch/imcontrol/model/managers/detectors/ESP32CamManager.py`
+- [x] `imswitch/imcontrol/model/managers/detectors/ESP32CamManager.py` — 3 instant fixes applied (module-level import; wrong attribute name; misleading log); 1 moderate proposal (dead code)
 
 ## Laser Managers
 
@@ -277,6 +277,31 @@ Classification legend (for issues found):
 
 **Moderate proposals**
 - Line 75-76 — Remove unreachable dead code in `setParameter()` method
+  ```python
+  # current
+  super().setParameter(name, value)
+  
+  if name not in self._DetectorManager__parameters:
+      raise AttributeError(f'Non-existent parameter "{name}" specified')
+  
+  value = self._camera.setPropertyValue(name, value)
+  
+  # proposed
+  super().setParameter(name, value)
+  value = self._camera.setPropertyValue(name, value)
+  ```
+  Rationale: The `super().setParameter()` call already validates the parameter name and raises AttributeError if it doesn't exist (DetectorManager.py line 129-130), so the subsequent check is unreachable dead code that adds confusion.
+
+
+### ESP32CamManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 4 — Removed module-level import of `CameraESP32Cam` hardware library. This import is redundant (already lazily imported in line 164) and risks ImportError on startup if the library is not installed.
+- Line 89 — Fixed incorrect attribute reference `self._parameters` (which doesn't exist) to `self.parameters` (the property from base class). This bug would have caused AttributeError with wrong message when checking if parameter exists in `getParameter()`.
+- Line 168 — Fixed misleading log message that said "Failed to initialize PiCamera" when it should say "ESP32Camera".
+
+**Moderate proposals**
+- Line 77-78 — Remove unreachable dead code in `setParameter()` method
   ```python
   # current
   super().setParameter(name, value)
