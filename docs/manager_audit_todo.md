@@ -17,7 +17,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/detectors/HamamatsuManager.py` — fixed: `_getCameraObj` now early-exits on `cameraId="mock"` before touching DCAM DLL
 - [x] `imswitch/imcontrol/model/managers/detectors/BaslerManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/ThorcamManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
-- [ ] `imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py`
+- [x] `imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py` — 2 instant fixes applied (attribute name bug; bare except → logged); 1 moderate proposal (trigger mapping)
 - [ ] `imswitch/imcontrol/model/managers/detectors/GXPIPYManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/TISManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py`
@@ -146,3 +146,28 @@ Classification legend (for issues found):
   value = self._camera.setPropertyValue(name, value)
   ```
   Rationale: The `super().setParameter()` call already validates the parameter name and raises AttributeError if it doesn't exist (DetectorManager.py line 129-130), so the subsequent check is unreachable dead code that adds confusion.
+
+### PhotometricsManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 28 — Fixed attribute name inconsistency: changed `self.scanLineTime` to `self.__scanLineTime` to match usage in lines 108, 171, and 187. The code was setting a public attribute but accessing a private (name-mangled) attribute, which would cause AttributeError when `crop()` is called before `_setReadoutPort()`.
+- Line 89-90 — Bare `except RuntimeError: pass` in `getChunk()` replaced with logged exception. Silent failures when polling frames prevented debugging; now logs "Failed to get chunk from camera: {e}" before returning partial frame list.
+
+**Moderate proposals**
+- Lines 203-208 — Fix inconsistent trigger source value mappings between `_setTriggerSource()` and `_updatePropertiesFromCamera()`
+  ```python
+  # current in _setTriggerSource (lines 150-160)
+  'Internal trigger' -> 1792
+  'External "start-trigger"' -> 2048
+  'External "frame-trigger"' -> 2560
+  
+  # current in _updatePropertiesFromCamera (lines 203-208)
+  1792 -> 'Internal trigger'
+  2304 -> 'External "start-trigger"'
+  2048 -> 'External "frame-trigger"'
+  
+  # proposed: Make mappings consistent (need to verify correct values with hardware docs)
+  # Option A: Fix _updatePropertiesFromCamera to use 2048 for start-trigger and 2560 for frame-trigger
+  # Option B: Fix _setTriggerSource to use 2304 for start-trigger
+  ```
+  Rationale: The mismatch causes incorrect trigger source display after setting it. When user sets 'External "start-trigger"' (writes 2048), reading back shows 'External "frame-trigger"' (reads 2048). Need hardware documentation to determine correct values.

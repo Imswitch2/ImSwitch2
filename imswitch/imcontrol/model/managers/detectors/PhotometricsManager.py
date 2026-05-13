@@ -25,7 +25,7 @@ class PhotometricsManager(DetectorManager):
         fullShape = self._camera.sensor_size
 
         model = self._camera.name
-        self.scanLineTime = self._camera.scan_line_time
+        self.__scanLineTime = self._camera.scan_line_time
         self.__acquisition = False
         # Prepare parameters
         parameters = {
@@ -86,8 +86,8 @@ class PhotometricsManager(DetectorManager):
                 for _ in range(self.__chunkFrameSize):
                     im = np.array(self._camera.poll_frame()[0]['pixel_data'])
                     frames.append(im)
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            self.__logger.warning(f'Failed to get chunk from camera: {e}')
         return frames
 
     def flushBuffers(self):
