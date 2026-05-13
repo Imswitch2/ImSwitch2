@@ -1,3 +1,4 @@
+import warnings
 from abc import abstractmethod
 
 import napari
@@ -105,15 +106,22 @@ class NapariBaseWidget(QtWidgets.QWidget):
         widget = cls(napariViewer)
         napariViewer.window.add_dock_widget(widget, name=widget.name, area=position)
 
-        # Move layer list to bottom
-        napariViewer.window._qt_window.removeDockWidget(
-            napariViewer.window.qt_viewer.dockLayerList
-        )
-        napariViewer.window._qt_window.addDockWidget(
-            napariViewer.window.qt_viewer.dockLayerList.qt_area,
-            napariViewer.window.qt_viewer.dockLayerList
-        )
-        napariViewer.window.qt_viewer.dockLayerList.show()
+        # Move layer list to bottom. This reaches into private napari API
+        # (window.qt_viewer / window._qt_window) which raises a FutureWarning
+        # in recent napari versions — purely cosmetic so we silence the
+        # warnings while keeping the repositioning. Guarded with try/except
+        # so future API removal degrades gracefully.
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', FutureWarning)
+                warnings.simplefilter('ignore', DeprecationWarning)
+                qt_window = napariViewer.window._qt_window
+                dock_layer_list = napariViewer.window.qt_viewer.dockLayerList
+                qt_window.removeDockWidget(dock_layer_list)
+                qt_window.addDockWidget(dock_layer_list.qt_area, dock_layer_list)
+                dock_layer_list.show()
+        except AttributeError:
+            pass
         return widget
 
     def addItemToViewer(self, item):
