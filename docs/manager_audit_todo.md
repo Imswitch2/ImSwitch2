@@ -44,7 +44,7 @@ Classification legend (for issues found):
 
 ## Positioner Managers
 
-- [ ] `imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py` — 2 instant fixes (style, validation); 1 moderate
 - [ ] `imswitch/imcontrol/model/managers/positioners/PIStageManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py`
@@ -608,3 +608,39 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
   - Mock should simulate basic command/response protocol
   - Requires adding MockCoboltLaser class and integration throughout
   - Red-zone: hardware control code, requires hardware expert review
+
+### NidaqPositionerManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 37 — Removed trailing comma from method signature `resetToCurrent(self,)` → `resetToCurrent(self)`
+- Line 38 — Fixed spacing: `setPosition(...,0)` → `setPosition(..., 0)` for consistency
+- Lines 40-43 — Added axis validation in `get_abs` method to prevent KeyError with clear error message
+
+**Moderate proposals**
+- Lines 28, 31, 38 — Fix inconsistent axis parameter usage across methods
+  ```python
+  # current (line 28)
+  def move(self, dist, axis):
+      self.setPosition(self._position[self.axes[0]] + dist, axis)
+  
+  # current (line 30-31)
+  def setPosition(self, position, axis):
+      self._position[self.axes[0]] = position
+      # axis parameter is ignored, always uses self.axes[0]
+  
+  # proposed - either use the axis parameter consistently:
+  def move(self, dist, axis):
+      self.setPosition(self._position[axis] + dist, axis)
+  
+  def setPosition(self, position, axis):
+      self._position[axis] = position
+      self._nidaqManager.setAnalog(target=self.name, ...)
+  
+  # OR remove axis parameter since only one axis is supported:
+  def move(self, dist):
+      self.setPosition(self._position[self.axes[0]] + dist)
+  
+  def setPosition(self, position):
+      self._position[self.axes[0]] = position
+      self._nidaqManager.setAnalog(target=self.name, ...)
+  ```

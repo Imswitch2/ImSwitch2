@@ -34,10 +34,12 @@ class NidaqPositionerManager(PositionerManager):
                                      min_val=self._minVolt,
                                      max_val=self._maxVolt)
     
-    def resetToCurrent(self,):
-        self.setPosition(self._position[self.axes[0]],0)
+    def resetToCurrent(self):
+        self.setPosition(self._position[self.axes[0]], 0)
 
     def get_abs(self, axis):
+        if axis not in self._position:
+            raise ValueError(f'Axis {axis} not available. Available axes: {list(self._position.keys())}')
         return self._position[axis]
 
 
