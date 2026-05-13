@@ -18,7 +18,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/detectors/BaslerManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/ThorcamManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
 - [x] `imswitch/imcontrol/model/managers/detectors/PhotometricsManager.py` — 2 instant fixes applied (attribute name bug; bare except → logged); 1 moderate proposal (trigger mapping)
-- [ ] `imswitch/imcontrol/model/managers/detectors/GXPIPYManager.py`
+- [x] `imswitch/imcontrol/model/managers/detectors/GXPIPYManager.py` — 2 instant fixes applied (bare except → logged; wrong attribute name); 1 moderate proposal (dead code)
 - [ ] `imswitch/imcontrol/model/managers/detectors/TISManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/SwabianTimeTaggerManager.py`
 - [ ] `imswitch/imcontrol/model/managers/detectors/AVManager.py`
@@ -171,3 +171,26 @@ Classification legend (for issues found):
   # Option B: Fix _setTriggerSource to use 2304 for start-trigger
   ```
   Rationale: The mismatch causes incorrect trigger source display after setting it. When user sets 'External "start-trigger"' (writes 2048), reading back shows 'External "frame-trigger"' (reads 2048). Need hardware documentation to determine correct values.
+
+### GXPIPYManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 123-124 — Bare `except:` in `getChunk()` replaced with logged exception. Silent failures when retrieving camera chunks prevented debugging; now logs "Failed to get chunk from camera: {e}" before returning None.
+- Line 96 — Fixed incorrect attribute reference `self._parameters` (which doesn't exist) to `self.parameters` (the property from base class). This bug would have caused AttributeError with wrong message when checking if parameter exists.
+
+**Moderate proposals**
+- Line 84-85 — Remove unreachable dead code in `setParameter()` method
+  ```python
+  # current
+  super().setParameter(name, value)
+  
+  if name not in self._DetectorManager__parameters:
+      raise AttributeError(f'Non-existent parameter "{name}" specified')
+  
+  value = self._camera.setPropertyValue(name, value)
+  
+  # proposed
+  super().setParameter(name, value)
+  value = self._camera.setPropertyValue(name, value)
+  ```
+  Rationale: The `super().setParameter()` call already validates the parameter name and raises AttributeError if it doesn't exist (DetectorManager.py line 129-130), so the subsequent check is unreachable dead code that adds confusion.
