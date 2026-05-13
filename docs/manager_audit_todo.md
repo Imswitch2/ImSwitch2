@@ -35,8 +35,8 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py` — no issues found
 - [x] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py` — 2 instant fixes applied (added logger; print → logger)
 - [x] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py` — 1 instant fix applied (getValue returns numeric value)
-- [x] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py` � 1 instant fix applied (None comparison style); 1 moderate proposal (mock mode)
-- [ ] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py` � 1 instant fix applied (None comparison style); 1 moderate proposal (mock mode)
+- [x] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py` � 1 instant fix applied (docstring formatting); 2 moderate proposals (mock mode, setValue guard)
 - [ ] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py`
@@ -369,13 +369,13 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 **Instant fixes applied**
 - Line 59-60 — Fixed `getValue()` to parse and return numeric value instead of raw string. The method now splits the RS232 response format (e.g., 'D >100') and extracts the numeric value, converting it to float for proper use in calculations and comparisons.
 
-### CoolLEDLaserManager � 2026-05-13
+### CoolLEDLaserManager � 2026-05-13
 
 **Instant fixes applied**
-- Line 25-27 � Changed `!= None` to `is not None` for PEP 8 compliance. Python style guide recommends using `is not None` instead of `!= None` for None comparisons.
+- Line 25-27 � Changed `!= None` to `is not None` for PEP 8 compliance. Python style guide recommends using `is not None` instead of `!= None` for None comparisons.
 
 **Moderate proposals**
-- Line 16-30 � Add mock/fallback mode with try/except wrapper around RS232 manager initialization
+- Line 16-30 � Add mock/fallback mode with try/except wrapper around RS232 manager initialization
   ```python
   # current
   def __init__(self, laserInfo, name, **lowLevelManagers):
@@ -398,5 +398,52 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           self._isMock = True
           self.__logger.warning(f'CoolLED not available, entering mock mode: {e}')
       # Then add early returns in setEnabled() and setValue() if self._isMock
+  ```
+
+### PulseStreamerLaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 11 — Fixed docstring formatting: changed `"analogChannel"` (malformed with mismatched quotes/backticks) to proper RST format ``analogChannel``
+
+**Moderate proposals**
+- Lines 14-21 — Add mock/fallback mode with try/except wrapper around pulseStreamerManager initialization
+  ```python
+  # current
+  def __init__(self, laserInfo, name, **lowLevelManagers):
+      self._logger = initLogger(self, instanceName=name)
+      self._pulseStreamerManager = lowLevelManagers["pulseStreamerManager"]
+  
+  # proposed
+  def __init__(self, laserInfo, name, **lowLevelManagers):
+      self._logger = initLogger(self, instanceName=name)
+      self._isMock = False
+      try:
+          self._pulseStreamerManager = lowLevelManagers["pulseStreamerManager"]
+      except Exception as e:
+          self._isMock = True
+          self._logger.warning(f'PulseStreamer not available, entering mock mode: {e}')
+      # Then add early returns in setEnabled() and setValue() if self._isMock
+  ```
+
+- Lines 28-34 — Add guard in setValue to prevent errors when analog control is not available (binary-only lasers)
+  ```python
+  # current
+  def setValue(self, voltage):
+      """Sets the output voltage of the analog channel selected by the manager."""
+      self._pulseStreamerManager.setAnalog(
+          channel=self._analogChannels, voltage=voltage,
+          min_val=self.valueRangeMin, max_val=self.valueRangeMax
+      )
+  
+  # proposed
+  def setValue(self, voltage):
+      """Sets the output voltage of the analog channel selected by the manager."""
+      if self._analogChannels is None:
+          self._logger.warning(f'setValue called on binary-only laser {self.name}')
+          return
+      self._pulseStreamerManager.setAnalog(
+          channel=self._analogChannels, voltage=voltage,
+          min_val=self.valueRangeMin, max_val=self.valueRangeMax
+      )
   ```
 

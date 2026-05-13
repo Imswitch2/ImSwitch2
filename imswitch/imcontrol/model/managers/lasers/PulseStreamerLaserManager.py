@@ -8,7 +8,7 @@ class PulseStreamerLaserManager(LaserManager):
     Manager properties:
 
     - ``digitalChannel`` -- streamer digital output (0 to 7)
-    - ``analogChannel"   -- streamer analog output (0 to 1)
+    - ``analogChannel`` -- streamer analog output (0 to 1)
     """
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
