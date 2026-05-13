@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.interpolate import interp1d
 
+from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
 
 
@@ -23,6 +24,7 @@ class AAAOTFLaserManager(LaserManager):
     """
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
+        self.__logger = initLogger(self, instanceName=name)
         self._channel = int(laserInfo.managerProperties['channel'])
         self._rs232manager = lowLevelManagers['rs232sManager'][
             laserInfo.managerProperties['rs232device']
@@ -62,7 +64,7 @@ class AAAOTFLaserManager(LaserManager):
         except KeyError:
             pass  # Calib file not specified, managerProperties does exist but calib is missing
         except Exception as e:
-            print(f"creating lut for {laserInfo} from calib failed due to: {e}")
+            self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
 

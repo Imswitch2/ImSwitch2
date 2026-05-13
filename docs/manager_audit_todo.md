@@ -33,7 +33,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py` — 5 instant fixes applied (lazy imports; mock assignment bug; spacing/style)
 - [x] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py` — no issues found
 - [x] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py` — no issues found
-- [ ] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py` — 2 instant fixes applied (added logger; print → logger)
 - [ ] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py`
@@ -356,4 +356,11 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - No bare except blocks
 - No hard-coded paths, magic numbers, or platform-specific assumptions
 - No Python errors or deprecated API calls
+
+### AAAOTFLaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 4 — Added `from imswitch.imcommon.model import initLogger` to enable proper logging
+- Line 27 — Added `self.__logger = initLogger(self, instanceName=name)` to initialize logger in `__init__`
+- Line 67 — Changed `print(f"creating lut for {laserInfo} from calib failed due to: {e}")` to `self.__logger.error(f"Creating LUT for {name} from calib failed due to: {e}")` for proper error logging instead of print statement
 
