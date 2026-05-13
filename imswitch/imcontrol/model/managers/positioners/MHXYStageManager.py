@@ -26,7 +26,10 @@ class MHXYStageManager(PositionerManager):
         self._rs232Manager = lowLevelManagers['rs232sManager'][
             positionerInfo.managerProperties['rs232device']
         ]
-        self.__logger.info(str(self._rs232Manager.query('?readsn')))  # log serial no of stage
+        try:
+            self.__logger.info(f"MHXYStage serial no: {self._rs232Manager.query('?readsn')}")
+        except Exception as e:
+            self.__logger.warning(f"Failed to read stage serial number: {e}")
 
     def move(self, value, axis):
         if axis == 'X':

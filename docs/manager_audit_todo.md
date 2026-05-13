@@ -50,7 +50,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py` — 3 instant fixes applied (logger)
 - [x] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py` — 4 instant fixes applied (critical syntax error fixed, logger added)
 - [x] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py` — 4 instant fixes applied (bare except, logger); 1 hard
-- [ ] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py` — 1 instant fix applied (exception handling); 1 moderate
 - [ ] `imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py`
@@ -729,3 +729,30 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
   - Lines 46 and 57 use `self._position` which will raise AttributeError on first use
   - Requires understanding what `initialPosition` dict should contain for this device
   - May need to query device for current position or use a default value
+
+### MHXYStageManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 29-32 — Wrapped serial number query in try/except to prevent startup crash if device not responding. Changed to use f-string for consistent logging format.
+
+**Moderate proposals**
+- Lines 26-28 — Add try/except with mock fallback for RS232 manager initialization to prevent crash when hardware is unavailable
+  ```python
+  # current
+  self._rs232Manager = lowLevelManagers['rs232sManager'][
+      positionerInfo.managerProperties['rs232device']
+  ]
+  
+  # proposed
+  try:
+      self._rs232Manager = lowLevelManagers['rs232sManager'][
+          positionerInfo.managerProperties['rs232device']
+      ]
+  except (KeyError, Exception):
+      self.__logger.error(f'Failed to access MHXYStage RS232 connection, loading mock.')
+      from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
+      self._rs232Manager = MockRS232Driver(
+          name=positionerInfo.managerProperties.get('rs232device', 'mock'),
+          settings={'port': 'Mock'}
+      )
+  ```
