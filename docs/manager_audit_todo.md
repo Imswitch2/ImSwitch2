@@ -68,7 +68,7 @@ Classification legend (for issues found):
 
 ## SLM Managers
 
-- [ ] `imswitch/imcontrol/model/managers/slms/HamamatsuSLMdviManager.py`
+- [x] `imswitch/imcontrol/model/managers/slms/HamamatsuSLMdviManager.py` — 4 instant fixes applied (lazy import, PyQt abstraction, dead code, uninitialized var)
 - [ ] `imswitch/imcontrol/model/managers/slms/HamamatsuSLMusbManager.py`
 
 ## Infrastructure Managers (audit for robustness only)
@@ -1019,3 +1019,11 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
       self._squid = None  # or a proper mock object
   ```
   This catches hardware connection failures (serial port not found, device not responding, etc.) and provides a graceful fallback. However, all methods that use `self._squid` (send, finalize) need to be refactored to handle the None/mock case.
+
+### HamamatsuSLMdviManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 4 — Removed module-level `import skimage`. Moved to lazy import inside `_array_to_qpixmap` method at line 104 where it's actually used. This prevents ImportError on startup if scikit-image is not installed. The import is only needed when resizing patterns that don't match SLM dimensions.
+- Lines 5-6 — Replaced direct PyQt5 imports with qtpy abstraction. Changed `from PyQt5.QtWidgets import QLabel, QApplication` to `from qtpy.QtWidgets import QLabel, QApplication`. The file was already using qtpy for other imports (line 4), so this makes it consistent and allows using different Qt bindings (PyQt5, PySide2, etc.).
+- Line 8 — Removed unused import `from matplotlib import pyplot as plt`. This import was never referenced in the code (dead code), and matplotlib is a heavy dependency.
+- Line 29 — Initialized `self.mockermode = False` before the conditional check. Previously, if `slmInfo.managerProperties` was None, `self.mockermode` was never initialized, causing an AttributeError at line 33 when checking `if self.mockermode:`.
