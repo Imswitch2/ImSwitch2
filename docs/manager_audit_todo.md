@@ -30,7 +30,7 @@ Classification legend (for issues found):
 
 - [x] `imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py` — 3 instant fixes applied (bare except → logged; print → logger; wrong logger args)
 - [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py` — 2 instant fixes applied (lazy import; print → logger)
-- [ ] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py` — 5 instant fixes applied (lazy imports; mock assignment bug; spacing/style)
 - [ ] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py`
@@ -332,4 +332,15 @@ Classification legend (for issues found):
 - Line 19-24 — Added lazy import of `Q_` from lantz with try/except in `__init__`, storing as `self._Q` for use throughout the class. Import failures are logged before re-raising.
 - Line 35 — Replaced `print(f'Laser turning {enabled}')` with `self.__logger.debug(f'Laser turning {enabled}')`. Print statements bypass the logging system and cannot be controlled or filtered in production environments.
 - Lines 41, 43 — Updated references from `Q_` to `self._Q` to use the lazily-imported instance stored in `__init__`.
+
+### Cobolt0601NewLaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Lines 2-3 — Removed module-level hardware imports `from .PyCoboltManager import list_lasers` and `from .PyCoboltManager import Cobolt06`. Module-level hardware library imports risk ImportError on startup if the library is not installed, preventing the entire application from starting even when this specific laser is not used.
+- Lines 20-26 — Added lazy import of `Cobolt06` from PyCoboltManager with try/except in `__init__`, storing as `self._Cobolt06` for instantiation. Import failures are logged before re-raising.
+- Line 38 — Updated `self._laser = Cobolt06(port=self._port)` to `self._laser = self._Cobolt06(port=self._port)` to use the lazily-imported class reference.
+- Lines 68-69 — Fixed critical bug where mock laser was created in local variable `laser` but never assigned to `self._laser`. Changed `laser = driver(self._port)` and `laser.initialize()` to `self._laser = driver(self._port)` and `self._laser.initialize()`. Without this fix, any code path using the mock would fail with AttributeError when trying to access `self._laser` attributes.
+- Line 93 — Fixed spacing inconsistency in comparison `if power ==0:` to `if power == 0:` for code consistency.
+- Line 107 — Changed non-Pythonic comparison `if active == False:` to `if not active:` following Python style guidelines.
+- Lines 149-153 — Added lazy import of `list_lasers` in `getAllDeviceNames` method with try/except. Returns empty list on import failure instead of crashing.
 

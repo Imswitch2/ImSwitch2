@@ -1,6 +1,4 @@
 from imswitch.imcommon.model import initLogger, pythontools
-from .PyCoboltManager import list_lasers
-from .PyCoboltManager import Cobolt06
 from .LaserManager import LaserManager
 import traceback
 import importlib
@@ -19,6 +17,14 @@ class Cobolt0601NewLaserManager(LaserManager):
     def __init__(self, laserInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
+        # Lazy import of hardware library
+        try:
+            from .PyCoboltManager import Cobolt06
+            self._Cobolt06 = Cobolt06
+        except ImportError as e:
+            self.__logger.error(f'Failed to import PyCoboltManager library: {e}')
+            raise
+
         self._port = laserInfo.managerProperties['digitalPorts'][0]
         # self._ttlLine = laserInfo.managerProperties['digitalLine']
         self.__logger.debug(f'Initializing Cobolt0601 laser (name: {name}) on port {self._port}')
@@ -29,7 +35,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._is_DPL = True
         try:
             # self._laser = CoboltLaser(port=self._port)
-            self._laser = Cobolt06(port=self._port)
+            self._laser = self._Cobolt06(port=self._port)
             self._digitalMod = False
 
             # start up by turning on modulation power -> laser is off
@@ -59,8 +65,8 @@ class Cobolt0601NewLaserManager(LaserManager):
                 pythontools.joinModulePath('imswitch.imcontrol.model.lantzdrivers_mock.', 'cobolt0601')
             )
             driver = getattr(package, 'Cobolt0601_f2')
-            laser = driver(self._port)
-            laser.initialize()
+            self._laser = driver(self._port)
+            self._laser.initialize()
     
     def finalize(self):
         """ Turn off laser """
@@ -84,7 +90,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         power = int(power)
         self.powerQ = power
         if self._digitalMod:
-            if power ==0:
+            if power == 0:
                 self._laser.current_modulation_mode()
                 self._laser.set_modulation_current(0.1)
                 self.__logger.debug(f'Modulation current in setValue is: {self._laser.get_modulation_current()}')
@@ -98,7 +104,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             self.__logger.debug(f'Set power to: {power}')
 
     def setScanModeActive(self, active,enabled=True):
-        if active == False:  # Come back to values set before scan
+        if not active:  # Come back to values set before scan
             self._digitalMod = False
             self._laser.constant_power()  # If laser should be disabled, turn off by setting scanmode to active -> modulation mode
             self.__logger.debug('Exited digital modulation mode')
@@ -140,6 +146,11 @@ class Cobolt0601NewLaserManager(LaserManager):
         return self._laser.get_modulation_power()
 
     def getAllDeviceNames(self):  # wonder where thats needed
+        try:
+            from .PyCoboltManager import list_lasers
+        except ImportError as e:
+            self.__logger.error(f'Failed to import list_lasers: {e}')
+            return []
         self.__logger.debug(f'Available devices: {list_lasers()}')
         return list_lasers()
 
