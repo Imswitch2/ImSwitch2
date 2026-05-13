@@ -39,7 +39,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py` � 1 instant fix applied (docstring formatting); 2 moderate proposals (mock mode, setValue guard)
 - [x] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py` — 3 moderate proposals (mock mode, driver validation, division by zero)
 - [x] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py` — 2 instant fixes applied (typo, boolean multiplication); 1 moderate proposal (mock mode)
-- [ ] `imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py` — 4 instant fixes applied (typos, docstring errors, missing pass)
 - [ ] `imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py`
 
 ## Positioner Managers
@@ -544,4 +544,12 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           self.__logger.warning(f'ESP32 LED not available, mock mode: {e}')
       # Then add early returns in setEnabled() and setValue() if self._isMock
   ```
+
+### LEDMatrixManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 7 — Fixed typo in docstring: "LEDMatrixs" → "LED matrices"
+- Line 97 — Fixed incorrect docstring for freqRangeMax property: "minimum" → "maximum"
+- Line 116 — Fixed typo in docstring: "wether" → "whether"
+- Line 125 — Added missing `pass` statement to setModulationDutyCycle method body
 

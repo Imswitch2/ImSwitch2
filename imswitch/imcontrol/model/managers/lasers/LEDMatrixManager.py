@@ -4,7 +4,7 @@ from typing import Union
 
 
 class LEDMatrixManager(ABC):
-    """ Abstract base class for managers that control LEDMatrixs. Each type of
+    """ Abstract base class for managers that control LED matrices. Each type of
     LEDMatrix corresponds to a manager derived from this class. """
 
     @abstractmethod
@@ -94,7 +94,7 @@ class LEDMatrixManager(ABC):
     
     @property
     def freqRangeMax(self) -> int:
-        """ The minimum frequency of the LEDMatrix modulation. """
+        """ The maximum frequency of the LEDMatrix modulation. """
         return self.__freqRangeMax
     
     @property
@@ -113,7 +113,7 @@ class LEDMatrixManager(ABC):
         pass
 
     def setModulationEnabled(self, enabled: bool) -> None:
-        """ Sets wether the LEDMatrix frequency modulation is enabled. """
+        """ Sets whether the LEDMatrix frequency modulation is enabled. """
         pass
 
     def setModulationFrequency(self, frequency: int) -> None:
@@ -122,6 +122,7 @@ class LEDMatrixManager(ABC):
     
     def setModulationDutyCycle(self, dutyCycle: int) -> None:
         """ Sets the LEDMatrix modulation duty cycle. """
+        pass
 
     def setScanModeActive(self, active: bool) -> None:
         """ Sets whether the LEDMatrix should be in scan mode (if the LEDMatrix
