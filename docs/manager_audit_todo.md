@@ -35,7 +35,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py` â€” no issues found
 - [x] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py` â€” 2 instant fixes applied (added logger; print â†’ logger)
 - [x] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py` â€” 1 instant fix applied (getValue returns numeric value)
-- [ ] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py` Ñ 1 instant fix applied (None comparison style); 1 moderate proposal (mock mode)
 - [ ] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py`
@@ -368,4 +368,35 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 
 **Instant fixes applied**
 - Line 59-60 â€” Fixed `getValue()` to parse and return numeric value instead of raw string. The method now splits the RS232 response format (e.g., 'D >100') and extracts the numeric value, converting it to float for proper use in calculations and comparisons.
+
+### CoolLEDLaserManager Ñ 2026-05-13
+
+**Instant fixes applied**
+- Line 25-27 Ñ Changed `!= None` to `is not None` for PEP 8 compliance. Python style guide recommends using `is not None` instead of `!= None` for None comparisons.
+
+**Moderate proposals**
+- Line 16-30 Ñ Add mock/fallback mode with try/except wrapper around RS232 manager initialization
+  ```python
+  # current
+  def __init__(self, laserInfo, name, **lowLevelManagers):
+      self.__logger = initLogger(self, instanceName=name)
+      self._rs232manager = lowLevelManagers['rs232sManager'][
+          laserInfo.managerProperties['rs232device']
+      ]
+      self.__channel_index = laserInfo.managerProperties['channel_index']
+  
+  # proposed
+  def __init__(self, laserInfo, name, **lowLevelManagers):
+      self.__logger = initLogger(self, instanceName=name)
+      self._isMock = False
+      try:
+          self._rs232manager = lowLevelManagers['rs232sManager'][
+              laserInfo.managerProperties['rs232device']
+          ]
+          self.__channel_index = laserInfo.managerProperties['channel_index']
+      except Exception as e:
+          self._isMock = True
+          self.__logger.warning(f'CoolLED not available, entering mock mode: {e}')
+      # Then add early returns in setEnabled() and setValue() if self._isMock
+  ```
 
