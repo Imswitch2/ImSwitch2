@@ -20,10 +20,10 @@ class MockPositionerManager(PositionerManager):
         })
 
     def move(self, dist, axis):
-        self.setPosition(self._position[self.axes[0]] + dist, axis)
+        self.setPosition(self._position[axis] + dist, axis)
 
     def setPosition(self, position, axis):
-        self._position[self.axes[0]] = position
+        self._position[axis] = position
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

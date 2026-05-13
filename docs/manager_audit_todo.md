@@ -53,7 +53,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/positioners/MHXYStageManager.py` — 1 instant fix applied (exception handling); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/positioners/SQUIDStageManager.py` — 3 instant fixes applied (dead code, logger order, print); 2 moderate
 - [x] `imswitch/imcontrol/model/managers/positioners/SmarACTPositionerManager.py` — 5 instant fixes applied (logging config, logger, duplicate method, dead code); 2 moderate
-- [ ] `imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/MockPositionerManager.py` — 2 instant fixes applied (axis parameter usage)
 
 ## Rotator Managers
 
@@ -863,3 +863,9 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           self._mock = True
           self.mcsHandle = None
   ```
+
+### MockPositionerManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 23 — Changed `self._position[self.axes[0]]` to `self._position[axis]` in `move()` method to use the axis parameter instead of ignoring it
+- Line 26 — Changed `self._position[self.axes[0]]` to `self._position[axis]` in `setPosition()` method to use the axis parameter instead of ignoring it. This makes both methods consistent with the base class contract and allows proper KeyError if an invalid axis is passed.
