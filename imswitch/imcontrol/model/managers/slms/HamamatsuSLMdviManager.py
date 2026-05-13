@@ -1,12 +1,8 @@
 import sys
 
 import numpy as np
-import skimage
-from PyQt5.QtGui import QGuiApplication
-from PyQt5.QtWidgets import QLabel, QApplication
-#from cupy import asfortranarray
-from matplotlib import pyplot as plt
 from qtpy import QtCore, QtGui
+from qtpy.QtWidgets import QLabel, QApplication
 
 from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcommon.model import initLogger
@@ -30,6 +26,7 @@ class HamamatsuSLMdviManager(SignalInterface):
 
         self.preferredMonitor = slmInfo.monitorIdx
 
+        self.mockermode = False
         if slmInfo.managerProperties is not None:
             self.mockermode = slmInfo.managerProperties.get("mockermode", False)
 
@@ -104,6 +101,7 @@ class HamamatsuSLMdviManager(SignalInterface):
         if h != self.height or w != self.width:
             self.__logger.warning(f"Pattern shape {array.shape} does not match SLM {self.width} x {self.height} shape")
 
+            import skimage.transform
             array = skimage.transform.resize(array, (self.height, self.width), order=0, preserve_range=True)
 
             h = self.height
