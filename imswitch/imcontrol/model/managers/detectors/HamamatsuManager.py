@@ -211,11 +211,6 @@ class HamamatsuManager(DetectorManager):
                 self.setParameter('Trigger source', 'External "frame-trigger"')
 
     def _getCameraObj(self, cameraId):
-        if str(cameraId).lower() == 'mock':
-            self.__logger.info('cameraListIndex="mock" — loading Hamamatsu mocker directly')
-            from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
-            return MockHamamatsu()
-
         try:
             from imswitch.imcontrol.model.interfaces.hamamatsu import HamamatsuCameraMR
             self.__logger.debug(f'Trying to initialize Hamamatsu camera {cameraId}')

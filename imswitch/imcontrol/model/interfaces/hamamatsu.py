@@ -150,18 +150,6 @@ dcam = None
 n_cameras = -1
 
 
-class DCAMAPI_INIT(ctypes.Structure):
-    """Parameter struct for the DCAM4 dcamapi_init() call (SDK ≥ v4 / 2016+)."""
-    _fields_ = [
-        ('size',            ctypes.c_int32),
-        ('iDeviceCount',    ctypes.c_int32),
-        ('reserved',        ctypes.c_int32),
-        ('initoptionbytes', ctypes.c_int32),
-        ('initoption',      ctypes.c_void_p),
-        ('guid',            ctypes.c_void_p),
-    ]
-
-
 def initDcam():
     global dcam
     global n_cameras
@@ -169,25 +157,11 @@ def initDcam():
     if dcam is not None:
         return
 
-    dcam_lib = ctypes.windll.dcamapi
-
-    if hasattr(dcam_lib, 'dcamapi_init'):
-        # DCAM4 API (SDK 18.x / 2016+): dcam_init is a broken stub in these
-        # versions; dcamapi_init is the correct entry point.
-        param = DCAMAPI_INIT()
-        param.size = ctypes.sizeof(DCAMAPI_INIT)
-        ret = dcam_lib.dcamapi_init(ctypes.byref(param))
-        if ret != DCAMERR_NOERROR:
-            raise DCAMException(f"DCAM4 initialization failed (err=0x{ret & 0xFFFFFFFF:08X}).")
-        dcam = dcam_lib
-        n_cameras = param.iDeviceCount
-    else:
-        # Legacy API (SDK < v4)
-        temp = ctypes.c_int32(0)
-        if dcam_lib.dcam_init(None, ctypes.byref(temp), None) != DCAMERR_NOERROR:
-            raise DCAMException("DCAM initialization failed.")
-        dcam = dcam_lib
-        n_cameras = temp.value
+    dcam = ctypes.windll.dcamapi
+    temp = ctypes.c_int32(0)
+    if (dcam.dcam_init(None, ctypes.byref(temp), None) != DCAMERR_NOERROR):
+        raise DCAMException("DCAM initialization failed.")
+    n_cameras = temp.value
 
 
 # ## HCamData
