@@ -31,7 +31,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py` — 3 instant fixes applied (bare except → logged; print → logger; wrong logger args)
 - [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py` — 2 instant fixes applied (lazy import; print → logger)
 - [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py` — 5 instant fixes applied (lazy imports; mock assignment bug; spacing/style)
-- [ ] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py` — no issues found
 - [ ] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/AAAOTFLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/MPBLaserManager.py`
@@ -343,4 +343,8 @@ Classification legend (for issues found):
 - Line 93 — Fixed spacing inconsistency in comparison `if power ==0:` to `if power == 0:` for code consistency.
 - Line 107 — Changed non-Pythonic comparison `if active == False:` to `if not active:` following Python style guidelines.
 - Lines 149-153 — Added lazy import of `list_lasers` in `getAllDeviceNames` method with try/except. Returns empty list on import failure instead of crashing.
+
+### CoboltLaserManager — 2026-05-13
+
+No issues found. This is a simple backwards compatibility alias that inherits from `Cobolt0601LaserManager` with no additional implementation. All robustness concerns are addressed in the parent class (which was audited separately).
 
