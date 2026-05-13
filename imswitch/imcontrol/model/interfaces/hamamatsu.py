@@ -149,7 +149,6 @@ class DCAMException(Exception):
 #
 dcam = None
 n_cameras = -1
-_dcam4 = False  # True when initialised via dcamapi_init (DCAM4 entry point)
 
 # How long to wait for the legacy dcam_init entry point before giving up
 # and falling back to dcamapi_init. The legacy entry point can block
@@ -231,7 +230,6 @@ def _tryLegacyDcamInit(lib):
 def _doDcam4Init(lib):
     """Initialize via dcamapi_init (DCAM4)."""
     global n_cameras
-    global _dcam4
     param = _DCAMAPI_INIT()
     param.size = ctypes.sizeof(_DCAMAPI_INIT)
     ret = lib.dcamapi_init(ctypes.byref(param))
@@ -240,7 +238,6 @@ def _doDcam4Init(lib):
             f"dcamapi_init failed (err=0x{ret & 0xFFFFFFFF:08X})."
         )
     n_cameras = param.iDeviceCount
-    _dcam4 = True
 
 
 # ## HCamData
@@ -329,24 +326,12 @@ class HamamatsuCamera:
         self.max_backlog = 0
         self.number_image_buffers = 0
 
-        # Open the camera. DCAM4 dropped the third (GUID*) argument from
-        # dcam_open; calling it with the legacy 3-arg signature against
-        # the DCAM4 entry point misaligns the stdcall stack and hangs.
+        # Open the camera.
         self.camera_handle = ctypes.c_void_p(0)
-        if _dcam4:
-            ret = dcam.dcam_open(ctypes.byref(self.camera_handle),
-                                 ctypes.c_int32(self.camera_id))
-        else:
-            ret = dcam.dcam_open(ctypes.byref(self.camera_handle),
-                                 ctypes.c_int32(self.camera_id),
-                                 None)
-        if not self.camera_handle.value:
-            raise DCAMException(
-                f"dcam_open did not return a valid camera handle "
-                f"(ret=0x{ret & 0xFFFFFFFF:08X}, index={self.camera_id}, "
-                f"n_cameras={n_cameras})."
-            )
-        self.checkStatus(ret, "dcam_open")
+        self.checkStatus(dcam.dcam_open(ctypes.byref(self.camera_handle),
+                                        ctypes.c_int32(self.camera_id),
+                                        None),
+                         "dcam_open")
         # Get camera properties.
         self.properties = self.getCameraProperties()
         # Get camera max width, height.
