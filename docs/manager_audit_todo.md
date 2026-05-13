@@ -63,7 +63,7 @@ Classification legend (for issues found):
 
 - [x] `imswitch/imcontrol/model/managers/rs232/RS232Manager.py` — 1 instant fix applied (exception logging); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/rs232/ESP32Manager.py` — 4 instant fixes applied (lazy import, bare excepts); 1 moderate
-- [ ] `imswitch/imcontrol/model/managers/rs232/GRBLManager.py`
+- [x] `imswitch/imcontrol/model/managers/rs232/GRBLManager.py` — 3 instant fixes applied (lazy import, bare except, Python error); 1 moderate
 - [ ] `imswitch/imcontrol/model/managers/rs232/SQUIDManager.py`
 
 ## SLM Managers
@@ -959,3 +959,40 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
       self._esp32 = None
   ```
   This catches hardware connection failures (not just missing library) and provides a graceful fallback. However, the manager needs to be refactored to handle `self._esp32 = None` in all methods that use it.
+
+### GRBLManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 2 — Removed module-level hardware import `import imswitch.imcontrol.model.interfaces.grbldriver as grbldriver`. Moved to lazy import inside `__init__` at line 36. This prevents ImportError on startup if the grbldriver interface or its dependencies (pyserial) are not installed.
+- Line 33 — Replaced bare `except:` with `except KeyError:`. Bare except catches all exceptions including SystemExit and KeyboardInterrupt, making debugging impossible. KeyError is the specific exception when accessing missing dictionary keys.
+- Line 53 — Fixed Python syntax error: `self.self._board.close()` → `self._board.close()`. The duplicate `self.` would cause an AttributeError at runtime.
+
+**Moderate proposals**
+- Lines 36-45 — Add try/except wrapper around GrblDriver initialization and hardware calls with mock/fallback support
+  ```python
+  # current
+  import imswitch.imcontrol.model.interfaces.grbldriver as grbldriver
+  self._board = grbldriver.GrblDriver(self._port)
+  
+  # init the stage
+  self._board.write_global_config()
+  self._board.write_all_settings()
+  self._board.reset_stage()
+  if self.is_home:
+      self._board.home()
+  
+  # proposed
+  import imswitch.imcontrol.model.interfaces.grbldriver as grbldriver
+  try:
+      self._board = grbldriver.GrblDriver(self._port)
+      # init the stage
+      self._board.write_global_config()
+      self._board.write_all_settings()
+      self._board.reset_stage()
+      if self.is_home:
+          self._board.home()
+  except Exception as e:
+      self.__logger.warning(f'Failed to initialize GRBL device on {self._port}: {e}. Using mock fallback.')
+      self._board = None  # or a proper mock object
+  ```
+  This catches hardware connection failures (serial port not found, device not responding, etc.) and provides a graceful fallback. However, all methods that use `self._board` (query, finalize) need to be refactored to handle the None/mock case.

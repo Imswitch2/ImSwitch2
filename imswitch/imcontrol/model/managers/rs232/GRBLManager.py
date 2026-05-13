@@ -1,5 +1,4 @@
 from imswitch.imcommon.model import initLogger
-import imswitch.imcontrol.model.interfaces.grbldriver as grbldriver
 
 
 class GRBLManager:
@@ -31,10 +30,10 @@ class GRBLManager:
         self._port = rs232Info.managerProperties['port']
         try:
             self.is_home = rs232Info.managerProperties['is_home']
-        except:
+        except KeyError:
             self.is_home = False 
              
-        
+        import imswitch.imcontrol.model.interfaces.grbldriver as grbldriver
         self._board = grbldriver.GrblDriver(self._port)
 
         # init the stage
@@ -51,7 +50,7 @@ class GRBLManager:
         return self._board._write(arg)
 
     def finalize(self):
-        self.self._board.close()
+        self._board.close()
 
 
 
