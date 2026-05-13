@@ -45,7 +45,7 @@ class CoboltLaser:
                 self.address = serial.Serial(self.port, self.baudrate, timeout=1)
             except Exception as err:
                 self.address = None
-                raise SerialException(f"{self.port} not accesible.") from err
+                raise SerialException(f"{self.port} not accessible.") from err
 
         elif self.serialnumber != None:
             ports = list_ports.comports()
@@ -96,7 +96,7 @@ class CoboltLaser:
             raise RuntimeError("Not a Cobolt laser")
 
     def _classify_(self):
-        """Classifies the laser into probler subclass depending on laser type"""
+        """Classifies the laser into proper subclass depending on laser type"""
         try:
             if re.search("-06-.*-(1\d{3})(|-C)$", self.modelnumber):
                 self.__class__ = Cobolt06
@@ -225,7 +225,7 @@ class CoboltLaser:
         return self.send_cmd(f"hrs?")
 
     def send_cmd(self, message, timeout: int = None):
-        """Sends a message to the laset and awaits response until timeout (in s).
+        """Sends a message to the laser and awaits response until timeout (in s).
 
         Returns:
             The response received from the laser as string
@@ -250,7 +250,7 @@ class CoboltLaser:
             received_string = self.address.readline().decode().rstrip()
             self.msg_timer = time.perf_counter()
             if len(received_string) < 1:  # if empty response raise syntax error
-                logger.error(f"No responce recieved for {message}")
+                logger.error(f"No response received for {message}")
                 raise SerialException
         except serial.SerialException:
 
@@ -575,7 +575,7 @@ class Cobolt06DPL(CoboltLaser):
         """Set the temperature of the modulation TEC in °C"""
         return self.send_cmd(f"stec4t {temperature}")
 
-    def get_modualtion_tec_setpoint(self):
+    def get_modulation_tec_setpoint(self):
         """Get the setpoint of the modulation TEC in °C"""
         return float(self.send_cmd("gtec4t?"))
 

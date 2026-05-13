@@ -40,7 +40,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py` — 3 moderate proposals (mock mode, driver validation, division by zero)
 - [x] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py` — 2 instant fixes applied (typo, boolean multiplication); 1 moderate proposal (mock mode)
 - [x] `imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py` — 4 instant fixes applied (typos, docstring errors, missing pass)
-- [ ] `imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py` — 5 instant fixes (typos); 3 moderate; 1 hard
 
 ## Positioner Managers
 
@@ -553,3 +553,58 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 116 — Fixed typo in docstring: "wether" → "whether"
 - Line 125 — Added missing `pass` statement to setModulationDutyCycle method body
 
+
+### PyCoboltManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 48 — Fixed typo in error message: "accesible" → "accessible"
+- Line 99 — Fixed typo in docstring: "probler" → "proper"
+- Line 228 — Fixed typo in docstring: "laset" → "laser"
+- Line 253 — Fixed typo in log message: "responce recieved" → "response received"
+- Line 578 — Fixed typo in method name: "get_modualtion_tec_setpoint" → "get_modulation_tec_setpoint"
+
+**Moderate proposals**
+- Lines 1-3 — Lazy import serial library to avoid ImportError on startup
+  ```python
+  # current
+  import serial
+  from serial.tools import list_ports
+  from serial.serialutil import SerialException
+  
+  # proposed
+  # Move imports inside __init__ or connect() methods with try/except:
+  try:
+      import serial
+      from serial.tools import list_ports
+      from serial.serialutil import SerialException
+  except ImportError:
+      raise ImportError("pyserial required for Cobolt laser support")
+  ```
+
+- Lines 177, 189 — Fix boolean logic error (OR should be AND)
+  ```python
+  # current (line 177)
+  if not "-08-" in self.modelnumber or not "-06-" in self.modelnumber:
+  
+  # proposed
+  if not "-08-" in self.modelnumber and not "-06-" in self.modelnumber:
+  ```
+
+- Lines 32, 63, 94, 107, 120, 124, 594 — Replace bare except blocks with specific exceptions
+  ```python
+  # current (example from line 63)
+  except:
+      pass
+  
+  # proposed
+  except (serial.SerialException, RuntimeError) as e:
+      logger.debug(f"Failed to connect to {port.device}: {e}")
+  ```
+
+**Hard issues**
+- **[ISSUE] Add mock/fallback mode for Cobolt laser driver**
+  - Currently no way to test without real hardware connected
+  - Add mock mode when port/serialnumber is "mock" or "simulation"
+  - Mock should simulate basic command/response protocol
+  - Requires adding MockCoboltLaser class and integration throughout
+  - Red-zone: hardware control code, requires hardware expert review
