@@ -28,7 +28,7 @@ class NidaqLaserManager(LaserManager):
         except KeyError:
             pass  # Calib file not specified, managerProperties does exist but calib is missing
         except Exception as e:
-            print(f"creating lut for {laserInfo} from calib failed due to: {e}")
+            self.__logger.warning(f"Creating LUT for {laserInfo} from calib failed due to: {e}")
 
 
         super().__init__(laserInfo, name, isBinary=laserInfo.getAnalogChannel() is None,
@@ -37,8 +37,8 @@ class NidaqLaserManager(LaserManager):
     def setEnabled(self, enabled):
         try:
             self._nidaqManager.setDigital(self.name, enabled)
-        except:
-            self.__logger.error("Error trying to enable laser.")
+        except Exception as e:
+            self.__logger.error(f"Error trying to enable laser: {e}")
 
     def setValue(self, val, enabled=True, for_scanning=False):
         if self.isBinary:
@@ -55,7 +55,7 @@ class NidaqLaserManager(LaserManager):
                 min_val=self.valueRangeMin, max_val=self.valueRangeMax
             )
         except Exception as e:
-            self.__logger.error(e, "Error trying to set value to laser.")
+            self.__logger.error(f"Error trying to set value to laser: {e}")
 
     def setScanModeActive(self, active, enabled=True):
         if active:

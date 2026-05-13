@@ -28,7 +28,7 @@ Classification legend (for issues found):
 
 ## Laser Managers
 
-- [ ] `imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py` — 3 instant fixes applied (bare except → logged; print → logger; wrong logger args)
 - [ ] `imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py`
@@ -316,4 +316,12 @@ Classification legend (for issues found):
   value = self._camera.setPropertyValue(name, value)
   ```
   Rationale: The `super().setParameter()` call already validates the parameter name and raises AttributeError if it doesn't exist (DetectorManager.py line 129-130), so the subsequent check is unreachable dead code that adds confusion.
+
+
+### NidaqLaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 40 — Changed bare `except:` to `except Exception as e:` and improved error message to include exception details. Bare except blocks catch all exceptions including KeyboardInterrupt and SystemExit, making debugging impossible.
+- Line 31 — Replaced `print()` with `self.__logger.warning()` for consistent logging throughout the codebase. Print statements don't respect the logging configuration and make it harder to track issues in production.
+- Line 58 — Fixed incorrect argument order in `self.__logger.error(e, "Error trying to set value to laser.")`. The error message should come first, not the exception object. Changed to f-string format: `self.__logger.error(f"Error trying to set value to laser: {e}")`.
 
