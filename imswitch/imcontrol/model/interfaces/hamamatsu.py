@@ -148,7 +148,6 @@ class DCAMException(Exception):
 #
 dcam = None
 n_cameras = -1
-_dcam4 = False   # True when initialised via dcamapi_init (DCAM4 SDK)
 
 
 class DCAMAPI_INIT(ctypes.Structure):
@@ -166,7 +165,6 @@ class DCAMAPI_INIT(ctypes.Structure):
 def initDcam():
     global dcam
     global n_cameras
-    global _dcam4
 
     if dcam is not None:
         return
@@ -183,7 +181,6 @@ def initDcam():
             raise DCAMException(f"DCAM4 initialization failed (err=0x{ret & 0xFFFFFFFF:08X}).")
         dcam = dcam_lib
         n_cameras = param.iDeviceCount
-        _dcam4 = True
     else:
         # Legacy API (SDK < v4)
         temp = ctypes.c_int32(0)
@@ -280,18 +277,11 @@ class HamamatsuCamera:
         self.number_image_buffers = 0
 
         # Open the camera.
-        # DCAM4 dropped the third GUID argument from dcam_open; the legacy
-        # API required it (always NULL in practice).
         self.camera_handle = ctypes.c_void_p(0)
-        if _dcam4:
-            self.checkStatus(dcam.dcam_open(ctypes.byref(self.camera_handle),
-                                            ctypes.c_int32(self.camera_id)),
-                             "dcam_open")
-        else:
-            self.checkStatus(dcam.dcam_open(ctypes.byref(self.camera_handle),
-                                            ctypes.c_int32(self.camera_id),
-                                            None),
-                             "dcam_open")
+        self.checkStatus(dcam.dcam_open(ctypes.byref(self.camera_handle),
+                                        ctypes.c_int32(self.camera_id),
+                                        None),
+                         "dcam_open")
         # Get camera properties.
         self.properties = self.getCameraProperties()
         # Get camera max width, height.
