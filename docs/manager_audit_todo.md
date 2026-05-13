@@ -38,7 +38,7 @@ Classification legend (for issues found):
 - [x] `imswitch/imcontrol/model/managers/lasers/CoolLEDLaserManager.py` � 1 instant fix applied (None comparison style); 1 moderate proposal (mock mode)
 - [x] `imswitch/imcontrol/model/managers/lasers/PulseStreamerLaserManager.py` � 1 instant fix applied (docstring formatting); 2 moderate proposals (mock mode, setValue guard)
 - [x] `imswitch/imcontrol/model/managers/lasers/PyMicroscopeLaserManager.py` — 3 moderate proposals (mock mode, driver validation, division by zero)
-- [ ] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/ESP32LEDLaserManager.py` — 2 instant fixes applied (typo, boolean multiplication); 1 moderate proposal (mock mode)
 - [ ] `imswitch/imcontrol/model/managers/lasers/LEDMatrixManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/PyCoboltManager.py`
 
@@ -512,5 +512,36 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
           self.__logger.error(f"Cannot set power: maxPower is 0")
           return
       self.__laser.power = float(value) / self.__maxPower
+  ```
+
+### ESP32LEDLaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 5 — Fixed typo in docstring: "LAsers" → "Lasers"
+- Line 31 — Made boolean multiplication explicit: changed `self.power*self.enabled` to `self.power if self.enabled else 0` for clarity
+
+**Moderate proposals**
+- Lines 16-20 — Add mock/fallback mode with try/except wrapper around rs232manager initialization
+  ```python
+  # current
+  def __init__(self, laserInfo, name, **lowLevelManagers):
+      super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0)
+      self._rs232manager = lowLevelManagers['rs232sManager'][
+          laserInfo.managerProperties['rs232device']
+      ]
+  
+  # proposed
+  def __init__(self, laserInfo, name, **lowLevelManagers):
+      super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0)
+      self.__logger = initLogger(self, instanceName=name)
+      self._isMock = False
+      try:
+          self._rs232manager = lowLevelManagers['rs232sManager'][
+              laserInfo.managerProperties['rs232device']
+          ]
+      except Exception as e:
+          self._isMock = True
+          self.__logger.warning(f'ESP32 LED not available, mock mode: {e}')
+      # Then add early returns in setEnabled() and setValue() if self._isMock
   ```
 
