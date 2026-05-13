@@ -29,7 +29,7 @@ Classification legend (for issues found):
 ## Laser Managers
 
 - [x] `imswitch/imcontrol/model/managers/lasers/NidaqLaserManager.py` — 3 instant fixes applied (bare except → logged; print → logger; wrong logger args)
-- [ ] `imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py`
+- [x] `imswitch/imcontrol/model/managers/lasers/Cobolt0601LaserManager.py` — 2 instant fixes applied (lazy import; print → logger)
 - [ ] `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/CoboltLaserManager.py`
 - [ ] `imswitch/imcontrol/model/managers/lasers/LantzLaserManager.py`
@@ -324,4 +324,12 @@ Classification legend (for issues found):
 - Line 40 — Changed bare `except:` to `except Exception as e:` and improved error message to include exception details. Bare except blocks catch all exceptions including KeyboardInterrupt and SystemExit, making debugging impossible.
 - Line 31 — Replaced `print()` with `self.__logger.warning()` for consistent logging throughout the codebase. Print statements don't respect the logging configuration and make it harder to track issues in production.
 - Line 58 — Fixed incorrect argument order in `self.__logger.error(e, "Error trying to set value to laser.")`. The error message should come first, not the exception object. Changed to f-string format: `self.__logger.error(f"Error trying to set value to laser: {e}")`.
+
+### Cobolt0601LaserManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 1 — Removed module-level `from lantz import Q_` import and moved to lazy import inside `__init__` method. Module-level hardware library imports risk ImportError on startup if the library is not installed, preventing the entire application from starting even when this specific laser is not used.
+- Line 19-24 — Added lazy import of `Q_` from lantz with try/except in `__init__`, storing as `self._Q` for use throughout the class. Import failures are logged before re-raising.
+- Line 35 — Replaced `print(f'Laser turning {enabled}')` with `self.__logger.debug(f'Laser turning {enabled}')`. Print statements bypass the logging system and cannot be controlled or filtered in production environments.
+- Lines 41, 43 — Updated references from `Q_` to `self._Q` to use the lazily-imported instance stored in `__init__`.
 
