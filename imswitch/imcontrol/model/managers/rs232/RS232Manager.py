@@ -53,8 +53,8 @@ class RS232Manager:
             rs232port = DriverClass(port)
             rs232port.initialize()
             return rs232port
-        except Exception:
-            self.__logger.warning('Initializing mock RS232 port')
+        except Exception as e:
+            self.__logger.warning(f'Failed to initialize RS232 port {port}: {e}. Initializing mock RS232 port')
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             return MockRS232Driver(port, settings)
 

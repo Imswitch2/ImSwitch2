@@ -61,7 +61,7 @@ Classification legend (for issues found):
 
 ## RS232 / Board Managers
 
-- [ ] `imswitch/imcontrol/model/managers/rs232/RS232Manager.py`
+- [x] `imswitch/imcontrol/model/managers/rs232/RS232Manager.py` — 1 instant fix applied (exception logging); 1 moderate
 - [ ] `imswitch/imcontrol/model/managers/rs232/ESP32Manager.py`
 - [ ] `imswitch/imcontrol/model/managers/rs232/GRBLManager.py`
 - [ ] `imswitch/imcontrol/model/managers/rs232/SQUIDManager.py`
@@ -896,3 +896,33 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
       self.__logger.warning(f'Failed to initialize Standa motor {device_id}: {e}, loading mocker')
   ```
   This prevents catching programming errors like AttributeError, TypeError, NameError which should fail fast for debugging.
+
+### RS232Manager — 2026-05-13
+
+**Instant fixes applied**
+- Line 56-57 — Added exception details to warning message. Changed `except Exception:` to `except Exception as e:` and updated warning message to include the actual error: `f'Failed to initialize RS232 port {port}: {e}. Initializing mock RS232 port'`. This provides better debugging information when RS232 initialization fails.
+
+**Moderate proposals**
+- Line 56 — Replace overly broad `except Exception:` with more specific exception handling
+  ```python
+  # current
+  try:
+      from imswitch.imcontrol.model.interfaces.RS232Driver import generateDriverClass
+      DriverClass = generateDriverClass(settings)
+      rs232port = DriverClass(port)
+      rs232port.initialize()
+      return rs232port
+  except Exception as e:
+      self.__logger.warning(f'Failed to initialize RS232 port {port}: {e}. Initializing mock RS232 port')
+  
+  # proposed
+  try:
+      from imswitch.imcontrol.model.interfaces.RS232Driver import generateDriverClass
+      DriverClass = generateDriverClass(settings)
+      rs232port = DriverClass(port)
+      rs232port.initialize()
+      return rs232port
+  except (ImportError, OSError, AttributeError, serial.SerialException) as e:
+      self.__logger.warning(f'Failed to initialize RS232 port {port}: {e}. Initializing mock RS232 port')
+  ```
+  This prevents catching programming errors like NameError, TypeError, KeyError which should fail fast for debugging.
