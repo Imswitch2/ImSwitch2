@@ -20,7 +20,7 @@ from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 logger = logging.getLogger(__name__)
 
 
-class AsTemporayFile(object):
+class AsTemporaryFile(object):
     """ A temporary file that when exiting the context manager is renamed to its original name. """
     def __init__(self, filepath, tmp_extension='.tmp'):
         if os.path.exists(filepath):
@@ -53,7 +53,7 @@ class Storer(abc.ABC):
 class ZarrStorer(Storer):
     """ A storer that stores the images in a zarr file store """
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
-        with AsTemporayFile(f'{self.filepath}.zarr') as path:
+        with AsTemporaryFile(f'{self.filepath}.zarr') as path:
             store = zarr.storage.DirectoryStore(path)
             root = zarr.group(store=store)
 
@@ -69,7 +69,7 @@ class HDF5Storer(Storer):
     """ A storer that stores the images in a series of hd5 files """
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
         for channel, image in images.items():
-            with AsTemporayFile(f'{self.filepath}_{channel}.h5') as path:
+            with AsTemporaryFile(f'{self.filepath}_{channel}.h5') as path:
                 file = h5py.File(path, 'w')
                 #image.sh = self.detectorManager[channel].shape # why not take image shape directly? LR
                 dataset = file.create_dataset('data', tuple(reversed(image.shape)), dtype='i2')
@@ -100,7 +100,7 @@ class TiffStorer(Storer):
     """ A storer that stores the images in a series of tiff files """
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
         for channel, image in images.items():
-            with AsTemporayFile(f'{self.filepath}_{channel}.tiff') as path:
+            with AsTemporaryFile(f'{self.filepath}_{channel}.tiff') as path:
                 tiff.imwrite(path, image,) # TODO: Parse metadata to tiff meta data
                 logger.info(f"Saved image to tiff file {path}")
 
@@ -256,8 +256,8 @@ class RecordingManager(SignalInterface):
             for key, value in attrs[detectorName].items():
                 try:
                     dataset.attrs[key] = value
-                except:
-                    self.__logger.debug(f'Could not put key:value pair {key}:{value} in hdf5 metadata.')
+                except Exception as e:
+                    self.__logger.debug(f'Could not put key:value pair {key}:{value} in hdf5 metadata: {e}')
 
             dataset.attrs['detector_name'] = detectorName
 
@@ -359,7 +359,7 @@ class RecordingWorker(Worker):
                         else:
                             datasets[detectorName].attrs[key] = value
                     except Exception as e:
-                        print(f"Error saving {key} {value} to Hdf5.")
+                        self.__logger.error(f"Error saving {key} {value} to Hdf5: {e}")
                 datasets[detectorName].attrs['detector_name'] = detectorName
 
                 # For ImageJ compatibility

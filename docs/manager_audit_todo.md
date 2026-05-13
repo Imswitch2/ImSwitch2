@@ -74,7 +74,7 @@ Classification legend (for issues found):
 ## Infrastructure Managers (audit for robustness only)
 
 - [x] `imswitch/imcontrol/model/managers/NidaqManager.py` — 3 instant fixes applied (uninitialized var, logger usage)
-- [ ] `imswitch/imcontrol/model/managers/RecordingManager.py`
+- [x] `imswitch/imcontrol/model/managers/RecordingManager.py` — 3 instant fixes applied (typo, bare except, print statement)
 - [ ] `imswitch/imcontrol/model/managers/PulseStreamerManager.py`
 
 ---
@@ -1044,3 +1044,10 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 50 — Initialized `self.signalSent = False` in `__init__` method. Previously, this attribute was only set in `runScan()` at line 275, but was referenced in `inputTaskDone()` (line 409) and `taskDone()` (line 415) which could be called via callbacks before `runScan()` was ever invoked, causing an AttributeError.
 - Line 218 — Fixed `self.__logger.exception(Exception)` in `setDigital()` method. The `exception()` method should be called with a message string, not the Exception class. Combined with the warning message below it into a single `exception()` call that includes the message and automatically captures the exception traceback.
 - Line 253 — Fixed `self.__logger.error(e, 'message')` in `setAnalog()` method. Changed to proper format string syntax: `self.__logger.error('message: %s', e)` to correctly log the exception with the error message.
+
+### RecordingManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 23 — Fixed typo in class name `AsTemporayFile` → `AsTemporaryFile`. The class was misspelled throughout the file (lines 23, 56, 72, 103). All references have been updated to use the correct spelling.
+- Line 259 — Fixed bare `except:` clause in `snapImagePrev()` method. Changed to `except Exception as e:` and added exception details to the log message. Bare except clauses make debugging impossible by catching all exceptions including SystemExit and KeyboardInterrupt. Now logs: `'Could not put key:value pair {key}:{value} in hdf5 metadata: {e}'`.
+- Line 362 — Replaced `print(f"Error saving {key} {value} to Hdf5.")` with `self.__logger.error(f"Error saving {key} {value} to Hdf5: {e}")` in the `RecordingWorker._record()` method. Print statements bypass the logging system and don't respect log levels or handlers. Also added the exception details to the error message.
