@@ -3,7 +3,6 @@ from .PositionerManager import PositionerManager
 from thorlabs_apt_device.devices.bsc import BSC
 from serial.serialutil import SerialException
 import numpy as np
-import time
 
 STEPS_PER_REV = 409600
 REV_PER_MM = 2
@@ -24,9 +23,8 @@ class BSC203StageManager(PositionerManager):
         try:
             self.dev = BSC(serial_port=port, vid=None, pid=None, manufacturer=None, product=None, serial_number=None,
                            location=None, home=home, x=3, invert_direction_logic=False, swap_limit_switches=True)
-            #self.initialize()
         except SerialException:
-            self.__logger.debug('Could not initialize NanoMax motorized stage, might not be switched on.')
+            self.__logger.debug('Could not initialize BSC203 motorized stage, might not be switched on.')
             self.dev = None
         if home:
             self.__logger.debug('Is homing')

@@ -46,7 +46,7 @@ Classification legend (for issues found):
 
 - [x] `imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py` — 2 instant fixes (style, validation); 1 moderate
 - [x] `imswitch/imcontrol/model/managers/positioners/PIStageManager.py` — 5 instant fixes (exception handling, dead code)
-- [ ] `imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py` — 2 instant fixes; 2 moderate proposals; 1 hard issue
 - [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/LeicaDMIManager.py`
@@ -654,3 +654,46 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 - Line 157 — Added exception details to log message: `{e}` 
 - Line 174 — Changed second `if axis == 'Y':` to `elif axis == 'Y':` for correct control flow
 - Lines 261-310 — Removed large commented-out dead code block (obsolete move_to methods)
+
+### BSC203StageManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 6 — Removed unused import `import time` (dead import)
+- Line 27-28 — Fixed error message from "NanoMax motorized stage" to "BSC203 motorized stage" and removed commented-out `#self.initialize()` call
+
+**Moderate proposals**
+- Line 3 — Lazy-load hardware library to avoid ImportError on startup
+  ```python
+  # current
+  from thorlabs_apt_device.devices.bsc import BSC
+  
+  # proposed
+  # Remove module-level import, add inside __init__:
+  try:
+      from thorlabs_apt_device.devices.bsc import BSC
+      self.dev = BSC(...)
+  except ImportError as e:
+      self.__logger.warning(f'thorlabs_apt_device not installed: {e}')
+      self.dev = None
+  except SerialException:
+      ...
+  ```
+
+- Line 22-23 — Read serial port from managerProperties instead of hard-coded 'COM9'
+  ```python
+  # current
+  home = False
+  port = 'COM9'
+  
+  # proposed
+  manager_properties = positionerInfo.managerProperties
+  home = manager_properties.get('home', False)
+  port = manager_properties.get('port', 'COM9')  # fallback to COM9 if not specified
+  ```
+
+**Hard issues**
+- **[ISSUE] BSC203StageManager methods crash when device initialization fails**
+  - Methods like `homeAll()`, `homing()`, `move()`, `setPosition()`, etc. call `self.dev.*` without checking if `self.dev` is None
+  - If initialization fails (line 28), all subsequent method calls will raise AttributeError
+  - Need systematic None-checking or mock device pattern across all 10+ methods
+  - Affects: `homeAll()`, `homing()`, `move()`, `setPosition()`, `move_relative_mm()`, `setJogPars()`, `jog()`
