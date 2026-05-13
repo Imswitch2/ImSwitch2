@@ -2,7 +2,6 @@ from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
 from imswitch.imcontrol.model.interfaces.pipython.pidevice import GCSDevice
 from imswitch.imcontrol.model.interfaces.pipython.pidevice.gcs2 import gcs2pitools
-from serial.serialutil import SerialException
 from qtpy.QtCore import QTimer
 from imswitch.imcommon.framework import Signal, SignalInterface
 
@@ -64,8 +63,8 @@ class PIStageManager(PositionerManager, SignalInterface):
         try:
             self.connect()
             self.getJoystickEnabledStatus()
-        except:
-            self.__logger.debug('Could not initialize PI motorized stage.')
+        except Exception as e:
+            self.__logger.debug(f'Could not initialize PI motorized stage: {e}')
             self.device = None
 
     def _resolve_usb_description(self, manager_properties):
@@ -88,12 +87,12 @@ class PIStageManager(PositionerManager, SignalInterface):
         finally:
             try:
                 finder.CloseConnection()
-            except Exception:
-                pass
+            except Exception as e:
+                self.__logger.debug(f'Failed to close PI finder connection: {e}')
             try:
                 finder.CloseDaisyChain()
-            except Exception:
-                pass
+            except Exception as e:
+                self.__logger.debug(f'Failed to close PI finder daisy chain: {e}')
 
         if not usb_devices:
             self.__logger.warning(
@@ -155,7 +154,7 @@ class PIStageManager(PositionerManager, SignalInterface):
             self.buttonTimer.start(self.buttonPollIntervalMs)
             self._pollButtons()
         except Exception as e:
-            self.__logger.warning(f"Failed to initialize Joystick button allowing variable speed")
+            self.__logger.warning(f"Failed to initialize Joystick button allowing variable speed: {e}")
 
     def move(self, value, axis):
         if self.device is None:
@@ -172,7 +171,7 @@ class PIStageManager(PositionerManager, SignalInterface):
             self.deactivate_joystick()
             if axis == 'X':
                 self.X.MOV(1, position)
-            if axis == 'Y':
+            elif axis == 'Y':
                 self.Y.MOV(1, position)
             self._position[axis] = position * 1000
         else:
@@ -257,57 +256,6 @@ class PIStageManager(PositionerManager, SignalInterface):
 
         except Exception as e:
             self.__logger.debug(f'Error while polling joystick buttons: {e}')
-
-    """
-    
-    def move_to(self, axis, coord):
-
-        if self.rangeMax >= coord >= self.rangeMin:
-            if axis == 'X':
-                if self.joystick_status == 'enabled':
-                    self.deactivate_joystick()
-                    self.X.MOV(1, coord)
-                    self.deactivate_joystick()
-                else:
-                    self.X.MOV(1, coord)
-                # self.PosX = coord
-            if axis == 'Y':
-                if self.rangeMax >= coord >= self.rangeMin:
-                    if self.joystick_status == 'enabled':
-                        self.deactivate_joystick()
-                        self.Y.MOV(1, coord)
-                        self.deactivate_joystick()
-                    else:
-                        self.Y.MOV(1, coord)
-                    # self.PosY = coord
-        else:
-            self.__logger.debug('Out of the stage range')
-
-    def move_to_x(self, x_coord):
-        if self.rangeMax >= x_coord >= self.rangeMin:
-            if self.joystick_status == 'enabled':
-                self.deactivate_joystick()
-                self.X.MOV(1, x_coord)
-                self.deactivate_joystick()
-            else:
-                self.X.MOV(1, x_coord)
-            # self.PosX = x_coord
-        else:
-            self.__logger.debug('Out of the stage range')
-
-    def move_to_y(self, y_coord):
-        if self.rangeMax >= y_coord >= self.rangeMin:
-            if self.joystick_status == 'enabled':
-                self.deactivate_joystick()
-                self.X.MOV(1, y_coord)
-                self.deactivate_joystick()
-            else:
-                self.X.MOV(1, y_coord)
-            # self.PosX = x_coord
-        else:
-            self.__logger.debug('Out of the stage range')
-
-    """
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

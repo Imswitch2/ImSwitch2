@@ -45,7 +45,7 @@ Classification legend (for issues found):
 ## Positioner Managers
 
 - [x] `imswitch/imcontrol/model/managers/positioners/NidaqPositionerManager.py` — 2 instant fixes (style, validation); 1 moderate
-- [ ] `imswitch/imcontrol/model/managers/positioners/PIStageManager.py`
+- [x] `imswitch/imcontrol/model/managers/positioners/PIStageManager.py` — 5 instant fixes (exception handling, dead code)
 - [ ] `imswitch/imcontrol/model/managers/positioners/BSC203StageManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py`
 - [ ] `imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager2.py`
@@ -644,3 +644,13 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
       self._position[self.axes[0]] = position
       self._nidaqManager.setAnalog(target=self.name, ...)
   ```
+
+### PIStageManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 5 — Removed unused import `from serial.serialutil import SerialException` (dead import)
+- Line 67 — Fixed bare `except:` → `except Exception as e:` and added exception details to log message
+- Lines 90-91, 94-95 — Added debug logging to silent exception handlers in `_resolve_usb_description` cleanup
+- Line 157 — Added exception details to log message: `{e}` 
+- Line 174 — Changed second `if axis == 'Y':` to `elif axis == 'Y':` for correct control flow
+- Lines 261-310 — Removed large commented-out dead code block (obsolete move_to methods)
