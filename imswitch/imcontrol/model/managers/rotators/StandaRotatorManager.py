@@ -26,10 +26,6 @@ class StandaRotatorManager(RotatorManager):
         for info_piece in info:
             self.__logger.debug(f'{info_piece}: {info[info_piece]}')
 
-    def position(self):
-        """ Return the position as a float. """
-        return self._position
-
     def get_pos(self):
         self._position = self._motor.get_pos()
 
@@ -64,7 +60,7 @@ class StandaRotatorManager(RotatorManager):
             self.__logger.info(f'Initialized Standa motor {device_id}')
         except Exception:
             self.__logger.warning(f'Failed to initialize Standa motor {device_id}, loading mocker')
-            self.__logger.warning(f'Check if the lib_loc in the setupFileName json is availalbe (network drive)') #eventually move this file to a local drive. Need to adjust all .json s
+            self.__logger.warning(f'Check if the lib_loc in the setupFileName json is available (network drive)') #eventually move this file to a local drive. Need to adjust all .json s
             from imswitch.imcontrol.model.interfaces.standamotor import MockStandaMotor
             motor = MockStandaMotor(lib_loc)
         return motor

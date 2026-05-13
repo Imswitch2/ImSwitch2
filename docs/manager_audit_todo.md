@@ -57,7 +57,7 @@ Classification legend (for issues found):
 
 ## Rotator Managers
 
-- [ ] `imswitch/imcontrol/model/managers/rotators/StandaRotatorManager.py`
+- [x] `imswitch/imcontrol/model/managers/rotators/StandaRotatorManager.py` — 2 instant fixes applied (typo, redundant method); 1 moderate
 
 ## RS232 / Board Managers
 
@@ -869,3 +869,30 @@ No issues found. This base class for Lantz-based lasers is clean and follows goo
 **Instant fixes applied**
 - Line 23 — Changed `self._position[self.axes[0]]` to `self._position[axis]` in `move()` method to use the axis parameter instead of ignoring it
 - Line 26 — Changed `self._position[self.axes[0]]` to `self._position[axis]` in `setPosition()` method to use the axis parameter instead of ignoring it. This makes both methods consistent with the base class contract and allows proper KeyError if an invalid axis is passed.
+
+### StandaRotatorManager — 2026-05-13
+
+**Instant fixes applied**
+- Line 29-31 — Removed redundant `position()` method that shadowed the base class property. The base class already defines `position` as a `@property` (RotatorManager.py line 28-30), so this method was dead code that would never be called.
+- Line 63 — Fixed typo in warning message: "availalbe" → "available"
+
+**Moderate proposals**
+- Line 61 — Replace overly broad `except Exception:` with more specific exception handling
+  ```python
+  # current
+  try:
+      from imswitch.imcontrol.model.interfaces.standamotor import StandaMotor
+      motor = StandaMotor(device_id, lib_loc, steps_per_turn, microsteps_per_step)
+      self.__logger.info(f'Initialized Standa motor {device_id}')
+  except Exception:
+      self.__logger.warning(f'Failed to initialize Standa motor {device_id}, loading mocker')
+  
+  # proposed
+  try:
+      from imswitch.imcontrol.model.interfaces.standamotor import StandaMotor
+      motor = StandaMotor(device_id, lib_loc, steps_per_turn, microsteps_per_step)
+      self.__logger.info(f'Initialized Standa motor {device_id}')
+  except (ImportError, OSError, RuntimeError) as e:
+      self.__logger.warning(f'Failed to initialize Standa motor {device_id}: {e}, loading mocker')
+  ```
+  This prevents catching programming errors like AttributeError, TypeError, NameError which should fail fast for debugging.
