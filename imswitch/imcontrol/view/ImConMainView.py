@@ -78,8 +78,17 @@ class ImConMainView(QtWidgets.QMainWindow):
             rightDockInfos = _DEFAULT_RIGHT_DOCK_INFOS
             leftDockInfos = _DEFAULT_LEFT_DOCK_INFOS
         else:
-            rightDockInfos = _build_dock_infos_from_layout(viewSetupInfo.widgetLayout.right)
-            leftDockInfos = _build_dock_infos_from_layout(viewSetupInfo.widgetLayout.left)
+            rightDockInfos = dict(_build_dock_infos_from_layout(viewSetupInfo.widgetLayout.right))
+            leftDockInfos = dict(_build_dock_infos_from_layout(viewSetupInfo.widgetLayout.left))
+            # Widgets not mentioned in the explicit layout fall back to their default
+            # panel placement so nothing enabled is silently dropped.
+            placed = set(rightDockInfos) | set(leftDockInfos)
+            for key, info in _DEFAULT_RIGHT_DOCK_INFOS.items():
+                if key not in placed:
+                    rightDockInfos[key] = info
+            for key, info in _DEFAULT_LEFT_DOCK_INFOS.items():
+                if key not in placed:
+                    leftDockInfos[key] = info
 
         otherDockKeys = ['Image']
         allDockKeys = list(rightDockInfos.keys()) + list(leftDockInfos.keys()) + otherDockKeys
