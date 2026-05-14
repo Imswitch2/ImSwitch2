@@ -174,7 +174,7 @@ class CoboltLaser:
     def constant_current(self, current=None):
         """Enter constant current mode, current in mA"""
         if current != None:
-            if not "-08-" in self.modelnumber or not "-06-" in self.modelnumber:
+            if not "-08-" in self.modelnumber and not "-06-" in self.modelnumber:
                 self.send_cmd(f"slc {current / 1000}")
             else:
                 self.send_cmd(f"slc {current}")
@@ -186,7 +186,7 @@ class CoboltLaser:
     def set_current(self, current: float):
         """Set laser current in mA"""
         logger.info(f"Setting I = {current} mA")
-        if not "-08-" in self.modelnumber or not "-06-" in self.modelnumber:
+        if not "-08-" in self.modelnumber and not "-06-" in self.modelnumber:
             current = current / 1000
         return self.send_cmd(f"slc {current}")
 
