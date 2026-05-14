@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 import glob
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox,
@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QStatusBar, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
-    QDialog, QTextEdit,
+    QDialog, QTextEdit, QLayout, QLayoutItem,
 )
 
 # =============================================================================
@@ -221,6 +221,117 @@ def get_themed_colors(is_dark: bool):
             'button_bg': '#EEF2F6',
             'button_bg_hover': '#DDE8F2',
         }
+
+
+# =============================================================================
+# FlowLayout – wraps children into rows like a tag cloud
+# =============================================================================
+class FlowLayout(QLayout):
+    """Layout that arranges items in rows, wrapping to new rows as needed."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._item_list = []
+        self._h_spacing = -1
+        self._v_spacing = -1
+    
+    def __del__(self):
+        item = self.takeAt(0)
+        while item:
+            item = self.takeAt(0)
+    
+    def addItem(self, item: QLayoutItem):
+        self._item_list.append(item)
+    
+    def count(self) -> int:
+        return len(self._item_list)
+    
+    def itemAt(self, index: int) -> QLayoutItem:
+        if 0 <= index < len(self._item_list):
+            return self._item_list[index]
+        return None
+    
+    def takeAt(self, index: int) -> QLayoutItem:
+        if 0 <= index < len(self._item_list):
+            return self._item_list.pop(index)
+        return None
+    
+    def expandingDirections(self):
+        return Qt.Orientations(0)
+    
+    def hasHeightForWidth(self) -> bool:
+        return True
+    
+    def heightForWidth(self, width: int) -> int:
+        height = self._do_layout(QRect(0, 0, width, 0), test_only=True)
+        return height
+    
+    def setGeometry(self, rect: QRect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+    
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+    
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._item_list:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+    
+    def setSpacing(self, spacing: int):
+        self._h_spacing = spacing
+        self._v_spacing = spacing
+    
+    def spacing(self) -> int:
+        return self._h_spacing
+    
+    def _horizontal_spacing(self) -> int:
+        if self._h_spacing >= 0:
+            return self._h_spacing
+        return self._smart_spacing(QSizePolicy.PushButton, Qt.Horizontal)
+    
+    def _vertical_spacing(self) -> int:
+        if self._v_spacing >= 0:
+            return self._v_spacing
+        return self._smart_spacing(QSizePolicy.PushButton, Qt.Vertical)
+    
+    def _smart_spacing(self, pm, orientation) -> int:
+        parent = self.parent()
+        if parent is None:
+            return -1
+        if parent.isWidgetType():
+            return parent.style().pixelMetric(pm, None, parent)
+        return parent.spacing()
+    
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        left, top, right, bottom = self.getContentsMargins()
+        effective_rect = rect.adjusted(left, top, -right, -bottom)
+        x = effective_rect.x()
+        y = effective_rect.y()
+        line_height = 0
+        
+        for item in self._item_list:
+            widget = item.widget()
+            space_x = self._horizontal_spacing()
+            space_y = self._vertical_spacing()
+            
+            next_x = x + item.sizeHint().width() + space_x
+            if next_x - space_x > effective_rect.right() and line_height > 0:
+                x = effective_rect.x()
+                y = y + line_height + space_y
+                next_x = x + item.sizeHint().width() + space_x
+                line_height = 0
+            
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+            
+            x = next_x
+            line_height = max(line_height, item.sizeHint().height())
+        
+        return y + line_height - rect.y() + bottom
 
 
 # =============================================================================
@@ -570,6 +681,7 @@ class FieldWidget(QWidget):
 class PropertyEditor(QWidget):
     sig_apply = pyqtSignal(str, str, dict)   # (category, name, new_device_dict)
     sig_rename = pyqtSignal(str, str, str)    # (category, old_name, new_name)
+    sig_modified = pyqtSignal()               # any change to config settings (widgets, sections)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -577,6 +689,7 @@ class PropertyEditor(QWidget):
         self._cat = ""
         self._name = ""
         self._device = {}
+        self._data: dict = {}                 # Reference to full config data for config settings view
         self._field_widgets: dict[tuple, FieldWidget] = {}   # (section, key) → widget
 
         outer = QVBoxLayout(self)
@@ -600,11 +713,11 @@ class PropertyEditor(QWidget):
         self._name_lbl.setFont(bold)
         row1.addWidget(self._name_lbl)
         row1.addStretch()
-        rename_btn = QPushButton("Rename…")
-        rename_btn.setFixedHeight(22)
-        rename_btn.setStyleSheet("font-size:8pt;")
-        rename_btn.clicked.connect(self._do_rename)
-        row1.addWidget(rename_btn)
+        self._rename_btn = QPushButton("Rename…")
+        self._rename_btn.setFixedHeight(22)
+        self._rename_btn.setStyleSheet("font-size:8pt;")
+        self._rename_btn.clicked.connect(self._do_rename)
+        row1.addWidget(self._rename_btn)
         hdr_lay.addLayout(row1)
 
         # Manager type: combo for known schemas + line-edit for custom/free-form
@@ -620,6 +733,7 @@ class PropertyEditor(QWidget):
         self._custom_mgr_edit.setVisible(False)
         hdr_lay.addWidget(self._custom_mgr_edit)
         outer.addWidget(hdr)
+        self._hdr = hdr
 
         # ── Tab widget (populated dynamically) ──
         self._tabs = QTabWidget()
@@ -632,41 +746,160 @@ class PropertyEditor(QWidget):
         self._val_lbl.setStyleSheet("color:#C06000; font-size:8pt;")
         outer.addWidget(self._val_lbl)
 
-        # ── Add custom field buttons ──
-        add_row = QHBoxLayout()
-        add_top_btn = QPushButton("⊕ Add field")
-        add_top_btn.setFixedHeight(22)
-        add_top_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
-        add_top_btn.setToolTip("Add an arbitrary top-level field to this device")
-        add_top_btn.clicked.connect(lambda: self._add_custom_field("top"))
-        add_row.addWidget(add_top_btn)
-        add_prop_btn = QPushButton("⊕ Add property")
-        add_prop_btn.setFixedHeight(22)
-        add_prop_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
-        add_prop_btn.setToolTip("Add an arbitrary field inside managerProperties")
-        add_prop_btn.clicked.connect(lambda: self._add_custom_field("props"))
-        add_row.addWidget(add_prop_btn)
-        outer.addLayout(add_row)
+        # ── Add custom field buttons (for device view) ──
+        self._add_row_widget = QWidget(self)
+        add_row = QHBoxLayout(self._add_row_widget)
+        add_row.setContentsMargins(0, 0, 0, 0)
+        self._add_top_btn = QPushButton("⊕ Add field")
+        self._add_top_btn.setFixedHeight(22)
+        self._add_top_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
+        self._add_top_btn.setToolTip("Add an arbitrary top-level field to this device")
+        self._add_top_btn.clicked.connect(lambda: self._add_custom_field("top"))
+        add_row.addWidget(self._add_top_btn)
+        self._add_prop_btn = QPushButton("⊕ Add property")
+        self._add_prop_btn.setFixedHeight(22)
+        self._add_prop_btn.setStyleSheet("font-size:8pt; padding:0 6px;")
+        self._add_prop_btn.setToolTip("Add an arbitrary field inside managerProperties")
+        self._add_prop_btn.clicked.connect(lambda: self._add_custom_field("props"))
+        add_row.addWidget(self._add_prop_btn)
+        outer.addWidget(self._add_row_widget)
 
-        # ── Apply button ──
-        apply_btn = QPushButton("Apply Changes")
-        apply_btn.setStyleSheet("""
+        # ── Apply button (for device view) ──
+        self._apply_btn = QPushButton("Apply Changes")
+        self._apply_btn.setStyleSheet("""
             QPushButton {
                 background:#3A7FC1; color:white; border-radius:4px;
                 padding:6px; font-size:10pt;
             }
             QPushButton:hover { background:#2A6FAF; }
         """)
-        apply_btn.clicked.connect(self._do_apply)
-        outer.addWidget(apply_btn)
+        self._apply_btn.clicked.connect(self._do_apply)
+        outer.addWidget(self._apply_btn)
+
+        # ── Config Settings view (for when no device is selected) ──
+        self._config_view = self._build_config_settings_view()
+        outer.addWidget(self._config_view)
 
         self._block_combo = False
+        
+        # Show config settings view initially
+        self._show_config_view()
+
+    def _build_config_settings_view(self) -> QWidget:
+        """Build the Config Settings view (shown when no device is selected)."""
+        view = QWidget()
+        lay = QVBoxLayout(view)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setFrameShape(QFrame.NoFrame)
+        
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setSpacing(16)
+        
+        # ── Available Widgets section ──
+        w_section = QFrame()
+        colors = get_themed_colors(is_dark_mode())
+        w_section.setStyleSheet(f"QFrame {{ background:{colors['card_bg']}; border:1px solid {colors['card_border']}; border-radius:4px; }}")
+        w_lay = QVBoxLayout(w_section)
+        w_lay.setContentsMargins(10, 10, 10, 10)
+        w_lay.setSpacing(8)
+        
+        w_hdr = QLabel("<b>Available Widgets</b>")
+        w_hdr.setTextFormat(Qt.RichText)
+        w_lay.addWidget(w_hdr)
+        
+        # Widget chips container (uses FlowLayout for wrapping)
+        self._widgets_inner = QWidget()
+        self._widgets_lay = FlowLayout(self._widgets_inner)
+        self._widgets_lay.setContentsMargins(0, 0, 0, 0)
+        self._widgets_lay.setSpacing(4)
+        w_lay.addWidget(self._widgets_inner)
+        
+        # Edit widgets button
+        edit_w_btn = QPushButton("Edit Widgets…")
+        edit_w_btn.setFixedHeight(26)
+        edit_w_btn.setToolTip("Choose which widgets are available")
+        edit_w_btn.setStyleSheet(
+            f"QPushButton {{ font-size:8pt; padding:0 8px; border:1px solid {colors['chip_border']}; "
+            f"border-radius:3px; background:{colors['button_bg']}; }}"
+            f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+        )
+        edit_w_btn.clicked.connect(self._open_widget_picker)
+        w_lay.addWidget(edit_w_btn)
+        
+        inner_lay.addWidget(w_section)
+        
+        # ── Other Sections ──
+        s_section = QFrame()
+        s_section.setStyleSheet(f"QFrame {{ background:{colors['card_bg']}; border:1px solid {colors['card_border']}; border-radius:4px; }}")
+        s_lay = QVBoxLayout(s_section)
+        s_lay.setContentsMargins(10, 10, 10, 10)
+        s_lay.setSpacing(8)
+        
+        s_hdr = QLabel("<b>Other Sections</b>")
+        s_hdr.setTextFormat(Qt.RichText)
+        s_lay.addWidget(s_hdr)
+        
+        # Section buttons container
+        self._sections_inner = QWidget()
+        self._sections_lay = QVBoxLayout(self._sections_inner)
+        self._sections_lay.setContentsMargins(0, 0, 0, 0)
+        self._sections_lay.setSpacing(4)
+        s_lay.addWidget(self._sections_inner)
+        
+        inner_lay.addWidget(s_section)
+        inner_lay.addStretch()
+        
+        scroll.setWidget(inner)
+        lay.addWidget(scroll)
+        
+        return view
+
+    def _show_config_view(self):
+        """Switch to Config Settings view (hide device form)."""
+        self._name_lbl.setText("Config Settings")
+        self._hdr.setVisible(True)
+        self._rename_btn.setVisible(False)
+        self._mgr_combo.setVisible(False)
+        self._custom_mgr_edit.setVisible(False)
+        self._tabs.setVisible(False)
+        self._val_lbl.setVisible(False)
+        self._add_row_widget.setVisible(False)
+        self._apply_btn.setVisible(False)
+        self._config_view.setVisible(True)
+
+    def _show_device_view(self):
+        """Switch to device editor view (hide config settings)."""
+        self._rename_btn.setVisible(True)
+        self._mgr_combo.setVisible(True)
+        self._tabs.setVisible(True)
+        self._val_lbl.setVisible(True)
+        self._add_row_widget.setVisible(True)
+        self._apply_btn.setVisible(True)
+        self._config_view.setVisible(False)
+
+    def load_config_extras(self, data: dict):
+        """Load config data and show Config Settings view."""
+        self._data = data
+        self._refresh_widgets()
+        self._refresh_sections()
+        self._show_config_view()
 
     def load_device(self, cat: str, name: str, device: dict):
         self._cat = cat
         self._name = name
         self._device = copy.deepcopy(device)
         self._name_lbl.setText(name)
+        
+        # Switch to device view
+        self._show_device_view()
 
         mgr = device.get("managerName", "")
         self._block_combo = True
@@ -902,15 +1135,115 @@ class PropertyEditor(QWidget):
             self._device["managerProperties"][key.strip()] = value
         self._rebuild_form()
 
+    # ── Widget chips (from ConfigExtrasBar) ──────────────────────────────────
+
+    def _refresh_widgets(self):
+        """Refresh the widget chips display."""
+        while self._widgets_lay.count():
+            item = self._widgets_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for w in (self._data.get("availableWidgets") or []):
+            self._widgets_lay.addWidget(self._make_chip(str(w)))
+
+    def _make_chip(self, name: str) -> QWidget:
+        """Create a widget chip with delete button."""
+        chip = QFrame()
+        colors = get_themed_colors(is_dark_mode())
+        chip.setStyleSheet(
+            f"QFrame {{ background:{colors['chip_bg']}; border:1px solid {colors['chip_border']}; "
+            "border-radius:3px; }"
+        )
+        lay = QHBoxLayout(chip)
+        lay.setContentsMargins(5, 1, 2, 1)
+        lay.setSpacing(2)
+        lbl = QLabel(name)
+        lbl.setStyleSheet("font-size:8pt; border:none; background:transparent;")
+        lay.addWidget(lbl)
+        del_btn = QPushButton("×")
+        del_btn.setFixedSize(14, 14)
+        del_btn.setStyleSheet(
+            "QPushButton { border:none; color:#666; background:transparent; font-size:9pt; }"
+            "QPushButton:hover { color:#C00; }"
+        )
+        del_btn.clicked.connect(lambda _, n=name: self._remove_widget(n))
+        lay.addWidget(del_btn)
+        return chip
+
+    def _open_widget_picker(self):
+        """Open the widget picker dialog."""
+        current = list(self._data.get("availableWidgets") or [])
+        dlg = WidgetPickerDialog(current, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._data["availableWidgets"] = dlg.selected_widgets()
+            self._refresh_widgets()
+            self.sig_modified.emit()
+
+    def _remove_widget(self, name: str):
+        """Remove a widget from the available widgets list."""
+        widgets = list(self._data.get("availableWidgets") or [])
+        if name in widgets:
+            widgets.remove(name)
+            self._data["availableWidgets"] = widgets
+            self._refresh_widgets()
+            self.sig_modified.emit()
+
+    # ── Section buttons (from ConfigExtrasBar) ───────────────────────────────
+
+    def _refresh_sections(self):
+        """Refresh the section buttons display."""
+        while self._sections_lay.count():
+            item = self._sections_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        excluded = set(DEVICE_CATS) | {"availableWidgets"}
+        colors = get_themed_colors(is_dark_mode())
+        for key, val in self._data.items():
+            if key in excluded:
+                continue
+            btn = QPushButton(key)
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(
+                f"QPushButton {{ font-size:8pt; padding:0 8px; border:1px solid {colors['chip_border']}; "
+                f"border-radius:3px; background:{colors['button_bg']}; }}"
+                f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+            )
+            btn.setToolTip(f"View / edit '{key}' section")
+            btn.clicked.connect(lambda _, k=key: self._open_section(k))
+            self._sections_lay.addWidget(btn)
+
+    def _open_section(self, key: str):
+        """Open the JSON editor for a config section."""
+        val = self._data.get(key)
+        dlg = JsonEditorDialog(key, val, self)
+        dlg.exec_()
+        if dlg.changed:
+            self._data[key] = dlg.result_data
+            self._refresh_sections()
+            self.sig_modified.emit()
+
     def clear(self):
         self._cat = ""
         self._name = ""
         self._device = {}
         self._field_widgets.clear()
         self._tabs.clear()
-        self._name_lbl.setText("<i>No device selected</i>")
         self._val_lbl.clear()
         self._custom_mgr_edit.setVisible(False)
+        
+        # Show config settings view if data is available, otherwise show empty state
+        if self._data:
+            self._show_config_view()
+        else:
+            self._name_lbl.setText("<i>No device selected</i>")
+            self._hdr.setVisible(True)
+            self._rename_btn.setVisible(False)
+            self._mgr_combo.setVisible(False)
+            self._tabs.setVisible(False)
+            self._val_lbl.setVisible(False)
+            self._add_row_widget.setVisible(False)
+            self._apply_btn.setVisible(False)
+            self._config_view.setVisible(False)
 
 
 # =============================================================================
@@ -1231,163 +1564,6 @@ class WidgetPickerDialog(QDialog):
             if widget_name not in _ALL_KNOWN_WIDGETS and cb.isChecked():
                 result.append(widget_name)
         return result
-
-
-# =============================================================================
-# ConfigExtrasBar – availableWidgets list + buttons for other config sections
-# =============================================================================
-class ConfigExtrasBar(QFrame):
-    sig_modified = pyqtSignal()   # any change → MainWindow marks dirty
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.StyledPanel)
-        colors = get_themed_colors(is_dark_mode())
-        self.setStyleSheet(f"QFrame {{ background:{colors['extras_bar_bg']}; border-top:1px solid {colors['extras_bar_border']}; }}")
-        self.setFixedHeight(64)
-        self._data: dict = {}
-
-        root = QHBoxLayout(self)
-        root.setContentsMargins(10, 4, 10, 4)
-        root.setSpacing(10)
-
-        # ── Available Widgets ──────────────────────────────────────────────
-        wlbl = QLabel("<b style='font-size:8pt;'>Available Widgets:</b>")
-        wlbl.setTextFormat(Qt.RichText)
-        root.addWidget(wlbl)
-
-        self._widgets_inner = QWidget()
-        self._widgets_lay = QHBoxLayout(self._widgets_inner)
-        self._widgets_lay.setContentsMargins(0, 0, 0, 0)
-        self._widgets_lay.setSpacing(4)
-        w_scroll = QScrollArea()
-        w_scroll.setWidgetResizable(True)
-        w_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        w_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        w_scroll.setFrameShape(QFrame.NoFrame)
-        w_scroll.setFixedHeight(54)
-        w_scroll.setWidget(self._widgets_inner)
-        root.addWidget(w_scroll, 1)
-
-        edit_w_btn = QPushButton("Edit Widgets…")
-        edit_w_btn.setFixedHeight(26)
-        edit_w_btn.setToolTip("Choose which widgets are available")
-        edit_w_btn.setStyleSheet(
-            "QPushButton { font-size:8pt; padding:0 8px; border:1px solid #AAA; "
-            "border-radius:3px; }"
-            "QPushButton:hover { background:#DDD; }"
-        )
-        edit_w_btn.clicked.connect(self._open_widget_picker)
-        root.addWidget(edit_w_btn)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet("color:#CCC;")
-        root.addWidget(sep)
-
-        # ── Other sections ─────────────────────────────────────────────────
-        slbl = QLabel("<b style='font-size:8pt;'>Other sections:</b>")
-        slbl.setTextFormat(Qt.RichText)
-        root.addWidget(slbl)
-
-        self._sections_inner = QWidget()
-        self._sections_lay = QHBoxLayout(self._sections_inner)
-        self._sections_lay.setContentsMargins(0, 0, 0, 0)
-        self._sections_lay.setSpacing(4)
-        root.addWidget(self._sections_inner)
-        root.addStretch()
-
-    # ── Public ────────────────────────────────────────────────────────────
-
-    def load(self, data: dict):
-        self._data = data
-        self._refresh_widgets()
-        self._refresh_sections()
-
-    def clear(self):
-        self._data = {}
-        self._refresh_widgets()
-        self._refresh_sections()
-
-    # ── Widget chips ─────────────────────────────────────────────────────
-
-    def _refresh_widgets(self):
-        while self._widgets_lay.count():
-            item = self._widgets_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        for w in (self._data.get("availableWidgets") or []):
-            self._widgets_lay.addWidget(self._make_chip(str(w)))
-        self._widgets_lay.addStretch()
-
-    def _make_chip(self, name: str) -> QWidget:
-        chip = QFrame()
-        chip.setStyleSheet(
-            "QFrame { background:#E0E8F0; border:1px solid #B0C4D8; "
-            "border-radius:3px; }"
-        )
-        lay = QHBoxLayout(chip)
-        lay.setContentsMargins(5, 1, 2, 1)
-        lay.setSpacing(2)
-        lbl = QLabel(name)
-        lbl.setStyleSheet("font-size:8pt; border:none; background:transparent;")
-        lay.addWidget(lbl)
-        del_btn = QPushButton("×")
-        del_btn.setFixedSize(14, 14)
-        del_btn.setStyleSheet(
-            "QPushButton { border:none; color:#666; background:transparent; font-size:9pt; }"
-            "QPushButton:hover { color:#C00; }"
-        )
-        del_btn.clicked.connect(lambda _, n=name: self._remove_widget(n))
-        lay.addWidget(del_btn)
-        return chip
-
-    def _open_widget_picker(self):
-        current = list(self._data.get("availableWidgets") or [])
-        dlg = WidgetPickerDialog(current, self)
-        if dlg.exec_() == QDialog.Accepted:
-            self._data["availableWidgets"] = dlg.selected_widgets()
-            self._refresh_widgets()
-            self.sig_modified.emit()
-
-    def _remove_widget(self, name: str):
-        widgets = list(self._data.get("availableWidgets") or [])
-        if name in widgets:
-            widgets.remove(name)
-            self._data["availableWidgets"] = widgets
-            self._refresh_widgets()
-            self.sig_modified.emit()
-
-    # ── Section buttons ──────────────────────────────────────────────────
-
-    def _refresh_sections(self):
-        while self._sections_lay.count():
-            item = self._sections_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        excluded = set(DEVICE_CATS) | {"availableWidgets"}
-        for key, val in self._data.items():
-            if key in excluded:
-                continue
-            btn = QPushButton(key)
-            btn.setFixedHeight(26)
-            btn.setStyleSheet(
-                "QPushButton { font-size:8pt; padding:0 8px; border:1px solid #B0B8C0; "
-                "border-radius:3px; background:#EEF2F6; }"
-                "QPushButton:hover { background:#DDE8F2; }"
-            )
-            btn.setToolTip(f"View / edit '{key}' section")
-            btn.clicked.connect(lambda _, k=key: self._open_section(k))
-            self._sections_lay.addWidget(btn)
-
-    def _open_section(self, key: str):
-        val = self._data.get(key)
-        dlg = JsonEditorDialog(key, val, self)
-        dlg.exec_()
-        if dlg.changed:
-            self._data[key] = dlg.result_data
-            self._refresh_sections()
-            self.sig_modified.emit()
 
 
 # =============================================================================
@@ -1868,14 +2044,10 @@ class MainWindow(QMainWindow):
         self._editor = PropertyEditor()
         self._editor.sig_apply.connect(self._on_editor_apply)
         self._editor.sig_rename.connect(self._on_device_rename)
+        self._editor.sig_modified.connect(self._on_extras_modified)
         splitter.addWidget(self._editor)
 
         splitter.setSizes([220, 780, 340])
-
-        # ── Extras bar: availableWidgets + other sections ──
-        self._extras_bar = ConfigExtrasBar()
-        self._extras_bar.sig_modified.connect(self._on_extras_modified)
-        root_lay.addWidget(self._extras_bar)
 
     def _build_status_bar(self):
         sb = QStatusBar()
@@ -1892,8 +2064,7 @@ class MainWindow(QMainWindow):
         self._path = ""
         self._modified = False
         self._refresh_canvas()
-        self._editor.clear()
-        self._extras_bar.load(self._data)
+        self._editor.load_config_extras(self._data)
         self._status.setText("New config (unsaved)")
         self.setWindowTitle("ImSwitch Config Studio — [new]")
 
@@ -1913,8 +2084,7 @@ class MainWindow(QMainWindow):
             self._path = path
             self._modified = False
             self._refresh_canvas()
-            self._editor.clear()
-            self._extras_bar.load(self._data)
+            self._editor.load_config_extras(self._data)
             self._val_panel.validate(self._data)
             self.setWindowTitle(f"ImSwitch Config Studio — {Path(path).name}")
             self._status.setText(f"Loaded: {path}")
@@ -2222,7 +2392,13 @@ def dark_theme(app, palette):
         QFrame {
             background-color: #2B2B2B;
             color: #E0E0E0;
-            border: 1px solid #3C3F41;
+        }
+        /* HLine / VLine separators — just a coloured line, no box */
+        QFrame[frameShape="4"], QFrame[frameShape="5"] {
+            background-color: #3C3F41;
+            border: none;
+            max-width: 1px;
+            max-height: 1px;
         }
         
         QGroupBox {
@@ -2482,9 +2658,9 @@ def main():
     app.setApplicationName("ImSwitch Config Studio")
     app.setStyle("Fusion")
 
-    # Clean up default palette for a neutral look
+    # Apply dark theme with comprehensive styling
     palette = app.palette()
-    # palette = dark_theme(palette) # remove this line for light theme
+    palette = dark_theme(app, palette)  # Comment this line for light theme
     app.setPalette(palette)
 
     if len(sys.argv) > 1:
