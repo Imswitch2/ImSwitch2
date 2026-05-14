@@ -15,14 +15,6 @@ class Cobolt0601LaserManager(LantzLaserManager):
     def __init__(self, laserInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
-        # Lazy import of hardware library
-        try:
-            from lantz import Q_
-            self._Q = Q_
-        except ImportError as e:
-            self.__logger.error(f'Failed to import lantz library: {e}')
-            raise
-
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0,
                          driver='cobolt.cobolt0601.Cobolt0601_f2', **_lowLevelManagers)
 
@@ -36,11 +28,11 @@ class Cobolt0601LaserManager(LantzLaserManager):
         self._laser.enabled = enabled
 
     def setValue(self, power, enabled=True, for_scanning=False):
-        power = int(power)
+        power = float(power)
         if self._digitalMod:
-            self._setModPower(power * self._Q(1, 'mW'))
+            self._setModPower(power)
         else:
-            self._setBasicPower(power * self._Q(1, 'mW'))
+            self._setBasicPower(power)
 
     def setScanModeActive(self, active, enabled=True):
         if active:

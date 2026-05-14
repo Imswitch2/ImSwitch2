@@ -1,16 +1,24 @@
-from lantz import Driver, Feat, Q_
+from imswitch.imcommon.model import initLogger
 
 
-class Cobolt0601_f2(Driver):
+class Cobolt0601_f2:
+    """Mock driver for Cobolt 06-01 Series laser (no lantz / no hardware)."""
 
     def __init__(self, *args, **kwargs):
-        super().__init__()
-
-        self.mW = Q_(1, 'mW')
-
+        self.__logger = initLogger(self, tryInheritParent=True)
         self.enabled = False
-        self.power_sp = 0 * self.mW
+        self.power_sp = 0.0   # mW, plain float
         self._digMod = False
+        self._mode = None
+
+    def initialize(self):
+        self._mode = None
+
+    def finalize(self):
+        pass
+
+    def close(self):
+        pass
 
     @property
     def idn(self):
@@ -18,70 +26,54 @@ class Cobolt0601_f2(Driver):
 
     @property
     def status(self):
-        """Current device status
-        """
         return 'Simulated laser status'
-
-    # ENABLE LASER
-    @property
-    def enabled(self):
-        """Method for turning on the laser
-        """
-        return self.enabled_state
-
-    @enabled.setter
-    def enabled(self, value):
-        self.enabled_state = value
-
-    # LASER'S CONTROL MODE AND SET POINT
-
-    @property
-    def power_sp(self):
-        """To handle output power set point (mW) in APC Mode
-        """
-        return self.power_setpoint
-
-    @power_sp.setter
-    def power_sp(self, value):
-        self.power_setpoint = value
-
-    # LASER'S CURRENT STATUS
 
     @property
     def power(self):
-        """To get the laser emission power (mW)
-        """
-        return 55555 * self.mW
+        return 0.0
 
-    def enter_mod_mode(self):
-        self._digMod = True
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, value):
+        self._mode = value
+
+    @property
+    def autostart(self):
+        return False
+
+    @autostart.setter
+    def autostart(self, value):
+        pass
 
     @property
     def digital_mod(self):
-        """digital modulation enable state
-        """
         return self._digMod
 
     @digital_mod.setter
     def digital_mod(self, value):
         self._digMod = value
 
+    def enter_mod_mode(self):
+        self._digMod = True
+
     @property
     def mod_mode(self):
-        """Returns the current operating mode
-        """
         return 0
 
-    @Feat(units='mW')
+    @property
     def power_mod(self):
-        return 0
+        return 0.0
 
     @power_mod.setter
     def power_mod(self, value):
         pass
 
     def query(self, text):
-        return 0
+        self.__logger.debug(f'Mock query: {text!r}')
+        return '0'
 
 
 # Copyright (C) 2017 Federico Barabas

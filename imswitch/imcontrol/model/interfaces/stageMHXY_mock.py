@@ -1,71 +1,72 @@
-from lantz import Action, Feat, Driver
-
 from imswitch.imcommon.model import initLogger
 
 
-class MockMHXYStage(Driver):
+class MockMHXYStage:
 
     def __init__(self, SerialDriver=0):
-        super().__init__()
         self.__logger = initLogger(self, tryInheritParent=True)
         self.__logger.debug('Simulated Marzhauser XY-stage')
+        self._absX = 0.0
+        self._absY = 0.0
 
-    @Feat(read_once=True)
+    @property
     def idn(self):
         """Get information of device"""
         return 'Marzhauser XY-stage mock'
 
     # XY-POSITION READING AND MOVEMENT
 
-    @Feat()
+    @property
     def absX(self):
         """ Read absolute X position, in um. """
         self.__logger.debug("Mock MHXY: Absolute position, X.")
+        return self._absX
 
-    @Feat()
+    @property
     def absY(self):
         """ Read absolute Y position, in um. """
         self.__logger.debug("Absolute position, Y.")
+        return self._absY
 
-    @Action()
     def move_relX(self, value):
         """ Relative X position movement, in um. """
         self.__logger.debug(f"Move relative, X: {value} um.")
 
-    @Action()
     def move_relY(self, value):
         """ Relative Y position movement, in um. """
         self.__logger.debug(f"Move relative, Y: {value} um.")
 
-    @Action(limits=(100,))
     def move_absX(self, value):
         """ Absolute X position movement, in um. """
         self.__logger.debug(f"Set position, X: {value} um.")
 
-    @Action(limits=(100,))
     def move_absY(self, value):
         """ Absolute Y position movement, in um. """
         self.__logger.debug(f"Set position, Y: {value} um.")
 
     # CONTROL/STATUS/LIMITS
 
-    @Feat()
+    @property
     def circLimit(self):
         """ Circular limits, in terms of X,Y center and radius. """
         self.__logger.debug("Ask circular limits.")
 
     @circLimit.setter
-    def circLimit(self, xpos, ypos, radius):
-        """ Set circular limits, in terms of X,Y center and radius. """
-        self.__logger.debug(f"Ask circular limits, X: {xpos}, Y: {ypos}, radius: {radius}.")
+    def circLimit(self, value):
+        self.__logger.debug(f"Set circular limits: {value}.")
 
-    @Action()
     def function_press(self):
         """ Check function button presses. """
         self.__logger.debug("Check button presses.")
 
+    def initialize(self):
+        pass
+
+    def finalize(self):
+        pass
+
     def close(self):
-        self.finalize()
+        pass
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

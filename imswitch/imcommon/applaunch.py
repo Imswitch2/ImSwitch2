@@ -17,7 +17,6 @@ def prepareApp():
 
     # Set logging levels
     logging.getLogger('pyvisa').setLevel(logging.WARNING)
-    logging.getLogger('lantz').setLevel(logging.WARNING)
 
     # Create app
     os.environ['IMSWITCH_FULL_APP'] = '1'  # Indicator that non-plugin version of ImSwitch is used

@@ -1,73 +1,67 @@
-from lantz import Action, Feat, Driver
-
 from imswitch.imcommon.model import initLogger
 
 
-class MockPCZPiezo(Driver):
+class MockPCZPiezo:
     """Mock driver for the PiezoConcept Z-piezo."""
 
     def __init__(self):
-        super().__init__()
         self.__logger = initLogger(self, tryInheritParent=True)
+        self._absZ = 2.0
+        self._timeStep = 1
 
-    @Feat(read_once=True)
+    @property
     def idn(self):
         """Get information of device"""
-        #        return self.query('INFOS')
-        dummyquery = 'dummy zpiezo answer'
-        return dummyquery
+        return 'dummy zpiezo answer'
 
     def initialize(self):
         pass
 
+    def finalize(self):
+        pass
+
+    def close(self):
+        pass
+
     # Z-MOVEMENT
 
-    @Feat()
+    @property
     def absZ(self):
         """ Absolute Z position. """
-        return 2.0
+        return self._absZ
 
     @absZ.setter
     def absZ(self, value):
         """ Absolute Z position movement, in um. """
         self.__logger.debug(f"setting Z position to {value} um")
+        self._absZ = value
 
     def relZ(self, value):
         """ Relative Z position movement, in um. """
         self.__logger.debug(f"Moving Z position {value} um")
-        pass
         if abs(float(value)) > 0.5:
             self.__logger.warning('Warning: Step bigger than 500 nm')
 
-    @Action()
     def move_relZ(self, value):
         """ Relative Z position movement, in um. """
         self.__logger.debug(f"Moving Z position {value} um")
-        pass
         if abs(float(value)) > 0.5:
             self.__logger.warning('Warning: Step bigger than 500 nm')
 
-    @Action(limits=(100,))
     def move_absZ(self, value):
         """ Absolute Z position movement, in um. """
         self.__logger.debug(f"Setting Z position to {value} um")
 
     # CONTROL/STATUS
 
-    @Feat()
+    @property
     def timeStep(self):
-        """ Get the time between each points sent by the RAM of the USB
-        interface to the nanopositioner. """
-        return 1
+        """ Time between points sent by the USB interface, in ms. """
+        return self._timeStep
 
     @timeStep.setter
     def timeStep(self, value):
-        """ Set the time between each points sent by the RAM of the USB
-        interface to the nanopositioner, in ms. """
-        pass
-
-    def close(self):
-        pass
+        self._timeStep = value
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
