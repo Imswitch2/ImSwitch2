@@ -56,8 +56,13 @@ class SettingsController(ImConWidgetController):
             if supportsAdvancedProperties:
                 advancedWidget = self._widget.getAdvancedWidget(dName)
                 if advancedWidget:
+                    # Connect refresh signal
                     advancedWidget.sigRefreshClicked.connect(
                         lambda checked=False, name=dName: self.refreshAdvancedProperties(name)
+                    )
+                    # Connect property change signal
+                    advancedWidget.sigPropertyChangeRequested.connect(
+                        lambda propName, value, name=dName: self.applyAdvancedProperty(name, propName, value)
                     )
                     # Initial population
                     self.refreshAdvancedProperties(dName)
@@ -582,6 +587,65 @@ class SettingsController(ImConWidgetController):
                 advancedWidget.showMessage(
                     f'Error querying properties: {str(e)}'
                 )
+    
+    def applyAdvancedProperty(self, detectorName, propertyName, value):
+        """
+        Apply a change to an advanced camera property.
+        
+        This method is called when the user clicks Apply on a property in the
+        Advanced Properties tab. It calls the detector manager's setAdvancedProperty
+        method, logs the result, and refreshes the displayed value.
+        
+        Args:
+            detectorName: Name of the detector
+            propertyName: Name of the property to change
+            value: New value for the property
+        """
+        try:
+            # Get the detector manager
+            detectorManager = self._master.detectorsManager[detectorName]
+            
+            # Check if manager has the setAdvancedProperty method
+            if not hasattr(detectorManager, 'setAdvancedProperty'):
+                self.__logger.error(
+                    f'Detector {detectorName} does not support setting advanced properties'
+                )
+                return
+            
+            # Log the change attempt
+            self.__logger.info(
+                f'User requesting to change {propertyName} to {value} for {detectorName}'
+            )
+            
+            # Call the manager's setAdvancedProperty method
+            result = detectorManager.setAdvancedProperty(propertyName, value)
+            
+            # Handle the result
+            if result.get('success'):
+                actual_value = result.get('value')
+                self.__logger.info(
+                    f'Successfully set {propertyName} to {actual_value} for {detectorName}'
+                )
+                
+                # Refresh properties to show the updated value
+                self.refreshAdvancedProperties(detectorName)
+                
+                # TODO: Could add a status message in the UI here if desired
+                
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                self.__logger.error(
+                    f'Failed to set {propertyName} to {value} for {detectorName}: {error_msg}'
+                )
+                
+                # TODO: Could show error dialog or status message in UI
+        
+        except Exception as e:
+            self.__logger.error(
+                f'Exception while setting {propertyName} to {value} for {detectorName}: {e}'
+            )
+            import traceback
+            traceback.print_exc()
 
 
 _attrCategory = 'Detector'

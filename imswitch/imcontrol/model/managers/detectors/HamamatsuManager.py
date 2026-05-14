@@ -179,6 +179,68 @@ class HamamatsuManager(DetectorManager):
         except Exception as e:
             self.__logger.error(f'Failed to get advanced property info: {e}')
             return []
+    
+    def setAdvancedProperty(self, propertyName, value):
+        """
+        Set an advanced camera property value safely.
+        
+        This manager-level method wraps the camera interface's setPropertyValue,
+        providing safe property changes by stopping/restarting acquisition if needed.
+        The method validates the property exists and logs all changes.
+        
+        Args:
+            propertyName: Name of the property to set (str)
+            value: New value for the property (int, float, bytes, or str)
+                  For text/MODE properties, can be text key (bytes/str) or numeric value
+        
+        Returns:
+            dict: Result dictionary containing:
+                - success: Whether the operation succeeded (bool)
+                - value: The actual value set by camera (float) or None if failed
+                - error: Error message if failed, None otherwise (str or None)
+        
+        Example:
+            >>> result = manager.setAdvancedProperty('exposure_time', 0.05)
+            >>> if result['success']:
+            ...     print(f"Exposure set to {result['value']}")
+            ... else:
+            ...     print(f"Failed: {result['error']}")
+        """
+        try:
+            # Log the change request
+            self.__logger.info(f'Setting advanced property {propertyName} to {value}')
+            
+            # Convert string to bytes for text properties if needed
+            if isinstance(value, str) and not isinstance(value, bytes):
+                value = value.encode('utf-8')
+            
+            # Use safe camera action to handle acquisition stop/restart if needed
+            result_value = None
+            def set_property():
+                nonlocal result_value
+                result_value = self._camera.setPropertyValue(propertyName, value)
+            
+            self._performSafeCameraAction(set_property)
+            
+            # Log success
+            self.__logger.info(f'Successfully set {propertyName} to {result_value}')
+            
+            return {
+                'success': True,
+                'value': result_value,
+                'error': None
+            }
+        
+        except Exception as e:
+            # Log failure
+            error_msg = str(e)
+            self.__logger.error(f'Failed to set {propertyName} to {value}: {error_msg}')
+            
+            return {
+                'success': False,
+                'value': None,
+                'error': error_msg
+            }
 
     def startAcquisition(self):
         self._camera.startAcquisition()
@@ -247,9 +309,11 @@ class HamamatsuManager(DetectorManager):
             from imswitch.imcontrol.model.interfaces.hamamatsu import HamamatsuCameraMR
             self.__logger.debug(f'Trying to initialize Hamamatsu camera {cameraId}')
             camera = HamamatsuCameraMR(cameraId)
-        except Exception:
-            self.__logger.warning(f'Failed to initialize Hamamatsu camera {cameraId},'
-                                  f' loading mocker')
+        except Exception as e:
+            self.__logger.warning(
+                f'Failed to initialize Hamamatsu camera {cameraId}, loading mocker: {e}',
+                exc_info=True
+            )
             from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
             camera = MockHamamatsu()
 

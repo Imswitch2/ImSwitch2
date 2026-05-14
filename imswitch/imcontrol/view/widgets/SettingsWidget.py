@@ -141,16 +141,23 @@ class CamParamTree(ParameterTree):
 
 class AdvancedPropertiesWidget(QtWidgets.QWidget):
     """
-    Read-only widget displaying advanced camera properties.
+    Widget for displaying and editing advanced camera properties.
     
-    Shows a table with property metadata: name, value, R/W status, range, and options.
-    Includes a Refresh button to re-query properties from the camera.
+    Shows a table with property metadata: name, current value, edit control, and Apply button.
+    For writable properties, provides appropriate edit controls:
+    - QDoubleSpinBox/QSpinBox for numeric properties with ranges
+    - QComboBox for MODE properties with text options
+    - Read-only display for non-writable properties
     """
     
     sigRefreshClicked = QtCore.Signal()
+    sigPropertyChangeRequested = QtCore.Signal(str, object)  # (propertyName, newValue)
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        
+        # Store current properties data
+        self._properties = []
         
         # Create layout
         layout = QtWidgets.QVBoxLayout()
@@ -158,8 +165,8 @@ class AdvancedPropertiesWidget(QtWidgets.QWidget):
         
         # Info label
         infoLabel = QtWidgets.QLabel(
-            '<i>Advanced camera properties (read-only). '
-            'Use Refresh to update values from camera.</i>'
+            '<i>Advanced camera properties. Writable properties can be edited. '
+            'Click Apply to send changes to camera. Use Refresh to update current values.</i>'
         )
         infoLabel.setWordWrap(True)
         layout.addWidget(infoLabel)
@@ -170,42 +177,141 @@ class AdvancedPropertiesWidget(QtWidgets.QWidget):
         
         # Properties table
         self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(['Property', 'Value', 'Access', 'Range', 'Options'])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(['Property', 'Current Value', 'New Value', 'Apply', 'Range/Options', 'Access'])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(False)  # Disable sorting because we have widgets in cells
         
         # Set column widths
         self.table.setColumnWidth(0, 200)  # Property name
-        self.table.setColumnWidth(1, 100)  # Value
-        self.table.setColumnWidth(2, 60)   # Access (R/W)
-        self.table.setColumnWidth(3, 150)  # Range
+        self.table.setColumnWidth(1, 100)  # Current value
+        self.table.setColumnWidth(2, 150)  # New value (edit control)
+        self.table.setColumnWidth(3, 60)   # Apply button
+        self.table.setColumnWidth(4, 200)  # Range/Options info
         
         layout.addWidget(self.table)
         
         # Connect signals
         self.refreshButton.clicked.connect(self.sigRefreshClicked)
     
+    def _createEditWidget(self, prop):
+        """
+        Create appropriate edit widget based on property type and metadata.
+        
+        Args:
+            prop: Property dict with metadata
+            
+        Returns:
+            QWidget or None: Edit widget for writable properties, None for read-only
+        """
+        if not prop.get('writable', False) or prop.get('error'):
+            return None
+        
+        prop_type = prop.get('type', 'NONE')
+        text_options = prop.get('text_options')
+        prop_range = prop.get('range')
+        current_value = prop.get('value')
+        
+        # MODE properties with text options -> QComboBox
+        if text_options:
+            combo = QtWidgets.QComboBox()
+            combo.setObjectName(prop.get('name', ''))
+            
+            # Add options to combo box
+            for text_key, numeric_value in text_options.items():
+                # Decode bytes to string
+                if isinstance(text_key, bytes):
+                    display_text = text_key.decode('utf-8', errors='replace')
+                else:
+                    display_text = str(text_key)
+                combo.addItem(display_text, numeric_value)
+            
+            # Set current value if available
+            if current_value is not None:
+                index = combo.findData(current_value)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            
+            return combo
+        
+        # Numeric properties with range -> Spinbox
+        elif prop_range and len(prop_range) == 2:
+            min_val, max_val = prop_range
+            
+            # Check if values are integers
+            is_integer = (
+                isinstance(current_value, int) and
+                isinstance(min_val, (int, float)) and
+                isinstance(max_val, (int, float)) and
+                abs(min_val - int(min_val)) < 1e-9 and
+                abs(max_val - int(max_val)) < 1e-9 and
+                abs(max_val - min_val) < 1000000  # Reasonable range for spinbox
+            )
+            
+            if is_integer:
+                # Use QSpinBox for integer values
+                spinbox = QtWidgets.QSpinBox()
+                spinbox.setRange(int(min_val), int(max_val))
+                if current_value is not None:
+                    spinbox.setValue(int(current_value))
+                spinbox.setObjectName(prop.get('name', ''))
+                return spinbox
+            else:
+                # Use QDoubleSpinBox for float values
+                spinbox = QtWidgets.QDoubleSpinBox()
+                spinbox.setRange(min_val, max_val)
+                
+                # Set reasonable decimals based on range
+                range_magnitude = max_val - min_val
+                if range_magnitude > 100:
+                    spinbox.setDecimals(2)
+                elif range_magnitude > 1:
+                    spinbox.setDecimals(4)
+                else:
+                    spinbox.setDecimals(6)
+                
+                # Set step size
+                if range_magnitude > 100:
+                    spinbox.setSingleStep(1.0)
+                elif range_magnitude > 1:
+                    spinbox.setSingleStep(0.1)
+                else:
+                    spinbox.setSingleStep(range_magnitude / 100)
+                
+                if current_value is not None:
+                    spinbox.setValue(float(current_value))
+                
+                spinbox.setObjectName(prop.get('name', ''))
+                return spinbox
+        
+        # Unknown writable property -> Keep read-only for safety
+        return None
+    
     def setProperties(self, properties):
         """
-        Populate table with property information.
+        Populate table with property information and edit controls.
         
         Args:
             properties: List of property dicts from manager.getAdvancedPropertyInfo()
         """
-        self.table.setSortingEnabled(False)  # Disable sorting while updating
+        self._properties = properties
         self.table.setRowCount(len(properties))
         
         for row, prop in enumerate(properties):
-            # Property name
-            nameItem = QtWidgets.QTableWidgetItem(prop.get('name', ''))
+            prop_name = prop.get('name', '')
+            value = prop.get('value')
+            writable = prop.get('writable', False)
+            readable = prop.get('readable', False)
+            error = prop.get('error')
+            
+            # Column 0: Property name
+            nameItem = QtWidgets.QTableWidgetItem(prop_name)
             self.table.setItem(row, 0, nameItem)
             
-            # Current value
-            value = prop.get('value')
+            # Column 1: Current value
             if value is None:
                 valueStr = '—'
             elif isinstance(value, float):
@@ -215,9 +321,62 @@ class AdvancedPropertiesWidget(QtWidgets.QWidget):
             valueItem = QtWidgets.QTableWidgetItem(valueStr)
             self.table.setItem(row, 1, valueItem)
             
-            # Access (R/W)
-            readable = prop.get('readable', False)
-            writable = prop.get('writable', False)
+            # Column 2: Edit widget (for writable properties)
+            if writable and not error:
+                edit_widget = self._createEditWidget(prop)
+                if edit_widget:
+                    self.table.setCellWidget(row, 2, edit_widget)
+                else:
+                    # Writable but no safe widget available
+                    noEditItem = QtWidgets.QTableWidgetItem('(manual edit unsafe)')
+                    noEditItem.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))
+                    self.table.setItem(row, 2, noEditItem)
+            else:
+                # Read-only
+                readOnlyItem = QtWidgets.QTableWidgetItem('—')
+                readOnlyItem.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))
+                self.table.setItem(row, 2, readOnlyItem)
+            
+            # Column 3: Apply button (for writable properties with edit widget)
+            if writable and not error and self.table.cellWidget(row, 2):
+                applyBtn = guitools.BetterPushButton('Apply')
+                applyBtn.setMaximumWidth(60)
+                # Connect with lambda that captures current row
+                applyBtn.clicked.connect(
+                    lambda checked=False, r=row: self._onApplyClicked(r)
+                )
+                self.table.setCellWidget(row, 3, applyBtn)
+            else:
+                emptyItem = QtWidgets.QTableWidgetItem('')
+                self.table.setItem(row, 3, emptyItem)
+            
+            # Column 4: Range/Options info
+            text_options = prop.get('text_options')
+            prop_range = prop.get('range')
+            
+            if text_options:
+                # Show text options
+                options = []
+                for key in list(text_options.keys())[:3]:
+                    if isinstance(key, bytes):
+                        options.append(key.decode('utf-8', errors='replace'))
+                    else:
+                        options.append(str(key))
+                
+                if len(text_options) > 3:
+                    infoStr = ', '.join(options) + f'... (+{len(text_options)-3} more)'
+                else:
+                    infoStr = ', '.join(options)
+            elif prop_range and len(prop_range) == 2:
+                # Show numeric range
+                infoStr = f'[{prop_range[0]:.6g}, {prop_range[1]:.6g}]'
+            else:
+                infoStr = '—'
+            
+            infoItem = QtWidgets.QTableWidgetItem(infoStr)
+            self.table.setItem(row, 4, infoItem)
+            
+            # Column 5: Access (R/W)
             access = ''
             if readable:
                 access += 'R'
@@ -232,48 +391,47 @@ class AdvancedPropertiesWidget(QtWidgets.QWidget):
                 accessItem.setForeground(QtGui.QBrush(QtGui.QColor(0, 100, 0)))  # Dark green
                 accessItem.setFont(QtGui.QFont('', -1, QtGui.QFont.Bold))
             
-            self.table.setItem(row, 2, accessItem)
-            
-            # Range
-            prop_range = prop.get('range')
-            if prop_range and len(prop_range) == 2:
-                rangeStr = f'[{prop_range[0]:.6g}, {prop_range[1]:.6g}]'
-            else:
-                rangeStr = '—'
-            rangeItem = QtWidgets.QTableWidgetItem(rangeStr)
-            self.table.setItem(row, 3, rangeItem)
-            
-            # Text options
-            text_options = prop.get('text_options')
-            if text_options:
-                # Convert bytes keys to strings and show first few options
-                options = []
-                for key in list(text_options.keys())[:3]:
-                    if isinstance(key, bytes):
-                        options.append(key.decode('utf-8', errors='replace'))
-                    else:
-                        options.append(str(key))
-                
-                if len(text_options) > 3:
-                    optionsStr = ', '.join(options) + f'... (+{len(text_options)-3} more)'
-                else:
-                    optionsStr = ', '.join(options)
-            else:
-                optionsStr = '—'
-            optionsItem = QtWidgets.QTableWidgetItem(optionsStr)
-            self.table.setItem(row, 4, optionsItem)
+            self.table.setItem(row, 5, accessItem)
             
             # Mark rows with errors
-            error = prop.get('error')
             if error:
-                for col in range(5):
+                for col in range(6):
                     item = self.table.item(row, col)
                     if item:
                         item.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))  # Gray out
                         item.setToolTip(f'Error: {error}')
         
-        self.table.setSortingEnabled(True)  # Re-enable sorting
         self.table.resizeRowsToContents()
+    
+    def _onApplyClicked(self, row):
+        """
+        Handle Apply button click for a specific property.
+        
+        Args:
+            row: Table row index
+        """
+        if row >= len(self._properties):
+            return
+        
+        prop = self._properties[row]
+        prop_name = prop.get('name', '')
+        
+        # Get the edit widget
+        edit_widget = self.table.cellWidget(row, 2)
+        if not edit_widget:
+            return
+        
+        # Extract value from edit widget
+        if isinstance(edit_widget, QtWidgets.QComboBox):
+            # Get the data (numeric value) from selected item
+            new_value = edit_widget.currentData()
+        elif isinstance(edit_widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+            new_value = edit_widget.value()
+        else:
+            return
+        
+        # Emit signal with property name and new value
+        self.sigPropertyChangeRequested.emit(prop_name, new_value)
     
     def showMessage(self, message):
         """
