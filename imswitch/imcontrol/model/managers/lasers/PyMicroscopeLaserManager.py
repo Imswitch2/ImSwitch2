@@ -18,6 +18,10 @@ class PyMicroscopeLaserManager(LaserManager):
         self.__port = laserInfo.managerProperties["digitalPorts"]
         self.__driver = str(laserInfo.managerProperties["pyMicroscopeDriver"])
         driver = self.__driver.split(".")
+        if len(driver) != 2:
+            raise ValueError(
+                f"pyMicroscopeDriver must be in format 'module.class', got: '{self.__driver}'"
+            )
         package = importlib.import_module(
             pythontools.joinModulePath("microscope.lights", driver[0])
         )
@@ -34,6 +38,9 @@ class PyMicroscopeLaserManager(LaserManager):
         # so we divide for the max power to obtain
         # the actual percentage to which we set
         # the output power
+        if self.__maxPower == 0:
+            self.__logger.error(f"Cannot set power: maxPower is zero")
+            return
         self.__laser.power = float(value) / self.__maxPower
     
     def finalize(self) -> None:
