@@ -91,7 +91,10 @@ class LineProfileWidget(Widget):
                 if profile is not None:
                     self._ax.plot(np.arange(len(profile)), profile,
                                   color='red', linewidth=1.5)
-        self._figure.tight_layout(pad=1.5)
+        try:
+            self._figure.tight_layout(pad=1.5)
+        except Exception:
+            pass
         self._canvas.draw()
 
     def _computeLineProfile(self, image_data, r0, c0, r1, c1, n=1):
@@ -203,7 +206,10 @@ class LineProfileWidget(Widget):
                             edgecolor=self._GRID, labelcolor=self._FG,
                             handlelength=1.2, borderpad=0.5)
 
-        self._figure.tight_layout(pad=1.5)
+        try:
+            self._figure.tight_layout(pad=1.5)
+        except Exception:
+            pass
         self._canvas.draw()
 
     # ------------------------------------------------------------------

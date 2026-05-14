@@ -1436,7 +1436,7 @@ class NapariCrosshairOverlay:
             return
         self._layer = self._viewer.add_shapes(
             name='_crosshair_overlay', edge_color=self._color,
-            face_color=[0, 0, 0, 0], edge_width=2)
+            face_color=[0, 0, 0, 0], edge_width=3)
         self._layer.mode = 'pan_zoom'
 
     def _redraw(self):
@@ -1448,7 +1448,7 @@ class NapariCrosshairOverlay:
         self._layer.add_lines(
             [[[cy - span, cx], [cy + span, cx]],
              [[cy, cx - span], [cy, cx + span]]],
-            edge_color=self._color, edge_width=2)
+            edge_color=self._color, edge_width=3)
 
     def place_at(self, row, col):
         """Position the crosshair at (row, col) in image data coordinates."""
@@ -1498,7 +1498,7 @@ class NapariGridOverlay:
             return
         self._layer = self._viewer.add_shapes(
             name='_grid_overlay', edge_color=self._color,
-            face_color=[0, 0, 0, 0], edge_width=2)
+            face_color=[0, 0, 0, 0], edge_width=3)
         self._layer.mode = 'pan_zoom'
 
     def _redraw(self):
@@ -1508,7 +1508,7 @@ class NapariGridOverlay:
             lines.append([[f * H, 0], [f * H, W]])
             lines.append([[0, f * W], [H, f * W]])
         self._layer.data = []
-        self._layer.add_lines(lines, edge_color=self._color, edge_width=2)
+        self._layer.add_lines(lines, edge_color=self._color, edge_width=3)
 
     def update(self, shape):
         self._shape = np.array(shape, dtype=float)
