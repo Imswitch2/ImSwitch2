@@ -1,7 +1,5 @@
 from imswitch.imcommon.model import initLogger
 from .PositionerManager import PositionerManager
-from thorlabs_apt_device.devices.bsc import BSC
-from serial.serialutil import SerialException
 import numpy as np
 
 STEPS_PER_REV = 409600
@@ -20,11 +18,20 @@ class BSC203StageManager(PositionerManager):
         self.__logger = initLogger(self, instanceName=name)
         home = False
         port = 'COM9'
+        
         try:
+            from thorlabs_apt_device.devices.bsc import BSC
+            from serial.serialutil import SerialException
             self.dev = BSC(serial_port=port, vid=None, pid=None, manufacturer=None, product=None, serial_number=None,
                            location=None, home=home, x=3, invert_direction_logic=False, swap_limit_switches=True)
-        except SerialException:
-            self.__logger.debug('Could not initialize BSC203 motorized stage, might not be switched on.')
+        except ImportError as e:
+            self.__logger.warning(
+                f'Failed to import thorlabs_apt_device: {e}. '
+                'Install with: pip install thorlabs_apt_device'
+            )
+            self.dev = None
+        except Exception as e:
+            self.__logger.debug(f'Could not initialize BSC203 motorized stage: {e}')
             self.dev = None
         if home:
             self.__logger.debug('Is homing')
