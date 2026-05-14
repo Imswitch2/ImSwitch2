@@ -26,7 +26,19 @@ class ImageWidget(QtWidgets.QWidget):
         self.toolManager = naparitools.ViewerToolManager(self.napariViewer)
 
         self.viewCtrlLayout = QtWidgets.QVBoxLayout()
-        self.viewCtrlLayout.addWidget(self.napariViewer.get_widget())
+        self.viewCtrlLayout.setContentsMargins(0, 0, 0, 0)
+
+        nw = self.napariViewer.get_widget()
+        # Napari's _qt_window is a QMainWindow that restores its own saved size
+        # from preferences and has a large minimumSizeHint() from its dock layout.
+        # Clear the hard minimum so it doesn't force the parent window taller
+        # than the available screen area when embedded.
+        nw.setMinimumSize(0, 0)
+        nw.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding,
+        )
+        self.viewCtrlLayout.addWidget(nw)
         self.setLayout(self.viewCtrlLayout)
 
     def setLiveViewLayers(self, names):

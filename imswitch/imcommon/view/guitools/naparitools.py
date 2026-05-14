@@ -125,13 +125,20 @@ class NapariBaseWidget(QtWidgets.QWidget):
         return widget
 
     def addItemToViewer(self, item):
-        _canvas = self.viewer.window.qt_viewer.canvas
-        _view = getattr(_canvas, 'view', None) or getattr(self.viewer.window.qt_viewer, 'view', None)
-        item.attach(self.viewer,
-                    canvas=_canvas,
-                    view=_view,
-                    parent=_view.scene,
-                    order=1e6 + 8000)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', FutureWarning)
+                warnings.simplefilter('ignore', DeprecationWarning)
+                _canvas = self.viewer.window.qt_viewer.canvas
+                _view = (getattr(_canvas, 'view', None)
+                         or getattr(self.viewer.window.qt_viewer, 'view', None))
+            item.attach(self.viewer,
+                        canvas=_canvas,
+                        view=_view,
+                        parent=_view.scene,
+                        order=1e6 + 8000)
+        except AttributeError:
+            pass
 
 
 class NapariUpdateLevelsWidget(NapariBaseWidget):

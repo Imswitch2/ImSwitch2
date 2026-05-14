@@ -73,38 +73,14 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.cwidget.setLayout(layout)
         self.setCentralWidget(self.cwidget)
 
-        # Dock area
-        rightDockInfos = {
-            'Autofocus': _DockInfo(name='Autofocus', yPosition=0),
-            'FocusLock': _DockInfo(name='Focus Lock', yPosition=0),
-            'EtSTED': _DockInfo(name='EtSTED', yPosition=0),
-            'EtMonalisa': _DockInfo(name='EtMonalisa', yPosition=0),
-            'Positioner': _DockInfo(name='Positioner', yPosition=0),
-            'Laser': _DockInfo(name='Laser Control', yPosition=0),
-            'Rotator': _DockInfo(name='Rotator', yPosition=1),
-            'MotCorr': _DockInfo(name='Motorized Correction Collar', yPosition=1),
-            'SLMs': _DockInfo(name='SLMs', yPosition=2),
-            'Scan': _DockInfo(name='Scan', yPosition=2),
-            'RotationScan': _DockInfo(name='RotationScan', yPosition=2),
-            'BeadRec': _DockInfo(name='Bead Rec', yPosition=3),
-            'AlignmentLine': _DockInfo(name='Alignment Tool', yPosition=3),
-            'AlignAverage': _DockInfo(name='Axial Alignment Tool', yPosition=3),
-            'AlignXY': _DockInfo(name='Rotational Alignment Tool', yPosition=3),
-            'ULenses': _DockInfo(name='uLenses Tool', yPosition=3),
-            'FFT': _DockInfo(name='FFT Tool', yPosition=3),
-            'Watcher': _DockInfo(name='File Watcher', yPosition=3),
-            'Tiling': _DockInfo(name='Tiling', yPosition=3),
-            'Et': _DockInfo(name='Et', yPosition=3)
-        }
-        leftDockInfos = {
-            'LeicaStand': _DockInfo(name='Stand', yPosition=0),
-            'Settings': _DockInfo(name='Detector Settings', yPosition=1),
-            'View': _DockInfo(name='Image Controls', yPosition=2),
-            'ViewerTools': _DockInfo(name='Viewer Tools', yPosition=3),
-            'LineProfile': _DockInfo(name='Line Profile', yPosition=4),
-            'Recording': _DockInfo(name='Recording', yPosition=5),
-            'Console': _DockInfo(name='Console', yPosition=6)
-        }
+        # Dock area — use layout from setup JSON when present, else the defaults.
+        if viewSetupInfo.widgetLayout is None:
+            rightDockInfos = _DEFAULT_RIGHT_DOCK_INFOS
+            leftDockInfos = _DEFAULT_LEFT_DOCK_INFOS
+        else:
+            rightDockInfos = _build_dock_infos_from_layout(viewSetupInfo.widgetLayout.right)
+            leftDockInfos = _build_dock_infos_from_layout(viewSetupInfo.widgetLayout.left)
+
         otherDockKeys = ['Image']
         allDockKeys = list(rightDockInfos.keys()) + list(leftDockInfos.keys()) + otherDockKeys
 
@@ -149,6 +125,11 @@ class ImConMainView(QtWidgets.QMainWindow):
             rightDocks[-1].setStretch(1, 5)
         if 'Image' in self.docks:
             self.docks['Image'].setStretch(16, 1)
+
+        # Reset to a compact size so this widget's size hint doesn't push
+        # MultiModuleWindow below the screen bottom when embedded.
+        # setStretch ratios are proportional so they survive the resize.
+        self.resize(800, 600)
 
     def addShortcuts(self, shortcuts):
         for s in shortcuts.values():
@@ -199,6 +180,90 @@ class ImConMainView(QtWidgets.QMainWindow):
 class _DockInfo:
     name: str
     yPosition: int
+
+
+# Display names for every known widget key.  Used when widgetLayout is present
+# in the setup JSON so the dock title doesn't have to be specified separately.
+# Falls back to the raw key name for unknown/future widgets.
+_DOCK_DISPLAY_NAMES = {
+    'Autofocus': 'Autofocus',
+    'FocusLock': 'Focus Lock',
+    'EtSTED': 'EtSTED',
+    'EtMonalisa': 'EtMonalisa',
+    'Positioner': 'Positioner',
+    'Laser': 'Laser Control',
+    'Rotator': 'Rotator',
+    'MotCorr': 'Motorized Correction Collar',
+    'SLMs': 'SLMs',
+    'SLM': 'SLM',
+    'Scan': 'Scan',
+    'RotationScan': 'RotationScan',
+    'BeadRec': 'Bead Rec',
+    'AlignmentLine': 'Alignment Tool',
+    'AlignAverage': 'Axial Alignment Tool',
+    'AlignXY': 'Rotational Alignment Tool',
+    'ULenses': 'uLenses Tool',
+    'FFT': 'FFT Tool',
+    'Watcher': 'File Watcher',
+    'Tiling': 'Tiling',
+    'BFTimelapse': 'BFTimelapse',
+    'Et': 'Et',
+    'LeicaStand': 'Stand',
+    'Settings': 'Detector Settings',
+    'View': 'Image Controls',
+    'ViewerTools': 'Viewer Tools',
+    'LineProfile': 'Line Profile',
+    'Recording': 'Recording',
+    'Console': 'Console',
+    'Image': 'Image Display',
+}
+
+# Default dock layout, mirroring the previous hard-coded behaviour exactly.
+# Used whenever widgetLayout is absent from the setup JSON.
+_DEFAULT_RIGHT_DOCK_INFOS = {
+    'Autofocus':     _DockInfo(name='Autofocus',                     yPosition=0),
+    'FocusLock':     _DockInfo(name='Focus Lock',                    yPosition=0),
+    'EtSTED':        _DockInfo(name='EtSTED',                        yPosition=0),
+    'EtMonalisa':    _DockInfo(name='EtMonalisa',                    yPosition=0),
+    'Positioner':    _DockInfo(name='Positioner',                    yPosition=0),
+    'Laser':         _DockInfo(name='Laser Control',                 yPosition=0),
+    'Rotator':       _DockInfo(name='Rotator',                       yPosition=1),
+    'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
+    'SLMs':          _DockInfo(name='SLMs',                          yPosition=2),
+    'Scan':          _DockInfo(name='Scan',                          yPosition=2),
+    'RotationScan':  _DockInfo(name='RotationScan',                  yPosition=2),
+    'BeadRec':       _DockInfo(name='Bead Rec',                      yPosition=3),
+    'AlignmentLine': _DockInfo(name='Alignment Tool',                yPosition=3),
+    'AlignAverage':  _DockInfo(name='Axial Alignment Tool',          yPosition=3),
+    'AlignXY':       _DockInfo(name='Rotational Alignment Tool',     yPosition=3),
+    'ULenses':       _DockInfo(name='uLenses Tool',                  yPosition=3),
+    'FFT':           _DockInfo(name='FFT Tool',                      yPosition=3),
+    'Watcher':       _DockInfo(name='File Watcher',                  yPosition=3),
+    'Tiling':        _DockInfo(name='Tiling',                        yPosition=3),
+    'Et':            _DockInfo(name='Et',                            yPosition=3),
+}
+_DEFAULT_LEFT_DOCK_INFOS = {
+    'LeicaStand':  _DockInfo(name='Stand',              yPosition=0),
+    'Settings':    _DockInfo(name='Detector Settings',  yPosition=1),
+    'View':        _DockInfo(name='Image Controls',     yPosition=2),
+    'ViewerTools': _DockInfo(name='Viewer Tools',       yPosition=3),
+    'LineProfile': _DockInfo(name='Line Profile',       yPosition=4),
+    'Recording':   _DockInfo(name='Recording',          yPosition=5),
+    'Console':     _DockInfo(name='Console',            yPosition=6),
+}
+
+
+def _build_dock_infos_from_layout(tab_groups):
+    """Convert a list-of-tab-groups into a {key: _DockInfo} dict.
+
+    Each inner list in *tab_groups* is a tab group (same yPosition).
+    Successive inner lists get increasing yPositions so they stack vertically.
+    """
+    result = {}
+    for y_pos, group in enumerate(tab_groups):
+        for key in group:
+            result[key] = _DockInfo(name=_DOCK_DISPLAY_NAMES.get(key, key), yPosition=y_pos)
+    return result
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

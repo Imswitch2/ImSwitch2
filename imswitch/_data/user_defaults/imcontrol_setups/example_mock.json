@@ -41,5 +41,14 @@
         "Image",
         "ViewerTools",
         "LineProfile"
-    ]
+    ],
+    "widgetLayout": {
+        "right": [],
+        "left": [
+            ["Settings"],
+            ["View"],
+            ["ViewerTools", "LineProfile"],
+            ["Recording"]
+        ]
+    }
 }

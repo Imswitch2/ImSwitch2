@@ -155,8 +155,19 @@ class MultiModuleWindow(QtWidgets.QMainWindow):
             # Show tabs
             self.setCentralWidget(self.moduleTabs)
 
-        self.showMaximized()
         super().show()
+
+        # showMaximized() uses QScreen::geometry() on macOS which includes the
+        # menu-bar area, making the window slightly taller than the available
+        # space.  Using availableGeometry() + move/resize mirrors exactly what
+        # the native macOS zoom button does and avoids the bottom-clipping.
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            self.move(avail.topLeft())
+            self.resize(avail.size())
+        else:
+            self.showMaximized()
 
     def closeEvent(self, event):
         QtWidgets.QApplication.instance().quit()

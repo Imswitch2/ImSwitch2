@@ -26,6 +26,38 @@ class LaserPresetInfo:
 
 
 @dataclass
+class WidgetLayoutInfo:
+    """Optional dock layout override stored in the hardware config JSON.
+
+    Each inner list is a *tab group* (widgets share one dock row and appear as
+    tabs).  Successive inner lists are stacked vertically.  When this field is
+    absent from the JSON the application falls back to its built-in default
+    layout, so all legacy configs continue to work without change.
+
+    Example::
+
+        "widgetLayout": {
+            "right": [
+                ["Positioner", "Laser"],
+                ["Scan"],
+                ["Tiling", "BeadRec"]
+            ],
+            "left": [
+                ["Settings"],
+                ["View"],
+                ["Recording"]
+            ]
+        }
+    """
+
+    right: List[List[str]] = field(default_factory=list)
+    """ Tab-grouped widget keys for the right panel. """
+
+    left: List[List[str]] = field(default_factory=list)
+    """ Tab-grouped widget keys for the left panel. """
+
+
+@dataclass
 class ViewSetupInfo(SetupInfo):
     """ This is the object represented by the hardware configuration JSON file.
     All fields are optional, unless explicitly otherwise specified. """
@@ -41,6 +73,11 @@ class ViewSetupInfo(SetupInfo):
 
     defaultLaserPresetForScan: Optional[str] = field(default_factory=lambda: None)
     """ Default laser preset for scanning. """
+
+    widgetLayout: Optional['WidgetLayoutInfo'] = field(default_factory=lambda: None)
+    """ Optional dock layout override.  When ``null`` or absent, the built-in
+    default layout is used (matches current hard-coded behaviour).  See
+    :class:`WidgetLayoutInfo` for the schema. """
 
     availableWidgets: Union[List[str], bool] = field(default_factory=list)
     """ Which widgets to load. The following values are possible to include

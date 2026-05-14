@@ -12,6 +12,7 @@ import colorsys
 import copy
 import json
 import os
+import re
 import sys
 from pathlib import Path
 import glob
@@ -180,6 +181,49 @@ def _collect_daq_channels(data: dict) -> dict:
 
 
 # =============================================================================
+# Theme helpers
+# =============================================================================
+def is_dark_mode() -> bool:
+    """Check if the application is in dark mode based on palette lightness."""
+    app = QApplication.instance()
+    if app is None:
+        return False
+    return app.palette().window().color().lightness() < 128
+
+
+def get_themed_colors(is_dark: bool):
+    """Return dict of colors appropriate for current theme."""
+    if is_dark:
+        return {
+            'card_bg': '#2B2B2B',
+            'card_bg_selected': '#1E3A52',
+            'card_bg_hover': '#3C3F41',
+            'card_border': '#3C3F41',
+            'header_bg': '#252525',
+            'extras_bar_bg': '#1E1E1E',
+            'extras_bar_border': '#3C3F41',
+            'chip_bg': '#3C3F41',
+            'chip_border': '#555555',
+            'button_bg': '#3C3F41',
+            'button_bg_hover': '#4C5F6B',
+        }
+    else:
+        return {
+            'card_bg': '#F8F8F8',
+            'card_bg_selected': '#EEF4FF',
+            'card_bg_hover': '#EFF6FF',
+            'card_border': '#DDD',
+            'header_bg': '#F0F4F8',
+            'extras_bar_bg': '#F5F5F5',
+            'extras_bar_border': '#DDD',
+            'chip_bg': '#E0E8F0',
+            'chip_border': '#B0C4D8',
+            'button_bg': '#EEF2F6',
+            'button_bg_hover': '#DDE8F2',
+        }
+
+
+# =============================================================================
 # DeviceCard
 # =============================================================================
 class DeviceCard(QFrame):
@@ -258,16 +302,19 @@ class DeviceCard(QFrame):
     def _apply_style(self, selected: bool):
         color = CAT_COLOR.get(self.category, "#888")
         bw = "5px" if selected else "3px"
-        bg = "#EEF4FF" if selected else "#F8F8F8"
+        # Get themed colors based on current palette
+        dark = is_dark_mode()
+        colors = get_themed_colors(dark)
+        bg = colors['card_bg_selected'] if selected else colors['card_bg']
         self.setStyleSheet(f"""
             DeviceCard {{
                 background: {bg};
-                border: 1px solid #DDD;
+                border: 1px solid {colors['card_border']};
                 border-left: {bw} solid {color};
                 border-radius: 4px;
             }}
             DeviceCard:hover {{
-                background: #EFF6FF;
+                background: {colors['card_bg_hover']};
                 border-left: 5px solid {color};
             }}
         """)
@@ -538,7 +585,8 @@ class PropertyEditor(QWidget):
 
         # ── Header ──
         hdr = QFrame()
-        hdr.setStyleSheet("background:#F0F4F8; border-radius:4px;")
+        colors = get_themed_colors(is_dark_mode())
+        hdr.setStyleSheet(f"background:{colors['header_bg']}; border-radius:4px;")
         hdr_lay = QVBoxLayout(hdr)
         hdr_lay.setContentsMargins(8, 6, 8, 6)
         hdr_lay.setSpacing(4)
@@ -957,46 +1005,145 @@ class JsonEditorDialog(QDialog):
 # =============================================================================
 # WidgetPickerDialog – checkbox-based widget selector
 # =============================================================================
-WIDGET_GROUPS = {
-    "Core": [
-        ("Image",       "Main image display"),
-        ("Settings",    "Detector settings & ROI"),
-        ("View",        "Image controls (LUT, zoom)"),
-        ("Recording",   "Recording panel"),
-        ("ViewerTools", "Napari viewer tools"),
-        ("LineProfile",  "Line profile tool"),
-        ("Console",     "Python scripting console"),
-    ],
-    "Control": [
-        ("Laser",        "Laser / LED power control"),
-        ("Positioner",   "Stage positioner"),
-        ("Scan",         "Scan widget"),
-        ("Rotator",      "Rotator control"),
-        ("RotationScan", "Rotation scan"),
-        ("MotCorr",      "Leica motorized correction collar"),
-    ],
-    "Microscope": [
-        ("FocusLock",  "IR focus lock"),
-        ("Autofocus",  "Software autofocus"),
-        ("LeicaStand", "Leica stand control"),
-    ],
-    "Analysis": [
-        ("FFT",            "Live FFT tool"),
-        ("BeadRec",        "Bead reconstruction"),
-        ("AlignAverage",   "Axial alignment tool"),
-        ("AlignXY",        "Rotational alignment tool"),
-        ("AlignmentLine",  "Line alignment overlay"),
-        ("ULenses",        "uLenses tool"),
-        ("BFTimelapse",    "Brightfield timelapse"),
-    ],
-    "Advanced": [
-        ("SLMs",       "SLM control"),
-        ("EtSTED",     "EtSTED widget"),
-        ("EtMonalisa", "EtMonalisa widget"),
-        ("Tiling",     "Spiral tiling scan"),
-        ("Watcher",    "File watcher"),
-    ],
-}
+
+def _load_widget_registry() -> dict:
+    """Dynamically load widget registry from ViewSetupInfo.py or fall back to hardcoded list.
+    
+    Parses the availableWidgets docstring from ViewSetupInfo.py to extract widget
+    names and descriptions. Uses _WIDGET_GROUP_MAP to assign widgets to categories.
+    Unknown widgets are placed in an "Other" group. Falls back to hardcoded values
+    if ViewSetupInfo.py cannot be found.
+    
+    Returns:
+        dict: Widget groups in format {group_name: [(widget_name, description), ...]}
+    """
+    # Map widget names to their display groups
+    _WIDGET_GROUP_MAP: dict[str, str] = {
+        # Core
+        "Image": "Core",
+        "Settings": "Core",
+        "View": "Core",
+        "Recording": "Core",
+        "ViewerTools": "Core",
+        "LineProfile": "Core",
+        "Console": "Core",
+        # Control
+        "Laser": "Control",
+        "Positioner": "Control",
+        "Scan": "Control",
+        "Rotator": "Control",
+        "RotationScan": "Control",
+        "MotCorr": "Control",
+        # Microscope
+        "FocusLock": "Microscope",
+        "Autofocus": "Microscope",
+        "LeicaStand": "Microscope",
+        # Analysis
+        "FFT": "Analysis",
+        "BeadRec": "Analysis",
+        "AlignAverage": "Analysis",
+        "AlignXY": "Analysis",
+        "AlignmentLine": "Analysis",
+        "ULenses": "Analysis",      # Code uses ULenses (capital U)
+        "uLenses": "Analysis",      # Docstring uses uLenses (lowercase u)
+        "BFTimelapse": "Analysis",
+        # Advanced
+        "SLMs": "Advanced",
+        "SLM": "Advanced",          # Docstring uses SLM (singular)
+        "EtSTED": "Advanced",
+        "EtMonalisa": "Advanced",
+        "Tiling": "Advanced",
+        "Watcher": "Advanced",
+    }
+    
+    # Try to find ViewSetupInfo.py relative to this script
+    script_dir = Path(__file__).resolve().parent
+    view_setup_path = script_dir / ".." / "imswitch" / "imcontrol" / "view" / "guitools" / "ViewSetupInfo.py"
+    
+    widgets_found = {}  # {widget_name: description}
+    
+    if view_setup_path.exists():
+        try:
+            with open(view_setup_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            # Find the availableWidgets field docstring
+            # Pattern: - ``WidgetName`` (description text)
+            pattern = r'-\s+``(\w+)``\s+\(([^)]+)\)'
+            matches = re.findall(pattern, content)
+            
+            for widget_name, description in matches:
+                # Clean up description (collapse whitespace, remove newlines, capitalize first letter)
+                desc = ' '.join(description.split())
+                if desc and desc[0].islower():
+                    desc = desc[0].upper() + desc[1:]
+                widgets_found[widget_name] = desc
+        except Exception:
+            pass  # Fall through to hardcoded fallback
+    
+    # If we found widgets, build groups dynamically
+    if widgets_found:
+        groups = {
+            "Core": [],
+            "Control": [],
+            "Microscope": [],
+            "Analysis": [],
+            "Advanced": [],
+            "Other": [],
+        }
+        
+        for widget_name, description in sorted(widgets_found.items()):
+            group = _WIDGET_GROUP_MAP.get(widget_name, "Other")
+            groups[group].append((widget_name, description))
+        
+        # Remove empty groups
+        groups = {k: v for k, v in groups.items() if v}
+        return groups
+    
+    # Fallback: hardcoded widget list for offline/standalone use
+    return {
+        "Core": [
+            ("Image",       "Main image display"),
+            ("Settings",    "Detector settings & ROI"),
+            ("View",        "Image controls (LUT, zoom)"),
+            ("Recording",   "Recording panel"),
+            ("ViewerTools", "Napari viewer tools"),
+            ("LineProfile", "Line profile tool"),
+            ("Console",     "Python scripting console"),
+        ],
+        "Control": [
+            ("Laser",        "Laser / LED power control"),
+            ("Positioner",   "Stage positioner"),
+            ("Scan",         "Scan widget"),
+            ("Rotator",      "Rotator control"),
+            ("RotationScan", "Rotation scan"),
+            ("MotCorr",      "Leica motorized correction collar"),
+        ],
+        "Microscope": [
+            ("FocusLock",  "IR focus lock"),
+            ("Autofocus",  "Software autofocus"),
+            ("LeicaStand", "Leica stand control"),
+        ],
+        "Analysis": [
+            ("FFT",            "Live FFT tool"),
+            ("BeadRec",        "Bead reconstruction"),
+            ("AlignAverage",   "Axial alignment tool"),
+            ("AlignXY",        "Rotational alignment tool"),
+            ("AlignmentLine",  "Line alignment overlay"),
+            ("ULenses",        "uLenses tool"),
+            ("BFTimelapse",    "Brightfield timelapse"),
+        ],
+        "Advanced": [
+            ("SLMs",       "SLM control"),
+            ("EtSTED",     "EtSTED widget"),
+            ("EtMonalisa", "EtMonalisa widget"),
+            ("Tiling",     "Spiral tiling scan"),
+            ("Watcher",    "File watcher"),
+        ],
+    }
+
+
+WIDGET_GROUPS = _load_widget_registry()  # auto-discovered from ViewSetupInfo.py
 
 # Flat set of all known widget names for fast lookup
 _ALL_KNOWN_WIDGETS = {name for group in WIDGET_GROUPS.values() for name, _ in group}
@@ -1095,7 +1242,8 @@ class ConfigExtrasBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
-        self.setStyleSheet("QFrame { background:#F5F5F5; border-top:1px solid #DDD; }")
+        colors = get_themed_colors(is_dark_mode())
+        self.setStyleSheet(f"QFrame {{ background:{colors['extras_bar_bg']}; border-top:1px solid {colors['extras_bar_border']}; }}")
         self.setFixedHeight(64)
         self._data: dict = {}
 
@@ -2048,20 +2196,282 @@ class MainWindow(QMainWindow):
         else:
             event.accept()
 
-def dark_theme(palette): # currently ugly
-    palette.setColor(QPalette.Window, QColor(53, 53, 53))
-    palette.setColor(QPalette.WindowText, Qt.white)
-    palette.setColor(QPalette.Base, QColor(25, 25, 25))
-    palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-    palette.setColor(QPalette.ToolTipBase, Qt.black)
-    palette.setColor(QPalette.ToolTipText, Qt.white)
-    palette.setColor(QPalette.Text, Qt.white)
-    palette.setColor(QPalette.Button, QColor(53, 53, 53))
-    palette.setColor(QPalette.ButtonText, Qt.white)
-    palette.setColor(QPalette.BrightText, Qt.red)
-    palette.setColor(QPalette.Link, QColor(42, 130, 218))
-    palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-    palette.setColor(QPalette.HighlightedText, Qt.black)
+def dark_theme(app, palette):
+    """Apply complete dark theme with palette and comprehensive QSS stylesheet."""
+    # Set dark palette colors
+    palette.setColor(QPalette.Window, QColor("#2B2B2B"))
+    palette.setColor(QPalette.Base, QColor("#1E1E1E"))
+    palette.setColor(QPalette.AlternateBase, QColor("#252525"))
+    palette.setColor(QPalette.Text, QColor("#E0E0E0"))
+    palette.setColor(QPalette.WindowText, QColor("#E0E0E0"))
+    palette.setColor(QPalette.ButtonText, QColor("#E0E0E0"))
+    palette.setColor(QPalette.Button, QColor("#3C3F41"))
+    palette.setColor(QPalette.Highlight, QColor("#2979C0"))
+    palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+    palette.setColor(QPalette.ToolTipBase, QColor("#2B2B2B"))
+    palette.setColor(QPalette.ToolTipText, QColor("#E0E0E0"))
+    palette.setColor(QPalette.Link, QColor("#2979C0"))
+    palette.setColor(QPalette.BrightText, QColor("#FF5555"))
+    # Disabled text
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#707070"))
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#707070"))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#707070"))
+
+    # Comprehensive QSS stylesheet
+    stylesheet = """
+        QFrame {
+            background-color: #2B2B2B;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+        }
+        
+        QGroupBox {
+            background-color: #2B2B2B;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            border-radius: 4px;
+            margin-top: 8px;
+            padding-top: 8px;
+        }
+        QGroupBox::title {
+            color: #E0E0E0;
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 2px 5px;
+        }
+        
+        QLineEdit, QTextEdit {
+            background-color: #1E1E1E;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            border-radius: 3px;
+            padding: 3px;
+            selection-background-color: #2979C0;
+            selection-color: #FFFFFF;
+        }
+        QLineEdit:focus, QTextEdit:focus {
+            border: 1px solid #2979C0;
+        }
+        QLineEdit:disabled, QTextEdit:disabled {
+            color: #707070;
+            background-color: #252525;
+        }
+        
+        QComboBox {
+            background-color: #3C3F41;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            border-radius: 3px;
+            padding: 3px 5px;
+        }
+        QComboBox:hover {
+            border: 1px solid #2979C0;
+        }
+        QComboBox:disabled {
+            color: #707070;
+            background-color: #252525;
+        }
+        QComboBox::drop-down {
+            border: none;
+            width: 20px;
+        }
+        QComboBox::down-arrow {
+            image: none;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #E0E0E0;
+            margin-right: 5px;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #3C3F41;
+            color: #E0E0E0;
+            selection-background-color: #2979C0;
+            selection-color: #FFFFFF;
+            border: 1px solid #2979C0;
+        }
+        
+        QSpinBox, QDoubleSpinBox {
+            background-color: #1E1E1E;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            border-radius: 3px;
+            padding: 3px;
+        }
+        QSpinBox:focus, QDoubleSpinBox:focus {
+            border: 1px solid #2979C0;
+        }
+        QSpinBox:disabled, QDoubleSpinBox:disabled {
+            color: #707070;
+            background-color: #252525;
+        }
+        QSpinBox::up-button, QDoubleSpinBox::up-button,
+        QSpinBox::down-button, QDoubleSpinBox::down-button {
+            background-color: #3C3F41;
+            border: none;
+        }
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+            background-color: #2979C0;
+        }
+        
+        QScrollArea {
+            background-color: #2B2B2B;
+            border: none;
+        }
+        QScrollBar:vertical {
+            background-color: #2B2B2B;
+            width: 12px;
+            border: none;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #3C3F41;
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background-color: #2979C0;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
+        QScrollBar:horizontal {
+            background-color: #2B2B2B;
+            height: 12px;
+            border: none;
+        }
+        QScrollBar::handle:horizontal {
+            background-color: #3C3F41;
+            border-radius: 6px;
+            min-width: 20px;
+        }
+        QScrollBar::handle:horizontal:hover {
+            background-color: #2979C0;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0px;
+        }
+        
+        QTreeWidget {
+            background-color: #1E1E1E;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            alternate-background-color: #252525;
+        }
+        QTreeWidget::item:selected {
+            background-color: #2979C0;
+            color: #FFFFFF;
+        }
+        QTreeWidget::item:hover {
+            background-color: #3C3F41;
+        }
+        QTreeWidget::branch {
+            background-color: #1E1E1E;
+        }
+        
+        QTabWidget::pane {
+            background-color: #2B2B2B;
+            border: 1px solid #3C3F41;
+            border-radius: 3px;
+        }
+        QTabBar::tab {
+            background-color: #3C3F41;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            border-bottom: none;
+            border-top-left-radius: 3px;
+            border-top-right-radius: 3px;
+            padding: 5px 10px;
+            margin-right: 2px;
+        }
+        QTabBar::tab:selected {
+            background-color: #2979C0;
+            color: #FFFFFF;
+        }
+        QTabBar::tab:hover:!selected {
+            background-color: #4C5052;
+        }
+        
+        QPushButton {
+            background-color: #3C3F41;
+            color: #E0E0E0;
+            border: 1px solid #3C3F41;
+            border-radius: 3px;
+            padding: 5px 15px;
+        }
+        QPushButton:hover {
+            background-color: #2979C0;
+            border: 1px solid #2979C0;
+        }
+        QPushButton:pressed {
+            background-color: #1E5A8E;
+        }
+        QPushButton:disabled {
+            color: #707070;
+            background-color: #252525;
+            border: 1px solid #252525;
+        }
+        
+        QCheckBox {
+            color: #E0E0E0;
+            spacing: 5px;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            border: 1px solid #3C3F41;
+            border-radius: 3px;
+            background-color: #1E1E1E;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #2979C0;
+            border: 1px solid #2979C0;
+        }
+        QCheckBox::indicator:hover {
+            border: 1px solid #2979C0;
+        }
+        QCheckBox:disabled {
+            color: #707070;
+        }
+        
+        QLabel {
+            color: #E0E0E0;
+            background-color: transparent;
+        }
+        
+        QToolBar {
+            background-color: #2B2B2B;
+            border: 1px solid #3C3F41;
+            spacing: 3px;
+            padding: 3px;
+        }
+        QToolBar::separator {
+            background-color: #3C3F41;
+            width: 1px;
+            margin: 3px;
+        }
+        
+        QStatusBar {
+            background-color: #2B2B2B;
+            color: #E0E0E0;
+            border-top: 1px solid #3C3F41;
+        }
+        
+        QMenu {
+            background-color: #3C3F41;
+            color: #E0E0E0;
+            border: 1px solid #2979C0;
+        }
+        QMenu::item:selected {
+            background-color: #2979C0;
+            color: #FFFFFF;
+        }
+        QMenu::separator {
+            height: 1px;
+            background-color: #252525;
+            margin: 3px 0;
+        }
+    """
+    app.setStyleSheet(stylesheet)
     return palette
 
 # =============================================================================
