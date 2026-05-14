@@ -15,12 +15,22 @@ class CoolLEDLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
+        self._isMock = False
 
-        self._rs232manager = lowLevelManagers['rs232sManager'][
-            laserInfo.managerProperties['rs232device']
-        ]
-        self.__channel_index = laserInfo.managerProperties['channel_index']
-        self.__digital_mod = False
+        try:
+            self._rs232manager = lowLevelManagers['rs232sManager'][
+                laserInfo.managerProperties['rs232device']
+            ]
+            self.__channel_index = laserInfo.managerProperties['channel_index']
+            self.__digital_mod = False
+        except Exception as e:
+            self._isMock = True
+            self.__logger.warning(
+                f'Failed to initialize CoolLED hardware, running in mock mode: {e}'
+            )
+            self._rs232manager = None
+            self.__channel_index = laserInfo.managerProperties.get('channel_index', 'A')
+            self.__digital_mod = False
 
         isModulated = (True if laserInfo.freqRangeMin is not None and 
                                 laserInfo.freqRangeMax is not None and
@@ -31,6 +41,10 @@ class CoolLEDLaserManager(LaserManager):
 
     def setEnabled(self, enabled):
         """Turn on (N) or off (F) laser emission"""
+        if self._isMock:
+            self.__logger.debug(f'Mock mode: setEnabled({enabled}) ignored')
+            return
+        
         if enabled:
             value = "N"
         else:
@@ -42,6 +56,10 @@ class CoolLEDLaserManager(LaserManager):
         """Handles output power.
         Sends a RS232 command to the laser specifying the new intensity.
         """
+        if self._isMock:
+            self.__logger.debug(f'Mock mode: setValue({power}) ignored')
+            return
+        
         cmd = "C" + self.__channel_index + "IX" + "{0:03.0f}".format(power)
         self.__logger.debug(cmd)
         self._rs232manager.query(cmd)
