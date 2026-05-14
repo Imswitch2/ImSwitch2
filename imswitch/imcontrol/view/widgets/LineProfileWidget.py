@@ -152,7 +152,7 @@ class LineProfileWidget(Widget):
     # Rectangle integrated-intensity projections
     # ------------------------------------------------------------------
     def _updateRectangleProfile(self, bounds):
-        self._redraw('Rectangle Projections', 'Position (px)', 'Integrated Intensity')
+        self._redraw('Rectangle Projections', 'Distance (px)', 'Mean Intensity')
         if bounds is None or self._napariViewer is None:
             self._canvas.draw()
             return
@@ -172,12 +172,29 @@ class LineProfileWidget(Widget):
             if rc0 >= rc1 or cc0 >= cc1:
                 continue
             roi = img[rc0:rc1, cc0:cc1].astype(float)
-            # x-projection: sum along rows → value per column position
-            self._ax.plot(np.arange(cc0, cc1), roi.sum(axis=0),
+            
+            # Rectangle dimensions (pixels)
+            roi_height = rc1 - rc0
+            roi_width = cc1 - cc0
+            
+            # x-projection: sum along rows (axis=0), normalized by rectangle height
+            # This gives the mean intensity in the y-direction for each x position.
+            # Divide by height to show density/mean rather than total integrated signal,
+            # making x and y profiles comparable even for non-square rectangles.
+            x_profile = roi.sum(axis=0) / roi_height
+            x_distance = np.arange(roi_width)  # Distance from start of ROI, not absolute position
+            self._ax.plot(x_distance, x_profile,
                           color='red', linewidth=1.5, label='x')
-            # y-projection: sum along columns → value per row position
-            self._ax.plot(np.arange(rc0, rc1), roi.sum(axis=1),
+            
+            # y-projection: sum along columns (axis=1), normalized by rectangle width
+            # This gives the mean intensity in the x-direction for each y position.
+            # Divide by width to show density/mean rather than total integrated signal,
+            # making x and y profiles comparable even for non-square rectangles.
+            y_profile = roi.sum(axis=1) / roi_width
+            y_distance = np.arange(roi_height)  # Distance from start of ROI, not absolute position
+            self._ax.plot(y_distance, y_profile,
                           color='#00cc44', linewidth=1.5, label='y')
+            
             plotted = True
             break  # one layer is enough for single-layer setups
 
