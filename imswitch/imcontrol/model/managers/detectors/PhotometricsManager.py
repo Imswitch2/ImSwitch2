@@ -227,9 +227,11 @@ class PhotometricsManager(DetectorManager):
             self.__logger.debug(f'Trying to initialize Photometrics camera {cameraId}')
             camera = next(Camera.detect_camera())
             camera.open()
-        except Exception:
-            self.__logger.warning(f'Failed to initialize Photometrics camera {cameraId},'
-                                  f' loading mocker')
+        except Exception as e:
+            self.__logger.warning(
+                f'Failed to initialize Photometrics camera {cameraId}, loading mocker: {e}',
+                exc_info=True
+            )
             from imswitch.imcontrol.model.interfaces.hamamatsu_mock import MockHamamatsu
             camera = MockHamamatsu()
 

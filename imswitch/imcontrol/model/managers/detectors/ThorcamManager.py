@@ -135,8 +135,10 @@ class ThorcamManager(DetectorManager):
             self.__logger.debug(f'Trying to initialize Throcamera {cameraId}')
             camera = ThorCamera(cameraNo=cameraId, binning=binning)
         except Exception as e:
-            self.__logger.debug(e)
-            self.__logger.warning(f'Failed to initialize ThorCamera {cameraId}, loading TIS mocker')
+            self.__logger.warning(
+                f'Failed to initialize ThorCamera {cameraId}, loading TIS mocker: {e}',
+                exc_info=True
+            )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
 

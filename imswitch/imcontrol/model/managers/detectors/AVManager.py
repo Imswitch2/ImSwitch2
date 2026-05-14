@@ -168,8 +168,10 @@ class AVManager(DetectorManager):
             self.__logger.debug(f'Trying to initialize Allied Vision camera {cameraId}')
             camera = CameraAV(cameraId)
         except Exception as e:
-            self.__logger.error(e)
-            self.__logger.warning(f'Failed to initialize AV camera {cameraId}, loading TIS mocker')
+            self.__logger.warning(
+                f'Failed to initialize AV camera {cameraId}, loading TIS mocker: {e}',
+                exc_info=True
+            )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
         

@@ -141,8 +141,11 @@ class TISManager(DetectorManager):
         try:
             from imswitch.imcontrol.model.interfaces.tiscamera import CameraTIS
             camera = CameraTIS(cameraId)
-        except Exception:
-            self.__logger.warning(f'Failed to initialize TIS camera {cameraId}, loading mocker')
+        except Exception as e:
+            self.__logger.warning(
+                f'Failed to initialize TIS camera {cameraId}, loading mocker: {e}',
+                exc_info=True
+            )
             from imswitch.imcontrol.model.interfaces.tiscamera_mock import MockCameraTIS
             camera = MockCameraTIS()
 
