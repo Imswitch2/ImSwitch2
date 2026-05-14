@@ -86,6 +86,12 @@ class ImConMainController(MainController):
         self.__shortcuts = generateShortcuts(shorcutObjs)
         self.__mainView.addShortcuts(self.__shortcuts)
 
+        # Auto-restore widget states after all controllers are ready
+        try:
+            getWidgetStatePersistence().loadAllWidgetStates('default')
+        except Exception as e:
+            self.__logger.warning(f'Failed to auto-restore widget states: {e}')
+
         if setupInfo.pyroServerInfo.active:
             self._serverWorker = ImSwitchServer(self.__api, setupInfo)
             self.__logger.debug(self.__api)
@@ -216,6 +222,10 @@ class ImConMainController(MainController):
 
     def closeEvent(self):
         self.__logger.info('Shutting down')
+        try:
+            getWidgetStatePersistence().saveAllWidgetStates('default')
+        except Exception as e:
+            self.__logger.warning(f'Failed to auto-save widget states: {e}')
         self.__factory.closeAllCreatedControllers()
         self.__masterController.closeEvent()
 

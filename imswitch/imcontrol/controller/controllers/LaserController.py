@@ -338,15 +338,13 @@ class LaserController(ImConWidgetController):
         for lName, lManager in self._master.lasersManager:
             if not lManager.isBinary:
                 state['laser_values'][lName] = self._widget.getValue(lName)
-            
-            if lManager.isModulated:
-                # Get modulation settings from widget if available
-                if hasattr(self._widget.laserModules[lName], 'getFrequency'):
-                    state['modulation_frequencies'][lName] = \
-                        self._widget.laserModules[lName].getFrequency()
-                if hasattr(self._widget.laserModules[lName], 'getDutyCycle'):
-                    state['modulation_duty_cycles'][lName] = \
-                        self._widget.laserModules[lName].getDutyCycle()
+
+            module = self._widget.laserModules.get(lName)
+            if lManager.isModulated and module is not None:
+                if hasattr(module, 'getFrequency'):
+                    state['modulation_frequencies'][lName] = module.getFrequency()
+                if hasattr(module, 'getDutyCycle'):
+                    state['modulation_duty_cycles'][lName] = module.getDutyCycle()
         
         return state
     
@@ -363,45 +361,43 @@ class LaserController(ImConWidgetController):
             state: Dict returned by getWidgetState()
         """
         try:
-            # Restore laser values (but not enable states - safety first!)
-            laser_values = state.get('laser_values', {})
-            for lName, value in laser_values.items():
-                if lName in [name for name, _ in self._master.lasersManager]:
+            known_lasers = {name for name, _ in self._master.lasersManager}
+            binary_lasers = {name for name, mgr in self._master.lasersManager if mgr.isBinary}
+
+            # Restore power values — non-binary lasers only; does NOT enable them
+            for lName, value in state.get('laser_values', {}).items():
+                if lName in known_lasers and lName not in binary_lasers:
                     try:
                         self.setLaserValue(lName, value)
                     except Exception as e:
-                        self._logger.warning(
-                            f'Failed to restore value for laser {lName}: {e}'
-                        )
-            
+                        self._logger.warning(f'Failed to restore value for laser {lName}: {e}')
+
             # Restore modulation settings
-            modulation_frequencies = state.get('modulation_frequencies', {})
-            for lName, freq in modulation_frequencies.items():
-                if lName in [name for name, _ in self._master.lasersManager]:
+            for lName, freq in state.get('modulation_frequencies', {}).items():
+                if lName in known_lasers:
                     try:
                         self.frequencyChanged(lName, freq)
                     except Exception as e:
                         self._logger.warning(
                             f'Failed to restore modulation frequency for laser {lName}: {e}'
                         )
-            
-            modulation_duty_cycles = state.get('modulation_duty_cycles', {})
-            for lName, dc in modulation_duty_cycles.items():
-                if lName in [name for name, _ in self._master.lasersManager]:
+
+            for lName, dc in state.get('modulation_duty_cycles', {}).items():
+                if lName in known_lasers:
                     try:
                         self.dutyCycleChanged(lName, dc)
                     except Exception as e:
                         self._logger.warning(
                             f'Failed to restore modulation duty cycle for laser {lName}: {e}'
                         )
-            
-            # Restore selected preset (UI state only, doesn't apply it)
+
+            # Restore selected preset (UI label only — does NOT apply it to hardware)
             selected_preset = state.get('selected_preset')
             if selected_preset and selected_preset in self._setupInfo.laserPresets:
                 self._widget.setCurrentPreset(selected_preset)
-            
+
             self._logger.info('Widget state restored successfully')
-            
+
         except Exception as e:
             self._logger.error(f'Failed to restore widget state: {e}')
     

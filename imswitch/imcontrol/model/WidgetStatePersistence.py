@@ -14,17 +14,8 @@ import os
 import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, asdict
 
 from imswitch.imcommon.model import dirtools, initLogger
-
-
-@dataclass
-class WidgetStateMetadata:
-    """Metadata for a widget state snapshot"""
-    controller_name: str
-    schema_version: int = 1
-    widget_type: Optional[str] = None
 
 
 class WidgetStatePersistence:
@@ -48,11 +39,7 @@ class WidgetStatePersistence:
         self._logger = initLogger(self, tryInheritParent=True)
         self._stateDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_widget_states')
         os.makedirs(self._stateDir, exist_ok=True)
-        
-        # Registry of controllers that support state persistence
-        # Key: controller name (e.g., "LaserController")
-        # Value: weak reference to controller instance
-        self._registry: Dict[str, Any] = {}
+        self._registry: Dict[str, Any] = {}  # controller_name -> controller instance
         
         self._logger.debug(f'Widget state persistence initialized: {self._stateDir}')
     
@@ -105,18 +92,12 @@ class WidgetStatePersistence:
             # Get state from controller
             state = controller.getWidgetState()
             
-            # Add metadata
-            schema_version = self._getSchemaVersion(controller)
-            metadata = WidgetStateMetadata(
-                controller_name=controller_name,
-                schema_version=schema_version,
-                widget_type=type(controller._widget).__name__ if hasattr(controller, '_widget') else None
-            )
-            
-            # Combine metadata and state
             full_state = {
-                '_metadata': asdict(metadata),
-                'state': state
+                '_metadata': {
+                    'controller_name': controller_name,
+                    'schema_version': self._getSchemaVersion(controller),
+                },
+                'state': state,
             }
             
             # Save to file
@@ -281,7 +262,52 @@ class WidgetStatePersistence:
     def getRegisteredControllers(self) -> List[str]:
         """Get list of registered controller names."""
         return list(self._registry.keys())
-    
+
+    def save_to_file(self, file_path: str) -> None:
+        """Export all registered controller states to a single JSON file.
+
+        Raises:
+            IOError / json.JSONDecodeError on failure.
+        """
+        bundle: Dict[str, Any] = {}
+        for name, controller in self._registry.items():
+            try:
+                bundle[name] = {
+                    '_metadata': {'controller_name': name,
+                                  'schema_version': self._getSchemaVersion(controller)},
+                    'state': controller.getWidgetState(),
+                }
+            except Exception as e:
+                self._logger.warning(f'Skipping {name} during export: {e}')
+
+        with open(file_path, 'w') as f:
+            json.dump(bundle, f, indent=2)
+        self._logger.info(f'Widget states exported to {file_path}')
+
+    def load_from_file(self, file_path: str) -> int:
+        """Import controller states from a file written by save_to_file().
+
+        Returns:
+            Number of controllers successfully restored.
+        """
+        with open(file_path, 'r') as f:
+            bundle = json.load(f)
+
+        count = 0
+        for name, entry in bundle.items():
+            controller = self._registry.get(name)
+            if controller is None:
+                self._logger.debug(f'Skipping {name}: not registered')
+                continue
+            try:
+                controller.setWidgetState(entry.get('state', {}))
+                count += 1
+            except Exception as e:
+                self._logger.warning(f'Failed to apply imported state for {name}: {e}')
+
+        self._logger.info(f'Widget states imported from {file_path}: {count} applied')
+        return count
+
     # Private helper methods
     
     def _getStatePath(self, controller_name: str, state_name: str) -> str:
