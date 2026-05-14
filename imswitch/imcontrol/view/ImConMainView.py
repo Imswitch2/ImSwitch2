@@ -13,6 +13,8 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigLoadParamsFromHDF5 = QtCore.Signal()
     sigPickSetup = QtCore.Signal()
     sigClosing = QtCore.Signal()
+    sigSaveWidgetState = QtCore.Signal()
+    sigLoadWidgetState = QtCore.Signal()
 
     def __init__(self, options, viewSetupInfo, *args, **kwargs):
         self.__logger = initLogger(self)
@@ -41,6 +43,18 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.loadParamsAction.setShortcut('Ctrl+P')
         self.loadParamsAction.triggered.connect(self.sigLoadParamsFromHDF5)
         file.addAction(self.loadParamsAction)
+        
+        file.addSeparator()
+        
+        self.saveWidgetStateAction = QtWidgets.QAction('Save Widget States…', self)
+        self.saveWidgetStateAction.setShortcut('Ctrl+Shift+S')
+        self.saveWidgetStateAction.triggered.connect(self.sigSaveWidgetState)
+        file.addAction(self.saveWidgetStateAction)
+        
+        self.loadWidgetStateAction = QtWidgets.QAction('Load Widget States…', self)
+        self.loadWidgetStateAction.setShortcut('Ctrl+Shift+L')
+        self.loadWidgetStateAction.triggered.connect(self.sigLoadWidgetState)
+        file.addAction(self.loadWidgetStateAction)
 
         self.pickSetupAction = QtWidgets.QAction('Pick hardware setup…', self)
         self.pickSetupAction.triggered.connect(self.sigPickSetup)

@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Dict
 
 import numpy as np
 
 from imswitch.imcommon.model import APIExport
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools as guitools
 from ..basecontrollers import ImConWidgetController
 
@@ -92,6 +92,9 @@ class SettingsController(ImConWidgetController):
         self._widget.sigROIChanged.connect(self.ROIchanged)
         self._widget.sigDetectorChanged.connect(self.detectorSwitchClicked)
         self._widget.sigNextDetectorClicked.connect(self.detectorNextClicked)
+        
+        # Register for widget state persistence
+        getWidgetStatePersistence().register('SettingsController', self)
 
     def addROI(self):
         """ Adds the ROI to ImageWidget viewbox through the CommunicationChannel. """
@@ -646,6 +649,177 @@ class SettingsController(ImConWidgetController):
             )
             import traceback
             traceback.print_exc()
+
+    # Widget State Persistence Interface
+    
+    def getWidgetState(self) -> Dict[str, Any]:
+        """
+        Get current detector settings state for persistence.
+        
+        Returns detector parameters like ROI, binning, frame mode, and detector-specific
+        parameters. Does NOT include acquisition state (running/stopped) for safety.
+        
+        Returns:
+            Dict with structure:
+            {
+                'detectors': {
+                    detectorName: {
+                        'binning': int,
+                        'frame_mode': str,
+                        'x0': int,
+                        'y0': int,
+                        'width': int,
+                        'height': int,
+                        'parameters': {paramName: value}
+                    }
+                }
+            }
+        """
+        state = {'detectors': {}}
+        
+        try:
+            for detectorName in self._master.detectorsManager.getAllDeviceNames():
+                detector = self._master.detectorsManager[detectorName]
+                if not detector.forAcquisition:
+                    continue
+                
+                try:
+                    params = self.allParams.get(detectorName)
+                    if not params:
+                        continue
+                    
+                    detector_state = {
+                        'binning': params.binning.value() if hasattr(params.binning, 'value') else None,
+                        'frame_mode': params.frameMode.value() if hasattr(params.frameMode, 'value') else None,
+                        'x0': params.x0.value() if hasattr(params.x0, 'value') else None,
+                        'y0': params.y0.value() if hasattr(params.y0, 'value') else None,
+                        'width': params.width.value() if hasattr(params.width, 'value') else None,
+                        'height': params.height.value() if hasattr(params.height, 'value') else None,
+                        'parameters': {}
+                    }
+                    
+                    # Get detector-specific parameters (exposure, gain, etc.)
+                    if hasattr(detector, 'parameters'):
+                        for paramName, parameter in detector.parameters.items():
+                            try:
+                                # Get parameter value from widget tree
+                                paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
+                                detector_state['parameters'][paramName] = paramInWidget.value()
+                            except Exception as e:
+                                self.__logger.debug(
+                                    f'Could not save parameter {paramName} for {detectorName}: {e}'
+                                )
+                    
+                    state['detectors'][detectorName] = detector_state
+                    
+                except Exception as e:
+                    self.__logger.warning(
+                        f'Failed to save state for detector {detectorName}: {e}'
+                    )
+        
+        except Exception as e:
+            self.__logger.error(f'Failed to save detector settings state: {e}')
+        
+        return state
+    
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        """
+        Restore detector settings state from persistence.
+        
+        SAFETY: Does NOT start acquisition or enable lasers. Only restores:
+        - ROI settings (frame position and size)
+        - Binning
+        - Frame mode
+        - Detector-specific parameters (exposure, gain, etc.)
+        
+        Args:
+            state: Dict returned by getWidgetState()
+        """
+        try:
+            detectors_state = state.get('detectors', {})
+            
+            for detectorName, detector_state in detectors_state.items():
+                # Check if detector exists
+                if detectorName not in self._master.detectorsManager.getAllDeviceNames():
+                    self.__logger.debug(
+                        f'Skipping state for non-existent detector: {detectorName}'
+                    )
+                    continue
+                
+                detector = self._master.detectorsManager[detectorName]
+                if not detector.forAcquisition:
+                    continue
+                
+                params = self.allParams.get(detectorName)
+                if not params:
+                    continue
+                
+                try:
+                    # Restore binning
+                    if 'binning' in detector_state and detector_state['binning'] is not None:
+                        try:
+                            params.binning.setValue(detector_state['binning'])
+                        except Exception as e:
+                            self.__logger.debug(f'Could not restore binning for {detectorName}: {e}')
+                    
+                    # Restore frame mode
+                    if 'frame_mode' in detector_state and detector_state['frame_mode'] is not None:
+                        try:
+                            params.frameMode.setValue(detector_state['frame_mode'])
+                        except Exception as e:
+                            self.__logger.debug(f'Could not restore frame mode for {detectorName}: {e}')
+                    
+                    # Restore ROI settings
+                    if 'x0' in detector_state and detector_state['x0'] is not None:
+                        try:
+                            params.x0.setValue(detector_state['x0'])
+                        except Exception as e:
+                            self.__logger.debug(f'Could not restore x0 for {detectorName}: {e}')
+                    
+                    if 'y0' in detector_state and detector_state['y0'] is not None:
+                        try:
+                            params.y0.setValue(detector_state['y0'])
+                        except Exception as e:
+                            self.__logger.debug(f'Could not restore y0 for {detectorName}: {e}')
+                    
+                    if 'width' in detector_state and detector_state['width'] is not None:
+                        try:
+                            params.width.setValue(detector_state['width'])
+                        except Exception as e:
+                            self.__logger.debug(f'Could not restore width for {detectorName}: {e}')
+                    
+                    if 'height' in detector_state and detector_state['height'] is not None:
+                        try:
+                            params.height.setValue(detector_state['height'])
+                        except Exception as e:
+                            self.__logger.debug(f'Could not restore height for {detectorName}: {e}')
+                    
+                    # Restore detector-specific parameters
+                    parameters_state = detector_state.get('parameters', {})
+                    for paramName, value in parameters_state.items():
+                        try:
+                            if hasattr(detector, 'parameters') and paramName in detector.parameters:
+                                parameter = detector.parameters[paramName]
+                                paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
+                                paramInWidget.setValue(value)
+                        except Exception as e:
+                            self.__logger.debug(
+                                f'Could not restore parameter {paramName} for {detectorName}: {e}'
+                            )
+                    
+                except Exception as e:
+                    self.__logger.warning(
+                        f'Failed to restore state for detector {detectorName}: {e}'
+                    )
+            
+            self.__logger.info('Detector settings state restored successfully')
+            
+        except Exception as e:
+            self.__logger.error(f'Failed to restore detector settings state: {e}')
+    
+    def getStateSchemaVersion(self) -> int:
+        """Return schema version for state compatibility checking."""
+        return 1
 
 
 _attrCategory = 'Detector'

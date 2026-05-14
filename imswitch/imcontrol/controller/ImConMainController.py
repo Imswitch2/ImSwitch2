@@ -1,6 +1,7 @@
 import dataclasses
 
 import h5py
+from qtpy import QtWidgets
 
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
@@ -8,7 +9,7 @@ from imswitch.imcommon.model import (
 )
 from imswitch.imcommon.framework import Thread
 from .server import ImSwitchServer
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from . import controllers
 from .CommunicationChannel import CommunicationChannel
@@ -31,6 +32,8 @@ class ImConMainController(MainController):
         self.__mainView.sigLoadParamsFromHDF5.connect(self.loadParamsFromHDF5)
         self.__mainView.sigPickSetup.connect(self.pickSetup)
         self.__mainView.sigClosing.connect(self.closeEvent)
+        self.__mainView.sigSaveWidgetState.connect(self.saveWidgetState)
+        self.__mainView.sigLoadWidgetState.connect(self.loadWidgetState)
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
@@ -151,6 +154,65 @@ class ImConMainController(MainController):
         options = dataclasses.replace(options, setupFileName=setupFileName)
         configfiletools.saveOptions(options)
         ostools.restartSoftware()
+
+    def saveWidgetState(self):
+        """Save widget states to a JSON file selected by the user."""
+        filePath = guitools.askForFilePath(
+            self.__mainView, 
+            'Save Widget States', 
+            nameFilter='JSON files (*.json)',
+            isSaving=True
+        )
+        if not filePath:
+            return
+        
+        # Add .json extension if not present
+        if not filePath.endswith('.json'):
+            filePath = filePath + '.json'
+        
+        try:
+            persistence = getWidgetStatePersistence()
+            persistence.save_to_file(filePath)
+            self.__logger.info(f'Widget states saved to {filePath}')
+            QtWidgets.QMessageBox.information(
+                self.__mainView, 
+                'Save Successful', 
+                f'Widget states saved successfully to:\n{filePath}'
+            )
+        except Exception as e:
+            self.__logger.error(f'Failed to save widget states: {e}')
+            QtWidgets.QMessageBox.critical(
+                self.__mainView, 
+                'Save Failed', 
+                f'Failed to save widget states:\n{str(e)}'
+            )
+    
+    def loadWidgetState(self):
+        """Load widget states from a JSON file selected by the user."""
+        filePath = guitools.askForFilePath(
+            self.__mainView, 
+            'Load Widget States', 
+            nameFilter='JSON files (*.json)'
+        )
+        if not filePath:
+            return
+        
+        try:
+            persistence = getWidgetStatePersistence()
+            persistence.load_from_file(filePath)
+            self.__logger.info(f'Widget states loaded from {filePath}')
+            QtWidgets.QMessageBox.information(
+                self.__mainView, 
+                'Load Successful', 
+                f'Widget states loaded successfully from:\n{filePath}'
+            )
+        except Exception as e:
+            self.__logger.error(f'Failed to load widget states: {e}')
+            QtWidgets.QMessageBox.critical(
+                self.__mainView, 
+                'Load Failed', 
+                f'Failed to load widget states:\n{str(e)}'
+            )
 
     def closeEvent(self):
         self.__logger.info('Shutting down')
