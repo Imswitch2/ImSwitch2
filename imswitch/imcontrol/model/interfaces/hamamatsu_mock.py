@@ -228,6 +228,128 @@ class MockHamamatsu:
 
         return prop_value, prop_type
 
+    def getAdvancedPropertyInfo(self):
+        """
+        Mock implementation of advanced property introspection.
+        Returns structured metadata for all mock camera properties.
+        """
+        property_info_list = []
+        
+        # Define mock ranges and attributes for different property types
+        mock_property_metadata = {
+            'exposure_time': {
+                'type': 'REAL',
+                'readable': True,
+                'writable': True,
+                'range': (0.001, 10.0),
+                'text_options': None
+            },
+            'accumulation_time': {
+                'type': 'REAL',
+                'readable': True,
+                'writable': False,
+                'range': (1.0, 99999.0),
+                'text_options': None
+            },
+            'image_width': {
+                'type': 'LONG',
+                'readable': True,
+                'writable': True,
+                'range': (64, 2048),
+                'text_options': None
+            },
+            'image_height': {
+                'type': 'LONG',
+                'readable': True,
+                'writable': True,
+                'range': (64, 2048),
+                'text_options': None
+            },
+            'subarray_hsize': {
+                'type': 'LONG',
+                'readable': True,
+                'writable': True,
+                'range': (64, 2048),
+                'text_options': None
+            },
+            'subarray_vsize': {
+                'type': 'LONG',
+                'readable': True,
+                'writable': True,
+                'range': (64, 2048),
+                'text_options': None
+            },
+            'subarray_mode': {
+                'type': 'MODE',
+                'readable': True,
+                'writable': True,
+                'range': None,
+                'text_options': {b'OFF': 1, b'ON': 2}
+            },
+            'trigger_source': {
+                'type': 'MODE',
+                'readable': True,
+                'writable': True,
+                'range': (1, 3),
+                'text_options': {b'INTERNAL': 1, b'EXTERNAL': 2, b'SOFTWARE': 3}
+            },
+            'trigger_mode': {
+                'type': 'MODE',
+                'readable': True,
+                'writable': True,
+                'range': (1, 6),
+                'text_options': {b'NORMAL': 1, b'START': 6}
+            },
+            'internal_frame_rate': {
+                'type': 'REAL',
+                'readable': True,
+                'writable': False,
+                'range': (0.1, 100.0),
+                'text_options': None
+            },
+            'internal_frame_interval': {
+                'type': 'REAL',
+                'readable': True,
+                'writable': False,
+                'range': (0.01, 10.0),
+                'text_options': None
+            },
+            'timing_readout_time': {
+                'type': 'REAL',
+                'readable': True,
+                'writable': False,
+                'range': (0.001, 1.0),
+                'text_options': None
+            }
+        }
+        
+        for prop_name, prop_value in self.properties.items():
+            # Get metadata or use defaults
+            metadata = mock_property_metadata.get(prop_name, {
+                'type': 'NONE',
+                'readable': True,
+                'writable': True,
+                'range': None,
+                'text_options': None
+            })
+            
+            prop_info = {
+                'name': prop_name,
+                'id': hash(prop_name) % 10000,  # Mock property ID
+                'value': prop_value,
+                'type': metadata['type'],
+                'readable': metadata['readable'],
+                'writable': metadata['writable'],
+                'range': metadata['range'],
+                'text_options': metadata['text_options'],
+                'error': None
+            }
+            
+            property_info_list.append(prop_info)
+        
+        self.__logger.debug(f"Mock: Introspected {len(property_info_list)} camera properties")
+        return property_info_list
+
     # isCameraProperty
     #
     # Check if a property name is supported by the camera.

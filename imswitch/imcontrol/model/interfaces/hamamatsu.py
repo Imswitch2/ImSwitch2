@@ -701,6 +701,100 @@ class HamamatsuCamera:
                          "dcam_setgetpropertyvalue")
         return p_value.value
 
+    # ## getAdvancedPropertyInfo
+    #
+    # Return detailed metadata for all camera properties.
+    # This method introspects all discovered DCAM properties and returns
+    # structured information including value, type, range, text options, and R/W status.
+    #
+    # @return A list of dictionaries, each containing property metadata.
+    #
+    def getAdvancedPropertyInfo(self):
+        """
+        Introspect all camera properties and return detailed metadata.
+        
+        Returns a list of dictionaries with the following keys:
+        - name: Property name (str)
+        - id: DCAM property ID (int)
+        - value: Current value (int, float, or None if failed)
+        - type: Property type - 'MODE', 'LONG', 'REAL', or 'NONE' (str)
+        - readable: Whether property is readable (bool)
+        - writable: Whether property is writable (bool)
+        - range: (min, max) tuple or None if not available
+        - text_options: Dict of text option names to values, or None
+        - error: Error message if property introspection failed (str or None)
+        
+        Each property is introspected independently with graceful error handling.
+        Failed property reads are logged but don't prevent other properties from being read.
+        """
+        property_info_list = []
+        
+        for prop_name, prop_id in self.properties.items():
+            prop_info = {
+                'name': prop_name,
+                'id': prop_id,
+                'value': None,
+                'type': 'NONE',
+                'readable': False,
+                'writable': False,
+                'range': None,
+                'text_options': None,
+                'error': None
+            }
+            
+            try:
+                # Get current value and type
+                try:
+                    value, prop_type = self.getPropertyValue(prop_name)
+                    prop_info['value'] = value
+                    prop_info['type'] = prop_type
+                except Exception as e:
+                    self._logger.debug(f"Failed to get value for property '{prop_name}': {e}")
+                    prop_info['error'] = f"Value read failed: {str(e)}"
+                
+                # Get readable/writable status
+                try:
+                    readable, writable = self.getPropertyRW(prop_name)
+                    prop_info['readable'] = readable
+                    prop_info['writable'] = writable
+                except Exception as e:
+                    self._logger.debug(f"Failed to get R/W status for property '{prop_name}': {e}")
+                    if prop_info['error']:
+                        prop_info['error'] += f"; R/W status failed: {str(e)}"
+                    else:
+                        prop_info['error'] = f"R/W status failed: {str(e)}"
+                
+                # Get range (only for numeric properties)
+                if prop_info['type'] in ['LONG', 'REAL']:
+                    try:
+                        prop_range = self.getPropertyRange(prop_name)
+                        prop_info['range'] = prop_range
+                    except Exception as e:
+                        self._logger.debug(f"Failed to get range for property '{prop_name}': {e}")
+                        if prop_info['error']:
+                            prop_info['error'] += f"; Range read failed: {str(e)}"
+                        else:
+                            prop_info['error'] = f"Range read failed: {str(e)}"
+                
+                # Get text options (for MODE properties or properties with text values)
+                try:
+                    text_options = self.getPropertyText(prop_name)
+                    if text_options:  # Only set if non-empty
+                        prop_info['text_options'] = text_options
+                except Exception as e:
+                    self._logger.debug(f"Failed to get text options for property '{prop_name}': {e}")
+                    # Don't add to error - text options are optional
+                
+            except Exception as e:
+                # Catch-all for any unexpected errors
+                self._logger.warning(f"Unexpected error introspecting property '{prop_name}': {e}")
+                prop_info['error'] = f"Unexpected error: {str(e)}"
+            
+            property_info_list.append(prop_info)
+        
+        self._logger.info(f"Introspected {len(property_info_list)} camera properties")
+        return property_info_list
+
     # ## setSubArrayMode
     #
     # This sets the sub-array mode as appropriate based on the current ROI.

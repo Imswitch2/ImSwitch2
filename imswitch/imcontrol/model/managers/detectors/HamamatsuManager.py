@@ -148,6 +148,38 @@ class HamamatsuManager(DetectorManager):
             self.__logger.error(f'Camera parmeter {name} not available. Returning default value 0.')
         return value
 
+    def getAdvancedPropertyInfo(self):
+        """
+        Get detailed metadata for all camera properties.
+        
+        This manager-level method wraps the camera interface's property introspection,
+        providing a UI-safe way to query all available DCAM properties without
+        directly depending on DCAM internals.
+        
+        Returns:
+            list: List of dictionaries containing property metadata:
+                - name: Property name (str)
+                - id: DCAM property ID (int)
+                - value: Current value (int, float, or None)
+                - type: Property type - 'MODE', 'LONG', 'REAL', or 'NONE' (str)
+                - readable: Whether property is readable (bool)
+                - writable: Whether property is writable (bool)
+                - range: (min, max) tuple or None
+                - text_options: Dict of text options or None
+                - error: Error message or None
+        
+        Example:
+            >>> props = manager.getAdvancedPropertyInfo()
+            >>> for prop in props:
+            ...     if prop['writable']:
+            ...         print(f"{prop['name']}: {prop['value']}")
+        """
+        try:
+            return self._camera.getAdvancedPropertyInfo()
+        except Exception as e:
+            self.__logger.error(f'Failed to get advanced property info: {e}')
+            return []
+
     def startAcquisition(self):
         self._camera.startAcquisition()
 
