@@ -1,34 +1,80 @@
-from qtpy import QtCore, QtWidgets, QtGui
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
-import os
 
 
 class TilingWidget(Widget):
-    """ Widget that watch for new script files (.py) in a specific folder, for running them sequentially."""
+    """ Widget for controlling tiling scans with configurable parameters. """
 
+    sigStartTiling = QtCore.Signal()
+    sigStopTiling = QtCore.Signal()
+    sigParamsChanged = QtCore.Signal()
     sigSaveFocus = QtCore.Signal(bool)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.skipTileButton = guitools.BetterPushButton("Skip tile")
-        self.registerFocusButton = guitools.BetterPushButton("Register focus")
-        self.tileNumberEdit = QtWidgets.QLabel("Tile Number: 0/0")
-
         layout = QtWidgets.QGridLayout()
         self.setLayout(layout)
 
-        layout.addWidget(self.tileNumberEdit, 0, 0)
-        layout.addWidget(self.registerFocusButton, 0, 1)
-        layout.addWidget(self.skipTileButton, 0, 2)
+        # Row 0: N tiles and step size
+        nTilesLabel = QtWidgets.QLabel('N tiles:')
+        self.nTilesSpinbox = QtWidgets.QSpinBox()
+        self.nTilesSpinbox.setMinimum(1)
+        self.nTilesSpinbox.setMaximum(10000)
+        self.nTilesSpinbox.setValue(9)
 
-        self.registerFocusButton.clicked.connect(lambda: self.sigSaveFocus.emit(True))
-        self.skipTileButton.clicked.connect(lambda: self.sigSaveFocus.emit(False))
+        stepLabel = QtWidgets.QLabel('Step (µm):')
+        self.tileStepSpinbox = QtWidgets.QDoubleSpinBox()
+        self.tileStepSpinbox.setMinimum(1.0)
+        self.tileStepSpinbox.setMaximum(50000.0)
+        self.tileStepSpinbox.setSingleStep(10.0)
+        self.tileStepSpinbox.setDecimals(1)
+        self.tileStepSpinbox.setValue(100.0)
+
+        layout.addWidget(nTilesLabel, 0, 0)
+        layout.addWidget(self.nTilesSpinbox, 0, 1)
+        layout.addWidget(stepLabel, 0, 2)
+        layout.addWidget(self.tileStepSpinbox, 0, 3)
+
+        # Row 1: Start and Stop buttons
+        self.startButton = guitools.BetterPushButton('Start Tiling')
+        self.stopButton = guitools.BetterPushButton('Stop')
+        self.stopButton.setEnabled(False)
+
+        layout.addWidget(self.startButton, 1, 0, 1, 2)
+        layout.addWidget(self.stopButton, 1, 2, 1, 2)
+
+        # Row 2: Progress label
+        self.progressLabel = QtWidgets.QLabel('')
+        self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.progressLabel, 2, 0, 1, 4)
+
+        # Wire up signals
+        self.startButton.clicked.connect(self.sigStartTiling)
+        self.stopButton.clicked.connect(self.sigStopTiling)
+        self.nTilesSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
+
+    def setProgress(self, current, total):
+        self.progressLabel.setText(f'{current} / {total}')
+
+    def setRunning(self, running):
+        self.startButton.setEnabled(not running)
+        self.stopButton.setEnabled(running)
+
+    def getNTiles(self):
+        return self.nTilesSpinbox.value()
+
+    def getTileStepUm(self):
+        return self.tileStepSpinbox.value()
+
+    def setDefaultStep(self, step_um):
+        self.tileStepSpinbox.setValue(step_um)
 
     def setLabel(self, label):
-        self.tileNumberEdit.setText(label)
+        self.progressLabel.setText(label)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
