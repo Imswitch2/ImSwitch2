@@ -43,10 +43,24 @@ class SettingsController(ImConWidgetController):
             if not dManager.forAcquisition:
                 continue
 
+            # Check if detector supports advanced property introspection
+            supportsAdvancedProperties = hasattr(dManager, 'getAdvancedPropertyInfo')
+            
             self._widget.addDetector(
                 dName, dManager.model, dManager.parameters, dManager.actions,
-                dManager.supportedBinnings, self._setupInfo.rois
+                dManager.supportedBinnings, self._setupInfo.rois,
+                supportsAdvancedProperties=supportsAdvancedProperties
             )
+            
+            # If advanced properties are supported, connect refresh signal and populate
+            if supportsAdvancedProperties:
+                advancedWidget = self._widget.getAdvancedWidget(dName)
+                if advancedWidget:
+                    advancedWidget.sigRefreshClicked.connect(
+                        lambda checked=False, name=dName: self.refreshAdvancedProperties(name)
+                    )
+                    # Initial population
+                    self.refreshAdvancedProperties(dName)
 
         self.roiAdded = False
         self.initParameters()
@@ -515,6 +529,59 @@ class SettingsController(ImConWidgetController):
                        self.updateParamsFromDetector(detector=c))
         )
         self.updateSharedAttrs()
+    
+    def refreshAdvancedProperties(self, detectorName):
+        """
+        Refresh advanced properties for a detector.
+        
+        Queries the detector manager for advanced property information and
+        updates the advanced properties widget display.
+        
+        Args:
+            detectorName: Name of the detector to refresh
+        """
+        try:
+            # Get the detector manager
+            detectorManager = self._master.detectorsManager[detectorName]
+            
+            # Get the advanced widget
+            advancedWidget = self._widget.getAdvancedWidget(detectorName)
+            if not advancedWidget:
+                return
+            
+            # Check if manager has the method (should be true if we got here, but be safe)
+            if not hasattr(detectorManager, 'getAdvancedPropertyInfo'):
+                advancedWidget.showMessage(
+                    'Advanced properties not supported for this detector.'
+                )
+                return
+            
+            # Get properties from manager
+            properties = detectorManager.getAdvancedPropertyInfo()
+            
+            # Display properties in widget
+            if properties:
+                advancedWidget.setProperties(properties)
+                self.__logger.info(
+                    f'Refreshed {len(properties)} advanced properties for {detectorName}'
+                )
+            else:
+                advancedWidget.showMessage(
+                    'No advanced properties available or failed to query properties.'
+                )
+                self.__logger.warning(
+                    f'No advanced properties returned for {detectorName}'
+                )
+        
+        except Exception as e:
+            self.__logger.error(
+                f'Failed to refresh advanced properties for {detectorName}: {e}'
+            )
+            advancedWidget = self._widget.getAdvancedWidget(detectorName)
+            if advancedWidget:
+                advancedWidget.showMessage(
+                    f'Error querying properties: {str(e)}'
+                )
 
 
 _attrCategory = 'Detector'

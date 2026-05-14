@@ -1,5 +1,5 @@
 from pyqtgraph.parametertree import ParameterTree, Parameter
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtWidgets, QtGui
 
 from imswitch.imcommon.model import shortcut
 from imswitch.imcommon.view.guitools import naparitools
@@ -139,6 +139,160 @@ class CamParamTree(ParameterTree):
         return attrs
 
 
+class AdvancedPropertiesWidget(QtWidgets.QWidget):
+    """
+    Read-only widget displaying advanced camera properties.
+    
+    Shows a table with property metadata: name, value, R/W status, range, and options.
+    Includes a Refresh button to re-query properties from the camera.
+    """
+    
+    sigRefreshClicked = QtCore.Signal()
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Create layout
+        layout = QtWidgets.QVBoxLayout()
+        self.setLayout(layout)
+        
+        # Info label
+        infoLabel = QtWidgets.QLabel(
+            '<i>Advanced camera properties (read-only). '
+            'Use Refresh to update values from camera.</i>'
+        )
+        infoLabel.setWordWrap(True)
+        layout.addWidget(infoLabel)
+        
+        # Refresh button
+        self.refreshButton = guitools.BetterPushButton('Refresh Properties')
+        layout.addWidget(self.refreshButton)
+        
+        # Properties table
+        self.table = QtWidgets.QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(['Property', 'Value', 'Access', 'Range', 'Options'])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        
+        # Set column widths
+        self.table.setColumnWidth(0, 200)  # Property name
+        self.table.setColumnWidth(1, 100)  # Value
+        self.table.setColumnWidth(2, 60)   # Access (R/W)
+        self.table.setColumnWidth(3, 150)  # Range
+        
+        layout.addWidget(self.table)
+        
+        # Connect signals
+        self.refreshButton.clicked.connect(self.sigRefreshClicked)
+    
+    def setProperties(self, properties):
+        """
+        Populate table with property information.
+        
+        Args:
+            properties: List of property dicts from manager.getAdvancedPropertyInfo()
+        """
+        self.table.setSortingEnabled(False)  # Disable sorting while updating
+        self.table.setRowCount(len(properties))
+        
+        for row, prop in enumerate(properties):
+            # Property name
+            nameItem = QtWidgets.QTableWidgetItem(prop.get('name', ''))
+            self.table.setItem(row, 0, nameItem)
+            
+            # Current value
+            value = prop.get('value')
+            if value is None:
+                valueStr = '—'
+            elif isinstance(value, float):
+                valueStr = f'{value:.6g}'
+            else:
+                valueStr = str(value)
+            valueItem = QtWidgets.QTableWidgetItem(valueStr)
+            self.table.setItem(row, 1, valueItem)
+            
+            # Access (R/W)
+            readable = prop.get('readable', False)
+            writable = prop.get('writable', False)
+            access = ''
+            if readable:
+                access += 'R'
+            if writable:
+                access += 'W'
+            if not access:
+                access = '—'
+            accessItem = QtWidgets.QTableWidgetItem(access)
+            
+            # Color-code writable properties
+            if writable:
+                accessItem.setForeground(QtGui.QBrush(QtGui.QColor(0, 100, 0)))  # Dark green
+                accessItem.setFont(QtGui.QFont('', -1, QtGui.QFont.Bold))
+            
+            self.table.setItem(row, 2, accessItem)
+            
+            # Range
+            prop_range = prop.get('range')
+            if prop_range and len(prop_range) == 2:
+                rangeStr = f'[{prop_range[0]:.6g}, {prop_range[1]:.6g}]'
+            else:
+                rangeStr = '—'
+            rangeItem = QtWidgets.QTableWidgetItem(rangeStr)
+            self.table.setItem(row, 3, rangeItem)
+            
+            # Text options
+            text_options = prop.get('text_options')
+            if text_options:
+                # Convert bytes keys to strings and show first few options
+                options = []
+                for key in list(text_options.keys())[:3]:
+                    if isinstance(key, bytes):
+                        options.append(key.decode('utf-8', errors='replace'))
+                    else:
+                        options.append(str(key))
+                
+                if len(text_options) > 3:
+                    optionsStr = ', '.join(options) + f'... (+{len(text_options)-3} more)'
+                else:
+                    optionsStr = ', '.join(options)
+            else:
+                optionsStr = '—'
+            optionsItem = QtWidgets.QTableWidgetItem(optionsStr)
+            self.table.setItem(row, 4, optionsItem)
+            
+            # Mark rows with errors
+            error = prop.get('error')
+            if error:
+                for col in range(5):
+                    item = self.table.item(row, col)
+                    if item:
+                        item.setForeground(QtGui.QBrush(QtGui.QColor(150, 150, 150)))  # Gray out
+                        item.setToolTip(f'Error: {error}')
+        
+        self.table.setSortingEnabled(True)  # Re-enable sorting
+        self.table.resizeRowsToContents()
+    
+    def showMessage(self, message):
+        """
+        Show a message in place of the table (e.g., for errors or "not supported").
+        
+        Args:
+            message: Message text to display
+        """
+        self.table.setRowCount(1)
+        self.table.setColumnCount(1)
+        self.table.horizontalHeader().setVisible(False)
+        self.table.verticalHeader().setVisible(False)
+        
+        messageItem = QtWidgets.QTableWidgetItem(message)
+        messageItem.setTextAlignment(QtCore.Qt.AlignCenter)
+        messageItem.setFlags(QtCore.Qt.ItemIsEnabled)
+        self.table.setItem(0, 0, messageItem)
+
+
 class SettingsWidget(Widget):
     """ Detector settings and ROI parameters. """
 
@@ -155,6 +309,7 @@ class SettingsWidget(Widget):
         self.ROI = naparitools.NapariROIOverlay()
         self.stack = QtWidgets.QStackedWidget()
         self.trees = {}
+        self.advancedWidgets = {}  # Store advanced property widgets by detector name
 
         self.detectorListBox = QtWidgets.QHBoxLayout()
         self.detectorListLabel = QtWidgets.QLabel('Current detector:')
@@ -180,10 +335,42 @@ class SettingsWidget(Widget):
         self.nextDetectorButton.clicked.connect(self.sigNextDetectorClicked)
 
     def addDetector(self, detectorName, detectorModel, detectorParameters, detectorActions,
-                    supportedBinnings, roiInfos):
-        self.trees[detectorName] = CamParamTree(detectorParameters, detectorActions,
-                                                supportedBinnings, roiInfos)
-        self.stack.addWidget(self.trees[detectorName])
+                    supportedBinnings, roiInfos, supportsAdvancedProperties=False):
+        """
+        Add a detector to the settings widget.
+        
+        Args:
+            detectorName: Name of the detector
+            detectorModel: Model string of the detector
+            detectorParameters: Dict of detector parameters
+            detectorActions: Dict of detector actions
+            supportedBinnings: List of supported binning values
+            roiInfos: Dict of ROI information
+            supportsAdvancedProperties: If True, add an "Advanced" tab for property introspection
+        """
+        # Create the parameter tree
+        paramTree = CamParamTree(detectorParameters, detectorActions,
+                                supportedBinnings, roiInfos)
+        self.trees[detectorName] = paramTree
+        
+        # If advanced properties are supported, create a tab widget
+        if supportsAdvancedProperties:
+            tabWidget = QtWidgets.QTabWidget()
+            
+            # Add Basic tab with parameter tree
+            tabWidget.addTab(paramTree, 'Basic')
+            
+            # Add Advanced tab with property introspection widget
+            advancedWidget = AdvancedPropertiesWidget()
+            self.advancedWidgets[detectorName] = advancedWidget
+            tabWidget.addTab(advancedWidget, 'Advanced')
+            
+            # Add tab widget to stack
+            self.stack.addWidget(tabWidget)
+        else:
+            # No advanced properties, just add the parameter tree directly
+            self.stack.addWidget(paramTree)
+            self.advancedWidgets[detectorName] = None
 
         self.detectorList.addItem(f'{detectorModel} ({detectorName})', detectorName)
         self.nextDetectorButton.setVisible(True)
@@ -222,6 +409,30 @@ class SettingsWidget(Widget):
     def hideROI(self):
         self.ROI.hide()
 
+    def getAdvancedWidget(self, detectorName):
+        """
+        Get the advanced properties widget for a detector, if it exists.
+        
+        Args:
+            detectorName: Name of the detector
+            
+        Returns:
+            AdvancedPropertiesWidget or None if detector doesn't support advanced properties
+        """
+        return self.advancedWidgets.get(detectorName)
+    
+    def hasAdvancedWidget(self, detectorName):
+        """
+        Check if a detector has an advanced properties widget.
+        
+        Args:
+            detectorName: Name of the detector
+            
+        Returns:
+            bool: True if detector has advanced properties support
+        """
+        return detectorName in self.advancedWidgets and self.advancedWidgets[detectorName] is not None
+    
     @shortcut("Ctrl+N", "Next detector")
     def toggleNextButton(self):
         self.nextDetectorButton.click()
