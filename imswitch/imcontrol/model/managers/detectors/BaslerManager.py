@@ -71,9 +71,6 @@ class BaslerManager(DetectorManager):
 
         super().setParameter(name, value)
 
-        if name not in self._DetectorManager__parameters:
-            raise AttributeError(f'Non-existent parameter "{name}" specified')
-
         value = self._camera.setPropertyValue(name, value)
         return value
 
