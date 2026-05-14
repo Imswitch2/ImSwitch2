@@ -570,19 +570,19 @@ class SettingsController(ImConWidgetController):
             # Display properties in widget
             if properties:
                 advancedWidget.setProperties(properties)
-                self.__logger.info(
+                self._logger.info(
                     f'Refreshed {len(properties)} advanced properties for {detectorName}'
                 )
             else:
                 advancedWidget.showMessage(
                     'No advanced properties available or failed to query properties.'
                 )
-                self.__logger.warning(
+                self._logger.warning(
                     f'No advanced properties returned for {detectorName}'
                 )
         
         except Exception as e:
-            self.__logger.error(
+            self._logger.error(
                 f'Failed to refresh advanced properties for {detectorName}: {e}'
             )
             advancedWidget = self._widget.getAdvancedWidget(detectorName)
@@ -610,13 +610,13 @@ class SettingsController(ImConWidgetController):
             
             # Check if manager has the setAdvancedProperty method
             if not hasattr(detectorManager, 'setAdvancedProperty'):
-                self.__logger.error(
+                self._logger.error(
                     f'Detector {detectorName} does not support setting advanced properties'
                 )
                 return
             
             # Log the change attempt
-            self.__logger.info(
+            self._logger.info(
                 f'User requesting to change {propertyName} to {value} for {detectorName}'
             )
             
@@ -626,7 +626,7 @@ class SettingsController(ImConWidgetController):
             # Handle the result
             if result.get('success'):
                 actual_value = result.get('value')
-                self.__logger.info(
+                self._logger.info(
                     f'Successfully set {propertyName} to {actual_value} for {detectorName}'
                 )
                 
@@ -637,14 +637,14 @@ class SettingsController(ImConWidgetController):
                 
             else:
                 error_msg = result.get('error', 'Unknown error')
-                self.__logger.error(
+                self._logger.error(
                     f'Failed to set {propertyName} to {value} for {detectorName}: {error_msg}'
                 )
                 
                 # TODO: Could show error dialog or status message in UI
         
         except Exception as e:
-            self.__logger.error(
+            self._logger.error(
                 f'Exception while setting {propertyName} to {value} for {detectorName}: {e}'
             )
             import traceback
@@ -706,19 +706,19 @@ class SettingsController(ImConWidgetController):
                                 paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
                                 detector_state['parameters'][paramName] = paramInWidget.value()
                             except Exception as e:
-                                self.__logger.debug(
+                                self._logger.debug(
                                     f'Could not save parameter {paramName} for {detectorName}: {e}'
                                 )
                     
                     state['detectors'][detectorName] = detector_state
                     
                 except Exception as e:
-                    self.__logger.warning(
+                    self._logger.warning(
                         f'Failed to save state for detector {detectorName}: {e}'
                     )
         
         except Exception as e:
-            self.__logger.error(f'Failed to save detector settings state: {e}')
+            self._logger.error(f'Failed to save detector settings state: {e}')
         
         return state
     
@@ -741,7 +741,7 @@ class SettingsController(ImConWidgetController):
             for detectorName, detector_state in detectors_state.items():
                 # Check if detector exists
                 if detectorName not in self._master.detectorsManager.getAllDeviceNames():
-                    self.__logger.debug(
+                    self._logger.debug(
                         f'Skipping state for non-existent detector: {detectorName}'
                     )
                     continue
@@ -760,39 +760,39 @@ class SettingsController(ImConWidgetController):
                         try:
                             params.binning.setValue(detector_state['binning'])
                         except Exception as e:
-                            self.__logger.debug(f'Could not restore binning for {detectorName}: {e}')
+                            self._logger.debug(f'Could not restore binning for {detectorName}: {e}')
                     
                     # Restore frame mode
                     if 'frame_mode' in detector_state and detector_state['frame_mode'] is not None:
                         try:
                             params.frameMode.setValue(detector_state['frame_mode'])
                         except Exception as e:
-                            self.__logger.debug(f'Could not restore frame mode for {detectorName}: {e}')
+                            self._logger.debug(f'Could not restore frame mode for {detectorName}: {e}')
                     
                     # Restore ROI settings
                     if 'x0' in detector_state and detector_state['x0'] is not None:
                         try:
                             params.x0.setValue(detector_state['x0'])
                         except Exception as e:
-                            self.__logger.debug(f'Could not restore x0 for {detectorName}: {e}')
+                            self._logger.debug(f'Could not restore x0 for {detectorName}: {e}')
                     
                     if 'y0' in detector_state and detector_state['y0'] is not None:
                         try:
                             params.y0.setValue(detector_state['y0'])
                         except Exception as e:
-                            self.__logger.debug(f'Could not restore y0 for {detectorName}: {e}')
+                            self._logger.debug(f'Could not restore y0 for {detectorName}: {e}')
                     
                     if 'width' in detector_state and detector_state['width'] is not None:
                         try:
                             params.width.setValue(detector_state['width'])
                         except Exception as e:
-                            self.__logger.debug(f'Could not restore width for {detectorName}: {e}')
+                            self._logger.debug(f'Could not restore width for {detectorName}: {e}')
                     
                     if 'height' in detector_state and detector_state['height'] is not None:
                         try:
                             params.height.setValue(detector_state['height'])
                         except Exception as e:
-                            self.__logger.debug(f'Could not restore height for {detectorName}: {e}')
+                            self._logger.debug(f'Could not restore height for {detectorName}: {e}')
                     
                     # Restore detector-specific parameters
                     parameters_state = detector_state.get('parameters', {})
@@ -803,19 +803,19 @@ class SettingsController(ImConWidgetController):
                                 paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
                                 paramInWidget.setValue(value)
                         except Exception as e:
-                            self.__logger.debug(
+                            self._logger.debug(
                                 f'Could not restore parameter {paramName} for {detectorName}: {e}'
                             )
                     
                 except Exception as e:
-                    self.__logger.warning(
+                    self._logger.warning(
                         f'Failed to restore state for detector {detectorName}: {e}'
                     )
             
-            self.__logger.info('Detector settings state restored successfully')
+            self._logger.info('Detector settings state restored successfully')
             
         except Exception as e:
-            self.__logger.error(f'Failed to restore detector settings state: {e}')
+            self._logger.error(f'Failed to restore detector settings state: {e}')
     
     def getStateSchemaVersion(self) -> int:
         """Return schema version for state compatibility checking."""
