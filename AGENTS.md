@@ -257,3 +257,85 @@ def setWidgetState(self, state: Dict[str, Any]) -> None:
 - **No breaking changes**: All existing functionality preserved
 
 **Status:** Fully implemented, documented, and tested. Safe for production use. See `docs/WIDGET_STATE_PERSISTENCE.md` for detailed usage guide.
+
+### Widget State Persistence: Detector and Scan Controllers + UI Integration (2026-05-14)
+
+Extended the widget state persistence framework to detector and scan controllers, and added UI integration with convenient save/load menu actions.
+
+**Controllers with persistence:**
+- **SettingsController**: Detector settings (exposure, ROI, binning, frame mode, detector-specific parameters)
+- **ScanControllerBase**: Scan parameters (size, step, center, TTL settings, dwell time)
+- **LaserController**: Laser settings (power, modulation, presets) — already implemented
+
+**UI Integration:**
+- Menu items: File > "Save Widget States…", "Load Widget States…"
+- Keyboard shortcuts: Ctrl+Shift+S (save), Ctrl+Shift+L (load)
+- File dialogs for user-friendly state file selection
+- Success/error messages via QMessageBox
+- Graceful handling of missing controllers
+
+**What gets persisted:**
+
+*SettingsController:*
+- Exposure time
+- ROI (X0, Y0, X1, Y1)
+- Binning (horizontal, vertical)
+- Frame mode (Continuous, Fixed-length)
+- Detector-specific parameters (Gain, Offset, etc.)
+
+*ScanControllerBase:*
+- Scan size (X, Y, Z)
+- Step size (X, Y, Z)
+- Center position (X, Y, Z)
+- TTL settings (start trigger, each, sequence)
+- Dwell time
+- **Note**: Only safe parameters, no hardware-active states
+
+**Safety:**
+- No automatic hardware actions on restore
+- Per-property error handling (one failure doesn't break all)
+- Only passive configuration persisted (no "scan running", "acquisition on", etc.)
+- Graceful degradation on missing/invalid properties
+- Schema versioning for compatibility
+
+**Files modified:**
+1. `imswitch/imcontrol/controller/controllers/SettingsController.py` (+178 lines)
+   - getWidgetState(), restoreWidgetState()
+   - Registration with WidgetStatePersistence
+   
+2. `imswitch/imcontrol/controller/controllers/ScanControllerBase.py` (+157 lines)
+   - getWidgetState(), restoreWidgetState()
+   - Registration with WidgetStatePersistence
+   
+3. `imswitch/imcontrol/view/ImConMainView.py` (+14 lines)
+   - sigSaveWidgetState, sigLoadWidgetState signals
+   - Menu items and keyboard shortcuts
+   
+4. `imswitch/imcontrol/controller/ImConMainController.py` (+64 lines)
+   - saveWidgetState(), loadWidgetState() handlers
+   - File dialogs and error handling
+
+**Usage:**
+```python
+# Programmatic usage:
+from imswitch.imcontrol.model import getWidgetStatePersistence
+persistence = getWidgetStatePersistence()
+
+# Save all widget states
+persistence.saveAllStates('my_experiment_config')
+
+# Load all widget states
+persistence.loadAllStates('my_experiment_config')
+
+# Or via UI:
+# File > Save Widget States… (Ctrl+Shift+S)
+# File > Load Widget States… (Ctrl+Shift+L)
+```
+
+**Documentation:**
+- Implementation summary: `PERSISTENCE_UI_INTEGRATION_SUMMARY.md`
+- Usage demo: `examples/widget_state_save_load_demo.py`
+- Framework docs: `docs/WIDGET_STATE_PERSISTENCE.md`
+
+**Status:** Complete and committed (commit 340bfb13). Fully backward compatible, zero risk to existing functionality. Ready for user testing.
+
