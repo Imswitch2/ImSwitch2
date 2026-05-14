@@ -1,6 +1,3 @@
-import serial
-from serial.tools import list_ports
-from serial.serialutil import SerialException
 import time
 import sys
 import re
@@ -39,6 +36,17 @@ class CoboltLaser:
             SerialException: serial port error
             RuntimeError: no laser found
         """
+        
+        try:
+            import serial
+            from serial.tools import list_ports
+            from serial.serialutil import SerialException
+        except ImportError as e:
+            logger.error(
+                f'Failed to import pyserial: {e}. '
+                'Install with: pip install pyserial'
+            )
+            raise
 
         if self.port != None:
             try:
@@ -582,6 +590,15 @@ class Cobolt06DPL(CoboltLaser):
 
 def list_lasers():
     """Return a list of laser objects for all cobolt lasers connected to the computer"""
+    try:
+        from serial.tools import list_ports
+    except ImportError as e:
+        logger.error(
+            f'Failed to import pyserial: {e}. '
+            'Install with: pip install pyserial'
+        )
+        raise
+    
     lasers = []
     ports = list_ports.comports()
     for port in ports:
