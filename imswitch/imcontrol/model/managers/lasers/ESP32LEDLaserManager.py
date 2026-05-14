@@ -15,19 +15,33 @@ class ESP32LEDLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0)
-        self._rs232manager = lowLevelManagers['rs232sManager'][
-            laserInfo.managerProperties['rs232device']
-        ]
         self.__logger = initLogger(self, instanceName=name)
+        self._isMock = False
         self.power = 0
-        self.__channel_index = laserInfo.managerProperties['channel_index']
-
         self.enabled = False
+        
+        try:
+            self._rs232manager = lowLevelManagers['rs232sManager'][
+                laserInfo.managerProperties['rs232device']
+            ]
+            self.__channel_index = laserInfo.managerProperties['channel_index']
+        except Exception as e:
+            self._isMock = True
+            self.__logger.warning(
+                f'Failed to initialize ESP32LED hardware, running in mock mode: {e}'
+            )
+            self._rs232manager = None
+            self.__channel_index = laserInfo.managerProperties.get('channel_index', 0)
         
 
     def setEnabled(self, enabled):
         """Turn on (N) or off (F) laser emission"""
         self.enabled = enabled
+        
+        if self._isMock:
+            self.__logger.debug(f'Mock mode: setEnabled({enabled}) ignored')
+            return
+        
         self._rs232manager._squid.set_laser(self.__channel_index, self.power if self.enabled else 0)
         
 
@@ -36,6 +50,11 @@ class ESP32LEDLaserManager(LaserManager):
         Sends a RS232 command to the laser specifying the new intensity.
         """
         self.power = power
+        
+        if self._isMock:
+            self.__logger.debug(f'Mock mode: setValue({power}) ignored')
+            return
+        
         if self.enabled:
             self._rs232manager._squid.set_laser(self.__channel_index, self.power)
 
