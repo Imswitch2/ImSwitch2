@@ -31,8 +31,9 @@ class APDManager(DetectorManager):
         self._detection_samplerate = float(1e6)
         self._nidaq_clock_source = r'ctr2InternalOutput'  # counter output task generating a 1 MHz frequency digitial pulse train
         self._channel = detectorInfo.managerProperties["ctrInputLine"]
+        device_name = detectorInfo.managerProperties.get("deviceName", "Dev1")
         if isinstance(self._channel, int):
-            self._channel = f'Dev1/ctr{self._channel}'  # for backwards compatibility
+            self._channel = f'{device_name}/ctr{self._channel}'  # for backwards compatibility
         self._terminal = detectorInfo.managerProperties["terminal"]
 
         self._frameCount = 0

@@ -27,8 +27,9 @@ class PMTManager(DetectorManager):
         self._nidaq_clock_source = r"ctr2InternalOutput"
 
         self._channel = detectorInfo.managerProperties.get("analogInputLine", None)
+        device_name = detectorInfo.managerProperties.get("deviceName", "Dev1")
         if isinstance(self._channel, int):
-            self._channel = f"Dev1/ai{self._channel}"
+            self._channel = f"{device_name}/ai{self._channel}"
 
         self._offset_v = float(detectorInfo.managerProperties.get("offset_v", 0.0))
 
