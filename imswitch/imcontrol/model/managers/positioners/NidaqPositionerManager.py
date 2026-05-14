@@ -25,17 +25,17 @@ class NidaqPositionerManager(PositionerManager):
         })
 
     def move(self, dist, axis):
-        self.setPosition(self._position[self.axes[0]] + dist, axis)
+        self.setPosition(self._position[axis] + dist, axis)
 
     def setPosition(self, position, axis):
-        self._position[self.axes[0]] = position
+        self._position[axis] = position
         self._nidaqManager.setAnalog(target=self.name,
                                      voltage=position / self._conversionFactor,
                                      min_val=self._minVolt,
                                      max_val=self._maxVolt)
     
     def resetToCurrent(self):
-        self.setPosition(self._position[self.axes[0]], 0)
+        self.setPosition(self._position[self.axes[0]], self.axes[0])
 
     def get_abs(self, axis):
         if axis not in self._position:
