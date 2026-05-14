@@ -179,3 +179,81 @@ napari Shapes layer mode change
 - ToolManager API: `VIEWER_TOOL_MANAGER_USAGE.md`
 
 **Status:** Complete and ready for testing. Zero risk to existing functionality.
+
+### Widget State Persistence Framework (2026-05-14)
+
+A generalized, reusable framework for saving and loading widget controller states to persistent storage.
+
+**What it does:**
+- Centralized service for widget state save/load operations
+- Controllers opt-in by implementing `getWidgetState()` and `setWidgetState()` methods
+- States stored in `~/ImSwitchConfig/imcontrol_widget_states/`
+- JSON format with metadata (controller name, schema version, widget type)
+- Robust error handling (missing widgets, corrupted files, version mismatches)
+- **Safety-first**: Never includes hardware-active states (laser on/off, acquisition running, etc.)
+
+**Why it was added:**
+- Enable persistent UI preferences across sessions
+- Provide programmatic state management via API
+- Replace ad-hoc preset systems with unified framework
+- Support future features (cloud sync, team configurations, state history)
+
+**Architecture:**
+```
+WidgetStatePersistence (singleton service)
+    ↓ register()
+Controllers implementing:
+    - getWidgetState() -> dict (passive config only, NO hardware-active states)
+    - setWidgetState(state: dict) -> None (restore config, NO hardware actions)
+    - getStateSchemaVersion() -> int (optional)
+```
+
+**Location:**
+- Service: `imswitch/imcontrol/model/WidgetStatePersistence.py`
+- Documentation: `docs/WIDGET_STATE_PERSISTENCE.md`
+- Demo: `examples/widget_state_persistence_demo.py`
+
+**Reference implementation:**
+- `LaserController` now implements state persistence
+- Includes laser power values, modulation settings, selected preset
+- **Does NOT include** laser enable states (safety requirement)
+- Coexists with existing laser preset system (backward compatible)
+
+**Safety guarantees:**
+1. **Never restores hardware-active states** (laser on, acquisition running, motor moving)
+2. **Only restores passive configuration** (values, settings, UI state)
+3. **Graceful degradation** (missing keys, unknown hardware, corrupted files)
+4. **Per-property error handling** (one failing property doesn't break others)
+
+**Usage pattern:**
+```python
+# In controller __init__:
+from imswitch.imcontrol.model import getWidgetStatePersistence
+getWidgetStatePersistence().register('MyController', self)
+
+# Implement interface:
+def getWidgetState(self) -> Dict[str, Any]:
+    return {'setting1': value1, 'setting2': value2}
+
+def setWidgetState(self, state: Dict[str, Any]) -> None:
+    self._widget.setSetting1(state.get('setting1', default))
+    self._widget.setSetting2(state.get('setting2', default))
+```
+
+**Storage structure:**
+```
+~/ImSwitchConfig/imcontrol_widget_states/
+├── LaserController/
+│   ├── default.json
+│   ├── high_power.json
+│   └── scanning.json
+└── <OtherController>/
+    └── default.json
+```
+
+**Integration with existing systems:**
+- **LaserController**: Both legacy presets (in setup JSON) and new state persistence work independently
+- **Future controllers**: Can use either system or both
+- **No breaking changes**: All existing functionality preserved
+
+**Status:** Fully implemented, documented, and tested. Safe for production use. See `docs/WIDGET_STATE_PERSISTENCE.md` for detailed usage guide.

@@ -1,7 +1,7 @@
-from typing import List, Union
+from typing import List, Union, Dict, Any
 
 from imswitch.imcommon.model import APIExport
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import ImConWidgetController
 
@@ -70,6 +70,9 @@ class LaserController(ImConWidgetController):
         self._widget.sigSavePresetAsClicked.connect(self.savePresetAs)
         self._widget.sigDeletePresetClicked.connect(self.deletePreset)
         self._widget.sigPresetScanDefaultToggled.connect(self.presetScanDefaultToggled)
+        
+        # Register for widget state persistence
+        getWidgetStatePersistence().register('LaserController', self)
 
     def closeEvent(self):
         self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
@@ -306,6 +309,105 @@ class LaserController(ImConWidgetController):
         returnmessage = self._master.rs232sManager["ESP32"]._esp32.readSerial(is_blocking=True, timeout=1)
 
         return returnmessage
+    
+    # Widget State Persistence Interface
+    
+    def getWidgetState(self) -> Dict[str, Any]:
+        """
+        Get current widget state for persistence.
+        
+        Returns a dict containing laser values and modulation settings.
+        Does NOT include enable states for safety.
+        
+        Returns:
+            Dict with structure:
+            {
+                'laser_values': {laserName: float},
+                'modulation_frequencies': {laserName: int},
+                'modulation_duty_cycles': {laserName: int},
+                'selected_preset': str or None
+            }
+        """
+        state = {
+            'laser_values': {},
+            'modulation_frequencies': {},
+            'modulation_duty_cycles': {},
+            'selected_preset': self._widget.getCurrentPreset()
+        }
+        
+        for lName, lManager in self._master.lasersManager:
+            if not lManager.isBinary:
+                state['laser_values'][lName] = self._widget.getValue(lName)
+            
+            if lManager.isModulated:
+                # Get modulation settings from widget if available
+                if hasattr(self._widget.laserModules[lName], 'getFrequency'):
+                    state['modulation_frequencies'][lName] = \
+                        self._widget.laserModules[lName].getFrequency()
+                if hasattr(self._widget.laserModules[lName], 'getDutyCycle'):
+                    state['modulation_duty_cycles'][lName] = \
+                        self._widget.laserModules[lName].getDutyCycle()
+        
+        return state
+    
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        """
+        Restore widget state from persistence.
+        
+        SAFETY: Does NOT restore laser enable states. Only restores:
+        - Laser power values (but doesn't turn lasers on)
+        - Modulation frequency/duty cycle settings
+        - Selected preset (for UI state only)
+        
+        Args:
+            state: Dict returned by getWidgetState()
+        """
+        try:
+            # Restore laser values (but not enable states - safety first!)
+            laser_values = state.get('laser_values', {})
+            for lName, value in laser_values.items():
+                if lName in [name for name, _ in self._master.lasersManager]:
+                    try:
+                        self.setLaserValue(lName, value)
+                    except Exception as e:
+                        self._logger.warning(
+                            f'Failed to restore value for laser {lName}: {e}'
+                        )
+            
+            # Restore modulation settings
+            modulation_frequencies = state.get('modulation_frequencies', {})
+            for lName, freq in modulation_frequencies.items():
+                if lName in [name for name, _ in self._master.lasersManager]:
+                    try:
+                        self.frequencyChanged(lName, freq)
+                    except Exception as e:
+                        self._logger.warning(
+                            f'Failed to restore modulation frequency for laser {lName}: {e}'
+                        )
+            
+            modulation_duty_cycles = state.get('modulation_duty_cycles', {})
+            for lName, dc in modulation_duty_cycles.items():
+                if lName in [name for name, _ in self._master.lasersManager]:
+                    try:
+                        self.dutyCycleChanged(lName, dc)
+                    except Exception as e:
+                        self._logger.warning(
+                            f'Failed to restore modulation duty cycle for laser {lName}: {e}'
+                        )
+            
+            # Restore selected preset (UI state only, doesn't apply it)
+            selected_preset = state.get('selected_preset')
+            if selected_preset and selected_preset in self._setupInfo.laserPresets:
+                self._widget.setCurrentPreset(selected_preset)
+            
+            self._logger.info('Widget state restored successfully')
+            
+        except Exception as e:
+            self._logger.error(f'Failed to restore widget state: {e}')
+    
+    def getStateSchemaVersion(self) -> int:
+        """Return schema version for state compatibility checking."""
+        return 1
 
 
 
