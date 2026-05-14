@@ -7,6 +7,7 @@ Run:      python tools/imswitch_config_editor.py [/path/to/config/dir]
 Requires: pip install PyQt5
 """
 
+import ast
 import colorsys
 import copy
 import json
@@ -17,11 +18,12 @@ import glob
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
-    QSpinBox, QSplitter, QStatusBar, QTabWidget, QToolBar, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout, QDialog, QTextEdit,
+    QApplication, QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox,
+    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
+    QSizePolicy, QSpinBox, QSplitter, QStatusBar, QTabWidget, QToolBar,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
+    QDialog, QTextEdit,
 )
 
 # =============================================================================
@@ -839,7 +841,10 @@ class PropertyEditor(QWidget):
         try:
             value = json.loads(val_str.strip()) if val_str.strip() else None
         except json.JSONDecodeError:
-            value = val_str.strip()
+            try:
+                value = ast.literal_eval(val_str.strip())
+            except Exception:
+                value = val_str.strip()
 
         if where == "top":
             self._device[key.strip()] = value
@@ -950,6 +955,138 @@ class JsonEditorDialog(QDialog):
 
 
 # =============================================================================
+# WidgetPickerDialog – checkbox-based widget selector
+# =============================================================================
+WIDGET_GROUPS = {
+    "Core": [
+        ("Image",       "Main image display"),
+        ("Settings",    "Detector settings & ROI"),
+        ("View",        "Image controls (LUT, zoom)"),
+        ("Recording",   "Recording panel"),
+        ("ViewerTools", "Napari viewer tools"),
+        ("LineProfile",  "Line profile tool"),
+        ("Console",     "Python scripting console"),
+    ],
+    "Control": [
+        ("Laser",        "Laser / LED power control"),
+        ("Positioner",   "Stage positioner"),
+        ("Scan",         "Scan widget"),
+        ("Rotator",      "Rotator control"),
+        ("RotationScan", "Rotation scan"),
+        ("MotCorr",      "Leica motorized correction collar"),
+    ],
+    "Microscope": [
+        ("FocusLock",  "IR focus lock"),
+        ("Autofocus",  "Software autofocus"),
+        ("LeicaStand", "Leica stand control"),
+    ],
+    "Analysis": [
+        ("FFT",            "Live FFT tool"),
+        ("BeadRec",        "Bead reconstruction"),
+        ("AlignAverage",   "Axial alignment tool"),
+        ("AlignXY",        "Rotational alignment tool"),
+        ("AlignmentLine",  "Line alignment overlay"),
+        ("ULenses",        "uLenses tool"),
+        ("BFTimelapse",    "Brightfield timelapse"),
+    ],
+    "Advanced": [
+        ("SLMs",       "SLM control"),
+        ("EtSTED",     "EtSTED widget"),
+        ("EtMonalisa", "EtMonalisa widget"),
+        ("Tiling",     "Spiral tiling scan"),
+        ("Watcher",    "File watcher"),
+    ],
+}
+
+# Flat set of all known widget names for fast lookup
+_ALL_KNOWN_WIDGETS = {name for group in WIDGET_GROUPS.values() for name, _ in group}
+
+
+class WidgetPickerDialog(QDialog):
+    """Modal dialog that presents every known widget as a checkbox grouped by
+    category.  Unknown (custom) widgets already in the enabled list are shown
+    in a separate 'Custom' section at the bottom, also pre-checked."""
+
+    def __init__(self, enabled: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Widgets")
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(480)
+
+        # Track checkboxes: name → QCheckBox
+        self._checkboxes: dict = {}
+
+        outer = QVBoxLayout(self)
+        outer.setSpacing(8)
+
+        # ── Scrollable checkbox area ──────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setSpacing(4)
+        inner_lay.setContentsMargins(4, 4, 4, 4)
+
+        enabled_set = set(enabled)
+
+        for group_name, members in WIDGET_GROUPS.items():
+            # Bold group header
+            hdr = QLabel(f"<b>{group_name}</b>")
+            hdr.setTextFormat(Qt.RichText)
+            hdr.setContentsMargins(0, 6, 0, 2)
+            inner_lay.addWidget(hdr)
+
+            for widget_name, description in members:
+                cb = QCheckBox(f"{widget_name}  —  {description}")
+                cb.setChecked(widget_name in enabled_set)
+                cb.setStyleSheet("font-size:9pt;")
+                self._checkboxes[widget_name] = cb
+                inner_lay.addWidget(cb)
+
+        # ── Custom / unknown entries ──────────────────────────────────────
+        custom_names = [n for n in enabled if n not in _ALL_KNOWN_WIDGETS]
+        if custom_names:
+            hdr = QLabel("<b>Custom</b>")
+            hdr.setTextFormat(Qt.RichText)
+            hdr.setContentsMargins(0, 6, 0, 2)
+            inner_lay.addWidget(hdr)
+            for widget_name in custom_names:
+                cb = QCheckBox(widget_name)
+                cb.setChecked(True)
+                cb.setStyleSheet("font-size:9pt;")
+                self._checkboxes[widget_name] = cb
+                inner_lay.addWidget(cb)
+
+        inner_lay.addStretch()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        # ── OK / Cancel ───────────────────────────────────────────────────
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        outer.addWidget(btn_box)
+
+    def selected_widgets(self) -> list:
+        """Return checked widget names in group order, custom entries last."""
+        result = []
+        # Known widgets in group order
+        for members in WIDGET_GROUPS.values():
+            for widget_name, _ in members:
+                cb = self._checkboxes.get(widget_name)
+                if cb is not None and cb.isChecked():
+                    result.append(widget_name)
+        # Custom widgets (preserve original order)
+        for widget_name, cb in self._checkboxes.items():
+            if widget_name not in _ALL_KNOWN_WIDGETS and cb.isChecked():
+                result.append(widget_name)
+        return result
+
+
+# =============================================================================
 # ConfigExtrasBar – availableWidgets list + buttons for other config sections
 # =============================================================================
 class ConfigExtrasBar(QFrame):
@@ -984,15 +1121,16 @@ class ConfigExtrasBar(QFrame):
         w_scroll.setWidget(self._widgets_inner)
         root.addWidget(w_scroll, 1)
 
-        add_w_btn = QPushButton("＋")
-        add_w_btn.setFixedSize(24, 24)
-        add_w_btn.setToolTip("Add a widget name")
-        add_w_btn.setStyleSheet(
-            "QPushButton { font-size:12pt; border:1px solid #AAA; border-radius:3px; }"
+        edit_w_btn = QPushButton("Edit Widgets…")
+        edit_w_btn.setFixedHeight(26)
+        edit_w_btn.setToolTip("Choose which widgets are available")
+        edit_w_btn.setStyleSheet(
+            "QPushButton { font-size:8pt; padding:0 8px; border:1px solid #AAA; "
+            "border-radius:3px; }"
             "QPushButton:hover { background:#DDD; }"
         )
-        add_w_btn.clicked.connect(self._add_widget)
-        root.addWidget(add_w_btn)
+        edit_w_btn.clicked.connect(self._open_widget_picker)
+        root.addWidget(edit_w_btn)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.VLine)
@@ -1056,14 +1194,11 @@ class ConfigExtrasBar(QFrame):
         lay.addWidget(del_btn)
         return chip
 
-    def _add_widget(self):
-        name, ok = QInputDialog.getText(self, "Add Widget", "Widget name:")
-        if not ok or not name.strip():
-            return
-        widgets = list(self._data.get("availableWidgets") or [])
-        if name.strip() not in widgets:
-            widgets.append(name.strip())
-            self._data["availableWidgets"] = widgets
+    def _open_widget_picker(self):
+        current = list(self._data.get("availableWidgets") or [])
+        dlg = WidgetPickerDialog(current, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._data["availableWidgets"] = dlg.selected_widgets()
             self._refresh_widgets()
             self.sig_modified.emit()
 
