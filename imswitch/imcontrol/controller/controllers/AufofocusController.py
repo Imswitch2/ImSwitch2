@@ -1,9 +1,6 @@
 import time
 
 import numpy as np
-from time import perf_counter
-import scipy.ndimage as ndi
-from scipy.ndimage.filters import laplace
 
 from imswitch.imcommon.framework import Thread, Timer
 from imswitch.imcommon.model import initLogger, APIExport
@@ -68,70 +65,56 @@ class ProcessDataThread(Thread):
         return self.latestimg
 
     def update(self, rangez, resolutionz):
-
-        allfocusvals = []
-        allfocuspositions = []
-
+        # Get current Z position
+        positioner = self._controller._master.positionersManager[self._controller.positioner]
+        current_z = positioner.position[gAxis]
         
-        # 0 move focus to initial position
-        self._controller._master.positionersManager[self._controller.positioner].move(-rangez, axis=gAxis)
-        img = self.grabCameraFrame()     # grab dummy frame?
-        # store data
-        Nz = int(2*rangez//resolutionz)
-        allfocusvals = np.zeros(Nz)
-        allfocuspositions  = np.zeros(Nz)
-        allfocusimages = []
-
-        # 1 compute focus for every z position
-        for iz in range(Nz):
-
-            # 0 Move stage to the predefined position - remember: stage moves in relative coordinates
-            self._controller._master.positionersManager[self._controller.positioner].move(resolutionz, axis=gAxis)
-            time.sleep(T_DEBOUNCE)
-            positionz = iz*resolutionz
-            self._controller._logger.debug(f'Moving focus to {positionz}')
-
-            # 1 Grab camera frame
-            self._controller._logger.debug("Grabbing Frame")
+        # Compute start and end positions centered on current Z
+        start = current_z - rangez / 2
+        end = current_z + rangez / 2
+        n_steps = max(3, int(rangez / resolutionz))
+        z_positions = [start + i * resolutionz for i in range(n_steps)]
+        
+        focus_vals = []
+        
+        # Scan through Z positions
+        for z in z_positions:
+            # Move to absolute position
+            positioner.setPosition(z, gAxis)
+            time.sleep(0.15)
+            
+            # Grab frame
+            self._controller._logger.debug(f'Moving focus to {z:.2f}')
             img = self.grabCameraFrame()
-            allfocusimages.append(img)
-
-            # 2 Gaussian filter the image, to remove noise
-            self._controller._logger.debug("Processing Frame")
-            #img_norm = img-np.min(img)
-            #img_norm = img_norm/np.mean(img_norm)
-            imagearraygf = ndi.filters.gaussian_filter(img, 3)
-
-            # 3 compute focus metric
-            focusquality = np.mean(ndi.filters.laplace(imagearraygf))
-            allfocusvals[iz]=focusquality
-            allfocuspositions[iz] = positionz
-
-        # display the curve
-        self._controller._widget.focusPlotCurve.setData(allfocuspositions,allfocusvals)
-
-        # 4 find maximum focus value and move stage to this position
-        allfocusvals=np.array(allfocusvals)
-        zindex=np.where(np.max(allfocusvals)==allfocusvals)[0]
-        bestzpos = allfocuspositions[np.squeeze(zindex)]
-
-         # 5 move focus back to initial position (reduce backlash)
-        self._controller._master.positionersManager[self._controller.positioner].move(-Nz*resolutionz, axis=gAxis)
-
-        # 6 Move stage to the position with max focus value
-        self._controller._logger.debug(f'Moving focus to {zindex*resolutionz}')
-        self._controller._master.positionersManager[self._controller.positioner].move(zindex*resolutionz, axis=gAxis)
-
-
-        # DEBUG
-        allfocusimages=np.array(allfocusimages)
-        np.save('allfocusimages.npy', allfocusimages)
-        import tifffile as tif
-        tif.imwrite("llfocusimages.tif", allfocusimages)
-        np.save('allfocuspositions.npy', allfocuspositions)
-        np.save('allfocusvals.npy', allfocusvals)
-
-        return bestzpos
+            
+            # Compute gradient variance focus metric
+            img_float = img.astype(float)
+            gx = np.diff(img_float, axis=1)
+            gy = np.diff(img_float, axis=0)
+            focus_val = float(np.var(gx) + np.var(gy))
+            focus_vals.append(focus_val)
+            
+            self._controller._logger.debug(f'Z={z:.2f}, focus={focus_val:.2f}')
+        
+        # Fit parabola and find peak
+        coeffs = np.polyfit(z_positions, focus_vals, 2)
+        
+        if coeffs[0] < 0:  # Concave down - valid peak
+            z_focus = -coeffs[1] / (2 * coeffs[0])
+            # Clamp to range
+            z_focus = max(min(z_positions), min(z_focus, max(z_positions)))
+        else:  # Fall back to grid maximum
+            z_focus = z_positions[np.argmax(focus_vals)]
+        
+        # Move to optimal focus position
+        positioner.setPosition(z_focus, gAxis)
+        
+        # Update plot
+        self._controller._widget.focusPlotCurve.setData(z_positions, focus_vals)
+        
+        self._controller._logger.debug(f'Optimal focus at Z={z_focus:.2f}')
+        
+        return z_focus
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
