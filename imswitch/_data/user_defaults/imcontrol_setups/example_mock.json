@@ -16,9 +16,24 @@
         }
     },
     "lasers": {},
-    "positioners": {},
+    "positioners": {
+        "Mock XY Stage": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MHXYStageManager",
+            "managerProperties": {
+                "rs232device": ""
+            },
+            "axes": ["X", "Y"],
+            "forPositioning": true
+        }
+    },
     "rs232devices": {},
     "slms": {},
+    "tiling": {
+        "xyPositioner": "Mock XY Stage",
+        "defaultTileStepUm": 100.0
+    },
     "availableWidgets": [
         "Settings",
         "View",

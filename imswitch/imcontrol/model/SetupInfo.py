@@ -232,6 +232,21 @@ class AutofocusInfo:
 
 
 @dataclass(frozen=True)
+class TilingInfo:
+    xyPositioner: str
+    """ Name of the XY positioner (must match a positioner in the setup). """
+
+    zPositioner: str = ""
+    """ Name of the Z positioner used for per-tile autofocus. Empty = disabled. """
+
+    camera: str = ""
+    """ Detector to use for tile acquisition. Empty = first forAcquisition detector. """
+
+    defaultTileStepUm: float = 100.0
+    """ Default stage step between tile centres, in µm. """
+
+
+@dataclass(frozen=True)
 class ScanInfo:
     scanWidgetType: str
     """ Type of scan widget to generate: PointScan/MoNaLISA/Base/etc."""
@@ -378,6 +393,9 @@ class SetupInfo:
     autofocus: Optional[AutofocusInfo] = field(default_factory=lambda: None)
     """ Autofocus settings. Required to be defined to use autofocus 
     functionality. """
+
+    tiling: Optional[TilingInfo] = field(default_factory=lambda: None)
+    """ Tiling scan settings. None = tiling disabled. """
 
     scan: Optional[ScanInfo] = field(default_factory=lambda: None)
     """ Scan settings. Required to be defined to use scan functionality. """
