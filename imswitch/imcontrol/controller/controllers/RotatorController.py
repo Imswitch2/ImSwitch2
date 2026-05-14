@@ -58,7 +58,7 @@ class RotatorController(ImConWidgetController):
         self._master.rotatorsManager[name].stop_cont_rot()
 
     def updatePosition(self, name):
-        pos = self._master.rotatorsManager[name].position()
+        pos = self._master.rotatorsManager[name].position
         #self.__logger.info(f'{name} pos is {pos}') #debugging simone
         self._widget.updatePosition(name, pos)
 

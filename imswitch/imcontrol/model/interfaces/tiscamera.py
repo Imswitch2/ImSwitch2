@@ -12,6 +12,12 @@ class CameraTIS:
         ic_ic = IC_ImagingControl.IC_ImagingControl()
         ic_ic.init_library()
         cam_names = ic_ic.get_unique_device_names()
+        if not cam_names:
+            raise RuntimeError('No TIS cameras detected. Check USB connection and driver.')
+        if cameraNo >= len(cam_names):
+            raise IndexError(
+                f'cameraNo={cameraNo} out of range — only {len(cam_names)} TIS camera(s) found: {cam_names}'
+            )
         self.model = cam_names[cameraNo]
         self.cam = ic_ic.get_device(cam_names[cameraNo])
 

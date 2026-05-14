@@ -467,6 +467,7 @@ class SettingsWidget(Widget):
         self.ROI = naparitools.NapariROIOverlay()
         self.stack = QtWidgets.QStackedWidget()
         self.trees = {}
+        self.stackWidgets = {}  # maps detectorName → widget actually in the stack
         self.advancedWidgets = {}  # Store advanced property widgets by detector name
 
         self.detectorListBox = QtWidgets.QHBoxLayout()
@@ -514,20 +515,22 @@ class SettingsWidget(Widget):
         # If advanced properties are supported, create a tab widget
         if supportsAdvancedProperties:
             tabWidget = QtWidgets.QTabWidget()
-            
+
             # Add Basic tab with parameter tree
             tabWidget.addTab(paramTree, 'Basic')
-            
+
             # Add Advanced tab with property introspection widget
             advancedWidget = AdvancedPropertiesWidget()
             self.advancedWidgets[detectorName] = advancedWidget
             tabWidget.addTab(advancedWidget, 'Advanced')
-            
+
             # Add tab widget to stack
             self.stack.addWidget(tabWidget)
+            self.stackWidgets[detectorName] = tabWidget
         else:
             # No advanced properties, just add the parameter tree directly
             self.stack.addWidget(paramTree)
+            self.stackWidgets[detectorName] = paramTree
             self.advancedWidgets[detectorName] = None
 
         self.detectorList.addItem(f'{detectorModel} ({detectorName})', detectorName)
@@ -540,7 +543,7 @@ class SettingsWidget(Widget):
         scrollY = prevDetectorWidget.verticalScrollBar().value()
 
         # Switch to new detector settings widget and set scroll position to same as previous widget
-        newDetectorWidget = self.trees[detectorName]
+        newDetectorWidget = self.stackWidgets[detectorName]
         self.stack.setCurrentWidget(newDetectorWidget)
         newDetectorWidget.horizontalScrollBar().setValue(scrollX)
         newDetectorWidget.verticalScrollBar().setValue(scrollY)

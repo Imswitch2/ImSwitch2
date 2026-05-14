@@ -93,7 +93,7 @@ class APDManager(DetectorManager):
             self._scanThread.quit()
             self._scanThread.wait()
             self._scanWorker.close()
-            self.__currSlice[-1] += 1
+            self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
             self.__newFrameReady = True
         except Exception as e:
             self.__logger.warning(f'Failed to stop acquisition cleanly: {e}')
@@ -106,7 +106,7 @@ class APDManager(DetectorManager):
             self._scanWorker.close()
             if self._ttlmultiplying:
                 self._renewImage()
-            self.__currSlice[-1] += 1
+            self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
             self.__newFrameReady = True
         except Exception as e:
             self.__logger.warning(f'Failed to stop acquisition locally: {e}')
