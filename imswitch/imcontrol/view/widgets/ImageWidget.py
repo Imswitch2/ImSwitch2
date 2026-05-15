@@ -47,10 +47,31 @@ class ImageWidget(QtWidgets.QWidget):
         self.viewCtrlLayout.addWidget(nw)
         self.setLayout(self.viewCtrlLayout)
 
+    def _removeProtectedLayer(self, layer):
+        """Remove a layer from the viewer, bypassing the protected-layer guard.
+
+        ``EmbeddedNapari`` monkey-patches the layer list's ``_delitem_indices``
+        to filter out layers marked ``protected=True``.  Older napari versions
+        accepted a ``force=True`` kwarg on ``LayerList.remove`` to override
+        that, but the keyword no longer exists in current napari — passing it
+        raises TypeError, and dropping it leaves protected layers in place
+        forever (the next ``add_image`` then auto-suffixes the new layer to
+        ``Live: Camera [1]``).  Clear the flag first instead.
+        """
+        try:
+            layer.protected = False
+        except AttributeError:
+            pass
+        try:
+            self.napariViewer.layers.remove(layer)
+        except ValueError:
+            # Already gone from the layer list — fine.
+            pass
+
     def setLiveViewLayers(self, names):
         for name, img in self.imgLayers.items():
             if name not in names:
-                self.napariViewer.layers.remove(img, force=True)
+                self._removeProtectedLayer(img)
 
         def addImage(name, colormap=None):
             self.imgLayers[name] = self.napariViewer.add_image(
@@ -81,44 +102,9 @@ class ImageWidget(QtWidgets.QWidget):
             while data.ndim < ndisplay:
                 data = data[np.newaxis]
                 scale = (pad_scale,) + scale
-            self._recreateLiveLayer(name, data, scale)
-
-    def _recreateLiveLayer(self, name, im, scale):
-        """Replace a live-view layer in place, preserving display properties.
-
-        Used when the layer's ndim has to change.  Mutating ``layer.scale``
-        and ``layer.data`` in place across an ndim transition leaves napari's
-        internal ``_world_to_layer_units_scale`` and ``_dims_displayed``
-        inconsistent — slicing then raises IndexError and the new dims never
-        propagate to ``viewer.dims`` (so the Z slider never appears).
-        """
-        old = self.imgLayers[name]
-        layers = self.napariViewer.layers
-        try:
-            index = layers.index(old)
-        except ValueError:
-            index = None
-
-        properties = dict(
-            name=old.name,
-            blending=old.blending,
-            colormap=old.colormap.name,
-            contrast_limits=tuple(old.contrast_limits),
-            rgb=False,
-            scale=scale,
-            protected=True,
-        )
-
-        layers.remove(old, force=True)
-        new = self.napariViewer.add_image(im, **properties)
-        if index is not None:
-            try:
-                new_index = layers.index(new)
-                if new_index != index:
-                    layers.move(new_index, index)
-            except (ValueError, IndexError):
-                pass
-        self.imgLayers[name] = new
+            # Same scale-before-data rule as setImage() — see the comment there.
+            layer.scale = scale
+            layer.data = data
 
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
@@ -160,21 +146,17 @@ class ImageWidget(QtWidgets.QWidget):
                 im = im[np.newaxis]
                 scale = (pad_scale,) + scale
 
-        # If the layer's current ndim differs from the incoming image we have
-        # to replace the layer rather than mutate it: napari can't cleanly
-        # update _world_to_layer_units_scale and _dims_displayed across an
-        # ndim change, so a 2D live layer receiving its first 3D scan stays
-        # 2D forever (no Z slider) and slicing raises IndexError.  Recreating
-        # the layer preserves contrast limits, colormap, blending and order
-        # while letting napari rebuild its dims from scratch — viewer.dims
-        # then picks up the new ndim and the Z slider appears immediately.
-        if layer.data.ndim != im.ndim:
-            self._recreateLiveLayer(name, im, scale)
-            return
-
-        # Scale MUST be set before data: napari rebuilds _world_to_layer_units_scale
-        # from the current scale when data is assigned; if the old scale has a
-        # different length dims_displayed indexes beyond it → IndexError.
+        # Scale MUST be set before data.  napari's data setter triggers
+        # _update_dims(), which rebuilds _world_to_layer_units_scale from the
+        # current scale tuple.  If we set data first while the scale tuple is
+        # still the old length, displayed_axes can index past the end of
+        # scale and raise IndexError on the next render.  Setting scale first
+        # leaves a transient state where scale length != data ndim, but that
+        # state is never observed by napari's renderer because both lines run
+        # synchronously on this thread — by the time the next render tick
+        # fires, the data setter has already brought everything into a
+        # consistent shape.  This works whether the layer's ndim changes
+        # (e.g. first 3D scan into a 2D-initialised layer) or stays the same.
         layer.scale = scale
         layer.data = im
 

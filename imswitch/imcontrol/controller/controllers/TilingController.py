@@ -18,6 +18,7 @@ class TilingController(ImConWidgetController):
 
     sigOverviewUpdated = QtCore.Signal(object)   # np.ndarray
     sigProgressUpdated = QtCore.Signal(int, int)  # current, total
+    sigRunningChanged = QtCore.Signal(bool)       # routes setRunning across threads
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -40,6 +41,7 @@ class TilingController(ImConWidgetController):
         self._widget.sigClickOnOverview.connect(self._navigateToPixel)
         self.sigOverviewUpdated.connect(self._widget.updateOverview)
         self.sigProgressUpdated.connect(self._widget.setProgress)
+        self.sigRunningChanged.connect(self._widget.setRunning)
 
     # ------------------------------------------------------------------
     # Public API
@@ -141,11 +143,13 @@ class TilingController(ImConWidgetController):
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
         finally:
             self._scanning = False
-            QtCore.QMetaObject.invokeMethod(
-                self._widget, 'setRunning',
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(bool, False),
-            )
+            # Cross-thread emit — Qt's AutoConnection becomes QueuedConnection
+            # because the sender (this background thread) lives in a different
+            # thread than the receiver (widget on the GUI thread).  Previously
+            # this used QMetaObject.invokeMethod which silently fails when the
+            # target slot isn't registered with the Qt meta-object system
+            # (setRunning is a plain Python method, not @Slot-decorated).
+            self.sigRunningChanged.emit(False)
 
     # ------------------------------------------------------------------
     # Click-to-navigate

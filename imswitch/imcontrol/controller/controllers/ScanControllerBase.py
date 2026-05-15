@@ -218,11 +218,17 @@ class ScanControllerBase(SuperScanController):
             'digitalParameterDict': dict(self._digitalParameterDict),
         }
         try:
-            state['scan_mode'] = self._widget.isScanMode()
-        except Exception:
-            pass
-        try:
-            state['repeat'] = self._widget.repeatEnabled()
+            # Scan mode radio (True = Scan, False = Cont. Laser Pulses)
+            state['scan_mode'] = self._widget.scanRadio.isChecked()
+            # Repeat checkbox
+            state['repeat'] = self._widget.repeatBox.isChecked()
+            # Dimension combo selections: index → positioner name string
+            state['scan_dims'] = {}
+            for i in range(2):   # ScanWidgetBase exposes getScanDim(index) for 0 and 1
+                try:
+                    state['scan_dims'][str(i)] = self._widget.getScanDim(i)
+                except Exception:
+                    pass
         except Exception:
             pass
         return state
@@ -234,21 +240,20 @@ class ScanControllerBase(SuperScanController):
             if 'digitalParameterDict' in state:
                 self._digitalParameterDict.update(state['digitalParameterDict'])
             self.setParameters()
+            
             if state.get('scan_mode', True):
-                try:
-                    self._widget.setScanMode()
-                except Exception:
-                    pass
+                self._widget.setScanMode()          # sets scanRadio checked
             else:
+                self._widget.setContLaserMode()     # sets contLaserPulsesRadio checked
+            
+            self._widget.setRepeatEnabled(state.get('repeat', False))
+            
+            for i_str, posName in state.get('scan_dims', {}).items():
                 try:
-                    self._widget.setContLaserMode()
+                    self._widget.setScanDim(int(i_str), posName)
                 except Exception:
                     pass
-            if 'repeat' in state:
-                try:
-                    self._widget.setRepeatEnabled(state['repeat'])
-                except Exception:
-                    pass
+            
             self._logger.info('Scan settings state restored successfully')
         except Exception as e:
             self._logger.error(f'Failed to restore scan state: {e}')

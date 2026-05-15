@@ -91,7 +91,7 @@ class CamParamTree(ParameterTree):
         self._writable = True
 
     def setImageFrameVisible(self, visible):
-        """ Sets whetehr the image frame settings are visible. """
+        """ Sets whether the image frame settings are visible. """
         framePar = self.p.param('Image frame')
         framePar.setOpts(visible=visible)
 
@@ -118,8 +118,18 @@ class CamParamTree(ParameterTree):
         # WARNING: If Apply and New ROI button are included here they will
         # emit status changed signal and their respective functions will be
         # called... -> problems.
-        timingPar = self.p.param('Timings')
-        timingPar.param('Set exposure time').setWritable(value)
+        # The 'Timings' group is only populated when the detector exposes
+        # parameters in that group (e.g. cameras with an exposure-time
+        # parameter); APD/PMT/TimeTagger don't. ``param()`` raises KeyError
+        # for missing groups — silently skip when the group isn't present.
+        try:
+            timingPar = self.p.param('Timings')
+        except Exception:
+            return
+        try:
+            timingPar.param('Set exposure time').setWritable(value)
+        except Exception:
+            pass
 
     def attrs(self):
         attrs = []
@@ -489,10 +499,17 @@ class SettingsWidget(Widget):
 
         # Connect signals
         self.ROI.sigROIChanged.connect(self.sigROIChanged)
-        self.detectorList.currentIndexChanged.connect(
-            lambda index: self.sigDetectorChanged.emit(self.detectorList.itemData(index))
-        )
+        self.detectorList.currentIndexChanged.connect(self._onDetectorListIndexChanged)
         self.nextDetectorButton.clicked.connect(self.sigNextDetectorClicked)
+
+    def _onDetectorListIndexChanged(self, index):
+        # itemData returns None when the combo box is empty or the index
+        # is invalid (e.g. -1 after clear()); don't propagate a None
+        # detector name to the controller.
+        data = self.detectorList.itemData(index)
+        if data is None:
+            return
+        self.sigDetectorChanged.emit(data)
 
     def addDetector(self, detectorName, detectorModel, detectorParameters, detectorActions,
                     supportedBinnings, roiInfos, supportsAdvancedProperties=False):
@@ -538,14 +555,24 @@ class SettingsWidget(Widget):
         self.nextDetectorButton.setVisible(True)
 
     def setDisplayedDetector(self, detectorName):
+        # Guard: detectorName must exist; otherwise self.stackWidgets[...]
+        # and self.trees[...] below would raise KeyError.
+        if detectorName not in self.stackWidgets or detectorName not in self.trees:
+            return
+
         # Scroll bars live on the CamParamTree, not on the QTabWidget wrapper.
         # Use self.trees (always the param tree) for scroll state, and
         # self.stackWidgets for the actual widget to show in the stack.
+        # On the very first detector switch the stack is empty and
+        # currentWidget() returns None — fall back to (0, 0) in that case.
         prevParamTree = self.stack.currentWidget()
         if isinstance(prevParamTree, QtWidgets.QTabWidget):
             prevParamTree = prevParamTree.widget(0)  # Basic tab = param tree
-        scrollX = prevParamTree.horizontalScrollBar().value()
-        scrollY = prevParamTree.verticalScrollBar().value()
+        if prevParamTree is None:
+            scrollX, scrollY = 0, 0
+        else:
+            scrollX = prevParamTree.horizontalScrollBar().value()
+            scrollY = prevParamTree.verticalScrollBar().value()
 
         self.stack.setCurrentWidget(self.stackWidgets[detectorName])
 
@@ -554,8 +581,11 @@ class SettingsWidget(Widget):
         newParamTree.verticalScrollBar().setValue(scrollY)
 
     def selectNextDetector(self):
+        count = self.detectorList.count()
+        if count == 0:
+            return
         self.detectorList.setCurrentIndex(
-            (self.detectorList.currentIndex() + 1) % self.detectorList.count()
+            (self.detectorList.currentIndex() + 1) % count
         )
 
     def setImageFrameVisible(self, visible):
@@ -563,10 +593,15 @@ class SettingsWidget(Widget):
         # For advanced detectors the stack contains a QTabWidget that wraps the
         # CamParamTree on tab 0; for simple detectors the stack holds the
         # CamParamTree directly. setImageFrameVisible only lives on the
-        # CamParamTree, so unwrap the tab widget when present.
+        # CamParamTree, so unwrap the tab widget when present. Also handle
+        # the empty-stack case (called before any detector is added).
         current = self.stack.currentWidget()
+        if current is None:
+            return
         if isinstance(current, QtWidgets.QTabWidget):
             current = current.widget(0)
+        if current is None:
+            return
         current.setImageFrameVisible(visible)
 
     def getROIGraphicsItem(self):
