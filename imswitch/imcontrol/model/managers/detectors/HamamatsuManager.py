@@ -183,22 +183,26 @@ class HamamatsuManager(DetectorManager):
     def setAdvancedProperty(self, propertyName, value):
         """
         Set an advanced camera property value safely.
-        
+
         This manager-level method wraps the camera interface's setPropertyValue,
         providing safe property changes by stopping/restarting acquisition if needed.
         The method validates the property exists and logs all changes.
-        
+
+        When any ``subarray_*`` property is changed, the internal frame-start and
+        shape state (``_frameStart`` / ``_shape``) are re-synchronised from the
+        camera so that the non-advanced ROI code path always sees a consistent view.
+
         Args:
             propertyName: Name of the property to set (str)
             value: New value for the property (int, float, bytes, or str)
                   For text/MODE properties, can be text key (bytes/str) or numeric value
-        
+
         Returns:
             dict: Result dictionary containing:
                 - success: Whether the operation succeeded (bool)
                 - value: The actual value set by camera (float) or None if failed
                 - error: Error message if failed, None otherwise (str or None)
-        
+
         Example:
             >>> result = manager.setAdvancedProperty('exposure_time', 0.05)
             >>> if result['success']:
@@ -209,38 +213,76 @@ class HamamatsuManager(DetectorManager):
         try:
             # Log the change request
             self.__logger.info(f'Setting advanced property {propertyName} to {value}')
-            
+
             # Convert string to bytes for text properties if needed
             if isinstance(value, str) and not isinstance(value, bytes):
                 value = value.encode('utf-8')
-            
+
             # Use safe camera action to handle acquisition stop/restart if needed
             result_value = None
             def set_property():
                 nonlocal result_value
                 result_value = self._camera.setPropertyValue(propertyName, value)
-            
+
             self._performSafeCameraAction(set_property)
-            
+
+            # Keep internal ROI state in sync when any subarray property is changed.
+            # Without this, _frameStart / _shape would be stale after an advanced-settings
+            # edit, causing crop() and abortROI() to overwrite or misreport the ROI.
+            if propertyName.startswith('subarray_'):
+                self._syncSubarrayState()
+
             # Log success
             self.__logger.info(f'Successfully set {propertyName} to {result_value}')
-            
+
             return {
                 'success': True,
                 'value': result_value,
                 'error': None
             }
-        
+
         except Exception as e:
             # Log failure
             error_msg = str(e)
             self.__logger.error(f'Failed to set {propertyName} to {value}: {error_msg}')
-            
+
             return {
                 'success': False,
                 'value': None,
                 'error': error_msg
             }
+
+    def _syncSubarrayState(self):
+        """Read the four subarray properties back from the camera and update
+        ``_frameStart`` / ``_shape`` so that ImSwitch's internal state matches
+        the hardware after any out-of-band subarray change (e.g. via the
+        Advanced Properties tab).
+
+        Missing properties (some cameras omit ``subarray_hpos`` / ``subarray_vpos``
+        when subarray mode is off) are treated as 0 / full-chip size.
+        """
+        try:
+            hpos = int(self._camera.getPropertyValue('subarray_hpos')[0])
+        except Exception:
+            hpos = 0
+        try:
+            vpos = int(self._camera.getPropertyValue('subarray_vpos')[0])
+        except Exception:
+            vpos = 0
+        try:
+            hsize = int(self._camera.getPropertyValue('subarray_hsize')[0])
+        except Exception:
+            hsize = self.fullShape[0]
+        try:
+            vsize = int(self._camera.getPropertyValue('subarray_vsize')[0])
+        except Exception:
+            vsize = self.fullShape[1]
+
+        self._frameStart = (hpos, vpos)
+        self._shape = (hsize, vsize)
+        self.__logger.debug(
+            f'Synced subarray state: frameStart={self._frameStart}, shape={self._shape}'
+        )
 
     def startAcquisition(self):
         self._camera.startAcquisition()

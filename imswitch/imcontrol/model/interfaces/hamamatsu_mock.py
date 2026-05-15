@@ -88,6 +88,8 @@ class MockHamamatsu:
                            'image_width': 2048,
                            'image_height': 2048,
                            'image_framebytes': 8,
+                           'subarray_hpos': 0,
+                           'subarray_vpos': 0,
                            'subarray_hsize': 2048,
                            'subarray_vsize': 2048,
                            'subarray_mode': 'OFF',
@@ -257,6 +259,20 @@ class MockHamamatsu:
                 'readable': True,
                 'writable': True,
                 'range': (64, 2048),
+                'text_options': None
+            },
+            'subarray_hpos': {
+                'type': 'LONG',
+                'readable': True,
+                'writable': True,
+                'range': (0, 2048),
+                'text_options': None
+            },
+            'subarray_vpos': {
+                'type': 'LONG',
+                'readable': True,
+                'writable': True,
+                'range': (0, 2048),
                 'text_options': None
             },
             'subarray_hsize': {
