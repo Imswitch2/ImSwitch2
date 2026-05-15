@@ -275,6 +275,26 @@ class ScanControllerBase(SuperScanController):
                 state['sequence_time'] = self._widget.getSeqTimePar()
             except Exception as e:
                 self._logger.debug(f'Could not save sequence time: {e}')
+            
+            # Scan mode radio (True = Scan, False = Cont. Laser Pulses)
+            try:
+                state['scan_mode'] = self._widget.scanRadio.isChecked()
+            except Exception as e:
+                self._logger.debug(f'Could not save scan mode: {e}')
+            
+            # Repeat checkbox
+            try:
+                state['repeat'] = self._widget.repeatBox.isChecked()
+            except Exception as e:
+                self._logger.debug(f'Could not save repeat setting: {e}')
+            
+            # Dimension combo selections: index → positioner name string
+            state['scan_dims'] = {}
+            for i in range(2):  # ScanWidgetBase exposes getScanDim(index) for 0 and 1
+                try:
+                    state['scan_dims'][str(i)] = self._widget.getScanDim(i)
+                except Exception:
+                    pass
         
         except Exception as e:
             self._logger.error(f'Failed to save scan settings state: {e}')
@@ -350,6 +370,28 @@ class ScanControllerBase(SuperScanController):
                     self._widget.setSeqTimePar(state['sequence_time'])
                 except Exception as e:
                     self._logger.debug(f'Could not restore sequence time: {e}')
+            
+            # Restore scan mode (Scan vs Cont. Laser Pulses)
+            try:
+                if state.get('scan_mode', True):
+                    self._widget.setScanMode()  # sets scanRadio checked
+                else:
+                    self._widget.setContLaserMode()  # sets contLaserPulsesRadio checked
+            except Exception as e:
+                self._logger.debug(f'Could not restore scan mode: {e}')
+            
+            # Restore repeat checkbox
+            try:
+                self._widget.setRepeatEnabled(state.get('repeat', False))
+            except Exception as e:
+                self._logger.debug(f'Could not restore repeat setting: {e}')
+            
+            # Restore dimension combo selections
+            for i_str, posName in state.get('scan_dims', {}).items():
+                try:
+                    self._widget.setScanDim(int(i_str), posName)
+                except Exception:
+                    pass
             
             self._logger.info('Scan settings state restored successfully')
             

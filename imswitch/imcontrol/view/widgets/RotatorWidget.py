@@ -93,6 +93,10 @@ class RotatorWidget(Widget):
         """ Returns the user-input speed, in mrpm. """
         return int(self.pars['SpeedEdit'+name].text())
 
+    def setSpeed(self, name, speed):
+        """ Sets the speed to the specified value in mrpm. """
+        self.pars['SpeedEdit'+name].setText(str(speed))
+
     def setAbsPos(self, name, absPos):
         """ Sets the absolute position to the specified number of degrees. """
         self.pars['AbsPosEdit'+name].setText(absPos)

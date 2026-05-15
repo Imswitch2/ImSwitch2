@@ -1,6 +1,7 @@
-from typing import Dict, List
+from typing import Dict, List, Any
 
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from ..basecontrollers import ImConWidgetController
 from imswitch.imcommon.model import initLogger
 from qtpy.QtCore import QTimer
@@ -72,6 +73,9 @@ class PositionerController(ImConWidgetController):
         self._widget.sigStepUpClicked.connect(self.stepUp)
         self._widget.sigStepDownClicked.connect(self.stepDown)
         self._widget.sigsetSpeedClicked.connect(self.setSpeedGUI)
+        
+        # Register for widget state persistence
+        getWidgetStatePersistence().register('PositionerController', self)
     
 
     def _onManagerJoystickStatusChanged(self, pName, enabled):
@@ -269,6 +273,97 @@ class PositionerController(ImConWidgetController):
         """ Moves the specified positioner axis in negative direction by its
         set step size. """
         self.stepDown(positionerName, axis)
+    
+    # Widget State Persistence Interface
+    
+    def getWidgetState(self) -> Dict[str, Any]:
+        """
+        Get current widget state for persistence.
+        
+        Returns step sizes per (positionerName, axis) pair.
+        Does NOT include position values or speed — those are hardware state.
+        
+        Returns:
+            Dict with structure:
+            {
+                'version': 1,
+                'step_sizes': {
+                    positionerName: {
+                        axis: float,
+                        ...
+                    },
+                    ...
+                }
+            }
+        """
+        state = {
+            'version': 1,
+            'step_sizes': {}
+        }
+        
+        for pName, pManager in self._master.positionersManager:
+            if not pManager.forPositioning:
+                continue
+            
+            state['step_sizes'][pName] = {}
+            for axis in pManager.axes:
+                try:
+                    state['step_sizes'][pName][axis] = self._widget.getStepSize(pName, axis)
+                except Exception as e:
+                    self._logger.debug(
+                        f'Could not save step size for positioner {pName}, axis {axis}: {e}'
+                    )
+        
+        return state
+    
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        """
+        Restore widget state from persistence.
+        
+        SAFETY: Does NOT restore position values or speed. Only restores:
+        - Step sizes per (positionerName, axis) pair
+        
+        Args:
+            state: Dict returned by getWidgetState()
+        """
+        try:
+            step_sizes = state.get('step_sizes', {})
+            
+            for pName, axes_state in step_sizes.items():
+                # Check if positioner exists in current setup
+                if pName not in [name for name, _ in self._master.positionersManager]:
+                    self._logger.debug(
+                        f'Skipping state for non-existent positioner: {pName}'
+                    )
+                    continue
+                
+                pManager = self._master.positionersManager[pName]
+                if not pManager.forPositioning:
+                    continue
+                
+                for axis, step_size in axes_state.items():
+                    # Check if axis exists in current positioner
+                    if axis not in pManager.axes:
+                        self._logger.debug(
+                            f'Skipping state for non-existent axis: {pName}.{axis}'
+                        )
+                        continue
+                    
+                    try:
+                        self._widget.setStepSize(pName, axis, str(step_size))
+                    except Exception as e:
+                        self._logger.warning(
+                            f'Failed to restore step size for positioner {pName}, axis {axis}: {e}'
+                        )
+            
+            self._logger.info('Widget state restored successfully')
+        
+        except Exception as e:
+            self._logger.error(f'Failed to restore widget state: {e}')
+    
+    def getStateSchemaVersion(self) -> int:
+        """Return schema version for state compatibility checking."""
+        return 1
 
 
 

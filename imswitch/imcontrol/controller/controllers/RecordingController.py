@@ -1,11 +1,11 @@
 import os
 import time
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict, Any
 import numpy as np
 
 from imswitch.imcommon.framework import Timer
 from imswitch.imcommon.model import ostools, APIExport
-from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat
+from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
 from ..basecontrollers import ImConWidgetController
 from imswitch.imcommon.model import initLogger
 
@@ -74,6 +74,9 @@ class RecordingController(ImConWidgetController):
 
         self._widget.sigSnapRequested.connect(self.snap)
         self._widget.sigRecToggled.connect(self.toggleREC)
+        
+        # Register for widget state persistence
+        getWidgetStatePersistence().register('RecordingController', self)
 
     def openFolder(self):
         """ Opens current folder in File Explorer. """
@@ -510,6 +513,123 @@ class RecordingController(ImConWidgetController):
     def getRecFolder(self) -> str:
         return self._widget.folderEdit.text()
     
+    # Widget State Persistence Interface
+    
+    def getWidgetState(self) -> Dict[str, Any]:
+        """
+        Get current widget state for persistence.
+        
+        Returns a dict containing recording settings.
+        Does NOT include filename, recording status, or detector/laser selections.
+        
+        Returns:
+            Dict with structure:
+            {
+                'saveFormat': int,
+                'snapSaveMode': int,
+                'recSaveMode': int,
+                'recFolder': str,
+                'recMode': str (enum name),
+                'numFrames': int,
+                'timeToRec': float
+            }
+        """
+        state = {
+            'saveFormat': self._widget.getSaveFormat(),
+            'snapSaveMode': self._widget.getSnapSaveMode(),
+            'recSaveMode': self._widget.getRecSaveMode(),
+            'recFolder': self._widget.getRecFolder(),
+            'recMode': self.recMode.name if hasattr(self, 'recMode') else 'UntilStop',
+            'numFrames': self._widget.getNumExpositions(),
+            'timeToRec': self._widget.getTimeToRec()
+        }
+        
+        return state
+    
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        """
+        Restore widget state from persistence.
+        
+        SAFETY: Does NOT restore recording status. Only restores:
+        - Save format and save mode settings
+        - Recording folder (only if it exists)
+        - Recording mode (frames vs time)
+        - Frame count and time values
+        
+        Args:
+            state: Dict returned by getWidgetState()
+        """
+        try:
+            # Restore save format
+            saveFormat = state.get('saveFormat', SaveFormat.HDF5.value)
+            try:
+                self._widget.setsaveFormat(saveFormat)
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore save format: {e}')
+            
+            # Restore snap save mode
+            snapSaveMode = state.get('snapSaveMode', SaveMode.Disk.value)
+            try:
+                self._widget.setSnapSaveMode(snapSaveMode)
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore snap save mode: {e}')
+            
+            # Restore rec save mode
+            recSaveMode = state.get('recSaveMode', SaveMode.Disk.value)
+            try:
+                self._widget.setRecSaveMode(recSaveMode)
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore rec save mode: {e}')
+            
+            # Restore recording folder (only if it exists)
+            recFolder = state.get('recFolder')
+            if recFolder and os.path.exists(recFolder):
+                try:
+                    self._widget.setRecFolder(recFolder)
+                except Exception as e:
+                    self.__logger.warning(f'Failed to restore rec folder: {e}')
+            
+            # Restore frame count
+            numFrames = state.get('numFrames', 100)
+            try:
+                self._widget.numExpositionsEdit.setText(str(numFrames))
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore num frames: {e}')
+            
+            # Restore time to record
+            timeToRec = state.get('timeToRec', 1)
+            try:
+                self._widget.timeToRec.setText(str(timeToRec))
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore time to record: {e}')
+            
+            # Restore recording mode (must be last to properly set UI state)
+            recModeName = state.get('recMode', 'UntilStop')
+            try:
+                if recModeName == 'SpecFrames':
+                    self.specFrames()
+                elif recModeName == 'SpecTime':
+                    self.specTime()
+                elif recModeName == 'SpecLapse':
+                    self.specLapse()
+                elif recModeName == 'ScanOnce':
+                    self.recScanOnce()
+                elif recModeName == 'ScanLapse':
+                    self.recScanLapse()
+                else:  # Default to UntilStop
+                    self.untilStop()
+            except Exception as e:
+                self.__logger.warning(f'Failed to restore rec mode: {e}')
+            
+            self.__logger.info('Widget state restored successfully')
+        
+        except Exception as e:
+            self.__logger.error(f'Failed to restore widget state: {e}')
+    
+    def getStateSchemaVersion(self) -> int:
+        """Return schema version for state compatibility checking."""
+        return 1
+
 
 _attrCategory = 'Rec'
 _recModeAttr = 'Mode'
