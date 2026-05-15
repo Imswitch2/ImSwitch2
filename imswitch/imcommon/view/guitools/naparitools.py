@@ -1171,11 +1171,13 @@ class ViewerToolManager(QtCore.QObject):
     
     sigShapesChanged = QtCore.Signal()  # Emitted when shapes data changes
     sigModeChanged = QtCore.Signal(str)  # Emitted when mode changes (mode_name)
-    
+
+    _PIXEL_WIDTH = 2  # desired line width in screen pixels
+
     def __init__(self, napari_viewer):
         """
         Initialize the ViewerToolManager.
-        
+
         Parameters
         ----------
         napari_viewer : napari.Viewer
@@ -1186,7 +1188,45 @@ class ViewerToolManager(QtCore.QObject):
         self._shapes_layer = None
         self._current_mode = 'pan'
         self._processing_data_change = False
-        
+
+        # Recompute edge width whenever the camera zoom changes so user-drawn
+        # shapes stay ~PIXEL_WIDTH screen pixels thick regardless of which
+        # detector is active.  The Shapes layer is scale-(1,1), so edge_width
+        # is in world units (µm) — without this handler, a hardcoded value
+        # gives wildly different screen thickness between detectors with
+        # different µm/px pitch (a 0.1 µm/px camera at fit-to-view zooms ~5×
+        # tighter than a 0.5 µm/px camera, so the same edge_width looks 5×
+        # thicker on the small-pitch detector).
+        try:
+            self._viewer.camera.events.zoom.connect(self._on_zoom_changed)
+        except Exception:
+            pass
+
+    def _get_edge_width(self):
+        """Edge width in world units that renders to ~PIXEL_WIDTH screen pixels."""
+        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
+        return max(0.5, self._PIXEL_WIDTH / zoom)
+
+    def _on_zoom_changed(self, event):
+        """Rescale existing shapes' edge widths to match the new zoom."""
+        if self._shapes_layer is None:
+            return
+        if self._shapes_layer not in self._viewer.layers:
+            return
+        ew = self._get_edge_width()
+        # current_edge_width feeds newly-drawn shapes; setting edge_width on
+        # the layer rescales every existing shape's edge.  Both are needed:
+        # one for shapes already on the canvas, one for the next click.
+        try:
+            self._shapes_layer.current_edge_width = ew
+        except Exception:
+            pass
+        try:
+            if len(self._shapes_layer.data) > 0:
+                self._shapes_layer.edge_width = ew
+        except Exception:
+            pass
+
     def _ensure_shapes_layer(self):
         """Lazily create the Shapes layer if it doesn't exist."""
         if self._shapes_layer is None:
@@ -1194,7 +1234,7 @@ class ViewerToolManager(QtCore.QObject):
                 name='Viewer Tools',
                 edge_color='yellow',
                 face_color=[0, 0, 0, 0],  # Transparent fill
-                edge_width=2,
+                edge_width=self._get_edge_width(),
                 ndim=2
             )
             # Connect to data change events
