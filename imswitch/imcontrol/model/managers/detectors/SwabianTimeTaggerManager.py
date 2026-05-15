@@ -117,7 +117,6 @@ class SwabianTimeTaggerManager(DetectorManager):
 
         self._image_display = np.zeros((1, 64, 64), dtype=np.float32)
         self._image_intensity = np.zeros((1, 64, 64), dtype=np.float32)
-        self._image_raw = None
         self._newFrameReady = False
         self.__pixel_sizes = [1, 1]
 
@@ -194,7 +193,6 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._newFrameReady = False
         self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
         self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
-        self._image_raw = None
 
         # pixel_sizes: list from low to high dim (matches APDManager convention)
         self.setPixelSize(list(scanInfoDict.get('pixel_sizes', [1, 1])) or [1, 1])
@@ -221,8 +219,7 @@ class SwabianTimeTaggerManager(DetectorManager):
             # reorder the end edge — Flim's pixel index then stalls mid-line.
             pixel_width_ps=pixel_period_ps - 1,
         )
-        self._fullShape = (Ny, Nx)
-        self._shape = self._fullShape
+        self._shape = (Ny, Nx)
 
         try:
             if self._tt is None:
@@ -329,9 +326,7 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._image_intensity[0] = intensity_img
         self._image_display[0] = lifetime_img
         self._newFrameReady = True
-        self.sigImageUpdated.emit(self._image_display, False, self.scale)
-        if hasattr(self, 'updateLatestFrame'):
-            self.updateLatestFrame(True)
+        self.updateLatestFrame(False)
         self.sigNewFrame.emit()
 
     # ------------------------------------------------------------------ #
@@ -353,9 +348,7 @@ class SwabianTimeTaggerManager(DetectorManager):
     def crop(self, hpos, vpos, hsize, vsize):
         pass
 
-    def getLatestFrame(self, is_save=True):
-        if is_save and self._image_raw is not None:
-            return self._image_raw
+    def getLatestFrame(self):
         return self._image_display
 
     def getChunk(self):
@@ -536,7 +529,7 @@ class _TTFlimWorker(Worker):
 
                 stall_count = 0
                 got_valid_frame = True
-                #self._emit_frame(cube, t_axis, fit_method, binwidth_ps, n_bins, min_counts)
+                self._emit_frame(cube, t_axis, fit_method, binwidth_ps, n_bins, min_counts)
                 time.sleep(poll_s)
 
             # --- Final read after scan completes: captures the completed
