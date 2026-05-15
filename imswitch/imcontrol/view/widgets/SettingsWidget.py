@@ -537,16 +537,20 @@ class SettingsWidget(Widget):
         self.nextDetectorButton.setVisible(True)
 
     def setDisplayedDetector(self, detectorName):
-        # Remember previously displayed detector settings widget scroll position
-        prevDetectorWidget = self.stack.currentWidget()
-        scrollX = prevDetectorWidget.horizontalScrollBar().value()
-        scrollY = prevDetectorWidget.verticalScrollBar().value()
+        # Scroll bars live on the CamParamTree, not on the QTabWidget wrapper.
+        # Use self.trees (always the param tree) for scroll state, and
+        # self.stackWidgets for the actual widget to show in the stack.
+        prevParamTree = self.stack.currentWidget()
+        if isinstance(prevParamTree, QtWidgets.QTabWidget):
+            prevParamTree = prevParamTree.widget(0)  # Basic tab = param tree
+        scrollX = prevParamTree.horizontalScrollBar().value()
+        scrollY = prevParamTree.verticalScrollBar().value()
 
-        # Switch to new detector settings widget and set scroll position to same as previous widget
-        newDetectorWidget = self.stackWidgets[detectorName]
-        self.stack.setCurrentWidget(newDetectorWidget)
-        newDetectorWidget.horizontalScrollBar().setValue(scrollX)
-        newDetectorWidget.verticalScrollBar().setValue(scrollY)
+        self.stack.setCurrentWidget(self.stackWidgets[detectorName])
+
+        newParamTree = self.trees[detectorName]
+        newParamTree.horizontalScrollBar().setValue(scrollX)
+        newParamTree.verticalScrollBar().setValue(scrollY)
 
     def selectNextDetector(self):
         self.detectorList.setCurrentIndex(
