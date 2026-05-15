@@ -354,7 +354,12 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._image_intensity[0] = intensity_img
         self._image_display[0] = lifetime_img
         self._newFrameReady = True
-        self.updateLatestFrame(False)
+        # init=True matches APDManager._onFrameBoundary's convention: every
+        # frame says "leave the user's view and contrast alone".
+        # ImageController consumes this as `if not init: autoLevels();
+        # adjustFrame()` — passing False would re-auto-stretch and re-fit the
+        # view on every FLIM frame, making the live preview unusable.
+        self.updateLatestFrame(True)
         self.sigNewFrame.emit()
 
     # ------------------------------------------------------------------ #
