@@ -559,8 +559,15 @@ class SettingsWidget(Widget):
         )
 
     def setImageFrameVisible(self, visible):
-        """ Sets whetehr the image frame settings are visible. """
-        self.stack.currentWidget().setImageFrameVisible(visible)
+        """ Sets whether the image frame settings are visible. """
+        # For advanced detectors the stack contains a QTabWidget that wraps the
+        # CamParamTree on tab 0; for simple detectors the stack holds the
+        # CamParamTree directly. setImageFrameVisible only lives on the
+        # CamParamTree, so unwrap the tab widget when present.
+        current = self.stack.currentWidget()
+        if isinstance(current, QtWidgets.QTabWidget):
+            current = current.widget(0)
+        current.setImageFrameVisible(visible)
 
     def getROIGraphicsItem(self):
         return self.ROI
