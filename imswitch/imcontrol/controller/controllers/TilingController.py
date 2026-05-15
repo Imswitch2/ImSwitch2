@@ -152,6 +152,23 @@ class TilingController(ImConWidgetController):
     # ------------------------------------------------------------------
 
     def _navigateToPixel(self, row: int, col: int) -> None:
+        # Reject clicks while the scan thread is still active.  The acquisition
+        # loop exits as soon as the last tile is captured (line ~134), but the
+        # thread then performs a blocking return-to-origin (lines ~137-138)
+        # before reaching the ``finally`` block that clears ``_scanning`` and
+        # restores button state.  A click during that window issues a second
+        # ``setPosition`` on the same positioner from the UI thread; on most
+        # backends that aborts the scan thread's pending hardware ACK and
+        # leaves its ``setPosition`` call hung forever — ``finally`` never runs,
+        # ``_scanning`` stays True, ``setRunning(False)`` never fires, Start
+        # remains disabled and Stop becomes a no-op (the scan loop has already
+        # exited, so flipping ``_stopRequested`` has nothing to react to).
+        if self._scanning:
+            self._logger.info(
+                'Tiling click-to-navigate ignored: scan still in progress'
+                ' (return-to-origin). Wait for the run to finish.'
+            )
+            return
         if self._stitcher is None or self._originXY is None or not self._gridPositions:
             return
         tilingInfo = self._setupInfo.tiling
