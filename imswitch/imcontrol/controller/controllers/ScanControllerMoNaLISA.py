@@ -1,6 +1,7 @@
 import traceback
 import configparser
 from math import ceil
+from typing import Dict, Any
 import numpy as np
 from imswitch.imcommon.model import APIExport
 from ast import literal_eval
@@ -10,6 +11,7 @@ from imswitch.imcommon.view.guitools import colorutils
 from PyQt5.QtCore import QTimer
 import copy
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model import getWidgetStatePersistence
 
 
 class ScanControllerMoNaLISA(SuperScanController):
@@ -49,6 +51,8 @@ class ScanControllerMoNaLISA(SuperScanController):
         self._widget.sigAutoAxialToggled.connect(self._commChannel.sigAutoAxialToggled)
 
         self._commChannel.sigCenterCoordPipelineFinished.connect(self.centerCoordPipelineFinished)
+
+        getWidgetStatePersistence().register('ScanControllerMoNaLISA', self)
 
     def getDimsScan(self):
         # TODO: Make sure this works as intended
@@ -431,6 +435,47 @@ class ScanControllerMoNaLISA(SuperScanController):
             self._widget.setContLaserMode()
 
         self.setParameters()
+
+    # ------------------------------------------------------------------
+    # Widget State Persistence Interface
+    # ------------------------------------------------------------------
+
+    def getWidgetState(self) -> Dict[str, Any]:
+        self.getParameters()
+        state: Dict[str, Any] = {
+            'version': 1,
+            'analogParameterDict': dict(self._analogParameterDict),
+            'digitalParameterDict': dict(self._digitalParameterDict),
+        }
+        try:
+            state['scan_mode'] = self._widget.isScanMode()
+        except Exception:
+            pass
+        return state
+
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        try:
+            if 'analogParameterDict' in state:
+                self._analogParameterDict.update(state['analogParameterDict'])
+            if 'digitalParameterDict' in state:
+                self._digitalParameterDict.update(state['digitalParameterDict'])
+            self.setParameters()
+            if state.get('scan_mode', True):
+                try:
+                    self._widget.setScanMode()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._widget.setContLaserMode()
+                except Exception:
+                    pass
+            self._logger.info('MoNaLISA scan state restored successfully')
+        except Exception as e:
+            self._logger.error(f'Failed to restore MoNaLISA scan state: {e}')
+
+    def getStateSchemaVersion(self) -> int:
+        return 1
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
