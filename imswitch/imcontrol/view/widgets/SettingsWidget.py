@@ -57,7 +57,8 @@ class CamParamTree(ParameterTree):
                     'readonly': not detectorParameter.editable,
                     'siPrefix': detectorParameter.valueUnits in ['s'],
                     'suffix': detectorParameter.valueUnits,
-                    'decimals': 5
+                    'decimals': 5,
+                    'step': 0.001,
                 }
             elif detectorParameterType == 'DetectorListParameter':
                 pyqtParam = {

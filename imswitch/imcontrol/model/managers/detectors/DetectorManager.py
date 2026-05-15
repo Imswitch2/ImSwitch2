@@ -207,7 +207,7 @@ class DetectorManager(SignalInterface):
         return self.__forFocusLock
 
     @property
-    def scale(self) -> List[int]:
+    def scale(self) -> List[float]:
         """ The pixel sizes in micrometers, all axes, in the format high dim
         to low dim (ex. [..., 'Z', 'Y', 'X']). Override in managers handling
         >3 dim images (e.g. APDManager). """
@@ -215,7 +215,7 @@ class DetectorManager(SignalInterface):
 
     @property
     @abstractmethod
-    def pixelSizeUm(self) -> List[int]:
+    def pixelSizeUm(self) -> List[float]:
         """ The pixel size in micrometers, in 3D, in the format
         ``[Z, Y, X]``. Non-scanned ``Z`` set to 1. """
         pass

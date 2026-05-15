@@ -70,21 +70,25 @@ class ImageWidget(QtWidgets.QWidget):
 
     def setImage(self, name, im, scale):
         layer = self.imgLayers[name]
-        # napari's internal _world_to_layer_units_scale is indexed by
-        # dims_displayed; if `scale` is shorter than im.ndim the layer
-        # raises IndexError during the post-data refresh. Normalise the
-        # scale length to match im.ndim.
+        # Normalise scale length to match im.ndim so napari's internal
+        # _world_to_layer_units_scale (indexed by dims_displayed) never
+        # goes out of range.
         scale = tuple(scale)
         if len(scale) < im.ndim:
             scale = (1.0,) * (im.ndim - len(scale)) + scale
         elif len(scale) > im.ndim:
             scale = scale[-im.ndim:]
+        # Scale MUST be set before data: when layer.data is assigned napari
+        # immediately rebuilds _world_to_layer_units_scale using the current
+        # scale.  If the old scale still has a different length at that point
+        # dims_displayed can index beyond the end → IndexError.
+        try:
+            layer.scale = scale
+        except Exception:
+            pass
         try:
             layer.data = im
-            layer.scale = scale
         except IndexError:
-            # Transient mismatch when other layers in the viewer have a
-            # different ndim; next frame will overwrite cleanly.
             pass
 
     def clearImage(self, name):
