@@ -142,8 +142,8 @@ class NapariBaseWidget(QtWidgets.QWidget):
 
 
 class NapariUpdateLevelsWidget(NapariBaseWidget):
-    """ Napari widget for auto-levelling the currently selected layer with a
-    single click. """
+    """ Napari widget for auto-levelling the currently selected layer.
+    Includes both one-click auto-levels and manual min/max range input. """
 
     @property
     def name(self):
@@ -152,27 +152,60 @@ class NapariUpdateLevelsWidget(NapariBaseWidget):
     def __init__(self, napariViewer):
         super().__init__(napariViewer)
 
-        # Update levels button
-        self.updateLevelsButton = QtWidgets.QPushButton('Update levels')
+        # Auto levels button
+        self.updateLevelsButton = QtWidgets.QPushButton('Auto levels')
         self.updateLevelsButton.clicked.connect(self._on_update_levels)
+
+        # Manual min/max inputs
+        self._minInput = QtWidgets.QLineEdit('0.0')
+        self._maxInput = QtWidgets.QLineEdit('1.0')
+        self._minInput.setPlaceholderText('Min')
+        self._maxInput.setPlaceholderText('Max')
+        self._minInput.setFixedWidth(80)
+        self._maxInput.setFixedWidth(80)
+        self._applyButton = QtWidgets.QPushButton('Set range')
+        self._applyButton.clicked.connect(self._on_apply_range)
+
+        minMaxRow = QtWidgets.QHBoxLayout()
+        minMaxRow.addWidget(QtWidgets.QLabel('Min:'))
+        minMaxRow.addWidget(self._minInput)
+        minMaxRow.addWidget(QtWidgets.QLabel('Max:'))
+        minMaxRow.addWidget(self._maxInput)
 
         # Layout
         self.setLayout(QtWidgets.QVBoxLayout())
         self.layout().addWidget(self.updateLevelsButton)
+        self.layout().addLayout(minMaxRow)
+        self.layout().addWidget(self._applyButton)
 
         # Make sure widget isn't too big
         self.setSizePolicy(QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding,
                                                  QtWidgets.QSizePolicy.Maximum))
 
+    def _set_layer_range(self, layer, lo, hi):
+        """Apply [lo, hi] contrast range to layer, guarding against zero-width ranges."""
+        if lo == hi:
+            hi = lo + 1.0
+        layer.contrast_limits_range = (lo, hi)
+        layer.contrast_limits = (lo, hi)
+
     def _on_update_levels(self):
         for layer in self.viewer.layers.selection:
             mn, mx = minmaxLevels(layer.data)
-            # Expand contrast_limits_range first; otherwise napari silently
-            # clamps contrast_limits to the old range (e.g. [0,1] for a float
-            # layer initialised with zeros, even if actual data is in counts).
-            layer.contrast_limits_range = (min(mn, layer.contrast_limits_range[0]),
-                                           max(mx, layer.contrast_limits_range[1]))
-            layer.contrast_limits = (mn, mx)
+            self._set_layer_range(layer, mn, mx)
+            # Populate manual inputs so the user can fine-tune from here
+            self._minInput.setText(f'{mn:.6g}')
+            self._maxInput.setText(f'{mx:.6g}')
+
+    def _on_apply_range(self):
+        try:
+            lo = float(self._minInput.text())
+            hi = float(self._maxInput.text())
+        except ValueError:
+            return
+        lo, hi = min(lo, hi), max(lo, hi)
+        for layer in self.viewer.layers.selection:
+            self._set_layer_range(layer, lo, hi)
 
 
 class NapariResetViewWidget(NapariBaseWidget):
@@ -1429,6 +1462,8 @@ class NapariCrosshairOverlay:
     Position is set via place_at(row, col) on each click; defaults to image centre.
     """
 
+    _PIXEL_WIDTH = 2  # desired line width in screen pixels
+
     def __init__(self, viewer, color='yellow'):
         self._viewer = viewer
         self._layer = None
@@ -1436,13 +1471,27 @@ class NapariCrosshairOverlay:
         self._shape = np.array([1.0, 1.0])
         self._cy = None  # None → centred on image
         self._cx = None
+        try:
+            self._viewer.camera.events.zoom.connect(self._on_zoom_changed)
+        except Exception:
+            pass
+
+    def _get_edge_width(self):
+        """Convert PIXEL_WIDTH to data-unit edge_width for the current zoom."""
+        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
+        return max(0.5, self._PIXEL_WIDTH / zoom)
+
+    def _on_zoom_changed(self, event):
+        if self._layer is not None and self._layer in self._viewer.layers \
+                and self._layer.visible:
+            self._redraw()
 
     def _ensure_layer(self):
         if self._layer is not None and self._layer in self._viewer.layers:
             return
         self._layer = self._viewer.add_shapes(
             name='_crosshair_overlay', edge_color=self._color,
-            face_color=[0, 0, 0, 0], edge_width=3)
+            face_color=[0, 0, 0, 0], edge_width=self._get_edge_width())
         self._layer.mode = 'pan_zoom'
 
     def _redraw(self):
@@ -1450,11 +1499,12 @@ class NapariCrosshairOverlay:
         cy = self._cy if self._cy is not None else H / 2.0
         cx = self._cx if self._cx is not None else W / 2.0
         span = max(H, W) * 10.0
+        ew = self._get_edge_width()
         self._layer.data = []
         self._layer.add_lines(
             [[[cy - span, cx], [cy + span, cx]],
              [[cy, cx - span], [cy, cx + span]]],
-            edge_color=self._color, edge_width=3)
+            edge_color=self._color, edge_width=ew)
 
     def place_at(self, row, col):
         """Position the crosshair at (row, col) in image data coordinates."""
@@ -1492,19 +1542,34 @@ class NapariGridOverlay:
     """
 
     _FRACTIONS = [0.25, 0.375, 0.50, 0.625, 0.75]
+    _PIXEL_WIDTH = 2  # desired line width in screen pixels
 
     def __init__(self, viewer, color='yellow'):
         self._viewer = viewer
         self._layer = None
         self._color = color
         self._shape = np.array([1.0, 1.0])
+        try:
+            self._viewer.camera.events.zoom.connect(self._on_zoom_changed)
+        except Exception:
+            pass
+
+    def _get_edge_width(self):
+        """Convert PIXEL_WIDTH to data-unit edge_width for the current zoom."""
+        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
+        return max(0.5, self._PIXEL_WIDTH / zoom)
+
+    def _on_zoom_changed(self, event):
+        if self._layer is not None and self._layer in self._viewer.layers \
+                and self._layer.visible:
+            self._redraw()
 
     def _ensure_layer(self):
         if self._layer is not None and self._layer in self._viewer.layers:
             return
         self._layer = self._viewer.add_shapes(
             name='_grid_overlay', edge_color=self._color,
-            face_color=[0, 0, 0, 0], edge_width=3)
+            face_color=[0, 0, 0, 0], edge_width=self._get_edge_width())
         self._layer.mode = 'pan_zoom'
 
     def _redraw(self):
@@ -1513,8 +1578,9 @@ class NapariGridOverlay:
         for f in self._FRACTIONS:
             lines.append([[f * H, 0], [f * H, W]])
             lines.append([[0, f * W], [H, f * W]])
+        ew = self._get_edge_width()
         self._layer.data = []
-        self._layer.add_lines(lines, edge_color=self._color, edge_width=3)
+        self._layer.add_lines(lines, edge_color=self._color, edge_width=ew)
 
     def update(self, shape):
         self._shape = np.array(shape, dtype=float)
