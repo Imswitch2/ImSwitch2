@@ -209,198 +209,52 @@ class ScanControllerBase(SuperScanController):
         self.setParameters()
 
     # Widget State Persistence Interface
-    
+
     def getWidgetState(self) -> Dict[str, Any]:
-        """
-        Get current scan settings state for persistence.
-        
-        Returns scan parameters like size, step size, center position, and safe TTL settings.
-        Does NOT include scan running state or cont laser mode for safety.
-        
-        Returns:
-            Dict with structure:
-            {
-                'positioners': {
-                    positionerName: {
-                        'size': float,
-                        'step_size': float,
-                        'center_pos': float
-                    }
-                },
-                'ttl_devices': {
-                    deviceName: {
-                        'included': bool,
-                        'start': value,
-                        'end': value
-                    }
-                },
-                'sequence_time': value
-            }
-        """
-        state = {
-            'positioners': {},
-            'ttl_devices': {},
-            'sequence_time': None
+        self.getParameters()
+        state: Dict[str, Any] = {
+            'version': 2,
+            'analogParameterDict': dict(self._analogParameterDict),
+            'digitalParameterDict': dict(self._digitalParameterDict),
         }
-        
         try:
-            # Save positioner settings
-            for positionerName in self.positioners.keys():
-                try:
-                    state['positioners'][positionerName] = {
-                        'size': self._widget.getScanSize(positionerName),
-                        'step_size': self._widget.getScanStepSize(positionerName),
-                        'center_pos': self._widget.getScanCenterPos(positionerName)
-                    }
-                except Exception as e:
-                    self._logger.debug(
-                        f'Could not save settings for positioner {positionerName}: {e}'
-                    )
-            
-            # Save TTL device settings (safe settings only, not trigger commands)
-            for deviceName in self.TTLDevices.keys():
-                try:
-                    state['ttl_devices'][deviceName] = {
-                        'included': self._widget.getTTLIncluded(deviceName),
-                        'start': self._widget.getTTLStarts(deviceName),
-                        'end': self._widget.getTTLEnds(deviceName)
-                    }
-                except Exception as e:
-                    self._logger.debug(
-                        f'Could not save settings for TTL device {deviceName}: {e}'
-                    )
-            
-            # Save sequence time
-            try:
-                state['sequence_time'] = self._widget.getSeqTimePar()
-            except Exception as e:
-                self._logger.debug(f'Could not save sequence time: {e}')
-            
-            # Scan mode radio (True = Scan, False = Cont. Laser Pulses)
-            try:
-                state['scan_mode'] = self._widget.scanRadio.isChecked()
-            except Exception as e:
-                self._logger.debug(f'Could not save scan mode: {e}')
-            
-            # Repeat checkbox
-            try:
-                state['repeat'] = self._widget.repeatBox.isChecked()
-            except Exception as e:
-                self._logger.debug(f'Could not save repeat setting: {e}')
-            
-            # Dimension combo selections: index → positioner name string
-            state['scan_dims'] = {}
-            for i in range(2):  # ScanWidgetBase exposes getScanDim(index) for 0 and 1
-                try:
-                    state['scan_dims'][str(i)] = self._widget.getScanDim(i)
-                except Exception:
-                    pass
-        
-        except Exception as e:
-            self._logger.error(f'Failed to save scan settings state: {e}')
-        
+            state['scan_mode'] = self._widget.isScanMode()
+        except Exception:
+            pass
+        try:
+            state['repeat'] = self._widget.repeatEnabled()
+        except Exception:
+            pass
         return state
-    
+
     def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """
-        Restore scan settings state from persistence.
-        
-        SAFETY: Does NOT start scans or trigger hardware. Only restores:
-        - Scan size, step size, and center position for positioners
-        - TTL timing parameters (not triggering)
-        - Sequence time
-        
-        Args:
-            state: Dict returned by getWidgetState()
-        """
         try:
-            # Restore positioner settings
-            positioners_state = state.get('positioners', {})
-            for positionerName, positioner_state in positioners_state.items():
-                if positionerName not in self.positioners:
-                    self._logger.debug(
-                        f'Skipping state for non-existent positioner: {positionerName}'
-                    )
-                    continue
-                
+            if 'analogParameterDict' in state:
+                self._analogParameterDict.update(state['analogParameterDict'])
+            if 'digitalParameterDict' in state:
+                self._digitalParameterDict.update(state['digitalParameterDict'])
+            self.setParameters()
+            if state.get('scan_mode', True):
                 try:
-                    if 'size' in positioner_state:
-                        self._widget.setScanSize(positionerName, positioner_state['size'])
-                    
-                    if 'step_size' in positioner_state:
-                        self._widget.setScanStepSize(positionerName, positioner_state['step_size'])
-                    
-                    if 'center_pos' in positioner_state:
-                        self._widget.setScanCenterPos(positionerName, positioner_state['center_pos'])
-                
-                except Exception as e:
-                    self._logger.warning(
-                        f'Failed to restore settings for positioner {positionerName}: {e}'
-                    )
-            
-            # Restore TTL device settings
-            ttl_devices_state = state.get('ttl_devices', {})
-            for deviceName, device_state in ttl_devices_state.items():
-                if deviceName not in self.TTLDevices:
-                    self._logger.debug(
-                        f'Skipping state for non-existent TTL device: {deviceName}'
-                    )
-                    continue
-                
-                try:
-                    if 'start' in device_state:
-                        self._widget.setTTLStarts(deviceName, device_state['start'])
-                    
-                    if 'end' in device_state:
-                        self._widget.setTTLEnds(deviceName, device_state['end'])
-                    
-                    # Note: We restore 'included' state but this doesn't trigger anything
-                    # It just sets the checkbox state for user reference
-                    if 'included' in device_state and hasattr(self._widget, 'setTTLIncluded'):
-                        self._widget.setTTLIncluded(deviceName, device_state['included'])
-                
-                except Exception as e:
-                    self._logger.warning(
-                        f'Failed to restore settings for TTL device {deviceName}: {e}'
-                    )
-            
-            # Restore sequence time
-            if 'sequence_time' in state and state['sequence_time'] is not None:
-                try:
-                    self._widget.setSeqTimePar(state['sequence_time'])
-                except Exception as e:
-                    self._logger.debug(f'Could not restore sequence time: {e}')
-            
-            # Restore scan mode (Scan vs Cont. Laser Pulses)
-            try:
-                if state.get('scan_mode', True):
-                    self._widget.setScanMode()  # sets scanRadio checked
-                else:
-                    self._widget.setContLaserMode()  # sets contLaserPulsesRadio checked
-            except Exception as e:
-                self._logger.debug(f'Could not restore scan mode: {e}')
-            
-            # Restore repeat checkbox
-            try:
-                self._widget.setRepeatEnabled(state.get('repeat', False))
-            except Exception as e:
-                self._logger.debug(f'Could not restore repeat setting: {e}')
-            
-            # Restore dimension combo selections
-            for i_str, posName in state.get('scan_dims', {}).items():
-                try:
-                    self._widget.setScanDim(int(i_str), posName)
+                    self._widget.setScanMode()
                 except Exception:
                     pass
-            
+            else:
+                try:
+                    self._widget.setContLaserMode()
+                except Exception:
+                    pass
+            if 'repeat' in state:
+                try:
+                    self._widget.setRepeatEnabled(state['repeat'])
+                except Exception:
+                    pass
             self._logger.info('Scan settings state restored successfully')
-            
         except Exception as e:
-            self._logger.error(f'Failed to restore scan settings state: {e}')
-    
+            self._logger.error(f'Failed to restore scan state: {e}')
+
     def getStateSchemaVersion(self) -> int:
-        """Return schema version for state compatibility checking."""
-        return 1
+        return 2
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

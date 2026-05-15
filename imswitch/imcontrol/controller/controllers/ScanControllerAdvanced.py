@@ -3,10 +3,12 @@ import copy
 import traceback
 import configparser
 from ast import literal_eval
+from typing import Dict, Any
 
 import numpy as np
 from PyQt5.QtCore import QTimer
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from ..basecontrollers import SuperScanController
 
 # Optional: only if you want wavelength-based colors like MoNaLISA
@@ -90,6 +92,9 @@ class ScanControllerAdvanced(SuperScanController):
         # Use singleShot(0) so all other controllers (including BeadRecController)
         # have finished __init__ before we emit.
         QTimer.singleShot(0, lambda: self._commChannel.sigUpdateBeadRecCenter.emit(0, 0))
+
+        # Register for widget state persistence
+        getWidgetStatePersistence().register('ScanControllerAdvanced', self)
 
     # ---------------------------------------------------------------------
     # Internal helpers: designer instances (no ScanManager in this branch)
@@ -723,3 +728,29 @@ class ScanControllerAdvanced(SuperScanController):
     @APIExport(runOnUIThread=True)
     def changeScanSize(self, positioner: str, size: float):
         self._widget.setScanSize(positioner, size)
+
+    # ------------------------------------------------------------------
+    # Widget State Persistence Interface
+    # ------------------------------------------------------------------
+
+    def getWidgetState(self) -> Dict[str, Any]:
+        self.getParameters()
+        return {
+            'version': 1,
+            'analogParameterDict': dict(self._analogParameterDict),
+            'digitalParameterDict': dict(self._digitalParameterDict),
+        }
+
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        try:
+            if 'analogParameterDict' in state:
+                self._analogParameterDict.update(state['analogParameterDict'])
+            if 'digitalParameterDict' in state:
+                self._digitalParameterDict = dict(state['digitalParameterDict'])
+            self.setParameters()
+            self._logger.info('Advanced scan state restored successfully')
+        except Exception as e:
+            self._logger.error(f'Failed to restore advanced scan state: {e}')
+
+    def getStateSchemaVersion(self) -> int:
+        return 1
