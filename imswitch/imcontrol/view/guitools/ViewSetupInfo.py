@@ -101,6 +101,9 @@ class ViewSetupInfo(SetupInfo):
     - ``AlignmentLine`` (line alignment tool widget)
     - ``uLenses`` (uLenses tool widget; requires ``Image`` widget)
     - ``FFT`` (FFT tool widget)
+    - ``FLIMHist`` (FLIM per-pixel lifetime histogram widget; requires a
+      detector that emits fluorescence-lifetime images, e.g. the
+      Swabian TimeTagger detector)
     - ``Console`` (Python console widget)
     - ``EtSTED`` (etSTED widget)
     - ``Rotator`` (Rotator widget; requires "Rotator" field to be defined)
