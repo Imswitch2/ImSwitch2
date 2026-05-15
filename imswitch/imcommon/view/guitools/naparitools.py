@@ -165,8 +165,14 @@ class NapariUpdateLevelsWidget(NapariBaseWidget):
                                                  QtWidgets.QSizePolicy.Maximum))
 
     def _on_update_levels(self):
-        for layer in self.viewer.layers.selected:
-            layer.contrast_limits = minmaxLevels(layer.data)
+        for layer in self.viewer.layers.selection:
+            mn, mx = minmaxLevels(layer.data)
+            # Expand contrast_limits_range first; otherwise napari silently
+            # clamps contrast_limits to the old range (e.g. [0,1] for a float
+            # layer initialised with zeros, even if actual data is in counts).
+            layer.contrast_limits_range = (min(mn, layer.contrast_limits_range[0]),
+                                           max(mx, layer.contrast_limits_range[1]))
+            layer.contrast_limits = (mn, mx)
 
 
 class NapariResetViewWidget(NapariBaseWidget):
