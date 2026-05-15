@@ -1340,13 +1340,27 @@ class JsonEditorDialog(QDialog):
 # =============================================================================
 
 def _load_widget_registry() -> dict:
-    """Dynamically load widget registry from ViewSetupInfo.py or fall back to hardcoded list.
-    
-    Parses the availableWidgets docstring from ViewSetupInfo.py to extract widget
-    names and descriptions. Uses _WIDGET_GROUP_MAP to assign widgets to categories.
-    Unknown widgets are placed in an "Other" group. Falls back to hardcoded values
-    if ViewSetupInfo.py cannot be found.
-    
+    """Dynamically load widget registry from three sources, union'd together.
+
+    The previous implementation parsed only the ``availableWidgets`` docstring
+    in ``ViewSetupInfo.py`` — but that docstring is documentation, not the
+    runtime source of truth, and it's missing several widgets that the app
+    can actually load (LeicaStand, ViewerTools, LineProfile, Watcher,
+    EtMonalisa, SLMs, BFTimelapse).  The hardcoded fallback below is more
+    complete but was only used when parsing failed entirely, so the
+    incomplete docstring shadowed it.
+
+    Now we union three sources:
+      1. The hardcoded fallback (guaranteed base — all known widgets with
+         descriptions).
+      2. The ``availableWidgets`` docstring in ViewSetupInfo.py (refines
+         descriptions when present; may add new widgets).
+      3. ``_DOCK_DISPLAY_NAMES`` in ImConMainView.py (the actual runtime
+         widget registry; ensures every loadable widget appears).
+
+    This way nothing falls out of the picker just because one of the three
+    sources got stale.
+
     Returns:
         dict: Widget groups in format {group_name: [(widget_name, description), ...]}
     """
@@ -1389,52 +1403,8 @@ def _load_widget_registry() -> dict:
         "Watcher": "Advanced",
     }
     
-    # Try to find ViewSetupInfo.py relative to this script
-    script_dir = Path(__file__).resolve().parent
-    view_setup_path = script_dir / ".." / "imswitch" / "imcontrol" / "view" / "guitools" / "ViewSetupInfo.py"
-    
-    widgets_found = {}  # {widget_name: description}
-    
-    if view_setup_path.exists():
-        try:
-            with open(view_setup_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            # Find the availableWidgets field docstring
-            # Pattern: - ``WidgetName`` (description text)
-            pattern = r'-\s+``(\w+)``\s+\(([^)]+)\)'
-            matches = re.findall(pattern, content)
-            
-            for widget_name, description in matches:
-                # Clean up description (collapse whitespace, remove newlines, capitalize first letter)
-                desc = ' '.join(description.split())
-                if desc and desc[0].islower():
-                    desc = desc[0].upper() + desc[1:]
-                widgets_found[widget_name] = desc
-        except Exception:
-            pass  # Fall through to hardcoded fallback
-    
-    # If we found widgets, build groups dynamically
-    if widgets_found:
-        groups = {
-            "Core": [],
-            "Control": [],
-            "Microscope": [],
-            "Analysis": [],
-            "Advanced": [],
-            "Other": [],
-        }
-        
-        for widget_name, description in sorted(widgets_found.items()):
-            group = _WIDGET_GROUP_MAP.get(widget_name, "Other")
-            groups[group].append((widget_name, description))
-        
-        # Remove empty groups
-        groups = {k: v for k, v in groups.items() if v}
-        return groups
-    
-    # Fallback: hardcoded widget list for offline/standalone use
-    return {
+    # ── Source 1: hardcoded baseline (always present) ──
+    hardcoded = {
         "Core": [
             ("Image",       "Main image display"),
             ("Settings",    "Detector settings & ROI"),
@@ -1467,13 +1437,74 @@ def _load_widget_registry() -> dict:
             ("BFTimelapse",    "Brightfield timelapse"),
         ],
         "Advanced": [
-            ("SLMs",       "SLM control"),
+            ("SLM",        "SLM control (single)"),
+            ("SLMs",       "SLM control (multi)"),
             ("EtSTED",     "EtSTED widget"),
             ("EtMonalisa", "EtMonalisa widget"),
             ("Tiling",     "Spiral tiling scan"),
             ("Watcher",    "File watcher"),
         ],
     }
+
+    # Flatten into {widget_name: description} for merging.
+    widgets_found = {name: desc for group in hardcoded.values()
+                     for name, desc in group}
+
+    script_dir = Path(__file__).resolve().parent
+
+    # ── Source 2: parse availableWidgets docstring in ViewSetupInfo.py ──
+    view_setup_path = (script_dir / ".." / "imswitch" / "imcontrol"
+                       / "view" / "guitools" / "ViewSetupInfo.py")
+    if view_setup_path.exists():
+        try:
+            with open(view_setup_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # Pattern: - ``WidgetName`` (description text)
+            for widget_name, description in re.findall(
+                r'-\s+``(\w+)``\s+\(([^)]+)\)', content
+            ):
+                desc = ' '.join(description.split())
+                if desc and desc[0].islower():
+                    desc = desc[0].upper() + desc[1:]
+                # Docstring descriptions are the official ones; let them
+                # override hardcoded defaults.
+                widgets_found[widget_name] = desc
+        except Exception:
+            pass
+
+    # ── Source 3: parse _DOCK_DISPLAY_NAMES from ImConMainView.py ──
+    # This is the authoritative runtime list — every widget the app can
+    # actually load appears here.  Add any names that the other two sources
+    # missed, using the display name as a fallback description.
+    main_view_path = (script_dir / ".." / "imswitch" / "imcontrol"
+                      / "view" / "ImConMainView.py")
+    if main_view_path.exists():
+        try:
+            with open(main_view_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # Scope to the _DOCK_DISPLAY_NAMES dict body.
+            block_match = re.search(
+                r'_DOCK_DISPLAY_NAMES\s*=\s*\{(.*?)\}', content, re.DOTALL
+            )
+            if block_match:
+                for widget_name, display_name in re.findall(
+                    r"'(\w+)'\s*:\s*'([^']+)'", block_match.group(1)
+                ):
+                    # Don't overwrite existing descriptions; only fill gaps.
+                    widgets_found.setdefault(widget_name, display_name)
+        except Exception:
+            pass
+
+    # Build the grouped output.  Unknown widgets (not in _WIDGET_GROUP_MAP)
+    # land in "Other" so they're still pickable.
+    groups = {
+        "Core": [], "Control": [], "Microscope": [],
+        "Analysis": [], "Advanced": [], "Other": [],
+    }
+    for widget_name, description in sorted(widgets_found.items()):
+        group = _WIDGET_GROUP_MAP.get(widget_name, "Other")
+        groups[group].append((widget_name, description))
+    return {k: v for k, v in groups.items() if v}
 
 
 WIDGET_GROUPS = _load_widget_registry()  # auto-discovered from ViewSetupInfo.py
@@ -1499,14 +1530,30 @@ class WidgetPickerDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setSpacing(8)
 
+        # ── Manual entry: add a widget name not present in the registry ──
+        # Lets the user enable an experimental/custom widget by typing its
+        # name.  Adds a checked checkbox to the Custom section on submit.
+        entry_row = QHBoxLayout()
+        entry_row.setSpacing(4)
+        entry_row.addWidget(QLabel("Custom widget:"))
+        self._custom_entry = QLineEdit()
+        self._custom_entry.setPlaceholderText("e.g. MyExperimental")
+        self._custom_entry.returnPressed.connect(self._add_custom_from_entry)
+        entry_row.addWidget(self._custom_entry, 1)
+        add_btn = QPushButton("Add")
+        add_btn.setFixedHeight(24)
+        add_btn.clicked.connect(self._add_custom_from_entry)
+        entry_row.addWidget(add_btn)
+        outer.addLayout(entry_row)
+
         # ── Scrollable checkbox area ──────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         inner = QWidget()
-        inner_lay = QVBoxLayout(inner)
-        inner_lay.setSpacing(4)
-        inner_lay.setContentsMargins(4, 4, 4, 4)
+        self._inner_lay = QVBoxLayout(inner)
+        self._inner_lay.setSpacing(4)
+        self._inner_lay.setContentsMargins(4, 4, 4, 4)
 
         enabled_set = set(enabled)
 
@@ -1515,30 +1562,33 @@ class WidgetPickerDialog(QDialog):
             hdr = QLabel(f"<b>{group_name}</b>")
             hdr.setTextFormat(Qt.RichText)
             hdr.setContentsMargins(0, 6, 0, 2)
-            inner_lay.addWidget(hdr)
+            self._inner_lay.addWidget(hdr)
 
             for widget_name, description in members:
                 cb = QCheckBox(f"{widget_name}  —  {description}")
                 cb.setChecked(widget_name in enabled_set)
                 cb.setStyleSheet("font-size:9pt;")
                 self._checkboxes[widget_name] = cb
-                inner_lay.addWidget(cb)
+                self._inner_lay.addWidget(cb)
 
         # ── Custom / unknown entries ──────────────────────────────────────
-        custom_names = [n for n in enabled if n not in _ALL_KNOWN_WIDGETS]
-        if custom_names:
-            hdr = QLabel("<b>Custom</b>")
-            hdr.setTextFormat(Qt.RichText)
-            hdr.setContentsMargins(0, 6, 0, 2)
-            inner_lay.addWidget(hdr)
-            for widget_name in custom_names:
-                cb = QCheckBox(widget_name)
-                cb.setChecked(True)
-                cb.setStyleSheet("font-size:9pt;")
-                self._checkboxes[widget_name] = cb
-                inner_lay.addWidget(cb)
+        # Always create the header so manually-added widgets have somewhere
+        # to land even when the enabled list has no customs to start with.
+        self._custom_hdr = QLabel("<b>Custom</b>")
+        self._custom_hdr.setTextFormat(Qt.RichText)
+        self._custom_hdr.setContentsMargins(0, 6, 0, 2)
+        self._inner_lay.addWidget(self._custom_hdr)
 
-        inner_lay.addStretch()
+        # Track index of the trailing stretch so we can insert new custom
+        # checkboxes just above it (keeps the dialog layout tidy).
+        for widget_name in [n for n in enabled if n not in _ALL_KNOWN_WIDGETS]:
+            self._add_custom_checkbox(widget_name, checked=True)
+
+        # Hide the header initially if there are no custom entries yet.
+        self._update_custom_hdr_visibility()
+
+        self._stretch_marker = self._inner_lay.count()
+        self._inner_lay.addStretch()
         scroll.setWidget(inner)
         outer.addWidget(scroll, 1)
 
@@ -1549,6 +1599,46 @@ class WidgetPickerDialog(QDialog):
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         outer.addWidget(btn_box)
+
+    def _add_custom_from_entry(self):
+        """Read the manual-entry field and add a custom checkbox."""
+        name = self._custom_entry.text().strip()
+        if not name:
+            return
+        # Don't allow duplicates — if the widget is already in the registry
+        # (known group), just check its existing box.  If it's already in
+        # the custom section, also just re-check.
+        existing = self._checkboxes.get(name)
+        if existing is not None:
+            existing.setChecked(True)
+            self._custom_entry.clear()
+            return
+        self._add_custom_checkbox(name, checked=True)
+        self._update_custom_hdr_visibility()
+        self._custom_entry.clear()
+
+    def _add_custom_checkbox(self, widget_name: str, checked: bool):
+        """Insert a new checkbox into the Custom section, above the stretch."""
+        cb = QCheckBox(widget_name)
+        cb.setChecked(checked)
+        cb.setStyleSheet("font-size:9pt;")
+        self._checkboxes[widget_name] = cb
+        # Insert before the final stretch (which is the last item once
+        # __init__ has added it).  During __init__ the stretch isn't there
+        # yet, so addWidget appends — that's also correct.
+        if getattr(self, '_stretch_marker', None) is not None:
+            self._inner_lay.insertWidget(self._stretch_marker, cb)
+            self._stretch_marker += 1
+        else:
+            self._inner_lay.addWidget(cb)
+
+    def _update_custom_hdr_visibility(self):
+        """Hide the Custom header when no custom checkboxes exist."""
+        has_custom = any(
+            name not in _ALL_KNOWN_WIDGETS
+            for name in self._checkboxes
+        )
+        self._custom_hdr.setVisible(has_custom)
 
     def selected_widgets(self) -> list:
         """Return checked widget names in group order, custom entries last."""

@@ -102,9 +102,57 @@ class ImageWidget(QtWidgets.QWidget):
             while data.ndim < ndisplay:
                 data = data[np.newaxis]
                 scale = (pad_scale,) + scale
-            # Same scale-before-data rule as setImage() — see the comment there.
-            layer.scale = scale
-            layer.data = data
+            # ndim change ⇒ must recreate; see comment in setImage().
+            self._recreateLiveLayer(name, data, scale)
+
+    def _recreateLiveLayer(self, name, im, scale):
+        """Replace a live-view layer in place, preserving display properties.
+
+        Mandatory when the layer's ndim has to change.  napari has no API to
+        atomically grow/shrink a layer's ndim:
+
+          * ``layer.scale = (longer_tuple)`` raises ValueError inside
+            transform_utils.py — the scale setter materialises into
+            ``np.ones(layer.ndim)`` and broadcasts the new tuple into it,
+            so any scale longer than the current ndim fails immediately.
+          * ``layer.data = different_ndim_array`` triggers ``_update_dims``,
+            which fires ``events.set_data`` synchronously; downstream
+            handlers index the still-mismatched affine and raise
+            IndexError on ``_world_to_layer_units_scale[displayed_axes]``.
+
+        Recreating preserves contrast limits, colormap, blending and
+        list-position; the cost is losing gamma/opacity/visibility tweaks
+        the user may have applied, and a brief flicker.  Both are
+        acceptable for an ndim transition (rare event — happens once when
+        the first 3D scan arrives after startup).
+        """
+        old = self.imgLayers[name]
+        layers = self.napariViewer.layers
+        try:
+            index = layers.index(old)
+        except ValueError:
+            index = None
+
+        properties = dict(
+            name=old.name,
+            blending=old.blending,
+            colormap=old.colormap.name,
+            contrast_limits=tuple(old.contrast_limits),
+            rgb=False,
+            scale=scale,
+            protected=True,
+        )
+
+        self._removeProtectedLayer(old)
+        new = self.napariViewer.add_image(im, **properties)
+        if index is not None:
+            try:
+                new_index = layers.index(new)
+                if new_index != index:
+                    layers.move(new_index, index)
+            except (ValueError, IndexError):
+                pass
+        self.imgLayers[name] = new
 
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
@@ -146,17 +194,24 @@ class ImageWidget(QtWidgets.QWidget):
                 im = im[np.newaxis]
                 scale = (pad_scale,) + scale
 
-        # Scale MUST be set before data.  napari's data setter triggers
-        # _update_dims(), which rebuilds _world_to_layer_units_scale from the
-        # current scale tuple.  If we set data first while the scale tuple is
-        # still the old length, displayed_axes can index past the end of
-        # scale and raise IndexError on the next render.  Setting scale first
-        # leaves a transient state where scale length != data ndim, but that
-        # state is never observed by napari's renderer because both lines run
-        # synchronously on this thread — by the time the next render tick
-        # fires, the data setter has already brought everything into a
-        # consistent shape.  This works whether the layer's ndim changes
-        # (e.g. first 3D scan into a 2D-initialised layer) or stays the same.
+        # If the layer's current ndim differs from the incoming image, in-place
+        # mutation is not possible in this napari version — see the docstring
+        # of _recreateLiveLayer for the full explanation.  Briefly:
+        #   * scale-first fails because the scale setter validates
+        #     len(scale) <= layer.ndim and raises ValueError otherwise
+        #     (transform_utils.py:138, "could not broadcast … into shape").
+        #   * data-first fails because the data setter synchronously fires
+        #     events.set_data with a still-mismatched affine.
+        # Recreate is the only path that lets napari rebuild its dims from
+        # scratch.  Only hits on the first frame of an ndim transition.
+        if layer.data.ndim != im.ndim:
+            self._recreateLiveLayer(name, im, scale)
+            return
+
+        # Same-ndim update: scale-before-data is safe because the scale setter
+        # accepts a tuple matching the current ndim, and the data setter then
+        # uses the already-correct scale length when rebuilding the world↔layer
+        # transform.
         layer.scale = scale
         layer.data = im
 
