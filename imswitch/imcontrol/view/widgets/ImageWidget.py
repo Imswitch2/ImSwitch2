@@ -29,10 +29,7 @@ class ImageWidget(QtWidgets.QWidget):
         # must have at least 3 dimensions; otherwise napari's extent
         # computation (extent.data[:, displayed_axes]) raises IndexError for
         # 2D layers while the user slides through a 3D scan result.
-        try:
-            self.napariViewer.dims.events.ndisplay.connect(self._on_ndisplay_changed)
-        except Exception:
-            pass
+        self.napariViewer.dims.events.ndisplay.connect(self._on_ndisplay_changed)
 
         self.viewCtrlLayout = QtWidgets.QVBoxLayout()
         self.viewCtrlLayout.setContentsMargins(0, 0, 0, 0)
@@ -70,30 +67,58 @@ class ImageWidget(QtWidgets.QWidget):
 
     def _on_ndisplay_changed(self, event=None):
         """Pad all live-view layers to ndisplay dims when the viewer enters 3D mode."""
-        try:
-            ndisplay = self.napariViewer.dims.ndisplay
-        except Exception:
-            return
+        ndisplay = self.napariViewer.dims.ndisplay
         for name, layer in list(self.imgLayers.items()):
+            if layer.data.ndim >= ndisplay:
+                continue
+            data = layer.data
+            scale = tuple(layer.scale)
+            # Pad with the smallest existing scale so the new singleton axis
+            # stays visually negligible — using 1.0 here would distort napari's
+            # 3D bounding box when X/Y pixel pitch is << 1 µm and bloat the
+            # rendered image.
+            pad_scale = min(scale) if scale else 1.0
+            while data.ndim < ndisplay:
+                data = data[np.newaxis]
+                scale = (pad_scale,) + scale
+            self._recreateLiveLayer(name, data, scale)
+
+    def _recreateLiveLayer(self, name, im, scale):
+        """Replace a live-view layer in place, preserving display properties.
+
+        Used when the layer's ndim has to change.  Mutating ``layer.scale``
+        and ``layer.data`` in place across an ndim transition leaves napari's
+        internal ``_world_to_layer_units_scale`` and ``_dims_displayed``
+        inconsistent — slicing then raises IndexError and the new dims never
+        propagate to ``viewer.dims`` (so the Z slider never appears).
+        """
+        old = self.imgLayers[name]
+        layers = self.napariViewer.layers
+        try:
+            index = layers.index(old)
+        except ValueError:
+            index = None
+
+        properties = dict(
+            name=old.name,
+            blending=old.blending,
+            colormap=old.colormap.name,
+            contrast_limits=tuple(old.contrast_limits),
+            rgb=False,
+            scale=scale,
+            protected=True,
+        )
+
+        layers.remove(old, force=True)
+        new = self.napariViewer.add_image(im, **properties)
+        if index is not None:
             try:
-                data = layer.data
-                scale = tuple(layer.scale)
-                changed = False
-                while data.ndim < ndisplay:
-                    data = data[np.newaxis]
-                    scale = (1.0,) + scale
-                    changed = True
-                if changed:
-                    try:
-                        layer.scale = scale
-                    except Exception:
-                        pass
-                    try:
-                        layer.data = data
-                    except Exception:
-                        pass
-            except Exception:
+                new_index = layers.index(new)
+                if new_index != index:
+                    layers.move(new_index, index)
+            except (ValueError, IndexError):
                 pass
+        self.imgLayers[name] = new
 
     def addStaticLayer(self, name, im, scale=None):
         kwargs = dict(rgb=False, name=name, blending='additive')
@@ -122,29 +147,36 @@ class ImageWidget(QtWidgets.QWidget):
         elif len(scale) > im.ndim:
             scale = scale[-im.ndim:]
 
-        # When the viewer is in 3D display mode (ndisplay=3) every layer must
-        # have at least 3 dimensions; otherwise napari indexes displayed_axes
-        # into extent.data[:, displayed_axes] (shape (2, ndim)) and raises
-        # IndexError when ndim < ndisplay.  Add singleton axes at the front.
-        try:
-            ndisplay = self.napariViewer.dims.ndisplay
+        # Every layer must have at least ndisplay dimensions, otherwise napari
+        # indexes displayed_axes into extent.data[:, displayed_axes] (shape
+        # (2, ndim)) and raises IndexError.  Pad with the smallest existing
+        # scale so the new singleton axes stay visually negligible (using 1.0
+        # distorts the 3D bounding box and bloats the rendered image when the
+        # real X/Y pixel pitch is << 1 µm).
+        ndisplay = self.napariViewer.dims.ndisplay
+        if im.ndim < ndisplay:
+            pad_scale = min(scale) if scale else 1.0
             while im.ndim < ndisplay:
                 im = im[np.newaxis]
-                scale = (1.0,) + scale
-        except Exception:
-            pass
+                scale = (pad_scale,) + scale
+
+        # If the layer's current ndim differs from the incoming image we have
+        # to replace the layer rather than mutate it: napari can't cleanly
+        # update _world_to_layer_units_scale and _dims_displayed across an
+        # ndim change, so a 2D live layer receiving its first 3D scan stays
+        # 2D forever (no Z slider) and slicing raises IndexError.  Recreating
+        # the layer preserves contrast limits, colormap, blending and order
+        # while letting napari rebuild its dims from scratch — viewer.dims
+        # then picks up the new ndim and the Z slider appears immediately.
+        if layer.data.ndim != im.ndim:
+            self._recreateLiveLayer(name, im, scale)
+            return
 
         # Scale MUST be set before data: napari rebuilds _world_to_layer_units_scale
         # from the current scale when data is assigned; if the old scale has a
         # different length dims_displayed indexes beyond it → IndexError.
-        try:
-            layer.scale = scale
-        except Exception:
-            pass
-        try:
-            layer.data = im
-        except (IndexError, ValueError):
-            pass
+        layer.scale = scale
+        layer.data = im
 
     def clearImage(self, name):
         self.setImage(name, np.zeros((1, 1)))
