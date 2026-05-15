@@ -21,9 +21,18 @@ class ImageWidget(QtWidgets.QWidget):
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
         self.NapariShiftWidget = naparitools.NapariShiftWidget.addToViewer(self.napariViewer)
         self.imgLayers = {}
-        
+
         # ViewerToolManager for napari Shape-based tools (ROI, line, etc.)
         self.toolManager = naparitools.ViewerToolManager(self.napariViewer)
+
+        # When the viewer switches to 3D display mode all live-view layers
+        # must have at least 3 dimensions; otherwise napari's extent
+        # computation (extent.data[:, displayed_axes]) raises IndexError for
+        # 2D layers while the user slides through a 3D scan result.
+        try:
+            self.napariViewer.dims.events.ndisplay.connect(self._on_ndisplay_changed)
+        except Exception:
+            pass
 
         self.viewCtrlLayout = QtWidgets.QVBoxLayout()
         self.viewCtrlLayout.setContentsMargins(0, 0, 0, 0)
@@ -59,8 +68,43 @@ class ImageWidget(QtWidgets.QWidget):
                 except KeyError:
                     addImage(name, 'grayclip')
 
-    def addStaticLayer(self, name, im):
-        self.napariViewer.add_image(im, rgb=False, name=name, blending='additive')
+    def _on_ndisplay_changed(self, event=None):
+        """Pad all live-view layers to ndisplay dims when the viewer enters 3D mode."""
+        try:
+            ndisplay = self.napariViewer.dims.ndisplay
+        except Exception:
+            return
+        for name, layer in list(self.imgLayers.items()):
+            try:
+                data = layer.data
+                scale = tuple(layer.scale)
+                changed = False
+                while data.ndim < ndisplay:
+                    data = data[np.newaxis]
+                    scale = (1.0,) + scale
+                    changed = True
+                if changed:
+                    try:
+                        layer.scale = scale
+                    except Exception:
+                        pass
+                    try:
+                        layer.data = data
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    def addStaticLayer(self, name, im, scale=None):
+        kwargs = dict(rgb=False, name=name, blending='additive')
+        if scale is not None:
+            sc = tuple(scale)
+            if len(sc) < im.ndim:
+                sc = (1.0,) * (im.ndim - len(sc)) + sc
+            elif len(sc) > im.ndim:
+                sc = sc[-im.ndim:]
+            kwargs['scale'] = sc
+        self.napariViewer.add_image(im, **kwargs)
 
     def getCurrentImageName(self):
         return self.napariViewer.active_layer.name
