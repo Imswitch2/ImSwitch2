@@ -1,4 +1,5 @@
 import numpy as np
+import threading
 import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
@@ -110,11 +111,13 @@ class SwabianTimeTaggerManager(DetectorManager):
 
         self._tt = None
         self._flim = None
+        self._flim_lock = threading.Lock()
         self._ev_pix_begin = None
         self._ev_pix_end = None
         self._scan = {}
         self._isMock = False  # True when hardware connection failed
 
+        self.acquisition = False
         self._image_display = np.zeros((1, 64, 64), dtype=np.float32)
         self._image_intensity = np.zeros((1, 64, 64), dtype=np.float32)
         self._newFrameReady = False
@@ -139,10 +142,11 @@ class SwabianTimeTaggerManager(DetectorManager):
         except Exception as e:
             self._logger.warning(f'Failed to stop acquisition during cleanup: {e}')
         try:
-            self._ev_pix_begin = None
-            self._ev_pix_end = None
-            self._flim = None
-            self._tt = None
+            with self._flim_lock:
+                self._ev_pix_begin = None
+                self._ev_pix_end = None
+                self._flim = None
+                self._tt = None
         except Exception as e:
             self._logger.warning(f'Failed to clean up TimeTagger objects: {e}')
         if hasattr(super(), '__del__'):
@@ -180,6 +184,19 @@ class SwabianTimeTaggerManager(DetectorManager):
     # ------------------------------------------------------------------ #
     # Scan lifecycle                                                        #
     # ------------------------------------------------------------------ #
+
+    def _teardownScanThread(self):
+        """Clean up any existing scan worker and thread before starting a new scan."""
+        worker = self._scanWorker
+        thread = self._scanThread
+        self._scanWorker = None
+        self._scanThread = None
+        if worker is not None:
+            worker.stop()
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            if not thread.wait(2000):
+                self._logger.warning('Scan thread did not stop within 2 s')
 
     def initiateScan(self, scanInfoDict, signalDict):
         if not self._enabled:
@@ -230,7 +247,8 @@ class SwabianTimeTaggerManager(DetectorManager):
                 'createTimeTagger() failed — running in mock mode (no FLIM data).'
             )
             self._isMock = True
-            self._flim = None
+            with self._flim_lock:
+                self._flim = None
             return
 
         try:
@@ -241,21 +259,23 @@ class SwabianTimeTaggerManager(DetectorManager):
             self._create_virtual_pixel_pulses()
 
             # Recreate Flim every scan so channel/bin changes always take effect
-            self._flim = Flim(
-                self._tt,
-                start_channel=self._start_ch,
-                click_channel=self._click_ch,
-                pixel_begin_channel=self._ev_pix_begin.getChannel(),
-                pixel_end_channel=self._ev_pix_end.getChannel(),
-                n_pixels=int(self._scan['n_pixels_total']),
-                n_bins=self._n_bins,
-                binwidth=self._binwidth_ps,
-            )
+            with self._flim_lock:
+                self._flim = Flim(
+                    self._tt,
+                    start_channel=self._start_ch,
+                    click_channel=self._click_ch,
+                    pixel_begin_channel=self._ev_pix_begin.getChannel(),
+                    pixel_end_channel=self._ev_pix_end.getChannel(),
+                    n_pixels=int(self._scan['n_pixels_total']),
+                    n_bins=self._n_bins,
+                    binwidth=self._binwidth_ps,
+                )
         except Exception:
             self._logger.exception(
                 'TimeTagger FLIM setup failed — no data this scan.'
             )
-            self._flim = None
+            with self._flim_lock:
+                self._flim = None
             return
 
         tot_scan_time_s = float(scanInfoDict.get('tot_scan_time_s', 0.0))
@@ -297,7 +317,15 @@ class SwabianTimeTaggerManager(DetectorManager):
         )
 
     def startScan(self):
-        if not self._enabled or self._flim is None:
+        if not self._enabled:
+            return
+        
+        # Tear down any previous scan thread before starting a new one
+        self._teardownScanThread()
+        
+        with self._flim_lock:
+            flim = self._flim
+        if flim is None:
             return
 
         self.acquisition = True
@@ -367,11 +395,7 @@ class SwabianTimeTaggerManager(DetectorManager):
     def stopAcquisition(self):
         self.acquisition = False
         try:
-            if getattr(self, '_scanWorker', None) is not None:
-                self._scanWorker.stop()
-            if getattr(self, '_scanThread', None) is not None:
-                self._scanThread.quit()
-                self._scanThread.wait()
+            self._teardownScanThread()
         except Exception as e:
             self._logger.warning(f'Failed to stop scan thread: {e}')
         self._newFrameReady = True
@@ -507,7 +531,17 @@ class _TTFlimWorker(Worker):
             expected_shape = (Nx * Ny, n_bins)
             STALL_MAX = int(10.0 / poll_s)  # 10 s of consecutive bad frames
 
+            # Precompute scan-invariant tables for fit methods
             t_axis = (np.arange(n_bins, dtype=np.float32) + 0.5) * binwidth_ps * 1e-12
+            t_axis_f64 = t_axis.astype(np.float64)[None, None, :]  # for exp1
+            
+            # Phasor tables
+            T_rep_s = n_bins * binwidth_ps * 1e-12
+            omega = 2.0 * np.pi / T_rep_s
+            t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
+            cos_table = np.cos(omega * t_s)
+            sin_table = np.sin(omega * t_s)
+            
             stall_count = 0
             got_valid_frame = False
 
@@ -529,16 +563,19 @@ class _TTFlimWorker(Worker):
 
                 stall_count = 0
                 got_valid_frame = True
-                self._emit_frame(cube, t_axis, fit_method, binwidth_ps, n_bins, min_counts)
+                self._emit_frame(cube, t_axis, t_axis_f64, fit_method, 
+                                omega, cos_table, sin_table, min_counts)
                 time.sleep(poll_s)
 
             # --- Final read after scan completes: captures the completed
             # histogram in full (mirrors APD's d3Step behaviour at scan end).
-            if got_valid_frame and self._m._flim is not None:
+            with self._m._flim_lock:
+                flim_exists = self._m._flim is not None
+            if got_valid_frame and flim_exists:
                 final_cube = self._poll_frame(expected_shape, Nx, Ny, n_bins)
                 if final_cube is not None:
-                    self._emit_frame(final_cube, t_axis, fit_method,
-                                     binwidth_ps, n_bins, min_counts)
+                    self._emit_frame(final_cube, t_axis, t_axis_f64, fit_method,
+                                    omega, cos_table, sin_table, min_counts)
 
             if self._last_total_counts == 0.0:
                 self._logger.warning(
@@ -562,25 +599,33 @@ class _TTFlimWorker(Worker):
 
     def _poll_frame(self, expected_shape, Nx, Ny, n_bins):
         """Single non-throwing poll. Returns a (Ny, Nx, n_bins) cube or None."""
-        if self._m._flim is None:
+        with self._m._flim_lock:
+            flim = self._m._flim
+        if flim is None:
             return None
         try:
-            h = self._m._flim.getCurrentFrame()
+            h = flim.getCurrentFrame()
         except Exception:
             self._logger.exception('getCurrentFrame() raised.')
             return None
         if h is None:
             return None
-        arr = np.asarray(h, dtype=np.float32)
+        arr = np.asarray(h)
         if arr.ndim != 2 or arr.shape != expected_shape:
             return None
+        # Only cast if needed; avoid copy when already correct type and layout
+        if arr.dtype != np.float32:
+            arr = arr.astype(np.float32, copy=False)
+        if not arr.flags['C_CONTIGUOUS']:
+            arr = np.ascontiguousarray(arr)
         return arr.reshape(Ny, Nx, n_bins)
 
-    def _emit_frame(self, cube, t_axis, fit_method, binwidth_ps, n_bins, min_counts):
+    def _emit_frame(self, cube, t_axis, t_axis_f64, fit_method,
+                    omega, cos_table, sin_table, min_counts):
         if fit_method == 'phasor':
-            intensity, lifetime = _fit_phasor(cube, binwidth_ps, n_bins)
+            intensity, lifetime = self._fit_phasor_cached(cube, omega, cos_table, sin_table)
         elif fit_method == 'exp1':
-            intensity, lifetime = _fit_exp1(cube, t_axis)
+            intensity, lifetime = self._fit_exp1_cached(cube, t_axis_f64)
         else:
             intensity, lifetime = _fit_moment(cube, t_axis)
 
@@ -600,3 +645,37 @@ class _TTFlimWorker(Worker):
             intensity.astype(np.float32),
             lifetime.astype(np.float32),
         )
+
+    def _fit_phasor_cached(self, cube, omega, cos_table, sin_table):
+        """Phasor fit using precomputed cos/sin tables. No per-call allocations."""
+        intensity = cube.sum(axis=2).astype(np.float32)
+        h = cube.astype(np.float64) / intensity.clip(1).astype(np.float64)[:, :, None]
+        g = (h * cos_table[None, None, :]).sum(axis=2)
+        s = (h * sin_table[None, None, :]).sum(axis=2)
+        denom = omega * g
+        lifetime = np.where(np.abs(denom) > 1e-30, s / denom, 0.0).astype(np.float32)
+        return intensity, lifetime
+
+    def _fit_exp1_cached(self, cube, t_axis_f64):
+        """Exp1 fit using precomputed t_axis in float64 with correct shape."""
+        intensity = cube.sum(axis=2).astype(np.float32)
+        h = cube.astype(np.float64)
+        t = t_axis_f64  # Already (1, 1, n_bins) in float64
+
+        w = np.sqrt(np.where(h > 0, h, 0.0))
+        log_h = np.where(h > 0, np.log(h), 0.0)
+
+        sw   = w.sum(axis=2)
+        swt  = (w * t).sum(axis=2)
+        swt2 = (w * t ** 2).sum(axis=2)
+        swlh  = (w * log_h).sum(axis=2)
+        swtlh = (w * t * log_h).sum(axis=2)
+
+        det = sw * swt2 - swt ** 2
+        with np.errstate(invalid='ignore', divide='ignore'):
+            slope = np.where(np.abs(det) > 1e-30,
+                            (sw * swtlh - swt * swlh) / det,
+                            0.0)
+
+        lifetime = np.where(slope < 0, (-1.0 / slope).astype(np.float32), 0.0)
+        return intensity, lifetime.astype(np.float32)
