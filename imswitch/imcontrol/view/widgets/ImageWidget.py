@@ -70,25 +70,36 @@ class ImageWidget(QtWidgets.QWidget):
 
     def setImage(self, name, im, scale):
         layer = self.imgLayers[name]
-        # Normalise scale length to match im.ndim so napari's internal
-        # _world_to_layer_units_scale (indexed by dims_displayed) never
-        # goes out of range.
         scale = tuple(scale)
+
+        # Normalise scale length to match im.ndim.
         if len(scale) < im.ndim:
             scale = (1.0,) * (im.ndim - len(scale)) + scale
         elif len(scale) > im.ndim:
             scale = scale[-im.ndim:]
-        # Scale MUST be set before data: when layer.data is assigned napari
-        # immediately rebuilds _world_to_layer_units_scale using the current
-        # scale.  If the old scale still has a different length at that point
-        # dims_displayed can index beyond the end → IndexError.
+
+        # When the viewer is in 3D display mode (ndisplay=3) every layer must
+        # have at least 3 dimensions; otherwise napari indexes displayed_axes
+        # into extent.data[:, displayed_axes] (shape (2, ndim)) and raises
+        # IndexError when ndim < ndisplay.  Add singleton axes at the front.
+        try:
+            ndisplay = self.napariViewer.dims.ndisplay
+            while im.ndim < ndisplay:
+                im = im[np.newaxis]
+                scale = (1.0,) + scale
+        except Exception:
+            pass
+
+        # Scale MUST be set before data: napari rebuilds _world_to_layer_units_scale
+        # from the current scale when data is assigned; if the old scale has a
+        # different length dims_displayed indexes beyond it → IndexError.
         try:
             layer.scale = scale
         except Exception:
             pass
         try:
             layer.data = im
-        except IndexError:
+        except (IndexError, ValueError):
             pass
 
     def clearImage(self, name):
