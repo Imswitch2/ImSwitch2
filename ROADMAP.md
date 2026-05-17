@@ -11,7 +11,6 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ✅ Critical lint errors resolved (`E9/F63/F7/F82` clean)
 - ✅ First unit tests passing in CI (`test_stores.py`)
 - ⬜ Ensure the application launches without errors on a clean install
-- ⬜ Document current state and known issues
 
 ## Milestone 2: Packaging Cleanup 🔄
 
@@ -20,9 +19,9 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ✅ Modernize `setup.cfg`: `python_requires = >=3.10`, relaxed version pins
 - ✅ Split hardware packages into optional extras (`[hardware]`, `[full]`)
 - ✅ Core install (`pip install imswitch`) no longer requires NI-DAQ, Lantz, napari
-- ⬜ Remove dead code and unused imports (bare-except / blank-import cleanup deferred)
+- ✅ Consolidate or remove `setup.py` in favour of `pyproject.toml` only (deleted in Milestone 3)
+- ⬜ Remove dead code and unused imports (29 bare `except:` blocks remain in `imcontrol/`)
 - ⬜ Establish clear package boundaries
-- ⬜ Consolidate or remove `setup.py` in favour of `pyproject.toml` only
 
 ## Milestone 3: Code-Level Bug Fixes
 
@@ -71,7 +70,46 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 **Goal:** Comprehensive documentation for developers, agents, and users.
 
 - ✅ Architecture map (`docs/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
+- ⬜ Document current state and known issues (moved from Milestone 1)
 - ⬜ Document all configuration options in `SetupInfo`
 - ⬜ Write developer onboarding guide
-- ⬜ Fill in microscope knowledge base with real hardware values
+- ⬜ Fill in microscope knowledge base with real hardware values (currently template-only)
 - ⬜ Create agent task templates for common operations
+
+## Milestone 8: ImControl UI & Workflow Enhancements ✅
+
+**Goal:** Modernize ImControl UI with persistent state, improved configuration editing, and advanced imaging workflows.
+
+- ✅ Widget state persistence framework (`WidgetStatePersistence.py` + `docs/WIDGET_STATE_PERSISTENCE.md`)
+  - Save/load widget controller states (laser power, scan params, detector settings) to JSON
+  - UI integration: File menu actions (Ctrl+Shift+S/L) with file dialogs
+  - Implemented for: Laser, Settings (detector), Scan, Positioner, Recording, Rotator controllers
+- ✅ Configuration editor improvements (`utility_scripts/imswitch_config_editor.py`)
+  - Widget layout JSON editor with drag-drop visual widget picker
+  - COM port quoting bugfix, chip/panel UI fixes
+  - macOS window positioning fix
+- ✅ FLIM (Fluorescence Lifetime Imaging) support
+  - `FLIMHistWidget.py` (histogram display), `FLIMHistController.py`
+  - Optimized pipeline with cached scan-invariant tables
+  - `SwabianTimeTaggerManager` fixes (live preview, signal duplication, init=True per frame)
+- ✅ Tiling/stitching workflow
+  - `TilingController.py` + `TilingWidget.py` (replaced stub implementation)
+  - Spiral scan pattern (`spiral_moves` utility)
+  - `StitchedImage` in-memory tile stitcher (workflows)
+  - `TilingInfo` config dataclass
+- ✅ Napari viewer enhancements
+  - `ViewerToolManager` (ROI, line, pan tools via napari Shapes layer)
+  - Zoom-stable edge widths (shape edges in screen pixels)
+  - 3D/2D dimension transition handling (layer padding to ndisplay dims)
+  - Manual contrast range inputs, scale bar unit set to µm
+- ✅ Detector improvements
+  - Hamamatsu advanced subarray property editing (`docs/HAMAMATSU_ADVANCED_PROPERTIES.md`)
+  - TIS camera IndexError fix
+  - APD tuple mutation fix
+  - Detector pixel size float step fix
+  - Frame sync after advanced property changes
+- ⬜ Dynamic napari layer lifecycle (still planned)
+  - Currently: all `forAcquisition` detectors get permanent layers at startup
+  - Plan: create/remove layers dynamically based on active detector
+  - Design doc: `docs/dynamic_layer_lifecycle_plan.md`
+
