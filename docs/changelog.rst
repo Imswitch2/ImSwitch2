@@ -2,8 +2,13 @@
 Changelog
 *********
 
-Unreleased
-==========
+v0.1.0 (2026-05-17)
+===================
+
+First tagged release of ImSwitch2 — the rewrite/refresh of the
+original ImSwitch project. Restarts from 0.x to signal that the API
+is still evolving and some roadmap milestones (DAQ safety layer,
+manager-level refactors) remain in progress.
 
 **New Features**
 
