@@ -2,6 +2,49 @@
 Changelog
 *********
 
+Unreleased
+==========
+
+**New Features**
+
+- Added FLIM lifetime histogram widget for Swabian Time Tagger photon-counting detectors with real-time histogram display and accumulation support
+- Introduced widget state persistence framework: save and load complete microscope configurations (detector settings, laser power, scan parameters) via File menu or Ctrl+Shift+S/L shortcuts
+- Added multi-position tiling controller with spiral scan patterns, real-time stitched overview, and click-to-navigate canvas
+- Configurable widget layout: define custom dock arrangements and tab groups directly in setup JSON files via the ``widgetLayout`` field
+- Enhanced configuration editor with visual widget picker dialog: categorized checkboxes replace text-input-only widget selection
+- Manual contrast range controls in napari viewer: type custom min/max values for detectors with negative voltages or unusual ranges
+- Line profile analysis now normalizes by ROI dimensions for rectangle selections
+- Scale bar in live-view napari viewer now displays physical units (µm)
+
+**Bug Fixes**
+
+- Fixed IndexError when napari viewer switches to 3D mode (e.g., after loading an APD 3D scan): 2D live-view layers now auto-pad to match viewer dimensionality
+- Resolved layer corruption when switching between detectors: napari layers are now properly recreated when image dimensionality changes
+- Contrast limits now apply correctly to integer-count detectors (APD, PMT): expanded range before setting limits prevents [0,1] clamp
+- Fixed detector advanced properties tab showing wrong camera model name after switching detectors
+- Eliminated APD manager "tuple does not support item assignment" warning during scan acquisition
+- Improved TIS camera error messages with explicit guards and descriptive IndexError/RuntimeError text
+- Swabian Time Tagger live preview now updates progressively during scans instead of only after completion
+- Fixed Hamamatsu detector subarray property synchronization after advanced property changes
+- Configuration editor now correctly parses single-quoted COM port strings (e.g., 'COM4') via ast.literal_eval fallback
+- Fixed macOS main window clipping behind system Dock: now uses availableGeometry instead of showMaximized
+- napari overlay line width (crosshair, grid) remains constant in screen pixels regardless of zoom level
+- Autofocus now uses absolute positioning to prevent drift and improved gradient-variance focus metric for better SNR
+- Fixed scan controller state persistence reliability when widget APIs vary across napari versions
+
+**Performance**
+
+- FLIM pipeline optimization: precompute scan-invariant trigonometric tables once per scan instead of per-frame, yielding 30-50% speedup for phasor and exponential fitting
+- Added thread-safe locking for FLIM processing to prevent race conditions in concurrent frame emission
+
+**Developer / Internal**
+
+- Removed lantz dependency: replaced with direct pyvisa wrapper and vendored Cobolt laser drivers implementing ASCII protocol natively
+- Lifted pyvisa<1.12 version pin, unblocking Python ecosystem upgrades and resolving setuptools<80 compatibility issues
+- Refreshed architecture documentation with current manager inventory, widget list, and subsystem descriptions
+- Completed hardware manager audit: applied 100+ instant fixes (mock fallbacks, lazy imports, validation checks)
+- Improved cross-thread signaling robustness in scan and tiling controllers (Qt signal emission replaces QMetaObject.invokeMethod)
+
 2.0.0
 =====
 
