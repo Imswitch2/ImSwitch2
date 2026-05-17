@@ -1,9 +1,25 @@
 name: imswitch-pypi
 
+# DISABLED tag trigger until the ImSwitch2 rebrand lands.  Reasons:
+#   1. setup.cfg still says `name = ImSwitch`, which is taken on PyPI
+#      by the upstream project (last release 2.0.0, Jan 2023).  Any
+#      tag push from this fork tries to publish ImSwitch 0.x to a
+#      package this maintainer does not own → token rejection.
+#   2. Even with a valid token, 0.1.0 is a version downgrade against
+#      the upstream 2.0.0, which PyPI refuses.
+#
+# To reactivate:
+#   - Rename the package in setup.cfg (e.g. `name = imswitch2`).
+#   - Register the new name on PyPI with a maintainer account.
+#   - Set the PYPI_API_TOKEN secret in the repo settings.
+#   - Restore the `push:` block below.
+#
+# workflow_dispatch stays available for manual testing during the rebrand.
 on:
-  push:
-    tags:
-      - '*'
+  workflow_dispatch:
+  # push:
+  #   tags:
+  #     - '*'
 
 jobs:
   build-n-publish:
