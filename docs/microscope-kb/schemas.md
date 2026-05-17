@@ -24,7 +24,7 @@ Every microscope KB should contain these files. Omit optional fields with `null`
 ├── software_config.yaml     # Control software defaults and device wiring
 ├── procedures.yaml          # Startup, shutdown, alignment, maintenance workflows
 ├── safety.yaml              # All safety information (laser, electrical, chemical, bio)
-├── troubleshooting.yaml     # Symptom → cause → fix decision trees
+├── troubleshooting.yaml     # Symptom → ranked likely causes → step-by-step fix
 ├── limits.yaml              # Performance envelope and operational boundaries
 ├── recipes.yaml             # Complete experiment configurations
 ├── faq.yaml                 # Common questions with canonical answers

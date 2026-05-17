@@ -50,9 +50,12 @@ IDs established here, so be thorough and consistent.
 2. **Structured data, not prose**: Use YAML key-value pairs, lists, and nested
    objects. The goal is machine-readability.
 
-3. **Use unique IDs**: Every referenceable entry MUST have a unique `id` field
-   in descriptive snake_case (e.g. `laser_640_cw`, `cam_sCMOS`, `obj_100x_oil`).
-   These IDs will be referenced by all other files — choose them carefully.
+3. **Use unique IDs and human names**: Every referenceable entry MUST have a
+   unique `id` field in descriptive snake_case (e.g. `laser_640_cw`,
+   `cam_sCMOS`, `obj_100x_oil`) **and** a paired `name` field with the
+   human-readable label (e.g. "640 nm CW laser", "Hamamatsu ORCA-Flash4.0",
+   "100x/1.4 NA oil objective"). The `id` is the stable cross-reference key
+   used by other files; the `name` is what surfaces in answers and UIs.
 
 4. **Explicit nulls for unknowns**: Use `null` and add a comment like
    `# not specified in provided sources`.
@@ -91,7 +94,8 @@ FILES TO GENERATE IN THIS WAVE:
 
 - concepts.yaml
 - calibrations.yaml
-- software_config.yaml   (or imswitch_defaults.yaml if the system uses ImSwitch)
+- software_config.yaml   (narrative: device wiring, presets, safety-critical guidance, what's safe to change)
+- <control_software>_defaults.yaml   (optional: auto-extracted defaults from the control software's config — e.g. `imswitch_defaults.yaml` for ImSwitch; generate only if such a file is provided or extractable. This file is the highest-fidelity source for factual questions about device names, channel wiring, and value ranges.)
 - procedures.yaml
 - safety.yaml
 - troubleshooting.yaml
@@ -125,6 +129,17 @@ FILES TO GENERATE IN THIS WAVE:
    fields or guessing values.
 
 8. **No AI artifacts**: Clean YAML only — no citation markers, no internal refs.
+
+9. **faq.yaml as a digest, not a re-write**: Synthesise the top ~10-15 entries
+   from (a) the most common troubleshooting issues and (b) any safety_critical
+   warnings — short canonical answers users hit before reading anything else.
+   Each entry is a question + 1-3 sentences, optionally with a `see_also` list
+   of file references for deeper detail.
+
+10. **_changelog.yaml is the audit log**: Initialise it with a single entry
+    dated today summarising the bulk-generation step. From this point on,
+    every modification to any KB file should append a one-line entry
+    (date, files touched, summary).
 
 Ask clarifying questions only if something is safety-critical and genuinely
 ambiguous. Otherwise proceed and flag uncertainties as comments in the YAML.
