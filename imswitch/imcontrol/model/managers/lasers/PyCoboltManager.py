@@ -242,6 +242,11 @@ class CoboltLaser:
             RuntimeError: sending the message failed
         """
 
+        # Lazy-load pyserial to match the pattern in connect() — keeps
+        # ImSwitch importable without pyserial installed.
+        import serial
+        from serial.serialutil import SerialException
+
         if timeout:
             self.address.timeout = timeout
         message += "\r"
@@ -365,6 +370,9 @@ class Cobolt06(CoboltLaser):
         !e - light on
         !d - light off
         !p XX - set XX mW power level"""
+
+        # Lazy-load pyserial to match connect() — see send_cmd() for rationale.
+        import serial
 
         cmd += "\r"
         utf8_msg = cmd.encode()
