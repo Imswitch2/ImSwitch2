@@ -1,0 +1,83 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 6 (Troubleshooting) of generation-prompt.md
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+troubleshooting:
+  safety_first:
+    always_do: []
+
+  issues: []
+    # Example structure - expand based on your system's modalities:
+    #
+    # UNIVERSAL issues (all systems):
+    # - No image / black image
+    # - Out of focus / blurry
+    # - Weak signal / low SNR
+    # - Unexpected background / autofluorescence
+    # - Software crash / communication error
+    # - Stage drift / focus drift
+    #
+    # IF camera-based:
+    # - Camera not triggering / wrong exposure
+    # - Hot pixels / striping artifacts
+    # - Uneven illumination (flatfield)
+    # - Saturated pixels
+    #
+    # IF point-scanning:
+    # - Scan artifacts (ringing, stepping)
+    # - Bidirectional scan misalignment
+    # - Low signal despite correct laser power (pinhole misaligned)
+    #
+    # IF spinning-disk:
+    # - Pinhole artifacts / grid pattern visible
+    # - Crosstalk between pinholes
+    #
+    # IF STED:
+    # - No resolution improvement
+    # - Donut asymmetry / poor null
+    # - Signal loss without resolution gain (timing issue)
+    #
+    # IF SIM:
+    # - Reconstruction artifacts (honeycomb, haloing)
+    # - Low modulation contrast
+    # - Pattern not visible / not modulated
+    #
+    # IF SMLM:
+    # - Molecules not blinking / too dense
+    # - Too few localizations
+    # - Drift in reconstruction
+    # - Buffer degradation (loss of switching)
+    #
+    # IF multiphoton:
+    # - No signal at any depth (mode-lock lost?)
+    # - Signal only at surface (scattering / power insufficient)
+    # - Photodamage / heat damage at depth
+    #
+    # IF light-sheet:
+    # - Striping artifacts (absorption shadows)
+    # - Sheet too thick / poor sectioning
+    # - Sample drift in agarose
+
+    # - id: null  # UNIQUE_SHORT_ID
+    #   observation: null
+    #   modality: null  # which modality or 'all'
+    #   typical_causes: []
+    #     # - id: null
+    #     #   cause: null
+    #     #   likelihood: null  # high / medium / low
+    #   steps_to_fix: []
+    #     # - step: null
+    #     #   check: null
+    #     #   how: null
+    #     #   fix: null
+    #   escalation: null

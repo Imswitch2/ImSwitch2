@@ -1,0 +1,38 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: This file can be auto-seeded from ImSwitch setup JSON using
+#       utility_scripts/scopeaid_seed_from_config.py (planned)
+# NOTE: ImSwitch-specific file - holds extracted default values from
+#       the ImSwitch setup JSON that aren't covered by other KB files
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+imswitch_defaults:
+  # Extracted from ImSwitch setup JSON
+  # Structure mirrors software_config.yaml but focuses on default values
+  # rather than wiring/topology
+  
+  widget_defaults: {}
+    # Example structure (fill from your setup JSON):
+    # LaserWidget:
+    #   laser_1:
+    #     default_power: null
+    #     modulation: null
+    # SettingsWidget:
+    #   detector_1:
+    #     default_exposure: null
+    #     default_roi: null
+
+  acquisition_defaults: {}
+    # scan_defaults: {}
+    # recording_defaults: {}
+
+  notes: []

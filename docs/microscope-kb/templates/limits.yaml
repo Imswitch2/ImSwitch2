@@ -1,0 +1,83 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 7 (Limits & Performance) of generation-prompt.md
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+limits:
+  notes: []
+
+  # One section per modality available on the system
+  # Example: widefield / confocal / STED / SIM / SMLM / multiphoton / light-sheet
+
+  # modality_name:
+  #   resolution:
+  #     lateral_nm: null
+  #     axial_nm: null
+  #     conditions: null
+  #
+  #   # IF camera-based
+  #   field_of_view_um: [null, null]
+  #   effective_pixel_size_nm: null
+  #   max_frame_rate_fps: null
+  #   exposure_range_ms:
+  #     min: null
+  #     max: null
+  #
+  #   # IF point-scanning
+  #   scan_field_um: [null, null]
+  #   max_line_rate_hz: null
+  #   pixel_dwell_time_us:
+  #     min: null
+  #     max: null
+  #   frame_time_s: null
+  #
+  #   # IF spinning-disk
+  #   disk_confocality: null
+  #   max_frame_rate_fps: null
+  #
+  #   # IF light-sheet
+  #   volume_rate_hz: null
+  #   sheet_thickness_um: null
+  #   sample_size_limits_mm: [null, null, null]
+  #
+  #   # IF SIM
+  #   raw_frames_per_reconstruction: null
+  #   reconstruction_time_s: null
+  #
+  #   # IF SMLM
+  #   typical_frames_required: null
+  #   localization_precision_nm: null
+  #   min_acquisition_time_s: null
+  #   reconstruction_time_min: null
+  #
+  #   # IF multiphoton
+  #   max_imaging_depth_um: null
+  #   two_photon_excitation_range_nm: [null, null]
+
+  # COMMON sections
+  stage_limits:
+    xy_travel_mm: [null, null]
+    z_range_um: null
+
+  laser_power_limits: {}
+    # laser_id:
+    #   max_safe_at_sample_mW: null
+    #   recommended_range_mW: [null, null]
+    #   notes: null
+
+  temporal:
+    min_latency_ms: null
+    notes: []
+
+  environmental:
+    max_experiment_duration_hours: null
+    notes: []

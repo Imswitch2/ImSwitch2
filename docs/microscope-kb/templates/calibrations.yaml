@@ -1,0 +1,85 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 4 (Calibrations) of generation-prompt.md
+# NOTE: Calibration CSV file paths are OPTIONAL. If provided, use relative
+#       paths within your local KB folder. If not available, set to null.
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+calibrations:
+  meta:
+    measurement_reference: null
+    recommended_storage: []
+    notes: []
+
+  laser_power_calibrations: []
+    # - id: null  # MUST be unique across ALL entries
+    #   wavelength_nm: null
+    #   modulator: null  # AOTF / AOM / direct / neutral_density / analog_voltage
+    #   measurement_location: null  # before_body / at_sample / after_objective
+    #   input:
+    #     name: null
+    #     unit: null
+    #     min: null
+    #     max: null
+    #   output:
+    #     name: null
+    #     unit: null  # W / mW / uW
+    #   power_range:
+    #     min: null
+    #     max: null
+    #     unit: null
+    #   n_points: null
+    #   source_file: null  # OPTIONAL: path to CSV relative to KB folder
+    #   date_measured: null
+    #   notes: []
+
+  # IF camera-based
+  camera_calibrations: []
+    # - id: null
+    #   camera: null
+    #   type: null  # flatfield / dark_frame / pixel_map / gain_map
+    #   source_file: null  # OPTIONAL
+    #   date_measured: null
+    #   notes: []
+
+  # IF SIM
+  # sim_calibrations: []
+  #   # - id: null
+  #   #   type: null  # pattern_calibration / OTF_measurement
+  #   #   source_file: null  # OPTIONAL
+  #   #   notes: []
+
+  # IF SMLM
+  # smlm_calibrations: []
+  #   # - id: null
+  #   #   type: null  # PSF_model / bead_calibration / astigmatism_curve
+  #   #   source_file: null  # OPTIONAL
+  #   #   notes: []
+
+  position_calibrations: []
+    # - id: null
+    #   type: null  # objective_z / stage_xy / pixel_size / magnification
+    #   input:
+    #     name: null
+    #     unit: null
+    #     min: null
+    #     max: null
+    #   output:
+    #     name: null
+    #     unit: null
+    #     min: null
+    #     max: null
+    #   model:
+    #     kind: null  # linear_fit / lookup_table / polynomial / affine_transform
+    #     parameters: {}
+    #   source_file: null  # OPTIONAL
+    #   notes: []

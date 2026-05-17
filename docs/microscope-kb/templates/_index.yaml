@@ -1,0 +1,32 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 1 (System Overview) of generation-prompt.md
+
+knowledge_base:
+  system: null  # Full microscope name
+  family: null  # e.g., 'point-scanning confocal + STED'
+  architecture:
+    image_formation: null  # widefield / point-scanning / spinning-disk / light-sheet / hybrid
+    resolution_regime: null  # diffraction-limited / super-resolution-deterministic / super-resolution-stochastic
+  institution: null
+  version: null
+  last_updated: null  # YYYY-MM-DD
+
+  modalities_available: []
+    # - name: null
+    #   type: null
+    #   description: null
+
+  usage_instructions: null  # 2-3 sentences for AI on how to use this KB
+
+  files: []
+    # - path: null
+    #   covers: null
+    #   query_types: []

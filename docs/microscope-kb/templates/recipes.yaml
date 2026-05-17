@@ -1,0 +1,112 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 8 (Recipes & FAQ) of generation-prompt.md
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+recipes:
+  notes: []
+
+  entries: []
+    # - id: null
+    #   name: null
+    #   purpose: null
+    #   modalities_used: []
+    #
+    #   sample:
+    #     type: null
+    #     label: null
+    #     mounting: null
+    #     preparation_notes: null
+    #
+    #   settings:
+    #     # Include ONLY sections relevant to the modality
+    #
+    #     # IF camera-based
+    #     camera:
+    #       camera_id: null
+    #       exposure_ms: null
+    #       em_gain: null
+    #       binning: null
+    #       roi_px: [null, null]
+    #
+    #     # IF spinning-disk
+    #     spinning_disk:
+    #       disk_speed_rpm: null
+    #       pinhole_size_um: null
+    #
+    #     # IF TIRF
+    #     tirf:
+    #       penetration_depth_nm: null
+    #       angle: null
+    #
+    #     # IF SIM
+    #     sim:
+    #       pattern_orientations: null
+    #       pattern_phases: null
+    #       reconstruction_software: null
+    #       reconstruction_parameters: {}
+    #
+    #     # IF SMLM
+    #     smlm:
+    #       activation_laser: null
+    #       activation_power: null
+    #       imaging_laser: null
+    #       imaging_power: null
+    #       frames: null
+    #       frame_rate_fps: null
+    #       buffer: null
+    #       reconstruction_software: null
+    #       localization_parameters: {}
+    #
+    #     # IF point-scanning (confocal, STED, multiphoton)
+    #     scan:
+    #       pixel_size_nm: null
+    #       dwell_time_us: null
+    #       roi_um: [null, null]
+    #       z_slices: null
+    #       z_step_um: null
+    #       averaging: null
+    #       bidirectional: null
+    #
+    #     # IF STED
+    #     sted:
+    #       depletion_laser: null
+    #       depletion_power: null
+    #       phase_mask: null
+    #
+    #     # IF multiphoton
+    #     multiphoton:
+    #       excitation_wavelength_nm: null
+    #       average_power_mW: null
+    #       zoom: null
+    #
+    #     # IF light-sheet
+    #     light_sheet:
+    #       excitation_wavelength_nm: null
+    #       sheet_na: null
+    #       z_step_um: null
+    #       views: null
+    #
+    #     # COMMON
+    #     excitation:
+    #       laser: null
+    #       power_setpoint: null
+    #       power_at_sample_approx: null
+    #     detection:
+    #       detector: null
+    #       filter: null
+    #
+    #   analysis_pipeline: null
+    #   expected_resolution_nm: null
+    #   expected_snr: null
+    #   common_pitfalls: []
+    #   tips: []

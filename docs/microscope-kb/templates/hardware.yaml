@@ -1,0 +1,201 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 2 (Hardware Inventory) of generation-prompt.md
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+microscope:
+  name: null
+  type: null
+  stand: null
+  commercial_system: null  # e.g., 'Zeiss LSM 980' or 'custom-built'
+  objectives: []
+    # - id: null
+    #   vendor: null
+    #   model: null
+    #   magnification: null
+    #   na: null
+    #   immersion: null
+    #   notes: null
+  control_software:
+    name: null  # ImSwitch / MicroManager / ZEN / etc.
+    version: null
+  core_modalities: []
+
+functional_blocks:
+
+  illumination_sources: {}
+    # source_id:
+    #   wavelength_nm: null
+    #   type: null  # CW / pulsed / LED / etc.
+    #   vendor: null
+    #   model: null
+    #   max_power_mW: null
+    #   pulse_width: null
+    #   repetition_rate: null
+    #   purpose: null
+
+  # IF camera-based (widefield, TIRF, spinning-disk, light-sheet, SIM, SMLM)
+  cameras: {}
+    # camera_id:
+    #   type: null  # sCMOS / EMCCD / CCD
+    #   vendor: null
+    #   model: null
+    #   pixel_size_um: null
+    #   chip_size_px: [null, null]
+    #   quantum_efficiency_peak: null
+    #   read_noise_e: null
+    #   max_frame_rate_fps: null
+    #   cooling: null
+    #   notes: []
+
+  # IF point-scanning (confocal, STED, multiphoton, FLIM, FCS)
+  point_detectors: {}
+    # detector_id:
+    #   type: null  # PMT / APD / SPAD / HyD / GaAsP
+    #   vendor: null
+    #   model: null
+    #   spectral_filters:
+    #     bandpass: null
+    #     notch: null
+    #     dichroic: null
+    #   gating_capable: null
+    #   photon_counting_capable: null
+    #   notes: []
+
+  # IF point-scanning or spinning-disk
+  scanning: {}
+    # scanner_id:
+    #   type: null  # galvo / resonant / piezo / MEMS / Yokogawa_CSU
+    #   vendor: null
+    #   model: null
+    #   max_scan_field_um: [null, null]
+    #   max_line_rate_hz: null
+    #   bidirectional: null
+
+  # IF spinning-disk
+  # spinning_disk_unit:
+  #   vendor: null
+  #   model: null
+  #   pinhole_size_um: null
+  #   disk_speed_rpm: null
+  #   dichroic_options: []
+
+  # IF light-sheet
+  # light_sheet_optics:
+  #   excitation_geometry: null
+  #   sheet_thickness_um: null
+  #   excitation_objective:
+  #     vendor: null
+  #     model: null
+  #     na: null
+  #   detection_objective:
+  #     vendor: null
+  #     model: null
+  #     na: null
+  #   sample_mounting: null
+  #   notes: []
+
+  # IF STED / RESOLFT
+  # beam_shaping: {}
+  #   # component_id:
+  #   #   device: null
+  #   #   vendor: null
+  #   #   model: null
+  #   #   patterns: []
+  #   #   notes: []
+
+  # IF SIM
+  # pattern_generation:
+  #   method: null
+  #   vendor: null
+  #   model: null
+  #   pattern_orientations: null
+  #   pattern_phases: null
+  #   notes: []
+
+  # IF TIRF
+  # tirf_optics:
+  #   method: null
+  #   angle_control: null
+  #   critical_angle_control: null
+  #   penetration_depth_nm: null
+  #   notes: []
+
+  # IF multiphoton
+  # pulsed_laser_system: {}
+  #   # laser_id:
+  #   #   type: null
+  #   #   vendor: null
+  #   #   model: null
+  #   #   tuning_range_nm: [null, null]
+  #   #   pulse_width_fs: null
+  #   #   repetition_rate_MHz: null
+  #   #   max_average_power_mW: null
+  #   #   dispersion_compensation: null
+  #   #   notes: []
+
+  # IF FLIM
+  # lifetime_electronics:
+  #   method: null
+  #   vendor: null
+  #   model: null
+  #   timing_resolution_ps: null
+  #   channels: null
+  #   notes: []
+
+  # IF SMLM
+  # smlm_specific:
+  #   activation_wavelength_nm: null
+  #   buffer_system: null
+  #   feedback_autofocus: null
+  #   notes: []
+
+  # IF FRAP / photoactivation
+  # targeted_illumination:
+  #   method: null
+  #   vendor: null
+  #   model: null
+  #   capabilities: []
+
+  # COMMON TO ALL
+  filter_configuration:
+    type: null  # filter_cubes / filter_wheel / spectral_detector / acousto-optic
+    elements: []
+      # - id: null
+      #   type: null
+      #   spec: null
+      #   position: null
+
+  sample_positioning:
+    xy_stage:
+      vendor: null
+      model: null
+      travel_mm: [null, null]
+      motorized: null
+    z_focus:
+      type: null  # objective_piezo / stage_motor / voice_coil
+      vendor: null
+      model: null
+      range_um: null
+      resolution_nm: null
+
+  environmental_control: {}
+    # temperature:
+    #   available: null
+    #   type: null
+    #   range: null
+    # co2:
+    #   available: null
+    # humidity:
+    #   available: null
+
+  notes: []

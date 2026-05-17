@@ -1,0 +1,31 @@
+# Template — DO NOT fill in here.
+# Copy this file to your LOCAL microscope-kb directory (e.g.
+# ~/microscope-kb/my-system/) and fill it in there.  This
+# template is checked in for reference only; no KB content
+# ships with ImSwitch.
+#
+# Schema reference: ../schemas.md
+# Generation workflow: ../README.md
+
+# TODO: Fill during Wave 8 (Recipes & FAQ) of generation-prompt.md
+
+version: null
+last_updated: null  # YYYY-MM-DD
+
+faq:
+  entries: []
+    # - q: null
+    #   a: null
+    #   refs: []  # e.g., ["hardware.yaml#detectors", "limits.yaml#confocal"]
+
+  # Good universal starters (10-20 entries total):
+  # - "What resolution can I achieve with [modality]?"
+  # - "What dyes/fluorophores work on this system?"
+  # - "Can I do live-cell imaging?"
+  # - "How long does startup take?"
+  # - "What's the maximum field of view?"
+  # - "Can I do multi-color imaging?"
+  # - "How deep can I image into tissue?" (if multiphoton/light-sheet)
+  # - "What reconstruction software do I use?" (if SIM/SMLM)
+  # - "How do I prepare the imaging buffer?" (if SMLM)
+  # - "What is the difference between [modality A] and [modality B] on this system?"
