@@ -77,10 +77,6 @@ GitHub Issue (scoped task)
 
 Automatic merges are **never allowed**.
 
-## Microscope Knowledge Base
-
-Before modifying hardware-related code, agents MUST consult the microscope knowledge base in `microscope-kb/`. This provides context about hardware limits, safety procedures, and configuration constraints.
-
 ## Cost Tracking
 
 Each agent task should track:

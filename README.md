@@ -241,7 +241,6 @@ ImSwitch2/
 │   ├── imreconstruct/            # SIM reconstruction module
 │   └── imscripting/              # Scripting console module
 ├── utility_scripts/              # Config editor GUI + built-in device templates
-├── microscope-kb/                # Microscope knowledge base (YAML)
 ├── docs/                         # Architecture documentation and diagrams
 └── .github/workflows/            # CI pipeline
 ```

@@ -60,7 +60,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 **Goal:** Add a safety layer around all DAQ operations.
 
 - Implement voltage limit enforcement
-- Add scan parameter validation against `microscope-kb/limits.yaml`
+- Add scan-parameter validation in `SetupInfo` validators (config-level limits, e.g. galvo `maxVolt` range, dwell-time bounds)
 - Implement graceful error recovery for DAQ failures
 - Add logging for all DAQ operations
 - Create integration tests with mock hardware
@@ -73,7 +73,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ⬜ Document current state and known issues (moved from Milestone 1)
 - ⬜ Document all configuration options in `SetupInfo`
 - ⬜ Write developer onboarding guide
-- ⬜ Fill in microscope knowledge base with real hardware values (currently template-only)
+- ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
 - ⬜ Create agent task templates for common operations
 
 ## Milestone 8: ImControl UI & Workflow Enhancements ✅
