@@ -210,10 +210,17 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._scanWorker = None
         self._scanThread = None
         if worker is not None:
-            worker.stop()
-        if thread is not None and thread.isRunning():
-            thread.quit()
-            thread.wait()
+            try:
+                worker.stop()
+            except RuntimeError:
+                pass  # C++ object already deleted — thread self-cleaned via deleteLater
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait()
+            except RuntimeError:
+                pass  # C++ object already deleted — thread is already done
 
     def initiateScan(self, scanInfoDict, signalDict):
         if not self._enabled:
