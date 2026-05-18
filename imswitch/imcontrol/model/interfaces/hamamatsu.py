@@ -820,6 +820,8 @@ class HamamatsuCamera:
     # Start data acquisition.
     #
     def startAcquisition(self):
+        # Bring camera to idle/ready state before setup; safe from any state.
+        dcam.dcam_idle(self.camera_handle)
         self.captureSetup()
         #
         # Allocate Hamamatsu image buffers.
@@ -947,6 +949,11 @@ class HamamatsuCameraMR(HamamatsuCamera):
     # Allocate as many frames as will fit in 2GB of memory and start data acquisition.
     #
     def startAcquisition(self):
+        # Bring camera to idle/ready state before setup; safe from any state.
+        dcam.dcam_idle(self.camera_handle)
+        # Release previously attached buffers so dcam_attachbuffer doesn't fail.
+        if self.hcam_ptr:
+            dcam.dcam_releasebuffer(self.camera_handle)
         self.captureSetup()
         self._logger.debug(self.frame_bytes)
         #
