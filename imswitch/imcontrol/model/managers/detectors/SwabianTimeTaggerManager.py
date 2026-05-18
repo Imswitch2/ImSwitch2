@@ -71,6 +71,8 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._t0_ps = int(props.get('t0_ps', 0))
         self._min_counts_per_pixel = int(props.get('min_counts_per_pixel', 20))
         self._fit_method = str(props.get('fit_method', 'moment'))
+        self._accumulate_mode = False
+        self._flim_geometry = None  # (Nx, Ny, n_bins, binwidth_ps, click_ch, start_ch, line_ch)
 
         parameters = {
             # --- Channel routing ---
@@ -111,6 +113,10 @@ class SwabianTimeTaggerManager(DetectorManager):
                 group='Fitting', value=self._fit_method,
                 options=['moment', 'phasor', 'exp1'],
                 editable=True),
+            # --- Accumulation ---
+            'accumulate_mode': DetectorListParameter(
+                group='Accumulation', value='off',
+                options=['off', 'on'], editable=True),
         }
 
         self._tt = None
@@ -185,6 +191,11 @@ class SwabianTimeTaggerManager(DetectorManager):
             self._min_counts_per_pixel = int(value)
         elif name == 'fit_method':
             self._fit_method = str(value)
+        elif name == 'accumulate_mode':
+            self._accumulate_mode = (str(value).lower() == 'on')
+            if not self._accumulate_mode:
+                # Turning off resets geometry so the next scan always starts fresh
+                self._flim_geometry = None
         return self.parameters
 
     # ------------------------------------------------------------------ #
@@ -213,8 +224,6 @@ class SwabianTimeTaggerManager(DetectorManager):
         Nx, Ny, S, _outer_axes, _outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
 
         self._newFrameReady = False
-        self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
-        self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
 
         # pixel_sizes: list from low to high dim (matches APDManager convention)
         self.setPixelSize(list(scanInfoDict.get('pixel_sizes', [1, 1])) or [1, 1])
@@ -256,6 +265,14 @@ class SwabianTimeTaggerManager(DetectorManager):
                 self._flim = None
             return
 
+        current_geometry = (Nx, Ny, self._n_bins, self._binwidth_ps,
+                            self._click_ch, self._start_ch, self._line_ch)
+        reuse_flim = (
+            self._accumulate_mode
+            and self._flim is not None
+            and current_geometry == self._flim_geometry
+        )
+
         try:
             self._tt.setTriggerLevel(self._click_ch, self._click_trigger)
             self._tt.setTriggerLevel(self._start_ch, self._start_trigger)
@@ -265,20 +282,30 @@ class SwabianTimeTaggerManager(DetectorManager):
             # placing the IRF peak at histogram bin 0.
             self._tt.setInputDelay(self._click_ch, -self._t0_ps)
 
-            self._create_virtual_pixel_pulses()
+            if reuse_flim:
+                self._logger.info('Accumulate mode: reusing Flim object — photons accumulate across scans.')
+            else:
+                if self._accumulate_mode and self._flim_geometry is not None:
+                    self._logger.warning(
+                        'Accumulate mode: geometry changed — resetting accumulation.'
+                    )
+                # Reset image buffers only when starting a fresh Flim
+                self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
+                self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
 
-            # Recreate Flim every scan so channel/bin changes always take effect
-            with self._flim_lock:
-                self._flim = Flim(
-                    self._tt,
-                    start_channel=self._start_ch,
-                    click_channel=self._click_ch,
-                    pixel_begin_channel=self._ev_pix_begin.getChannel(),
-                    pixel_end_channel=self._ev_pix_end.getChannel(),
-                    n_pixels=int(self._scan['n_pixels_total']),
-                    n_bins=self._n_bins,
-                    binwidth=self._binwidth_ps,
-                )
+                self._create_virtual_pixel_pulses()
+                with self._flim_lock:
+                    self._flim = Flim(
+                        self._tt,
+                        start_channel=self._start_ch,
+                        click_channel=self._click_ch,
+                        pixel_begin_channel=self._ev_pix_begin.getChannel(),
+                        pixel_end_channel=self._ev_pix_end.getChannel(),
+                        n_pixels=int(self._scan['n_pixels_total']),
+                        n_bins=self._n_bins,
+                        binwidth=self._binwidth_ps,
+                    )
+                self._flim_geometry = current_geometry
         except Exception:
             self._logger.exception(
                 'TimeTagger FLIM setup failed — no data this scan.'
@@ -649,6 +676,11 @@ class _TTFlimWorker(Worker):
         lifetime[intensity < min_counts] = 0.0
         lifetime[~np.isfinite(lifetime)] = 0.0
         lifetime[lifetime < 0] = 0.0
+        # Clamp outliers: near-zero denominators (phasor g≈0) or near-zero
+        # slopes (exp1) produce huge-but-finite values that pass the checks
+        # above and explode the mean.  Cap at 5× the measurement window —
+        # nothing physical exceeds that.
+        lifetime[lifetime > t_axis[-1] * 5] = 0.0
 
         total = float(intensity.sum())
         self._last_total_counts = total
