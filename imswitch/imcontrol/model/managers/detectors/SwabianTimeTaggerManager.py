@@ -379,13 +379,15 @@ class SwabianTimeTaggerManager(DetectorManager):
             except RuntimeError:
                 pass  # worker already cleaned up
 
-    def _on_frame_ready(self, intensity_img, lifetime_img):
+    def _on_frame_ready(self, intensity_img, lifetime_img, is_final: bool):
         self._image_intensity[0] = intensity_img
         lifetime_ns = (lifetime_img * 1e9).astype(np.float32)
 
         if self._accumulate_mode:
-            if not self.acquisition:
-                # Final frame — commit this scan's data to the accumulation buffer.
+            if is_final:
+                # Final frame of this scan — commit to accumulation buffer.
+                # Using the explicit flag avoids a race with continuous scanning
+                # where acquisition may be True again by the time this slot runs.
                 self._accum_add_frame(lifetime_ns)
 
             # Always display on every poll so the histogram widget keeps updating.
@@ -423,11 +425,13 @@ class SwabianTimeTaggerManager(DetectorManager):
         Pixels with no data in any scan return 0."""
         if self._accum_sum is None or self._accum_sum.shape != shape:
             return np.zeros(shape, dtype=np.float32)
-        return np.where(
-            self._accum_count > 0,
-            self._accum_sum / self._accum_count,
-            0.0,
-        ).astype(np.float32)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            avg = np.where(
+                self._accum_count > 0,
+                self._accum_sum / self._accum_count,
+                0.0,
+            )
+        return avg.astype(np.float32)
 
     # ------------------------------------------------------------------ #
     # DetectorManager abstract method implementations                      #
@@ -576,7 +580,7 @@ def _fit_exp1(cube, t_axis):
 # --------------------------------------------------------------------------- #
 
 class _TTFlimWorker(Worker):
-    sigFrameReady = Signal(object, object)
+    sigFrameReady = Signal(object, object, bool)  # intensity, lifetime, is_final
     sigFinished = Signal()
 
     # Live-preview interval: read Flim data once per second during a running
@@ -644,7 +648,8 @@ class _TTFlimWorker(Worker):
 
                 stall_count = 0
                 self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
-                                 omega, cos_table, sin_table, min_counts)
+                                 omega, cos_table, sin_table, min_counts,
+                                 is_final=scan_done)
 
                 if scan_done:
                     break  # final frame emitted — exit cleanly
@@ -693,7 +698,7 @@ class _TTFlimWorker(Worker):
         return arr.reshape(Ny, Nx, n_bins)
 
     def _emit_frame(self, cube, t_axis, t_axis_f64, fit_method,
-                    omega, cos_table, sin_table, min_counts):
+                    omega, cos_table, sin_table, min_counts, *, is_final=False):
         if fit_method == 'phasor':
             intensity, lifetime = self._fit_phasor_cached(cube, omega, cos_table, sin_table)
         elif fit_method == 'exp1':
@@ -715,12 +720,14 @@ class _TTFlimWorker(Worker):
         self._logger.debug(
             f'FLIM emit: total={int(total)} '
             f'max_pix={int(intensity.max())} '
-            f'nonzero_px={int((intensity > 0).sum())}'
+            f'nonzero_px={int((intensity > 0).sum())} '
+            f'is_final={is_final}'
         )
 
         self.sigFrameReady.emit(
             intensity.astype(np.float32),
             lifetime.astype(np.float32),
+            is_final,
         )
 
     def _fit_phasor_cached(self, cube, omega, cos_table, sin_table):
