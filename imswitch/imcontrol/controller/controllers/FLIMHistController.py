@@ -73,18 +73,13 @@ class FLIMHistController(LiveUpdatedController):
         self._current_frame_ns = valid.astype(np.float32) * 1e9
 
         if self._widget.isAccumulating():
-            # Combine completed scans with the current scan's latest frame.
-            # Do NOT append on every poll — that double-counts pixels because
-            # the Flim object's cumulative histogram makes successive polls of
-            # the same scan correlated, causing the mean to drift upward.
-            parts = self._accum + ([self._current_frame_ns]
-                                   if self._current_frame_ns.size else [])
-            data = np.concatenate(parts) if parts else self._current_frame_ns
-        else:
-            self._accum.clear()
-            data = self._current_frame_ns
+            # Accumulating mode: histogram is driven by sigScanDone, not by
+            # individual polls.  Just keep the latest frame ready; do nothing
+            # to the display here so the histogram stays in sync with scans.
+            return
 
-        self._widget.updateHistogram(data)
+        self._accum.clear()
+        self._widget.updateHistogram(self._current_frame_ns)
 
     def _on_scan_started(self):
         """New scan beginning — discard the in-progress frame so the next
@@ -92,11 +87,13 @@ class FLIMHistController(LiveUpdatedController):
         self._current_frame_ns = np.empty(0, dtype=np.float32)
 
     def _on_scan_done(self):
-        """Scan complete — save the final (best) frame into _accum so it
-        contributes to cross-scan accumulation without being re-counted on
-        subsequent polls."""
+        """Scan complete — append this scan's final snapshot to _accum and
+        redraw the histogram once.  This keeps accumulation in sync with scan
+        boundaries: one independent measurement added per completed scan."""
         if self._widget.isAccumulating() and self._current_frame_ns.size:
             self._accum.append(self._current_frame_ns.copy())
+            data = np.concatenate(self._accum)
+            self._widget.updateHistogram(data)
         self._current_frame_ns = np.empty(0, dtype=np.float32)
 
     def _on_show_toggled(self, enabled: bool):
