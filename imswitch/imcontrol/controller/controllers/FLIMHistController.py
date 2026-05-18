@@ -68,9 +68,10 @@ class FLIMHistController(LiveUpdatedController):
             return
 
         # Drop zero / non-positive pixels — those are the "below threshold"
-        # placeholders SwabianTimeTaggerManager writes.  Convert seconds → ns.
+        # placeholders SwabianTimeTaggerManager writes.
+        # _image_display already holds lifetimes in ns (converted in _on_frame_ready).
         valid = arr[arr > 0].ravel()
-        self._current_frame_ns = valid.astype(np.float32) * 1e9
+        self._current_frame_ns = valid.astype(np.float32)
 
         if self._widget.isAccumulating():
             # Accumulating mode: histogram is driven by sigScanDone, not by
@@ -82,19 +83,25 @@ class FLIMHistController(LiveUpdatedController):
         self._widget.updateHistogram(self._current_frame_ns)
 
     def _on_scan_started(self):
-        """New scan beginning — discard the in-progress frame so the next
-        update starts fresh rather than blending into the previous scan."""
+        """New scan starting — save the previous scan's frame first (handles
+        continuous scanning where sigScanDone may not fire between passes)."""
+        self._save_and_update()
         self._current_frame_ns = np.empty(0, dtype=np.float32)
 
     def _on_scan_done(self):
-        """Scan complete — append this scan's final snapshot to _accum and
-        redraw the histogram once.  This keeps accumulation in sync with scan
-        boundaries: one independent measurement added per completed scan."""
+        """Scan complete — save final frame (handles single-shot scans where
+        no subsequent sigScanStarted follows)."""
+        self._save_and_update()
+        self._current_frame_ns = np.empty(0, dtype=np.float32)
+
+    def _save_and_update(self):
+        """Append current frame to _accum and redraw once.  Clears
+        _current_frame_ns afterwards so a second call (e.g. both sigScanDone
+        and sigScanStarted firing for the same boundary) is a no-op."""
         if self._widget.isAccumulating() and self._current_frame_ns.size:
             self._accum.append(self._current_frame_ns.copy())
-            data = np.concatenate(self._accum)
-            self._widget.updateHistogram(data)
-        self._current_frame_ns = np.empty(0, dtype=np.float32)
+            self._widget.updateHistogram(np.concatenate(self._accum))
+            self._current_frame_ns = np.empty(0, dtype=np.float32)
 
     def _on_show_toggled(self, enabled: bool):
         self.active = enabled

@@ -361,7 +361,7 @@ class SwabianTimeTaggerManager(DetectorManager):
 
     def _on_frame_ready(self, intensity_img, lifetime_img):
         self._image_intensity[0] = intensity_img
-        self._image_display[0] = lifetime_img
+        self._image_display[0] = lifetime_img * 1e9  # s → ns for image display
         self._newFrameReady = True
         # init=True matches APDManager._onFrameBoundary's convention: every
         # frame says "leave the user's view and contrast alone".
