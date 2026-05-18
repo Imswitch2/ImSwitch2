@@ -68,6 +68,8 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._line_trigger = float(tl.get(str(self._line_ch), 0.5))
         self._n_bins = int(props.get('n_bins', 64))
         self._binwidth_ps = int(props.get('binwidth_ps', 32))
+        self._t0_bins = int(props.get('t0_bins', 0))
+        self._laser_period_ps = int(props.get('laser_period_ps', 0))
         self._min_counts_per_pixel = int(props.get('min_counts_per_pixel', 20))
         self._fit_method = str(props.get('fit_method', 'moment'))
 
@@ -98,6 +100,12 @@ class SwabianTimeTaggerManager(DetectorManager):
                 valueUnits='bins', editable=True),
             'binwidth_ps': DetectorNumberParameter(
                 group='TCSPC', value=self._binwidth_ps,
+                valueUnits='ps', editable=True),
+            't0_bins': DetectorNumberParameter(
+                group='TCSPC', value=self._t0_bins,
+                valueUnits='bins', editable=True),
+            'laser_period_ps': DetectorNumberParameter(
+                group='TCSPC', value=self._laser_period_ps,
                 valueUnits='ps', editable=True),
             'min_counts_per_pixel': DetectorNumberParameter(
                 group='TCSPC', value=self._min_counts_per_pixel,
@@ -175,6 +183,10 @@ class SwabianTimeTaggerManager(DetectorManager):
             self._n_bins = int(value)
         elif name == 'binwidth_ps':
             self._binwidth_ps = int(value)
+        elif name == 't0_bins':
+            self._t0_bins = int(value)
+        elif name == 'laser_period_ps':
+            self._laser_period_ps = int(value)
         elif name == 'min_counts_per_pixel':
             self._min_counts_per_pixel = int(value)
         elif name == 'fit_method':
@@ -535,14 +547,22 @@ class _TTFlimWorker(Worker):
             expected_shape = (Nx * Ny, n_bins)
             STALL_MAX = int(10.0 / poll_s)  # 10 s of consecutive bad frames
 
-            # Precompute scan-invariant tables for fit methods
-            t_axis = (np.arange(n_bins, dtype=np.float32) + 0.5) * binwidth_ps * 1e-12
+            t0_bins = int(self._m._t0_bins)
+            laser_period_ps = int(self._m._laser_period_ps)
+
+            # Precompute scan-invariant tables for fit methods.
+            # t_axis is shifted so t=0 is the IRF/scatter peak (t0_bins).
+            t_axis = ((np.arange(n_bins, dtype=np.float32) + 0.5) - t0_bins) * binwidth_ps * 1e-12
             t_axis_f64 = t_axis.astype(np.float64)[None, None, :]  # for exp1
-            
-            # Phasor tables
-            T_rep_s = n_bins * binwidth_ps * 1e-12
+
+            # Phasor tables.
+            # T_rep must be the actual laser repetition period, not the histogram
+            # window — otherwise omega (and thus lifetimes) change with n_bins.
+            # Use laser_period_ps when set; fall back to the full window if 0.
+            T_rep_s = (laser_period_ps if laser_period_ps > 0 else n_bins * binwidth_ps) * 1e-12
             omega = 2.0 * np.pi / T_rep_s
-            t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
+            # Apply t0 offset so phasor phase is measured from t0, not bin 0.
+            t_s = ((np.arange(n_bins, dtype=np.float64) + 0.5) - t0_bins) * binwidth_ps * 1e-12
             cos_table = np.cos(omega * t_s)
             sin_table = np.sin(omega * t_s)
             

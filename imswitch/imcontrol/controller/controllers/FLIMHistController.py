@@ -24,9 +24,15 @@ class FLIMHistController(LiveUpdatedController):
 
         self.active = self._widget.isActive()
 
-        # Accumulated samples across frames when "Accumulate" is on.  Stored
-        # as a 1-D list of numpy arrays and concatenated on update so we
-        # never resize a single buffer repeatedly.
+        # _current_frame_ns: latest poll's valid lifetimes for the in-progress
+        # scan.  Replaced (never appended to) on every update — the Flim object
+        # already accumulates photons internally, so successive polls of the
+        # same scan are correlated, not independent.
+        self._current_frame_ns: np.ndarray = np.empty(0, dtype=np.float32)
+
+        # _accum: one entry per *completed* scan, holding that scan's final
+        # valid-pixel lifetime array.  Only grows at scan boundaries so pixels
+        # are never double-counted within a scan.
         self._accum: list = []
 
         # Wire widget signals
@@ -35,8 +41,10 @@ class FLIMHistController(LiveUpdatedController):
         self._widget.sigNBinsChanged.connect(self._on_nbins_changed)
         self._widget.sigRangeChanged.connect(self._on_range_changed)
 
-        # Subscribe to detector frames
+        # Subscribe to detector frames and scan lifecycle
         self._commChannel.sigUpdateImage.connect(self.update)
+        self._commChannel.sigScanStarted.connect(self._on_scan_started)
+        self._commChannel.sigScanDone.connect(self._on_scan_done)
 
     # ------------------------------------------------------------------ #
     # Slot implementations                                                 #
@@ -62,22 +70,40 @@ class FLIMHistController(LiveUpdatedController):
         # Drop zero / non-positive pixels — those are the "below threshold"
         # placeholders SwabianTimeTaggerManager writes.  Convert seconds → ns.
         valid = arr[arr > 0].ravel()
-        valid_ns = valid * 1e9
+        self._current_frame_ns = valid.astype(np.float32) * 1e9
 
         if self._widget.isAccumulating():
-            self._accum.append(valid_ns)
-            data = np.concatenate(self._accum) if self._accum else valid_ns
+            # Combine completed scans with the current scan's latest frame.
+            # Do NOT append on every poll — that double-counts pixels because
+            # the Flim object's cumulative histogram makes successive polls of
+            # the same scan correlated, causing the mean to drift upward.
+            parts = self._accum + ([self._current_frame_ns]
+                                   if self._current_frame_ns.size else [])
+            data = np.concatenate(parts) if parts else self._current_frame_ns
         else:
             self._accum.clear()
-            data = valid_ns
+            data = self._current_frame_ns
 
         self._widget.updateHistogram(data)
+
+    def _on_scan_started(self):
+        """New scan beginning — discard the in-progress frame so the next
+        update starts fresh rather than blending into the previous scan."""
+        self._current_frame_ns = np.empty(0, dtype=np.float32)
+
+    def _on_scan_done(self):
+        """Scan complete — save the final (best) frame into _accum so it
+        contributes to cross-scan accumulation without being re-counted on
+        subsequent polls."""
+        if self._widget.isAccumulating() and self._current_frame_ns.size:
+            self._accum.append(self._current_frame_ns.copy())
+        self._current_frame_ns = np.empty(0, dtype=np.float32)
 
     def _on_show_toggled(self, enabled: bool):
         self.active = enabled
         if not enabled:
-            # Stop accumulating so re-enabling later starts from a clean slate.
             self._accum.clear()
+            self._current_frame_ns = np.empty(0, dtype=np.float32)
 
     def _on_accumulate_toggled(self, enabled: bool):
         if not enabled:
