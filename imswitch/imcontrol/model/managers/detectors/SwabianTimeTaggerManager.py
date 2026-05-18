@@ -1,6 +1,5 @@
 import numpy as np
 import threading
-import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
@@ -370,11 +369,15 @@ class SwabianTimeTaggerManager(DetectorManager):
             self._scanWorker.stop()
 
     def _onScanDone(self):
-        """Triggered by NidaqManager.sigScanDone — mirrors APD's acqDoneSignal
-        path. Flips acquisition off so the worker's polling loop exits and
-        captures one final completed frame before terminating.
+        """Triggered by NidaqManager.sigScanDone — flips acquisition off and
+        wakes the worker immediately so it reads the final completed frame.
         """
         self.acquisition = False
+        if self._scanWorker is not None:
+            try:
+                self._scanWorker.signal_done()
+            except RuntimeError:
+                pass  # worker already cleaned up
 
     def _on_frame_ready(self, intensity_img, lifetime_img):
         self._image_intensity[0] = intensity_img
@@ -382,22 +385,23 @@ class SwabianTimeTaggerManager(DetectorManager):
 
         if self._accumulate_mode:
             if not self.acquisition:
-                # Final frame for this scan (acquisition cleared by _onScanDone
-                # before the worker's post-loop read).  Commit to accumulation.
+                # Final frame — commit this scan's data to the accumulation buffer.
                 self._accum_add_frame(lifetime_ns)
-                self._image_display[0] = self._get_accum_avg(lifetime_ns.shape)
-                self._newFrameReady = True
-                self.updateLatestFrame(True)
-                self.sigNewFrame.emit()
-            # Mid-scan polls: display stays at the previous accumulated average
-            # so the image never flashes to blank between scans.
+
+            # Always display on every poll so the histogram widget keeps updating.
+            # Show accumulated average as the baseline; overlay the current scan's
+            # live pixels on top so the user sees real-time progress too.
+            accum_avg = self._get_accum_avg(lifetime_ns.shape)
+            displayed = accum_avg.copy()
+            valid = lifetime_ns > 0
+            displayed[valid] = lifetime_ns[valid]
+            self._image_display[0] = displayed
         else:
             self._image_display[0] = lifetime_ns
-            self._newFrameReady = True
-            # init=True: leave the user's contrast/view settings alone on every
-            # FLIM update (same convention as APDManager._onFrameBoundary).
-            self.updateLatestFrame(True)
-            self.sigNewFrame.emit()
+
+        self._newFrameReady = True
+        self.updateLatestFrame(True)
+        self.sigNewFrame.emit()
 
     def _accum_add_frame(self, lifetime_ns: np.ndarray):
         """Add a completed-scan lifetime image (ns) to the running accumulation.
@@ -575,15 +579,27 @@ class _TTFlimWorker(Worker):
     sigFrameReady = Signal(object, object)
     sigFinished = Signal()
 
+    # Live-preview interval: read Flim data once per second during a running
+    # scan.  The worker also wakes immediately when signal_done() is called
+    # (sigScanDone path), so the final frame is never delayed.
+    LIVE_PREVIEW_S = 1.0
+    STALL_MAX = 10  # consecutive live-preview ticks with no data → ~10 s
+
     def __init__(self, m: SwabianTimeTaggerManager):
         super().__init__()
         self._logger = initLogger(self, tryInheritParent=True)
         self._m = m
         self._running = True
         self._last_total_counts = 0.0
+        self._done_event = threading.Event()
 
     def stop(self):
         self._running = False
+        self._done_event.set()  # unblock wait() immediately
+
+    def signal_done(self):
+        """Called from the main thread when sigScanDone fires."""
+        self._done_event.set()
 
     def run(self):
         try:
@@ -591,62 +607,47 @@ class _TTFlimWorker(Worker):
             Ny = int(self._m._scan['Ny'])
             n_bins = int(self._m._n_bins)
             binwidth_ps = int(self._m._binwidth_ps)
-            # Snapshot fit settings at scan start so mid-scan parameter changes
-            # don't corrupt a frame in progress.
             fit_method = str(self._m._fit_method)
             min_counts = int(self._m._min_counts_per_pixel)
-            poll_s = 0.1            # live-preview poll interval (~10 Hz)
             expected_shape = (Nx * Ny, n_bins)
-            STALL_MAX = int(10.0 / poll_s)  # 10 s of consecutive bad frames
 
-            # Precompute scan-invariant tables for fit methods.
-            # t0 is applied at the hardware level via setInputDelay on the
-            # click channel, so bin 0 corresponds to t=0 here.
             t_axis = (np.arange(n_bins, dtype=np.float32) + 0.5) * binwidth_ps * 1e-12
-            t_axis_f64 = t_axis.astype(np.float64)[None, None, :]  # for exp1
-
-            # Phasor: T_rep = n_bins * binwidth_ps, which is correct when the
-            # TCSPC window is set to cover exactly one laser period (standard).
+            t_axis_f64 = t_axis.astype(np.float64)[None, None, :]
             T_rep_s = n_bins * binwidth_ps * 1e-12
             omega = 2.0 * np.pi / T_rep_s
             t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
             cos_table = np.cos(omega * t_s)
             sin_table = np.sin(omega * t_s)
-            
-            stall_count = 0
-            got_valid_frame = False
 
-            # --- Live polling loop — emits progressive frames for preview.
-            # Exits when acquisition flips False (sigScanDone → _onScanDone) or
-            # the worker is stopped externally.
-            while self._running and getattr(self._m, 'acquisition', True):
+            stall_count = 0
+
+            while self._running:
+                # Block until scan-done signal OR live-preview tick, whichever
+                # comes first.  scan_done=True means the event was set.
+                scan_done = self._done_event.wait(timeout=self.LIVE_PREVIEW_S)
+                if not self._running:
+                    break
+
                 cube = self._poll_frame(expected_shape, Nx, Ny, n_bins)
+
                 if cube is None:
+                    if scan_done:
+                        break  # scan finished but Flim had no data yet
                     stall_count += 1
-                    if stall_count >= STALL_MAX:
+                    if stall_count >= self.STALL_MAX:
                         self._logger.error(
-                            'TimeTagger: no valid frame for 10 s. '
+                            'TimeTagger: no valid frame for ~10 s. '
                             'Check line trigger signal. Stopping worker.'
                         )
                         break
-                    time.sleep(poll_s)
                     continue
 
                 stall_count = 0
-                got_valid_frame = True
-                self._emit_frame(cube, t_axis, t_axis_f64, fit_method, 
-                                omega, cos_table, sin_table, min_counts)
-                time.sleep(poll_s)
+                self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
+                                 omega, cos_table, sin_table, min_counts)
 
-            # --- Final read after scan completes: captures the completed
-            # histogram in full (mirrors APD's d3Step behaviour at scan end).
-            with self._m._flim_lock:
-                flim_exists = self._m._flim is not None
-            if got_valid_frame and flim_exists:
-                final_cube = self._poll_frame(expected_shape, Nx, Ny, n_bins)
-                if final_cube is not None:
-                    self._emit_frame(final_cube, t_axis, t_axis_f64, fit_method,
-                                    omega, cos_table, sin_table, min_counts)
+                if scan_done:
+                    break  # final frame emitted — exit cleanly
 
             if self._last_total_counts == 0.0:
                 self._logger.warning(
