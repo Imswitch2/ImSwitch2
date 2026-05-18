@@ -195,8 +195,7 @@ class SwabianTimeTaggerManager(DetectorManager):
             worker.stop()
         if thread is not None and thread.isRunning():
             thread.quit()
-            if not thread.wait(2000):
-                self._logger.warning('Scan thread did not stop within 2 s')
+            thread.wait()
 
     def initiateScan(self, scanInfoDict, signalDict):
         if not self._enabled:
@@ -532,7 +531,7 @@ class _TTFlimWorker(Worker):
             # don't corrupt a frame in progress.
             fit_method = str(self._m._fit_method)
             min_counts = int(self._m._min_counts_per_pixel)
-            poll_s = 0.05           # live-preview poll interval
+            poll_s = 0.1            # live-preview poll interval (~10 Hz)
             expected_shape = (Nx * Ny, n_bins)
             STALL_MAX = int(10.0 / poll_s)  # 10 s of consecutive bad frames
 
@@ -658,7 +657,8 @@ class _TTFlimWorker(Worker):
         g = (h * cos_table[None, None, :]).sum(axis=2)
         s = (h * sin_table[None, None, :]).sum(axis=2)
         denom = omega * g
-        lifetime = np.where(np.abs(denom) > 1e-30, s / denom, 0.0).astype(np.float32)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            lifetime = np.where(np.abs(denom) > 1e-30, s / denom, 0.0).astype(np.float32)
         return intensity, lifetime
 
     def _fit_exp1_cached(self, cube, t_axis_f64):
