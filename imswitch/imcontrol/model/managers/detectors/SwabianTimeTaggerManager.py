@@ -72,7 +72,8 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._min_counts_per_pixel = int(props.get('min_counts_per_pixel', 20))
         self._fit_method = str(props.get('fit_method', 'moment'))
         self._accumulate_mode = False
-        self._flim_geometry = None  # (Nx, Ny, n_bins, binwidth_ps, click_ch, start_ch, line_ch)
+        self._accum_sum: np.ndarray | None = None    # (Ny, Nx) float64, sum of valid lifetimes
+        self._accum_count: np.ndarray | None = None  # (Ny, Nx) int32, number of valid scans per pixel
 
         parameters = {
             # --- Channel routing ---
@@ -194,8 +195,8 @@ class SwabianTimeTaggerManager(DetectorManager):
         elif name == 'accumulate_mode':
             self._accumulate_mode = (str(value).lower() == 'on')
             if not self._accumulate_mode:
-                # Turning off resets geometry so the next scan always starts fresh
-                self._flim_geometry = None
+                self._accum_sum = None
+                self._accum_count = None
         return self.parameters
 
     # ------------------------------------------------------------------ #
@@ -224,6 +225,8 @@ class SwabianTimeTaggerManager(DetectorManager):
         Nx, Ny, S, _outer_axes, _outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
 
         self._newFrameReady = False
+        self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
+        self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
 
         # pixel_sizes: list from low to high dim (matches APDManager convention)
         self.setPixelSize(list(scanInfoDict.get('pixel_sizes', [1, 1])) or [1, 1])
@@ -265,14 +268,6 @@ class SwabianTimeTaggerManager(DetectorManager):
                 self._flim = None
             return
 
-        current_geometry = (Nx, Ny, self._n_bins, self._binwidth_ps,
-                            self._click_ch, self._start_ch, self._line_ch)
-        reuse_flim = (
-            self._accumulate_mode
-            and self._flim is not None
-            and current_geometry == self._flim_geometry
-        )
-
         try:
             self._tt.setTriggerLevel(self._click_ch, self._click_trigger)
             self._tt.setTriggerLevel(self._start_ch, self._start_trigger)
@@ -282,30 +277,18 @@ class SwabianTimeTaggerManager(DetectorManager):
             # placing the IRF peak at histogram bin 0.
             self._tt.setInputDelay(self._click_ch, -self._t0_ps)
 
-            if reuse_flim:
-                self._logger.info('Accumulate mode: reusing Flim object — photons accumulate across scans.')
-            else:
-                if self._accumulate_mode and self._flim_geometry is not None:
-                    self._logger.warning(
-                        'Accumulate mode: geometry changed — resetting accumulation.'
-                    )
-                # Reset image buffers only when starting a fresh Flim
-                self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
-                self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
-
-                self._create_virtual_pixel_pulses()
-                with self._flim_lock:
-                    self._flim = Flim(
-                        self._tt,
-                        start_channel=self._start_ch,
-                        click_channel=self._click_ch,
-                        pixel_begin_channel=self._ev_pix_begin.getChannel(),
-                        pixel_end_channel=self._ev_pix_end.getChannel(),
-                        n_pixels=int(self._scan['n_pixels_total']),
-                        n_bins=self._n_bins,
-                        binwidth=self._binwidth_ps,
-                    )
-                self._flim_geometry = current_geometry
+            self._create_virtual_pixel_pulses()
+            with self._flim_lock:
+                self._flim = Flim(
+                    self._tt,
+                    start_channel=self._start_ch,
+                    click_channel=self._click_ch,
+                    pixel_begin_channel=self._ev_pix_begin.getChannel(),
+                    pixel_end_channel=self._ev_pix_end.getChannel(),
+                    n_pixels=int(self._scan['n_pixels_total']),
+                    n_bins=self._n_bins,
+                    binwidth=self._binwidth_ps,
+                )
         except Exception:
             self._logger.exception(
                 'TimeTagger FLIM setup failed — no data this scan.'
@@ -388,15 +371,52 @@ class SwabianTimeTaggerManager(DetectorManager):
 
     def _on_frame_ready(self, intensity_img, lifetime_img):
         self._image_intensity[0] = intensity_img
-        self._image_display[0] = lifetime_img * 1e9  # s → ns for image display
-        self._newFrameReady = True
-        # init=True matches APDManager._onFrameBoundary's convention: every
-        # frame says "leave the user's view and contrast alone".
-        # ImageController consumes this as `if not init: autoLevels();
-        # adjustFrame()` — passing False would re-auto-stretch and re-fit the
-        # view on every FLIM frame, making the live preview unusable.
-        self.updateLatestFrame(True)
-        self.sigNewFrame.emit()
+        lifetime_ns = (lifetime_img * 1e9).astype(np.float32)
+
+        if self._accumulate_mode:
+            if not self.acquisition:
+                # Final frame for this scan (acquisition cleared by _onScanDone
+                # before the worker's post-loop read).  Commit to accumulation.
+                self._accum_add_frame(lifetime_ns)
+                self._image_display[0] = self._get_accum_avg(lifetime_ns.shape)
+                self._newFrameReady = True
+                self.updateLatestFrame(True)
+                self.sigNewFrame.emit()
+            # Mid-scan polls: display stays at the previous accumulated average
+            # so the image never flashes to blank between scans.
+        else:
+            self._image_display[0] = lifetime_ns
+            self._newFrameReady = True
+            # init=True: leave the user's contrast/view settings alone on every
+            # FLIM update (same convention as APDManager._onFrameBoundary).
+            self.updateLatestFrame(True)
+            self.sigNewFrame.emit()
+
+    def _accum_add_frame(self, lifetime_ns: np.ndarray):
+        """Add a completed-scan lifetime image (ns) to the running accumulation.
+        Only pixels with lifetime > 0 contribute; zeros are treated as "no data"."""
+        valid = lifetime_ns > 0
+        if self._accum_sum is None or self._accum_sum.shape != lifetime_ns.shape:
+            self._accum_sum = np.zeros(lifetime_ns.shape, dtype=np.float64)
+            self._accum_count = np.zeros(lifetime_ns.shape, dtype=np.int32)
+        self._accum_sum[valid] += lifetime_ns[valid].astype(np.float64)
+        self._accum_count[valid] += 1
+        n_accum = int(self._accum_count.max())
+        self._logger.info(
+            f'Accumulate: added scan #{n_accum}, '
+            f'valid_px={int(valid.sum())}/{lifetime_ns.size}'
+        )
+
+    def _get_accum_avg(self, shape) -> np.ndarray:
+        """Return per-pixel mean lifetime (ns) over all accumulated scans.
+        Pixels with no data in any scan return 0."""
+        if self._accum_sum is None or self._accum_sum.shape != shape:
+            return np.zeros(shape, dtype=np.float32)
+        return np.where(
+            self._accum_count > 0,
+            self._accum_sum / self._accum_count,
+            0.0,
+        ).astype(np.float32)
 
     # ------------------------------------------------------------------ #
     # DetectorManager abstract method implementations                      #
