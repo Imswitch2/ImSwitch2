@@ -1,6 +1,75 @@
 from imswitch.imcommon.model import initLogger
 
 
+class MockCobolt06:
+    """Mock driver matching the Cobolt06 API used by Cobolt0601NewLaserManager."""
+
+    def __init__(self, *args, **kwargs):
+        self.__logger = initLogger(self, tryInheritParent=True)
+        self._on = False
+        self._power = 0.0
+        self._mod_power = 0.0
+        self._mod_current = 0.1
+        self._paused = False
+
+    def initialize(self):
+        pass
+
+    def finalize(self):
+        pass
+
+    def is_on(self):
+        return self._on
+
+    def turn_on(self):
+        self._on = True
+
+    def turn_off(self):
+        self._on = False
+
+    def pause_emission(self):
+        self._paused = True
+
+    def resume_emission(self):
+        self._paused = False
+
+    def constant_current(self, current=None):
+        pass
+
+    def constant_power(self, power=None):
+        pass
+
+    def get_mode(self):
+        return "ConstantPower"
+
+    def set_power(self, power):
+        self._power = float(power)
+
+    def get_power(self):
+        return self._power
+
+    def power_modulation_mode(self, digital_enabled=True, analog_enabled=False):
+        pass
+
+    def current_modulation_mode(self, digital_enabled=True, analog_enabled=False):
+        pass
+
+    def set_modulation_power(self, power):
+        self._mod_power = float(power)
+
+    def get_modulation_power(self):
+        return self._mod_power
+
+    def set_modulation_current(self, current):
+        self._mod_current = float(current)
+
+    def get_modulation_current(self):
+        return self._mod_current
+
+    def get_modulation_state(self):
+        return [0, 0]
+
+
 class Cobolt0601_f2:
     """Mock driver for Cobolt 06-01 Series laser (no lantz / no hardware)."""
 

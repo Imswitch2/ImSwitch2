@@ -57,16 +57,16 @@ class Cobolt0601NewLaserManager(LaserManager):
                     self.__logger.warning(f'Laser {name} could not be turned on: {err}')
 
 
-        # TODO mocker does not work
         except Exception as e:
             self.__logger.error(
-                f'Failed to initialize Cobolt0601-DPL laser (name: {name}) on port {self._port}, loading mocker.')
+                f'Failed to initialize Cobolt0601 laser (name: {name}) on port {self._port}, loading mocker.')
             package = importlib.import_module(
-                pythontools.joinModulePath('imswitch.imcontrol.model.lantzdrivers_mock.', 'cobolt0601')
+                pythontools.joinModulePath('imswitch.imcontrol.model.lantzdrivers_mock.cobolt.', 'cobolt0601')
             )
-            driver = getattr(package, 'Cobolt0601_f2')
+            driver = getattr(package, 'MockCobolt06')
             self._laser = driver(self._port)
             self._laser.initialize()
+            super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0)
     
     def finalize(self):
         """ Turn off laser """

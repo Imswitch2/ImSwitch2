@@ -384,7 +384,7 @@ class Cobolt06(CoboltLaser):
 
     def get_mode(self):
         """Get operating mode"""
-        return self.send_cmd("LASer:RUNMode?")
+        return self.send_cmd("laser:runmode?")
 
     def get_state(self):
         """Get autostart state"""

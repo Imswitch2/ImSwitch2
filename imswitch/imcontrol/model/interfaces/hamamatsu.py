@@ -240,7 +240,6 @@ class HamamatsuCamera:
 
         self.buffer_index = 0
         self.camera_id = camera_id
-        self.camera_model = self.getModelInfo(camera_id)
         self.debug = False
         self.frame_bytes = 0
         self.frame_x = 0
@@ -250,8 +249,9 @@ class HamamatsuCamera:
         self.max_backlog = 0
         self.number_image_buffers = 0
 
-        # Open the camera.
+        # Initialize camera_handle before any calls to checkStatus (which accesses it on error).
         self.camera_handle = ctypes.c_void_p(0)
+        self.camera_model = self.getModelInfo(camera_id)
         self.checkStatus(dcam.dcam_open(ctypes.byref(self.camera_handle),
                                         ctypes.c_int32(self.camera_id),
                                         None),
