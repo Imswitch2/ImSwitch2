@@ -108,19 +108,19 @@ class Cobolt0601(RS232Driver):
     def power_sp(self):
         result = self._safe_query('p?', default='0')
         try:
-            return float(result)
+            return float(result) * 1000  # W → mW
         except (ValueError, TypeError):
             return 0.0
 
     @power_sp.setter
     def power_sp(self, value):
-        self._safe_query(f'p {float(value):.4f}')
+        self._safe_query(f'p {float(value) / 1000:.6f}')  # mW → W
 
     @property
     def power(self):
         result = self._safe_query('pa?', default='0')
         try:
-            return float(result)
+            return float(result) * 1000  # W → mW
         except (ValueError, TypeError):
             return 0.0
 
@@ -190,7 +190,7 @@ class Cobolt0601_f2(Cobolt0601):
     def power_mod(self):
         result = self._safe_query('glmp?')
         try:
-            val = float(result)
+            val = float(result) * 1000  # W → mW
             self._power_mod = val
             return val
         except (ValueError, TypeError):
@@ -199,7 +199,7 @@ class Cobolt0601_f2(Cobolt0601):
     @power_mod.setter
     def power_mod(self, value):
         self._power_mod = float(value)
-        self._safe_query(f'slmp {float(value):.4f}')
+        self._safe_query(f'slmp {float(value) / 1000:.6f}')  # mW → W
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

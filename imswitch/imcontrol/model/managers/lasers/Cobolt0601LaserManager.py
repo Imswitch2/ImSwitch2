@@ -58,7 +58,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
             self._laser.query('ci')
             self._laser.query('slc {:.1f}'.format(0))
         else:
-            if self._laser.mode == 'ACC':
+            if self._laser.mode != 'APC':
                 self._laser.power_sp = 0
                 self._laser.query('cp')
                 self._laser.mode = 'APC'
