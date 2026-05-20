@@ -1,5 +1,5 @@
 from imswitch.imcommon.model import initLogger, pythontools
-from .LaserManager import LaserManager
+from .LaserManager import LaserManager, normalise_ports
 import traceback
 import importlib
 
@@ -25,7 +25,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             self.__logger.error(f'Failed to import PyCoboltManager library: {e}')
             raise
 
-        self._port = laserInfo.managerProperties['digitalPorts'][0]
+        self._port = normalise_ports(laserInfo.managerProperties['digitalPorts'])[0]
         # self._ttlLine = laserInfo.managerProperties['digitalLine']
         self.__logger.debug(f'Initializing Cobolt0601 laser (name: {name}) on port {self._port}')
         self._is_DPL = False

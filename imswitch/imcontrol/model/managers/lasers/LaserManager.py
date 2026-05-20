@@ -1,6 +1,42 @@
+import ast
+import json
 from abc import ABC, abstractmethod
-
 from typing import Union
+
+
+def normalise_ports(value) -> list:
+    """Return *value* as a list of port strings.
+
+    Accepts:
+      - A proper Python list                    ['COM3']
+      - A JSON array string                     '["COM3"]'
+      - A Python repr list/tuple string         "['COM3']"  (old config-editor bug)
+      - A plain comma-separated string          'COM3,COM4'
+      - A bare string                           'COM3'
+    """
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str):
+        return [str(value)]
+    s = value.strip()
+    # JSON array: ["COM3"]
+    try:
+        result = json.loads(s)
+        if isinstance(result, list):
+            return [str(p) for p in result]
+        return [str(result)]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Python repr list/tuple: ['COM3'] or ('COM3',)
+    try:
+        result = ast.literal_eval(s)
+        if isinstance(result, (list, tuple)):
+            return [str(p) for p in result]
+        return [str(result)]
+    except (ValueError, SyntaxError):
+        pass
+    # Comma-separated or bare string
+    return [p.strip() for p in s.split(',') if p.strip()]
 
 
 class LaserManager(ABC):

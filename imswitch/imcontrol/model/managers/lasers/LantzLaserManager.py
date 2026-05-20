@@ -1,6 +1,6 @@
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.interfaces.lantzlasers import LantzLaser
-from .LaserManager import LaserManager
+from .LaserManager import LaserManager, normalise_ports
 
 
 class LantzLaserManager(LaserManager):
@@ -17,7 +17,7 @@ class LantzLaserManager(LaserManager):
                  **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
 
-        ports = laserInfo.managerProperties['digitalPorts']
+        ports = normalise_ports(laserInfo.managerProperties['digitalPorts'])
 
         # Init laser
         self._laser = LantzLaser(driver, ports)
