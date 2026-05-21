@@ -1,8 +1,7 @@
 # ScanControllerLineStepPointScan.py
 import copy
+import json
 import traceback
-import configparser
-from ast import literal_eval
 from typing import Dict, Any
 
 import numpy as np
@@ -693,32 +692,87 @@ class ScanControllerAdvanced(SuperScanController):
     # ---------------------------------------------------------------------
 
     def saveScanParamsToFile(self, filePath: str) -> None:
+        if not filePath.endswith('.json'):
+            filePath += '.json'
         self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-
-        config["analogParameterDict"] = self._analogParameterDict
-        config["digitalParameterDict"] = self._digitalParameterDict
-
-        with open(filePath, "w") as f:
-            config.write(f)
+        payload = {
+            'analogParameterDict': self._analogParameterDict,
+            'digitalParameterDict': self._digitalParameterDict,
+        }
+        try:
+            with open(filePath, 'w') as f:
+                json.dump(payload, f, indent=2)
+            self._logger.info(f'Scan parameters saved to {filePath}')
+        except Exception:
+            self._logger.error(f'Failed to save scan parameters:\n{traceback.format_exc()}')
 
     @APIExport(runOnUIThread=True)
     def loadScanParamsFromFile(self, filePath: str) -> None:
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
+        payload = self._read_scan_file(filePath)
+        if payload is None:
+            return
 
-        for key in self._analogParameterDict:
-            if key in config._sections.get("analogParameterDict", {}):
-                self._analogParameterDict[key] = literal_eval(config._sections["analogParameterDict"][key])
+        analog = payload.get('analogParameterDict', {})
+        digital = payload.get('digitalParameterDict', {})
 
-        # digital dict might not have all keys pre-defined
-        self._digitalParameterDict = {}
-        for key, val in config._sections.get("digitalParameterDict", {}).items():
-            self._digitalParameterDict[key] = literal_eval(val)
+        if not analog and not digital:
+            self._logger.warning(f'Scan file {filePath!r} contains no parameter dicts — nothing loaded')
+            return
+
+        if analog:
+            self._analogParameterDict.update(analog)
+        if digital:
+            self._digitalParameterDict = digital
 
         self.setParameters()
+
+    def _read_scan_file(self, filePath: str):
+        """Read a scan file, returning a dict with analogParameterDict / digitalParameterDict.
+
+        Tries JSON first; falls back to the legacy configparser INI format.
+        Returns None on unrecoverable error.
+        """
+        # --- attempt 1: JSON ---
+        try:
+            with open(filePath, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass  # not JSON — try legacy format
+        except Exception:
+            self._logger.error(f'Could not open scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
+
+        # --- attempt 2: legacy configparser INI format ---
+        try:
+            import configparser
+            from ast import literal_eval
+            config = configparser.ConfigParser()
+            config.optionxform = str
+            config.read(filePath)
+
+            analog = {}
+            for key, val in config.items('analogParameterDict') if config.has_section('analogParameterDict') else []:
+                try:
+                    analog[key] = literal_eval(val)
+                except Exception:
+                    analog[key] = val
+
+            digital = {}
+            for key, val in config.items('digitalParameterDict') if config.has_section('digitalParameterDict') else []:
+                try:
+                    digital[key] = literal_eval(val)
+                except Exception:
+                    digital[key] = val
+
+            if not analog and not digital:
+                self._logger.error(f'Scan file {filePath!r} is neither valid JSON nor a recognised INI scan file')
+                return None
+
+            self._logger.info(f'Loaded legacy INI scan file {filePath!r}')
+            return {'analogParameterDict': analog, 'digitalParameterDict': digital}
+        except Exception:
+            self._logger.error(f'Failed to parse scan file {filePath!r} as INI:\n{traceback.format_exc()}')
+            return None
 
 
     @APIExport(runOnUIThread=True)

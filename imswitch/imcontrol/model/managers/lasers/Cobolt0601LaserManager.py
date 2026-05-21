@@ -19,7 +19,9 @@ class Cobolt0601LaserManager(LantzLaserManager):
                          driver='cobolt.cobolt0601.Cobolt0601_f2', **_lowLevelManagers)
 
         self._digitalMod = False
-        self._laser.digital_mod = False
+        self._laser.digital_mod = False  # sdmes 0 — disable TTL gate
+        self._laser.query('cp')          # enter constant-power mode (known clean state)
+        self._laser.mode = 'APC'
         self._laser.enabled = False
         self._laser.autostart = False
 
@@ -37,8 +39,9 @@ class Cobolt0601LaserManager(LantzLaserManager):
     def setScanModeActive(self, active, enabled=True):
         if active:
             powerQ = self._laser.power_sp * self._numLasers
-            self._laser.enter_mod_mode()
-            self._setModPower(powerQ)
+            self._laser.enter_mod_mode()   # em — enter modulation mode
+            self._laser.digital_mod = True # sdmes 1 — enable TTL gate
+            self._setModPower(powerQ)      # slmp X — power when TTL is HIGH
             #self.__logger.debug('Entered digital modulation mode')
             #self.__logger.debug(f'Modulation mode is: {self._laser.mod_mode}')
         else:
