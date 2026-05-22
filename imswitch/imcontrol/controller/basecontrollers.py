@@ -182,14 +182,20 @@ class SuperScanController(ImConWidgetController):
 
     def saveScan(self):
         """ Save scan parameters template. """
-        fileName = guitools.askForFilePath(self._widget, 'Save scan', self.scanDir, isSaving=True)
+        fileName = guitools.askForFilePath(
+            self._widget, 'Save scan', self.scanDir,
+            nameFilter='Scan parameters (*.json)', isSaving=True
+        )
         if not fileName:
             return
         self.saveScanParamsToFile(fileName)
 
     def loadScan(self):
         """ Load scan parameters template. """
-        fileName = guitools.askForFilePath(self._widget, 'Load scan', self.scanDir)
+        fileName = guitools.askForFilePath(
+            self._widget, 'Load scan', self.scanDir,
+            nameFilter='Scan parameters (*.json)'
+        )
         if not fileName:
             return
         self.loadScanParamsFromFile(fileName)

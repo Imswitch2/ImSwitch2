@@ -646,9 +646,13 @@ class FieldWidget(QWidget):
                 self._w.setToolTip(self._def["tip"])
             return
         else:  # text
-            self._w = QLineEdit(
-                "null" if value is None else str(value)
-            )
+            if isinstance(value, list):
+                display = ", ".join(str(v) for v in value)
+            elif value is None:
+                display = "null"
+            else:
+                display = str(value)
+            self._w = QLineEdit(display)
         lay.addWidget(self._w)
         if self._def.get("tip"):
             self._w.setToolTip(self._def["tip"])

@@ -8,6 +8,10 @@ class Cobolt0601(RS232Driver):
 
     Communicates over RS-232 using the Cobolt ASCII protocol.
     Serial settings: 115200 baud, 8N1, CR termination.
+
+    Older firmware revisions omit certain query commands (l?, gmod?, sn?).
+    All properties fall back to locally-tracked state when the hardware returns
+    a syntax error, so the driver works across firmware versions.
     """
 
     DEFAULTS = {
@@ -23,95 +27,179 @@ class Cobolt0601(RS232Driver):
 
     def initialize(self):
         super().initialize()
-        self._mode = None  # 'ACC' or 'APC', tracked locally
+        self._mode = None      # 'ACC' or 'APC', tracked locally
+        self._enabled = False  # tracked locally — l? absent on older firmware
+        self._digital_mod = False
+        self._log_capabilities()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _log_capabilities(self):
+        """Probe optional commands and log which are supported by this firmware."""
+        import logging
+        log = logging.getLogger(__name__)
+        fw = self._safe_query('gfv?', default='unknown')
+        probes = {
+            'l?':     'emission state query',
+            'sn?':    'serial number',
+            'gmod?':  'modulation mode query',
+            'glmp?':  'modulation power query',
+        }
+        unsupported = [desc for cmd, desc in probes.items()
+                       if self._safe_query(cmd) is None]
+        if unsupported:
+            log.info(
+                f'Cobolt firmware {fw}: the following optional queries are not '
+                f'supported and will use local state — {", ".join(unsupported)}'
+            )
+        else:
+            log.info(f'Cobolt firmware {fw}: all optional queries supported')
+
+    def _safe_query(self, command, default=None):
+        """Send command and return the response.
+
+        Returns *default* if the firmware responds with a syntax/illegal-command
+        error or if a communication exception occurs.
+        """
+        try:
+            result = self.query(command)
+            if 'syntax error' in result.lower() or 'illegal command' in result.lower():
+                return default
+            return result
+        except Exception:
+            return default
+
+    # ------------------------------------------------------------------
+    # Identification
+    # ------------------------------------------------------------------
 
     @property
     def idn(self):
-        return self.query('id?')
+        # gfv? (firmware version) is universally supported; sn? is not on older FW
+        return self._safe_query('gfv?', default='Cobolt (unknown)')
 
     @property
     def status(self):
-        return self.query('?')
+        return self._safe_query('?', default='unknown')
 
-    # ---- enable ----
+    # ------------------------------------------------------------------
+    # Enable / disable emission
+    # ------------------------------------------------------------------
 
     @property
     def enabled(self):
-        return self.query('l?').strip() == '1'
+        result = self._safe_query('l?')
+        if result is not None:
+            self._enabled = result.strip() == '1'
+        return self._enabled
 
     @enabled.setter
     def enabled(self, value):
-        self.query('l1' if value else 'l0')
+        self._safe_query('l1' if value else 'l0')
+        self._enabled = bool(value)
 
-    # ---- power setpoint ----
+    # ------------------------------------------------------------------
+    # Power
+    # ------------------------------------------------------------------
 
     @property
     def power_sp(self):
-        return float(self.query('p?'))
+        result = self._safe_query('p?', default='0')
+        try:
+            return float(result) * 1000  # W → mW
+        except (ValueError, TypeError):
+            return 0.0
 
     @power_sp.setter
     def power_sp(self, value):
-        self.query(f'p {float(value):.4f}')
-
-    # ---- actual power ----
+        self._safe_query(f'p {float(value) / 1000:.6f}')  # mW → W
 
     @property
     def power(self):
-        return float(self.query('pa?'))
+        result = self._safe_query('pa?', default='0')
+        try:
+            return float(result) * 1000  # W → mW
+        except (ValueError, TypeError):
+            return 0.0
 
-    # ---- operating mode ('ACC' / 'APC') ----
+    # ------------------------------------------------------------------
+    # Operating mode ('ACC' / 'APC') — tracked locally
+    # ------------------------------------------------------------------
 
     @property
     def mode(self):
-        # mode is tracked locally; hardware switches happen via ci / cp queries
         return self._mode
 
     @mode.setter
     def mode(self, value):
         self._mode = value
 
-    # ---- autostart ----
+    # ------------------------------------------------------------------
+    # Autostart
+    # ------------------------------------------------------------------
 
     @property
     def autostart(self):
-        return self.query('@cobas?').strip() == '1'
+        result = self._safe_query('@cobas?')
+        if result is not None:
+            return result.strip() == '1'
+        return False
 
     @autostart.setter
     def autostart(self, value):
-        self.query(f'@cobas {1 if value else 0}')
+        self._safe_query(f'@cobas {1 if value else 0}')
 
-    # ---- digital modulation ----
+    # ------------------------------------------------------------------
+    # Digital modulation
+    # ------------------------------------------------------------------
 
     @property
     def digital_mod(self):
-        return self.query('gdmes?').strip() == '1'
+        result = self._safe_query('gdmes?')
+        if result is not None:
+            self._digital_mod = result.strip() == '1'
+        return self._digital_mod
 
     @digital_mod.setter
     def digital_mod(self, value):
-        self.query(f'sdmes {1 if value else 0}')
+        self._safe_query(f'sdmes {1 if value else 0}')
+        self._digital_mod = bool(value)
 
     def enter_mod_mode(self):
-        self.query('em')
+        self._safe_query('em')
 
     @property
     def mod_mode(self):
+        result = self._safe_query('gmod?')
         try:
-            return int(self.query('gmod?').strip())
-        except (ValueError, AttributeError):
+            return int(result)
+        except (ValueError, TypeError):
             return 0
 
 
 class Cobolt0601_f2(Cobolt0601):
     """Driver for Cobolt 06-01 Series laser, new firmware (adds power_mod)."""
 
+    def initialize(self):
+        super().initialize()
+        self._power_mod = 0.0  # tracked locally — glmp? absent on older firmware
+
     @property
     def power_mod(self):
-        """Laser modulated power (mW)."""
-        return float(self.query('glmp?'))
+        result = self._safe_query('glmp?')
+        try:
+            val = float(result) * 1000  # W → mW
+            self._power_mod = val
+            return val
+        except (ValueError, TypeError):
+            return self._power_mod
 
     @power_mod.setter
     def power_mod(self, value):
-        self.query(f'slmp {float(value):.4f}')
+        self._power_mod = float(value)
+        self._safe_query(f'slmp {float(value) / 1000:.6f}')  # mW → W
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

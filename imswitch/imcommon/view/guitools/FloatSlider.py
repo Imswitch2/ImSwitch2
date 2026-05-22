@@ -25,10 +25,10 @@ class FloatSlider(BetterSlider):
         return float(super().value()) / self._multiplier
 
     def setMinimum(self, value):
-        return super().setMinimum(value * self._multiplier)
+        return super().setMinimum(int(value * self._multiplier))
 
     def setMaximum(self, value):
-        return super().setMaximum(value * self._multiplier)
+        return super().setMaximum(int(value * self._multiplier))
 
     def setSingleStep(self, value):
         return super().setSingleStep(int(value * self._multiplier))

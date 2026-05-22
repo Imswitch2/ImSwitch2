@@ -25,7 +25,10 @@ import matplotlib.pyplot as plt
 # print the root folder of this module
 #self.__logger.debug(devwraps.get_root_folder)
 
-from devwraps.thorcam import ThorCam
+try:
+    from devwraps.thorcam import ThorCam
+except ImportError:
+    ThorCam = None
 
 class TriggerMode:
     SOFTWARE = 'Software Trigger'
