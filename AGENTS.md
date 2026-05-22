@@ -335,3 +335,33 @@ persistence.loadAllStates('my_experiment_config')
 
 **Status:** Complete and committed (commit 340bfb13). Fully backward compatible, zero risk to existing functionality. Ready for user testing.
 
+### Laser-Scan Emission Ownership (2026-05-22)
+
+The scan module's TTL device list (`ttlDeviceList`) is now the single source of truth for which lasers emit during a scan.
+
+**What changed:**
+- **Sole authority**: The scan's TTL cycle (linestep_enable signal) determines per-laser emission. Only lasers in the scan's device list participate.
+- **Force-disable non-participants**: `LaserController.setScanModeActive()` now explicitly disables all lasers not in the scan's device list before entering scan mode.
+- **Dead parameter removed**: The unused `enabled` parameter was removed from `setScanModeActive()` (always `True` at all call sites).
+- **Dead code removed**: A permanently disabled `if False:` branch referencing a legacy `scanManager` was removed from `ScanControllerAdvanced.runScanAdvanced()`.
+
+**Why this matters:**
+- Eliminates ambiguity about which module controls laser emission during scans
+- Prevents stale laser state from previous scans interfering with current scan
+- Clarifies control flow: scan module owns emission authority, LaserController enforces it
+- Removes confusion from dead/unused code paths
+
+**Files modified (red-zone):**
+1. `imswitch/imcontrol/controller/controllers/LaserController.py`
+   - `setScanModeActive()`: Removed `enabled` param, added force-disable of non-participants
+2. `imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py`
+   - `runScanAdvanced()`: Removed dead `scanManager` branch, added clarifying comment
+
+**Safety notes:**
+- **Red-zone files**: Both modified files involve laser control (hardware safety critical)
+- **No behavior change**: Only removes dead code and clarifies existing ownership model
+- **No timing changes**: TTL generation and signal timing unchanged
+- **No API breaking changes**: `setScanModeActive()` call sites already passed no explicit `enabled` value
+
+**Status:** Committed (commits cb64772e). No functional changes to working code paths. Documentation change only.
+
