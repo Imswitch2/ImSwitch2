@@ -1,8 +1,9 @@
 import pytest
 
 import h5py
+import numpy as np
 
-from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode
+from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, DetectorInfo
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
 
 
@@ -88,6 +89,83 @@ def test_recording_spec_time(qtbot, detectorInfos):
         file.close()  # Otherwise we can get segfaults
     for savedToDisk in savedToDiskPerDetector.values():
         assert savedToDisk is False
+
+
+@pytest.mark.parametrize('dtype,mock_suffix', [
+    (np.uint8, 'mock_uint8'),
+    (np.uint16, 'mock_uint16')
+])
+def test_recording_dtype_preservation(qtbot, dtype, mock_suffix):
+    """Test that HDF5 datasets preserve the frame dtype instead of hardcoded 'i2'.
+    
+    Regression test for issue where:
+    - uint16 data >32767 wrapped to negative values (signed int16 corruption)
+    - uint8 data was needlessly widened to int16
+    """
+    # Create detector with specific dtype through mock suffix
+    detectorInfos = {
+        'CAM': DetectorInfo(
+            analogChannel=None,
+            digitalLine=3,
+            managerName='HamamatsuManager',
+            managerProperties={
+                'cameraListIndex': mock_suffix,
+                'hamamatsu': {
+                    'readout_speed': 3,
+                    'trigger_global_exposure': 5,
+                    'trigger_active': 2,
+                    'trigger_polarity': 2,
+                    'exposure_time': 0.01,
+                    'trigger_source': 1,
+                    'subarray_hpos': 0,
+                    'subarray_vpos': 0,
+                    'subarray_hsize': 512,
+                    'subarray_vsize': 512,
+                    'image_width': 512,
+                    'image_height': 512
+                }
+            },
+            forAcquisition=True
+        )
+    }
+
+    filePerDetector, savedToDiskPerDetector = record(
+        qtbot,
+        detectorInfos,
+        detectorNames=list(detectorInfos.keys()),
+        recMode=RecMode.SpecFrames,
+        savename=f'test_dtype_{dtype.__name__}',
+        saveMode=SaveMode.RAM,
+        attrs={detectorName: {
+            'testAttr1': 2,
+            'testAttr2': 'value'
+        } for detectorName in detectorInfos.keys()},
+        recFrames=5
+    )
+
+    assert filePerDetector.keys() == detectorInfos.keys()
+    
+    for detectorName, file in filePerDetector.items():
+        h5pyFile = h5py.File(file)
+        dataset = h5pyFile.get(detectorName)
+        
+        # Check dtype matches expected type
+        assert dataset.dtype == dtype, \
+            f"Expected dtype {dtype}, got {dataset.dtype}"
+        
+        # For uint16, verify no wrap-around corruption
+        if dtype == np.uint16:
+            # Verify we can represent values >32767 without wrapping
+            assert dataset.dtype.kind == 'u', \
+                "uint16 detector should produce unsigned dataset, not signed i2"
+        
+        # For uint8, verify no unnecessary widening
+        if dtype == np.uint8:
+            assert dataset.dtype.itemsize == 1, \
+                f"uint8 detector should produce 1-byte dataset, got {dataset.dtype.itemsize} bytes"
+        
+        h5pyFile.close()
+        file.close()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

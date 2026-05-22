@@ -72,7 +72,7 @@ class HDF5Storer(Storer):
             with AsTemporaryFile(f'{self.filepath}_{channel}.h5') as path:
                 file = h5py.File(path, 'w')
                 #image.sh = self.detectorManager[channel].shape # why not take image shape directly? LR
-                dataset = file.create_dataset('data', tuple(reversed(image.shape)), dtype='i2')
+                dataset = file.create_dataset('data', tuple(reversed(image.shape)), dtype=image.dtype)
                 for key, value in attrs[channel].items():
                     try:
                         dataset.attrs[key] = value
@@ -251,7 +251,7 @@ class RecordingManager(SignalInterface):
             file = h5py.File(filePath, 'w')
 
             shape = image.shape
-            dataset = file.create_dataset('data', tuple(reversed(shape)), dtype='i2')
+            dataset = file.create_dataset('data', tuple(reversed(shape)), dtype=image.dtype)
 
             for key, value in attrs[detectorName].items():
                 try:
@@ -324,6 +324,7 @@ class RecordingWorker(Worker):
         currentFrame = {}
         datasets = {}
         filenames = {}
+        datasetNames = {}  # Store dataset names for lazy HDF5 creation
         for detectorName in self.detectorNames:
             currentFrame[detectorName] = 0
 
@@ -337,35 +338,15 @@ class RecordingWorker(Worker):
                     datasetNameWithScan = f'{datasetName}_scan{scanNum}'
                 datasetName = datasetNameWithScan
 
-            # Initial number of frames must not be 0; otherwise, too much disk space may get
-            # allocated. We remove this default frame later on if no frames are captured.
             shape = shapes[detectorName]
             if len(shape) > 2:
                 shape = shape[-2:]
 
             if self.saveFormat == SaveFormat.HDF5:
-                # Initial number of frames must not be 0; otherwise, too much disk space may get
-                # allocated. We remove this default frame later on if no frames are captured.
-                datasets[detectorName] = files[detectorName].create_dataset(
-                    datasetName, (1, *reversed(shape)),
-                    maxshape=(None, *reversed(shape)),
-                    dtype='i2'
-                )
-
-                for key, value in self.attrs[detectorName].items():
-                    try:
-                        if isinstance(value, dict):
-                            datasets[detectorName].attrs[key] = json.dumps(value)
-                        else:
-                            datasets[detectorName].attrs[key] = value
-                    except Exception as e:
-                        self.__logger.error(f"Error saving {key} {value} to Hdf5: {e}")
-                datasets[detectorName].attrs['detector_name'] = detectorName
-
-                # For ImageJ compatibility
-                datasets[detectorName].attrs['element_size_um'] \
-                    = self.__recordingManager.detectorsManager[detectorName].pixelSizeUm
-                datasets[detectorName].attrs['writing'] = True
+                # HDF5 dataset creation is now LAZY - deferred until first frame write
+                # to derive dtype from actual frame data instead of hardcoded 'i2'.
+                # Store dataset name and shape for later creation.
+                datasetNames[detectorName] = datasetName
 
             elif self.saveFormat == SaveFormat.TIFF:
                 fileExtension = str(self.saveFormat.name).lower()
@@ -380,6 +361,35 @@ class RecordingWorker(Worker):
                 datasets[detectorName].attrs['ImSwitchData'] = self.attrs[detectorName]
                 datasets[detectorName].attrs['detector_name'] = detectorName
                 # For ImageJ compatibility
+                datasets[detectorName].attrs['element_size_um'] \
+                    = self.__recordingManager.detectorsManager[detectorName].pixelSizeUm
+                datasets[detectorName].attrs['writing'] = True
+
+        def _ensureHDF5Dataset(detectorName, newFrames):
+            """Lazily create HDF5 dataset on first frame write with dtype from actual frames."""
+            if detectorName not in datasets:
+                shape = shapes[detectorName]
+                if len(shape) > 2:
+                    shape = shape[-2:]
+                datasetName = datasetNames[detectorName]
+                
+                # Create dataset with dtype from actual frame data
+                datasets[detectorName] = files[detectorName].create_dataset(
+                    datasetName, (0, *reversed(shape)),
+                    maxshape=(None, *reversed(shape)),
+                    dtype=newFrames.dtype
+                )
+
+                # Set attributes
+                for key, value in self.attrs[detectorName].items():
+                    try:
+                        if isinstance(value, dict):
+                            datasets[detectorName].attrs[key] = json.dumps(value)
+                        else:
+                            datasets[detectorName].attrs[key] = value
+                    except Exception as e:
+                        self.__logger.error(f"Error saving {key} {value} to Hdf5: {e}")
+                datasets[detectorName].attrs['detector_name'] = detectorName
                 datasets[detectorName].attrs['element_size_um'] \
                     = self.__recordingManager.detectorsManager[detectorName].pixelSizeUm
                 datasets[detectorName].attrs['writing'] = True
@@ -426,6 +436,7 @@ class RecordingWorker(Worker):
                                             f'{self.savename}_{detectorName}.{fileExtension}', False, False)
                                         continue
                             elif self.saveFormat == SaveFormat.HDF5:
+                                _ensureHDF5Dataset(detectorName, newFrames)
                                 dataset = datasets[detectorName]
                                 if (it + n) <= nFrames:
                                     dataset.resize(n + it, axis=0)
@@ -477,7 +488,13 @@ class RecordingWorker(Worker):
                                         filePath = self.__recordingManager.getSaveFilePath(
                                             f'{self.savename}_{detectorName}.{fileExtension}', False, False)
                                         continue
-                            elif self.saveFormat == SaveFormat.HDF5 or self.saveFormat == SaveFormat.ZARR:
+                            elif self.saveFormat == SaveFormat.HDF5:
+                                _ensureHDF5Dataset(detectorName, newFrames)
+                                it = currentFrame[detectorName]
+                                dataset = datasets[detectorName]
+                                dataset.resize(n + it, axis=0)
+                                dataset[it:it + n, :, :] = newFrames
+                            elif self.saveFormat == SaveFormat.ZARR:
                                 it = currentFrame[detectorName]
                                 dataset = datasets[detectorName]
                                 dataset.resize(n + it, axis=0)
@@ -516,6 +533,7 @@ class RecordingWorker(Worker):
                                         continue
 
                             elif self.saveFormat == SaveFormat.HDF5:
+                                _ensureHDF5Dataset(detectorName, newFrames)
                                 it = currentFrame[detectorName]
                                 dataset = datasets[detectorName]
                                 dataset.resize(n + it, axis=0)
@@ -547,9 +565,11 @@ class RecordingWorker(Worker):
             if self.saveFormat == SaveFormat.HDF5 or self.saveFormat == SaveFormat.ZARR:
                 for detectorName, file in files.items():
                     # Remove default frame if no frames have been captured
-                    if currentFrame[detectorName] < 1:
+                    # (HDF5 lazy creation: dataset may not exist if no frames captured)
+                    dataset = datasets.get(detectorName)
+                    if dataset is not None and currentFrame[detectorName] < 1:
                         if self.saveFormat == SaveFormat.HDF5:
-                            datasets[detectorName].resize(0, axis=0)
+                            dataset.resize(0, axis=0)
 
                     # Handle memory recordings
                     if self.saveMode == SaveMode.RAM or self.saveMode == SaveMode.DiskAndRAM:
@@ -566,7 +586,8 @@ class RecordingWorker(Worker):
                                 name, file, filePath, True
                             )
                     else:
-                        datasets[detectorName].attrs['writing'] = False
+                        if dataset is not None:
+                            dataset.attrs['writing'] = False
                         if self.saveFormat == SaveFormat.HDF5:
                             file.close()
                         else:
