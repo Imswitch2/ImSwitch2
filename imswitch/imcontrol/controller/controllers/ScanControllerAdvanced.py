@@ -36,6 +36,10 @@ class ScanControllerAdvanced(SuperScanController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # Snapshot of the parameters that produced the cached signalDict, so
+        # repeated scan frames can skip regenerating an identical signal.
+        self._lastBuiltParams = None
+
         # ---- widget init ----
         # Keep PointScan signature (pos, TTL devices)
         self._widget.initControls(
@@ -470,15 +474,34 @@ class ScanControllerAdvanced(SuperScanController):
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
-                # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-                self.signalDict, self.scanInfoDict = self._make_full_scan(
-                    self._analogParameterDict, self._digitalParameterDict
-                )
 
-                if self.signalDict is None:
-                    self.isRunning = False
-                    self.abortScan()
-                    return
+                # Only rebuild the (expensive) scan signal if the parameters
+                # actually changed since the last build. Repeated scan frames
+                # reuse identical parameters, so this avoids regenerating a
+                # byte-identical galvo/TTL signal — and the per-frame stall it
+                # causes — on every repeat. Live parameter edits still trigger
+                # a rebuild because the snapshot then differs.
+                paramsSnapshot = (
+                    copy.deepcopy(self._analogParameterDict),
+                    copy.deepcopy(self._digitalParameterDict),
+                )
+                signalsCached = (
+                    self.signalDict is not None
+                    and self.scanInfoDict is not None
+                    and paramsSnapshot == self._lastBuiltParams
+                )
+                if not signalsCached:
+                    # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+                    self.signalDict, self.scanInfoDict = self._make_full_scan(
+                        self._analogParameterDict, self._digitalParameterDict
+                    )
+
+                    if self.signalDict is None:
+                        self.isRunning = False
+                        self.abortScan()
+                        return
+
+                    self._lastBuiltParams = paramsSnapshot
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
