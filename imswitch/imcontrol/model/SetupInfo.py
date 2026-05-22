@@ -356,6 +356,13 @@ class PyroServerInfo:
     active: Optional[bool] = False
 
 
+@dataclass(frozen=True)
+class TriggerScopeInfo:
+    rs232device: str
+    """ Name of the RS232 device key (in rs232devices) that connects to the
+    TriggerScope board over serial. """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -416,6 +423,9 @@ class SetupInfo:
     """ Pulse Streamer settings. """
 
     pyroServerInfo: PyroServerInfo = field(default_factory=PyroServerInfo)
+
+    triggerScope: Optional[TriggerScopeInfo] = field(default_factory=lambda: None)
+    """ TriggerScope DAQ board settings. Required to use TriggerScope hardware. """
 
     _catchAll: CatchAll = None
 

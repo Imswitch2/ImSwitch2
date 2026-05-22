@@ -20,6 +20,18 @@ class CommunicationChannel(SignalInterface):
 
     sigAcquisitionStopped = Signal()
 
+    sigKeyReleased = Signal(object)  # (QKeyEvent)
+
+    sigSetVisibleLayers = Signal(tuple)  # (detectorNameTuple,)
+
+    sigSetConfig = Signal(str)  # (configName,)
+
+    sigStartRecording = Signal()
+
+    sigStopRecording = Signal()
+
+    sigRunScanTriggerScopePLSRMulticolor = Signal()
+
     sigScriptExecutionFinished = Signal()
 
     sigAdjustFrame = Signal(object)  # (shape)
@@ -95,6 +107,8 @@ class CommunicationChannel(SignalInterface):
     sigNewFrame = Signal()
 
     sigInitiateEtMonalisa = Signal(bool)
+
+    sigInitiateEtSnouty = Signal(bool)
 
     sigQueryCenterCoord = Signal(str) # (search mode)
     

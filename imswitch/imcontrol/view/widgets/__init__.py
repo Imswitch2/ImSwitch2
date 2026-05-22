@@ -32,4 +32,13 @@ from .ViewWidget import ViewWidget
 from .ViewerToolsWidget import ViewerToolsWidget
 from .WatcherWidget import WatcherWidget
 from .BFTimelapseWidget import BFTimelapseWidget
+from .LightSheetMulticolorWidget import LightSheetMulticolorWidget
+from .WellPlateWidget import WellPlateWidget
+from .EtSnoutyWidget import EtSnoutyWidget
+from .SetupStatusWidget import SetupStatusWidget
+from .TriggerScopeRasterWidget import TriggerScopeRasterWidget
+from .TriggerScopePLSRWidget import TriggerScopePLSRWidget
+from .TriggerScopeGalvoDetectionWidget import TriggerScopeGalvoDetectionWidget
+from .TriggerScopePLSRMulticolorWidget import TriggerScopePLSRMulticolorWidget
+from .TriggerScopeLSXYRWidget import TriggerScopeLSXYRWidget
 # from .EtWidget import EtWidget # Current prototype on old Monalisa machine needs rework, hardcoded paths, not tracked, etc. for now commented!

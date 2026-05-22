@@ -31,4 +31,13 @@ from .ViewController import ViewController
 from .ViewerToolsController import ViewerToolsController
 from .WatcherController import WatcherController
 from .BFTimelapseController import BFTimelapseController
+from .LightSheetMulticolorController import LightSheetMulticolorController
+from .WellPlateController import WellPlateController
+from .EtSnoutyController import EtSnoutyController
+from .SetupStatusController import SetupStatusController
+from .TriggerScopeRasterController import TriggerScopeRasterController
+from .TriggerScopePLSRController import TriggerScopePLSRController
+from .TriggerScopeGalvoDetectionController import TriggerScopeGalvoDetectionController
+from .TriggerScopePLSRMulticolorController import TriggerScopePLSRMulticolorController
+from .TriggerScopeLSXYRController import TriggerScopeLSXYRController
 # from .EtController import EtController # Current prototype on old Monalisa machine needs rework and is not tracked currently.
