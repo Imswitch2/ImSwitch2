@@ -92,6 +92,10 @@ class GalvoScanDesigner(ScanDesigner):
         acc_max = [positionerProps['acc_max'] / positionerProps['conversionFactor']
                    if 'acc_max' in positionerProps else 1e6
                    for positionerProps in positionersProps]
+        # convert jerk_max from µm/µs^3 to V/µs^3 (optional)
+        jerk_max = [positionerProps['jerk_max'] / positionerProps['conversionFactor']
+                    if 'jerk_max' in positionerProps else None
+                    for positionerProps in positionersProps]
 
         # get conversion factors for scanning axes
         convFactors = [positionerProps['conversionFactor'] 
@@ -114,6 +118,17 @@ class GalvoScanDesigner(ScanDesigner):
                                for j, i in enumerate(active)]
         self.axis_vel_max = [vel_max[pos_idx[j]] for j in range(len(active))]
         self.axis_acc_max = [acc_max[pos_idx[j]] for j in range(len(active))]
+        self.axis_jerk_max = [jerk_max[pos_idx[j]] for j in range(len(active))]
+
+        # Compute jerk-transition time (dt_fix): acc_max / jerk_max for each smooth axis with jerk_max
+        dt_fix_candidates = []
+        for j in range(len(active)):
+            # Only consider smooth scanning axes (not mock) with jerk_max configured
+            is_smooth = not ('mock' in self.axis_devs_order[j].lower())
+            if is_smooth and self.axis_jerk_max[j] is not None:
+                dt_fix_candidates.append(self.axis_acc_max[j] / self.axis_jerk_max[j])
+        # Use max of computed values, or fall back to legacy 1e-2 if no jerk_max configured
+        self.__dt_fix = max(dt_fix_candidates) if dt_fix_candidates else 1e-2
 
         axis_count_scan = len(self.axis_devs_order)
 
@@ -369,8 +384,8 @@ class GalvoScanDesigner(ScanDesigner):
         c_scan = self.axis_centerpos[0]  # µm
         v_scan = self.axis_step_size[0] / sequence_time  # µm/µs
 
-        # time between two fix points where the acceleration changes (infinite jerk) - µs
-        dt_fix = 1e-2
+        # jerk-transition time: acceleration change interval (finite jerk if jerk_max configured) - µs
+        dt_fix = self.__dt_fix
 
         # positions at fixed points
         p1 = c_scan
@@ -460,8 +475,8 @@ class GalvoScanDesigner(ScanDesigner):
         v_max = np.sign(initpos) * v_max
         a_max = np.sign(initpos) * a_max
 
-        # time between two fix points where the acceleration changes (infinite jerk)  # µs
-        dt_fix = 1e-2
+        # jerk-transition time: acceleration change interval (finite jerk if jerk_max configured) - µs
+        dt_fix = self.__dt_fix
 
         # positions at fixed points
         p1 = p1p = 0
@@ -532,8 +547,8 @@ class GalvoScanDesigner(ScanDesigner):
         v_max = -np.sign(initpos) * v_max
         a_max = -np.sign(initpos) * a_max
 
-        # time between two fix points where the acceleration changes (infinite jerk)  # µs
-        dt_fix = 1e-2
+        # jerk-transition time: acceleration change interval (finite jerk if jerk_max configured) - µs
+        dt_fix = self.__dt_fix
 
         # positions at fixed points
         p1 = p1p = initpos
