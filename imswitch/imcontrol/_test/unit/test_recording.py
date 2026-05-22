@@ -88,7 +88,11 @@ def test_recording_spec_time(qtbot, detectorInfos):
 
     for detectorName, file in filePerDetector.items():
         h5pyFile = h5py.File(file)
-        dataset = h5pyFile.get(detectorName)
+        # Phase 4: structured layout - dataset at /<detector>/data
+        detector_group = h5pyFile.get(detectorName)
+        assert detector_group is not None, f"Detector group '{detectorName}' not found"
+        dataset = detector_group.get('data')
+        assert dataset is not None, f"Data dataset not found in group '{detectorName}'"
         assert dataset.shape[0] > 0
         h5pyFile.close()  # Otherwise we can get segfaults
         file.close()  # Otherwise we can get segfaults
@@ -125,7 +129,10 @@ def test_recording_dtype_preservation(qtbot):
 
     file = filePerDetector[detectorName]
     with h5py.File(file) as h5pyFile:
-        dataset = h5pyFile.get(detectorName)
+        # Phase 4: structured layout - dataset at /<detector>/data
+        detector_group = h5pyFile.get(detectorName)
+        assert detector_group is not None, 'recorded detector group missing'
+        dataset = detector_group.get('data')
         assert dataset is not None, 'recorded dataset missing'
         # The bug: dtype was hardcoded to signed int16 ('i2'). The fix derives
         # it from the frame array, so it must NOT be 'i2' here (the mock

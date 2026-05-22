@@ -396,22 +396,22 @@ class HDF5Storer(Storer):
 
         # Lazy dataset creation using structured layout
         if detectorName not in self._datasets:
-            shape = self._shapes[detectorName]
-            if len(shape) > 2:
-                shape = shape[-2:]
+            # Derive spatial dims from the frame arrays themselves. The detector
+            # .shape attribute is (X, Y) while frame arrays follow numpy's
+            # (n, Y, X) convention, so using _shapes here would mis-broadcast
+            # for non-square detectors.
+            spatialShape = frames.shape[-2:]
 
-            # Create structured detector group with extendable dataset
-            # Use (T, Y, X) convention - NO reversal (matches snap() and numpy convention)
             file = self._files[detectorName]
             groupPath = self._groupPaths[detectorName]
-            
+
             # Temporarily override compression for streaming
             original_compression = self.compression
             self.compression = self._streamCompression
             try:
                 dataset = self._createDetectorGroup(
                     file, detectorName, frames.dtype, self._attrs[detectorName],
-                    maxshape=(None, *shape),  # (None, Y, X)
+                    maxshape=(None, *spatialShape),  # (None, Y, X)
                     groupPath=groupPath
                 )
             finally:
