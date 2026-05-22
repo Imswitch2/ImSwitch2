@@ -148,7 +148,9 @@ tuned offsets and magic numbers, especially for fast scans.
   `dt_fix` with a finite jerk-transition time derived from a configurable
   `jerk_max` physical limit. Opt-in / config-gated, default preserves current
   behaviour. Pure trajectory math — unit-testable. Hardware verification
-  required before enabling.
+  required before enabling. NOTE: `test_galvo_jerk_limit.py` is currently
+  skipped — it was written against a non-existent `ScanManagerBase` API
+  (`signalDictTwoScan`) and needs rewriting against `makeFullScan`.
 - ⬜ **Detector-sync fix.** Single source of truth for the scan-start offset:
   apply `phase_delay` when generating `line_clock`/frame clocks in the TTL
   designer; APD/PMT then stop throwing it. All detectors align by

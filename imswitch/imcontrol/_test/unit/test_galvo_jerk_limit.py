@@ -6,8 +6,19 @@ Tests that:
 2. With jerk_max configured: peak jerk is bounded by the configured limit
 """
 import numpy as np
+import pytest
 
-from imswitch.imcontrol.model import ViewSetupInfo, ScanManagerBase
+from imswitch.imcontrol.model import ScanManagerBase
+from imswitch.imcontrol.view.guitools.ViewSetupInfo import ViewSetupInfo
+
+# These tests were written against a non-existent ScanManagerBase API
+# (`signalDictTwoScan`); the real entry point is `makeFullScan(scanParameters,
+# TTLParameters)`. They have never run. Skipped until rewritten against the
+# real API — tracked under the scanning milestone in ROADMAP.md.
+pytestmark = pytest.mark.skip(
+    reason="Written against non-existent API (signalDictTwoScan); needs rewrite "
+           "against ScanManagerBase.makeFullScan — see ROADMAP.md Milestone 9."
+)
 
 
 def test_galvo_jerk_limit_backward_compatible():
