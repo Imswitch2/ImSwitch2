@@ -36,18 +36,59 @@ class AsTemporaryFile(object):
 
 
 class Storer(abc.ABC):
-    """ Base class for storing data"""
+    """Base class for storing detector data to disk.
+    
+    All storers use the (T, Y, X) axis convention:
+    - T: time/frame dimension
+    - Y: vertical image dimension (rows)
+    - X: horizontal image dimension (columns)
+    
+    This matches numpy array indexing and the _record streaming format.
+    No axis reversal or transposition is applied.
+    """
     def __init__(self, filepath, detectorManager):
         self.filepath = filepath
         self.detectorManager: DetectorsManager = detectorManager
 
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
-        """ Stores images and attributes according to the spec of the storer """
+    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
+        """Store snapshot images with metadata.
+        
+        Args:
+            images: Dict mapping detector name to image array (T, Y, X) or (Y, X)
+            attrs: Dict mapping detector name to flat metadata dict with ':'-separated keys
+        """
         raise NotImplementedError
 
     def stream(self, data = None, **kwargs):
-        """ Stores data in a streaming fashion. """
+        """Store data in streaming fashion (used by RecordingWorker._record)."""
         raise NotImplementedError
+    
+    @staticmethod
+    def _group_metadata_by_category(attrs: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+        """Group flat metadata by category prefix.
+        
+        Input attrs have keys like 'detector:exposure', 'lasers:laser1:power', 'uncategorized'.
+        Output groups by first component: {'detector': {'exposure': ...}, 'lasers': {'laser1:power': ...}}.
+        Keys without ':' go to the '' (empty string) category.
+        
+        Args:
+            attrs: Flat dict with ':'-separated keys
+            
+        Returns:
+            Dict mapping category to sub-dict of keys within that category
+        """
+        grouped = {}
+        for key, value in attrs.items():
+            if ':' in key:
+                category, _, rest = key.partition(':')
+            else:
+                category, rest = '', key
+            
+            if category not in grouped:
+                grouped[category] = {}
+            grouped[category][rest or key] = value
+        
+        return grouped
 
 
 class ZarrStorer(Storer):
@@ -66,43 +107,135 @@ class ZarrStorer(Storer):
 
 
 class HDF5Storer(Storer):
-    """ A storer that stores the images in a series of hd5 files """
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
+    """Storer for HDF5 format with structured layout.
+    
+    Snapshot layout:
+        <file>.h5
+          @imswitch_version (future)
+          @timestamp
+          @rec_mode = 'snap'
+          <detectorName>/
+            data              # (T, Y, X) or (Y, X), dtype from frame, lzf compressed
+              @detector_name
+              @element_size_um
+            metadata/
+              <category>/     # e.g., 'detector', 'lasers', 'scan'
+                @key = value  # attrs within category
+    
+    Compression: lzf (fast, lossless) + shuffle filter by default.
+    """
+    
+    def __init__(self, filepath, detectorManager, compression='lzf'):
+        """Initialize HDF5 storer.
+        
+        Args:
+            filepath: Base path for output file (without extension)
+            detectorManager: DetectorsManager instance
+            compression: Compression filter ('lzf', 'gzip', None, or h5py compression spec)
+        """
+        super().__init__(filepath, detectorManager)
+        self.compression = compression
+    
+    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
+        """Save snapshot with structured HDF5 layout.
+        
+        Creates one file per detector with structured groups and lossless compression.
+        """
+        attrs = attrs or {}
+        
         for channel, image in images.items():
             with AsTemporaryFile(f'{self.filepath}_{channel}.h5') as path:
-                file = h5py.File(path, 'w')
-                #image.sh = self.detectorManager[channel].shape # why not take image shape directly? LR
-                dataset = file.create_dataset('data', tuple(reversed(image.shape)), dtype=image.dtype)
-                for key, value in attrs[channel].items():
-                    try:
-                        dataset.attrs[key] = value
-                    except Exception as e:
-                        logger.debug(f'Snap Error caught: Could not put key:value pair {key}:{value} in hdf5 metadata. Because of {e}')
-
-                dataset.attrs['detector_name'] = channel
-
-                # For ImageJ compatibility
-                dataset.attrs['element_size_um'] = \
-                    self.detectorManager[channel].pixelSizeUm
-
-                if image.ndim == 3:
-                    dataset[:, ...] = np.moveaxis(image, [0, 1, 2], [2, 1, 0])
-                elif image.ndim == 4:
-                    dataset[:, ...] = np.moveaxis(image, [0, 1, 2, 3], [3, 2, 1, 0])
-                else:
-                    dataset[:, ...] = np.moveaxis(image, 0, -1)
-            
-                file.close()
-                logger.info(f"Saved image to hdf5 file {path}")
+                with h5py.File(path, 'w') as file:
+                    # File-level metadata
+                    file.attrs['timestamp'] = time.time()
+                    file.attrs['rec_mode'] = 'snap'
+                    
+                    # Create detector group
+                    det_group = file.create_group(channel)
+                    
+                    # Ensure 3D: (T, Y, X)
+                    if image.ndim == 2:
+                        image = image[np.newaxis, ...]  # Add time dimension
+                    
+                    # Create dataset with compression (per-frame chunks for compatibility with streaming)
+                    chunks = (1, *image.shape[-2:]) if image.ndim >= 3 else True
+                    dataset = det_group.create_dataset(
+                        'data',
+                        data=image,
+                        dtype=image.dtype,
+                        compression=self.compression,
+                        shuffle=True if self.compression else False,
+                        chunks=chunks
+                    )
+                    
+                    # Dataset-level metadata
+                    dataset.attrs['detector_name'] = channel
+                    dataset.attrs['element_size_um'] = self.detectorManager[channel].pixelSizeUm
+                    
+                    # Group attrs by category and create metadata subgroups
+                    channel_attrs = attrs.get(channel, {})
+                    grouped = self._group_metadata_by_category(channel_attrs)
+                    
+                    if grouped:
+                        meta_group = det_group.create_group('metadata')
+                        for category, cat_attrs in grouped.items():
+                            if category:  # Non-empty category -> subgroup
+                                cat_group = meta_group.create_group(category)
+                                for key, value in cat_attrs.items():
+                                    try:
+                                        cat_group.attrs[key] = value
+                                    except Exception as e:
+                                        logger.debug(f'Could not save metadata {category}/{key}={value}: {e}')
+                            else:  # Empty category -> flat in metadata group
+                                for key, value in cat_attrs.items():
+                                    try:
+                                        meta_group.attrs[key] = value
+                                    except Exception as e:
+                                        logger.debug(f'Could not save metadata {key}={value}: {e}')
+                
+                logger.info(f"Saved snapshot to {path} with structured HDF5 layout")
         
 
 class TiffStorer(Storer):
-    """ A storer that stores the images in a series of tiff files """
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
+    """Storer for TIFF format with ImageJ-compatible metadata."""
+    
+    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
+        """Save snapshot as TIFF with ImageJ metadata.
+        
+        Uses tifffile's ImageJ mode for multi-frame compatibility.
+        Metadata is embedded as ImageJ metadata and custom TIFF tags.
+        """
+        attrs = attrs or {}
+        
         for channel, image in images.items():
             with AsTemporaryFile(f'{self.filepath}_{channel}.tiff') as path:
-                tiff.imwrite(path, image,) # TODO: Parse metadata to tiff meta data
-                logger.info(f"Saved image to tiff file {path}")
+                # Prepare metadata for ImageJ
+                channel_attrs = attrs.get(channel, {})
+                pixel_size_um = self.detectorManager[channel].pixelSizeUm[0]  # Assume square pixels
+                
+                # Build ImageJ-compatible metadata dict
+                metadata = {
+                    'axes': 'TYX' if image.ndim == 3 else 'YX',
+                    'unit': 'um',
+                    'spacing': pixel_size_um,
+                }
+                
+                # Add custom attrs as ImageJ metadata (will appear in ImageJ info window)
+                info_lines = [f'detector_name={channel}']
+                for key, value in channel_attrs.items():
+                    # Flatten ':'-separated keys for ImageJ display
+                    info_lines.append(f'{key}={value}')
+                metadata['Info'] = '\n'.join(info_lines)
+                
+                # Write TIFF with ImageJ metadata
+                tiff.imwrite(
+                    path,
+                    image,
+                    imagej=True,
+                    resolution=(1.0/pixel_size_um, 1.0/pixel_size_um),  # pixels per micron
+                    metadata=metadata
+                )
+                logger.info(f"Saved snapshot to {path} with ImageJ metadata")
 
 
 class SaveMode(enum.Enum):
@@ -241,35 +374,22 @@ class RecordingManager(SignalInterface):
                 return images
 
     def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs):
-        """ Saves a previously taken image to a file with the specified name prefix,
-        file format and attributes to save to the capture per detector. """
-        fileExtension = str(saveFormat.name).lower()
-        filePath = self.getSaveFilePath(f'{savename}_{detectorName}.{fileExtension}')
-
-        # Write file
-        if saveFormat == SaveFormat.HDF5:
-            file = h5py.File(filePath, 'w')
-
-            shape = image.shape
-            dataset = file.create_dataset('data', tuple(reversed(shape)), dtype=image.dtype)
-
-            for key, value in attrs[detectorName].items():
-                try:
-                    dataset.attrs[key] = value
-                except Exception as e:
-                    self.__logger.debug(f'Could not put key:value pair {key}:{value} in hdf5 metadata: {e}')
-
-            dataset.attrs['detector_name'] = detectorName
-
-            # For ImageJ compatibility
-            dataset.attrs['element_size_um'] = \
-                self.__detectorsManager[detectorName].pixelSizeUm
-
-            dataset[:, ...] = np.moveaxis(image, 0, -1)
-            file.close()
-        elif saveFormat == SaveFormat.TIFF:
-            tiff.imwrite(filePath, image)
-        elif saveFormat == SaveFormat.ZARR:
+        """Save a previously captured image using the appropriate Storer.
+        
+        Routes through Storer.snap() for unified snapshot saving logic.
+        This ensures consistent file format, metadata structure, and axis ordering
+        between snap() and snapImagePrev().
+        
+        Args:
+            detectorName: Name of the detector
+            savename: Base filename (without extension)
+            saveFormat: SaveFormat enum value
+            image: Image array to save (T, Y, X) or (Y, X)
+            attrs: Dict mapping detector name to flat metadata dict
+        """
+        if saveFormat == SaveFormat.ZARR:
+            # ZARR kept as-is (deferred - will be unified in upstream merge)
+            fileExtension = str(saveFormat.name).lower()
             path = self.getSaveFilePath(f'{savename}.{fileExtension}')
             store = zarr.storage.DirectoryStore(path)
             root = zarr.group(store=store)
@@ -279,7 +399,13 @@ class RecordingManager(SignalInterface):
             d.attrs["ImSwitchData"] = attrs[detectorName]
             store.close()
         else:
-            raise ValueError(f'Unsupported save format "{saveFormat}"')
+            # Route through Storer for HDF5 and TIFF
+            storer = self.__storerMap[saveFormat]
+            store = storer(savename, self.__detectorsManager)
+            
+            # Wrap single detector in dict for storer interface
+            images = {detectorName: image}
+            store.snap(images, attrs)
 
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
