@@ -255,6 +255,9 @@ class LaserController(ImConWidgetController):
                 # Disarm and force off lasers not participating in this scan
                 self._master.lasersManager[lName].setScanModeActive(False)
                 self._master.lasersManager[lName].setEnabled(False)
+                # Sync the UI toggle silently so it reflects the forced-off
+                # hardware state without re-triggering toggleLaser.
+                self._widget.setLaserActive(lName, False, emitSignal=False)
                 self._widget.setLaserEditable(lName, True)
 
     def attrChanged(self, key, value):

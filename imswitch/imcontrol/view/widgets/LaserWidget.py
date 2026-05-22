@@ -138,9 +138,13 @@ class LaserWidget(Widget):
         """ Sets whether the widget can be interacted with. """
         self.setEnabled(editable)
 
-    def setLaserActive(self, laserName, active):
-        """ Sets whether the specified laser is powered on. """
-        self.laserModules[laserName].setActive(active)
+    def setLaserActive(self, laserName, active, emitSignal=True):
+        """ Sets whether the specified laser is powered on.
+
+        If emitSignal is False, the button state is updated silently without
+        emitting sigEnableChanged — used to sync the UI to a hardware state
+        without re-triggering laser-toggle logic. """
+        self.laserModules[laserName].setActive(active, emitSignal=emitSignal)
 
     def setLaserActivatable(self, laserName, activatable):
         """ Sets whether the specified laser can be (de)activated by the user.
@@ -398,9 +402,19 @@ class LaserModule(QtWidgets.QWidget):
         """
         return int(self.modulationDutyCycleEdit.text())
 
-    def setActive(self, active):
-        """ Sets whether the laser is powered on. """
-        self.enableButton.setChecked(active)
+    def setActive(self, active, emitSignal=True):
+        """ Sets whether the laser is powered on.
+
+        If emitSignal is False, the button is updated without emitting the
+        toggled/sigEnableChanged signal, so no laser-toggle handler runs. """
+        if emitSignal:
+            self.enableButton.setChecked(active)
+        else:
+            self.enableButton.blockSignals(True)
+            try:
+                self.enableButton.setChecked(active)
+            finally:
+                self.enableButton.blockSignals(False)
 
     def setActivatable(self, activatable):
         """ Sets whether the laser can be (de)activated by the user. """
