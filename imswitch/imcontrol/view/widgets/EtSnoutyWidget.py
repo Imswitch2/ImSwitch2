@@ -209,7 +209,7 @@ class AnalysisWidget(Widget):
         self.imgVb = self.imgVbWidget.addViewBox(row=1, col=1)
 
         self.img = pg.ImageItem(axisOrder='row-major')
-        self.img.translate(-0.5, -0.5)
+        #self.img.translate(-0.5, -0.5) #TODO find modern replacement LR
 
         self.scatter = pg.ScatterPlotItem()
 
