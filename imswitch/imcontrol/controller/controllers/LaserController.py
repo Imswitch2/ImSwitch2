@@ -252,6 +252,19 @@ class LaserController(ImConWidgetController):
         The scan module's TTL device list is the sole authority for emission. """
         for lName, _ in self._master.lasersManager:
             if lName not in deviceList:
+                # Only force off lasers the scan can actually drive via the
+                # DAQ (analog or digital channel). Pure RS232-controlled
+                # lasers (e.g. AA AOTF) never appear in deviceList and cannot
+                # be gated by the DAQ — leave them in the state the user set,
+                # otherwise every scan frame disables them.
+                info = self._setupInfo.lasers.get(lName)
+                hasDaqChannel = info is not None and (
+                    info.getAnalogChannel() is not None
+                    or info.getDigitalLine() is not None
+                )
+                if not hasDaqChannel:
+                    self._widget.setLaserEditable(lName, True)
+                    continue
                 # Disarm and force off lasers not participating in this scan
                 self._master.lasersManager[lName].setScanModeActive(False)
                 self._master.lasersManager[lName].setEnabled(False)
