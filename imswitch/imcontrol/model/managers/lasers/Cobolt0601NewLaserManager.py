@@ -69,13 +69,17 @@ class Cobolt0601NewLaserManager(LaserManager):
             super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0)
     
     def finalize(self):
-        """ Turn off laser """
-        if self._laser.is_on():
-            try:
-                self._laser.turn_off() # turn on laser
-            except Exception as e:
-                err = traceback.format_exc()
-                self.__logger.warning(f'Laser could not be turned off properly: {err}.')
+        """ Turn off laser — always attempt turn_off regardless of is_on(),
+        because l? is absent on older firmware and always returns False. """
+        try:
+            self._laser.pause_emission()   # safest first: gate off
+        except Exception:
+            pass
+        try:
+            self._laser.turn_off()
+        except Exception as e:
+            err = traceback.format_exc()
+            self.__logger.warning(f'Laser could not be turned off properly: {err}.')
 
     def setEnabled(self, enabled):  # toggle laser on or off
         if enabled:  # laser is toggled on
@@ -103,7 +107,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._laser.set_power(power)
             self.__logger.debug(f'Set power to: {power}')
 
-    def setScanModeActive(self, active,enabled=True):
+    def setScanModeActive(self, active):
         if not active:  # Come back to values set before scan
             self._digitalMod = False
             self._laser.constant_power()  # If laser should be disabled, turn off by setting scanmode to active -> modulation mode

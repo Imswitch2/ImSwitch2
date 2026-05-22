@@ -159,9 +159,10 @@ class LaserManager(ABC):
     def setModulationDutyCycle(self, dutyCycle: int) -> None:
         """ Sets the laser modulation duty cycle. """
 
-    def setScanModeActive(self, active: bool, enabled=True) -> None:
+    def setScanModeActive(self, active: bool) -> None:
         """ Sets whether the laser should be in scan mode (if the laser
-        supports it). """
+        supports it). The scan module's TTL device list is the sole
+        authority for which lasers emit during a scan. """
         pass
 
     def finalize(self) -> None:

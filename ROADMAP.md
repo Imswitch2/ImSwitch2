@@ -113,3 +113,88 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
   - Plan: create/remove layers dynamically based on active detector
   - Design doc: `docs/dynamic_layer_lifecycle_plan.md`
 
+## Milestone 9: Scanning & Galvo Modernization
+
+**Goal:** Make galvo scanning correct-by-construction and remove the manually
+tuned offsets and magic numbers, especially for fast scans.
+
+**Background — issues found during a 2026-05-22 code review:**
+
+- **Detector-sync defect.** `phase_delay` (galvo-lag compensation) is applied
+  *detector-side* by `APDManager`/`PMTManager` (they throw `phase_delay`
+  samples), but it is **never applied to `line_clock`** in
+  `AdvancedScanTTLCycleDesigner.__generate_all_clocks`. The
+  `SwabianTimeTaggerManager` keys its pixel markers off the physical
+  `line_clock` edges, so it is uncompensated. The two detector families are
+  therefore offset by `phase_delay` by construction — observed as APD vs.
+  TimeTagger structures shifted by ~a line.
+- **Linestep `line_clock` count bug.** `__generate_all_clocks` tiles
+  `line_clock` for physical `n_steps_dx[1]` (Ny), but an Advanced scan with
+  `S>1` linesteps has `Ny*S` line periods → too few edges when `S>1`.
+- **Inconsistent `phase_delay` default.** `APDManager` uses
+  `scanInfoDict.get('phase_delay', 0)`; `PMTManager` uses a hard key.
+- **Fast-axis line-start artifacts.** `GalvoScanDesigner.__d2scan_poly` /
+  `__init_positioning` / `__final_positioning` place acceleration fixed points
+  `dt_fix = 1e-2 µs` apart → effectively infinite jerk → excites galvo
+  resonance → ringing at the start of each line.
+- **Magic numbers.** `dt_fix`, `__paddingtime_full = 100`, `clock_len = 10`,
+  the hand-built 10-point `BPoly` — the trajectory is constructed
+  geometrically rather than derived from physical limits, and the gap to the
+  galvo's real motion is patched with the manual `phase_delay` fudge factor.
+
+**Plan:**
+
+- 🔄 **Jerk-limited raster (minimal fix — in progress).** Replace the magic
+  `dt_fix` with a finite jerk-transition time derived from a configurable
+  `jerk_max` physical limit. Opt-in / config-gated, default preserves current
+  behaviour. Pure trajectory math — unit-testable. Hardware verification
+  required before enabling. NOTE: `test_galvo_jerk_limit.py` is currently
+  skipped — it was written against a non-existent `ScanManagerBase` API
+  (`signalDictTwoScan`) and needs rewriting against `makeFullScan`.
+- ⬜ **Detector-sync fix.** Single source of truth for the scan-start offset:
+  apply `phase_delay` when generating `line_clock`/frame clocks in the TTL
+  designer; APD/PMT then stop throwing it. All detectors align by
+  construction. Fix the linestep edge count (`Ny*S`) and unify the
+  `phase_delay` default.
+- ⬜ **GalvoScanDesigner 2.0 — feedback-based pixel binning (Option A).** Galvo
+  exposes an analog position-feedback output; sample it synchronously and bin
+  photons by *measured* position instead of commanded position. Removes
+  `phase_delay` and the `scan_throw_*` magic numbers entirely — image geometry
+  becomes correct by measurement, at any scan speed.
+- ⬜ **Sinusoidal / bidirectional fast axis (Phase 2).** Once position binning
+  is proven with the raster trajectory, drive the fast axis as a pure sine
+  (gentlest on the mirror, real fast-scan speed) and resample from measured
+  position; optionally bidirectional for 2× throughput.
+- ⬜ **Auto-calibration routine.** Command a known sweep, capture position
+  feedback, cross-correlate → derive lag / transfer function automatically;
+  no hand-typed offsets.
+- ⬜ **Magic-number cleanup.** Promote `__paddingtime_full`, `clock_len`, etc.
+  to named, documented, physically meaningful config parameters.
+
+## Milestone 10: Recording Manager Upgrade
+
+**Goal:** Modernize `RecordingManager` and bring in the live-recording /
+live-reconstruction developments from upstream ImSwitch 1.
+
+**Background:** The upstream branch
+[`ImSwitch/ImSwitch@testalab_liveRec_dev`](https://github.com/ImSwitch/ImSwitch/tree/testalab_liveRec_dev)
+contains live-recording work (a ZARR streaming save path) and a larger
+`imreconstruct` live-reconstruction pipeline (Zarr stream/save/load/process
+workers + Gauss processor CPU/GPU + localizer/geometry models). As of
+2026-05-22 that branch is still WIP — commit history is prototyping-grade,
+4 files conflict with ImSwitch2's own divergence, and it carries debug noise
+and a stray `loc_parms.json` artifact.
+
+**Decision (2026-05-22):** Do **not** merge the branch now. Wait until the
+upstream work is in a finished state, then **port it deliberately** — re-introduce
+the intended functionality as clean, reviewed commits rather than merging WIP
+history. Drop debug logging, whitespace churn, and stray artifacts on the way
+in. The GPU path (`GaussProcessorGPU`) should be an optional extra.
+
+**Plan (deferred until upstream is ready):**
+
+- ⬜ Port the recording-side ZARR streaming save into `RecordingManager`.
+- ⬜ Port the `imreconstruct` live-reconstruction pipeline as a separate phase;
+  rename the `karl_*` packages to descriptive names; gate GPU behind an extra.
+- ⬜ Build further recording-manager improvements from that foundation.
+

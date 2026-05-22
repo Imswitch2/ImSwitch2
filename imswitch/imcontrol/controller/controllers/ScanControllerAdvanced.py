@@ -470,18 +470,10 @@ class ScanControllerAdvanced(SuperScanController):
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
-                sm = getattr(self._master, "scanManager", None)
-                if False:#sm is not None:
-                    out = sm.makeFullScan(self._analogParameterDict, self._digitalParameterDict, staticPositioner=False)
-                    if out is None:
-                        self.isRunning = False
-                        self.abortScan()
-                        return
-                    self.signalDict, self.scanInfoDict = out
-                else:
-                    self.signalDict, self.scanInfoDict = self._make_full_scan(
-                        self._analogParameterDict, self._digitalParameterDict
-                    )
+                # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+                self.signalDict, self.scanInfoDict = self._make_full_scan(
+                    self._analogParameterDict, self._digitalParameterDict
+                )
 
                 if self.signalDict is None:
                     self.isRunning = False

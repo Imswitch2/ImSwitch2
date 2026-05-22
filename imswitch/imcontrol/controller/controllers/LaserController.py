@@ -37,6 +37,9 @@ class LaserController(ImConWidgetController):
                 valueRangeStep if valueRangeStep is not None else None,
                 (lManager.freqRangeMin, lManager.freqRangeMax, lManager.freqRangeInit) if lManager.isModulated else (0, 0, 0),
             )
+            # Ensure laser/LED is off and at zero power on startup, regardless of
+            # hardware state left over from a previous session.
+            self._master.lasersManager[lName].setEnabled(False)
             if not lManager.isBinary:
                 self.valueChanged(lName, valueRangeMin)
 
@@ -77,6 +80,7 @@ class LaserController(ImConWidgetController):
     def closeEvent(self):
         self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
         self._master.lasersManager.execOnAll(lambda l: l.setValue(0))
+        self._master.lasersManager.execOnAll(lambda l: l.setEnabled(False))
 
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""
@@ -228,9 +232,8 @@ class LaserController(ImConWidgetController):
         self.is_scanning = isScanning
 
         for lName, _ in self._master.lasersManager:
-            enabled = self._widget.isLaserActive(lName)
             self._widget.setLaserEditable(lName, not isScanning)
-            self._master.lasersManager[lName].setScanModeActive(isScanning, enabled)
+            self._master.lasersManager[lName].setScanModeActive(isScanning)
         #self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(isScanning))
 
         defaultScanPresetName = self._setupInfo.defaultLaserPresetForScan
@@ -245,8 +248,16 @@ class LaserController(ImConWidgetController):
                 self.presetBeforeScan = None
 
     def scanBuilt(self, deviceList):
+        """ Force-disable lasers not in the scan's TTL device list.
+        The scan module's TTL device list is the sole authority for emission. """
         for lName, _ in self._master.lasersManager:
             if lName not in deviceList:
+                # Disarm and force off lasers not participating in this scan
+                self._master.lasersManager[lName].setScanModeActive(False)
+                self._master.lasersManager[lName].setEnabled(False)
+                # Sync the UI toggle silently so it reflects the forced-off
+                # hardware state without re-triggering toggleLaser.
+                self._widget.setLaserActive(lName, False, emitSignal=False)
                 self._widget.setLaserEditable(lName, True)
 
     def attrChanged(self, key, value):

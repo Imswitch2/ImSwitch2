@@ -3,7 +3,7 @@ import json
 import os
 import time
 from io import BytesIO
-from typing import Dict, Optional, Type
+from typing import Dict, List, Optional, Type, Union
 
 import h5py
 import zarr
@@ -18,6 +18,10 @@ import logging
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 
 logger = logging.getLogger(__name__)
+
+# Recording loop constants
+FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
+DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
 
 
 class AsTemporaryFile(object):
@@ -36,22 +40,109 @@ class AsTemporaryFile(object):
 
 
 class Storer(abc.ABC):
-    """ Base class for storing data"""
+    """Base class for storing detector data to disk.
+    
+    All storers use the (T, Y, X) axis convention:
+    - T: time/frame dimension
+    - Y: vertical image dimension (rows)
+    - X: horizontal image dimension (columns)
+    
+    This matches numpy array indexing and the _record streaming format.
+    No axis reversal or transposition is applied.
+    """
     def __init__(self, filepath, detectorManager):
         self.filepath = filepath
         self.detectorManager: DetectorsManager = detectorManager
 
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
-        """ Stores images and attributes according to the spec of the storer """
+    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
+        """Store snapshot images with metadata.
+        
+        Args:
+            images: Dict mapping detector name to image array (T, Y, X) or (Y, X)
+            attrs: Dict mapping detector name to flat metadata dict with ':'-separated keys
+        """
         raise NotImplementedError
 
-    def stream(self, data = None, **kwargs):
-        """ Stores data in a streaming fashion. """
+    # Streaming lifecycle for RecordingWorker
+    def openStream(self, fileDests: Dict[str, Union[str, 'BytesIO']], detectorNames: List[str],
+                   shapes: Dict[str, tuple], attrs: Dict[str, Dict[str, str]], *,
+                   singleMultiDetectorFile: bool, singleLapseFile: bool, saveMode) -> None:
+        """Initialize streaming recording session.
+        
+        Called once before frame acquisition starts. Opens files and prepares for streaming writes.
+        
+        Args:
+            fileDests: Dict mapping detector name to file path (str) or BytesIO for RAM mode
+            detectorNames: List of detector names to record
+            shapes: Dict mapping detector name to detector shape (Y, X)
+            attrs: Dict mapping detector name to flat metadata dict
+            singleMultiDetectorFile: Whether all detectors share one file
+            singleLapseFile: Whether lapse scans share one file with multiple datasets
+            saveMode: SaveMode enum value (Disk, RAM, DiskAndRAM)
+        """
         raise NotImplementedError
+
+    def writeFrames(self, detectorName: str, frames: np.ndarray) -> None:
+        """Write frame chunk to stream.
+        
+        Lazily creates dataset on first call (deriving dtype from frames).
+        Subsequent calls append to the dataset.
+        
+        Args:
+            detectorName: Name of detector
+            frames: Frame chunk array, shape (N, Y, X) or (Y, X)
+        """
+        raise NotImplementedError
+
+    def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
+                       recordingManager, saveMode) -> None:
+        """Finalize streaming session and emit signals.
+        
+        Called once after acquisition ends. Closes files, removes empty datasets,
+        and emits sigMemoryRecordingAvailable for RAM/DiskAndRAM modes.
+        
+        Args:
+            currentFrames: Dict mapping detector name to total frames written
+            filePaths: Dict mapping detector name to file path (for signal emission)
+            recordingManager: RecordingManager instance (for signal emission)
+            saveMode: SaveMode enum value
+        """
+        raise NotImplementedError
+    
+    @staticmethod
+    def _group_metadata_by_category(attrs: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+        """Group flat metadata by category prefix.
+        
+        Input attrs have keys like 'detector:exposure', 'lasers:laser1:power', 'uncategorized'.
+        Output groups by first component: {'detector': {'exposure': ...}, 'lasers': {'laser1:power': ...}}.
+        Keys without ':' go to the '' (empty string) category.
+        
+        Args:
+            attrs: Flat dict with ':'-separated keys
+            
+        Returns:
+            Dict mapping category to sub-dict of keys within that category
+        """
+        grouped = {}
+        for key, value in attrs.items():
+            if ':' in key:
+                category, _, rest = key.partition(':')
+            else:
+                category, rest = '', key
+            
+            if category not in grouped:
+                grouped[category] = {}
+            grouped[category][rest or key] = value
+        
+        return grouped
 
 
 class ZarrStorer(Storer):
-    """ A storer that stores the images in a zarr file store """
+    """A storer that stores the images in a zarr file store.
+    
+    Note: Streaming implementation preserves legacy behavior with hardcoded 'i2' dtype.
+    This is isolated for future migration to dtype-aware zarr.
+    """
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
         with AsTemporaryFile(f'{self.filepath}.zarr') as path:
             store = zarr.storage.DirectoryStore(path)
@@ -63,46 +154,415 @@ class ZarrStorer(Storer):
                                         chunks=(512, 512), dtype='i2') #TODO: why not dynamic chunking?
                 d.attrs["ImSwitchData"] = attrs[channel]
             logger.info(f"Saved image to zarr file {path}")
+    
+    def openStream(self, fileDests, detectorNames, shapes, attrs, *,
+                   singleMultiDetectorFile, singleLapseFile, saveMode):
+        """Initialize ZARR streaming session (legacy behavior preserved)."""
+        self._store = zarr.storage.DirectoryStore(list(fileDests.values())[0])
+        self._root = zarr.group(store=self._store, overwrite=True)
+        self._datasets = {}
+        self._attrs = attrs
+        self._shapes = shapes
+        self._currentFrames = {}
+        
+        # Create datasets up-front (legacy behavior)
+        for detectorName in detectorNames:
+            shape = shapes[detectorName]
+            if len(shape) > 2:
+                shape = shape[-2:]
+            
+            self._datasets[detectorName] = self._root.create_dataset(
+                detectorName, shape=(1, *reversed(shape)),
+                dtype='i2', chunks=(1, 512, 512)
+            )
+            self._datasets[detectorName].attrs['ImSwitchData'] = attrs[detectorName]
+            self._datasets[detectorName].attrs['detector_name'] = detectorName
+            self._datasets[detectorName].attrs['element_size_um'] = \
+                self.detectorManager[detectorName].pixelSizeUm
+            self._datasets[detectorName].attrs['writing'] = True
+            self._currentFrames[detectorName] = 0
+    
+    def writeFrames(self, detectorName, frames):
+        """Write frames to ZARR dataset (legacy append behavior)."""
+        if len(frames) == 0:
+            return
+        
+        dataset = self._datasets[detectorName]
+        it = self._currentFrames[detectorName]
+        
+        # Legacy behavior: first frame uses index 0, subsequent frames append
+        if it == 0:
+            dataset[0, :, :] = frames[0, :, :]
+            if len(frames) > 1:
+                dataset.append(frames[1:, :, :])
+        else:
+            dataset.append(frames)
+        
+        self._currentFrames[detectorName] += len(frames)
+    
+    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+        """Close ZARR store."""
+        for detectorName, dataset in self._datasets.items():
+            dataset.attrs['writing'] = False
+        self._store.close()
 
 
 class HDF5Storer(Storer):
-    """ A storer that stores the images in a series of hd5 files """
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
+    """Storer for HDF5 format with structured layout.
+    
+    Snapshot layout:
+        <file>.h5
+          @imswitch_version (future)
+          @timestamp
+          @rec_mode = 'snap'
+          <detectorName>/
+            data              # (T, Y, X) or (Y, X), dtype from frame, lzf compressed
+              @detector_name
+              @element_size_um
+            metadata/
+              <category>/     # e.g., 'detector', 'lasers', 'scan'
+                @key = value  # attrs within category
+    
+    Compression: lzf (fast, lossless) + shuffle filter by default.
+    """
+    
+    def __init__(self, filepath, detectorManager, compression='lzf'):
+        """Initialize HDF5 storer.
+        
+        Args:
+            filepath: Base path for output file (without extension)
+            detectorManager: DetectorsManager instance
+            compression: Compression filter ('lzf', 'gzip', None, or h5py compression spec)
+        """
+        super().__init__(filepath, detectorManager)
+        self.compression = compression
+
+    def _createDetectorGroup(self, h5file, detectorName, dtype, attrs, *,
+                             maxshape=None, data=None, groupPath=None):
+        """Create structured HDF5 detector group with data and metadata.
+
+        Creates the unified structured layout used by both snapshots and recordings:
+            <groupPath>/<detectorName>/data           - dataset with compression
+            <groupPath>/<detectorName>/metadata/      - grouped attributes
+
+        Args:
+            h5file: Open h5py.File
+            detectorName: Name of detector (used as group name)
+            dtype: Numpy dtype for data dataset
+            attrs: Flat dict of metadata attributes (with ':'-separated keys)
+            maxshape: If provided, creates extendable dataset (for streaming).
+                      Should be (None, Y, X) for time-extendable recordings.
+            data: If provided (and maxshape is None), creates fixed dataset from data.
+            groupPath: Optional parent path (e.g., 'scan0' for lapse files).
+                       Detector group created at <groupPath>/<detectorName>.
+
+        Returns:
+            dataset: The created data dataset (for further writes)
+        """
+        # Create group hierarchy
+        if groupPath:
+            if groupPath not in h5file:
+                parent = h5file.create_group(groupPath)
+            else:
+                parent = h5file[groupPath]
+            det_group = parent.create_group(detectorName)
+        else:
+            det_group = h5file.create_group(detectorName)
+
+        # Create data dataset
+        if maxshape is not None:
+            # Extendable dataset for streaming (start with 0 frames)
+            shape = maxshape[-2:]  # (Y, X)
+            dataset = det_group.create_dataset(
+                'data',
+                shape=(0, *shape),
+                maxshape=maxshape,
+                dtype=dtype,
+                compression=self.compression,
+                shuffle=True if self.compression else False,
+                chunks=(1, *shape)  # Per-frame chunks
+            )
+        else:
+            # Fixed dataset from data (snapshot)
+            if data is None:
+                raise ValueError("Must provide either maxshape or data")
+            # Ensure 3D: (T, Y, X)
+            if data.ndim == 2:
+                data = data[np.newaxis, ...]
+            chunks = (1, *data.shape[-2:]) if data.ndim >= 3 else True
+            dataset = det_group.create_dataset(
+                'data',
+                data=data,
+                dtype=dtype,
+                compression=self.compression,
+                shuffle=True if self.compression else False,
+                chunks=chunks
+            )
+
+        # Dataset-level metadata
+        dataset.attrs['detector_name'] = detectorName
+        dataset.attrs['element_size_um'] = self.detectorManager[detectorName].pixelSizeUm
+
+        # Group attrs by category and create metadata subgroups
+        grouped = self._group_metadata_by_category(attrs)
+
+        if grouped:
+            meta_group = det_group.create_group('metadata')
+            for category, cat_attrs in grouped.items():
+                if category:  # Non-empty category -> subgroup
+                    cat_group = meta_group.create_group(category)
+                    for key, value in cat_attrs.items():
+                        try:
+                            cat_group.attrs[key] = value
+                        except Exception as e:
+                            logger.debug(f'Could not save metadata {category}/{key}={value}: {e}')
+                else:  # Empty category -> flat in metadata group
+                    for key, value in cat_attrs.items():
+                        try:
+                            meta_group.attrs[key] = value
+                        except Exception as e:
+                            logger.debug(f'Could not save metadata {key}={value}: {e}')
+
+        return dataset
+
+    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
+        """Save snapshot with structured HDF5 layout.
+
+        Creates one file per detector with structured groups and lossless compression.
+        """
+        attrs = attrs or {}
+
         for channel, image in images.items():
             with AsTemporaryFile(f'{self.filepath}_{channel}.h5') as path:
-                file = h5py.File(path, 'w')
-                #image.sh = self.detectorManager[channel].shape # why not take image shape directly? LR
-                dataset = file.create_dataset('data', tuple(reversed(image.shape)), dtype='i2')
-                for key, value in attrs[channel].items():
-                    try:
-                        dataset.attrs[key] = value
-                    except Exception as e:
-                        logger.debug(f'Snap Error caught: Could not put key:value pair {key}:{value} in hdf5 metadata. Because of {e}')
+                with h5py.File(path, 'w') as file:
+                    # File-level metadata
+                    file.attrs['timestamp'] = time.time()
+                    file.attrs['rec_mode'] = 'snap'
 
-                dataset.attrs['detector_name'] = channel
+                    # Create structured detector group using shared helper
+                    channel_attrs = attrs.get(channel, {})
+                    self._createDetectorGroup(
+                        file, channel, image.dtype, channel_attrs,
+                        data=image
+                    )
 
-                # For ImageJ compatibility
-                dataset.attrs['element_size_um'] = \
-                    self.detectorManager[channel].pixelSizeUm
+                logger.info(f"Saved snapshot to {path} with structured HDF5 layout")
+    
+    def openStream(self, fileDests, detectorNames, shapes, attrs, *,
+                   singleMultiDetectorFile, singleLapseFile, saveMode):
+        """Initialize HDF5 streaming session."""
+        self._files = {}
+        self._datasets = {}
+        self._fileDests = fileDests
+        self._shapes = shapes
+        self._attrs = attrs
+        self._singleMultiDetectorFile = singleMultiDetectorFile
+        self._singleLapseFile = singleLapseFile
+        self._groupPaths = {}  # Track group paths for lapse files
+        self._saveMode = saveMode
 
-                if image.ndim == 3:
-                    dataset[:, ...] = np.moveaxis(image, [0, 1, 2], [2, 1, 0])
-                elif image.ndim == 4:
-                    dataset[:, ...] = np.moveaxis(image, [0, 1, 2, 3], [3, 2, 1, 0])
-                else:
-                    dataset[:, ...] = np.moveaxis(image, 0, -1)
+        # Temporarily disable compression for RAM mode (BytesIO) due to h5py instability
+        self._streamCompression = None if saveMode == SaveMode.RAM else self.compression
+
+        # Open HDF5 files
+        for detectorName in detectorNames:
+            if singleMultiDetectorFile and len(self._files) > 0:
+                # Reuse first file for all detectors
+                self._files[detectorName] = list(self._files.values())[0]
+            else:
+                # Open new file (append mode for lapse files, write mode otherwise)
+                mode = 'a' if singleLapseFile else 'w-'
+                # Let h5py automatically handle BytesIO (RAM mode) vs file paths (Disk mode)
+                self._files[detectorName] = h5py.File(fileDests[detectorName], mode)
+
+            # Determine group path for lapse files (structured: scan{N}/detector)
+            if singleLapseFile:
+                scanNum = 0
+                scanGroup = f'scan{scanNum}'
+                file = self._files[detectorName]
+                while scanGroup in file:
+                    scanNum += 1
+                    scanGroup = f'scan{scanNum}'
+                self._groupPaths[detectorName] = scanGroup
+            else:
+                self._groupPaths[detectorName] = None
+
+            # Dataset creation is LAZY - deferred until first writeFrames call
+
+    def writeFrames(self, detectorName, frames):
+        """Write frames to HDF5 dataset, lazily creating structured group on first call."""
+        if len(frames) == 0:
+            return
+
+        # Lazy dataset creation using structured layout
+        if detectorName not in self._datasets:
+            # Derive spatial dims from the frame arrays themselves. The detector
+            # .shape attribute is (X, Y) while frame arrays follow numpy's
+            # (n, Y, X) convention, so using _shapes here would mis-broadcast
+            # for non-square detectors.
+            spatialShape = frames.shape[-2:]
+
+            file = self._files[detectorName]
+            groupPath = self._groupPaths[detectorName]
+
+            # Temporarily override compression for streaming
+            original_compression = self.compression
+            self.compression = self._streamCompression
+            try:
+                dataset = self._createDetectorGroup(
+                    file, detectorName, frames.dtype, self._attrs[detectorName],
+                    maxshape=(None, *spatialShape),  # (None, Y, X)
+                    groupPath=groupPath
+                )
+            finally:
+                self.compression = original_compression
             
-                file.close()
-                logger.info(f"Saved image to hdf5 file {path}")
+            dataset.attrs['writing'] = True
+            self._datasets[detectorName] = dataset
+
+        # Append frames to structured dataset
+        dataset = self._datasets[detectorName]
+        currentSize = dataset.shape[0]
+        newSize = currentSize + len(frames)
+        dataset.resize(newSize, axis=0)
+        dataset[currentSize:newSize, :, :] = frames
+    
+    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+        """Close HDF5 files and emit signals."""
+        # Track unique files to avoid duplicate close (singleMultiDetectorFile mode)
+        processed_files = set()
         
+        for detectorName, file in self._files.items():
+            # Remove empty datasets (if no frames captured)
+            dataset = self._datasets.get(detectorName)
+            if dataset is not None and currentFrames[detectorName] < 1:
+                dataset.resize(0, axis=0)
+            
+            # Mark dataset as complete
+            if dataset is not None:
+                dataset.attrs['writing'] = False
+            
+            # Emit signal for each detector (even in singleMultiDetectorFile mode)
+            if saveMode == SaveMode.RAM or saveMode == SaveMode.DiskAndRAM:
+                filePath = filePaths[detectorName]
+                name = os.path.basename(filePath)
+                if saveMode == SaveMode.RAM:
+                    recordingManager.sigMemoryRecordingAvailable.emit(
+                        name, self._fileDests[detectorName], filePath, False
+                    )
+                else:  # DiskAndRAM
+                    recordingManager.sigMemoryRecordingAvailable.emit(
+                        name, file, filePath, True
+                    )
+            
+            # Only close/flush each unique file once (handles singleMultiDetectorFile mode)
+            file_id = id(file)
+            if file_id in processed_files:
+                continue
+            processed_files.add(file_id)
+            
+            if saveMode == SaveMode.RAM:
+                file.close()
+            elif saveMode == SaveMode.DiskAndRAM:
+                file.flush()
+            elif saveMode == SaveMode.Disk:
+                file.close()
+
 
 class TiffStorer(Storer):
-    """ A storer that stores the images in a series of tiff files """
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
+    """Storer for TIFF format with ImageJ-compatible metadata."""
+    
+    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
+        """Save snapshot as TIFF with ImageJ metadata.
+        
+        Uses tifffile's ImageJ mode for multi-frame compatibility.
+        Metadata is embedded as ImageJ metadata and custom TIFF tags.
+        """
+        attrs = attrs or {}
+        
         for channel, image in images.items():
             with AsTemporaryFile(f'{self.filepath}_{channel}.tiff') as path:
-                tiff.imwrite(path, image,) # TODO: Parse metadata to tiff meta data
-                logger.info(f"Saved image to tiff file {path}")
+                # Prepare metadata for ImageJ
+                channel_attrs = attrs.get(channel, {})
+                pixel_size_um = self.detectorManager[channel].pixelSizeUm[0]  # Assume square pixels
+                
+                # Build ImageJ-compatible metadata dict
+                metadata = {
+                    'axes': 'TYX' if image.ndim == 3 else 'YX',
+                    'unit': 'um',
+                    'spacing': pixel_size_um,
+                }
+                
+                # Add custom attrs as ImageJ metadata (will appear in ImageJ info window)
+                info_lines = [f'detector_name={channel}']
+                for key, value in channel_attrs.items():
+                    # Flatten ':'-separated keys for ImageJ display
+                    info_lines.append(f'{key}={value}')
+                metadata['Info'] = '\n'.join(info_lines)
+                
+                # Write TIFF with ImageJ metadata
+                tiff.imwrite(
+                    path,
+                    image,
+                    imagej=True,
+                    resolution=(1.0/pixel_size_um, 1.0/pixel_size_um),  # pixels per micron
+                    metadata=metadata
+                )
+                logger.info(f"Saved snapshot to {path} with ImageJ metadata")
+    
+    def openStream(self, fileDests, detectorNames, shapes, attrs, *,
+                   singleMultiDetectorFile, singleLapseFile, saveMode):
+        """Initialize TIFF streaming session."""
+        self._filenames = {}
+        self._basePaths = {}
+        self._partNumbers = {}
+
+        # Determine output file paths
+        for detectorName in detectorNames:
+            # TIFF files are created per-detector (no singleMultiDetectorFile support)
+            basePath = fileDests[detectorName]
+            self._basePaths[detectorName] = basePath
+            self._filenames[detectorName] = basePath
+            self._partNumbers[detectorName] = 1
+
+    def writeFrames(self, detectorName, frames):
+        """Write frames to TIFF file (append mode) with automatic >4GB rollover."""
+        if len(frames) == 0:
+            return
+
+        filePath = self._filenames[detectorName]
+        try:
+            tiff.imwrite(filePath, frames, append=True)
+        except ValueError as e:
+            # TIFF file exceeded 4GB limit - rollover to next part
+            logger.warning(f"TIFF file exceeded 4GB limit: {filePath}. Rolling over to next part.")
+
+            # Generate next part filename
+            basePath = self._basePaths[detectorName]
+            self._partNumbers[detectorName] += 1
+            partNum = self._partNumbers[detectorName]
+
+            # Insert _part{N} before extension
+            if basePath.endswith('.tiff'):
+                newPath = basePath[:-5] + f'_part{partNum}.tiff'
+            elif basePath.endswith('.tif'):
+                newPath = basePath[:-4] + f'_part{partNum}.tif'
+            else:
+                newPath = basePath + f'_part{partNum}.tiff'
+
+            self._filenames[detectorName] = newPath
+            logger.info(f"Continuing recording to: {newPath}")
+
+            # Write frames to new file (create mode, not append)
+            try:
+                tiff.imwrite(newPath, frames, append=False)
+            except Exception as write_error:
+                logger.error(f"Failed to write to rollover file {newPath}: {write_error}")
+    
+    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+        """TIFF files are automatically closed by tifffile. Nothing to finalize."""
+        # TIFF writes are direct to disk - no RAM mode or special cleanup needed
+        pass
 
 
 class SaveMode(enum.Enum):
@@ -130,6 +590,7 @@ class RecordingManager(SignalInterface):
     recordings of detector data. """
     sigRecordingStarted = Signal()
     sigRecordingEnded = Signal()
+    sigRecordingStalled = Signal(str)  # (detectorName) - emitted when watchdog detects zero-progress stall
     sigRecordingFrameNumUpdated = Signal(int)  # (frameNumber)
     sigRecordingTimeUpdated = Signal(int)  # (recTime)
     sigMemorySnapAvailable = Signal(
@@ -167,12 +628,18 @@ class RecordingManager(SignalInterface):
 
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
-                       recFrames=None, recTime=None, numCamTTL = None):
+                       recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
         and in SpecTime mode, recTime (the recording time in seconds) must be
-        specified. """
+        specified.
+        
+        Args:
+            stallTimeout: Maximum seconds without frame progress before aborting
+                         (None uses DEFAULT_STALL_TIMEOUT). Watchdog only applies
+                         to streaming recording, not snap().
+        """
 
         self.__logger.info('Starting recording')
         self.__record = True
@@ -187,6 +654,7 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.recTime = recTime
         self.__recordingWorker.singleMultiDetectorFile = singleMultiDetectorFile
         self.__recordingWorker.singleLapseFile = singleLapseFile
+        self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
         self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
                                           condition=lambda c: c.forAcquisition)
         self.__thread.start()
@@ -241,35 +709,22 @@ class RecordingManager(SignalInterface):
                 return images
 
     def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs):
-        """ Saves a previously taken image to a file with the specified name prefix,
-        file format and attributes to save to the capture per detector. """
-        fileExtension = str(saveFormat.name).lower()
-        filePath = self.getSaveFilePath(f'{savename}_{detectorName}.{fileExtension}')
-
-        # Write file
-        if saveFormat == SaveFormat.HDF5:
-            file = h5py.File(filePath, 'w')
-
-            shape = image.shape
-            dataset = file.create_dataset('data', tuple(reversed(shape)), dtype='i2')
-
-            for key, value in attrs[detectorName].items():
-                try:
-                    dataset.attrs[key] = value
-                except Exception as e:
-                    self.__logger.debug(f'Could not put key:value pair {key}:{value} in hdf5 metadata: {e}')
-
-            dataset.attrs['detector_name'] = detectorName
-
-            # For ImageJ compatibility
-            dataset.attrs['element_size_um'] = \
-                self.__detectorsManager[detectorName].pixelSizeUm
-
-            dataset[:, ...] = np.moveaxis(image, 0, -1)
-            file.close()
-        elif saveFormat == SaveFormat.TIFF:
-            tiff.imwrite(filePath, image)
-        elif saveFormat == SaveFormat.ZARR:
+        """Save a previously captured image using the appropriate Storer.
+        
+        Routes through Storer.snap() for unified snapshot saving logic.
+        This ensures consistent file format, metadata structure, and axis ordering
+        between snap() and snapImagePrev().
+        
+        Args:
+            detectorName: Name of the detector
+            savename: Base filename (without extension)
+            saveFormat: SaveFormat enum value
+            image: Image array to save (T, Y, X) or (Y, X)
+            attrs: Dict mapping detector name to flat metadata dict
+        """
+        if saveFormat == SaveFormat.ZARR:
+            # ZARR kept as-is (deferred - will be unified in upstream merge)
+            fileExtension = str(saveFormat.name).lower()
             path = self.getSaveFilePath(f'{savename}.{fileExtension}')
             store = zarr.storage.DirectoryStore(path)
             root = zarr.group(store=store)
@@ -279,7 +734,13 @@ class RecordingManager(SignalInterface):
             d.attrs["ImSwitchData"] = attrs[detectorName]
             store.close()
         else:
-            raise ValueError(f'Unsupported save format "{saveFormat}"')
+            # Route through Storer for HDF5 and TIFF
+            storer = self.__storerMap[saveFormat]
+            store = storer(savename, self.__detectorsManager)
+            
+            # Wrap single detector in dict for storer interface
+            images = {detectorName: image}
+            store.snap(images, attrs)
 
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
@@ -313,290 +774,38 @@ class RecordingWorker(Worker):
 
         finally:
             self.__recordingManager.detectorsManager.stopAcquisition(acqHandle)
-
-    def _record(self):
-        if self.saveFormat == SaveFormat.HDF5 or self.saveFormat == SaveFormat.ZARR:
-            files, fileDests, filePaths = self._getFiles()
-
-        shapes = {detectorName: self.__recordingManager.detectorsManager[detectorName].shape
-                  for detectorName in self.detectorNames}
-
-        currentFrame = {}
-        datasets = {}
-        filenames = {}
-        for detectorName in self.detectorNames:
-            currentFrame[detectorName] = 0
-
-            datasetName = detectorName
-            if self.recMode == RecMode.ScanLapse and self.singleLapseFile:
-                # Add scan number to dataset name
-                scanNum = 0
-                datasetNameWithScan = f'{datasetName}_scan{scanNum}'
-                while datasetNameWithScan in files[detectorName]:
-                    scanNum += 1
-                    datasetNameWithScan = f'{datasetName}_scan{scanNum}'
-                datasetName = datasetNameWithScan
-
-            # Initial number of frames must not be 0; otherwise, too much disk space may get
-            # allocated. We remove this default frame later on if no frames are captured.
-            shape = shapes[detectorName]
-            if len(shape) > 2:
-                shape = shape[-2:]
-
-            if self.saveFormat == SaveFormat.HDF5:
-                # Initial number of frames must not be 0; otherwise, too much disk space may get
-                # allocated. We remove this default frame later on if no frames are captured.
-                datasets[detectorName] = files[detectorName].create_dataset(
-                    datasetName, (1, *reversed(shape)),
-                    maxshape=(None, *reversed(shape)),
-                    dtype='i2'
-                )
-
-                for key, value in self.attrs[detectorName].items():
-                    try:
-                        if isinstance(value, dict):
-                            datasets[detectorName].attrs[key] = json.dumps(value)
-                        else:
-                            datasets[detectorName].attrs[key] = value
-                    except Exception as e:
-                        self.__logger.error(f"Error saving {key} {value} to Hdf5: {e}")
-                datasets[detectorName].attrs['detector_name'] = detectorName
-
-                # For ImageJ compatibility
-                datasets[detectorName].attrs['element_size_um'] \
-                    = self.__recordingManager.detectorsManager[detectorName].pixelSizeUm
-                datasets[detectorName].attrs['writing'] = True
-
-            elif self.saveFormat == SaveFormat.TIFF:
-                fileExtension = str(self.saveFormat.name).lower()
-                filenames[detectorName] = self.__recordingManager.getSaveFilePath(
-                    f'{self.savename}_{detectorName}.{fileExtension}', False, False)
-
-            elif self.saveFormat == SaveFormat.ZARR:
-                datasets[detectorName] = files[detectorName].create_dataset(datasetName, shape=(1, *reversed(shape)),
-                                                                            dtype='i2', chunks=(1, 512, 512)
-                                                                            )
-
-                datasets[detectorName].attrs['ImSwitchData'] = self.attrs[detectorName]
-                datasets[detectorName].attrs['detector_name'] = detectorName
-                # For ImageJ compatibility
-                datasets[detectorName].attrs['element_size_um'] \
-                    = self.__recordingManager.detectorsManager[detectorName].pixelSizeUm
-                datasets[detectorName].attrs['writing'] = True
-
-        self.__recordingManager.sigRecordingStarted.emit()
-        try:
-            if len(self.detectorNames) < 1:
-                raise ValueError('No detectors to record specified')
-            
-            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
-                recFrames = self.recFrames
-                if recFrames is None:
-                    raise ValueError('recFrames must be specified in SpecFrames, ScanOnce or'
-                                     ' ScanLapse mode')
-
-                # calculate total number offrames for each detector (recFrames * number of TTL)
-                numCamTTL = self.numCamTTL if self.numCamTTL is not None else {}
-                nFramesPerDetector = {}
-                for detectorName in self.detectorNames:
-                    nFramesPerDetector[detectorName] = recFrames * numCamTTL.get(detectorName, 1) 
-                maxFrames = max(nFramesPerDetector.values())
-                # print(f"Aiming to capture {maxFrames} Frames", nFramesPerDetector, recFrames)
-
-                while (self.__recordingManager.record and
-                       any([currentFrame[detectorName] < maxFrames
-                            for detectorName in self.detectorNames])):
-                    for detectorName in self.detectorNames:
-                        nFrames = nFramesPerDetector[detectorName]
-                        if currentFrame[detectorName] >= nFrames:
-                            continue  # Reached requested number of frames with this detector, skip
-
-                        newFrames = self._getNewFrames(detectorName)
-                        n = len(newFrames)
-                        if n > 0:
-                            it = currentFrame[detectorName]
-                            if self.saveFormat == SaveFormat.TIFF:
-                                try:
-                                    filePath = filenames[detectorName]
-                                    tiff.imwrite(filePath, newFrames, append=True)
-                                except ValueError:
-                                    self.__logger.error("TIFF File exceeded 4GB.")
-                                    if self.saveFormat == SaveFormat.TIFF:
-                                        filePath = self.__recordingManager.getSaveFilePath(
-                                            f'{self.savename}_{detectorName}.{fileExtension}', False, False)
-                                        continue
-                            elif self.saveFormat == SaveFormat.HDF5:
-                                dataset = datasets[detectorName]
-                                if (it + n) <= nFrames:
-                                    dataset.resize(n + it, axis=0)
-                                    dataset[it:it + n, :, :] = newFrames
-                                    currentFrame[detectorName] += n
-                                else:
-                                    dataset.resize(nFrames, axis=0)
-                                    dataset[it:nFrames, :, :] = newFrames[0:nFrames - it]
-                                    currentFrame[detectorName] = nFrames
-                            elif self.saveFormat == SaveFormat.ZARR:
-                                dataset = datasets[detectorName]
-                                if it == 0:
-                                    dataset[0, :, :] = newFrames[0, :, :]
-                                    if n > 0:
-                                        dataset.append(newFrames[1:n, :, :])
-                                else:
-                                    dataset.append(newFrames)
-                                currentFrame[detectorName] += n
-
-                            # Things get a bit weird if we have multiple detectors when we report
-                            # the current frame number, since the detectors may not be synchronized.
-                            # For now, we will report the lowest number.
-                            self.__recordingManager.sigRecordingFrameNumUpdated.emit(
-                                min(list(currentFrame.values()))
-                            )
-                    time.sleep(0.0001)  # Prevents freezing for some reason
-
-                self.__recordingManager.sigRecordingFrameNumUpdated.emit(0)
-            elif self.recMode == RecMode.SpecTime:
-                recTime = self.recTime
-                if recTime is None:
-                    raise ValueError('recTime must be specified in SpecTime mode')
-
-                start = time.time()
-                currentRecTime = 0
-                shouldStop = False
-                while True:
-                    for detectorName in self.detectorNames:
-                        newFrames = self._getNewFrames(detectorName)
-                        n = len(newFrames)
-                        if n > 0:
-                            if self.saveFormat == SaveFormat.TIFF:
-                                try:
-                                    filePath = filenames[detectorName]
-                                    tiff.imwrite(filePath, newFrames, append=True)
-                                except ValueError:
-                                    self.__logger.error("TIFF File exceeded 4GB.")
-                                    if self.saveFormat == SaveFormat.TIFF:
-                                        filePath = self.__recordingManager.getSaveFilePath(
-                                            f'{self.savename}_{detectorName}.{fileExtension}', False, False)
-                                        continue
-                            elif self.saveFormat == SaveFormat.HDF5 or self.saveFormat == SaveFormat.ZARR:
-                                it = currentFrame[detectorName]
-                                dataset = datasets[detectorName]
-                                dataset.resize(n + it, axis=0)
-                                dataset[it:it + n, :, :] = newFrames
-                            currentFrame[detectorName] += n
-                            self.__recordingManager.sigRecordingTimeUpdated.emit(
-                                np.around(currentRecTime, decimals=2)
-                            )
-                            currentRecTime = time.time() - start
-
-                    if shouldStop:
-                        break  # Enter loop one final time, then stop
-
-                    if not self.__recordingManager.record or currentRecTime >= recTime:
-                        shouldStop = True
-
-                    time.sleep(0.0001)  # Prevents freezing for some reason
-
-                self.__recordingManager.sigRecordingTimeUpdated.emit(0)
-            elif self.recMode == RecMode.UntilStop:
-                shouldStop = False
-                while True:
-                    for detectorName in self.detectorNames:
-                        newFrames = self._getNewFrames(detectorName)
-                        n = len(newFrames)
-                        if n > 0:
-                            if self.saveFormat == SaveFormat.TIFF:
-                                try:
-                                    filePath = filenames[detectorName]
-                                    tiff.imwrite(filePath, newFrames, append=True)
-                                except ValueError:
-                                    self.__logger.error("TIFF File exceeded 4GB.")
-                                    if self.saveFormat == SaveFormat.TIFF:
-                                        filePath = self.__recordingManager.getSaveFilePath(
-                                            f'{self.savename}_{detectorName}.{fileExtension}', False, False)
-                                        continue
-
-                            elif self.saveFormat == SaveFormat.HDF5:
-                                it = currentFrame[detectorName]
-                                dataset = datasets[detectorName]
-                                dataset.resize(n + it, axis=0)
-                                dataset[it:it + n, :, :] = newFrames
-
-                            elif self.saveFormat == SaveFormat.ZARR:
-                                it = currentFrame[detectorName]
-                                dataset = datasets[detectorName]
-                                if it == 0:
-                                    dataset[0, :, :] = newFrames[0, :, :]
-                                    if n > 0:
-                                        dataset.append(newFrames[1:n, :, :])
-                                else:
-                                    dataset.append(newFrames)
-
-                            currentFrame[detectorName] += n
-
-                    if shouldStop:
-                        break
-
-                    if not self.__recordingManager.record:
-                        shouldStop = True  # Enter loop one final time, then stop
-
-                    time.sleep(0.0001)  # Prevents freezing for some reason
-            else:
-                raise ValueError('Unsupported recording mode specified')
-        finally:
-
-            if self.saveFormat == SaveFormat.HDF5 or self.saveFormat == SaveFormat.ZARR:
-                for detectorName, file in files.items():
-                    # Remove default frame if no frames have been captured
-                    if currentFrame[detectorName] < 1:
-                        if self.saveFormat == SaveFormat.HDF5:
-                            datasets[detectorName].resize(0, axis=0)
-
-                    # Handle memory recordings
-                    if self.saveMode == SaveMode.RAM or self.saveMode == SaveMode.DiskAndRAM:
-                        filePath = filePaths[detectorName]
-                        name = os.path.basename(filePath)
-                        if self.saveMode == SaveMode.RAM:
-                            file.close()
-                            self.__recordingManager.sigMemoryRecordingAvailable.emit(
-                                name, fileDests[detectorName], filePath, False
-                            )
-                        else:
-                            file.flush()
-                            self.__recordingManager.sigMemoryRecordingAvailable.emit(
-                                name, file, filePath, True
-                            )
-                    else:
-                        datasets[detectorName].attrs['writing'] = False
-                        if self.saveFormat == SaveFormat.HDF5:
-                            file.close()
-                        else:
-                            self.store.close()
-            emitSignal = True
-            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
-                emitSignal = False
-            self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
-
-    def _getFiles(self):
+    
+    def _getFileDests(self):
+        """Prepare file destinations and paths for streaming."""
         singleMultiDetectorFile = self.singleMultiDetectorFile
         singleLapseFile = self.recMode == RecMode.ScanLapse and self.singleLapseFile
-
-        files = {}
+        
         fileDests = {}
         filePaths = {}
-        extension = 'hdf5' if self.saveFormat == SaveFormat.HDF5 else 'zarr'
-
+        
+        if self.saveFormat == SaveFormat.TIFF:
+            extension = 'tiff'
+        elif self.saveFormat == SaveFormat.HDF5:
+            extension = 'hdf5'
+        elif self.saveFormat == SaveFormat.ZARR:
+            extension = 'zarr'
+        else:
+            raise ValueError(f'Unsupported save format: {self.saveFormat}')
+        
+        # Determine file paths
         for detectorName in self.detectorNames:
-            if singleMultiDetectorFile:
+            if singleMultiDetectorFile and self.saveFormat != SaveFormat.TIFF:
                 baseFilePath = f'{self.savename}.{extension}'
             else:
                 baseFilePath = f'{self.savename}_{detectorName}.{extension}'
-
+            
             filePaths[detectorName] = self.__recordingManager.getSaveFilePath(
                 baseFilePath,
                 allowOverwriteDisk=singleLapseFile and self.saveMode != SaveMode.RAM,
                 allowOverwriteMem=singleLapseFile and self.saveMode == SaveMode.RAM
             )
-
+        
+        # Determine file destinations (path or BytesIO)
         for detectorName in self.detectorNames:
             if self.saveMode == SaveMode.RAM:
                 memRecordings = self.__recordingManager._memRecordings
@@ -606,18 +815,165 @@ class RecordingWorker(Worker):
                 fileDests[detectorName] = memRecordings[filePaths[detectorName]]
             else:
                 fileDests[detectorName] = filePaths[detectorName]
+        
+        return fileDests, filePaths
 
-            if singleMultiDetectorFile and len(files) > 0:
-                files[detectorName] = list(files.values())[0]
-            else:
-                if self.saveFormat == SaveFormat.HDF5:
-                    files[detectorName] = h5py.File(fileDests[detectorName],
-                                                    'a' if singleLapseFile else 'w-')
-                elif self.saveFormat == SaveFormat.ZARR:
-                    self.store = zarr.storage.DirectoryStore(fileDests[detectorName])
-                    files[detectorName] = zarr.group(store=self.store, overwrite=True)
-
-        return files, fileDests, filePaths
+    def _record(self):
+        """Unified streaming recording loop delegating all I/O to Storer.
+        
+        Collapses recMode branches into a single loop with stop-condition predicates.
+        """
+        # Validate inputs
+        if len(self.detectorNames) < 1:
+            raise ValueError('No detectors to record specified')
+        
+        # Prepare file destinations
+        fileDests, filePaths = self._getFileDests()
+        
+        # Get detector shapes
+        shapes = {detectorName: self.__recordingManager.detectorsManager[detectorName].shape
+                  for detectorName in self.detectorNames}
+        
+        # Initialize storer for streaming
+        storerClass = self.__recordingManager._RecordingManager__storerMap[self.saveFormat]
+        storer = storerClass(self.savename, self.__recordingManager.detectorsManager)
+        
+        # Frame counters and stall watchdog timestamps
+        currentFrame = {detectorName: 0 for detectorName in self.detectorNames}
+        lastFrameTime = {detectorName: time.time() for detectorName in self.detectorNames}
+        
+        # Prepare shapes for storer
+        for detectorName in shapes:
+            shape = shapes[detectorName]
+            if len(shape) > 2:
+                shapes[detectorName] = shape[-2:]
+        
+        # Open streaming session
+        storer.openStream(
+            fileDests=fileDests,
+            detectorNames=self.detectorNames,
+            shapes=shapes,
+            attrs=self.attrs,
+            singleMultiDetectorFile=self.singleMultiDetectorFile,
+            singleLapseFile=self.recMode == RecMode.ScanLapse and self.singleLapseFile,
+            saveMode=self.saveMode
+        )
+        
+        # Determine stop condition based on recMode
+        if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+            recFrames = self.recFrames
+            if recFrames is None:
+                raise ValueError('recFrames must be specified in SpecFrames, ScanOnce or ScanLapse mode')
+            
+            # Calculate total number of frames for each detector (recFrames * number of TTL)
+            numCamTTL = self.numCamTTL if self.numCamTTL is not None else {}
+            nFramesPerDetector = {
+                detectorName: recFrames * numCamTTL.get(detectorName, 1)
+                for detectorName in self.detectorNames
+            }
+            
+            def should_stop():
+                return not any(currentFrame[det] < nFramesPerDetector[det]
+                               for det in self.detectorNames)
+        
+        elif self.recMode == RecMode.SpecTime:
+            recTime = self.recTime
+            if recTime is None:
+                raise ValueError('recTime must be specified in SpecTime mode')
+            
+            startTime = time.time()
+            
+            def should_stop():
+                return (time.time() - startTime) >= recTime
+        
+        elif self.recMode == RecMode.UntilStop:
+            def should_stop():
+                return False  # Only external record flag stops this mode
+        
+        else:
+            raise ValueError('Unsupported recording mode specified')
+        
+        # Unified acquisition loop
+        self.__recordingManager.sigRecordingStarted.emit()
+        shouldStopNext = False
+        try:
+            while self.__recordingManager.record and not shouldStopNext:
+                for detectorName in self.detectorNames:
+                    # Skip detector if it has reached its frame target
+                    if (self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse] and
+                            currentFrame[detectorName] >= nFramesPerDetector[detectorName]):
+                        continue
+                    
+                    # Get new frames
+                    newFrames = self._getNewFrames(detectorName)
+                    n = len(newFrames)
+                    if n > 0:
+                        # Clip frames if needed for SpecFrames mode
+                        if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                            remaining = nFramesPerDetector[detectorName] - currentFrame[detectorName]
+                            if n > remaining:
+                                newFrames = newFrames[:remaining]
+                                n = remaining
+                        
+                        # Delegate write to storer
+                        storer.writeFrames(detectorName, newFrames)
+                        currentFrame[detectorName] += n
+                        lastFrameTime[detectorName] = time.time()  # Update watchdog timestamp
+                
+                # Emit progress signals based on recMode
+                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                    # Report the lowest frame number (for multi-detector)
+                    self.__recordingManager.sigRecordingFrameNumUpdated.emit(
+                        min(list(currentFrame.values()))
+                    )
+                elif self.recMode == RecMode.SpecTime:
+                    currentRecTime = time.time() - startTime
+                    self.__recordingManager.sigRecordingTimeUpdated.emit(
+                        np.around(currentRecTime, decimals=2)
+                    )
+                
+                # Check for stalled detectors (only for modes with frame targets)
+                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                    now = time.time()
+                    for detectorName in self.detectorNames:
+                        # Skip detectors that have already reached their target
+                        if currentFrame[detectorName] >= nFramesPerDetector[detectorName]:
+                            continue
+                        
+                        elapsed = now - lastFrameTime[detectorName]
+                        if elapsed > self.stallTimeout:
+                            # Stall detected - log diagnostics and abort
+                            self.__logger.error(
+                                f"Detector '{detectorName}' stalled: no frames received for {elapsed:.1f}s "
+                                f"(timeout: {self.stallTimeout}s). Current: {currentFrame[detectorName]} frames, "
+                                f"expected: {nFramesPerDetector[detectorName]} frames. "
+                                f"Check camera triggering and numCamTTL configuration."
+                            )
+                            self.__recordingManager.sigRecordingStalled.emit(detectorName)
+                            shouldStopNext = True
+                            break
+                
+                # Check stop condition
+                if should_stop():
+                    shouldStopNext = True
+                
+                time.sleep(FRAME_POLL_INTERVAL)  # Yield to event loop to prevent UI freezing
+            
+            # Reset progress signals
+            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                self.__recordingManager.sigRecordingFrameNumUpdated.emit(0)
+            elif self.recMode == RecMode.SpecTime:
+                self.__recordingManager.sigRecordingTimeUpdated.emit(0)
+        
+        finally:
+            # Finalize streaming (close files, emit signals)
+            storer.finalizeStream(currentFrame, filePaths, self.__recordingManager, self.saveMode)
+            
+            # End recording
+            emitSignal = True
+            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                emitSignal = False
+            self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
 
     def _getNewFrames(self, detectorName):
         newFrames = self.__recordingManager.detectorsManager[detectorName].getChunk()
