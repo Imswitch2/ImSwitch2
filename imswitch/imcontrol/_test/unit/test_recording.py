@@ -54,7 +54,11 @@ def test_recording_spec_frames(qtbot, detectorInfos, numFrames):
 
     for detectorName, file in filePerDetector.items():
         h5pyFile = h5py.File(file)
-        dataset = h5pyFile.get(detectorName)
+        # Phase 4: structured layout - dataset at /<detector>/data
+        detector_group = h5pyFile.get(detectorName)
+        assert detector_group is not None, f"Detector group '{detectorName}' not found"
+        dataset = detector_group.get('data')
+        assert dataset is not None, f"Data dataset not found in group '{detectorName}'"
         assert dataset.shape[0] == numFrames
         h5pyFile.close()  # Otherwise we can get segfaults
         file.close()  # Otherwise we can get segfaults
@@ -268,6 +272,75 @@ def test_snap_axis_ordering():
             assert saved_data[0, :, 0].sum() == 100  # First column of frame 0
             assert saved_data[1, 0, :].sum() == 100  # First row of frame 1
             assert saved_data[2, :, :].sum() == 3 * 100 * 50  # All of frame 2
+
+
+def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
+    """Test that the stall watchdog detects and aborts recordings when no frames arrive."""
+    import time
+    import logging
+    
+    # Use basic detector configuration
+    detectorInfos = detectorInfosBasic
+    detectorsManager = DetectorsManager(detectorInfos, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    
+    # Mock the detector's getChunk method to return no frames (simulating a stalled camera)
+    detectorName = list(detectorInfos.keys())[0]
+    original_getChunk = detectorsManager[detectorName].getChunk
+    def mock_getChunk():
+        return []  # Return empty list to simulate no frames arriving
+    monkeypatch.setattr(detectorsManager[detectorName], 'getChunk', mock_getChunk)
+    
+    # Track signals
+    stalled_detector = None
+    
+    def on_stalled(detector_name):
+        nonlocal stalled_detector
+        stalled_detector = detector_name
+    
+    recordingManager.sigRecordingStalled.connect(on_stalled)
+    
+    # Start recording with a very short stall timeout
+    short_timeout = 0.5  # 0.5 seconds for faster test
+    start_time = time.time()
+    
+    with caplog.at_level(logging.ERROR):
+        recordingManager.startRecording(
+            detectorNames=[detectorName],
+            recMode=RecMode.SpecFrames,
+            savename='test_stall',
+            saveMode=SaveMode.RAM,
+            attrs={detectorName: {}},
+            recFrames=100,  # Request many frames that will never arrive
+            stallTimeout=short_timeout
+        )
+        
+        # Wait for stall signal with a reasonable timeout (stall timeout + margin)
+        try:
+            with qtbot.waitSignal(recordingManager.sigRecordingStalled, timeout=int((short_timeout + 2) * 1000)):
+                pass
+        except Exception:
+            # If signal not emitted, the test will check the state below
+            pass
+    
+    elapsed = time.time() - start_time
+    
+    # Verify the watchdog triggered
+    assert stalled_detector is not None, "Stall signal should have been emitted"
+    assert stalled_detector == detectorName, f"Stalled detector '{stalled_detector}' should match '{detectorName}'"
+    
+    # Verify error was logged
+    error_logs = [r for r in caplog.records if r.levelno == logging.ERROR and 'stalled' in r.message]
+    assert len(error_logs) > 0, "Expected ERROR log message about stall"
+    assert 'no frames received' in error_logs[0].message
+    
+    # Verify it triggered within reasonable time (stall timeout + some margin for processing)
+    assert elapsed >= short_timeout, f"Watchdog triggered too early: {elapsed:.2f}s < {short_timeout}s"
+    assert elapsed < short_timeout + 2, f"Watchdog took too long: {elapsed:.2f}s > {short_timeout + 2}s"
+    
+    # Verify recording ended cleanly (thread not hung)
+    qtbot.wait(200)  # Small delay to let thread finish
+    assert not recordingManager.record, "Recording should have stopped after stall"
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
