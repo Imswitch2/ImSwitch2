@@ -8,6 +8,17 @@ import pytest
 from typing import Dict, Any
 from imswitch.imcontrol.model.WidgetStatePersistence import WidgetStatePersistence
 
+# These tests were written against an API that does not exist: they construct
+# WidgetStatePersistence(state_dir=...), but the real __init__ takes no args
+# and uses a fixed state directory. All 22 fail at first contact. Skipped
+# until rewritten against the real API (register / saveWidgetState /
+# loadWidgetState / saveAllWidgetStates, with _stateDir monkeypatched to a
+# tmp dir). Tracked in ROADMAP.md.
+pytestmark = pytest.mark.skip(
+    reason="Written against a non-existent WidgetStatePersistence(state_dir=...) "
+           "constructor; needs rewrite against the real API."
+)
+
 
 class MockController:
     """Mock controller implementing state persistence interface"""
