@@ -60,10 +60,10 @@ class NidaqLaserManager(LaserManager):
     def setScanModeActive(self, active):
         if active:
             self.setEnabled(False)
-        # Exiting scan mode: restore to off state. Controller manages re-enable if needed.
         else:
-            self.setValue(0, True)
-            self.setEnabled(True)
+            # Scan end: zero the output and leave the laser off. The scan
+            # module owns laser emission; the manager must never force ON.
+            self.setValue(0)
 
     def create_lut_from_calib(self, calib_csv_path):
         data = np.loadtxt(calib_csv_path)
