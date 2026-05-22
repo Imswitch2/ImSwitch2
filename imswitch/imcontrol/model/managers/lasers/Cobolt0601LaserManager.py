@@ -19,10 +19,10 @@ class Cobolt0601LaserManager(LantzLaserManager):
                          driver='cobolt.cobolt0601.Cobolt0601_f2', **_lowLevelManagers)
 
         self._digitalMod = False
+        self._laser.enabled = False      # l0 first — ensure laser is off before any mode changes
         self._laser.digital_mod = False  # sdmes 0 — disable TTL gate
         self._laser.query('cp')          # enter constant-power mode (known clean state)
         self._laser.mode = 'APC'
-        self._laser.enabled = False
         self._laser.autostart = False
 
     def setEnabled(self, enabled):
@@ -36,14 +36,16 @@ class Cobolt0601LaserManager(LantzLaserManager):
         else:
             self._setBasicPower(power)
 
-    def setScanModeActive(self, active, enabled=True):
+    def setScanModeActive(self, active):
         if active:
             powerQ = self._laser.power_sp * self._numLasers
+            self.__logger.debug(f'setScanModeActive → active, powerQ={powerQ:.3f} mW, gam={self._laser._safe_query("gam?")}')
             self._laser.enter_mod_mode()   # em — enter modulation mode
+            self.__logger.debug(f'  after em: gam={self._laser._safe_query("gam?")}')
             self._laser.digital_mod = True # sdmes 1 — enable TTL gate
+            self.__logger.debug(f'  after sdmes 1: gdmes={self._laser._safe_query("gdmes?")}')
             self._setModPower(powerQ)      # slmp X — power when TTL is HIGH
-            #self.__logger.debug('Entered digital modulation mode')
-            #self.__logger.debug(f'Modulation mode is: {self._laser.mod_mode}')
+            self.__logger.debug(f'  after slmp: glmp={self._laser._safe_query("glmp?")}')
         else:
             self._laser.digital_mod = False
             # we go back to the mode before the scan
@@ -51,7 +53,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
                 self._laser.query('ci')
             else:
                 self._laser.query('cp')
-            #self.__logger.debug('Exited digital modulation mode')
+            self.__logger.debug('setScanModeActive → inactive, returned to CP/CC')
 
         self._digitalMod = active
 

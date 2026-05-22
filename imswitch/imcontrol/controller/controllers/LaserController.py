@@ -37,6 +37,9 @@ class LaserController(ImConWidgetController):
                 valueRangeStep if valueRangeStep is not None else None,
                 (lManager.freqRangeMin, lManager.freqRangeMax, lManager.freqRangeInit) if lManager.isModulated else (0, 0, 0),
             )
+            # Ensure laser/LED is off and at zero power on startup, regardless of
+            # hardware state left over from a previous session.
+            self._master.lasersManager[lName].setEnabled(False)
             if not lManager.isBinary:
                 self.valueChanged(lName, valueRangeMin)
 
@@ -77,6 +80,7 @@ class LaserController(ImConWidgetController):
     def closeEvent(self):
         self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
         self._master.lasersManager.execOnAll(lambda l: l.setValue(0))
+        self._master.lasersManager.execOnAll(lambda l: l.setEnabled(False))
 
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""
@@ -228,9 +232,8 @@ class LaserController(ImConWidgetController):
         self.is_scanning = isScanning
 
         for lName, _ in self._master.lasersManager:
-            enabled = self._widget.isLaserActive(lName)
             self._widget.setLaserEditable(lName, not isScanning)
-            self._master.lasersManager[lName].setScanModeActive(isScanning, enabled)
+            self._master.lasersManager[lName].setScanModeActive(isScanning)
         #self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(isScanning))
 
         defaultScanPresetName = self._setupInfo.defaultLaserPresetForScan

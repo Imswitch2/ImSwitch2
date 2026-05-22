@@ -57,12 +57,11 @@ class NidaqLaserManager(LaserManager):
         except Exception as e:
             self.__logger.error(f"Error trying to set value to laser: {e}")
 
-    def setScanModeActive(self, active, enabled=True):
+    def setScanModeActive(self, active):
         if active:
             self.setEnabled(False)
-        # if laser was enable before the scan, it is enabled again. Value set to 0 first so that it does not get enabled
-        # before laser preset is applied
-        elif enabled:
+        # Exiting scan mode: restore to off state. Controller manages re-enable if needed.
+        else:
             self.setValue(0, True)
             self.setEnabled(True)
 
