@@ -248,8 +248,13 @@ class LaserController(ImConWidgetController):
                 self.presetBeforeScan = None
 
     def scanBuilt(self, deviceList):
+        """ Force-disable lasers not in the scan's TTL device list.
+        The scan module's TTL device list is the sole authority for emission. """
         for lName, _ in self._master.lasersManager:
             if lName not in deviceList:
+                # Disarm and force off lasers not participating in this scan
+                self._master.lasersManager[lName].setScanModeActive(False)
+                self._master.lasersManager[lName].setEnabled(False)
                 self._widget.setLaserEditable(lName, True)
 
     def attrChanged(self, key, value):
