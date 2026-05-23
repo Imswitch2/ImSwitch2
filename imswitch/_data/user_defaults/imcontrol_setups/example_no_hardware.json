@@ -65,6 +65,20 @@
             "forScanning": true,
             "resetOnClose": false
         },
+        "Mock Kinesis XY": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "KinesisStageManager",
+            "managerProperties": {
+                "snr": "MOCK_MLS203",
+                "posRangeUm": {"X": [0, 25000], "Y": [0, 25000]},
+                "homeOnInit": false
+            },
+            "axes": ["X", "Y"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false
+        },
         "Jena Piezo Z": {
             "analogChannel": null,
             "digitalLine": null,
