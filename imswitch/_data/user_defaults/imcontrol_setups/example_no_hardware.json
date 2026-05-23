@@ -24,6 +24,24 @@
                 "unitsPerDegree": 136533.33,
                 "homeOnInit": false
             }
+        },
+        "Mock HWP": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "MOCK_COM20",
+                "address": 0,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        },
+        "Mock QWP": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "MOCK_COM20",
+                "address": 1,
+                "scale": "stage",
+                "homeOnInit": false
+            }
         }
     },
     "positioners": {
@@ -46,9 +64,42 @@
             "forPositioning": true,
             "forScanning": true,
             "resetOnClose": false
+        },
+        "Jena Piezo Z": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "JenaPiezoZManager",
+            "managerProperties": {
+                "rs232device": "jena_piezo_rs232",
+                "posRangeUm": [0, 100],
+                "waitForSettle": true,
+                "settleToleranceUm": 0.1,
+                "settleTimeoutS": 1.0
+            },
+            "axes": ["Z"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false
         }
     },
-    "rs232devices": {},
+    "rs232devices": {
+        "jena_piezo_rs232": {
+            "managerName": "RS232Manager",
+            "managerProperties": {
+                "port": "MOCK_JENA_PIEZO",
+                "encoding": "ascii",
+                "recv_termination": "\n",
+                "send_termination": "\r",
+                "baudrate": 9600,
+                "bytesize": 8,
+                "parity": "none",
+                "stopbits": 1,
+                "rtscts": false,
+                "dsrdtr": false,
+                "xonxoff": false
+            }
+        }
+    },
     "slms": {},
     "scan": {
         "scanWidgetType": "Base",
