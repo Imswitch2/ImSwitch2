@@ -27,7 +27,10 @@ class APDManager(DetectorManager):
         self._name = name
         self.setPixelSize([1, 1])
         fullShape = (100, 100)
-        self._image = np.random.rand(fullShape[0], fullShape[1]) * 100
+        # APD photon counts are non-negative integers — uint16 is sufficient
+        # for typical fluorescence; the TTL-multiplying path will reallocate
+        # as float32 (to preserve NaN as a "no-data" marker) in initiateImage.
+        self._image = np.zeros(fullShape, dtype=np.uint16)
         self._detection_samplerate = float(1e6)
         self._nidaq_clock_source = r'ctr2InternalOutput'  # counter output task generating a 1 MHz frequency digitial pulse train
         self._channel = detectorInfo.managerProperties["ctrInputLine"]
@@ -193,11 +196,21 @@ class APDManager(DetectorManager):
         img_dims = tuple(int(x) for x in img_dims)
 
         img_dims_extra = tuple(reversed(img_dims))
-        if np.shape(self._image) != img_dims_extra:
-            self._image = np.zeros(img_dims_extra)
+
+        # Use uint16 for the common photon-counting case; the TTL-multiplying
+        # path inserts NaN as a "no-data" marker, so fall back to float32 there
+        # (still ImageJ-compatible, half the memory of float64).
+        image_dtype = np.float32 if self._ttlmultiplying else np.uint16
+
+        if (np.shape(self._image) != img_dims_extra
+                or self._image.dtype != image_dtype):
+            self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
 
-        self._image_display = np.zeros(tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]))
+        self._image_display = np.zeros(
+            tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),
+            dtype=image_dtype,
+        )
 
     def setParameter(self, name, value):
         pass
