@@ -16,6 +16,16 @@
         }
     },
     "lasers": {},
+    "rotators": {
+        "Mock K10CR1": {
+            "managerName": "KinesisRotatorManager",
+            "managerProperties": {
+                "snr": "MOCK_K10CR1",
+                "unitsPerDegree": 136533.33,
+                "homeOnInit": false
+            }
+        }
+    },
     "positioners": {
         "Mock X": {
             "analogChannel": null,
