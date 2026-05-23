@@ -9,6 +9,7 @@ from imswitch.imcontrol.model.managers import (
     NidaqManager,
     PositionersManager,
     RS232sManager,
+    RotatorsManager,
 )
 
 
@@ -63,15 +64,23 @@ def test_no_hardware_profile_builds_core_managers():
     detectors_manager = DetectorsManager(setup_info.detectors, updatePeriod=300, **low_level_managers)
     positioners_manager = PositionersManager(setup_info.positioners, **low_level_managers)
     lasers_manager = LasersManager(setup_info.lasers, **low_level_managers)
+    rotators_manager = RotatorsManager(setup_info.rotators, **low_level_managers)
 
     try:
         assert detectors_manager.hasDevices()
         assert detectors_manager.getCurrentDetectorName() == "Mock Camera"
+        assert "Mock ThorCam TSI" in detectors_manager.getAllDeviceNames()
         assert positioners_manager.hasDevices()
         assert positioners_manager["Mock X"].position["X"] == 0
         assert positioners_manager["Mock Y"].position["Y"] == 0
+        assert positioners_manager["Mock Kinesis XY"].position == {"X": 0.0, "Y": 0.0}
         assert not lasers_manager.hasDevices()
+        assert rotators_manager.hasDevices()
+        assert rotators_manager["Mock K10CR1"].position == 0
+        assert rotators_manager["Mock HWP"].position == 0
+        assert rotators_manager["Mock QWP"].position == 0
     finally:
         detectors_manager.finalize()
         positioners_manager.finalize()
         lasers_manager.finalize()
+        rotators_manager.finalize()
