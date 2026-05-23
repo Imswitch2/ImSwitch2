@@ -23,9 +23,24 @@ class MasterController:
         #self.pulseStreamerManager = PulseStreamerManager(self.__setupInfo)
         self.rs232sManager = RS232sManager(self.__setupInfo.rs232devices)
 
+        # Pulse generator (Teensy / Arduino, v4 firmware).  Only built
+        # when the setup actually declares one — leaving it out keeps
+        # boot lean for setups without a Teensy.  The manager itself
+        # falls back to an in-process mock when the port can't be opened,
+        # so headless / CI runs work even with a real port configured.
+        self.pulseGeneratorManager = None
+        if getattr(self.__setupInfo, 'teensyPulse', None) is not None:
+            from imswitch.imcontrol.model.managers.pulsegen import (
+                TeensyPulseManager,
+            )
+            self.pulseGeneratorManager = TeensyPulseManager(
+                self.__setupInfo.teensyPulse
+            )
+
         lowLevelManagers = {
             'nidaqManager': self.nidaqManager,
             #'pulseStreamerManager' : self.pulseStreamerManager,
+            'pulseGeneratorManager': self.pulseGeneratorManager,
             'rs232sManager': self.rs232sManager
         }
 

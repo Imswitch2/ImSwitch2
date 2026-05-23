@@ -349,6 +349,40 @@ class PulseStreamerInfo:
 
 
 @dataclass(frozen=True)
+class TeensyPulseInfo:
+    """Config for a Teensy / Arduino pulse generator running the
+    ImSwitch v4 firmware (with v3 fallback).
+
+    See ``imswitch.imcontrol.model.managers.pulsegen.TeensyPulseManager``
+    for the consumer.  Leave ``port`` as ``None`` to skip construction
+    entirely; the manager will not be instantiated.  Provide a port and
+    set ``useMockOnFailure=True`` to get an in-process mock when the
+    real device is unavailable.
+    """
+    port: Optional[str] = None
+    """ Serial port, e.g. ``COM7`` or ``/dev/ttyACM0``.  ``None`` =
+    pulse generator disabled. """
+
+    baud: int = 115200
+
+    pinMap: Dict[str, int] = field(default_factory=dict)
+    """ Optional name → channel mapping.  Not enforced by the manager;
+    purely a convenience for scripts to refer to ``pinMap['laser488']``
+    rather than hardcoded integers. """
+
+    useMockOnFailure: bool = True
+    """ Fall back to the in-process mock if the port can't be opened.
+    Set False to make a missing device a hard failure. """
+
+    mockNChannels: int = 16
+    mockMinPulseUs: int = 1
+    mockMaxSteps: int = 256
+    """ Capabilities the mock advertises when the real device is
+    unavailable.  Ignored when a real connection succeeds (firmware
+    reports its own via ``*IDN?``). """
+
+
+@dataclass(frozen=True)
 class PyroServerInfo:
     name: Optional[str] = 'ImSwitchServer'
     host: Optional[str] = '127.0.0.1'
@@ -414,6 +448,10 @@ class SetupInfo:
 
     pulseStreamer: PulseStreamerInfo = field(default_factory=PulseStreamerInfo)
     """ Pulse Streamer settings. """
+
+    teensyPulse: Optional[TeensyPulseInfo] = field(default_factory=lambda: None)
+    """ Teensy / Arduino pulse generator settings.  ``None`` = no
+    Teensy in this setup.  See :class:`TeensyPulseInfo`. """
 
     pyroServerInfo: PyroServerInfo = field(default_factory=PyroServerInfo)
 

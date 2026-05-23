@@ -57,6 +57,8 @@ class TilingController(ImConWidgetController):
 
         n_tiles = self._widget.getNTiles()
         step_um = self._widget.getTileStepUm()
+        blend_overlaps = self._widget.getBlendOverlaps()
+        intensity_correction = self._widget.getIntensityCorrection()
 
         self._scanning = True
         self._stopRequested = False
@@ -70,7 +72,7 @@ class TilingController(ImConWidgetController):
 
         t = threading.Thread(
             target=self._runScan,
-            args=(tilingInfo, n_tiles, step_um),
+            args=(tilingInfo, n_tiles, step_um, blend_overlaps, intensity_correction),
             daemon=True,
         )
         t.start()
@@ -83,11 +85,24 @@ class TilingController(ImConWidgetController):
     def setTileLabel(self, label: str) -> None:
         self._widget.setLabel(label)
 
+    @APIExport()
+    def getStitchedImage(self) -> Optional[np.ndarray]:
+        if self._stitcher is None:
+            return None
+        return self._stitcher.get_overview()
+
     # ------------------------------------------------------------------
     # Scan loop (runs in background thread)
     # ------------------------------------------------------------------
 
-    def _runScan(self, tilingInfo, n_tiles: int, step_um: float) -> None:
+    def _runScan(
+        self,
+        tilingInfo,
+        n_tiles: int,
+        step_um: float,
+        blend_overlaps: bool,
+        intensity_correction: bool,
+    ) -> None:
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -120,12 +135,15 @@ class TilingController(ImConWidgetController):
 
                 # Lazy stitcher init after first frame (we need tile_size_px)
                 if self._stitcher is None:
-                    tile_size_px = max(frame.shape[0], frame.shape[1])
+                    pixel_size_um = self._detectorPixelSizeUm(detector)
                     self._stitcher = StitchedImage(
-                        tile_size_px=tile_size_px,
+                        tile_size_px=None,
                         tile_step_um=step_um,
-                        px_per_um=tile_size_px / step_um,
-                        overlap=0.0,
+                        px_per_um=None,
+                        tile_shape_px=frame.shape[:2],
+                        pixel_size_um=pixel_size_um,
+                        blend_overlaps=blend_overlaps,
+                        intensity_correction=intensity_correction,
                     )
 
                 self._stitcher.add_tile(frame, gx, gy)
@@ -182,8 +200,10 @@ class TilingController(ImConWidgetController):
         min_gx = min(g[0] for g in self._gridPositions)
         min_gy = min(g[1] for g in self._gridPositions)
         canvas_origin = (
-            self._originXY[0] + min_gx * self._lastStepUm,
-            self._originXY[1] + min_gy * self._lastStepUm,
+            self._originXY[0] + min_gx * self._lastStepUm
+            - (self._stitcher.tile_shape_px[1] / 2) / self._stitcher.px_per_um_x,
+            self._originXY[1] + min_gy * self._lastStepUm
+            - (self._stitcher.tile_shape_px[0] / 2) / self._stitcher.px_per_um_y,
         )
 
         stage_x, stage_y = self._stitcher.pixel_to_stage(row, col, canvas_origin)
@@ -202,6 +222,17 @@ class TilingController(ImConWidgetController):
             if info.forAcquisition:
                 return name
         return next(iter(self._setupInfo.detectors))
+
+    def _detectorPixelSizeUm(self, detector) -> Tuple[float, float]:
+        """Return detector pixel size as ``(y, x)`` in micrometres."""
+        pixel_size_um = detector.pixelSizeUm
+        if len(pixel_size_um) >= 3:
+            return float(pixel_size_um[-2]), float(pixel_size_um[-1])
+        if len(pixel_size_um) == 2:
+            return float(pixel_size_um[0]), float(pixel_size_um[1])
+        if len(pixel_size_um) == 1:
+            return float(pixel_size_um[0]), float(pixel_size_um[0])
+        raise ValueError(f'Detector {detector.name} has invalid pixelSizeUm: {pixel_size_um}')
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

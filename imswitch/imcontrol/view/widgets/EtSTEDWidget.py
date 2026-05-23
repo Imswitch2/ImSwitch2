@@ -103,6 +103,10 @@ class EtSTEDWidget(Widget):
         self.initiateButton = guitools.BetterPushButton('Initiate etSTED')
         self.initiateButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         self.loadPipelineButton = guitools.BetterPushButton('Load pipeline')
+        self.statusLabel = QtWidgets.QLabel('Idle')
+        self.statusLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.statusMessageLabel = QtWidgets.QLabel('')
+        self.statusMessageLabel.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         
         self.coordTransfCalibButton = guitools.BetterPushButton('Transform calibration')
         self.coordTransfCalibButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
@@ -158,6 +162,12 @@ class EtSTEDWidget(Widget):
         self.grid.addWidget(self.experimentModesPar_label, currentRow, 2)
         self.grid.addWidget(self.experimentModesPar, currentRow, 3)
         self.grid.addWidget(self.setBusyFalseButton, currentRow, 4)
+        self.setBusyFalseButton.setVisible(False)
+
+        currentRow += 1
+
+        self.grid.addWidget(self.statusLabel, currentRow, 0)
+        self.grid.addWidget(self.statusMessageLabel, currentRow, 1, 1, 4)
 
         currentRow += 1
 
@@ -226,6 +236,7 @@ class EtSTEDWidget(Widget):
         currentRow += 1
 
         self.grid.addWidget(self.loadScanParametersStatus, currentRow, 3, 2, 2)
+        self.setEtSTEDStatus('idle')
 
     def initParamFields(self, parameters: dict):
         """ Initialized etSTED widget parameter fields. """
@@ -271,6 +282,55 @@ class EtSTEDWidget(Widget):
             self.fastImgLasers.append(laserName)
         self.fastImgLasersPar.addItems(self.fastImgLasers)
         self.fastImgLasersPar.setCurrentIndex(0)
+
+    def setEtSTEDStatus(self, status: str, message: str = ''):
+        """Set the visible EtSTED runtime state."""
+        labels = {
+            'idle': 'Idle',
+            'arming': 'Arming',
+            'detecting': 'Detecting',
+            'triggered': 'Triggered',
+            'scanning': 'Scanning',
+            'error': 'Error',
+        }
+        colors = {
+            'idle': '#555555',
+            'arming': '#6b5b00',
+            'detecting': '#0b5f7a',
+            'triggered': '#6b4a00',
+            'scanning': '#5f3b7a',
+            'error': '#8a1f1f',
+        }
+        label = labels.get(status, status.title())
+        color = colors.get(status, '#555555')
+        self.statusLabel.setText(label)
+        self.statusLabel.setStyleSheet(
+            f'QLabel {{ background-color: {color}; color: white; padding: 3px 8px; border-radius: 3px; }}'
+        )
+        self.statusMessageLabel.setText(message)
+        self.setBusyFalseButton.setVisible(status == 'error')
+
+    def setEtSTEDControlsArmed(self, armed: bool):
+        """Enable controls according to whether EtSTED is armed."""
+        controls = [
+            self.loadPipelineButton,
+            self.analysisPipelinePar,
+            self.transformPipelinePar,
+            self.transformCoefsPar,
+            self.coordTransfCalibButton,
+            self.recordBinaryMaskButton,
+            self.loadScanParametersButton,
+            self.fastImgDetectorsPar,
+            self.fastImgLasersPar,
+            self.experimentModesPar,
+            self.scanInitiationPar,
+            self.bin_thresh_edit,
+            self.bin_smooth_edit,
+            self.fastaxisshiftCheck,
+            self.useScanLaserPresetCheck,
+        ]
+        for control in controls:
+            control.setEnabled(not armed)
 
     def setScanInitiationList(self, initiationTypes):
         """ Set combobox with types of scan initiation to use for the scan method. """
@@ -369,4 +429,3 @@ class CoordTransformWidget(Widget):
         currentRow += 1
         self.grid.addWidget(self.saveCalibButton, currentRow, 0)
         self.grid.addWidget(self.resetCoordsButton, currentRow, 1)
-

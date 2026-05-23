@@ -46,12 +46,19 @@ class TilingWidget(Widget):
         layout.addWidget(self.stopButton, 1, 2)
         layout.addWidget(self.navigateToggle, 1, 3)
 
-        # Row 2: Progress label
+        # Row 2: Stitching options
+        self.blendOverlapsCheck = QtWidgets.QCheckBox('Mean overlaps')
+        self.blendOverlapsCheck.setChecked(True)
+        self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
+        layout.addWidget(self.blendOverlapsCheck, 2, 0, 1, 2)
+        layout.addWidget(self.intensityCorrectionCheck, 2, 2, 1, 2)
+
+        # Row 3: Progress label
         self.progressLabel = QtWidgets.QLabel('')
         self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(self.progressLabel, 2, 0, 1, 4)
+        layout.addWidget(self.progressLabel, 3, 0, 1, 4)
 
-        # Rows 3+: Stitched overview display
+        # Rows 4+: Stitched overview display
         self.overviewView = pg.GraphicsLayoutWidget()
         self.overviewItem = pg.ImageItem()
         self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
@@ -59,13 +66,15 @@ class TilingWidget(Widget):
         self._overviewVB.setAspectLocked(True)
         self._overviewVB.invertY(True)
         self._overviewVB.addItem(self.overviewItem)
-        layout.addWidget(self.overviewView, 3, 0, 4, 4)
+        layout.addWidget(self.overviewView, 4, 0, 4, 4)
 
         # Wire signals
         self.startButton.clicked.connect(self.sigStartTiling)
         self.stopButton.clicked.connect(self.sigStopTiling)
         self.nTilesSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
+        self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
         self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
 
     def _onSceneClicked(self, event):
@@ -93,6 +102,12 @@ class TilingWidget(Widget):
 
     def getTileStepUm(self) -> float:
         return self.tileStepSpinbox.value()
+
+    def getBlendOverlaps(self) -> bool:
+        return self.blendOverlapsCheck.isChecked()
+
+    def getIntensityCorrection(self) -> bool:
+        return self.intensityCorrectionCheck.isChecked()
 
     def setDefaultStep(self, step_um: float) -> None:
         self.tileStepSpinbox.setValue(step_um)

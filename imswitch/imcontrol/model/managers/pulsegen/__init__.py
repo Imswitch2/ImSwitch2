@@ -7,3 +7,7 @@ from .PulseStreamerManager import (
     PulseStreamerManager,
     PulseStreamerManagerError,
 )
+from .TeensyPulseManager import (
+    TeensyPulseManager,
+    TeensyPulseInfo,
+)
