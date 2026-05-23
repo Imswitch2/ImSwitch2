@@ -26,3 +26,9 @@ select = ["E9", "F63", "F7", "F82"]
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 testpaths = ["imswitch"]
+markers = [
+    "nohardware: tests that must run without physical microscope hardware or hardware extras",
+    "hardware: tests that require physical microscope hardware or vendor drivers",
+    "redzone: tests covering safety-critical DAQ, laser, stage, TTL, or scan behavior through mocks or pure logic",
+    "ui: tests that require a Qt application, usually with offscreen rendering in CI",
+]

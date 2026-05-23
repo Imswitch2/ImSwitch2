@@ -10,7 +10,22 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ✅ Set up CI pipeline (linting, tests, build)
 - ✅ Critical lint errors resolved (`E9/F63/F7/F82` clean)
 - ✅ First unit tests passing in CI (`test_stores.py`)
-- ⬜ Ensure the application launches without errors on a clean install
+- ✅ Add first no-hardware validation profile
+  - `example_no_hardware.json` uses mock camera + mock positioners, no lasers,
+    no RS232 devices, no physical DAQ channels, and `nidaq.simulation=true`
+  - `imswitch/test_no_hardware_profile.py` verifies config parsing, absence of
+    physical IO channels, and core manager construction
+  - CI job: "No-Hardware Validation"
+- ✅ Restore legacy no-hardware unit-test collection and expand CI coverage
+  - Decoupled `imswitch/imcontrol/_test` model fixtures from GUI imports
+  - CI now runs `imswitch/test_no_hardware_profile.py` plus the full
+    `imswitch/imcontrol/_test/unit` directory
+  - Qt-backed no-hardware unit tests run with explicit `pytest-qt` loading and
+    third-party pytest plugin autoload disabled
+- ⬜ Ensure the full application UI launches without errors on a clean install
+  using a no-hardware setup
+  - Current blocker: legacy UI tests still import the full napari/matplotlib
+    stack during collection; this needs a dedicated dependency/isolation pass
 
 ## Milestone 2: Packaging Cleanup 🔄
 
@@ -72,6 +87,10 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ✅ Architecture map (`docs/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
 - ⬜ Document current state and known issues (moved from Milestone 1)
 - ⬜ Document all configuration options in `SetupInfo`
+- ⬜ Document no-hardware validation workflow
+  - How to run `pytest imswitch/test_no_hardware_profile.py -v`
+  - Difference between `nohardware`, `ui`, `redzone`, and `hardware` tests
+  - Rules for adding future no-hardware tests without importing the full UI stack
 - ⬜ Write developer onboarding guide
 - ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
 - ⬜ Create agent task templates for common operations
@@ -197,4 +216,3 @@ in. The GPU path (`GaussProcessorGPU`) should be an optional extra.
 - ⬜ Port the `imreconstruct` live-reconstruction pipeline as a separate phase;
   rename the `karl_*` packages to descriptive names; gate GPU behind an extra.
 - ⬜ Build further recording-manager improvements from that foundation.
-

@@ -97,7 +97,7 @@ AbstractBaseManager(ABC)  ←  ConcreteDeviceManager (per hardware)
 | `PMTManager` | Photomultiplier Tube (NI-DAQ analog) | Via injected `nidaqManager` |
 | `HamamatsuManager` | Hamamatsu sCMOS (DCAM API) | `ctypes` DLL via bundled interface |
 | `BaslerManager` | Basler cameras | `pypylon` (lazy) |
-| `ThorcamManager` | Thorlabs cameras | Bundled interface |
+| `ThorCamTSIManager` | Thorlabs scientific cameras | TSI SDK via bundled interface |
 | `PhotometricsManager` | Photometrics sCMOS/CCD | `pyvcam` (lazy) |
 | `GXPIPYManager` | Daheng Imaging cameras | `gxipy` (lazy) |
 | `TISManager` | The Imaging Source cameras | `ctypes`/`tisgrabber` via bundled interface |

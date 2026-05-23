@@ -1,6 +1,14 @@
 from imswitch import imcontrol
 from imswitch.imcommon import prepareApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel
+from imswitch.imcontrol.view import ViewSetupInfo
+from .. import SETUP_INFO_BASIC_JSON, SETUP_INFO_WITHOUT_WIDGETS_JSON
+
+
+setupInfoBasic = ViewSetupInfo.from_json(SETUP_INFO_BASIC_JSON, infer_missing=True)
+setupInfoWithoutWidgets = ViewSetupInfo.from_json(
+    SETUP_INFO_WITHOUT_WIDGETS_JSON, infer_missing=True
+)
 
 app = None
 
