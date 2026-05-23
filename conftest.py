@@ -10,14 +10,17 @@ from unittest.mock import MagicMock
 
 
 def _stub_if_missing(pkg_root, submodules=()):
-    """Register MagicMock stubs for pkg_root and its submodules when
-    the package is not importable."""
+    """Register MagicMock stubs when optional packages are missing or broken."""
     try:
         __import__(pkg_root)
     except Exception:
         sys.modules[pkg_root] = MagicMock()
-        for sub in submodules:
-            sys.modules[f"{pkg_root}.{sub}"] = MagicMock()
+    for sub in submodules:
+        module_name = f"{pkg_root}.{sub}"
+        try:
+            __import__(module_name)
+        except Exception:
+            sys.modules[module_name] = MagicMock()
 
 
 _stub_if_missing("napari", [
@@ -33,4 +36,11 @@ _stub_if_missing("vispy", [
     "scene.visuals",
     "visuals",
     "visuals.transforms",
+])
+
+_stub_if_missing("matplotlib", [
+    "backends",
+    "backends.backend_qt5agg",
+    "figure",
+    "pyplot",
 ])

@@ -36,6 +36,8 @@ class AsTemporaryFile(object):
         return self.tmp_path
 
     def __exit__(self, *args, **kwargs):
+        if args and args[0] is not None:
+            return False
         os.rename(self.tmp_path, self.path)
 
 
@@ -143,22 +145,53 @@ class ZarrStorer(Storer):
     Note: Streaming implementation preserves legacy behavior with hardcoded 'i2' dtype.
     This is isolated for future migration to dtype-aware zarr.
     """
+    @staticmethod
+    def _make_store(path: str):
+        if hasattr(zarr.storage, 'DirectoryStore'):
+            return zarr.storage.DirectoryStore(path)
+        return zarr.storage.LocalStore(path)
+
+    @staticmethod
+    def _create_array(root, name: str, *, data=None, shape=None, chunks=None, dtype=None):
+        if hasattr(root, 'create_dataset'):
+            kwargs = {'chunks': chunks}
+            if data is not None:
+                kwargs['data'] = data
+            if shape is not None:
+                kwargs['shape'] = shape
+            if dtype is not None:
+                kwargs['dtype'] = dtype
+            return root.create_dataset(name, **kwargs)
+
+        kwargs = {'chunks': chunks}
+        if data is not None:
+            kwargs['data'] = data
+        else:
+            kwargs['shape'] = shape
+            kwargs['dtype'] = dtype
+        return root.create_array(name, **kwargs)
+
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
         with AsTemporaryFile(f'{self.filepath}.zarr') as path:
-            store = zarr.storage.DirectoryStore(path)
+            store = self._make_store(path)
             root = zarr.group(store=store)
 
             for channel, image in images.items():
                 shape = self.detectorManager[channel].shape
-                d = root.create_dataset(channel, data=image, shape=tuple(reversed(shape)),
-                                        chunks=(512, 512), dtype='i2') #TODO: why not dynamic chunking?
+                d = self._create_array(
+                    root,
+                    channel,
+                    data=image.astype('i2', copy=False),
+                    shape=tuple(reversed(shape)),
+                    chunks=(512, 512),
+                ) #TODO: why not dynamic chunking?
                 d.attrs["ImSwitchData"] = attrs[channel]
             logger.info(f"Saved image to zarr file {path}")
     
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
                    singleMultiDetectorFile, singleLapseFile, saveMode):
         """Initialize ZARR streaming session (legacy behavior preserved)."""
-        self._store = zarr.storage.DirectoryStore(list(fileDests.values())[0])
+        self._store = self._make_store(list(fileDests.values())[0])
         self._root = zarr.group(store=self._store, overwrite=True)
         self._datasets = {}
         self._attrs = attrs
@@ -171,9 +204,12 @@ class ZarrStorer(Storer):
             if len(shape) > 2:
                 shape = shape[-2:]
             
-            self._datasets[detectorName] = self._root.create_dataset(
-                detectorName, shape=(1, *reversed(shape)),
-                dtype='i2', chunks=(1, 512, 512)
+            self._datasets[detectorName] = self._create_array(
+                self._root,
+                detectorName,
+                shape=(1, *reversed(shape)),
+                dtype='i2',
+                chunks=(1, 512, 512),
             )
             self._datasets[detectorName].attrs['ImSwitchData'] = attrs[detectorName]
             self._datasets[detectorName].attrs['detector_name'] = detectorName

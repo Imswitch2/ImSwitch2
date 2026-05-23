@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from imswitch.imcontrol.model import ScanManagerBase
-from imswitch.imcontrol.view.guitools.ViewSetupInfo import ViewSetupInfo
+from imswitch.imcontrol.model.SetupInfo import SetupInfo
 
 # These tests were written against a non-existent ScanManagerBase API
 # (`signalDictTwoScan`); the real entry point is `makeFullScan(scanParameters,
@@ -25,7 +25,7 @@ def test_galvo_jerk_limit_backward_compatible():
     """Test that without jerk_max, behavior is identical to legacy dt_fix = 1e-2."""
     
     # Setup without jerk_max (legacy behavior)
-    setupInfo_no_jerk = ViewSetupInfo.from_json("""
+    setupInfo_no_jerk = SetupInfo.from_json("""
     {
         "positioners": {
             "X": {
@@ -105,7 +105,7 @@ def test_galvo_jerk_limit_with_jerk_max():
     """Test that with jerk_max configured, peak jerk is bounded."""
     
     # Setup WITH jerk_max configured
-    setupInfo_with_jerk = ViewSetupInfo.from_json("""
+    setupInfo_with_jerk = SetupInfo.from_json("""
     {
         "positioners": {
             "X": {
@@ -209,7 +209,7 @@ def test_galvo_jerk_limit_signals_differ():
     baseline_X, baseline_Y = test_galvo_jerk_limit_backward_compatible()
     
     # Setup WITH jerk_max
-    setupInfo_with_jerk = ViewSetupInfo.from_json("""
+    setupInfo_with_jerk = SetupInfo.from_json("""
     {
         "positioners": {
             "X": {

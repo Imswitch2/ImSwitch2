@@ -10,12 +10,12 @@ import zarr
 @dataclass
 class MockDetectorsManager():
     shape: tuple
-    pixelSizeUm: float
+    pixelSizeUm: list
     
 
 @pytest.fixture()
 def fake_manager():
-    return MockDetectorsManager(shape=(100,100), pixelSizeUm=12)
+    return MockDetectorsManager(shape=(100,100), pixelSizeUm=[12, 12, 12])
 
 def test_storer_instatiation(fake_manager):
     ZarrStorer("test",fake_manager)
@@ -34,7 +34,10 @@ def test_tiff_storer(tmpdir, fake_manager):
     """Test that the tiff storer can be instantiated and that the files are created"""
     path = os.path.join(tmpdir, "test")
     storer = TiffStorer(path, {"test_channel": fake_manager})
-    storer.snap({"test_channel": np.zeros((100,100))}, {"test_channel": "test"})
+    storer.snap(
+        {"test_channel": np.zeros((100,100), dtype=np.uint16)},
+        {"test_channel": {"test": "value"}}
+    )
     assert os.path.exists(path + "_test_channel.tiff"), "path does not exist"
 
 

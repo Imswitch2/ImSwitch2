@@ -1,7 +1,6 @@
-from imswitch.imcontrol.model import Options
-from imswitch.imcontrol.view import ViewSetupInfo
+from imswitch.imcontrol.model import Options, SetupInfo
 
-optionsBasic = Options.from_json("""
+OPTIONS_BASIC_JSON = """
 {
     "setupFileName": "",
     "recording": {
@@ -9,9 +8,11 @@ optionsBasic = Options.from_json("""
         "includeDateInOutputFolder": true
     }
 }
-""")
+"""
 
-setupInfoBasic = ViewSetupInfo.from_json("""
+optionsBasic = Options.from_json(OPTIONS_BASIC_JSON)
+
+SETUP_INFO_BASIC_JSON = """
 {
     "detectors": {
         "CAM": {
@@ -180,9 +181,11 @@ setupInfoBasic = ViewSetupInfo.from_json("""
         "ULenses"
     ]
 }
-""", infer_missing=True)
+"""
 
-setupInfoWithoutWidgets = ViewSetupInfo.from_json("""
+setupInfoBasic = SetupInfo.from_json(SETUP_INFO_BASIC_JSON, infer_missing=True)
+
+SETUP_INFO_WITHOUT_WIDGETS_JSON = """
 {
     "detectors": {
         "CAM": {
@@ -287,6 +290,7 @@ setupInfoWithoutWidgets = ViewSetupInfo.from_json("""
         }
     },
     "scan": {
+        "scanWidgetType": "Base",
         "scanDesigner": "BetaScanDesigner",
         "scanDesignerParams": {
             "return_time": 0.01
@@ -335,7 +339,9 @@ setupInfoWithoutWidgets = ViewSetupInfo.from_json("""
     },
     "availableWidgets": []
 }
-""", infer_missing=True)
+"""
+
+setupInfoWithoutWidgets = SetupInfo.from_json(SETUP_INFO_WITHOUT_WIDGETS_JSON, infer_missing=True)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

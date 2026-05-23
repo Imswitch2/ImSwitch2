@@ -33,10 +33,10 @@ def test_scan_signals():
 
     # Lengths of signal arrays match
     for device in fullsig['scanSignalsDict']:
-        assert len(fullsig['scanSignalsDict'][device]) == 111600
+        assert len(fullsig['scanSignalsDict'][device]) == 65000
 
     for device in fullsig['TTLCycleSignalsDict']:
-        assert len(fullsig['TTLCycleSignalsDict'][device]) == 111600
+        assert len(fullsig['TTLCycleSignalsDict'][device]) == 65000
 
     # Basic stage signal checks
     assert fullsig['scanSignalsDict']['X'].min() == 0.0
@@ -47,7 +47,7 @@ def test_scan_signals():
     assert fullsig['scanSignalsDict']['Z'].max() == 0.5
 
     # Basic TTL signal checks
-    assert np.count_nonzero(fullsig['TTLCycleSignalsDict']['405']) == 51840
+    assert np.count_nonzero(fullsig['TTLCycleSignalsDict']['405']) == 30000
     assert np.all(~fullsig['TTLCycleSignalsDict']['488'])
 
 # Copyright (C) 2020-2021 ImSwitch developers
