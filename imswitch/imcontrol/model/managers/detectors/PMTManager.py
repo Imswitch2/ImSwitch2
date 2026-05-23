@@ -137,8 +137,11 @@ class PMTManager(DetectorManager):
             if self._ttlmultiplying:
                 self._renewImage()
 
-            # final refresh
-            self._onFrameBoundary()
+            # NOTE: do NOT call _onFrameBoundary() here. d3Step at scan end has
+            # already produced the final _image_display and flagged
+            # __newFrameReady; re-running it re-flags the same data and causes
+            # getChunk() to deliver the last frame a second time (phantom
+            # duplicate in the recorded file).
 
         except Exception:
             self.__logger.exception("Error stopping PMT acquisition")

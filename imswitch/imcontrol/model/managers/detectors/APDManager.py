@@ -97,7 +97,10 @@ class APDManager(DetectorManager):
             self._scanThread.wait()
             self._scanWorker.close()
             self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
-            self.__newFrameReady = True
+            # NOTE: do NOT set __newFrameReady=True here. _onFrameBoundary
+            # (driven by d3Step) has already flagged the final real frame and
+            # _image_display is unchanged by this stop, so re-flagging causes
+            # getChunk() to return the same frame twice (phantom duplicate).
         except Exception as e:
             self.__logger.warning(f'Failed to stop acquisition cleanly: {e}')
 
@@ -110,7 +113,8 @@ class APDManager(DetectorManager):
             if self._ttlmultiplying:
                 self._renewImage()
             self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
-            self.__newFrameReady = True
+            # See stopAcquisition: __newFrameReady is NOT re-flagged here to
+            # avoid a phantom duplicate frame at scan end.
         except Exception as e:
             self.__logger.warning(f'Failed to stop acquisition locally: {e}')
         if self._debug_mode:
