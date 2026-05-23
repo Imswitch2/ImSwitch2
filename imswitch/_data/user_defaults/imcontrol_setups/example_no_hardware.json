@@ -13,6 +13,24 @@
             },
             "forAcquisition": true,
             "forFocusLock": false
+        },
+        "Mock ThorCam TSI": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "ThorCamTSIManager",
+            "managerProperties": {
+                "cameraSerial": "MOCK_TSI_12345",
+                "dllLocation": "dlls/64_lib",
+                "defaults": {
+                    "exposure_us": 50000,
+                    "gain": 0,
+                    "operation_mode": "Software",
+                    "trigger_polarity": "Active High",
+                    "frame_rate": 30
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
         }
     },
     "lasers": {},
