@@ -2,10 +2,23 @@
 Adding support for more devices
 *******************************
 
-There are three main device types that ImSwitch's hardware control module supports:
-**detectors**, **lasers** and **positioners**.
-In order to add support for a new detector, laser or positioner,
+ImSwitch's hardware control module supports four main device types:
+**detectors**, **lasers**, **positioners**, and **rotators**.
+In order to add support for a new device,
 a corresponding device manager class must be implemented in ImSwitch's code.
+
+For practical, task-oriented guides, see also:
+
+* :doc:`how-to/wire-teensy` — wire a Teensy pulse generator into your setup.
+* :doc:`how-to/add-pulse-generator-backend` — implement a new ``PulseGeneratorManager`` backend.
+* :doc:`how-to/port-from-third-party` — port a driver from a sibling project, with patterns and pitfalls drawn from the WidefieldStarss integration.
+
+For per-device JSON config reference (what fields each existing manager accepts), see:
+
+* :doc:`devices/detectors` — every ``DetectorManager`` with its ``managerProperties``.
+* :doc:`devices/lasers` — every ``LaserManager``.
+* :doc:`devices/positioners` — every ``PositionerManager``.
+* :doc:`devices/rotators` — every ``RotatorManager``.
 
 
 How device managers are implemented
@@ -13,8 +26,9 @@ How device managers are implemented
 
 Detector support is implemented in device manager classes derived from the abstract base class ``DetectorManager``.
 The corresponding parent class for lasers is ``LaserManager``,
-and for positioners it is ``PositionerManager``.
-These derived classes are placed in the ``detectors``, ``lasers`` and ``positioners`` sub-modules respectively in the ``imswitch.imcontrol.model.managers`` module.
+for positioners it is ``PositionerManager``,
+and for rotators it is ``RotatorManager``.
+These derived classes are placed in the ``detectors``, ``lasers``, ``positioners`` and ``rotators`` sub-modules respectively in the ``imswitch.imcontrol.model.managers`` module.
 
 The required constructor signature for the device managers is ``__init__(deviceInfo, name, **lowLevelManagers)``.
 ``deviceInfo`` is the ``DetectorInfo``, ``LaserInfo`` or ``PositionerInfo`` object which represents the device's entry in the setup file
@@ -82,6 +96,14 @@ PositionerManager
    :special-members: __init__
 
 
+RotatorManager
+--------------
+
+.. autoclass:: imswitch.imcontrol.model.managers.rotators.RotatorManager.RotatorManager
+   :members:
+   :special-members: __init__
+
+
 Available low-level managers
 ============================
 
@@ -99,4 +121,28 @@ lowLevelManagers['rs232sManager']
    :members:
 
 .. autoclass:: imswitch.imcontrol.model.managers.rs232.RS232Manager.RS232Manager
+   :members:
+
+
+lowLevelManagers['pulseGeneratorManager']
+-----------------------------------------
+
+Backend-agnostic digital pulse generator (Teensy / Arduino today;
+PulseStreamer once migrated; future NI / FPGA backends).  Available
+when ``setupInfo.teensyPulse`` (or future equivalent) is configured;
+``None`` otherwise.  Managers that depend on it should follow the
+mock-mode fallback pattern from
+:class:`~imswitch.imcontrol.model.managers.lasers.PulseGeneratorLaserManager.PulseGeneratorLaserManager`:
+
+.. code-block:: python
+
+    self._pulseGen = lowLevelManagers.get('pulseGeneratorManager')
+    self._isMock = self._pulseGen is None
+
+See :doc:`how-to/wire-teensy` for a worked example of consuming the
+pulse generator from a laser manager, and
+:doc:`how-to/add-pulse-generator-backend` for implementing a new
+backend.
+
+.. autoclass:: imswitch.imcontrol.model.managers.pulsegen.PulseGeneratorManager.PulseGeneratorManager
    :members:

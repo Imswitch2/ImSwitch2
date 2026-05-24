@@ -44,6 +44,23 @@ well as for developers (scripting and API modules, and hardware control and JSON
     adding-device-support
 
 .. toctree::
+    :hidden:
+    :caption: How-to guides
+
+    how-to/wire-teensy
+    how-to/add-pulse-generator-backend
+    how-to/port-from-third-party
+
+.. toctree::
+    :hidden:
+    :caption: Device reference
+
+    devices/detectors
+    devices/lasers
+    devices/positioners
+    devices/rotators
+
+.. toctree::
     :glob:
     :hidden:
     :caption: Scripting API reference

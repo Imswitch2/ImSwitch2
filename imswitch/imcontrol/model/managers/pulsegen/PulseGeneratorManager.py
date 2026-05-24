@@ -6,7 +6,7 @@ Teensy/Arduino microcontroller, an NI digital-out card, etc.  Backends
 expose explicit capability properties (``jitter_ns``,
 ``min_pulse_width_ns``, ``n_digital_channels``, ...) so consumers can
 introspect what they're getting rather than assuming all backends are
-equivalent — see [WSIntegration.md](../../../../../../WSIntegration.md)
+equivalent — see [ws-integration.md](../../../../../../docs/design/plans/ws-integration.md)
 for the rationale.
 
 Subclasses live alongside this file under ``pulsegen/``.

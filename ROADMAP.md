@@ -84,7 +84,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 
 **Goal:** Comprehensive documentation for developers, agents, and users.
 
-- ✅ Architecture map (`docs/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
+- ✅ Architecture map (`docs/design/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
 - ⬜ Document current state and known issues (moved from Milestone 1)
 - ⬜ Document all configuration options in `SetupInfo`
 - ⬜ Document no-hardware validation workflow
@@ -99,7 +99,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 
 **Goal:** Modernize ImControl UI with persistent state, improved configuration editing, and advanced imaging workflows.
 
-- ✅ Widget state persistence framework (`WidgetStatePersistence.py` + `docs/WIDGET_STATE_PERSISTENCE.md`)
+- ✅ Widget state persistence framework (`WidgetStatePersistence.py` + `docs/design/WIDGET_STATE_PERSISTENCE.md`)
   - Save/load widget controller states (laser power, scan params, detector settings) to JSON
   - UI integration: File menu actions (Ctrl+Shift+S/L) with file dialogs
   - Implemented for: Laser, Settings (detector), Scan, Positioner, Recording, Rotator controllers
@@ -130,7 +130,7 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ⬜ Dynamic napari layer lifecycle (still planned)
   - Currently: all `forAcquisition` detectors get permanent layers at startup
   - Plan: create/remove layers dynamically based on active detector
-  - Design doc: `docs/dynamic_layer_lifecycle_plan.md`
+  - Design doc: `docs/design/plans/dynamic-layer-lifecycle.md`
 
 ## Milestone 9: Scanning & Galvo Modernization
 

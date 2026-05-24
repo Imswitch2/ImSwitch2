@@ -34,7 +34,7 @@ Source paths refer to:
 
 ## #1 — K10CR1 Kinesis rotator
 
-**Source:** [thorlabsrotator_K10CR1.py](../WidefieldStarss/src/WFS/thorlabsrotator_K10CR1.py)
+**Source:** [thorlabsrotator_K10CR1.py](../../../../WidefieldStarss/src/WFS/thorlabsrotator_K10CR1.py)
 **Target manager:** `imswitch/imcontrol/model/managers/rotators/KinesisRotatorManager.py`
 **Driver:** import `pylablib.devices.Thorlabs.KinesisMotor` directly — no
 custom interface module needed.
@@ -84,7 +84,7 @@ pattern before tackling #2.
 
 ## #2 — ELL14 / ELL14K Elliptec rotator
 
-**Source:** [thorlabsrotator_ELL14.py](../WidefieldStarss/src/WFS/thorlabsrotator_ELL14.py)
+**Source:** [thorlabsrotator_ELL14.py](../../../../WidefieldStarss/src/WFS/thorlabsrotator_ELL14.py)
 **Target manager:** `imswitch/imcontrol/model/managers/rotators/ElliptecRotatorManager.py`
 **Driver helper:** `imswitch/imcontrol/model/interfaces/elliptecbus.py`
   (port the WFS `_SharedElliptecBus` here).
@@ -144,12 +144,12 @@ the only novel piece; once it's there, the manager itself is ~60 lines.
 
 ## #3 — Jena piezo Z-stage
 
-**Source:** [ZPiezoControl.py](../WidefieldStarss/src/WFS/ZPiezoControl.py)
+**Source:** [ZPiezoControl.py](../../../../WidefieldStarss/src/WFS/ZPiezoControl.py)
 **Target manager:** `imswitch/imcontrol/model/managers/positioners/JenaPiezoZManager.py`
 
 ### Pattern to copy
 
-Mirror [PiezoconceptZManager.py](imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py)
+Mirror [PiezoconceptZManager.py](../../../imswitch/imcontrol/model/managers/positioners/PiezoconceptZManager.py)
 — it is a near-identical role (RS232 single-axis Z piezo). Differences
 to handle:
 
@@ -188,7 +188,7 @@ to handle:
 ```
 
 Note: like Piezoconcept, route the serial port via an
-[RS232Manager](imswitch/imcontrol/model/managers/RS232sManager.py)
+[RS232Manager](../../../imswitch/imcontrol/model/managers/RS232sManager.py)
 entry instead of opening `serial.Serial` directly in the manager. That
 keeps reconnection/teardown consistent with the rest of ImSwitch.
 
@@ -203,7 +203,7 @@ necessary so the settle loop doesn't spin forever in tests.
 
 ## #4 — Thorlabs Kinesis MLS203 XY stage
 
-**Source:** [module_stage.py](../WidefieldStarss/src/WFS/module_stage.py)
+**Source:** [module_stage.py](../../../../WidefieldStarss/src/WFS/module_stage.py)
 **Target manager:** `imswitch/imcontrol/model/managers/positioners/KinesisStageManager.py`
 **Driver:** `pylablib.devices.Thorlabs.KinesisMotor` (same lib as #1,
 but two-channel).
@@ -277,14 +277,14 @@ change).
 
 ## #5 — Thorlabs scientific camera (TSI SDK) + Thorcam cleanup
 
-**Source:** [module_thorlabcam.py](../WidefieldStarss/src/WFS/module_thorlabcam.py)
+**Source:** [module_thorlabcam.py](../../../../WidefieldStarss/src/WFS/module_thorlabcam.py)
 **Target driver:** `imswitch/imcontrol/model/interfaces/thorcamera_tsi.py`
 **Target manager:** `imswitch/imcontrol/model/managers/detectors/ThorCamTSIManager.py`
 
 ### Cleanup: misnamed `ThorcamManager.py`
 
-[ThorcamManager.py](imswitch/imcontrol/model/managers/detectors/ThorcamManager.py)
-is an orphaned duplicate of [AVManager.py](imswitch/imcontrol/model/managers/detectors/AVManager.py)
+[ThorcamManager.py](../../../imswitch/imcontrol/model/managers/detectors/ThorcamManager.py)
+is an orphaned duplicate of [AVManager.py](../../../imswitch/imcontrol/model/managers/detectors/AVManager.py)
 (identical docstring, same Allied Vision GXIPY backend, **zero
 references** anywhere in the codebase or setup JSONs — confirmed by
 grep). It pretends to be a Thorlabs driver but isn't.
@@ -320,7 +320,7 @@ Quantalux family. ImSwitch has no manager for this today.
 
 ### Manager: `ThorCamTSIManager`
 
-Follow [HamamatsuManager.py](imswitch/imcontrol/model/managers/detectors/HamamatsuManager.py)
+Follow [HamamatsuManager.py](../../../imswitch/imcontrol/model/managers/detectors/HamamatsuManager.py)
 as the reference shape — Hamamatsu is the closest existing analogue
 (scientific camera, hardware trigger support, ROI control). Expose
 `DetectorNumberParameter` / `DetectorListParameter` for:

@@ -177,7 +177,7 @@ def demonstrate_persistence():
     print("=" * 70)
     print()
     print("For more information, see:")
-    print("- docs/WIDGET_STATE_PERSISTENCE.md")
+    print("- docs/design/WIDGET_STATE_PERSISTENCE.md")
     print("- PERSISTENCE_UI_INTEGRATION_SUMMARY.md")
     print()
 

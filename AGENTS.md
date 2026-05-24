@@ -206,7 +206,7 @@ Controllers implementing:
 
 **Location:**
 - Service: `imswitch/imcontrol/model/WidgetStatePersistence.py`
-- Documentation: `docs/WIDGET_STATE_PERSISTENCE.md`
+- Documentation: `docs/design/WIDGET_STATE_PERSISTENCE.md`
 - Demo: `examples/widget_state_persistence_demo.py`
 
 **Reference implementation:**
@@ -252,7 +252,7 @@ def setWidgetState(self, state: Dict[str, Any]) -> None:
 - **Future controllers**: Can use either system or both
 - **No breaking changes**: All existing functionality preserved
 
-**Status:** Fully implemented, documented, and tested. Safe for production use. See `docs/WIDGET_STATE_PERSISTENCE.md` for detailed usage guide.
+**Status:** Fully implemented, documented, and tested. Safe for production use. See `docs/design/WIDGET_STATE_PERSISTENCE.md` for detailed usage guide.
 
 ### Widget State Persistence: Detector and Scan Controllers + UI Integration (2026-05-14)
 
@@ -331,7 +331,7 @@ persistence.loadAllStates('my_experiment_config')
 **Documentation:**
 - Implementation summary: `PERSISTENCE_UI_INTEGRATION_SUMMARY.md`
 - Usage demo: `examples/widget_state_save_load_demo.py`
-- Framework docs: `docs/WIDGET_STATE_PERSISTENCE.md`
+- Framework docs: `docs/design/WIDGET_STATE_PERSISTENCE.md`
 
 **Status:** Complete and committed (commit 340bfb13). Fully backward compatible, zero risk to existing functionality. Ready for user testing.
 

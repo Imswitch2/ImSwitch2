@@ -245,7 +245,7 @@ ImSwitch2/
 └── .github/workflows/            # CI pipeline
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a full breakdown of the manager system, controller hierarchy, and startup flow.
+See [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) for a full breakdown of the manager system, controller hierarchy, and startup flow.
 
 ---
 
