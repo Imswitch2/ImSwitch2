@@ -50,6 +50,37 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
 - ⬜ Separate driver mocks from real interfaces in `model/interfaces/` (currently mixed with no clear pattern)
 - ⬜ Remove bare `except:` blocks and blank imports (deferred from Milestone 2 cleanup)
 
+## Milestone 3b: ImControl Backbone Cleanup 🔄
+
+**Goal:** Reduce coupling in the ImControl communication backbone without
+breaking existing controller/API signal contracts.
+
+- ✅ Add `CommunicationChannel` signal inventory contract tests
+  - Snapshot covers all signal names and signatures
+  - Public API signal aliases remain guarded
+- ✅ Reorganize `CommunicationChannel` into domain sections
+  - Acquisition/image, view, recording, scan, snapshot, SLM, focus/rotation,
+    event-triggered, bead-recognition, useq, scripting
+  - Duplicate `getNumCamTTL()` helper removed
+- ✅ Mark unused compatibility signals explicitly
+  - Deprecated but still available: `sigGridToggled`, `sigCrosshairToggled`,
+    `sigScanFrameFinished`, `sigClockWidefield`
+- ✅ Add domain event aliases
+  - `scanEvents`, `recordingEvents`, `eventTriggeredEvents`, `beadRecEvents`,
+    and related read-only groups preserve legacy `sigX` attributes
+- 🔄 Introduce workflow services for multi-step coordination
+  - `ScanWorkflowService`: scan parameter requests, scan-start notifications,
+    recording-triggered scan coordination, axis-center updates
+  - `BeadRecWorkflowService`: MoNaLISA/bead-recognition center-query and
+    axial-list coordination
+  - EtSTED, EtMonalisa, RecordingController, ScanControllerMoNaLISA,
+    ScanControllerAdvanced, and BeadRecController now route selected workflow
+    interactions through these services
+- ⬜ Continue extracting remaining broad signal usage where it is covered by
+  no-hardware tests
+- ⬜ Remove deprecated signals only after public API compatibility review
+  and representative no-hardware startup/widget-set tests
+
 ## Milestone 4: Hardware Abstraction Cleanup
 
 **Goal:** Improve the hardware abstraction layer for clarity and safety.

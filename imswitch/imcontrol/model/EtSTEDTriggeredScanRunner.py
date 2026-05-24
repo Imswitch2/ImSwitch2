@@ -29,6 +29,7 @@ class EtSTEDTriggeredScanRunner:
         positioners_scan: list,
         scan_manager=None,
         comm_channel=None,
+        scan_workflow=None,
         positioners_manager=None,
         apply_fast_axis_shift: bool = False,
         fast_axis_shift_fn: Callable[[float], float] | None = None,
@@ -61,15 +62,24 @@ class EtSTEDTriggeredScanRunner:
             )
 
         if scan_initiation_mode == self.recording_widget_mode:
-            if comm_channel is None:
-                return EtSTEDTriggeredScanResult(False, 'RecordingWidget initiation requires a communication channel.')
-            comm_channel.sigRequestScanFreq.emit()
-            self.set_centers_scan_widget(analog_params, comm_channel)
+            scan_workflow = self._resolve_scan_workflow(scan_workflow, comm_channel)
+            if scan_workflow is None:
+                return EtSTEDTriggeredScanResult(False, 'RecordingWidget initiation requires a scan workflow.')
+            scan_workflow.request_scan_frequency()
+            self.set_centers_scan_widget(analog_params, scan_workflow=scan_workflow)
             return EtSTEDTriggeredScanResult(True)
 
         return EtSTEDTriggeredScanResult(False, f'Unknown scan initiation mode: {scan_initiation_mode}')
 
-    def trigger(self, scan_initiation_mode: str, nidaq_manager=None, signal_dict=None, scan_info_dict=None, comm_channel=None) -> EtSTEDTriggeredScanResult:
+    def trigger(
+        self,
+        scan_initiation_mode: str,
+        nidaq_manager=None,
+        signal_dict=None,
+        scan_info_dict=None,
+        comm_channel=None,
+        scan_workflow=None,
+    ) -> EtSTEDTriggeredScanResult:
         """Trigger a previously prepared slow scan."""
         if scan_initiation_mode == self.scan_widget_mode:
             if nidaq_manager is None:
@@ -80,9 +90,10 @@ class EtSTEDTriggeredScanRunner:
             return EtSTEDTriggeredScanResult(True)
 
         if scan_initiation_mode == self.recording_widget_mode:
-            if comm_channel is None:
-                return EtSTEDTriggeredScanResult(False, 'RecordingWidget trigger requires a communication channel.')
-            comm_channel.sigStartRecordingExternal.emit()
+            scan_workflow = self._resolve_scan_workflow(scan_workflow, comm_channel)
+            if scan_workflow is None:
+                return EtSTEDTriggeredScanResult(False, 'RecordingWidget trigger requires a scan workflow.')
+            scan_workflow.start_external_recording()
             return EtSTEDTriggeredScanResult(True)
 
         return EtSTEDTriggeredScanResult(False, f'Unknown scan initiation mode: {scan_initiation_mode}')
@@ -114,14 +125,17 @@ class EtSTEDTriggeredScanRunner:
                 positioner = positioners_manager[positioner_name]
                 positioner.setPosition(analog_params['axis_centerpos'][index], 0)
 
-    def set_centers_scan_widget(self, analog_params: dict, comm_channel) -> None:
+    def set_centers_scan_widget(self, analog_params: dict, comm_channel=None, scan_workflow=None) -> None:
         """Emit updated scan centers to the scan widget."""
+        scan_workflow = self._resolve_scan_workflow(scan_workflow, comm_channel)
+        if scan_workflow is None:
+            raise ValueError('Updating scan centers requires a scan workflow.')
         devices = []
         centers = []
         for device, center in zip(analog_params['target_device'], analog_params['axis_centerpos']):
             devices.append(device)
             centers.append(center)
-        comm_channel.sigSetAxisCenters.emit(devices, centers)
+        scan_workflow.set_axis_centers(devices, centers)
 
     def _validate_position(self, position) -> np.ndarray:
         if position is None:
@@ -130,6 +144,16 @@ class EtSTEDTriggeredScanRunner:
         if position.size < 2:
             raise ValueError('Triggered etSTED scans require at least X/Y event coordinates.')
         return position
+
+    def _resolve_scan_workflow(self, scan_workflow=None, comm_channel=None):
+        if scan_workflow is not None:
+            return scan_workflow
+        if comm_channel is not None:
+            scan_workflow = getattr(comm_channel, 'scanWorkflow', None)
+            if scan_workflow is not None:
+                return scan_workflow
+            return _LegacyScanWorkflow(comm_channel)
+        return None
 
     def validate_scan_parameters(self, analog_params: dict, digital_params: dict, positioners_scan: list) -> None:
         if not analog_params:
@@ -156,3 +180,19 @@ class EtSTEDTriggeredScanRunner:
             for index, positioner_name in enumerate(analog_params['target_device'])
             if positioner_name != 'None'
         ]
+
+
+class _LegacyScanWorkflow:
+    """Compatibility adapter for tests and callers that pass only a comm channel."""
+
+    def __init__(self, comm_channel) -> None:
+        self._comm_channel = comm_channel
+
+    def request_scan_frequency(self) -> None:
+        self._comm_channel.sigRequestScanFreq.emit()
+
+    def set_axis_centers(self, devices, centers) -> None:
+        self._comm_channel.sigSetAxisCenters.emit(devices, centers)
+
+    def start_external_recording(self) -> None:
+        self._comm_channel.sigStartRecordingExternal.emit()

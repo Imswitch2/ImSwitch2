@@ -1,8 +1,6 @@
 import os
 import sys
-import ctypes
 import importlib
-import enum
 import h5py
 import csv
 import time
@@ -19,30 +17,26 @@ from tkinter.filedialog import askopenfilename
 from imswitch.imcommon.model import dirtools
 from ..basecontrollers import ImConWidgetController
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.EventTriggeredSession import (
+    EventRunMode as RunMode,
+    EventScanInitiationMode as ScanInitiationMode,
+    EventTriggeredSessionState,
+)
 
 _logsDir = os.path.join(dirtools.UserFileDirs.Root, 'recordings', 'logs_etmonalisa')
 
 
 def timestamp():
-    """Return current time (s). High-res timing function adapted from:
-    https://stackoverflow.com/questions/38319606/how-can-i-get-millisecond-and-microsecond-resolution-timestamps-in-python/38319607#38319607 """
-    tics = ctypes.c_int64()
-    freq = ctypes.c_int64()
-    #get ticks on the internal ~2MHz QPC clock
-    ctypes.windll.Kernel32.QueryPerformanceCounter(ctypes.byref(tics)) 
-    #get the actual freq. of the internal ~2MHz QPC clock
-    ctypes.windll.Kernel32.QueryPerformanceFrequency(ctypes.byref(freq))  
-    return tics.value, freq.value 
+    """Return a monotonic high-resolution timestamp in nanoseconds."""
+    return time.perf_counter_ns()
 
 def micros():
     "Return a timestamp in microseconds (us). "
-    tics, freq = timestamp()
-    return tics*1e6/freq
-    
+    return timestamp() / 1e3
+
 def millis():
     "Return a timestamp in milliseconds (ms). "
-    tics, freq = timestamp()
-    return tics*1e3/freq
+    return timestamp() / 1e6
 
 
 class EtMonalisaController(ImConWidgetController):
@@ -82,125 +76,183 @@ class EtMonalisaController(ImConWidgetController):
         self._commChannel.sigSendScanParameters.connect(lambda analogParams, digitalParams, positionersScan: self.assignScanParameters(analogParams, digitalParams, positionersScan))
         self._commChannel.sigSendScanFreq.connect(lambda scanFreq: self.logScanFreq(scanFreq))
 
+        # initiate flags and params
+        self.__state = EventTriggeredSessionState()
         # initiate log for each detected event
         self.resetDetLog()
 
-        # initiate flags and params
-        self.__runMode = RunMode.Experiment
-        self.__running = False
-        self.__validating = False
-        self.__busy = False
         self.__prevFrames = deque(maxlen=10)
         self.__prevAnaFrames = deque(maxlen=10)
         self.__binary_mask = None
         self.__binary_stack = None
         self.__binary_frames = 10
         self.__init_frames = 5
-        self.__validationFrames = 0
-        self.__frame = 0
-        self.__t_call = 0
-        self.__maxAnaImgVal = 0
         self.__flipwfcalib = True  # flipping widefield image when loading for transformation calibration
+        self._analogParameterDict = {}
+        self._digitalParameterDict = {}
+        self._positionersScan = []
 
         # Leica stand command example
         ####self._master.standManager._subManager.setILShutter(0)
 
     def initiate(self):
         """ Initiate or stop an etMonalisa experiment. """
-        if not self.__running:
+        if not self.__state.running:
+            os.makedirs(_logsDir, exist_ok=True)
 
-            self._commChannel.sigInitiateEtMonalisa.emit(True)
+            try:
+                self._commChannel.sigInitiateEtMonalisa.emit(True)
+                self._prepareExperiment()
+                if self.__state.runMode == RunMode.Experiment:
+                    self._switchStandToFastMode()
+                # connect communication channel signals and turn on wf laser
+                self._connectRunSignals()
+                self._setFastLaserEnabled(True)
 
-            detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
-            self.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
-            laserFastIdx = self._widget.fastImgLasersPar.currentIndex()
-            self.laserFast = self._widget.fastImgLasers[laserFastIdx]
-            scanInitiationTypeIdx = self._widget.scanInitiationPar.currentIndex()
-            scanInitiationType = self._widget.scanInitiation[scanInitiationTypeIdx]
-            if scanInitiationType == self.scanInitiationList[0]:
-                self.scanInitiationMode = ScanInitiationMode.ScanWidget
-            elif scanInitiationType == self.scanInitiationList[1]:
-                self.scanInitiationMode = ScanInitiationMode.RecordingWidget
-
-            self.__param_vals = self.readParams()
-            # Reset parameter for extra information that pipelines can input and output
-            self.__exinfo = None
-
-            # Check if visualization mode, in case launch help widget
-            experimentModeIdx = self._widget.experimentModesPar.currentIndex()
-            self.experimentMode = self._widget.experimentModes[experimentModeIdx]
-            if self.experimentMode == 'TestVisualize':
-                self.__runMode = RunMode.Visualize
-            elif self.experimentMode == 'TestValidate':
-                self.__runMode = RunMode.Validate
-            else:
-                self.__runMode = RunMode.Experiment
-            # Switch to FLUO if in experiment mode
-            if self.__runMode == RunMode.Experiment:
-                self._master.standManager._subManager.setFLUO()
-                time.sleep(1)
-                self._master.standManager._subManager.setILshutter(1)
-            # check if visualization or validation mode
-            if self.__runMode == RunMode.Validate or self.__runMode == RunMode.Visualize:
-                self.launchHelpWidget()
-            # load selected coordinate transform
-            self.loadTransform()
-            self.__transformCoeffs = self.__coordTransformHelper.getTransformCoeffs()
-            # connect communication channel signals and turn on wf laser
-            self._commChannel.sigUpdateImage.connect(self.runPipeline)
-            if self.scanInitiationMode == ScanInitiationMode.ScanWidget:
-                self._commChannel.sigToggleBlockScanWidget.emit(False)
-                self._commChannel.sigScanEnded.connect(self.scanEnded)
-            elif self.scanInitiationMode == ScanInitiationMode.RecordingWidget:
-                self._commChannel.sigRecordingEnded.connect(self.scanEnded)
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
-
-            self._widget.initiateButton.setText('Stop')
-            self.__running = True
+                self._widget.initiateButton.setText('Stop')
+                self.__state.running = True
+            except Exception as e:
+                self._logger.error(f'Failed to initiate etMonalisa experiment: {e}', exc_info=True)
+                self.stopExperiment(resetParams=True)
 
         else:
-            self._commChannel.sigInitiateEtMonalisa.emit(False)
+            self.stopExperiment(resetParams=True)
 
-            # disconnect communication channel signals and turn off wf laser
-            self._commChannel.sigUpdateImage.disconnect(self.runPipeline)
-            if self.scanInitiationMode == ScanInitiationMode.ScanWidget:
+    def _prepareExperiment(self):
+        """Validate UI selections and load runtime objects before arming EtMonalisa."""
+        detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
+        self.__state.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
+        self.detectorFast = self.__state.detectorFast
+        laserFastIdx = self._widget.fastImgLasersPar.currentIndex()
+        self.__state.laserFast = self._widget.fastImgLasers[laserFastIdx]
+        self.laserFast = self.__state.laserFast
+        scanInitiationTypeIdx = self._widget.scanInitiationPar.currentIndex()
+        scanInitiationType = self._widget.scanInitiation[scanInitiationTypeIdx]
+        if scanInitiationType == self.scanInitiationList[0]:
+            self.__state.scanInitiationMode = ScanInitiationMode.ScanWidget
+        elif scanInitiationType == self.scanInitiationList[1]:
+            self.__state.scanInitiationMode = ScanInitiationMode.RecordingWidget
+        else:
+            raise ValueError(f'Unknown scan initiation type: {scanInitiationType}')
+        self.scanInitiationMode = self.__state.scanInitiationMode
+
+        if not self._widget.analysisPipelines:
+            raise RuntimeError('No etMonalisa analysis pipeline is available.')
+        if not self._widget.transformPipelines:
+            raise RuntimeError('No etMonalisa coordinate transform pipeline is available.')
+        if not self._widget.transformCoefs:
+            raise RuntimeError('No etMonalisa coordinate transform coefficients are available.')
+        if not hasattr(self, 'pipeline'):
+            self.loadPipeline()
+
+        self.__param_vals = self.readParams()
+        # Reset parameter for extra information that pipelines can input and output
+        self.__exinfo = None
+
+        # Check if visualization mode, in case launch help widget
+        experimentModeIdx = self._widget.experimentModesPar.currentIndex()
+        self.experimentMode = self._widget.experimentModes[experimentModeIdx]
+        if self.experimentMode == 'TestVisualize':
+            self.__state.runMode = RunMode.Visualize
+        elif self.experimentMode == 'TestValidate':
+            self.__state.runMode = RunMode.Validate
+        else:
+            self.__state.runMode = RunMode.Experiment
+
+        # check if visualization or validation mode
+        if self.__state.runMode == RunMode.Validate or self.__state.runMode == RunMode.Visualize:
+            self.launchHelpWidget()
+        # load selected coordinate transform
+        self.loadTransform()
+
+    def _switchStandToFastMode(self):
+        self._master.standManager._subManager.setFLUO()
+        time.sleep(1)
+        self._master.standManager._subManager.setILshutter(1)
+
+    def _switchStandToSlowMode(self):
+        self._master.standManager._subManager.setCS()
+        time.sleep(1)
+
+    def _connectRunSignals(self):
+        if not self.__state.imageSignalConnected:
+            self._commChannel.sigUpdateImage.connect(self.runPipeline)
+            self.__state.imageSignalConnected = True
+        if not self.__state.scanEndSignalConnected:
+            if self.__state.scanInitiationMode == ScanInitiationMode.ScanWidget:
+                self._commChannel.sigToggleBlockScanWidget.emit(False)
+                self._commChannel.sigScanEnded.connect(self.scanEnded)
+            elif self.__state.scanInitiationMode == ScanInitiationMode.RecordingWidget:
+                self._commChannel.sigRecordingEnded.connect(self.scanEnded)
+            self.__state.scanEndSignalConnected = True
+
+    def _disconnectRunSignals(self):
+        if self.__state.imageSignalConnected:
+            self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
+            self.__state.imageSignalConnected = False
+        if self.__state.scanEndSignalConnected:
+            if self.__state.scanInitiationMode == ScanInitiationMode.ScanWidget:
                 self._commChannel.sigToggleBlockScanWidget.emit(True)
-                self._commChannel.sigScanEnded.disconnect(self.scanEnded)
-            elif self.scanInitiationMode == ScanInitiationMode.RecordingWidget:
-                self._commChannel.sigRecordingEnded.disconnect(self.scanEnded)
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
+                self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
+            elif self.__state.scanInitiationMode == ScanInitiationMode.RecordingWidget:
+                self._safeDisconnect(self._commChannel.sigRecordingEnded, self.scanEnded)
+            self.__state.scanEndSignalConnected = False
 
+    def _safeDisconnect(self, signal, slot):
+        try:
+            signal.disconnect(slot)
+        except (TypeError, RuntimeError):
+            pass
+
+    def _setFastLaserEnabled(self, enabled):
+        if self.__state.laserFast is not None:
+            try:
+                self._master.lasersManager.execOn(self.__state.laserFast, lambda l: l.setEnabled(enabled))
+            except Exception as e:
+                self._logger.error(
+                    f'Failed to set fast laser {self.__state.laserFast} enabled={enabled}: {e}',
+                    exc_info=True
+                )
+
+    def stopExperiment(self, resetParams=False):
+        """Best-effort stop path that leaves lasers and scan UI in a safe state."""
+        self._commChannel.sigInitiateEtMonalisa.emit(False)
+        self._disconnectRunSignals()
+        try:
+            self._setFastLaserEnabled(False)
+        finally:
             self._widget.initiateButton.setText('Initiate')
-            self.resetParamVals()
+            if resetParams:
+                self.resetParamVals()
             self.resetRunParams()
 
     def scanEnded(self):
         """ End an etSTED slow method scan. """
         self.setDetLogLine("scan_end",datetime.now().strftime('%Ss%fus'))
-        if self.scanInitiationMode == ScanInitiationMode.ScanWidget:
+        if self.__state.scanInitiationMode == ScanInitiationMode.ScanWidget:
             self._commChannel.sigSnapImg.emit()
             try:
                 total_scan_time = self.scanInfoDict['scan_samples_total'] * 10e-6  # length (s) of total scan signal
                 self.setDetLogLine("total_scan_time", total_scan_time)
-            except:
+            except KeyError:
                 self._logger.info("Scan 'total_scan_time' not saved in log as 'scan_samples_total' not available in scanInfoDict using current signal designer.")
         self.endRecording()
         self.continueFastModality()
-        self.__frame = 0
+        self.__state.frame = 0
 
     def setDetLogLine(self, key, val, *args):
         if args:
-            self.__detLog[f"{key}{args[0]}"] = val
+            self.__state.detLog[f"{key}{args[0]}"] = val
         else:
-            self.__detLog[key] = val
+            self.__state.detLog[key] = val
 
     def runSlowScan(self):
         """ Run a scan of the slow method (STED). """
-        self.__detLog[f"scan_start"] = datetime.now().strftime('%Ss%fus')
-        if self.scanInitiationMode == ScanInitiationMode.ScanWidget:
+        self.__state.detLog["scan_start"] = datetime.now().strftime('%Ss%fus')
+        if self.__state.scanInitiationMode == ScanInitiationMode.ScanWidget:
             # Run scan in nidaqManager
             self._master.nidaqManager.runScan(self.signalDic, self.scanInfoDict)
-        elif self.scanInitiationMode == ScanInitiationMode.RecordingWidget:
+        elif self.__state.scanInitiationMode == ScanInitiationMode.RecordingWidget:
             # Run recording from RecWidget
             self.triggerRecordingWidgetScan()
 
@@ -211,7 +263,8 @@ class EtMonalisaController(ImConWidgetController):
         # save log file with temporal info of trigger event
         filename = datetime.utcnow().strftime('%Hh%Mm%Ss%fus')
         name = os.path.join(_logsDir, filename) + '_log'
-        log = [f'{key}: {self.__detLog[key]}' for key in self.__detLog]
+        log = [f'{key}: {self.__state.detLog[key]}' for key in self.__state.detLog]
+        os.makedirs(_logsDir, exist_ok=True)
         with open(f'{name}.txt', 'w') as f:
             [f.write(f'{st}\n') for st in log]
         self.resetDetLog()
@@ -246,28 +299,19 @@ class EtMonalisaController(ImConWidgetController):
 
     def continueFastModality(self):
         """ Continue the fast method, after an event scan has been performed. """
-        if self._widget.endlessScanCheck.isChecked() and not self.__running:
+        if self._widget.endlessScanCheck.isChecked() and not self.__state.running:
             # switch back to FLUO mode if experiment mode
-            if self.__runMode == RunMode.Experiment:
-                self._master.standManager._subManager.setFLUO()
-                time.sleep(1)
-                self._master.standManager._subManager.setILshutter(1)
+            if self.__state.runMode == RunMode.Experiment:
+                self._switchStandToFastMode()
                 time.sleep(0.1) #to ensure that next detected event is not just the LEDs turning on
             # connect communication channel signals
-            self._commChannel.sigUpdateImage.connect(self.runPipeline)
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
+            self._connectRunSignals()
+            self._setFastLaserEnabled(True)
             
             self._widget.initiateButton.setText('Stop')
-            self.__running = True
+            self.__state.running = True
         elif not self._widget.endlessScanCheck.isChecked():
-            self._widget.initiateButton.setText('Initiate')
-            if self.scanInitiationMode == ScanInitiationMode.ScanWidget:
-                self._commChannel.sigToggleBlockScanWidget.emit(True)
-                self._commChannel.sigScanEnded.disconnect(self.scanEnded)
-            elif self.scanInitiationMode == ScanInitiationMode.RecordingWidget:
-                self._commChannel.sigRecordingEnded.disconnect(self.scanEnded)
-            self.__running = False
-            self.resetParamVals()
+            self.stopExperiment(resetParams=True)
 
     def loadTransform(self):
         """ Load a coordinate transform and previously saved transform coefficients. """
@@ -289,22 +333,24 @@ class EtMonalisaController(ImConWidgetController):
         """ Initiate the process of calculating a binary mask of the region of interest. """
         self.__binary_stack = None
         laserFastIdx = self._widget.fastImgLasersPar.currentIndex()
-        self.laserFast = self._widget.fastImgLasers[laserFastIdx]
+        self.__state.laserFast = self._widget.fastImgLasers[laserFastIdx]
+        self.laserFast = self.__state.laserFast
         detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
-        self.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
-        self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
+        self.__state.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
+        self.detectorFast = self.__state.detectorFast
+        self._master.lasersManager.execOn(self.__state.laserFast, lambda l: l.setEnabled(True))
         self._commChannel.sigUpdateImage.connect(self.addImgBinStack)
         self._widget.recordBinaryMaskButton.setText('Recording...')
 
     def addImgBinStack(self, detectorName, img, init, scale, isCurrentDetector):
         """ Add image to the stack of images used to calculate a binary mask of the region of interest. """
         del init, scale, isCurrentDetector
-        if detectorName == self.detectorFast:
+        if detectorName == self.__state.detectorFast:
             if self.__binary_stack is None:
                 self.__binary_stack = img
             elif len(self.__binary_stack) == self.__binary_frames:
                 self._commChannel.sigUpdateImage.disconnect(self.addImgBinStack)
-                self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
+                self._master.lasersManager.execOn(self.__state.laserFast, lambda l: l.setEnabled(False))
                 self.calculateBinaryMask(self.__binary_stack)
             else:
                 if np.ndim(self.__binary_stack) == 2:
@@ -315,16 +361,16 @@ class EtMonalisaController(ImConWidgetController):
     def calculateBinaryMask(self, img_stack):
         """ Calculate the binary mask of the region of interest. """
         img_mean = np.mean(img_stack, 0)
-        img_bin = ndi.filters.gaussian_filter(img_mean, np.float(self._widget.bin_smooth_edit.text()))
-        self.__binary_mask = np.array(img_bin > np.float(self._widget.bin_thresh_edit.text()))
+        img_bin = ndi.filters.gaussian_filter(img_mean, float(self._widget.bin_smooth_edit.text()))
+        self.__binary_mask = np.array(img_bin > float(self._widget.bin_thresh_edit.text()))
         self._widget.recordBinaryMaskButton.setText('Record binary mask')
         self.setAnalysisHelpImg(self.__binary_mask)
         self.launchHelpWidget()
 
     def setAnalysisHelpImg(self, img_ana, exinfo=None):
         """ Set the preprocessed image in the analysis help widget. """
-        if np.max(img_ana) > self.__maxAnaImgVal:
-            self.__maxAnaImgVal = np.max(img_ana)
+        if np.max(img_ana) > self.__state.maxAnaImgVal:
+            self.__state.maxAnaImgVal = np.max(img_ana)
             autolevels = True
         else:
             autolevels = False
@@ -343,7 +389,7 @@ class EtMonalisaController(ImConWidgetController):
 
     def getScanParameters(self):
         """ Load STED scan parameters from the scanning widget. """
-        self._commChannel.sigRequestScanParameters.emit()
+        self._commChannel.scanWorkflow.request_scan_parameters()
 
     def setUpdatePeriod(self):
         """ Set the update period for the fast method. """
@@ -351,7 +397,7 @@ class EtMonalisaController(ImConWidgetController):
         self._master.detectorsManager.setUpdatePeriod(self.__updatePeriod)
 
     def setBusyFalse(self):
-        self.__busy = False
+        self.__state.busy = False
 
     def assignScanParameters(self, analogParams, digitalParams, positionersScan):
         """ Assign scan parameters from the scanning widget. """
@@ -364,7 +410,7 @@ class EtMonalisaController(ImConWidgetController):
         """ Read user-provided analysis pipeline parameter values. """
         param_vals = list()
         for item in self._widget.param_edits:
-            param_vals.append(np.float(item.text()))
+            param_vals.append(float(item.text()))
         return param_vals
 
     def launchHelpWidget(self):
@@ -373,8 +419,7 @@ class EtMonalisaController(ImConWidgetController):
 
     def resetDetLog(self):
         """ Reset the event log file. """
-        self.__detLog = dict()
-        self.__detLog = {
+        self.__state.detLog = {
             "pipeline": "",
             "pipeline_start": "",
             "pipeline_end": "",
@@ -389,47 +434,49 @@ class EtMonalisaController(ImConWidgetController):
         self.__param_vals = list()
 
     def resetRunParams(self):
-        self.__running = False
-        self.__validating = False
-        self.__frame = 0
-        self.__maxAnaImgVal = 0
+        self.__state.reset_runtime_counters()
 
     def runPipeline(self, detectorName, img, init, scale, isCurrentDetector):
         """ If detector is detectorFast: run the analyis pipeline, called after every fast method frame. """
         del init, scale, isCurrentDetector
-        if detectorName == self.detectorFast:
-            if not self.__busy:
-                t_sincelastcall = millis() - self.__t_call
-                self.__t_call = millis()
+        if detectorName == self.__state.detectorFast:
+            if not self.__state.busy:
+                t_sincelastcall = millis() - self.__state.tCallMs
+                self.__state.tCallMs = millis()
                 self.setDetLogLine("pipeline_rep_period", str(t_sincelastcall))
                 self.setDetLogLine("pipeline_start", datetime.now().strftime('%Ss%fus'))
-                self.__busy = True
-                #t_pre = millis()
-                if self.__runMode == RunMode.Visualize or self.__runMode == RunMode.Validate:
-                    coords_detected, self.__exinfo, img_ana = self.pipeline(img, self.__prevFrames, self.__binary_mask, (self.__runMode==RunMode.Visualize or self.__runMode==RunMode.Validate), self.__exinfo, *self.__param_vals)
-                else:
-                    coords_detected, self.__exinfo = self.pipeline(img, self.__prevFrames, self.__binary_mask, self.__runMode==RunMode.Visualize, self.__exinfo, *self.__param_vals)
+                self.__state.busy = True
+                try:
+                    #t_pre = millis()
+                    if self.__state.runMode == RunMode.Visualize or self.__state.runMode == RunMode.Validate:
+                        coords_detected, self.__exinfo, img_ana = self.pipeline(img, self.__prevFrames, self.__binary_mask, (self.__state.runMode==RunMode.Visualize or self.__state.runMode==RunMode.Validate), self.__exinfo, *self.__param_vals)
+                    else:
+                        coords_detected, self.__exinfo = self.pipeline(img, self.__prevFrames, self.__binary_mask, self.__state.runMode==RunMode.Visualize, self.__exinfo, *self.__param_vals)
+                except Exception as e:
+                    self._logger.error(f'etMonalisa pipeline failed: {e}', exc_info=True)
+                    self.setBusyFalse()
+                    return
                 #t_post = millis()
                 self.setDetLogLine("pipeline_end", datetime.now().strftime('%Ss%fus'))
                 #self._logger.debug(f'Pipeline time: {t_post-t_pre} ms')
 
-                if self.__frame > self.__init_frames:
+                if self.__state.frame > self.__init_frames:
                     # run if the initial frames have passed
-                    if self.__runMode == RunMode.Visualize:
+                    if self.__state.runMode == RunMode.Visualize:
                         self.updateScatter(coords_detected, clear=True)
                         self.setAnalysisHelpImg(img_ana, self.__exinfo)
-                    elif self.__runMode == RunMode.Validate:
+                    elif self.__state.runMode == RunMode.Validate:
                         self.updateScatter(coords_detected, clear=True)
                         self.setAnalysisHelpImg(img_ana)
-                        if self.__validating:
-                            if self.__validationFrames > 5:
+                        if self.__state.validating:
+                            if self.__state.validationFrames > 5:
                                 self.saveValidationImages(prev=True, prev_ana=True)
                                 self.pauseFastModality()
                                 self.endRecording()
                                 self.continueFastModality()
-                                self.__frame = 0
-                                self.__validating = False
-                            self.__validationFrames += 1
+                                self.__state.frame = 0
+                                self.__state.validating = False
+                            self.__state.validationFrames += 1
                         elif coords_detected.size != 0:
                             # if some events where detected
                             if np.size(coords_detected) > 2:
@@ -444,8 +491,8 @@ class EtMonalisaController(ImConWidgetController):
                                 for i in range(np.size(coords_detected,0)):
                                     self.setDetLogLine("det_coord_x_", coords_detected[i,0], i)
                                     self.setDetLogLine("det_coord_y_", coords_detected[i,1], i)
-                            self.__validating = True
-                            self.__validationFrames = 0
+                            self.__state.validating = True
+                            self.__state.validationFrames = 0
                     elif coords_detected.size != 0:
                         # if some events were detected
                         if np.size(coords_detected) > 2:
@@ -470,15 +517,20 @@ class EtMonalisaController(ImConWidgetController):
                         #self._logger.debug(f'coords_wf: {coords_wf}')
                         #self._logger.debug(f'coords_scan: {coords_scan}')
                         try:
-                            self.initiateSlowScan(position=coords_scan)
+                            slow_scan_ready = self.initiateSlowScan(position=coords_scan)
                         except Exception as e:
                             self._logger.error(f"Failed to initiate slow scan, likely due to not having loaded scanning parameters. Error message: {e}")
                             self.setBusyFalse()
                             self.continueFastModality()
                             return
+                        if not slow_scan_ready:
+                            self._logger.error("Failed to initiate slow scan; scan was not started.")
+                            self.setBusyFalse()
+                            self.continueFastModality()
+                            return
                         # trigger scan starting signal emission or not - if triggered, use scan-standard laser preset
                         if not self._widget.useScanLaserPresetCheck.isChecked():
-                            self._commChannel.sigScanStarting.emit()
+                            self._commChannel.scanWorkflow.notify_scan_starting()
                         
                         self.runSlowScan()
 
@@ -488,34 +540,37 @@ class EtMonalisaController(ImConWidgetController):
                         self.__prevFrames.append(img)
                         self.saveValidationImages(prev=True, prev_ana=False)
                         self.__exinfo = None
-                        self.__busy = False
+                        self.__state.busy = False
                         return
                 #self.__bkg = img
                 self.__prevFrames.append(img)
-                if self.__runMode == RunMode.Validate:
+                if self.__state.runMode == RunMode.Validate:
                     self.__prevAnaFrames.append(img_ana)
-                self.__frame += 1
+                self.__state.frame += 1
                 self.setBusyFalse()
 
-    def initiateSlowScan(self, position=[0.0,0.0,0.0]):
+    def initiateSlowScan(self, position=None):
         """ Initiate a STED scan. """
+        if position is None:
+            position = [0.0,0.0,0.0]
         #dt = datetime.now()
         #time_curr_before = round(dt.microsecond/1000)
         self.setCenterScanParameter(position)
         #dt = datetime.now()
         #time_curr_mid = round(dt.microsecond/1000)
-        if self.scanInitiationMode == ScanInitiationMode.ScanWidget:
+        if self.__state.scanInitiationMode == ScanInitiationMode.ScanWidget:
             try:
                 self.signalDic, self.scanInfoDict = self._master.scanManager.makeFullScan(
                     self._analogParameterDict, self._digitalParameterDict, False
                 )
-            except:
-                self._logger.debug('Error when initiating ScanWidget scan')
-                return
-        elif self.scanInitiationMode == ScanInitiationMode.RecordingWidget:
-            self._commChannel.sigRequestScanFreq.emit()
+            except Exception:
+                self._logger.exception('Error when initiating ScanWidget scan')
+                return False
+        elif self.__state.scanInitiationMode == ScanInitiationMode.RecordingWidget:
+            self._commChannel.scanWorkflow.request_scan_frequency()
             # Set scan axis centers in scanwidget
             self.setCentersScanWidget()
+        return True
         #dt = datetime.now()
         #time_curr_after = round(dt.microsecond/1000)
         #self._logger.debug(f'Time for curve parameters: {time_curr_mid-time_curr_before} ms')
@@ -536,7 +591,7 @@ class EtMonalisaController(ImConWidgetController):
                         self._analogParameterDict['axis_centerpos'][index] = center
         # set actual positions of scanners not in scan from centerpos (usually done in ScanController.runScanAdvanced())
         for index, positionerName in enumerate(self._analogParameterDict['target_device']):
-            if positionerName not in self._positionersScan:
+            if positionerName != 'None' and positionerName not in self._positionersScan:
                 position = self._analogParameterDict['axis_centerpos'][index]
                 self._master.positionersManager[positionerName].setPosition(position, 0)
 
@@ -576,10 +631,10 @@ class EtMonalisaController(ImConWidgetController):
         for device,center in zip(self._analogParameterDict['target_device'], self._analogParameterDict['axis_centerpos']):
             devices.append(device)
             centers.append(center)
-        self._commChannel.sigSetAxisCenters.emit(devices, centers)
+        self._commChannel.scanWorkflow.set_axis_centers(devices, centers)
 
     def triggerRecordingWidgetScan(self):
-        self._commChannel.sigStartRecordingExternal.emit()
+        self._commChannel.scanWorkflow.start_external_recording()
 
     def updateScatter(self, coords, clear=True):
         """ Update the scatter plot of detected event coordinates. """
@@ -592,28 +647,28 @@ class EtMonalisaController(ImConWidgetController):
         """ Save the widefield validation images of an event detection. """
         if prev:
             img = np.array(list(self.__prevFrames))
-            self._commChannel.sigSnapImgPrev.emit(self.detectorFast, img, 'raw')
+            self._commChannel.sigSnapImgPrev.emit(self.__state.detectorFast, img, 'raw')
             self.__prevFrames.clear()
         if prev_ana:
             img = np.array(list(self.__prevAnaFrames))
-            self._commChannel.sigSnapImgPrev.emit(self.detectorFast, img, 'ana')
+            self._commChannel.sigSnapImgPrev.emit(self.__state.detectorFast, img, 'ana')
             self.__prevAnaFrames.clear()
 
     def pauseFastModality(self):
         """ Pause the fast method, when an event has been detected. """
-        if self.__running:
-            self._commChannel.sigUpdateImage.disconnect(self.runPipeline)
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
-            self.__running = False
-            if self.__runMode == RunMode.Experiment:
-                self._master.standManager._subManager.setCS()
-                time.sleep(1)
+        if self.__state.running:
+            self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
+            self.__state.imageSignalConnected = False
+            self._setFastLaserEnabled(False)
+            self.__state.running = False
+            if self.__state.runMode == RunMode.Experiment:
+                self._switchStandToSlowMode()
 
     def getFlipWf(self):
         return self.__flipwfcalib
 
     def closeEvent(self):
-        pass
+        self.stopExperiment(resetParams=True)
 
 
 class EtMonalisaCoordTransformHelper():
@@ -682,6 +737,8 @@ class EtMonalisaCoordTransformHelper():
         name_long = datetime.utcnow().strftime('%Y-%m-%d-%Hh%Mm%Ss')
         filename_txt = os.path.join(self.__saveFolder, name_short+'_FOV_calib.txt')
         filename_csv = os.path.join(self.etMonalisaController._widget.transformDir, name_long+'.csv')
+        os.makedirs(self.__saveFolder, exist_ok=True)
+        os.makedirs(self.etMonalisaController._widget.transformDir, exist_ok=True)
         np.savetxt(fname=filename_txt, X=self.__MLcenterfov_WFpx)
         # with open(filename_csv, 'w', newline='') as csvfile:
         #     writer = csv.writer(csvfile, delimiter=' ', quotechar='|', quoting=csv.QUOTE_MINIMAL)
@@ -779,18 +836,6 @@ class EtMonalisaCoordTransformHelper():
         x_i1 = a[0]*c1**3 + a[1]*c2**3 + a[2]*c2*c1**2 + a[3]*c1*c2**2 + a[4]*c1**2 + a[5]*c2**2 + a[6]*c1*c2 + a[7]*c1 + a[8]*c2 + a[9]
         x_i2 = a[10]*c1**3 + a[11]*c2**3 + a[12]*c2*c1**2 + a[13]*c1*c2**2 + a[14]*c1**2 + a[15]*c2**2 + a[16]*c1*c2 + a[17]*c1 + a[18]*c2 + a[19]
         return (x_i1, x_i2)
-
-
-
-class RunMode(enum.Enum):
-    Experiment = 1
-    Visualize = 2
-    Validate = 3
-
-class ScanInitiationMode(enum.Enum):
-    ScanWidget = 1
-    RecordingWidget = 2
-
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

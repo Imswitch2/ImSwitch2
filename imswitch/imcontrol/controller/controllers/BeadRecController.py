@@ -59,11 +59,11 @@ class BeadRecController(ImConWidgetController):
         self._commChannel.sigScanStarted.connect(self.onNewScan)
         self._commChannel.sigScanStarted.connect(self.OngoingScanStatus)
         self._commChannel.sigScanEnded.connect(self.onEndedScan)
-        self._commChannel.sigQueryCenterCoord.connect(self.centerCoordQuery)
-        self._commChannel.sigUpdateBeadRecCenter.connect(self.updateCenterCross)
-        self._commChannel.sigShowBeadRecCenterCross.connect(self.showStateChanged)
-        self._commChannel.sigAutoAxialToggled.connect(self.onAutoAxialToggled)
-        self._commChannel.sigNewAxialListBuffer.connect(self.onNewAxialListBuffer)
+        self._commChannel.beadRecWorkflow.on_query_center_coord(self.centerCoordQuery)
+        self._commChannel.beadRecWorkflow.on_update_bead_rec_center(self.updateCenterCross)
+        self._commChannel.beadRecWorkflow.on_show_bead_rec_center_cross(self.showStateChanged)
+        self._commChannel.beadRecWorkflow.on_auto_axial_toggled(self.onAutoAxialToggled)
+        self._commChannel.beadRecWorkflow.on_new_axial_list_buffer(self.onNewAxialListBuffer)
         
 
     def __del__(self):
@@ -359,7 +359,7 @@ class BeadRecController(ImConWidgetController):
         else:
             coord = None
         
-        self._commChannel.sigCenterCoordPipelineFinished.emit(coord)
+        self._commChannel.beadRecWorkflow.finish_center_coord_pipeline(coord)
         if coord is not None and self.showCenterState:
             self._widget.displayCenterCoord(coord[0],coord[1])
         else:

@@ -46,11 +46,11 @@ class ScanControllerMoNaLISA(SuperScanController):
         self._widget.sigSignalParChanged.connect(self.plotSignalGraph)
 
         # widget signal sent to commChannel
-        self._widget.sigUpdateBeadRecCenter.connect(self._commChannel.sigUpdateBeadRecCenter.emit)
-        self._widget.sigShowBeadRecCenterCross.connect(self._commChannel.sigShowBeadRecCenterCross.emit)
-        self._widget.sigAutoAxialToggled.connect(self._commChannel.sigAutoAxialToggled)
+        self._widget.sigUpdateBeadRecCenter.connect(self._commChannel.beadRecWorkflow.update_bead_rec_center)
+        self._widget.sigShowBeadRecCenterCross.connect(self._commChannel.beadRecWorkflow.show_bead_rec_center_cross)
+        self._widget.sigAutoAxialToggled.connect(self._commChannel.beadRecWorkflow.set_auto_axial)
 
-        self._commChannel.sigCenterCoordPipelineFinished.connect(self.centerCoordPipelineFinished)
+        self._commChannel.beadRecWorkflow.on_center_coord_pipeline_finished(self.centerCoordPipelineFinished)
 
         getWidgetStatePersistence().register('ScanControllerMoNaLISA', self)
 
@@ -179,7 +179,7 @@ class ScanControllerMoNaLISA(SuperScanController):
             self.runNextAxialScan()
         else:
             self.awaitingPipeline = True
-            self._commChannel.sigQueryCenterCoord.emit(self.centerSearchMode)
+            self._commChannel.beadRecWorkflow.query_center_coord(self.centerSearchMode)
             self.pipelineTimeoutTimer.start(self.pipeline_timeout_ms)# Start timeout
 
     def centerCoordPipelineFinished(self,coord):
@@ -230,7 +230,7 @@ class ScanControllerMoNaLISA(SuperScanController):
         self.nextAxial = "XY"
         self.centerSearchMode = self._widget.axialMenu.currentText()
         self.centerCoord = None
-        self._commChannel.sigNewAxialListBuffer.emit(self.axialListBuffer)
+        self._commChannel.beadRecWorkflow.set_axial_list_buffer(self.axialListBuffer)
 
     def resetAfterAutoAxialFinished(self):
         if self._analogParameterDictXY is not None:

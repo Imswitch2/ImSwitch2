@@ -9,7 +9,7 @@ the rationale behind the current code stays discoverable.
 | File | Status | Topic |
 |---|---|---|
 | [ws-integration.md](ws-integration.md) | Active — Phase 5 landed 2026-05-24, hardware verification pending | Porting device managers from WidefieldStarss + Teensy pulse generator |
-| [communication-backbone-cleanup.md](communication-backbone-cleanup.md) | Active — Phase 1 landed 2026-05-24 | CommunicationChannel and controller backbone cleanup |
+| [communication-backbone-cleanup.md](communication-backbone-cleanup.md) | Active — Phase 4 started 2026-05-24 | CommunicationChannel and controller backbone cleanup |
 | [etsted-2-0.md](etsted-2-0.md) | Active | EtSTED scan controller rewrite |
 | [etmonalisa-2-0.md](etmonalisa-2-0.md) | Active | EtMonalisa rewrite |
 | [dynamic-layer-lifecycle.md](dynamic-layer-lifecycle.md) | Historical | Napari layer lifecycle redesign |

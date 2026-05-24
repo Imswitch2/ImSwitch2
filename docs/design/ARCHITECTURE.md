@@ -292,7 +292,25 @@ WidgetController (imcommon)
 
 ### CommunicationChannel — Inter-Controller Signal Bus
 
-Key signals (selected): `sigUpdateImage`, `sigAcquisitionStarted/Stopped`, `sigDetectorSwitched`, `sigRunScan`, `sigScanStarting/Built/Started/Done/Ended`, `sigRecordingStarted/Ended`, `sigSnapImg`, `sigSLMMaskUpdated`, `sigSetXYPosition`, `sigSetZPosition`.
+`CommunicationChannel` remains the compatibility signal bus for existing
+controllers and external API consumers. Signal names and signatures are
+protected by a contract-test snapshot.
+
+Key signals (selected): `sigUpdateImage`, `sigAcquisitionStarted/Stopped`,
+`sigDetectorSwitched`, `sigRunScan`,
+`sigScanStarting/Built/Started/Done/Ended`, `sigRecordingStarted/Ended`,
+`sigSnapImg`, `sigSLMMaskUpdated`, `sigSetXYPosition`, `sigSetZPosition`.
+
+New code should prefer the narrower workflow/event surfaces exposed by the
+channel:
+
+- `scanWorkflow`: scan parameter requests, scan-start notifications,
+  recording-triggered scan coordination, axis-center updates.
+- `beadRecWorkflow`: MoNaLISA/bead-recognition center-query and axial-list
+  coordination.
+- Read-only event groups such as `scanEvents`, `recordingEvents`,
+  `eventTriggeredEvents`, and `beadRecEvents` provide domain aliases for the
+  legacy `sigX` attributes.
 
 ### API Exposure
 

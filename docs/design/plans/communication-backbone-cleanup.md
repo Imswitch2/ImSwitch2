@@ -88,7 +88,9 @@ signals, and `EtSTEDTriggeredScanRunner` can use this narrow service instead
 of the full communication channel while keeping a compatibility adapter for
 older callers. EtSTED, EtMonalisa, and RecordingController now route scan
 request/start notifications through this workflow service while preserving the
-same underlying legacy signals.
+same underlying legacy signals. `BeadRecWorkflowService` now wraps the
+bead-recognition and MoNaLISA center-query signals, and the scan/bead
+controllers route those interactions through the service.
 
 ## Phase 5: Removal Window
 

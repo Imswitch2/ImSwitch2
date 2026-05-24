@@ -421,7 +421,7 @@ class EtSTEDController(ImConWidgetController):
 
     def getScanParameters(self):
         """ Load STED scan parameters from the scanning widget. """
-        self._commChannel.sigRequestScanParameters.emit()
+        self._commChannel.scanWorkflow.request_scan_parameters()
 
     def setUpdatePeriod(self):
         """ Set the update period for the fast method. """
@@ -578,7 +578,7 @@ class EtSTEDController(ImConWidgetController):
                             return
                         # trigger scan starting signal emission or not - if triggered, use scan-standard laser preset
                         if not self._widget.useScanLaserPresetCheck.isChecked():
-                            self._commChannel.sigScanStarting.emit()
+                            self._commChannel.scanWorkflow.notify_scan_starting()
                         
                         self._setEtSTEDStatus('scanning')
                         if not self.runSlowScan():

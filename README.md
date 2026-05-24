@@ -1,272 +1,302 @@
+<div align="center">
+
+<!-- TODO: replace with a project logo (e.g. docs/images/logo.svg).  Suggested width: 320 px. -->
+<a href="#"><img src="docs/images/logo.png" alt="ImSwitch2 logo" width="320"/></a>
+
 # ImSwitch2
 
-ImSwitch2 is a Python software for flexible, modular microscope control. It supports a wide range of hardware (cameras, lasers, stages, DAQ cards) through a configuration-driven manager system — no code changes needed to switch hardware.
+**Modular, configuration-driven microscope control — built for safety, testability, and AI-assisted development.**
 
-This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch/ImSwitch) project, with a focus on safety, maintainability, and AI-assisted development.
+[![JOSS](https://joss.theoj.org/papers/10.21105/joss.03394/status.svg)](https://doi.org/10.21105/joss.03394)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+<!-- TODO: once CI is public, add:
+[![CI](https://github.com/<org>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/<repo>/actions/workflows/ci.yml)
+[![Docs](https://readthedocs.org/projects/imswitch/badge/?version=latest)](https://imswitch.readthedocs.io)
+[![codecov](https://codecov.io/gh/<org>/<repo>/branch/main/graph/badge.svg)](https://codecov.io/gh/<org>/<repo>)
+-->
+
+<!-- TODO: hero screenshot of the GUI in action.  Suggested: 1200×680 px, docs/images/hero.png.  Use the lightbox style below if you want a click-to-enlarge. -->
+<a href="#"><img src="docs/images/hero.png" alt="ImSwitch2 in action" width="900"/></a>
+
+</div>
 
 ---
 
-## Installation
+ImSwitch2 is a Python application for flexible, modular microscope control. It supports a wide range of hardware — cameras, lasers, stages, DAQ cards, rotation mounts, pulse generators — through a configuration-driven manager system. **Switching hardware means editing a JSON file, not the code.**
 
-**Requirements:** Python 3.10 or newer, PyQt5.
+This is a clean-slate continuation of the [ImSwitch](https://github.com/ImSwitch/ImSwitch) project, focused on safety, maintainability, and AI-assisted development under strict human oversight.
 
-### Core install (UI + file I/O, no hardware drivers)
+---
 
-```
+## ✨ Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+🔬 **42+ hardware managers out of the box** — sCMOS cameras, photon counters, lasers, piezo stages, motorized rotators, FLIM time taggers, SLMs, microcontroller pulse generators.
+
+🧩 **Pluggable architecture** — every device type has an abstract base; adding a new driver is one new file + one entry in your setup JSON.
+
+🪞 **Hardware-free dev mode** — every manager has a documented mock fallback so you can develop, test, and configure without any device plugged in.
+
+</td>
+<td width="50%" valign="top">
+
+⚡ **Backend-agnostic pulse generation** — drive lasers from a Swabian Pulse Streamer, a Teensy microcontroller, or future NI / FPGA backends through one common ABC.
+
+🤖 **AI-assisted development workflow** — agents are first-class contributors with clear guardrails, isolated branches, and mandatory human review.
+
+📖 **First-class documentation** — Sphinx site with per-device JSON reference, task-oriented how-to guides, and a full architecture map.
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🚀 Quick start
+
+> Requires **Python 3.10+** and **PyQt5**.  Windows / macOS / Linux all supported.
+
+```bash
+# 1. Clone and install (core install — UI + file I/O, no hardware drivers)
+git clone https://github.com/<your-fork>/Imswitch2.git
+cd Imswitch2
 pip install -e .
-```
 
-### With hardware drivers
-
-Install the optional `hardware` extra to add NI-DAQ, Lantz, and pyVISA support:
-
-```
-pip install -e ".[hardware]"
-```
-
-Install the optional `full` extra to also add napari, OpenCV, and vispy:
-
-```
-pip install -e ".[full]"
-```
-
-### Launch
-
-```
+# 2. Launch
 python -m imswitch
 ```
 
-On first launch ImSwitch creates a configuration folder and opens a setup picker dialog if no setup file is configured yet.
+ImSwitch creates `~/ImSwitchConfig/` on first launch and opens a setup-picker dialog.  Pick one of the bundled example setups (e.g. `example_no_hardware.json`) to see the UI without any device connected.
+
+For real hardware:
+
+```bash
+pip install -e ".[hardware]"   # NI-DAQ, Lantz, pyVISA
+pip install -e ".[full]"       # also napari, OpenCV, vispy
+```
+
+<!-- TODO: short setup screenshot, docs/images/quickstart.png.  Suggested 900×500 px. -->
+<div align="center">
+<img src="docs/images/quickstart.png" alt="Pick-setup dialog and first-run UI" width="720"/>
+</div>
 
 ---
 
-## Configuration
+## 📚 Documentation
 
-ImSwitch reads all hardware configuration from a folder called **ImSwitchConfig** in your home directory:
+The full documentation lives under [`docs/`](docs/) and is rendered with [Sphinx](https://www.sphinx-doc.org/).
+
+| Where | What you'll find |
+|---|---|
+| [`docs/installation.rst`](docs/installation.rst) | Installation, dependencies, platform notes |
+| [`docs/gui.rst`](docs/gui.rst) | GUI tour with annotated screenshots |
+| [`docs/scripting.rst`](docs/scripting.rst) | Scripting / API reference |
+| [`docs/devices/`](docs/devices/) | **Per-device JSON config reference** — every manager, every field, with defaults |
+| [`docs/how-to/`](docs/how-to/) | **Task-oriented guides** — wire a Teensy, add a backend, port a driver |
+| [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) | Full architecture map (managers, controllers, signal flow, startup) |
+| [`docs/design/plans/`](docs/design/plans/) | Integration plans (active + historical) |
+
+### Build the docs locally
+
+```bash
+# One-off — install the doc toolchain
+pip install sphinx sphinx-rtd-theme
+
+# Build the HTML site
+cd docs
+sphinx-build -b html . _build/html
+
+# Open it in your browser
+#   macOS:    open _build/html/index.html
+#   Linux:    xdg-open _build/html/index.html
+#   Windows:  start _build/html/index.html
+```
+
+For a live-reloading dev server while editing docs:
+
+```bash
+pip install sphinx-autobuild
+sphinx-autobuild docs docs/_build/html
+# → serves at http://127.0.0.1:8000 and rebuilds on save
+```
+
+---
+
+## 🔌 Hardware support
+
+ImSwitch ships managers for **42+ devices** across five categories. Every manager has its JSON config field-by-field documented under [`docs/devices/`](docs/devices/).
+
+<table>
+<tr>
+<td width="20%" align="center"><b>Detectors</b><br/>13 managers</td>
+<td>Hamamatsu, Thorlabs TSI (Zelux/Kiralux/Quantalux), Photometrics, Basler, Daheng (GXPIPY), The Imaging Source, Raspberry Pi Cam, ESP32-Cam, Jetson, Swabian Time Tagger (FLIM), APD, PMT, generic OpenCV — see <a href="docs/devices/detectors.rst"><code>detectors.rst</code></a></td>
+</tr>
+<tr>
+<td align="center"><b>Lasers</b><br/>14 managers</td>
+<td>Cobolt (Lantz + direct serial variants), MPB, CoolLED, AAA AOTF, NI-DAQ analog, PulseStreamer, Teensy/Arduino pulse generator, ESP32 LED, LED matrix, Lantz-compatible, python-microscopy — see <a href="docs/devices/lasers.rst"><code>lasers.rst</code></a></td>
+</tr>
+<tr>
+<td align="center"><b>Positioners</b><br/>12 managers</td>
+<td>NI-DAQ analog (piezo / galvo), Physik Instrumente, Thorlabs Kinesis MLS203, Thorlabs BSC203, Piezoconcept Z (×2), Jena Z-piezo, Märzhäuser SCAN, Leica DMI, SmarACT, SQUID, mock — see <a href="docs/devices/positioners.rst"><code>positioners.rst</code></a></td>
+</tr>
+<tr>
+<td align="center"><b>Rotators</b><br/>3 managers</td>
+<td>Standa, Thorlabs Kinesis K10CR1, Thorlabs Elliptec ELL14/ELL14K (multidrop bus) — see <a href="docs/devices/rotators.rst"><code>rotators.rst</code></a></td>
+</tr>
+<tr>
+<td align="center"><b>Other</b></td>
+<td>NI-DAQ (scan + IO), Pulse Streamer, Teensy pulse generator, SLMs, recording (HDF5 / TIFF / Zarr), microscope stands (Leica DMI), ESP32 / SQUID / GRBL boards via RS232.</td>
+</tr>
+</table>
+
+> **Don't see your hardware?** Adding a new driver is one file plus one JSON entry — see [`docs/how-to/port-from-third-party.rst`](docs/how-to/port-from-third-party.rst) for the canonical recipe, and [`docs/adding-device-support.rst`](docs/adding-device-support.rst) for the abstract-base reference.
+
+---
+
+## 🛠️ Configuration
+
+ImSwitch reads all hardware configuration from `~/ImSwitchConfig/`:
 
 ```
-~/ImSwitchConfig/               (Linux / macOS)
-Documents\ImSwitchConfig\       (Windows)
+~/ImSwitchConfig/                  (Linux / macOS)
+Documents\ImSwitchConfig\          (Windows)
   ├── config/
-  │   └── imcontrol_options.json    # active setup filename + recording folder
+  │   └── imcontrol_options.json   # active setup filename + recording folder
   └── imcontrol_setups/
-      └── my_microscope.json        # hardware definition (detectors, lasers, …)
+      └── my_microscope.json       # hardware definition
 ```
 
-The `imcontrol_setups/` folder is populated with example files on first launch. You can have multiple setup files and switch between them at startup.
+A GUI editor is included for building setup files without writing JSON by hand:
 
-### Using the Config Editor
-
-A GUI editor is included for building and editing setup files without writing JSON by hand:
-
-```
+```bash
 python utility_scripts/imswitch_config_editor.py
 ```
 
-The editor loads built-in templates for every supported manager (cameras, lasers, stages, etc.), lets you add and configure devices visually, and saves a valid JSON file directly into `imcontrol_setups/`.
+<!-- TODO: config editor screenshot, docs/images/config-editor.png.  Suggested 1000×600 px. -->
+<div align="center">
+<img src="docs/images/config-editor.png" alt="Config editor: visual setup-file builder" width="720"/>
+</div>
 
----
+The editor loads built-in templates for every supported manager, lets you add and configure devices visually, and saves valid JSON directly into `imcontrol_setups/`.
 
-## Setting Up a Microscope from Scratch
+### Minimal setup file
 
-### Step 1 — Create a setup file
-
-Open the config editor and add the devices you have. Or create a JSON file in `~/ImSwitchConfig/imcontrol_setups/` manually (see examples below).
-
-### Step 2 — Point ImSwitch at it
-
-Edit `~/ImSwitchConfig/config/imcontrol_options.json`:
-
-```json
-{
-  "setupFileName": "my_microscope.json",
-  "recording": {
-    "outputFolder": "~/Data",
-    "includeDateInOutputFolder": true
-  }
-}
-```
-
-### Step 3 — Launch and verify
-
-```
-python -m imswitch
-```
-
-ImSwitch will report any missing hardware in the log. Devices that fail to connect are skipped; the rest of the UI still loads.
-
----
-
-## Hardware Examples
-
-### USB / Generic Camera (`AVManager`)
-
-Suitable for any OpenCV-compatible camera (USB webcams, Allied Vision, etc.).
-
-```json
-"detectors": {
-  "Camera": {
-    "analogChannel": null,
-    "digitalLine": null,
-    "managerName": "AVManager",
-    "managerProperties": {
-      "cameraListIndex": 0,
-      "avcam": {
-        "exposure": 100,
-        "gain": 1
-      }
-    },
-    "forAcquisition": true
-  }
-}
-```
-
-Set `cameraListIndex` to the index of your camera in the system list (0 = first camera). Set it to the string `"mock"` to run without hardware connected.
-
----
-
-### Hamamatsu sCMOS Camera (`HamamatsuManager`)
-
-Requires the Hamamatsu DCAM SDK installed on the system.
-
-```json
-"detectors": {
-  "Hamamatsu": {
-    "analogChannel": null,
-    "digitalLine": "Dev1/port0/line3",
-    "managerName": "HamamatsuManager",
-    "managerProperties": {
-      "cameraListIndex": 0,
-      "hamamatsu": {
-        "readout_speed": 3,
-        "trigger_source": 2,
-        "trigger_active": 1,
-        "trigger_polarity": 2,
-        "exposure_time": 0.01,
-        "subarray_hpos": 0,
-        "subarray_hsize": 2048,
-        "subarray_vpos": 0,
-        "subarray_vsize": 2048
-      }
-    },
-    "forAcquisition": true
-  }
-}
-```
-
-`digitalLine` is the NI-DAQ output that triggers the camera; set to `null` if not using hardware triggering.
-
----
-
-### Cobolt 06-01 Laser — direct serial (`Cobolt0601NewLaserManager`)
-
-No extra dependencies beyond `pyserial`. Connect the laser via USB-to-serial and find its COM port (e.g. in Device Manager on Windows, or `ls /dev/ttyUSB*` on Linux).
-
-```json
-"lasers": {
-  "561 nm": {
-    "analogChannel": null,
-    "digitalLine": null,
-    "managerName": "Cobolt0601NewLaserManager",
-    "managerProperties": {
-      "digitalPorts": ["COM4"]
-    },
-    "wavelength": 561,
-    "valueRangeMin": 0,
-    "valueRangeMax": 200
-  }
-}
-```
-
-Replace `"COM4"` with the correct port (`"/dev/ttyUSB0"` on Linux). `valueRangeMax` is in mW — set it to the maximum power of your laser.
-
-**Note:** Use `Cobolt0601LaserManager` instead if you need Lantz-based instrument control (requires `pip install -e ".[hardware]"`). The new driver above is preferred for most setups.
-
----
-
-### Minimal complete setup file
-
-A minimal two-device setup (one camera, one laser, no DAQ):
+A two-device setup (one webcam, one Cobolt laser, no DAQ):
 
 ```json
 {
   "detectors": {
     "Camera": {
-      "analogChannel": null,
-      "digitalLine": null,
       "managerName": "AVManager",
       "managerProperties": {
         "cameraListIndex": 0,
         "avcam": { "exposure": 100, "gain": 1 }
       },
+      "analogChannel": null,
+      "digitalLine": null,
       "forAcquisition": true
     }
   },
   "lasers": {
     "561 nm": {
+      "managerName": "Cobolt0601NewLaserManager",
+      "managerProperties": { "digitalPorts": ["COM4"] },
       "analogChannel": null,
       "digitalLine": null,
-      "managerName": "Cobolt0601NewLaserManager",
-      "managerProperties": {
-        "digitalPorts": ["COM4"]
-      },
       "wavelength": 561,
       "valueRangeMin": 0,
       "valueRangeMax": 200
     }
   },
-  "availableWidgets": [
-    "Settings",
-    "View",
-    "Recording",
-    "Image",
-    "Laser"
-  ]
+  "availableWidgets": ["Settings", "View", "Recording", "Image", "Laser"]
 }
 ```
 
-`availableWidgets` controls which UI panels are shown. Add `"Positioner"` and `"Scan"` once you have a stage and DAQ configured.
+For per-field reference, every other manager's JSON shape, see [`docs/devices/`](docs/devices/).
 
 ---
 
-## Project Structure
+## 🏗️ Project structure
 
 ```
 ImSwitch2/
-├── imswitch/                     # Main package
-│   ├── imcontrol/                # Hardware control module
-│   │   ├── model/managers/       # One manager class per device type
-│   │   └── _data/user_defaults/  # Example setup files (copied to ImSwitchConfig on first run)
-│   ├── imcommon/                 # Shared framework (signals, Qt layer, logging)
-│   ├── imreconstruct/            # SIM reconstruction module
-│   └── imscripting/              # Scripting console module
-├── utility_scripts/              # Config editor GUI + built-in device templates
-├── docs/                         # Architecture documentation and diagrams
-└── .github/workflows/            # CI pipeline
+├── imswitch/                       # Main package
+│   ├── imcontrol/                  # Hardware control module
+│   │   ├── model/managers/         # One manager class per device type
+│   │   ├── controller/             # Widget controllers + CommunicationChannel
+│   │   ├── view/                   # Qt widgets + napari viewer
+│   │   └── _data/user_defaults/    # Example setup files
+│   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
+│   ├── imreconstruct/              # SIM reconstruction module
+│   └── imscripting/                # Scripting console module
+├── utility_scripts/                # Config editor GUI + device templates
+├── docs/                           # Sphinx site (architecture, how-tos, device ref)
+└── .github/workflows/              # CI pipeline
 ```
 
-See [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) for a full breakdown of the manager system, controller hierarchy, and startup flow.
+Deep dive: [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md).
 
 ---
 
-## AI Agent Workflow
+## 🤖 AI agent workflow
 
 ImSwitch2 uses AI agents as development assistants under strict human oversight:
 
 ```
-GitHub Issue → Agent plans → Isolated branch → Tests → PR → Human review → Merge
+GitHub Issue → Agent plans → Isolated branch/worktree → Tests → PR → Human review → Merge
 ```
 
-- All agent code changes require human review — no automatic merges.
+- All agent code changes require human review — **no automatic merges**.
 - Red-zone files (hardware timing, laser control, DAQ) require explicit maintainer approval.
-- See [AGENTS.md](AGENTS.md) for full rules.
+- Agents work in isolated branches or worktrees; parallel agents don't share state.
+- Every claim in the docs is grounded in source code — agents are explicitly forbidden from inventing fields, defaults, or vendor library calls.
+
+See [`AGENTS.md`](AGENTS.md) for the full rules and templates.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are very welcome — code, docs, hardware support, bug reports, use-case studies, all of it.
 
-## License
+- See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow and code-style expectations.
+- Project governance: [`GOVERNANCE.md`](GOVERNANCE.md).
+- Community standards: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
+Quick ways to help:
+
+- 📷 Try ImSwitch on your microscope and file a setup recipe.
+- 🐛 Report bugs with reproducible JSON setups attached.
+- 📚 Improve docs — especially per-device cards under [`docs/devices/`](docs/devices/).
+- 🔌 Port a driver from a sibling project (see [`docs/how-to/port-from-third-party.rst`](docs/how-to/port-from-third-party.rst)).
+
+---
+
+## 📖 Citation
+
+If you use ImSwitch in your research, please cite the original JOSS paper:
+
+```bibtex
+@article{Casas-Moreno2021,
+  doi       = {10.21105/joss.03394},
+  url       = {https://doi.org/10.21105/joss.03394},
+  year      = {2021},
+  publisher = {The Open Journal},
+  volume    = {6},
+  number    = {64},
+  pages     = {3394},
+  author    = {Xavier Casas Moreno and Staffan Al-Kadhimi and Jonatan Alvelid and Andreas Bodén and Ilaria Testa},
+  title     = {ImSwitch: Generalizing microscope control in Python},
+  journal   = {Journal of Open Source Software}
+}
+```
+
+---
+
+## 📜 License
+
+GNU General Public License v3.0 — see [`LICENSE`](LICENSE).

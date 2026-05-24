@@ -19,6 +19,22 @@ class _CommChannel:
         self.sigStartRecordingExternal = _Signal()
 
 
+class _ScanWorkflow:
+    def __init__(self) -> None:
+        self.request_scan_frequency_calls = 0
+        self.axis_centers = []
+        self.start_external_recording_calls = 0
+
+    def request_scan_frequency(self) -> None:
+        self.request_scan_frequency_calls += 1
+
+    def set_axis_centers(self, devices, centers) -> None:
+        self.axis_centers.append((devices, centers))
+
+    def start_external_recording(self) -> None:
+        self.start_external_recording_calls += 1
+
+
 class _ScanManager:
     def __init__(self) -> None:
         self.calls = []
@@ -98,6 +114,27 @@ def test_prepare_recording_widget_requests_frequency_and_updates_centers():
     ]
 
 
+def test_prepare_recording_widget_can_use_scan_workflow_service():
+    runner = EtSTEDTriggeredScanRunner()
+    analog_params = _analog_params()
+    scan_workflow = _ScanWorkflow()
+
+    result = runner.prepare(
+        [2.0, 3.0],
+        runner.recording_widget_mode,
+        analog_params,
+        {'ttl': []},
+        ['StageY', 'StageX'],
+        scan_workflow=scan_workflow,
+    )
+
+    assert result.success
+    assert scan_workflow.request_scan_frequency_calls == 1
+    assert scan_workflow.axis_centers == [
+        (['StageY', 'StageX', 'None', 'PiezoZ'], [2.0, 3.0, 0.0, 1.0])
+    ]
+
+
 def test_prepare_validates_loaded_scan_parameters():
     runner = EtSTEDTriggeredScanRunner()
 
@@ -128,3 +165,13 @@ def test_trigger_recording_widget_emits_external_recording_signal():
 
     assert result.success
     assert comm_channel.sigStartRecordingExternal.emitted == [()]
+
+
+def test_trigger_recording_widget_can_use_scan_workflow_service():
+    runner = EtSTEDTriggeredScanRunner()
+    scan_workflow = _ScanWorkflow()
+
+    result = runner.trigger(runner.recording_widget_mode, scan_workflow=scan_workflow)
+
+    assert result.success
+    assert scan_workflow.start_external_recording_calls == 1

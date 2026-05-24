@@ -4,118 +4,120 @@ import numpy as np
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
+from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService
 
 
 class CommunicationChannel(SignalInterface):
     """
-    Communication Channel is a class that handles the communication between Master Controller
-    and Widgets, or between Widgets.
+    Signal bus and narrow API helper for imcontrol controllers.
+
+    Keep this class as a compatibility surface. New cross-controller workflows
+    should prefer scoped service objects instead of adding more unrelated
+    signals here.
     """
 
+    DEPRECATED_SIGNALS = {
+        'sigGridToggled': 'No internal producer or consumer found in repository scan.',
+        'sigCrosshairToggled': 'No internal producer or consumer found in repository scan.',
+        'sigScanFrameFinished': 'No internal producer or consumer found in repository scan.',
+        'sigClockWidefield': 'No internal producer or consumer found in repository scan.',
+    }
+
+    EVENT_GROUP_NAMES = (
+        'acquisitionEvents',
+        'viewEvents',
+        'recordingEvents',
+        'scanEvents',
+        'snapshotEvents',
+        'slmEvents',
+        'focusEvents',
+        'rotationEvents',
+        'eventTriggeredEvents',
+        'beadRecEvents',
+        'useqEvents',
+        'scriptEvents',
+    )
+
+    # Acquisition and image stream events. Producers are mainly the detector
+    # managers, connected in MasterController.
     sigUpdateImage = Signal(
         str, np.ndarray, bool, list, bool
     )  # (detectorName, image, init, scale, isCurrentDetector)
-
     sigAcquisitionStarted = Signal()
-
     sigAcquisitionStopped = Signal()
-
-    sigScriptExecutionFinished = Signal()
-
     sigAdjustFrame = Signal(object)  # (shape)
-
     sigDetectorSwitched = Signal(str, str)  # (newDetectorName, oldDetectorName)
+    sigNewFrame = Signal()
 
+    # View-layer overlay and viewer item events.
+    # Deprecated compatibility signals: sigGridToggled, sigCrosshairToggled.
     sigGridToggled = Signal(bool)  # (enabled)
-
     sigCrosshairToggled = Signal(bool)  # (enabled)
-
     sigAddItemToVb = Signal(object)  # (item)
-
     sigRemoveItemFromVb = Signal(object)  # (item)
 
+    # Recording events.
     sigRecordingStarted = Signal()
-
     sigRecordingEnded = Signal()
-
     sigUpdateRecFrameNum = Signal(int)  # (frameNumber)
-
     sigUpdateRecTime = Signal(int)  # (recTime)
-
     sigMemorySnapAvailable = Signal(
         str, np.ndarray, object, bool
     )  # (name, image, filePath, savedToDisk)
 
+    # Scan orchestration events. These are hardware-adjacent and must keep
+    # their current semantics unless reviewed with hardware access.
     sigRunScan = Signal(bool, bool)  # (recalculateSignals, isNonFinalPartOfSequence)
-    
     sigAbortScan = Signal()
-
     sigScanStarting = Signal()
-
     sigScanBuilt = Signal(object)  # (deviceList)
-
     sigScanStarted = Signal()
-
     sigScanDone = Signal()
-
     sigScanEnded = Signal()
-
-    sigSLMMaskUpdated = Signal(object)  # (mask)
-
     sigToggleBlockScanWidget = Signal(bool)
-
-    sigSnapImg = Signal()
-
-    sigSnapImgPrev = Signal(str, np.ndarray, str)  # (detector, image, nameSuffix)
-
     sigRequestScanParameters = Signal()
-
     sigSendScanParameters = Signal(dict, dict, object)  # (analogParams, digitalParams, scannerList)
-
     sigSetAxisCenters = Signal(object, object)  # (axisDeviceList, axisCenterList)
+    sigRequestScanFreq = Signal()
+    sigSendScanFreq = Signal(float)  # (scanPeriod)
+    # Deprecated compatibility signal.
+    sigScanFrameFinished = Signal()  # TODO: emit this signal when a scanning frame finished, maybe in scanController if possible? Otherwise in APDManager for now, even if that is not general if you want to do camera-based experiments. Could also create a signal specifically for this from the scan curve generator perhaps, specifically for the rotation experiments, would that be smarter?
 
+    # Snapshot and external recording trigger events.
+    sigSnapImg = Signal()
+    sigSnapImgPrev = Signal(str, np.ndarray, str)  # (detector, image, nameSuffix)
     sigStartRecordingExternal = Signal()
 
-    sigRequestScanFreq = Signal()
-    
-    sigSendScanFreq = Signal(float)  # (scanPeriod)
+    # SLM events.
+    sigSLMMaskUpdated = Signal(object)  # (mask)
 
-    #sigRequestScannersInScan = Signal()
-
-    #sigSendScannersInScan = Signal(object)  # (scannerList)
-
+    # Focus and rotation workflow events.
     sigSaveFocus = Signal()
-
-    sigScanFrameFinished = Signal()  # TODO: emit this signal when a scanning frame finished, maybe in scanController if possible? Otherwise in APDManager for now, even if that is not general if you want to do camera-based experiments. Could also create a signal specifically for this from the scan curve generator perhaps, specifically for the rotation experiments, would that be smarter?
-    
     sigUpdateRotatorPosition = Signal(str)  # (rotatorName)
-
     sigSetSyncInMovementSettings = Signal(str, float, bool, bool)  # (rotatorName, position, relativeShift, enabled)
 
-    sigNewFrame = Signal()
-
+    # Event-triggered workflow events.
     sigInitiateEtMonalisa = Signal(bool)
-
-    sigQueryCenterCoord = Signal(str) # (search mode)
-    
-    sigCenterCoordPipelineFinished = Signal(object) #(center coordinates or None)
-
-    sigUpdateBeadRecCenter = Signal(int,int) # y,x coordinates
-
-    sigShowBeadRecCenterCross = Signal(bool) # state
-
-    sigAutoAxialToggled = Signal(bool) #state
-
-    sigNewAxialListBuffer = Signal(list) # list of auto axial scans to do e.g. ["XZ","YZ"]
-
     sigInitiateEt = Signal(bool)
+    # Deprecated compatibility signal.
     sigClockWidefield = Signal()
 
-    # useq-schema related signals
+    # Bead-recognition and MoNaLISA scan helper events.
+    sigQueryCenterCoord = Signal(str)  # (search mode)
+    sigCenterCoordPipelineFinished = Signal(object)  # (center coordinates or None)
+    sigUpdateBeadRecCenter = Signal(int, int)  # (y, x) coordinates
+    sigShowBeadRecCenterCross = Signal(bool)  # (state)
+    sigAutoAxialToggled = Signal(bool)  # (state)
+    sigNewAxialListBuffer = Signal(list)  # e.g. ["XZ", "YZ"]
+
+    # useq-schema related events.
     sigSetXYPosition = Signal(float, float)
     sigSetZPosition = Signal(float)
     sigSetExposure = Signal(float)
     sigSetSpeed = Signal(float)
+
+    # Scripting events.
+    sigScriptExecutionFinished = Signal()
 
     @property
     def sharedAttrs(self):
@@ -127,64 +129,123 @@ class CommunicationChannel(SignalInterface):
         self.__sharedAttrs = SharedAttributes()
         self.__logger = initLogger(self)
         self._scriptExecution = False
+        self._create_event_groups()
+        self.scanWorkflow = ScanWorkflowService(self)
+        self.beadRecWorkflow = BeadRecWorkflowService(self)
         self.__main._moduleCommChannel.sigExecutionFinished.connect(self.executionFinished)
-    
+
+    def _create_event_groups(self):
+        """Create domain aliases while preserving legacy ``sigX`` attributes."""
+        self.acquisitionEvents = pythontools.dictToROClass({
+            'updateImage': self.sigUpdateImage,
+            'acquisitionStarted': self.sigAcquisitionStarted,
+            'acquisitionStopped': self.sigAcquisitionStopped,
+            'adjustFrame': self.sigAdjustFrame,
+            'detectorSwitched': self.sigDetectorSwitched,
+            'newFrame': self.sigNewFrame,
+        })
+        self.viewEvents = pythontools.dictToROClass({
+            'gridToggled': self.sigGridToggled,
+            'crosshairToggled': self.sigCrosshairToggled,
+            'addItemToVb': self.sigAddItemToVb,
+            'removeItemFromVb': self.sigRemoveItemFromVb,
+        })
+        self.recordingEvents = pythontools.dictToROClass({
+            'recordingStarted': self.sigRecordingStarted,
+            'recordingEnded': self.sigRecordingEnded,
+            'updateRecFrameNum': self.sigUpdateRecFrameNum,
+            'updateRecTime': self.sigUpdateRecTime,
+            'memorySnapAvailable': self.sigMemorySnapAvailable,
+        })
+        self.scanEvents = pythontools.dictToROClass({
+            'runScan': self.sigRunScan,
+            'abortScan': self.sigAbortScan,
+            'scanStarting': self.sigScanStarting,
+            'scanBuilt': self.sigScanBuilt,
+            'scanStarted': self.sigScanStarted,
+            'scanDone': self.sigScanDone,
+            'scanEnded': self.sigScanEnded,
+            'toggleBlockScanWidget': self.sigToggleBlockScanWidget,
+            'requestScanParameters': self.sigRequestScanParameters,
+            'sendScanParameters': self.sigSendScanParameters,
+            'setAxisCenters': self.sigSetAxisCenters,
+            'requestScanFreq': self.sigRequestScanFreq,
+            'sendScanFreq': self.sigSendScanFreq,
+            'scanFrameFinished': self.sigScanFrameFinished,
+        })
+        self.snapshotEvents = pythontools.dictToROClass({
+            'snapImg': self.sigSnapImg,
+            'snapImgPrev': self.sigSnapImgPrev,
+            'startRecordingExternal': self.sigStartRecordingExternal,
+        })
+        self.slmEvents = pythontools.dictToROClass({
+            'slmMaskUpdated': self.sigSLMMaskUpdated,
+        })
+        self.focusEvents = pythontools.dictToROClass({
+            'saveFocus': self.sigSaveFocus,
+        })
+        self.rotationEvents = pythontools.dictToROClass({
+            'updateRotatorPosition': self.sigUpdateRotatorPosition,
+            'setSyncInMovementSettings': self.sigSetSyncInMovementSettings,
+        })
+        self.eventTriggeredEvents = pythontools.dictToROClass({
+            'initiateEtMonalisa': self.sigInitiateEtMonalisa,
+            'initiateEt': self.sigInitiateEt,
+            'clockWidefield': self.sigClockWidefield,
+        })
+        self.beadRecEvents = pythontools.dictToROClass({
+            'queryCenterCoord': self.sigQueryCenterCoord,
+            'centerCoordPipelineFinished': self.sigCenterCoordPipelineFinished,
+            'updateBeadRecCenter': self.sigUpdateBeadRecCenter,
+            'showBeadRecCenterCross': self.sigShowBeadRecCenterCross,
+            'autoAxialToggled': self.sigAutoAxialToggled,
+            'newAxialListBuffer': self.sigNewAxialListBuffer,
+        })
+        self.useqEvents = pythontools.dictToROClass({
+            'setXYPosition': self.sigSetXYPosition,
+            'setZPosition': self.sigSetZPosition,
+            'setExposure': self.sigSetExposure,
+            'setSpeed': self.sigSetSpeed,
+        })
+        self.scriptEvents = pythontools.dictToROClass({
+            'scriptExecutionFinished': self.sigScriptExecutionFinished,
+        })
+
+    def _get_required_controller(self, widgetKey, displayName=None):
+        """Return a controller by widget key or raise the legacy RuntimeError."""
+        try:
+            return self.__main.controllers[widgetKey]
+        except KeyError:
+            name = displayName or widgetKey.lower()
+            raise RuntimeError(f'Required {name} widget not available') from None
+
     def isScanRunning(self) -> bool:
         """
-        Returns wether a scan is ongoing or not.
+        Returns whether a scan is ongoing or not.
         """
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].isRunning
-        else:
-            raise RuntimeError('Required scan widget not available')
-        
+        return self._get_required_controller('Scan', 'scan').isRunning
+
     def getCenterViewbox(self):
         """ Returns the center point of the viewbox, as an (x, y) tuple. """
-        if 'Image' in self.__main.controllers:
-            return self.__main.controllers['Image'].getCenterViewbox()
-        else:
-            raise RuntimeError('Required image widget not available')
+        return self._get_required_controller('Image', 'image').getCenterViewbox()
 
     def getNumCamTTL(self):
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].getNumCamTTL()
-        else:
-            raise RuntimeError('Required scan widget not available')
+        return self._get_required_controller('Scan', 'scan').getNumCamTTL()
 
     def getDimsScan(self):
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].getDimsScan()
-        else:
-            raise RuntimeError('Required scan widget not available')
-    
+        return self._get_required_controller('Scan', 'scan').getDimsScan()
+
     def getScanStepSizes(self):
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].getScanStepSizes()
-        else:
-            raise RuntimeError('Required scan widget not available')
+        return self._get_required_controller('Scan', 'scan').getScanStepSizes()
 
     def getNumScanPositions(self):
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].getNumScanPositions()
-        else:
-            raise RuntimeError('Required scan widget not available')
+        return self._get_required_controller('Scan', 'scan').getNumScanPositions()
 
-    def getNumCamTTL(self):
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].getNumCamTTL()
-        else:
-            raise RuntimeError('Required scan widget not available')
-
-    
     def getNextAxial(self):
-        if 'Scan' in self.__main.controllers:
-            return self.__main.controllers['Scan'].getNextAxial()
-        else:
-            raise RuntimeError('Required scan widget not available')
-
+        return self._get_required_controller('Scan', 'scan').getNextAxial()
 
     def get_image(self, detectorName=None):
-        return self.__main.controllers['View'].get_image(detectorName)
+        return self._get_required_controller('View', 'view').get_image(detectorName)
 
     @APIExport(runOnUIThread=True)
     def acquireImage(self) -> None:

@@ -160,7 +160,7 @@ class RecordingController(ImConWidgetController):
             self.savename = os.path.join(folder, self.getFileName()) + '_rec'
 
             if self.recMode == RecMode.ScanOnce:
-                self._commChannel.sigScanStarting.emit()  # To get correct values from sharedAttrs
+                self._commChannel.scanWorkflow.notify_scan_starting()  # To get correct values from sharedAttrs
 
             detectorsBeingCaptured = self.getDetectorNamesToCapture()
 
@@ -193,7 +193,7 @@ class RecordingController(ImConWidgetController):
                 self.recordingArgs['numCamTTL'] = self._commChannel.getNumCamTTL()
                 self._master.recordingManager.startRecording(**self.recordingArgs)
                 time.sleep(0.3)
-                self._commChannel.sigRunScan.emit(True, False)
+                self._commChannel.scanWorkflow.run_scan(True, False)
             elif self.recMode == RecMode.ScanLapse:
                 self.recordingArgs['singleLapseFile'] = self._widget.getTimelapseSingleFile()
                 self.lapseTotal = self._widget.getTimelapseTime()
@@ -237,7 +237,7 @@ class RecordingController(ImConWidgetController):
             self.recordingArgs['savename'] = f'{self.savename}_scan{lapseCurrentStr}'
 
         if isFirstLapse:
-            self._commChannel.sigScanStarting.emit()  # To get updated values from sharedAttrs
+            self._commChannel.scanWorkflow.notify_scan_starting()  # To get updated values from sharedAttrs
             self.recordingArgs['attrs'] = {  # Update
                 detectorName: self._commChannel.sharedAttrs.getHDF5Attributes()
                 for detectorName in self.recordingArgs['detectorNames']
@@ -248,7 +248,7 @@ class RecordingController(ImConWidgetController):
         self._master.recordingManager.startRecording(**self.recordingArgs)
         time.sleep(0.3)
 
-        self._commChannel.sigRunScan.emit(isFirstLapse, not isFinalLapse)
+        self._commChannel.scanWorkflow.run_scan(isFirstLapse, not isFinalLapse)
 
     def recordingStarted(self):
         self._widget.setFieldsEnabled(False)
