@@ -162,6 +162,36 @@ breaking existing controller/API signal contracts.
   - Currently: all `forAcquisition` detectors get permanent layers at startup
   - Plan: create/remove layers dynamically based on active detector
   - Design doc: `docs/design/plans/dynamic-layer-lifecycle.md`
+- 🔄 Widget responsiveness and range cleanup
+  - Dock insertion remains direct so default and JSON-defined widget placement
+    keeps the original DockArea sizing behavior
+  - Scan and Laser widgets no longer force full content width as the widget
+    minimum
+  - Recording settings scroll internally while Snap/REC remain visible
+  - Positioner per-axis controls scroll internally without changing control
+    signals or movement behavior
+  - Embedded napari/Image minimum-height behavior still needs a safer targeted
+    fix; avoid overriding the top-level Image widget minimum size globally
+  - Advanced scan center spin boxes now allow negative positions
+  - Advanced Scan no longer exposes partial BeadRec center/axial controls;
+    BeadRec integration remains via scan geometry only
+  - Follow-up plan: `docs/design/plans/widget-usability-improvements.md`
+- 🔄 BeadRec 2.0
+  - Phase 1 pure model baseline added for analysis defaults, ROI clipping,
+    reconstruction buffering, and physical-step-size scaling
+  - Phase 2 routes controller reconstruction math through the pure model while
+    preserving existing scan/detector lifecycle behavior
+  - Phase 3 removes broad controller/widget/master access from `BeadWorker`;
+    the worker now uses narrow callables and emits reconstructed buffers
+  - Phase 4 extracts foci/donut center finding and donut metrics into pure
+    model functions with structured result objects
+  - Phase 5 starts widget 2.0: responsive BeadRec sizing, wider result list,
+    and status/progress feedback hooks
+  - Phase 6 adds typed result records and passive widget-state persistence
+    without restoring image data or active reconstruction state
+  - Phase 7 adds immutable acquisition configuration plus structured worker
+    updates for explicit progress metadata while preserving scan behavior
+  - Plan: `docs/design/plans/beadrec-2.0.md`
 
 ## Milestone 9: Scanning & Galvo Modernization
 

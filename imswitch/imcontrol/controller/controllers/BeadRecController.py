@@ -1,15 +1,29 @@
 import time
 import os
 import numpy as np
+from collections.abc import Callable, Sequence
+from threading import Lock
 
 from imswitch.imcommon.framework import Thread, Worker, Signal
 from ..basecontrollers import ImConWidgetController
-from skimage.transform import rescale
 from tifffile import imwrite, imread
 from imswitch.imcontrol.view import guitools
+from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.bead_recognition import (
+    analyze_donut,
+    BeadAcquisitionConfig,
+    BeadAnalysisParameters,
+    BeadRecResultRecord,
+    BeadWorkerUpdate,
+    ReconstructionUpdate,
+    append_roi_means,
+    create_reconstruction_buffer,
+    find_bead_center,
+    normalize_roi_bounds,
+    reconstruction_image,
+    rescale_reconstruction_to_pixel_size,
+)
 import  matplotlib.pyplot as plt 
-from skimage import measure, morphology
-from scipy.signal import find_peaks
 import matplotlib.patches as patches
 
 class BeadRecController(ImConWidgetController):
@@ -24,12 +38,20 @@ class BeadRecController(ImConWidgetController):
         self.dims = None
         self.stepSizes = None
         self.lastDir = None
+        self.resultRecords = []
         self.listRecs = []
         self.ongoingScan = False
         self.currentRunImgs = {}
 
-        self.beadWorker = BeadWorker(self)
+        self.beadWorker = BeadWorker(
+            isScanRunning=self._commChannel.isScanRunning,
+            getFrames=self._getCurrentDetectorChunk,
+            getRoiBounds=self._getBeadRoiBounds,
+        )
         self.beadWorker.sigNewChunk.connect(self.update)
+        self.beadWorker.sigWarning.connect(self._logger.warning)
+        self.beadWorker.sigWarning.connect(self._widget.setStatusText)
+        self.beadWorker.sigProgress.connect(self._updateProgress)
         self.thread = Thread()
         self.beadWorker.moveToThread(self.thread)
         self.thread.started.connect(self.beadWorker.run)
@@ -64,16 +86,44 @@ class BeadRecController(ImConWidgetController):
         self._commChannel.beadRecWorkflow.on_show_bead_rec_center_cross(self.showStateChanged)
         self._commChannel.beadRecWorkflow.on_auto_axial_toggled(self.onAutoAxialToggled)
         self._commChannel.beadRecWorkflow.on_new_axial_list_buffer(self.onNewAxialListBuffer)
+        getWidgetStatePersistence().register('BeadRecController', self)
         
 
-    def __del__(self):
+    def __del__(self) -> None:
+        self.beadWorker.stop()
         self.thread.quit()
         self.thread.wait()
         if hasattr(super(), '__del__'):
             super().__del__()
 
+    def _getCurrentDetectorChunk(self) -> Sequence[np.ndarray]:
+        return self._master.detectorsManager.execOnCurrent(
+            lambda c: c.getChunk()
+        )
+
+    def _getBeadRoiBounds(self) -> Sequence[int]:
+        return self._widget.getROIGraphicsItem().bounds
+
+    def _setResultRecords(self, records: Sequence[BeadRecResultRecord]) -> None:
+        self.resultRecords = list(records)
+        self.listRecs = [record.image for record in self.resultRecords]
+
+    def _insertResultRecord(self, index: int, record: BeadRecResultRecord) -> None:
+        self.resultRecords.insert(index, record)
+        self.listRecs.insert(index, record.image)
+
+    def _popResultRecord(self, index: int) -> None:
+        self.resultRecords.pop(index)
+        self.listRecs.pop(index)
+
+    def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:
+        return BeadAcquisitionConfig.from_scan_dims(self.dims)
+
+    def _updateProgress(self, current: int, total: int) -> None:
+        self._widget.updateProgress(current, total)
+
     def clearList(self):
-        self.listRecs = []
+        self._setResultRecords([])
 
     def selectionChanged(self,imgListIdx:int=None,currentRun=False,axialName=None):
         if currentRun:
@@ -83,8 +133,8 @@ class BeadRecController(ImConWidgetController):
             self.imDisplay=self.currentRunImgs.get(axialName)
         else:
             self.axialName = None
-            if imgListIdx is not None and imgListIdx<len(self.listRecs):
-                self.imDisplay=self.listRecs[imgListIdx]
+            if imgListIdx is not None and imgListIdx<len(self.resultRecords):
+                self.imDisplay=self.resultRecords[imgListIdx].image
             else:
                 return
         
@@ -94,8 +144,8 @@ class BeadRecController(ImConWidgetController):
             print("Selection changed, but self.imDisplay = none. current run: ",currentRun,"axialName:",axialName)
         
     def removeRecFromList(self,idx:int=None):
-        if idx is not None and idx<len(self.listRecs):
-            self.listRecs.pop(idx)
+        if idx is not None and idx<len(self.resultRecords):
+            self._popResultRecord(idx)
 
     def addCurrentToWidgetList(self):
         axial=False
@@ -136,9 +186,17 @@ class BeadRecController(ImConWidgetController):
             if len(im.shape)!=2:
                 print("Loaded images should be 2d")
                 return
-            self.listRecs.insert(0, im) # adds to list of saved images
             filename = os.path.splitext(os.path.basename(path))[0]
-            self._widget.addToList(filename) # adds to list of items in widget
+            itemName = self._widget.addToList(filename) # adds to list of items in widget
+            self._insertResultRecord(
+                0,
+                BeadRecResultRecord(
+                    name=itemName,
+                    image=im,
+                    source_path=path,
+                    timestamp=time.time(),
+                ),
+            )
         # display last image loaded
         self.imDisplay = im
         self._widget.updateImage(self.imDisplay)
@@ -150,11 +208,22 @@ class BeadRecController(ImConWidgetController):
         NOTE: insert to first position to keep same order as widget items."""
         
         for key, img in self.currentRunImgs.items():
+            scaled = False
             if self._widget.scaleButton.isChecked():
                 img = self.rescale(img)
+                scaled = True
             axialName = key if self.autoAxial else None
-            self._widget.addToList(name,axialName)
-            self.listRecs.insert(0, img)
+            itemName = self._widget.addToList(name,axialName)
+            self._insertResultRecord(
+                0,
+                BeadRecResultRecord(
+                    name=itemName,
+                    image=img,
+                    axial_name=axialName,
+                    timestamp=time.time(),
+                    scaled=scaled,
+                ),
+            )
             if not self.ongoingScan:
                 self._widget.removeCurrentRunItems()
                             
@@ -200,7 +269,7 @@ class BeadRecController(ImConWidgetController):
     
     def saveAll(self):
         """ Saves all images that are in self.listRecs, with file names from the list panel."""
-        if not self.listRecs:
+        if not self.resultRecords:
             return
         caption = "Choose folder to save all images"
         folder = guitools.askForFolderPath(self._widget, caption=caption, defaultFolder=self.lastDir)
@@ -210,11 +279,11 @@ class BeadRecController(ImConWidgetController):
 
         name_offset = self._widget.getInsertIndexAfterCurrent()
             
-        for idx,rec in enumerate(self.listRecs):
+        for idx,record in enumerate(self.resultRecords):
             item = self._widget.imageListWidget.item(idx + name_offset)
             name = item.text() + ".tif"
             path = os.path.join(folder, name)
-            imwrite(path, rec)
+            imwrite(path, record.image)
 
     def roiToggled(self, enabled):
         """ Show or hide ROI."""
@@ -241,13 +310,19 @@ class BeadRecController(ImConWidgetController):
         # if not self.running:
         if self._widget.runButton.isChecked():
             self.updateParameters()
+            config = self._createAcquisitionConfig()
             self.running = True
             self._master.detectorsManager.execOnAll(lambda c: c.flushBuffers())
+            self.beadWorker.start(config)
+            self._widget.setStatusText("Bead reconstruction running")
+            self._widget.updateProgress(0, config.total_pixels)
             self.thread.start()
             if self.ongoingScan:
                 self.addCurrentToWidgetList()
         else:
             self.running = False
+            self.beadWorker.stop()
+            self._widget.setStatusText("Bead reconstruction stopped")
             self.thread.quit()
             self.thread.wait()
 
@@ -259,6 +334,7 @@ class BeadRecController(ImConWidgetController):
             self.axialName = "XY"
 
         if self._widget.runButton.isChecked():
+            self.beadWorker.configure(self._createAcquisitionConfig())
             self.addCurrentToWidgetList() # in case "clear all" made it disappear
 
     
@@ -267,7 +343,12 @@ class BeadRecController(ImConWidgetController):
 
     def onEndedScan(self):
         self.ongoingScan=False
-        self.currentRunImgs[self.axialName] = np.resize(self.recIm, (self.dims[1],self.dims[0])) # we always store unscaled img
+        if self.recIm is None:
+            self._widget.setStatusText("Scan ended without bead reconstruction data")
+            return
+        self.currentRunImgs[self.axialName] = reconstruction_image(self.recIm, self.dims) # we always store unscaled img
+        self._widget.setStatusText("Bead reconstruction scan complete")
+        self._widget.updateProgress(self.recIm.size, self.recIm.size)
     
     def onAutoAxialToggled(self,state:bool = False):
         if state:
@@ -317,32 +398,24 @@ class BeadRecController(ImConWidgetController):
 
     def rescale(self,im):
         """
-        Rescale im if not isotropic scan. Uses scikit rescale function, without interpolation.
+        Rescale image to physical scan pixel size if x/y step sizes differ.
         """
-        if im.shape[0]!=im.shape[1]:
-            if im.shape[0]>im.shape[1]:
-                scale_y=1
-                scale_x=(im.shape[0]/im.shape[1])
-            else:
-                scale_x=1
-                scale_y=(im.shape[1]/im.shape[0])
-
-            rescaled_im = rescale(im, (scale_y, scale_x), anti_aliasing=False, mode='reflect', preserve_range=True)  
-            # px_y = self.stepSizes[1] # (y,x) in recIm, so inversed to the scan XY.
-            # px_x = self.stepSizes[0]
-            # if px_y - px_x == 0:
-            #     return im
-            # self.scale_x = px_x / min(px_x, px_y)
-            # self.scale_y = px_y / min(px_x, px_y)
-            # rescaled_im = rescale(im, (self.scale_y, self.scale_x), anti_aliasing=False, mode='reflect', preserve_range=True)  
-            # imwrite(r"C:\Users\MonaLisa\Documents\rescaled.tiff",rescaled_im) #to debug scaling
-            return rescaled_im
-        else:
+        try:
+            return rescale_reconstruction_to_pixel_size(im, self.stepSizes)
+        except ValueError as exc:
+            self._logger.warning("Could not rescale BeadRec image: %s", exc)
             return im
     
-    def update(self):
+    def update(self, recIm=None):
         """"Updates image display with current recorded image self.recIm"""
-        self.imDisplay = np.resize(self.recIm, (self.dims[1],self.dims[0]))
+        if isinstance(recIm, BeadWorkerUpdate):
+            self._updateProgress(recIm.filled_pixels, recIm.total_pixels)
+            recIm = recIm.buffer
+        if recIm is not None:
+            self.recIm = recIm
+        if self.recIm is None:
+            return
+        self.imDisplay = reconstruction_image(self.recIm, self.dims)
         if self._widget.scaleButton.isChecked():
             self.imDisplay = self.rescale(self.imDisplay)
         self._widget.updateImage(self.imDisplay)
@@ -350,12 +423,8 @@ class BeadRecController(ImConWidgetController):
 
     def centerCoordQuery(self,mode):
         if self.imDisplay is not None:
-            if mode == "Maxima":
-                coord = findCenterFoci(self.imDisplay,self._widget.analysisPrm)
-            elif mode == "Minima":
-                coord = findCenterDonut(self.imDisplay,self._widget.analysisPrm)
-            else:
-                raise ValueError("Center search mode unknown, should be 'Maxima', or 'Minima'")
+            result = find_bead_center(self.imDisplay, mode, self._widget.analysisPrm)
+            coord = result.coord
         else:
             coord = None
         
@@ -379,57 +448,159 @@ class BeadRecController(ImConWidgetController):
             self._widget.displayCenterCoord(self.yCenter,self.xCenter)
         else:
             self._widget.removeCenterCoord()
+
+    def getWidgetState(self) -> dict[str, object]:
+        """Return passive BeadRec UI state for persistence."""
+        return {
+            "analysis_parameters": BeadAnalysisParameters.from_mapping(
+                self._widget.analysisPrm
+            ).as_dict(),
+            "scale_enabled": self._widget.scaleButton.isChecked(),
+            "roi_visible": self._widget.roiButton.isChecked(),
+            "last_dir": self.lastDir,
+            "result_metadata": [
+                record.metadata() for record in self.resultRecords
+            ],
+        }
+
+    def setWidgetState(self, state: dict[str, object]) -> None:
+        """Restore passive BeadRec UI state without starting reconstruction."""
+        try:
+            analysisParameters = state.get("analysis_parameters")
+            if isinstance(analysisParameters, dict):
+                self._widget.analysisPrm = BeadAnalysisParameters.from_mapping(
+                    analysisParameters
+                ).as_dict()
+
+            self._widget.scaleButton.setChecked(bool(state.get("scale_enabled", False)))
+
+            lastDir = state.get("last_dir")
+            if isinstance(lastDir, str) and os.path.isdir(lastDir):
+                self.lastDir = lastDir
+
+            roiVisible = bool(state.get("roi_visible", False))
+            signalsBlocked = self._widget.roiButton.blockSignals(True)
+            self._widget.roiButton.setChecked(roiVisible)
+            self._widget.roiButton.blockSignals(signalsBlocked)
+            self.roiToggled(roiVisible)
+
+            self._widget.setStatusText("BeadRec passive state restored")
+        except Exception as exc:
+            self._logger.warning("Failed to restore BeadRec widget state: %s", exc)
+
+    def getStateSchemaVersion(self) -> int:
+        """Return BeadRec widget-state schema version."""
+        return 1
         
 
             
 
 class BeadWorker(Worker):
-    sigNewChunk = Signal()
+    sigNewChunk = Signal(object)
+    sigWarning = Signal(str)
+    sigProgress = Signal(int, int)
 
-    def __init__(self, controller):
+    def __init__(
+        self,
+        isScanRunning: Callable[[], bool],
+        getFrames: Callable[[], Sequence[np.ndarray]],
+        getRoiBounds: Callable[[], Sequence[int]],
+    ) -> None:
         super().__init__()
-        self.__controller = controller
+        self._isScanRunning = isScanRunning
+        self._getFrames = getFrames
+        self._getRoiBounds = getRoiBounds
+        self._lock = Lock()
+        self._running = False
+        self._config = None
+        self._recIm = None
+        self._nextIndex = 0
+        self._filledPixels = 0
+        self._resetRequested = False
+
+    def start(self, config: BeadAcquisitionConfig) -> None:
+        self.configure(config)
+        with self._lock:
+            self._running = True
+
+    def stop(self) -> None:
+        with self._lock:
+            self._running = False
+
+    def configure(self, config: BeadAcquisitionConfig) -> None:
+        with self._lock:
+            self._config = config
+            self._resetRequested = True
+
+    def _isRunning(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def _getBufferAndIndex(
+        self,
+    ) -> tuple[BeadAcquisitionConfig | None, np.ndarray | None, int | None]:
+        with self._lock:
+            if self._config is None:
+                return None, None, None
+            if self._recIm is None or self._resetRequested:
+                self._recIm = create_reconstruction_buffer(self._config.scan_dims)
+                self._nextIndex = 0
+                self._filledPixels = 0
+                self._resetRequested = False
+            return self._config, self._recIm, self._nextIndex
     
-    def init1DArray(self):
-        dims = np.array(self.__controller.dims)
-        N = (dims[0]) * (dims[1])
-        self.__controller.recIm = np.zeros(N)
-        return N
+    def _storeUpdate(
+        self,
+        sourceBuffer: np.ndarray,
+        update: ReconstructionUpdate,
+    ) -> BeadWorkerUpdate | None:
+        with self._lock:
+            if self._recIm is not sourceBuffer:
+                return None
+            self._recIm = update.buffer
+            self._nextIndex = update.next_index
+            if update.wrapped:
+                self._filledPixels = self._recIm.size
+            else:
+                self._filledPixels = min(self._filledPixels + update.frames_written, self._recIm.size)
+            return BeadWorkerUpdate(
+                buffer=self._recIm,
+                filled_pixels=self._filledPixels,
+                total_pixels=self._recIm.size,
+                frames_written=update.frames_written,
+                wrapped=update.wrapped,
+            )
 
-    def run(self):
-        N = self.init1DArray()
-        i = 0
+    def run(self) -> None:
+        while self._isRunning():
+            config, recIm, nextIndex = self._getBufferAndIndex()
+            if config is None or recIm is None or nextIndex is None:
+                time.sleep(0.0001)
+                continue
 
-        while self.__controller.running:
-
-            if self.__controller.newScan:
-                self.__controller.newScan = False
-                i = 0
-            
-            if self.__controller.parametersChanged:
-                self.__controller.parametersChanged = False
-                N = self.init1DArray()
-
-            if self.__controller._commChannel.isScanRunning():
-                newImages = self.__controller._master.detectorsManager.execOnCurrent(
-                    lambda c: c.getChunk()
-                )
+            if self._isScanRunning():
+                newImages = self._getFrames()
                 n = len(newImages)
                 if n > 0:
-                    roiItem = self.__controller._widget.getROIGraphicsItem()
-                    x0, y0, x1, y1 = roiItem.bounds
+                    try:
+                        roi = normalize_roi_bounds(self._getRoiBounds(), newImages[0].shape)
+                        update = append_roi_means(
+                            recIm,
+                            nextIndex,
+                            newImages,
+                            roi,
+                            wrap=config.wrap,
+                        )
+                    except ValueError as exc:
+                        self.sigWarning.emit(f"Skipping BeadRec chunk: {exc}")
+                        continue
 
-                    for j in range(0, n):
-                        img = newImages[j]
-                        img = img[y0:y1, x0:x1]
-                        mean = np.mean(img)
-                        self.__controller.recIm[i] = mean
-                        i = i + 1
-                        if i == N:
-                            i = 0
-                    self.sigNewChunk.emit()
+                    workerUpdate = self._storeUpdate(recIm, update)
+                    if workerUpdate is not None:
+                        self.sigNewChunk.emit(workerUpdate)
+                        self.sigProgress.emit(workerUpdate.filled_pixels, workerUpdate.total_pixels)
 
-            time.sleep(0.0001)  # Prevents freezing
+            time.sleep(config.poll_interval_s)  # Prevents freezing
 
 
 
@@ -438,294 +609,100 @@ class BeadWorker(Worker):
 
 def findCenterFoci(im: np.ndarray,params:dict=None):
     """ Find center of foci and return center coordinates"""
-    if params is None:
-        params = {}
-    else:
-        assert isinstance(params,dict), "params should be a dictionnary"
-    # retrieve parameters, default values set if not found
-    min_area = params.get("min_area",50)
-    max_area = params.get("max_area",1000)
-    thresh_coeff = params.get("thresh_coeff",0.2)
-
-    im_pad = np.pad(im, pad_width=3, mode='constant', constant_values=np.min(im))
-    # Thresholding
-    range_val = np.max(im) - np.min(im)
-    thresh = thresh_coeff * range_val + np.min(im)
-    im_bw1 = im_pad > thresh
-
-    # Connected components
-    labels = measure.label(im_bw1)
-    props = measure.regionprops_table(labels, properties=('centroid', 'area'))
-    areas = np.array(props['area'])
-    sorted_idx = np.argsort(areas)[::-1]  # descending
-
-    # Blob detection
-    if len(areas) > 0 and min_area < areas[sorted_idx[0]] < max_area:
-        mask = labels == (sorted_idx[0] + 1)
-        mask = mask [3:-3, 3:-3]
-        im2 = im.copy()
-        im2[~mask]=0
-        maxy, maxx = np.unravel_index(np.argmax(im2), im2.shape)
-        return (maxy,maxx)
-    else:
+    result = find_bead_center(im, "Maxima", params)
+    if result.coord is None:
         print("findCenterFoci pipeline failed...")
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        fig, axes = plt.subplots(1, 1, figsize=(4, 4))
         fig.suptitle('findCenterFoci failed', fontsize=16)
-        axes[0].imshow(im, cmap='gray')
-        axes[0].set_title("Foci")
-        axes[1].imshow(im_bw1, cmap='gray')
-        axes[1].set_title(f"Area size: {areas[sorted_idx[0]]} ")
+        axes.imshow(im, cmap='gray')
+        axes.set_title(result.reason or "Foci")
         plt.show()
-        return None
+    return result.coord
 
 
 
 def findCenterDonut(im: np.ndarray, params:dict = None):
     """ Find center of donuts and return center coordinates"""
-    if params is None:
-        params = {}
-    else:
-        assert isinstance(params,dict), "params should be a dictionnary"
-    
-    # retrieve parameters, default values set if not found
-    min_area = params.get("min_area",50)
-    max_area = params.get("max_area",1000)
-    thresh_coeff = params.get("thresh_coeff",0.2)
-    erosion_coeff = params.get("erosion_coeff",0.2)
+    return find_bead_center(im, "Minima", params).coord
 
-    # Pad image
-    im_pad = np.pad(im, pad_width=3, mode='constant', constant_values=np.min(im))
-
-    # Thresholding
-    range_val = np.max(im) - np.min(im)
-    thresh = thresh_coeff * range_val + np.min(im)
-    im_bw1 = im_pad > thresh
-
-    # Connected components
-    labels = measure.label(im_bw1)
-    props = measure.regionprops_table(labels, properties=('centroid', 'area'))
-    areas = np.array(props['area'])
-    sorted_idx = np.argsort(areas)[::-1]  # descending
-
-    # Blob detection
-    if len(areas) > 0 and min_area < areas[sorted_idx[0]] < max_area:
-        mask = labels == (sorted_idx[0] + 1)
-        im_bw2 = morphology.binary_closing(mask, morphology.disk(5))
-
-        # Diameter and erosion
-        props2 = measure.regionprops(im_bw2.astype(int))
-        blob_diameter = props2[0].equivalent_diameter
-        radius = max(round(blob_diameter * erosion_coeff), 1)
-        im_bw3 = morphology.erosion(im_bw2, morphology.disk(radius))
-        
-        # Find local minimum
-        im2 = im.copy()
-        im3_crop = im_bw3[3:-3, 3:-3]
-        im2[~im3_crop] = 1e3
-        miny, minx = np.unravel_index(np.argmin(im2), im2.shape)
-        return(miny,minx)
-    else:
-        return None
-
-def run_donut_analysis(im:np.ndarray,params:dict = None):
-
-    """ Zero analysis of donuts function"""
-    if params is None:
-        params = {}
-    else:
-        assert isinstance(params,dict), "params should be a dictionnary"
-    
-    # retrieve parameters, default values set if not found
-    min_area = params.get("min_area",50)
-    max_area = params.get("max_area",1000)
-    tol_peaks_pos = params.get("tol_peaks_pos",10)
-    thresh_coeff = params.get("thresh_coeff",0.2)
-    erosion_coeff = params.get("erosion_coeff",0.2)
-
-    # Pad image
-    im_pad = np.pad(im, pad_width=3, mode='constant', constant_values=np.min(im))
-
-    # Thresholding
-    range_val = np.max(im) - np.min(im)
-    thresh = thresh_coeff * range_val + np.min(im)
-    im_bw1 = im_pad > thresh
-
-    # Connected components
-    labels = measure.label(im_bw1)
-    props = measure.regionprops_table(labels, properties=('centroid', 'area'))
-    areas = np.array(props['area'])
-    sorted_idx = np.argsort(areas)[::-1]  # descending
-
-    rejected_peaks = False
-    rejected_binarization = False
-    # Blob detection
-    if len(areas) > 0 and min_area < areas[sorted_idx[0]] < max_area:
-        mask = labels == (sorted_idx[0] + 1)
-        im_bw2 = morphology.binary_closing(mask, morphology.disk(5))
-
-        # Diameter and erosion
-        props2 = measure.regionprops(im_bw2.astype(int))
-        blob_diameter = props2[0].equivalent_diameter
-        radius = max(round(blob_diameter * erosion_coeff), 1)
-        im_bw3 = morphology.erosion(im_bw2, morphology.disk(radius))
-
-        # Background estimation
-        im_bw_bg = morphology.dilation(im_bw1[3:-3, 3:-3], morphology.disk(3))
-        im_bw_bg[:2, :] = 1
-        im_bw_bg[-2:, :] = 1
-        im_bw_bg[:, :2] = 1
-        im_bw_bg[:, -2:] = 1
-
-        im_bg = im[~im_bw_bg]
-        bg = np.mean(im_bg[im_bg != 0])
-        std_bg = np.std(im_bg[im_bg != 0])
-
-        # Find local minimum
-        im2 = im.copy()
-        im3_crop = im_bw3[3:-3, 3:-3]
-        im2[~im3_crop] = 65535
-        # im2[im2 < bg + 0.03 * range_val] = 1e3
-        min_val = np.min(im2)
-        miny, minx = np.unravel_index(np.argmin(im2), im2.shape)
-        
-        linex = im[miny, :]
-        liney = im[:, minx]
-        
-        try:
-            # Line profile X
-            xlocs, xpks_props = find_peaks(linex)
-            xpks = linex[xlocs]  # Get the peak values at those indices
-            valid_peaks_x = np.where(np.abs(xlocs - minx) <= tol_peaks_pos)[0]
-
-            filtered_peaks_x = xlocs[valid_peaks_x]
-            filtered_vals_x = linex[filtered_peaks_x]
-            order_x = np.argsort(filtered_vals_x)[::-1]
-
-            maxX1 = filtered_vals_x[order_x[0]]
-            x1 = filtered_peaks_x[order_x[0]]
-            maxX2 = filtered_vals_x[order_x[1]]
-            x2 = filtered_peaks_x[order_x[1]]
-            maxX = 0.5 * (maxX1 + maxX2)
-            fillX = (min_val - bg) / (maxX - bg)
-
-            # Error propagation
-            std_maxX = abs(maxX1 - maxX2) / (2**0.5)
-            denom_squared = (maxX - bg)**2
-            df_dbg = -(maxX - min_val) / denom_squared
-            df_dmaxX = (min_val - bg) / denom_squared
-            std_fillX = (df_dbg**2 * std_bg**2 + df_dmaxX**2 * std_maxX**2)**0.5
-
-            # Line profile Y
-            ylocs, ypks_props = find_peaks(liney)
-            ypks = liney[ylocs]
-            valid_peaks_y = np.where(np.abs(ylocs - miny) <= tol_peaks_pos)[0]
-
-
-            filtered_peaks_y = ylocs[valid_peaks_y]
-            filtered_vals_y = liney[filtered_peaks_y]
-            order_y = np.argsort(filtered_vals_y)[::-1]
-
-            maxY1 = filtered_vals_y[order_y[0]]
-            y1 = filtered_peaks_y[order_y[0]]
-            maxY2 = filtered_vals_y[order_y[1]]
-            y2 = filtered_peaks_y[order_y[1]]
-            maxY = 0.5 * (maxY1 + maxY2)
-            fillY = (min_val - bg) / (maxY - bg)
-            
-            # Error propagation
-            std_maxY = abs(maxY1 - maxY2) / (2**0.5)
-            denom_squared = (maxY - bg)**2
-            df_dbg = -(maxY - min_val) / denom_squared
-            df_dmaxY = (min_val - bg) / denom_squared
-            std_fillY = (df_dbg**2 * std_bg**2 + df_dmaxY**2 * std_maxY**2)**0.5
-
-        except Exception as e:
-            rejected_peaks = True
-
-    else:
-        rejected_binarization = True
-
-    # Final plotting
-    if rejected_binarization:
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-        fig.suptitle('Rejected after binarization. Check parameters.', fontsize=16)
+def run_donut_analysis(im: np.ndarray, params: dict = None):
+    """Plot donut-analysis diagnostics from the pure analysis result."""
+    result = analyze_donut(im, params)
+    if not result.accepted:
+        fig, axes = plt.subplots(1, 4 if result.line_x is not None else 2, figsize=(16, 4))
+        fig.suptitle(f"Donut analysis rejected: {result.reason}", fontsize=16)
         axes[0].imshow(im, cmap='gray')
         axes[0].set_title("Donut")
-        axes[1].imshow(im_bw1, cmap='gray')
+        if result.coord is not None:
+            axes[0].axvline(x=result.coord[1], color='red')
+            axes[0].axhline(y=result.coord[0], color='green')
+        axes[1].imshow(result.binarized, cmap='gray')
         axes[1].set_title("Binarized")
+        if result.line_x is not None:
+            axes[2].plot(result.line_x, 'g')
+            axes[2].set_title("X profile")
+            axes[3].plot(result.line_y, 'r')
+            axes[3].set_title("Y profile")
         plt.show()
+        return result
 
-    elif rejected_peaks:
-        fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-        fig.suptitle('Rejected because peaks localization failed.', fontsize=16)
-        axes[0].imshow(im, cmap='gray')
-        axes[0].set_title("Donut + zero localization")
-        axes[0].axvline(x=minx, color='red')   # vertical line
-        axes[0].axhline(y=miny, color='green') # horizontal line
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    fig.suptitle('Donuts analysis results', fontsize=16)
 
-        axes[1].imshow(im_bw1, cmap='gray')
-        axes[1].set_title("Binarized")
+    axes[0][0].imshow(im, cmap='gray')
+    axes[0][0].set_title("Donut")
+    axes[0][1].imshow(result.binarized, cmap='gray')
+    axes[0][1].set_title("Binarized")
+    axes[0][2].imshow(result.selected_mask, cmap='gray')
+    axes[0][2].set_title("After closing and CC selection")
+    axes[0][3].imshow(result.eroded_mask, cmap='gray')
+    axes[0][3].set_title("After erosion (zero search area)")
 
-        axes[2].plot(linex, 'g')
-        axes[2].set_title("X profile")
+    for ax in axes[0]:
+        ax.axis('off')
 
-        axes[3].plot(liney, 'r')
-        axes[3].set_title("fillY")
-        plt.show()
+    miny, minx = result.coord
+    axes[1][0].imshow(im, cmap='gray')
+    axes[1][0].axis('image')
+    axes[1][0].axvline(x=minx, color='red')
+    axes[1][0].axhline(y=miny, color='green')
+    axes[1][0].set_title(f"Minima = {result.min_value:.0f}")
+    axes[1][0].axis('off')
 
+    axes[1][1].imshow(
+        result.background_mask,
+        cmap='gray',
+        extent=[0, result.background_mask.shape[1], 0, result.background_mask.shape[0]],
+    )
+    axes[1][1].axis('image')
+    axes[1][1].set_title(f"Avg Bkg = {result.background:.2f} ± {result.background_std:.2f}")
+    rect = patches.Rectangle(
+        (0, 0), result.background_mask.shape[1], result.background_mask.shape[0],
+        linewidth=1.5, edgecolor='black', facecolor='none'
+    )
+    axes[1][1].add_patch(rect)
+    axes[1][1].axis('off')
 
-    else:
-        # Display processing steps
-        fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-        fig.suptitle('Donuts analysis results', fontsize=16)
+    peak_values = [*result.peak_x_values, *result.peak_y_values]
+    ymax = round(np.max(peak_values) * 1.1)
+    ymin = np.min(im) * 0.95
 
-        axes[0][0].imshow(im, cmap='gray')
-        axes[0][0].set_title("Donut")
-        axes[0][1].imshow(im_bw1, cmap='gray')
-        axes[0][1].set_title("Binarized")
-        axes[0][2].imshow(im_bw2, cmap='gray')
-        axes[0][2].set_title("After closing and CC selection")
-        axes[0][3].imshow(im_bw3, cmap='gray')
-        axes[0][3].set_title("After erosion (zero search area)")
+    x1, x2 = result.peak_x_positions
+    maxX1, maxX2 = result.peak_x_values
+    axes[1][2].plot(result.line_x, 'g')
+    axes[1][2].plot([x1, x2], [maxX1, maxX2], 'xk')
+    axes[1][2].set_title(f"fillX={result.fill_x:.2f} ± {result.fill_x_std:0.2f}")
+    axes[1][2].set_ylim([ymin, ymax])
 
-        for ax in axes[0]:
-            ax.axis('off')
+    y1, y2 = result.peak_y_positions
+    maxY1, maxY2 = result.peak_y_values
+    axes[1][3].plot(result.line_y, 'r')
+    axes[1][3].plot([y1, y2], [maxY1, maxY2], 'xk')
+    axes[1][3].set_title(f"fillY={result.fill_y:.2f} ± {result.fill_y_std:0.2f}")
+    axes[1][3].set_ylim([ymin, ymax])
 
-        # Subplot 1: original image with cross lines
-        axes[1][0].imshow(im, cmap='gray')
-        axes[1][0].axis('image')
-        axes[1][0].axvline(x=minx, color='red')   # vertical line
-        axes[1][0].axhline(y=miny, color='green') # horizontal line
-        axes[1][0].set_title(f"Minima = {min_val:.0f}")
-        axes[1][0].axis('off')
-
-        # Subplot 2: background mask
-        axes[1][1].imshow(im_bw_bg, cmap='gray',extent=[0, im_bw_bg.shape[1], 0, im_bw_bg.shape[0]])
-        axes[1][1].axis('image')
-        axes[1][1].set_title(f"Avg Bkg = {bg:.2f} ± {std_bg:.2f}")
-        rect = patches.Rectangle(
-            (0, 0), im_bw_bg.shape[1], im_bw_bg.shape[0],
-            linewidth=1.5, edgecolor='black', facecolor='none'
-        )
-        axes[1][1].add_patch(rect)
-        axes[1][1].axis('off')
-
-        ymax = round(np.max([maxX1,maxX2,maxY1,maxY2])*1.1)
-        ymin = np.min(im) * 0.95
-
-        # Subplot 3: X profile
-        axes[1][2].plot(linex, 'g')
-        axes[1][2].plot([x1, x2], [maxX1, maxX2], 'xk')
-        axes[1][2].set_title(f"fillX={fillX:.2f} ± {std_fillX:0.2f}")
-        axes[1][2].set_ylim([ymin,ymax])
-
-        # Subplot 4: Y profile
-        axes[1][3].plot(liney, 'r')
-        axes[1][3].plot([y1, y2], [maxY1, maxY2], 'xk')
-        axes[1][3].set_title(f"fillY={fillY:.2f} ± {std_fillY:0.2f}")
-        axes[1][3].set_ylim([ymin,ymax])
-
-        plt.show()
+    plt.show()
+    return result
 
 
 

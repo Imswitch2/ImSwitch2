@@ -10,6 +10,11 @@ from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredSc
 
 ROOT = Path(__file__).resolve().parents[4]
 CONTROLLER_PATH = ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'EtSTEDController.py'
+# Cleanup-contract methods now live on the shared base class.
+BASE_CONTROLLER_PATH = (
+    ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers'
+    / 'EventTriggeredBaseController.py'
+)
 
 
 class _ScanManager:
@@ -165,7 +170,7 @@ def test_scan_preparation_failure_does_not_trigger_scan():
 
 
 def test_controller_stop_and_close_cleanup_contract_disables_fast_laser():
-    source = CONTROLLER_PATH.read_text()
+    source = BASE_CONTROLLER_PATH.read_text()
 
     assert 'def stopExperiment' in source
     assert 'self._disconnectRunSignals()' in source

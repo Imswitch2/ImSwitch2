@@ -5,7 +5,7 @@ from imswitch.imcommon.view.guitools import naparitools
 from imswitch.imcommon.view.guitools.JsonEditorDialog import JsonEditorDialog
 from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
-import json
+
 
 class BeadRecWidget(Widget):
     """ Displays the FFT transform of the image. """
@@ -33,6 +33,8 @@ class BeadRecWidget(Widget):
 
         #Main panel: Viewbox + buttons
         self.cwidget = pg.GraphicsLayoutWidget()
+        self.cwidget.setMinimumSize(0, 0)
+        self.cwidget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.vb = self.cwidget.addViewBox(row=1, col=1)
         self.vb.setMouseMode(pg.ViewBox.RectMode)
         self.img = pg.ImageItem(axisOrder='row-major')
@@ -60,12 +62,20 @@ class BeadRecWidget(Widget):
         self.loadImgBtn = guitools.BetterPushButton('Load')
         self.donutsAnalysisBtn = guitools.BetterPushButton('Donuts Analysis')
         self.prmBtn = guitools.BetterPushButton("Analysis Parameters")
+        self.statusLabel = QtWidgets.QLabel("Idle")
+        self.statusLabel.setWordWrap(True)
+        self.progressBar = QtWidgets.QProgressBar()
+        self.progressBar.setRange(0, 1)
+        self.progressBar.setValue(0)
+        self.progressBar.setTextVisible(True)
         self.ROI = naparitools.VispyROIVisual(rect_color='yellow', handle_color='orange')
 
         mainPanel = QtWidgets.QWidget()
         mainLayout = QtWidgets.QGridLayout()
         mainLayout.setContentsMargins(3, 3, 3, 3)
         mainPanel.setLayout(mainLayout)
+        mainPanel.setMinimumSize(0, 0)
+        mainPanel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         mainLayout.addWidget(self.cwidget, 0, 0, 1, 6)
         mainLayout.addWidget(self.roiButton, 1, 0, 1, 1)
@@ -90,16 +100,22 @@ class BeadRecWidget(Widget):
         # mainLayout.addItem(spacer, 2, 0, 1, 6)  
         mainLayout.addWidget(self.donutsAnalysisBtn, 5, 0, 1, 3)
         mainLayout.addWidget(self.prmBtn, 5, 3, 1, 3)
+        mainLayout.addWidget(self.statusLabel, 6, 0, 1, 6)
+        mainLayout.addWidget(self.progressBar, 7, 0, 1, 6)
+        mainLayout.setRowStretch(0, 1)
 
         ### list panels ###
         listPanel = QtWidgets.QWidget()
         listLayout = QtWidgets.QVBoxLayout()
         listLayout.setContentsMargins(3, 3, 3, 3)
         listPanel.setLayout(listLayout)
-        listPanel.setMaximumWidth(100)
+        listPanel.setMinimumWidth(140)
+        listPanel.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
 
         self.imageListWidget = QtWidgets.QListWidget()
         self.imageListWidget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.imageListWidget.setMinimumSize(0, 0)
+        self.imageListWidget.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         listLayout.addWidget(self.imageListWidget)
 
         self.buttonLayout = QtWidgets.QVBoxLayout()
@@ -117,9 +133,11 @@ class BeadRecWidget(Widget):
         # final panel: combine Main and List
         finalLayout = QtWidgets.QHBoxLayout()
         self.setLayout(finalLayout)
-        finalLayout.addWidget(mainPanel)
-        finalLayout.addWidget(listPanel)
+        finalLayout.addWidget(mainPanel, 1)
+        finalLayout.addWidget(listPanel, 0)
         finalLayout.setSpacing(15)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
         # Connect signals
         self.roiButton.toggled.connect(self.sigROIToggled)
@@ -150,6 +168,15 @@ class BeadRecWidget(Widget):
     def updateImage(self, image):
         self.img.setImage(image, autoLevels=False)
         # self.removeCenterCoord()
+
+    def setStatusText(self, text):
+        self.statusLabel.setText(text)
+
+    def updateProgress(self, current, total):
+        total = max(int(total), 1)
+        current = min(max(int(current), 0), total)
+        self.progressBar.setRange(0, total)
+        self.progressBar.setValue(current)
     
     def open_settings_dialog(self):
         updated = JsonEditorDialog.edit_params(self, self.analysisPrm)
@@ -167,6 +194,7 @@ class BeadRecWidget(Widget):
         item.setData(QtCore.Qt.UserRole, {'isCurrent': False, 'axialName': axialName}) # not a current scan
         insertIdx = self.getInsertIndexAfterCurrent()
         self.imageListWidget.insertItem(insertIdx,item)
+        return name
     
     
     def addCurrentRunToList(self,axial:bool=False,axialName:str=None):

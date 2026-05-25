@@ -16,8 +16,26 @@ class PositionerWidget(Widget):
         super().__init__(*args, **kwargs)
         self.numPositioners = 0
         self.pars = {}
+        self.gridContainer = QtWidgets.QWidget()
         self.grid = QtWidgets.QGridLayout()
-        self.setLayout(self.grid)
+        self.gridContainer.setLayout(self.grid)
+
+        self.scrollArea = QtWidgets.QScrollArea()
+        self.scrollArea.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setMinimumSize(0, 0)
+        self.scrollArea.setWidget(self.gridContainer)
+        self.scrollArea.setWidgetResizable(True)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self.scrollArea)
+        self.setLayout(layout)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Expanding,
+        )
 
     def addJoystick(self, pName):
         # create and add check box

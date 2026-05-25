@@ -130,7 +130,7 @@ class RecordingWidget(Widget):
         buttonWidget.setLayout(buttonGrid)
         buttonGrid.addWidget(self.snapTIFFButton, 0, 0)
         buttonWidget.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-                                   QtWidgets.QSizePolicy.Expanding)
+                                   QtWidgets.QSizePolicy.Fixed)
         buttonGrid.addWidget(self.recButton, 0, 2)
 
         layout = QtWidgets.QVBoxLayout()
@@ -214,7 +214,21 @@ class RecordingWidget(Widget):
         self.recGridContainer = QtWidgets.QWidget()
         self.recGridContainer.setLayout(recGrid)
 
-        layout.addWidget(self.recGridContainer)
+        self.scrollArea = QtWidgets.QScrollArea()
+        self.scrollArea.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setMinimumSize(0, 0)
+        self.scrollArea.setWidget(self.recGridContainer)
+        self.scrollArea.setWidgetResizable(True)
+
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Expanding,
+        )
+
+        layout.addWidget(self.scrollArea)
         layout.addWidget(buttonWidget)
 
         # Initial condition of fields and checkboxes.

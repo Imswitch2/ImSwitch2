@@ -403,8 +403,11 @@ class CoordTransformWidget(Widget):
         super().__init__(*args, **kwargs)
         self.loadLoResButton = guitools.BetterPushButton('Load low-res calibration image')
         self.loadHiResButton = guitools.BetterPushButton('Load high-res calibration image')
+        self.autoCalibButton = guitools.BetterPushButton('Auto-detect && match beads')
         self.saveCalibButton = guitools.BetterPushButton('Save calibration')
         self.resetCoordsButton = guitools.BetterPushButton('Reset coordinates')
+        self.autoCalibStatusLabel = QtWidgets.QLabel('')
+        self.autoCalibStatusLabel.setWordWrap(True)
 
         self.napariViewerLo = naparitools.EmbeddedNapari()
         self.napariViewerHi = naparitools.EmbeddedNapari()
@@ -416,15 +419,19 @@ class CoordTransformWidget(Widget):
 
         self.grid = QtWidgets.QGridLayout()
         self.setLayout(self.grid)
-    
+
         # initialize the controls for the coordinate transform help widget
         currentRow = 0
         self.grid.addWidget(self.loadLoResButton, currentRow, 0)
         self.grid.addWidget(self.loadHiResButton, currentRow, 1)
-        
+
         currentRow += 1
         self.grid.addWidget(self.napariViewerLo.get_widget(), currentRow, 0)
         self.grid.addWidget(self.napariViewerHi.get_widget(), currentRow, 1)
+
+        currentRow += 1
+        self.grid.addWidget(self.autoCalibButton, currentRow, 0)
+        self.grid.addWidget(self.autoCalibStatusLabel, currentRow, 1)
 
         currentRow += 1
         self.grid.addWidget(self.saveCalibButton, currentRow, 0)

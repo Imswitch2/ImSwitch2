@@ -2,42 +2,65 @@
 Hardware control configurations
 *******************************
 
-ImSwitch's hardware control module is designed to be flexible and be usable in a wide variety of microscopy setups.
-In order to provide this flexibility,
-hardware configurations are defined in .json files that are loaded when the hardware control module starts.
+Imswitch2's hardware control module is designed to be flexible and
+usable in a wide variety of microscopy setups.  In order to provide
+this flexibility, hardware configurations are defined in JSON files
+that are loaded when the hardware control module starts.
 
-Hardware configuration files are loaded from the ``imcontrol_setups`` directory,
-which is automatically created inside your user directory for ImSwitch the first time the hardware control module starts.
-It contains some pre-made configuration files by default.
-The user directory is located at ``%USERPROFILE%\Documents\ImSwitch`` on Windows and ``~/ImSwitch`` on macOS/Linux.
+Setup files are loaded from the ``imcontrol_setups`` directory,
+created inside your user config directory the first time the hardware
+control module starts.  It is pre-populated with example setups.
+The user directory is:
 
-The first time you start the hardware control module,
-you will be prompted to select a setup file to load.
-If you want to switch to another hardware configuration later,
-select "Tools" -> "Pick hardware setup…" in the hardware control module's menu bar.
+* ``%USERPROFILE%\Documents\ImSwitchConfig\`` on Windows
+* ``~/ImSwitchConfig/`` on macOS / Linux
+
+The first time you start the hardware control module you will be
+prompted to select a setup file.  To switch later, use
+**Tools → Pick hardware setup…** in the menu bar.
+
+.. tip::
+
+   Don't want to hand-edit JSON?  Use the bundled visual setup editor:
+
+   .. code-block:: bash
+
+      python utility_scripts/imswitch_config_editor.py
+
+   It loads built-in templates for every supported manager.
 
 
 How configurations are defined
 ==============================
 
-Hardware configurations are defined in JSON format.
-Behind the scenes,
-they are automatically translated to Python class instances when loaded into the software.
+Configurations are JSON.  Internally they are deserialized into Python
+class instances (one per device type) when loaded.
 
-A central concept in ImSwitch is that of device managers.
-Device managers define what kind of device you have, and how ImSwitch communicates with it.
-For example, if you have a Hamamatsu camera that you would like to control,
-you would define a detector that uses the ``HamamatsuManager`` in the hardware setup file and set its appropriate properties.
-The list of available managers and their properties can be found :ref:`here <Available managers>`.
-Each device must have a unique name, which is represented by its object key in the JSON.
+A central concept in Imswitch2 is the **device manager**.  A device
+manager defines what kind of device you have and how Imswitch2
+communicates with it.  For example, to control a Hamamatsu camera you
+declare a detector whose ``managerName`` is ``"HamamatsuManager"`` and
+fill in its ``managerProperties``.  Each device must have a unique
+name, given by its key in the JSON object.
 
-Signal designers, which are relevant for users who use the scan functionality, are similar.
-Microscopy scans can be set up in different ways; in a point-scanning setup, for instance,
-you might want to set your scan settings to use the ``PointScanTTLCycleDesigner`` to generate the appropriate TTL signals.
-They are documented :ref:`here <Available signal designers>`.
+The **complete per-manager reference** — every field, every default,
+every required low-level dependency — lives in the per-category pages
+under :doc:`devices/ <devices/detectors>`:
 
-As a very simple example,
-a hardware configuration file that allows you to control a single Cobolt 06-01 (non-DPL) laser connected to COM port 11 can look like this:
+* :doc:`devices/detectors` — every ``DetectorManager``.
+* :doc:`devices/lasers` — every ``LaserManager``.
+* :doc:`devices/positioners` — every ``PositionerManager``.
+* :doc:`devices/rotators` — every ``RotatorManager``.
+
+For adding a *new* manager class (i.e. implementing one yourself), see
+:doc:`adding-device-support`.
+
+**Signal designers** — used when you build a scan — are similar.  In a
+point-scanning setup, for example, you might select
+``PointScanTTLCycleDesigner`` to generate the TTL signals for your
+scan.  They are documented :ref:`below <Signal designers>`.
+
+Minimal example: a single Cobolt 06-01 laser on COM11:
 
 .. code-block:: json
 
@@ -58,19 +81,27 @@ a hardware configuration file that allows you to control a single Cobolt 06-01 (
        ]
    }
 
-Note that the ``digitalPorts`` property is specific to ``Cobolt0601LaserManager``.
+``digitalPorts`` is a property specific to ``Cobolt0601LaserManager``
+— each manager defines its own keys.
 
 
-Configuration file specification
-================================
+Setup file specification
+========================
+
+Top-level shape:
 
 .. autoclassconheader:: imswitch.imcontrol.view.guitools.ViewSetupInfo.ViewSetupInfo
    :members:
    :inherited-members:
 
 
-Item types that may be included
-===============================
+Per-device info classes
+=======================
+
+These ``Info`` classes describe the *generic* fields every entry in
+the corresponding top-level dict accepts.  Manager-specific keys go
+inside ``managerProperties`` and are documented in the per-category
+pages linked above.
 
 .. autoclassconheader:: imswitch.imcontrol.model.SetupInfo.DetectorInfo
    :members:
@@ -113,52 +144,15 @@ Item types that may be included
    :inherited-members:
 
 
+.. _Signal designers:
 
-Available managers
-==================
+Signal designers
+================
 
-Detector managers
------------------
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.detectors.APDManager.APDManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.detectors.HamamatsuManager.HamamatsuManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.detectors.PhotometricsManager.PhotometricsManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.detectors.TISManager.TISManager
-
-
-Laser managers
---------------
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.lasers.AAAOTFLaserManager.AAAOTFLaserManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.lasers.Cobolt0601LaserManager.Cobolt0601LaserManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.lasers.CoolLEDLaserManager.CoolLEDLaserManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.lasers.NidaqLaserManager.NidaqLaserManager
-
-
-Positioner managers
--------------------
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.positioners.MHXYStageManager.MHXYStageManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.positioners.NidaqPositionerManager.NidaqPositionerManager
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.positioners.PiezoconceptZManager.PiezoconceptZManager
-
-
-RS232 managers
---------------
-
-.. autoclassconheader:: imswitch.imcontrol.model.managers.rs232.RS232Manager.RS232Manager
-
-
-Available signal designers
-==========================
+Signal designers translate high-level scan settings into the
+analog/digital waveforms that drive scanners and modulate lasers.
+They are selected via the ``scanDesigner`` / ``signalDesigner`` fields
+in your setup file.
 
 Scan designers
 --------------

@@ -5,7 +5,6 @@ import traceback
 from typing import Dict, Any
 
 import numpy as np
-from PyQt5.QtCore import QTimer
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from ..basecontrollers import SuperScanController
@@ -77,23 +76,6 @@ class ScanControllerAdvanced(SuperScanController):
             self.plotSignalGraph()
         except Exception:
             self._logger.debug("[ScanControllerAdvanced] initial plotSignalGraph failed:\n%s", traceback.format_exc())
-
-        # ---- BeadRec signal bridge (widget → commChannel) ----
-        for widget_sig, workflow_slot in [
-            ("sigUpdateBeadRecCenter", self._commChannel.beadRecWorkflow.update_bead_rec_center),
-            ("sigShowBeadRecCenterCross", self._commChannel.beadRecWorkflow.show_bead_rec_center_cross),
-            ("sigAutoAxialToggled", self._commChannel.beadRecWorkflow.set_auto_axial),
-        ]:
-            src = getattr(self._widget, widget_sig, None)
-            if src is not None:
-                src.connect(workflow_slot)
-
-        # Emit initial (0, 0) bead center so BeadRecController.yCenter/xCenter
-        # are non-None from startup.  Without this the crosshair can never appear
-        # because updateCenterCrossWidget() guards on `yCenter is not None`.
-        # Use singleShot(0) so all other controllers (including BeadRecController)
-        # have finished __init__ before we emit.
-        QTimer.singleShot(0, lambda: self._commChannel.beadRecWorkflow.update_bead_rec_center(0, 0))
 
         # Register for widget state persistence
         getWidgetStatePersistence().register('ScanControllerAdvanced', self)
@@ -171,7 +153,7 @@ class ScanControllerAdvanced(SuperScanController):
         return signalDict, scanInfoDict
 
     # ---------------------------------------------------------------------
-    # BeadRec interface (mirrors ScanControllerMoNaLISA)
+    # Scan geometry interface consumed by BeadRecController
     # ---------------------------------------------------------------------
 
     def getDimsScan(self):
