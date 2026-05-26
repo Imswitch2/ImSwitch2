@@ -10,6 +10,8 @@ This directory contains one-off hardware diagnostic and exploration scripts that
 
 - **`test_standa_motrot.py`** — Standa motor/rotation stage serial communication test. Queries device serial number via ASRL8::INSTR. Requires Standa hardware.
 
+- **`measure_laser_rep_rate.py`** — Measures laser repetition rate on a Swabian Time Tagger channel using `TimeTagger.Countrate`. Output feeds the `laser_rep_rate_mhz` parameter used by the FLIM phasor fit.
+
 ## Why Not in `_test/`?
 
 These scripts are not proper unit/integration tests because:

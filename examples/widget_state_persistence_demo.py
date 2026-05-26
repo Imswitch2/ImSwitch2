@@ -238,7 +238,7 @@ def main():
     
     print("\n" + "=" * 60)
     print("For more information, see:")
-    print("  docs/WIDGET_STATE_PERSISTENCE.md")
+    print("  docs/design/WIDGET_STATE_PERSISTENCE.md")
     print("=" * 60 + "\n")
 
 

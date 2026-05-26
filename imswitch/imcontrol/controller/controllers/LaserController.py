@@ -15,6 +15,10 @@ class LaserController(ImConWidgetController):
         self.settingAttr = False
         self.presetBeforeScan = None
         self.is_scanning = False
+        # scanBuilt fires every repeated scan frame; the force-off only needs
+        # to run once per scan sequence. This guards against re-issuing
+        # blocking serial laser commands on every frame.
+        self._scanBuiltApplied = False
 
         # Set up lasers
         for lName, lManager in self._master.lasersManager:
@@ -230,6 +234,9 @@ class LaserController(ImConWidgetController):
         """ Handles what happens when a scan is started/stopped. """
 
         self.is_scanning = isScanning
+        if not isScanning:
+            # Scan sequence finished — re-arm the one-shot scanBuilt force-off.
+            self._scanBuiltApplied = False
 
         for lName, _ in self._master.lasersManager:
             self._widget.setLaserEditable(lName, not isScanning)
@@ -249,16 +256,36 @@ class LaserController(ImConWidgetController):
 
     def scanBuilt(self, deviceList):
         """ Force-disable lasers not in the scan's TTL device list.
-        The scan module's TTL device list is the sole authority for emission. """
+        The scan module's TTL device list is the sole authority for emission.
+
+        scanBuilt fires on every repeated scan frame; the hardware force-off
+        runs only once per scan sequence (guarded by _scanBuiltApplied) so
+        blocking serial laser commands are not re-issued every frame. """
         for lName, _ in self._master.lasersManager:
             if lName not in deviceList:
+                # Cheap UI update — safe to repeat every frame.
+                self._widget.setLaserEditable(lName, True)
+                if self._scanBuiltApplied:
+                    continue
+                # Only force off lasers the scan can actually drive via the
+                # DAQ (analog or digital channel). Pure RS232-controlled
+                # lasers (e.g. AA AOTF) never appear in deviceList and cannot
+                # be gated by the DAQ — leave them in the state the user set,
+                # otherwise every scan frame disables them.
+                info = self._setupInfo.lasers.get(lName)
+                hasDaqChannel = info is not None and (
+                    info.getAnalogChannel() is not None
+                    or info.getDigitalLine() is not None
+                )
+                if not hasDaqChannel:
+                    continue
                 # Disarm and force off lasers not participating in this scan
                 self._master.lasersManager[lName].setScanModeActive(False)
                 self._master.lasersManager[lName].setEnabled(False)
                 # Sync the UI toggle silently so it reflects the forced-off
                 # hardware state without re-triggering toggleLaser.
                 self._widget.setLaserActive(lName, False, emitSignal=False)
-                self._widget.setLaserEditable(lName, True)
+        self._scanBuiltApplied = True
 
     def attrChanged(self, key, value):
         if self.settingAttr or len(key) != 3 or key[0] != _attrCategory:

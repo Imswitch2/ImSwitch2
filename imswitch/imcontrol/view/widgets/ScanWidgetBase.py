@@ -47,8 +47,9 @@ class SuperScanWidget(Widget):
 
         self.scrollArea = QtWidgets.QScrollArea()
         self.scrollArea.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setMinimumSize(0, 0)
         self.scrollArea.setWidget(self.gridContainer)
         self.scrollArea.setWidgetResizable(True)
         self.scrollContainer.addWidget(self.scrollArea)
@@ -133,12 +134,7 @@ class SuperScanWidget(Widget):
 
     def eventFilter(self, source, event):
         if source is self.gridContainer and event.type() == QtCore.QEvent.Resize:
-            # Set correct minimum width (otherwise things can go outside the widget because of the
-            # scroll area)
-            width = self.gridContainer.minimumSizeHint().width() \
-                    + self.scrollArea.verticalScrollBar().width()
-            self.scrollArea.setMinimumWidth(width)
-            self.setMinimumWidth(width)
+            self.scrollArea.updateGeometry()
 
         return False
 

@@ -45,6 +45,28 @@ jobs:
         run: |
           pytest imswitch/imcontrol/_test/unit/test_stores.py -v
 
+  test-no-hardware:
+    name: No-Hardware Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install no-hardware dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Run no-hardware tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: |
+          pytest -p pytestqt.plugin \
+            imswitch/test_no_hardware_profile.py \
+            imswitch/imcontrol/_test/unit \
+            -v
+
   build:
     name: Package Build
     runs-on: ubuntu-latest

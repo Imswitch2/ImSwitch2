@@ -5,7 +5,7 @@ __title__ = 'Hardware Control'
 def getMainViewAndController(moduleCommChannel, *_args,
                              overrideSetupInfo=None, overrideOptions=None, **_kwargs):
     from imswitch.imcommon.model import initLogger
-    from .controller import ImConMainController
+    from .controller.ImConMainController import ImConMainController
     from .model import configfiletools
     from .view import ViewSetupInfo, ImConMainView
 

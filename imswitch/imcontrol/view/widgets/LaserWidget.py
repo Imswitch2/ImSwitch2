@@ -40,8 +40,9 @@ class LaserWidget(Widget):
 
         self.scrollArea = QtWidgets.QScrollArea()
         self.scrollArea.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setMinimumSize(0, 0)
         self.scrollArea.setWidget(self.lasersGridContainer)
         self.scrollArea.setWidgetResizable(True)
         self.lasersGridContainer.installEventFilter(self)
@@ -221,12 +222,7 @@ class LaserWidget(Widget):
 
     def eventFilter(self, source, event):
         if source is self.lasersGridContainer and event.type() == QtCore.QEvent.Resize:
-            # Set correct minimum width (otherwise things can go outside the widget because of the
-            # scroll area)
-            width = self.lasersGridContainer.minimumSizeHint().width() \
-                    + self.scrollArea.verticalScrollBar().width()
-            self.scrollArea.setMinimumWidth(width)
-            self.setMinimumWidth(width)
+            self.scrollArea.updateGeometry()
 
         return False
 

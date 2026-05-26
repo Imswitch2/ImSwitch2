@@ -137,8 +137,11 @@ class PMTManager(DetectorManager):
             if self._ttlmultiplying:
                 self._renewImage()
 
-            # final refresh
-            self._onFrameBoundary()
+            # NOTE: do NOT call _onFrameBoundary() here. d3Step at scan end has
+            # already produced the final _image_display and flagged
+            # __newFrameReady; re-running it re-flags the same data and causes
+            # getChunk() to deliver the last frame a second time (phantom
+            # duplicate in the recorded file).
 
         except Exception:
             self.__logger.exception("Error stopping PMT acquisition")
@@ -161,11 +164,21 @@ class PMTManager(DetectorManager):
         img_dims = tuple(int(x) for x in img_dims)
 
         img_dims_extra = tuple(reversed(img_dims))
-        if np.shape(self._image) != img_dims_extra:
-            self._image = np.zeros(img_dims_extra)
+
+        # PMT data is analog voltage — float32 has ~7 decimal digits, plenty
+        # for noise-limited PMT signals, and halves memory vs float64. NaN is
+        # preserved for the TTL-multiplying "no-data" marker.
+        image_dtype = np.float32
+
+        if (np.shape(self._image) != img_dims_extra
+                or self._image.dtype != image_dtype):
+            self._image = np.zeros(img_dims_extra, dtype=image_dtype)
             self.setShape(img_dims_extra)
 
-        self._image_display = np.zeros(tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]))
+        self._image_display = np.zeros(
+            tuple([int(img_dims[i]) for i in range(max(len(img_dims), 2))]),
+            dtype=image_dtype,
+        )
 
 
     def updateImage(self, pixels, pos: tuple):

@@ -40,8 +40,10 @@ class PositionerController(ImConWidgetController):
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:
                     self.setSharedAttr(pName, axis, _positionAttr, pManager.speed)
-                if pName == 'Stage':
-                    self.updatePosition(pName, axis)
+                # Push the manager's current position into the widget so the
+                # displayed value reflects the actual hardware state at
+                # startup — not just the initialPosition=0 placeholder.
+                self.updatePosition(pName, axis)
 
             if pManager.joystick:
                 # Set joystick checkbox status for first start

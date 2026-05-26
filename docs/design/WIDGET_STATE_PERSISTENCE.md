@@ -558,9 +558,9 @@ def setWidgetState(self, state):
 
 ## Related Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - ImSwitch architecture overview
-- [adding-device-support.rst](adding-device-support.rst) - Adding new hardware support
-- [scripting.rst](scripting.rst) - Scripting API documentation
+- [ARCHITECTURE.md](ARCHITECTURE.md) - ImSwitch architecture overview (same directory)
+- [../adding-device-support.rst](../adding-device-support.rst) - Adding new hardware support
+- [../scripting.rst](../scripting.rst) - Scripting API documentation
 
 ## API Reference
 

@@ -84,9 +84,10 @@ class LineProfileWidget(Widget):
         self._redraw('Line Profile', 'Distance (px)', 'Intensity')
         self._last_line_endpoints = endpoints
         if endpoints is not None and self._napariViewer is not None:
-            (r0, c0), (r1, c1) = endpoints
             n = self._widthSpinBox.value()
-            for layer in self._visibleImageLayers():
+            layer = self._activeImageLayer()
+            if layer is not None:
+                (r0, c0), (r1, c1) = self._endpointsToDataCoords(layer, endpoints)
                 profile = self._computeLineProfile(layer.data, r0, c0, r1, c1, n)
                 if profile is not None:
                     self._ax.plot(np.arange(len(profile)), profile,
@@ -160,12 +161,14 @@ class LineProfileWidget(Widget):
             self._canvas.draw()
             return
 
-        r0, c0, r1, c1 = bounds
-        rlo, rhi = int(round(min(r0, r1))), int(round(max(r0, r1)))
-        clo, chi = int(round(min(c0, c1))), int(round(max(c0, c1)))
-
         plotted = False
-        for layer in self._visibleImageLayers():
+        layer = self._activeImageLayer()
+        layers = [layer] if layer is not None else []
+        for layer in layers:
+            (r0, c0), (r1, c1) = self._endpointsToDataCoords(
+                layer, ((bounds[0], bounds[1]), (bounds[2], bounds[3])))
+            rlo, rhi = int(round(min(r0, r1))), int(round(max(r0, r1)))
+            clo, chi = int(round(min(c0, c1))), int(round(max(c0, c1)))
             img = layer.data
             if img.ndim > 2:
                 img = img[tuple([0] * (img.ndim - 2))]
@@ -213,17 +216,43 @@ class LineProfileWidget(Widget):
         self._canvas.draw()
 
     # ------------------------------------------------------------------
-    def _visibleImageLayers(self):
-        if self._napariViewer is None:
-            return []
-        return [
-            layer for layer in self._napariViewer.layers
-            if (hasattr(layer, 'data') and layer.visible
+    def _isImageLayer(self, layer):
+        return (hasattr(layer, 'data') and layer.visible
                 and isinstance(layer.data, np.ndarray)
                 and layer.data.ndim >= 2
                 and not layer.name.startswith('_')
                 and layer.name != 'Viewer Tools')
-        ]
+
+    def _activeImageLayer(self):
+        """Return the napari-selected layer, or fall back to the first
+        visible image layer. Restricting to the active layer keeps the
+        profile correct when multiple detectors with different pixel
+        sizes (layer scales) are loaded simultaneously."""
+        if self._napariViewer is None:
+            return None
+        try:
+            active = self._napariViewer.layers.selection.active
+        except Exception:
+            active = None
+        if active is not None and self._isImageLayer(active):
+            return active
+        for layer in self._napariViewer.layers:
+            if self._isImageLayer(layer):
+                return layer
+        return None
+
+    @staticmethod
+    def _endpointsToDataCoords(layer, endpoints):
+        """Convert world-space endpoints from the shapes layer into the
+        target layer's data (array index) coordinates. Required when
+        layers have differing pixel sizes encoded via layer.scale."""
+        (r0, c0), (r1, c1) = endpoints
+        try:
+            p0 = layer.world_to_data(np.array([r0, c0]))
+            p1 = layer.world_to_data(np.array([r1, c1]))
+            return (float(p0[-2]), float(p0[-1])), (float(p1[-2]), float(p1[-1]))
+        except Exception:
+            return (r0, c0), (r1, c1)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

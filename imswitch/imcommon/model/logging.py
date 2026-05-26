@@ -13,8 +13,24 @@ LEVEL_STYLES = {
 }
 
 baseLogger = logging.getLogger('imswitch')
-coloredlogs.install(level='DEBUG', logger=baseLogger, level_styles=LEVEL_STYLES,
+
+# Default to INFO. Pass `--debug` on the imswitch CLI (or set the env var
+# `IMSWITCH_LOG_LEVEL=DEBUG`) to see debug-level messages from every manager.
+import os as _os
+_default_level = _os.environ.get('IMSWITCH_LOG_LEVEL', 'INFO').upper()
+coloredlogs.install(level=_default_level, logger=baseLogger, level_styles=LEVEL_STYLES,
                     fmt='%(asctime)s %(levelname)s %(message)s')
+
+
+def setLogLevel(level):
+    """Override the imswitch logger level at runtime.
+
+    ``level`` may be a string (``'DEBUG'``, ``'INFO'``, ...) or an int.
+    """
+    coloredlogs.install(level=level, logger=baseLogger, level_styles=LEVEL_STYLES,
+                        fmt='%(asctime)s %(levelname)s %(message)s')
+
+
 objLoggers = {}
 
 

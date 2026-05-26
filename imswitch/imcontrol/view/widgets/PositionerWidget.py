@@ -1,5 +1,5 @@
 from qtpy import QtCore, QtWidgets
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import initLogger, shortcut
 from imswitch.imcontrol.view import guitools as guitools
 from .basewidgets import Widget
 
@@ -16,8 +16,27 @@ class PositionerWidget(Widget):
         super().__init__(*args, **kwargs)
         self.numPositioners = 0
         self.pars = {}
+        self._axisRegistry = {}  # axis (upper) -> (positionerName, axis)
+        self.gridContainer = QtWidgets.QWidget()
         self.grid = QtWidgets.QGridLayout()
-        self.setLayout(self.grid)
+        self.gridContainer.setLayout(self.grid)
+
+        self.scrollArea = QtWidgets.QScrollArea()
+        self.scrollArea.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scrollArea.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scrollArea.setMinimumSize(0, 0)
+        self.scrollArea.setWidget(self.gridContainer)
+        self.scrollArea.setWidgetResizable(True)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self.scrollArea)
+        self.setLayout(layout)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Expanding,
+        )
 
     def addJoystick(self, pName):
         # create and add check box
@@ -66,6 +85,11 @@ class PositionerWidget(Widget):
                 lambda *args, axis=axis: self.sigStepDownClicked.emit(positionerName, axis)
             )
 
+            # Register axis for keyboard shortcuts (first positioner wins)
+            axisKey = axis.upper()
+            if axisKey not in self._axisRegistry:
+                self._axisRegistry[axisKey] = (positionerName, axis)
+
             if speed:
                 self.pars['Speed'] = QtWidgets.QLabel(f'<strong>{0:.2f} µm/s</strong>')
                 self.pars['Speed'].setTextFormat(QtCore.Qt.RichText)
@@ -111,6 +135,48 @@ class PositionerWidget(Widget):
 
     def _getParNameSuffix(self, positionerName, axis):
         return f'{positionerName}--{axis}'
+
+    def _emitStep(self, axisKey: str, up: bool):
+        """Helper to emit step signal for the given axis key."""
+        entry = self._axisRegistry.get(axisKey.upper())
+        if entry is None:
+            initLogger(self).debug(f'No positioner registered for axis {axisKey}')
+            return
+        positionerName, axis = entry
+        if up:
+            self.sigStepUpClicked.emit(positionerName, axis)
+        else:
+            self.sigStepDownClicked.emit(positionerName, axis)
+
+    @shortcut("Ctrl+Right", "Positioner X +")
+    def stepXPlus(self):
+        """Step X axis in positive direction."""
+        self._emitStep('X', up=True)
+
+    @shortcut("Ctrl+Left", "Positioner X -")
+    def stepXMinus(self):
+        """Step X axis in negative direction."""
+        self._emitStep('X', up=False)
+
+    @shortcut("Ctrl+Up", "Positioner Y +")
+    def stepYPlus(self):
+        """Step Y axis in positive direction."""
+        self._emitStep('Y', up=True)
+
+    @shortcut("Ctrl+Down", "Positioner Y -")
+    def stepYMinus(self):
+        """Step Y axis in negative direction."""
+        self._emitStep('Y', up=False)
+
+    @shortcut("Ctrl+Y", "Positioner Z +")
+    def stepZPlus(self):
+        """Step Z axis in positive direction."""
+        self._emitStep('Z', up=True)
+
+    @shortcut("Ctrl+A", "Positioner Z -")
+    def stepZMinus(self):
+        """Step Z axis in negative direction."""
+        self._emitStep('Z', up=False)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

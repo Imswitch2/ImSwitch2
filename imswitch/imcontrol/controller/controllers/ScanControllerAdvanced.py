@@ -5,7 +5,6 @@ import traceback
 from typing import Dict, Any
 
 import numpy as np
-from PyQt5.QtCore import QTimer
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from ..basecontrollers import SuperScanController
@@ -35,6 +34,10 @@ class ScanControllerAdvanced(SuperScanController):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # Snapshot of the parameters that produced the cached signalDict, so
+        # repeated scan frames can skip regenerating an identical signal.
+        self._lastBuiltParams = None
 
         # ---- widget init ----
         # Keep PointScan signature (pos, TTL devices)
@@ -73,24 +76,6 @@ class ScanControllerAdvanced(SuperScanController):
             self.plotSignalGraph()
         except Exception:
             self._logger.debug("[ScanControllerAdvanced] initial plotSignalGraph failed:\n%s", traceback.format_exc())
-
-        # ---- BeadRec signal bridge (widget → commChannel) ----
-        for widget_sig, comm_sig in [
-            ("sigUpdateBeadRecCenter", "sigUpdateBeadRecCenter"),
-            ("sigShowBeadRecCenterCross", "sigShowBeadRecCenterCross"),
-            ("sigAutoAxialToggled", "sigAutoAxialToggled"),
-        ]:
-            src = getattr(self._widget, widget_sig, None)
-            dst = getattr(self._commChannel, comm_sig, None)
-            if src is not None and dst is not None:
-                src.connect(dst.emit)
-
-        # Emit initial (0, 0) bead center so BeadRecController.yCenter/xCenter
-        # are non-None from startup.  Without this the crosshair can never appear
-        # because updateCenterCrossWidget() guards on `yCenter is not None`.
-        # Use singleShot(0) so all other controllers (including BeadRecController)
-        # have finished __init__ before we emit.
-        QTimer.singleShot(0, lambda: self._commChannel.sigUpdateBeadRecCenter.emit(0, 0))
 
         # Register for widget state persistence
         getWidgetStatePersistence().register('ScanControllerAdvanced', self)
@@ -168,7 +153,7 @@ class ScanControllerAdvanced(SuperScanController):
         return signalDict, scanInfoDict
 
     # ---------------------------------------------------------------------
-    # BeadRec interface (mirrors ScanControllerMoNaLISA)
+    # Scan geometry interface consumed by BeadRecController
     # ---------------------------------------------------------------------
 
     def getDimsScan(self):
@@ -470,15 +455,34 @@ class ScanControllerAdvanced(SuperScanController):
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
-                # TTL cycle (linestep_enable) is the sole authority for per-laser emission
-                self.signalDict, self.scanInfoDict = self._make_full_scan(
-                    self._analogParameterDict, self._digitalParameterDict
-                )
 
-                if self.signalDict is None:
-                    self.isRunning = False
-                    self.abortScan()
-                    return
+                # Only rebuild the (expensive) scan signal if the parameters
+                # actually changed since the last build. Repeated scan frames
+                # reuse identical parameters, so this avoids regenerating a
+                # byte-identical galvo/TTL signal — and the per-frame stall it
+                # causes — on every repeat. Live parameter edits still trigger
+                # a rebuild because the snapshot then differs.
+                paramsSnapshot = (
+                    copy.deepcopy(self._analogParameterDict),
+                    copy.deepcopy(self._digitalParameterDict),
+                )
+                signalsCached = (
+                    self.signalDict is not None
+                    and self.scanInfoDict is not None
+                    and paramsSnapshot == self._lastBuiltParams
+                )
+                if not signalsCached:
+                    # TTL cycle (linestep_enable) is the sole authority for per-laser emission
+                    self.signalDict, self.scanInfoDict = self._make_full_scan(
+                        self._analogParameterDict, self._digitalParameterDict
+                    )
+
+                    if self.signalDict is None:
+                        self.isRunning = False
+                        self.abortScan()
+                        return
+
+                    self._lastBuiltParams = paramsSnapshot
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 

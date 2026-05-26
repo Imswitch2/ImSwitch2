@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any, Dict
 
 from pyqtgraph.dockarea import Dock, DockArea
 from qtpy import QtCore, QtWidgets
@@ -93,7 +94,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         otherDockKeys = ['Image']
         allDockKeys = list(rightDockInfos.keys()) + list(leftDockInfos.keys()) + otherDockKeys
 
-        dockArea = DockArea()
+        self.dockArea = DockArea()
         enabledDockKeys = self.viewSetupInfo.availableWidgets
         if enabledDockKeys is False:
             enabledDockKeys = []
@@ -108,19 +109,19 @@ class ImConMainView(QtWidgets.QMainWindow):
 
         rightDocks = self._addDocks(
             {k: v for k, v in rightDockInfos.items() if k in enabledDockKeys},
-            dockArea, 'right'
+            self.dockArea, 'right'
         )
 
         if 'Image' in enabledDockKeys:
-            dockArea.addDock(self.docks['Image'], 'left')
+            self.dockArea.addDock(self.docks['Image'], 'left')
 
         self._addDocks(
             {k: v for k, v in leftDockInfos.items() if k in enabledDockKeys},
-            dockArea, 'left'
+            self.dockArea, 'left'
         )
 
         # Add dock area to layout
-        layout.addWidget(dockArea)
+        layout.addWidget(self.dockArea)
 
         # Maximize window
         self.showMaximized()
@@ -154,6 +155,23 @@ class ImConMainView(QtWidgets.QMainWindow):
     def showPickDatasetsDialogBlocking(self):
         result = self.pickDatasetsDialog.exec_()
         return result == QtWidgets.QDialog.Accepted
+
+    def getLayoutState(self) -> Dict[str, Any]:
+        """Return passive GUI layout state for persistence."""
+        return {
+            'dock_area': self.dockArea.saveState(),
+        }
+
+    def setLayoutState(self, state: Dict[str, Any]) -> None:
+        """Restore passive GUI layout state if it is compatible with this setup."""
+        dockAreaState = state.get('dock_area')
+        if dockAreaState is None:
+            return
+
+        try:
+            self.dockArea.restoreState(dockAreaState, missing='ignore', extra='bottom')
+        except Exception as e:
+            self.__logger.warning(f'Failed to restore GUI dock layout: {e}')
 
     def closeEvent(self, event):
         self.sigClosing.emit()

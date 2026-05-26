@@ -1,0 +1,145 @@
+{
+    "detectors": {
+        "Mock Camera": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "AVManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "avcam": {
+                    "exposure": 100,
+                    "gain": 1
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        },
+        "Mock ThorCam TSI": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "ThorCamTSIManager",
+            "managerProperties": {
+                "cameraSerial": "MOCK_TSI_12345",
+                "dllLocation": "dlls/64_lib",
+                "defaults": {
+                    "exposure_us": 50000,
+                    "gain": 0,
+                    "operation_mode": "Software",
+                    "trigger_polarity": "Active High",
+                    "frame_rate": 30
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {},
+    "rotators": {
+        "Mock K10CR1": {
+            "managerName": "KinesisRotatorManager",
+            "managerProperties": {
+                "snr": "MOCK_K10CR1",
+                "unitsPerDegree": 136533.33,
+                "homeOnInit": false
+            }
+        },
+        "Mock HWP": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "MOCK_COM20",
+                "address": 0,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        },
+        "Mock QWP": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "MOCK_COM20",
+                "address": 1,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        }
+    },
+    "positioners": {
+        "Mock X": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["X"],
+            "forPositioning": true,
+            "forScanning": true,
+            "resetOnClose": false
+        },
+        "Mock Y": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["Y"],
+            "forPositioning": true,
+            "forScanning": true,
+            "resetOnClose": false
+        },
+        "Mock Kinesis XY": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "KinesisStageManager",
+            "managerProperties": {
+                "snr": "MOCK_MLS203",
+                "posRangeUm": {"X": [0, 25000], "Y": [0, 25000]},
+                "homeOnInit": false
+            },
+            "axes": ["X", "Y"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false
+        }
+    },
+    "rs232devices": {},
+    "slms": {},
+    "scan": {
+        "scanWidgetType": "Base",
+        "scanDesigner": "BetaScanDesigner",
+        "scanDesignerParams": {
+            "return_time": 0.01
+        },
+        "TTLCycleDesigner": "BetaTTLCycleDesigner",
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "maxScanTimeMin": 1,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "tiling": {
+        "xyPositioner": "Mock X",
+        "defaultTileStepUm": 100.0
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Positioner",
+        "ViewerTools",
+        "LineProfile"
+    ],
+    "widgetLayout": {
+        "right": [],
+        "left": [
+            ["Settings"],
+            ["View"],
+            ["Positioner"],
+            ["ViewerTools", "LineProfile"],
+            ["Recording"]
+        ]
+    }
+}

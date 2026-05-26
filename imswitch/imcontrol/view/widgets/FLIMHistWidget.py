@@ -6,17 +6,20 @@ from .basewidgets import Widget
 
 
 class FLIMHistWidget(Widget):
-    """Histogram of per-pixel fluorescence lifetimes from the FLIM detector.
+    """Histogram view for the FLIM detector with two modes:
 
-    Displays only pixels whose lifetime > 0 (i.e. those that passed the
-    min_counts_per_pixel threshold in SwabianTimeTaggerManager).  The X-axis
-    is in nanoseconds; Y-axis is pixel count.
+    - "Lifetime dist." — histogram of per-pixel fitted lifetimes (ns).
+      The red marker is the mean of the displayed distribution.
+    - "Decay" — aggregated TCSPC photon-arrival histogram across all valid
+      pixels. The red marker is the global single-τ fit using the
+      currently selected fit_method on the manager.
     """
 
     sigShowToggled = QtCore.Signal(bool)
     sigAccumulateToggled = QtCore.Signal(bool)
     sigNBinsChanged = QtCore.Signal(int)
     sigRangeChanged = QtCore.Signal(float, float)
+    sigModeChanged = QtCore.Signal(str)  # 'lifetime' or 'decay'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -47,6 +50,11 @@ class FLIMHistWidget(Widget):
         self._accumCheck = QtWidgets.QCheckBox('Accumulate')
         self._accumCheck.setChecked(False)
 
+        self._modeLabel = QtWidgets.QLabel('Mode:')
+        self._modeCombo = QtWidgets.QComboBox()
+        self._modeCombo.addItem('Lifetime dist.', userData='lifetime')
+        self._modeCombo.addItem('Decay', userData='decay')
+
         self._nBinsLabel = QtWidgets.QLabel('Bins:')
         self._nBinsEdit = QtWidgets.QLineEdit('50')
         self._nBinsEdit.setFixedWidth(50)
@@ -66,6 +74,8 @@ class FLIMHistWidget(Widget):
         ctrl = QtWidgets.QHBoxLayout()
         ctrl.addWidget(self._showCheck)
         ctrl.addWidget(self._accumCheck)
+        ctrl.addWidget(self._modeLabel)
+        ctrl.addWidget(self._modeCombo)
         ctrl.addWidget(self._nBinsLabel)
         ctrl.addWidget(self._nBinsEdit)
         ctrl.addWidget(self._minLabel)
@@ -86,6 +96,7 @@ class FLIMHistWidget(Widget):
         self._nBinsEdit.editingFinished.connect(self._onNBinsEdited)
         self._minEdit.editingFinished.connect(self._onRangeEdited)
         self._maxEdit.editingFinished.connect(self._onRangeEdited)
+        self._modeCombo.currentIndexChanged.connect(self._onModeChanged)
 
     # ------------------------------------------------------------------ #
     # Getters used by controller                                           #
@@ -103,6 +114,9 @@ class FLIMHistWidget(Widget):
         except ValueError:
             return 50
 
+    def getMode(self) -> str:
+        return str(self._modeCombo.currentData() or 'lifetime')
+
     def getRange(self):
         try:
             lo = float(self._minEdit.text())
@@ -117,6 +131,10 @@ class FLIMHistWidget(Widget):
 
     def updateHistogram(self, valid_lifetimes_ns: np.ndarray):
         """Redraw with a flat array of valid (> 0) lifetime values in ns."""
+        self._plot.setLabel('bottom', 'Lifetime (ns)')
+        self._plot.setLabel('left', 'Pixel count')
+        self._plot.setTitle('FLIM — lifetime distribution')
+
         n = len(valid_lifetimes_ns)
         if n == 0:
             self._bars.setOpts(x=[], height=[], width=0.1)
@@ -142,6 +160,46 @@ class FLIMHistWidget(Widget):
         )
         self._statLabel.setStyleSheet('')
 
+    def updateDecay(self, t_axis_ns: np.ndarray, counts: np.ndarray,
+                    global_tau_ns: float, n_valid_pixels: int):
+        """Redraw with an aggregated TCSPC decay histogram."""
+        self._plot.setLabel('bottom', 'Arrival time (ns)')
+        self._plot.setLabel('left', 'Photon count')
+        self._plot.setTitle('FLIM — aggregated decay')
+
+        if t_axis_ns is None or counts is None or len(counts) == 0:
+            self._bars.setOpts(x=[], height=[], width=0.1)
+            self._meanLine.setVisible(False)
+            self._statLabel.setText('No decay data')
+            return
+
+        # Bar width = bin spacing (assume uniform t_axis).
+        if len(t_axis_ns) >= 2:
+            width = float(t_axis_ns[1] - t_axis_ns[0]) * 0.85
+        else:
+            width = 0.1
+
+        self._bars.setOpts(x=np.asarray(t_axis_ns, dtype=float),
+                           height=np.asarray(counts, dtype=float),
+                           width=width)
+        self._plot.setXRange(float(t_axis_ns[0]), float(t_axis_ns[-1]), padding=0.02)
+
+        if global_tau_ns > 0:
+            self._meanLine.setValue(float(global_tau_ns))
+            self._meanLine.setVisible(True)
+            self._statLabel.setText(
+                f'Valid pixels: {n_valid_pixels}   '
+                f'Global τ: {global_tau_ns:.2f} ns   '
+                f'Photons: {int(counts.sum())}'
+            )
+        else:
+            self._meanLine.setVisible(False)
+            self._statLabel.setText(
+                f'Valid pixels: {n_valid_pixels}   '
+                f'Global τ: —   Photons: {int(counts.sum())}'
+            )
+        self._statLabel.setStyleSheet('')
+
     # ------------------------------------------------------------------ #
     # Private                                                              #
     # ------------------------------------------------------------------ #
@@ -151,6 +209,9 @@ class FLIMHistWidget(Widget):
             self.sigNBinsChanged.emit(max(1, int(self._nBinsEdit.text())))
         except ValueError:
             pass
+
+    def _onModeChanged(self):
+        self.sigModeChanged.emit(self.getMode())
 
     def _onRangeEdited(self):
         try:

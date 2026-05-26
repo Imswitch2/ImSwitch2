@@ -210,14 +210,14 @@ class CoboltLaser:
         """Enter constant power mode, power in mW"""
         if power != None:
             self.send_cmd(f"p {float(power) / 1000}")
-            logger.info(f"Entering constant power mode with P = {power} mW")
+            logger.debug(f"Entering constant power mode with P = {power} mW")
         else:
-            logger.info("Entering constant power mode")
+            logger.debug("Entering constant power mode")
         return self.send_cmd(f"cp")
 
     def set_power(self, power: float):
         """Set laser power in mW"""
-        logger.info(f"Setting P = {power} mW")
+        logger.debug(f"Setting P = {power} mW")
         return self.send_cmd(f"p {float(power) / 1000}")
 
     def get_power(self):
@@ -335,7 +335,7 @@ class Cobolt06(CoboltLaser):
 
     def set_modulation_power(self, power: float):
         """Set the modulation power in mW"""
-        logger.info(f"Setting modulation power = {power} mW")
+        logger.debug(f"Setting modulation power = {power} mW")
         return self.send_cmd(f"LASer:PowerModulation:POWer:SETPoint {power}")
 
     def get_modulation_power(self):
@@ -425,12 +425,17 @@ class Cobolt06(CoboltLaser):
         return self.send_cmd(f"SYSTem:INPut:ANAlog:VOLTage:RANGe:MAX?")
 
     def pause_emission(self):
-        """Pause laser emission without turning off the laser"""
-        self.send_cmd("las:paus 1")
+        """Pause laser emission without turning off the laser.
+
+        Returns the controller reply so callers can detect firmware that
+        doesn't support the SCPI ``las:paus`` command (older 06-01 units
+        respond with ``"Syntax error: illegal command"``).
+        """
+        return self.send_cmd("las:paus 1")
 
     def resume_emission(self):
-        """Resume emission of a paused laser"""
-        self.send_cmd("las:paus 0")
+        """Resume emission of a paused laser. Returns the controller reply."""
+        return self.send_cmd("las:paus 0")
 
 
 class Cobolt06MLD(CoboltLaser):
@@ -497,7 +502,7 @@ class Cobolt06MLD(CoboltLaser):
 
     def set_modulation_power(self, power: float):
         """Set the modulation power in mW"""
-        logger.info(f"Setting modulation power = {power} mW")
+        logger.debug(f"Setting modulation power = {power} mW")
         return self.send_cmd(f"slmp {power}")
 
     def get_modulation_power(self):

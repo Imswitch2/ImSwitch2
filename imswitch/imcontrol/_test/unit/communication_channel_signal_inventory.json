@@ -1,0 +1,285 @@
+[
+  {
+    "name": "sigUpdateImage",
+    "args": [
+      "str",
+      "np.ndarray",
+      "bool",
+      "list",
+      "bool"
+    ]
+  },
+  {
+    "name": "sigAcquisitionStarted",
+    "args": []
+  },
+  {
+    "name": "sigAcquisitionStopped",
+    "args": []
+  },
+  {
+    "name": "sigAdjustFrame",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigDetectorSwitched",
+    "args": [
+      "str",
+      "str"
+    ]
+  },
+  {
+    "name": "sigNewFrame",
+    "args": []
+  },
+  {
+    "name": "sigGridToggled",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigCrosshairToggled",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigAddItemToVb",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigRemoveItemFromVb",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigRecordingStarted",
+    "args": []
+  },
+  {
+    "name": "sigRecordingEnded",
+    "args": []
+  },
+  {
+    "name": "sigUpdateRecFrameNum",
+    "args": [
+      "int"
+    ]
+  },
+  {
+    "name": "sigUpdateRecTime",
+    "args": [
+      "int"
+    ]
+  },
+  {
+    "name": "sigMemorySnapAvailable",
+    "args": [
+      "str",
+      "np.ndarray",
+      "object",
+      "bool"
+    ]
+  },
+  {
+    "name": "sigRunScan",
+    "args": [
+      "bool",
+      "bool"
+    ]
+  },
+  {
+    "name": "sigAbortScan",
+    "args": []
+  },
+  {
+    "name": "sigScanStarting",
+    "args": []
+  },
+  {
+    "name": "sigScanBuilt",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigScanStarted",
+    "args": []
+  },
+  {
+    "name": "sigScanDone",
+    "args": []
+  },
+  {
+    "name": "sigScanEnded",
+    "args": []
+  },
+  {
+    "name": "sigToggleBlockScanWidget",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigRequestScanParameters",
+    "args": []
+  },
+  {
+    "name": "sigSendScanParameters",
+    "args": [
+      "dict",
+      "dict",
+      "object"
+    ]
+  },
+  {
+    "name": "sigSetAxisCenters",
+    "args": [
+      "object",
+      "object"
+    ]
+  },
+  {
+    "name": "sigRequestScanFreq",
+    "args": []
+  },
+  {
+    "name": "sigSendScanFreq",
+    "args": [
+      "float"
+    ]
+  },
+  {
+    "name": "sigScanFrameFinished",
+    "args": []
+  },
+  {
+    "name": "sigSnapImg",
+    "args": []
+  },
+  {
+    "name": "sigSnapImgPrev",
+    "args": [
+      "str",
+      "np.ndarray",
+      "str"
+    ]
+  },
+  {
+    "name": "sigStartRecordingExternal",
+    "args": []
+  },
+  {
+    "name": "sigSLMMaskUpdated",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigSaveFocus",
+    "args": []
+  },
+  {
+    "name": "sigUpdateRotatorPosition",
+    "args": [
+      "str"
+    ]
+  },
+  {
+    "name": "sigSetSyncInMovementSettings",
+    "args": [
+      "str",
+      "float",
+      "bool",
+      "bool"
+    ]
+  },
+  {
+    "name": "sigInitiateEtMonalisa",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigInitiateEt",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigClockWidefield",
+    "args": []
+  },
+  {
+    "name": "sigQueryCenterCoord",
+    "args": [
+      "str"
+    ]
+  },
+  {
+    "name": "sigCenterCoordPipelineFinished",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigUpdateBeadRecCenter",
+    "args": [
+      "int",
+      "int"
+    ]
+  },
+  {
+    "name": "sigShowBeadRecCenterCross",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigAutoAxialToggled",
+    "args": [
+      "bool"
+    ]
+  },
+  {
+    "name": "sigNewAxialListBuffer",
+    "args": [
+      "list"
+    ]
+  },
+  {
+    "name": "sigSetXYPosition",
+    "args": [
+      "float",
+      "float"
+    ]
+  },
+  {
+    "name": "sigSetZPosition",
+    "args": [
+      "float"
+    ]
+  },
+  {
+    "name": "sigSetExposure",
+    "args": [
+      "float"
+    ]
+  },
+  {
+    "name": "sigSetSpeed",
+    "args": [
+      "float"
+    ]
+  },
+  {
+    "name": "sigScriptExecutionFinished",
+    "args": []
+  }
+]
