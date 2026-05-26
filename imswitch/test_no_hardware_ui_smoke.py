@@ -260,12 +260,17 @@ def test_no_hardware_profile_constructs_imcontrol_ui(tmp_path, monkeypatch):
 
     from imswitch import imcontrol
     from imswitch.imcommon import prepareApp
-    from imswitch.imcommon.controller import ModuleCommunicationChannel
     from imswitch.imcommon.model import dirtools
     from imswitch.imcontrol.model import Options
     from imswitch.imcontrol.view import ViewSetupInfo
 
+    user_root = tmp_path / "home" / "ImSwitchConfig"
+    monkeypatch.setattr(dirtools, "_baseUserFilesDir", user_root)
+    monkeypatch.setattr(dirtools.UserFileDirs, "Root", str(user_root))
+    monkeypatch.setattr(dirtools.UserFileDirs, "Config", str(user_root / "config"))
     assert Path(dirtools.UserFileDirs.Root).is_relative_to(tmp_path / "home")
+
+    from imswitch.imcommon.controller import ModuleCommunicationChannel
 
     view_setup_info = ViewSetupInfo.from_json(PROFILE_PATH.read_text(), infer_missing=True)
     options = Options(setupFileName=PROFILE_PATH.name)

@@ -31,22 +31,21 @@ a polarisation-resolved image stack:
    from imswitch.imcontrol.model.workflows import (
        RecordingWorkflow,
        RecordingParams,
-       build_facade_from_master,
    )
 
-   # 2. Build the facade from the running ImSwitch master controller
-   facade = build_facade_from_master(
-       api.imcontrol._master,
+   # 2. Build the facade via the API helper (the controller wraps
+   #    build_facade_from_master so you do not need to touch the
+   #    internal master controller).
+   facade = api.imcontrol.workflowFacade.build(
        laser_aliases={
            "488": "488 (EXC) sn27311",
-           "405": "405 (UV) sn27312",
+           "405": "405 (ACT) sn26647",
        },
-       camera="Camera",
-       pulse_gen="teensyPulse",
-       stage="XYStage",
-       z_stage="PiezoZ",
-       hwp_rotator="HWP",
-       qwp_rotator="QWP",
+       detector_name="Kiralux",
+       xy_positioner_name="XY",
+       z_positioner_name="Z",
+       hwp_name="HWP",
+       qwp_name="QWP",
    )
 
    # 3. Configure parameters
@@ -77,16 +76,17 @@ a polarisation-resolved image stack:
 
 ``api``
     The global scripting API object, available in every script executed
-    from the ImSwitch Scripting widget. Provides ``api.imcontrol`` (the
-    main microscope API) and ``api.imcontrol._master`` (the internal
-    master controller that owns all managers).
+    from the ImSwitch Scripting widget. ``api.imcontrol`` is the main
+    microscope API; ``api.imcontrol.workflowFacade.build(...)`` is the
+    helper for assembling a workflow facade.
 
-``build_facade_from_master``
-    A factory function that wraps ImSwitch managers in WFS-shaped
-    sub-facades. It resolves managers by name from the running setup
-    and returns a ``MicroscopeFacade`` object with attributes
-    ``laser_con``, ``cam``, ``trig``, ``stage_con``, ``z_stage_con``,
-    ``rotator_hwp``, ``rotator_qwp``.
+``api.imcontrol.workflowFacade.build``
+    Wraps ImSwitch managers in WFS-shaped sub-facades. Resolves managers
+    by name from the running setup and returns a ``MicroscopeFacade``
+    object with attributes ``laser_con``, ``cam``, ``trig``,
+    ``stage_con``, ``z_stage_con``, ``rotator_hwp``, ``rotator_qwp``.
+    Under the hood this calls ``build_facade_from_master`` (also
+    importable directly for headless test code).
 
 ``laser_aliases``
     Maps short logical names (``"488"``, ``"405"``) to the full device
@@ -107,9 +107,9 @@ a polarisation-resolved image stack:
 The MicroscopeFacade
 ====================
 
-``build_facade_from_master`` returns a ``MicroscopeFacade`` with the following
-sub-facades. Each wraps one or more ImSwitch managers and presents a
-WFS-compatible API:
+``api.imcontrol.workflowFacade.build(...)`` returns a ``MicroscopeFacade``
+with the following sub-facades. Each wraps one or more ImSwitch managers
+and presents a WFS-compatible API:
 
 .. list-table::
    :header-rows: 1
@@ -231,18 +231,17 @@ Workflow code uses short logical names like ``"488"`` and ``"405"`` to
 refer to lasers. Your setup JSON, however, may define devices with longer
 cosmetic names like ``"488 (EXC) sn27311"`` or ``"Laser 488nm Oxxius"``.
 
-The ``laser_aliases`` dictionary in ``build_facade_from_master`` bridges
-this gap:
+The ``laser_aliases`` dictionary on
+``api.imcontrol.workflowFacade.build`` bridges this gap:
 
 .. code-block:: python
 
-   facade = build_facade_from_master(
-       api.imcontrol._master,
+   facade = api.imcontrol.workflowFacade.build(
        laser_aliases={
            "488": "488 (EXC) sn27311",
            "405": "Laser 405nm Oxxius",
        },
-       camera="Camera",
+       detector_name="Kiralux",
        # ... other manager names
    )
 
@@ -311,7 +310,27 @@ Z stage moved to the correct positions, etc. See the workflow tests in
 Composite Workflows
 ===================
 
-Several workflows compose lower-level workflows as building blocks:
+The single-device workflows are:
+
+**RecordingWorkflow**
+    Polarisation-resolved H/V acquisition. Drives HWP/QWP to preset
+    angles, fires a Teensy pulse scheme, grabs N camera frames, saves
+    a TIFF and reports a quick Stokes/anisotropy summary.
+
+**ZStackWorkflow**
+    Sweeps the Z piezo through N planes, snapping one frame per plane.
+    ``run_autofocus()`` fits a gradient-energy curve to find best focus.
+
+**CWSTARSSWorkflow**
+    Photoselection sequence per polarisation: pre-bleach pulse, stream
+    488 nm only, then stream 488 + 405 nm together for the configured
+    duration.
+
+**CalibrationWorkflow**
+    Sweeps QWP/HWP angles and records quad-pixel intensities for
+    polarisation calibration; writes a CSV ready for analysis.
+
+The composite workflows reuse the singles:
 
 **TilingWorkflow**
     Acquires a spiral grid of tiles and stitches them into a large mosaic.
@@ -345,15 +364,13 @@ then pass them to the parent:
        TilingParams,
        ZStackWorkflow,
        ZStackParams,
-       build_facade_from_master,
    )
 
-   facade = build_facade_from_master(
-       api.imcontrol._master,
+   facade = api.imcontrol.workflowFacade.build(
        laser_aliases={"488": "488 (EXC) sn27311"},
-       camera="Camera",
-       stage="XYStage",
-       z_stage="PiezoZ",
+       detector_name="Kiralux",
+       xy_positioner_name="XY",
+       z_positioner_name="Z",
    )
 
    # Configure sub-workflows
@@ -423,25 +440,13 @@ Fix:
 
 Cause:
     The workflow tried to fire a hardware-triggered pulse sequence, but
-    ``build_facade_from_master`` was called without a ``pulse_gen``
-    argument, or the pulse generator device is missing from your setup
-    JSON (no ``teensyPulse`` or equivalent).
+    the setup JSON has no ``teensyPulse`` block at the top level (the
+    facade resolves the pulse generator from that key).
 
 Fix:
-    Verify your setup JSON includes a pulse generator device:
-
-    .. code-block:: json
-
-       {
-         "teensyPulse": {
-           "managerName": "TeensyPulseGeneratorManager",
-           "managerProperties": {
-             "serialport": "/dev/ttyACM0"
-           }
-         }
-       }
-
-    Then pass ``pulse_gen="teensyPulse"`` to ``build_facade_from_master``.
+    Add a ``teensyPulse`` block to your setup JSON; see
+    ``example_kiralux_teensy.json`` for a working example. The facade
+    builder auto-attaches the pulse generator when present.
 
     If your microscope has no pulse generator, you can only run workflows
     that do not require triggered acquisition (e.g., ``ZStackWorkflow``
