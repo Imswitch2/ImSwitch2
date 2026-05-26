@@ -40,6 +40,7 @@ class FLIMHistController(LiveUpdatedController):
         self._widget.sigAccumulateToggled.connect(self._on_accumulate_toggled)
         self._widget.sigNBinsChanged.connect(self._on_nbins_changed)
         self._widget.sigRangeChanged.connect(self._on_range_changed)
+        self._widget.sigModeChanged.connect(self._on_mode_changed)
 
         # Subscribe to detector frames and scan lifecycle
         self._commChannel.sigUpdateImage.connect(self.update)
@@ -73,6 +74,10 @@ class FLIMHistController(LiveUpdatedController):
         valid = arr[arr > 0].ravel()
         self._current_frame_ns = valid.astype(np.float32)
 
+        if self._widget.getMode() == 'decay':
+            self._render_decay(detectorName, n_valid_pixels=int(valid.size))
+            return
+
         if self._widget.isAccumulating():
             # Accumulating mode: histogram is driven by sigScanDone, not by
             # individual polls.  Just keep the latest frame ready; do nothing
@@ -81,6 +86,19 @@ class FLIMHistController(LiveUpdatedController):
 
         self._accum.clear()
         self._widget.updateHistogram(self._current_frame_ns)
+
+    def _render_decay(self, detectorName, n_valid_pixels: int):
+        """Pull the latest aggregated decay + global τ from the manager and
+        render it. Only SwabianTimeTaggerManager populates these attributes;
+        for any other detector the widget shows an empty plot."""
+        try:
+            detector = self._master.detectorsManager[detectorName]
+        except (KeyError, AttributeError):
+            return
+        t_axis_ns = getattr(detector, '_last_t_axis_ns', None)
+        counts = getattr(detector, '_last_decay_counts', None)
+        tau_ns = float(getattr(detector, '_last_global_tau_ns', 0.0))
+        self._widget.updateDecay(t_axis_ns, counts, tau_ns, n_valid_pixels)
 
     def _on_scan_started(self):
         """New scan starting — save the previous scan's frame first (handles
@@ -121,6 +139,12 @@ class FLIMHistController(LiveUpdatedController):
     def _on_range_changed(self, _lo: float, _hi: float):
         # Same — widget reads getRange() on next update.
         pass
+
+    def _on_mode_changed(self, _mode: str):
+        # Drop any per-pixel accumulation when switching to decay mode so a
+        # later switch back starts clean.
+        self._accum.clear()
+        self._current_frame_ns = np.empty(0, dtype=np.float32)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

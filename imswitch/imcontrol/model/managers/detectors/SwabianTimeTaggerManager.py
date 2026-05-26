@@ -31,6 +31,7 @@ class SwabianTimeTaggerManager(DetectorManager):
     Optional config properties:
       n_bins (default 64), binwidth_ps (default 32),
       min_counts_per_pixel (default 20), fit_method (default 'moment'),
+      laser_rep_rate_mhz (default 80.0; used by phasor fit to set ω),
       trigger_levels (dict {channel_str: volts}, used only to seed
         click_trigger / start_trigger / line_trigger defaults),
       enabled (default True)
@@ -70,6 +71,7 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._t0_ps = int(props.get('t0_ps', 0))
         self._min_counts_per_pixel = int(props.get('min_counts_per_pixel', 20))
         self._fit_method = str(props.get('fit_method', 'moment'))
+        self._laser_rep_rate_mhz = float(props.get('laser_rep_rate_mhz', 80.0))
         self._accumulate_mode = False
         self._accum_sum: np.ndarray | None = None    # (Ny, Nx) float64, sum of valid lifetimes
         self._accum_count: np.ndarray | None = None  # (Ny, Nx) int32, number of valid scans per pixel
@@ -113,6 +115,9 @@ class SwabianTimeTaggerManager(DetectorManager):
                 group='Fitting', value=self._fit_method,
                 options=['moment', 'phasor', 'exp1'],
                 editable=True),
+            'laser_rep_rate_mhz': DetectorNumberParameter(
+                group='Fitting', value=self._laser_rep_rate_mhz,
+                valueUnits='MHz', editable=True),
             # --- Accumulation ---
             'accumulate_mode': DetectorListParameter(
                 group='Accumulation', value='off',
@@ -132,6 +137,13 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._image_intensity = np.zeros((1, 64, 64), dtype=np.float32)
         self._newFrameReady = False
         self.__pixel_sizes = [1, 1]
+
+        # Latest aggregated TCSPC decay (summed over valid pixels) and the
+        # global lifetime fit. Consumed by FLIMHistController's decay-histogram
+        # mode. None until the first valid frame is processed.
+        self._last_decay_counts: np.ndarray | None = None
+        self._last_t_axis_ns: np.ndarray | None = None
+        self._last_global_tau_ns: float = 0.0
 
         super().__init__(detectorInfo, name, fullShape=(64, 64),
                          supportedBinnings=[1], model=name,
@@ -191,6 +203,8 @@ class SwabianTimeTaggerManager(DetectorManager):
             self._min_counts_per_pixel = int(value)
         elif name == 'fit_method':
             self._fit_method = str(value)
+        elif name == 'laser_rep_rate_mhz':
+            self._laser_rep_rate_mhz = float(value)
         elif name == 'accumulate_mode':
             self._accumulate_mode = (str(value).lower() == 'on')
             if not self._accumulate_mode:
@@ -379,9 +393,13 @@ class SwabianTimeTaggerManager(DetectorManager):
             except RuntimeError:
                 pass  # worker already cleaned up
 
-    def _on_frame_ready(self, intensity_img, lifetime_img, is_final: bool):
+    def _on_frame_ready(self, intensity_img, lifetime_img, is_final: bool,
+                        decay_counts, t_axis_ns, global_tau_ns: float):
         self._image_intensity[0] = intensity_img
         lifetime_ns = (lifetime_img * 1e9).astype(np.float32)
+        self._last_decay_counts = decay_counts
+        self._last_t_axis_ns = t_axis_ns
+        self._last_global_tau_ns = float(global_tau_ns)
 
         if self._accumulate_mode:
             if is_final:
@@ -513,13 +531,12 @@ def _fit_moment(cube, t_axis):
     return intensity.astype(np.float32), lifetime
 
 
-def _fit_phasor(cube, binwidth_ps, n_bins):
+def _fit_phasor(cube, binwidth_ps, n_bins, laser_rep_rate_mhz):
     """
     Phasor / Fourier method for single-exponential lifetime.
-    Estimates the laser repetition period as the full histogram window
-    (T_rep = n_bins * binwidth_ps). Returns tau = s / (omega * g) where
-    g and s are the cosine and sine projections of the normalised histogram
-    onto the first harmonic.
+    Uses the supplied laser repetition rate to set ω = 2π·f_rep.
+    Returns tau = s / (omega * g) where g and s are the cosine and sine
+    projections of the normalised histogram onto the first harmonic.
 
     Same speed as moment. Assumes single-exponential decay; gives the
     phase lifetime which is a useful proxy even for multi-exponential samples.
@@ -527,7 +544,7 @@ def _fit_phasor(cube, binwidth_ps, n_bins):
     """
     intensity = cube.sum(axis=2).astype(np.float32)
 
-    T_rep_s = n_bins * binwidth_ps * 1e-12
+    T_rep_s = 1.0 / (max(1.0, float(laser_rep_rate_mhz)) * 1e6)
     omega = 2.0 * np.pi / T_rep_s
     t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
 
@@ -580,7 +597,8 @@ def _fit_exp1(cube, t_axis):
 # --------------------------------------------------------------------------- #
 
 class _TTFlimWorker(Worker):
-    sigFrameReady = Signal(object, object, bool)  # intensity, lifetime, is_final
+    # intensity, lifetime, is_final, decay_counts, t_axis_ns, global_tau_ns
+    sigFrameReady = Signal(object, object, bool, object, object, float)
     sigFinished = Signal()
 
     # Live-preview interval: read Flim data once per second during a running
@@ -617,7 +635,11 @@ class _TTFlimWorker(Worker):
 
             t_axis = (np.arange(n_bins, dtype=np.float32) + 0.5) * binwidth_ps * 1e-12
             t_axis_f64 = t_axis.astype(np.float64)[None, None, :]
-            T_rep_s = n_bins * binwidth_ps * 1e-12
+            # Phasor needs the laser repetition period, NOT the histogram window.
+            # The Flim API doesn't expose the rep rate, so take it from the
+            # user-supplied parameter. Default 80 MHz is the most common Ti:Sa rate.
+            rep_rate_hz = max(1.0, float(self._m._laser_rep_rate_mhz)) * 1e6
+            T_rep_s = 1.0 / rep_rate_hz
             omega = 2.0 * np.pi / T_rep_s
             t_s = (np.arange(n_bins, dtype=np.float64) + 0.5) * binwidth_ps * 1e-12
             cos_table = np.cos(omega * t_s)
@@ -649,7 +671,7 @@ class _TTFlimWorker(Worker):
                 stall_count = 0
                 self._emit_frame(cube, t_axis, t_axis_f64, fit_method,
                                  omega, cos_table, sin_table, min_counts,
-                                 is_final=scan_done)
+                                 rep_rate_hz, is_final=scan_done)
 
                 if scan_done:
                     break  # final frame emitted — exit cleanly
@@ -698,7 +720,8 @@ class _TTFlimWorker(Worker):
         return arr.reshape(Ny, Nx, n_bins)
 
     def _emit_frame(self, cube, t_axis, t_axis_f64, fit_method,
-                    omega, cos_table, sin_table, min_counts, *, is_final=False):
+                    omega, cos_table, sin_table, min_counts, rep_rate_hz,
+                    *, is_final=False):
         if fit_method == 'phasor':
             intensity, lifetime = self._fit_phasor_cached(cube, omega, cos_table, sin_table)
         elif fit_method == 'exp1':
@@ -724,11 +747,48 @@ class _TTFlimWorker(Worker):
             f'is_final={is_final}'
         )
 
+        # Aggregate TCSPC decay across valid pixels, then refit globally with
+        # the selected method so the red marker matches what the per-pixel
+        # mode would imply.
+        valid_mask = intensity >= min_counts
+        if valid_mask.any():
+            decay_counts = cube[valid_mask].sum(axis=0).astype(np.float32)
+            global_tau_ns = self._global_tau_ns(
+                decay_counts, t_axis, t_axis_f64, fit_method, rep_rate_hz
+            )
+        else:
+            decay_counts = cube.sum(axis=(0, 1)).astype(np.float32)
+            global_tau_ns = 0.0
+        t_axis_ns = (t_axis * 1e9).astype(np.float32)
+
         self.sigFrameReady.emit(
             intensity.astype(np.float32),
             lifetime.astype(np.float32),
             is_final,
+            decay_counts,
+            t_axis_ns,
+            float(global_tau_ns),
         )
+
+    def _global_tau_ns(self, decay_counts, t_axis, t_axis_f64,
+                       fit_method, rep_rate_hz):
+        """Fit a single τ to the aggregated decay using the selected method."""
+        cube1 = decay_counts.reshape(1, 1, -1).astype(np.float32)
+        if fit_method == 'phasor':
+            T_rep_s = 1.0 / rep_rate_hz
+            omega = 2.0 * np.pi / T_rep_s
+            t_s = t_axis.astype(np.float64)
+            cos_t = np.cos(omega * t_s)
+            sin_t = np.sin(omega * t_s)
+            _, tau_s = self._fit_phasor_cached(cube1, omega, cos_t, sin_t)
+        elif fit_method == 'exp1':
+            _, tau_s = self._fit_exp1_cached(cube1, t_axis_f64)
+        else:
+            _, tau_s = _fit_moment(cube1, t_axis)
+        tau_ns = float(tau_s[0, 0]) * 1e9
+        if not np.isfinite(tau_ns) or tau_ns <= 0:
+            return 0.0
+        return tau_ns
 
     def _fit_phasor_cached(self, cube, omega, cos_table, sin_table):
         """Phasor fit using precomputed cos/sin tables. No per-call allocations."""
