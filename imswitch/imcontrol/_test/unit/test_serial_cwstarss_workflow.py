@@ -423,6 +423,30 @@ def test_serial_cwstarss_propagates_measurements_root():
     assert cwstarss.params.measurements_root == new_root
 
 
+def test_serial_cwstarss_resolves_none_measurements_root(monkeypatch, tmp_path):
+    """Serial workflow should not propagate measurements_root=None to CWSTARSS."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.zeros((5, 32, 32), dtype=np.uint16))
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
+
+    cwstarss = CWSTARSSWorkflow(
+        facade,
+        CWSTARSSParams(5.0, 0.01, 0.0, 0.0, Path("/tmp/old")),
+    )
+    serial_params = SerialCWSTARSSParams(
+        powers_488_mw=[10.0],
+        powers_405_mw=[5.0],
+        fps=5.0,
+        duration_s=0.01,
+        measurements_root=None,
+    )
+
+    workflow = SerialCWSTARSSWorkflow(facade, cwstarss, serial_params)
+    workflow.run()
+
+    assert cwstarss.params.measurements_root == tmp_path
+
+
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------

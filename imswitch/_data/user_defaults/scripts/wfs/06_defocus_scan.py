@@ -5,10 +5,17 @@ Prerequisites:
   - Z positioner available
   - Camera configured for image acquisition
 
-Output: Returns array of (z_position_um, image_data) tuples.
-        No automatic file saving — call workflow methods to access data.
+Output: One recording per Z plane under ~/ImSwitchMeasurements/.
 """
-from imswitch.imcontrol.model.workflows import DefocusScanWorkflow, DefocusScanParams
+# ruff: noqa: F821
+from imswitch.imcontrol.model.workflows import (
+    DefocusScanParams,
+    DefocusScanWorkflow,
+    RecordingParams,
+    RecordingWorkflow,
+)
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -26,8 +33,28 @@ params = DefocusScanParams(
     scramble=False,
 )
 
-wf = DefocusScanWorkflow(facade, params)
-results = wf.run()
+recording_params = RecordingParams(
+    pin488=8,
+    pin405=6,
+    camerapin=11,
+    start488=0,
+    start405=25_000,
+    start_camera=0,
+    width488=20_000,
+    width405=20_000,
+    width_camera=50_000,
+    dwelltime=50_000,
+    delay_time=0,
+    frame_number=20,
+    move_waveplate=True,
+    record_h=True,
+    record_v=True,
+    measurements_root=MEASUREMENTS_ROOT,
+)
 
-print(f"Defocus scan complete: {len(results)} planes acquired.")
-print(f"Z positions: {[z for z, _ in results]}")
+recording = RecordingWorkflow(facade, recording_params)
+wf = DefocusScanWorkflow(facade, recording, params)
+z_positions = wf.run()
+
+print(f"Defocus scan complete: {len(z_positions)} planes acquired.")
+print(f"Z positions: {z_positions}")

@@ -20,10 +20,17 @@ import numpy as np
 import skimage.filters
 import tifffile as tf
 
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
+
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -49,7 +56,7 @@ class ZStackParams:
     pulsed: bool = False
     laser_power_488_mw: float = 50.0
     exposure_us: float = 50000.0
-    measurements_root: str = "~/Measurements"
+    measurements_root: Optional[str | Path] = DEFAULT_MEASUREMENTS_ROOT
 
 
 class ZStackWorkflow:
@@ -294,14 +301,14 @@ class ZStackWorkflow:
 
     def _save(self, stack: np.ndarray) -> None:
         """Save the stack as a TIFF to measurements_root/{YYYY_MM_DD}/zstack_{HHMMSS}.tif."""
-        root = Path(self.params.measurements_root).expanduser()
+        root = resolve_measurements_root(self.params.measurements_root)
         date_folder = root / time.strftime("%Y_%m_%d")
         date_folder.mkdir(parents=True, exist_ok=True)
 
         timestamp = time.strftime("%H%M%S")
         out_path = date_folder / f"zstack_{timestamp}.tif"
 
-        tf.imsave(out_path, stack)
+        tf.imwrite(out_path, stack)
         logger.info("Z-stack saved to %s", out_path)
 
 

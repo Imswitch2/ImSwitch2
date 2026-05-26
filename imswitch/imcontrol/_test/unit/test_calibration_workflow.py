@@ -156,6 +156,35 @@ def test_polarisation_calibration_default_path():
         assert len(csv_files) == 1, f"Expected 1 CSV file, found {len(csv_files)}"
 
 
+def test_calibration_workflow_run_alias_writes_csv(tmp_path):
+    """run() should execute the default polarisation calibration workflow."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.ones((1, 20, 20), dtype=np.uint16))
+
+    params = CalibrationParams(n_steps_qwp=1, n_steps_hwp=1)
+    wf = CalibrationWorkflow(facade, params)
+
+    wf.run(save_folder=tmp_path)
+
+    assert (tmp_path / "pol_calibration_cam.csv").exists()
+
+
+def test_polarisation_calibration_uses_default_root_when_params_root_is_none(tmp_path, monkeypatch):
+    """run_polarisation_calibration should accept measurements_root=None."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.ones((1, 20, 20), dtype=np.uint16))
+
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
+
+    params = CalibrationParams(n_steps_qwp=1, n_steps_hwp=1, measurements_root=None)
+    wf = CalibrationWorkflow(facade, params)
+
+    wf.run_polarisation_calibration()
+
+    csv_files = list(tmp_path.rglob("polcal_*.csv"))
+    assert len(csv_files) == 1
+
+
 def test_segmentation_param_check_runs():
     """run_segmentation_param_check should acquire an image and log stats."""
     facade = build_mock_facade()

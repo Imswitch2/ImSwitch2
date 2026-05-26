@@ -34,13 +34,18 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 import tifffile as tf
 
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
+
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
 
 logger = logging.getLogger(__name__)
 
 # Default base folder when none is provided.
-DEFAULT_MEASUREMENTS_ROOT = Path.home() / "ImSwitchMeasurements"
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -83,7 +88,7 @@ class RecordingParams:
     move_waveplate: bool = True
     record_h: bool = True
     record_v: bool = True
-    measurements_root: Optional[Path] = None
+    measurements_root: Optional[Path | str] = None
     measurement_name_addition: str = ""
 
 
@@ -106,14 +111,12 @@ class RecordingWorkflow:
         self,
         facade: MicroscopeFacade,
         params: RecordingParams,
-        measurements_root: Optional[Path] = None,
+        measurements_root: Optional[Path | str] = None,
     ) -> None:
         self.facade = facade
         self.params = params
-        self.measurements_root = (
-            measurements_root
-            or params.measurements_root
-            or DEFAULT_MEASUREMENTS_ROOT
+        self.measurements_root = resolve_measurements_root(
+            measurements_root or params.measurements_root
         )
 
         # Populated during a recording run
@@ -261,12 +264,12 @@ class RecordingWorkflow:
 
         # Save to TIFF under measurements_root/{YYYY_MM_DD}/data_stack_{name}_{pol}.tif
         t_date = time.strftime("%Y_%m_%d")
-        folder = str(self.measurements_root / t_date)
+        folder = self.measurements_root / t_date
         os.makedirs(folder, exist_ok=True)
 
         if isinstance(self.datastack, np.ndarray):
             suffix = self.params.measurement_name_addition
-            out_path = os.path.join(folder, f"data_stack{suffix}_{pol}.tif")
+            out_path = folder / f"data_stack{suffix}_{pol}.tif"
             tf.imwrite(out_path, self.datastack)
             logger.info("Saved %s-polarisation stack to %s", pol, out_path)
 
@@ -288,10 +291,10 @@ class RecordingWorkflow:
                 are signal and odd frames are background.
         """
         img = img[0::2]  # Keep only signal frames
-        img_0degree = img[:, 1::2, 1::2]
-        img_45degree = img[:, 1::2, ::2]
-        img_90degree = img[:, ::2, ::2]
-        img_135degree = img[:, ::2, 1::2]
+        img_0degree = img[1::2, 1::2]
+        img_45degree = img[1::2, ::2]
+        img_90degree = img[::2, ::2]
+        img_135degree = img[::2, 1::2]
 
         p_0 = np.sum(np.mean(img_0degree, axis=0)) / 250_000
         p_45 = np.sum(np.mean(img_45degree, axis=0)) / 250_000

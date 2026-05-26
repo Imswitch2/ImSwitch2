@@ -10,12 +10,15 @@ Output: ~/ImSwitchMeasurements/<timestamp>_<powers>/signal_bwd.csv (per combinat
         ~/ImSwitchMeasurements/<timestamp>_<powers>/combined_bwd.csv
         ~/ImSwitchMeasurements/<timestamp>_<powers>/background_bwd.csv
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (
     CWSTARSSWorkflow,
     CWSTARSSParams,
     SerialCWSTARSSWorkflow,
     SerialCWSTARSSParams,
 )
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -40,7 +43,7 @@ serial_params = SerialCWSTARSSParams(
     fps=20.0,
     duration_s=1.0,
     step_units=1560.0,
-    measurements_root=None,  # defaults to ~/ImSwitchMeasurements/
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 serial_wf = SerialCWSTARSSWorkflow(facade, cwstarss_wf, serial_params)

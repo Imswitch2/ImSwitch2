@@ -15,17 +15,22 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import tifffile as tf
+
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MEASUREMENTS_ROOT = Path.home() / "ImSwitchMeasurements"
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -44,7 +49,7 @@ class CWSTARSSParams:
     duration_s: float
     power_488_mw: float
     power_405_mw: float
-    measurements_root: Path = DEFAULT_MEASUREMENTS_ROOT
+    measurements_root: Optional[Path | str] = DEFAULT_MEASUREMENTS_ROOT
 
 
 class CWSTARSSWorkflow:
@@ -224,7 +229,7 @@ class CWSTARSSWorkflow:
         """Save acquired frames to TIFF under <measurements_root>/<date>/."""
         t_date = time.strftime("%Y_%m_%d")
         t = time.strftime("%H%M%S")
-        folder = self.params.measurements_root / t_date
+        folder = resolve_measurements_root(self.params.measurements_root) / t_date
         os.makedirs(folder, exist_ok=True)
         filename = folder / f"cwstarss_{label}_{t}.tif"
         tf.imwrite(str(filename), frames)

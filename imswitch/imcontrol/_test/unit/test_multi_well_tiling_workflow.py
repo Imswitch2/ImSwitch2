@@ -10,6 +10,7 @@ from imswitch.imcontrol.model.workflows import (
     MultiWellTilingWorkflow,
     MultiWellTilingParams,
 )
+from imswitch.imcontrol.model.workflows.paths import default_measurements_root
 
 
 def build_mock_facade():
@@ -73,7 +74,7 @@ def test_multi_well_tiling_params_defaults():
     assert params.autofocus_step_um == 2.0
     assert params.autofocus_z_center_um is None
     assert params.tiling_n_tiles == 9
-    assert params.measurements_root == "~/Measurements"
+    assert params.measurements_root == default_measurements_root()
 
 
 def test_multi_well_tiling_requires_stage_con():
@@ -228,6 +229,26 @@ def test_multi_well_tiling_calls_tiling_per_well():
     for i, expected_folder in enumerate(expected_folders):
         call_obj = tiling_wf.run.call_args_list[i]
         assert call_obj.kwargs["save_folder"] == expected_folder
+
+
+def test_multi_well_tiling_uses_default_root_when_params_root_is_none(monkeypatch, tmp_path):
+    """measurements_root=None should resolve before creating well folders."""
+    facade = build_mock_facade()
+    tiling_wf = build_mock_tiling_workflow()
+    zstack_wf = build_mock_zstack_workflow()
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
+    params = MultiWellTilingParams(
+        n_rows=1,
+        n_cols=1,
+        well_pitch_x_units=5000.0,
+        well_pitch_y_units=5000.0,
+        measurements_root=None,
+    )
+
+    wf = MultiWellTilingWorkflow(facade, tiling_wf, zstack_wf, params)
+    wf.run()
+
+    assert tiling_wf.run.call_args.kwargs["save_folder"] == tmp_path / "well_r0_c0"
 
 
 # ---------------------------------------------------------------------------

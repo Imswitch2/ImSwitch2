@@ -17,10 +17,17 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
+
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -45,7 +52,7 @@ class CalibrationParams:
     laser_pin: int = 1
     camera_pin: int = 0
     pulsed: bool = True
-    measurements_root: str = "."
+    measurements_root: Optional[str | Path] = DEFAULT_MEASUREMENTS_ROOT
 
 
 class CalibrationWorkflow:
@@ -59,6 +66,10 @@ class CalibrationWorkflow:
     def __init__(self, facade: MicroscopeFacade, params: CalibrationParams) -> None:
         self.facade = facade
         self.params = params
+
+    def run(self, save_folder: Optional[str | Path] = None) -> None:
+        """Run the default polarisation calibration workflow."""
+        self.run_polarisation_calibration(save_folder=save_folder)
 
     def _snap_triggered(self, laser_pin: int, camera_pin: int, exposure_us: int) -> np.ndarray:
         """Grab one hardware-triggered frame with a single laser pulse."""
@@ -90,7 +101,7 @@ class CalibrationWorkflow:
         logger.warning("Camera returned no data during triggered snap — using zeros")
         return np.zeros((1804, 1804), dtype=np.uint16)
 
-    def run_polarisation_calibration(self, save_folder: Optional[str] = None) -> None:
+    def run_polarisation_calibration(self, save_folder: Optional[str | Path] = None) -> None:
         """Sweep QWP/HWP angles and record camera quad-pixel means.
 
         Args:
@@ -172,7 +183,7 @@ class CalibrationWorkflow:
             now = datetime.now()
             date_folder = now.strftime("%Y_%m_%d")
             time_str = now.strftime("%H%M%S")
-            folder = Path(self.params.measurements_root) / date_folder
+            folder = resolve_measurements_root(self.params.measurements_root) / date_folder
             folder.mkdir(parents=True, exist_ok=True)
             out_path = folder / f"polcal_{time_str}.csv"
         else:

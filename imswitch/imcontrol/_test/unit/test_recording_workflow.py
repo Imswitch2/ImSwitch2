@@ -66,9 +66,31 @@ class TestRecordingWorkflow:
         workflow = RecordingWorkflow(mock_facade, default_params)
         assert workflow.facade is mock_facade
         assert workflow.params is default_params
+        assert isinstance(workflow.measurements_root, Path)
         assert workflow.datastack is None
         assert workflow.datastack_h is None
         assert workflow.datastack_v is None
+
+    def test_none_measurements_root_uses_environment_default(
+        self, mock_facade, default_params, monkeypatch, tmp_path
+    ):
+        """measurements_root=None should resolve before any Path arithmetic."""
+        monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
+        default_params.measurements_root = None
+
+        workflow = RecordingWorkflow(mock_facade, default_params)
+
+        assert workflow.measurements_root == tmp_path
+
+    def test_string_measurements_root_is_converted_to_path(
+        self, mock_facade, default_params, tmp_path
+    ):
+        """String roots should be accepted and normalized to Path."""
+        default_params.measurements_root = str(tmp_path)
+
+        workflow = RecordingWorkflow(mock_facade, default_params)
+
+        assert workflow.measurements_root == tmp_path
 
     def test_both_polarisations_recorded(self, mock_facade, default_params):
         """Verify H and V stacks are both acquired when both flags are True."""

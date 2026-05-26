@@ -15,12 +15,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
+
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
     from imswitch.imcontrol.model.workflows.tiling import TilingWorkflow
     from imswitch.imcontrol.model.workflows.z_stack import ZStackWorkflow
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -52,7 +59,7 @@ class MultiWellTilingParams:
     autofocus_step_um: float = 2.0
     autofocus_z_center_um: Optional[float] = None
     tiling_n_tiles: int = 9
-    measurements_root: str = "~/Measurements"
+    measurements_root: Optional[str | Path] = DEFAULT_MEASUREMENTS_ROOT
 
 
 class MultiWellTilingWorkflow:
@@ -121,7 +128,7 @@ class MultiWellTilingWorkflow:
         )
 
         # Create base measurement folder
-        base_folder = Path(self.params.measurements_root).expanduser()
+        base_folder = resolve_measurements_root(self.params.measurements_root)
         base_folder.mkdir(parents=True, exist_ok=True)
 
         # Iterate over grid in row-major order

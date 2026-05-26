@@ -2,6 +2,8 @@
 
 import numpy as np
 import pytest
+import tifffile as tf
+from pathlib import Path
 
 from imswitch.imcontrol.model.workflows import (
     ZStackParams,
@@ -53,6 +55,23 @@ def test_zstack_software_mode():
     # Verify return to start position
     set_pos_calls = [c for c in facade.calls if c[0] == "z_stage_con.set_pos_um"]
     assert set_pos_calls[-1][1][0] == pytest.approx(50.0, abs=0.01)
+
+
+@pytest.mark.nohardware
+def test_zstack_save_uses_default_root_when_params_root_is_none(monkeypatch, tmp_path):
+    """Z-stack saving should accept measurements_root=None."""
+    facade = build_mock_facade()
+    params = ZStackParams(n_planes=1, step_um=1.0, measurements_root=None)
+    workflow = ZStackWorkflow(facade, params)
+    saved_paths = []
+
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
+    monkeypatch.setattr(tf, "imwrite", lambda path, stack: saved_paths.append(path))
+
+    workflow._save(np.zeros((1, 4, 4), dtype=np.uint16))
+
+    assert len(saved_paths) == 1
+    assert Path(saved_paths[0]).is_relative_to(tmp_path)
 
 
 @pytest.mark.nohardware

@@ -33,6 +33,7 @@ class JenaPiezoZManager(PositionerManager):
         self._rs232Manager = lowLevelManagers['rs232sManager'][
             positionerInfo.managerProperties['rs232device']
         ]
+        self._configure_rs232_for_jena()
 
         self._posRangeUm = positionerInfo.managerProperties.get('posRangeUm', [0, 100])
         self._waitForSettle = positionerInfo.managerProperties.get('waitForSettle', True)
@@ -46,7 +47,7 @@ class JenaPiezoZManager(PositionerManager):
         # minimum position so the rest of the system comes up.
         try:
             time.sleep(0.2)
-            self._send_command('cl')
+            self._write_command('cl')
             current_pos = self._read_position_um()
             self._position[self.axes[0]] = current_pos
             self.__logger.info(f"Jena piezo initialized at {current_pos:.2f} µm")
@@ -64,23 +65,39 @@ class JenaPiezoZManager(PositionerManager):
         self.setPosition(target, axis)
 
     def setPosition(self, value, axis):
-        """Set the positioner to the specified absolute position."""
+        """Set the positioner to the specified absolute position.
+
+        Wraps the entire move in try/except so a transient RS232 timeout
+        cannot abort a long-running workflow; the next move call will
+        retry the activation handshake.
+        """
         self.__logger.debug(f"Set position to: {value} µm")
-        
+
         if not (self._posRangeUm[0] <= value <= self._posRangeUm[1]):
             self.__logger.error(f"Position {value} µm out of range {self._posRangeUm}")
             return
-        
-        if not self._ext_active:
-            self.activate_ext_control()
-        
-        value = round(value, 2)
-        self._send_command(f'wr, {value}')
-        
-        if self._waitForSettle:
-            self._wait_for_settle(value)
-        
-        self._position[self.axes[0]] = value
+
+        try:
+            if not self._ext_active:
+                self.activate_ext_control()
+                if not self._ext_active:
+                    # activate_ext_control already logged a warning; abort
+                    # this move but keep the manager alive.
+                    return
+
+            value = round(value, 2)
+            self._write_command(f'wr, {value}')
+
+            if self._waitForSettle:
+                self._wait_for_settle(value)
+
+            self._position[self.axes[0]] = value
+        except Exception as e:
+            self.__logger.warning(
+                f"Jena piezo move to {value} µm failed: {e!s}. "
+                f"Controller will be re-initialised on the next move."
+            )
+            self._ext_active = False
 
     def _wait_for_settle(self, target_pos):
         """Poll position until settled or timeout, with one retry."""
@@ -110,7 +127,7 @@ class JenaPiezoZManager(PositionerManager):
                 
                 if not retried and time.time() >= retry_time:
                     self.__logger.debug(f"Retrying write command at {elapsed:.2f}s")
-                    self._send_command(f'wr, {target_pos}')
+                    self._write_command(f'wr, {target_pos}')
                     retried = True
                 
             except Exception as e:
@@ -120,31 +137,60 @@ class JenaPiezoZManager(PositionerManager):
 
     def _read_position_um(self):
         """Read the current position in micrometres."""
-        reply = self._send_command('rd')
+        reply = self._query_command('rd')
         parts = reply.split(',')
         if len(parts) >= 2:
             return float(parts[1].strip())
         else:
             raise ValueError(f"Unexpected position reply format: {reply}")
 
-    def _send_command(self, cmd):
-        """Send a command and return the response.
-
-        The RS232 layer appends the configured ``send_termination`` itself,
-        so callers pass the bare command. For a Jena controller this means
-        ``send_termination`` must be ``"\\r"`` in the rs232 config.
-        """
+    def _query_command(self, cmd: str) -> str:
+        """Send a command that is expected to return a response."""
         return self._rs232Manager.query(cmd)
 
+    def _configure_rs232_for_jena(self) -> None:
+        """Apply the Jena controller's CR-terminated serial framing."""
+        try:
+            self._rs232Manager._settings['recv_termination'] = '\r'
+            resource = self._rs232Manager._rs232port._resource
+            resource.read_termination = '\r'
+        except Exception as e:
+            self.__logger.debug(f"Could not force Jena read termination to CR: {e!s}")
+
+    def _write_command(self, cmd: str) -> None:
+        """Send a command that is not expected to return a response.
+
+        The Jena controller accepts commands such as ``i1``, ``i0``, ``cl``,
+        and ``wr,<pos>`` without returning a line. Using ``query`` for these
+        commands makes pyvisa wait for a response until it raises
+        ``VI_ERROR_TMO``; the legacy pyserial code silently tolerated the
+        empty response. The RS232 layer appends the configured
+        ``send_termination`` itself, so callers pass the bare command.
+        """
+        self._rs232Manager.write(cmd)
+
     def activate_ext_control(self):
-        """Enter external control mode (enables serial commands)."""
-        self._send_command('i1')
-        self._ext_active = True
-        self.__logger.debug("External control mode activated")
+        """Enter external control mode (enables serial commands).
+
+        If the write fails, we log a warning and leave ``_ext_active`` False
+        so the next call retries. Importantly we do NOT raise — a single
+        serial failure must not bring down a multi-step workflow.
+        """
+        try:
+            self._write_command('i1')
+            self._ext_active = True
+            self.__logger.debug("External control mode activated")
+        except Exception as e:
+            self._ext_active = False
+            self.__logger.warning(
+                f"Jena piezo activate_ext_control (i1) failed: {e!s}. "
+                f"Controller may be unresponsive; subsequent moves will "
+                f"retry. Check COM port and that the controller is powered."
+            )
 
     def deactivate_ext_control(self):
         """Exit external control mode (returns control to front panel)."""
-        self._send_command('i0')
+        self._write_command('i0')
         self._ext_active = False
         self.__logger.debug("External control mode deactivated")
 

@@ -380,6 +380,27 @@ def test_cwstarss_saves_files_per_phase(tmp_path, monkeypatch):
     assert any("V_488_405_" in f for f in filenames)
 
 
+def test_cwstarss_save_uses_default_root_when_params_root_is_none(tmp_path, monkeypatch):
+    """_save should accept measurements_root=None and use the workflow default."""
+    params = CWSTARSSParams(
+        fps=5.0,
+        duration_s=1.0,
+        power_488_mw=5.0,
+        power_405_mw=2.0,
+        measurements_root=None,
+    )
+    workflow = CWSTARSSWorkflow(build_mock_facade(), params)
+    saved_files = []
+
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
+    monkeypatch.setattr("tifffile.imwrite", lambda filename, data: saved_files.append(Path(filename)))
+
+    workflow._save(np.zeros((1, 8, 8), dtype=np.uint16), "test")
+
+    assert len(saved_files) == 1
+    assert saved_files[0].is_relative_to(tmp_path)
+
+
 def test_cwstarss_handles_no_camera_data_gracefully():
     """Verify workflow handles None from get_data without crashing."""
     facade = build_mock_facade()

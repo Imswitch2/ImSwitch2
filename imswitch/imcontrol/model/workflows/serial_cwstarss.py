@@ -16,11 +16,15 @@ import itertools
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.cwstarss import CWSTARSSWorkflow
@@ -28,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MEASUREMENTS_ROOT = Path.home() / "ImSwitchMeasurements"
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -49,7 +53,7 @@ class SerialCWSTARSSParams:
     fps: float
     duration_s: float
     step_units: float = 1560.0
-    measurements_root: Path = DEFAULT_MEASUREMENTS_ROOT
+    measurements_root: Optional[Path | str] = DEFAULT_MEASUREMENTS_ROOT
 
 
 class SerialCWSTARSSWorkflow:
@@ -171,7 +175,9 @@ class SerialCWSTARSSWorkflow:
             self.cwstarss.params.duration_s = self.params.duration_s
             self.cwstarss.params.power_488_mw = p488
             self.cwstarss.params.power_405_mw = p405
-            self.cwstarss.params.measurements_root = self.params.measurements_root
+            self.cwstarss.params.measurements_root = resolve_measurements_root(
+                self.params.measurements_root
+            )
 
             # Run CWSTARSS experiment at this position
             self.cwstarss.run()
