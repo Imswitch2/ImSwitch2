@@ -108,6 +108,8 @@ class ThorCamTSIManager(DetectorManager):
     def _initCamera(self, serial, dll_location):
         """Initialize camera with fallback to mock."""
         # Mock fallback: serial starts with "MOCK_" or import fails
+        if serial is not None:
+            serial = str(serial)
         use_mock = serial is not None and serial.startswith("MOCK_")
         
         if not use_mock:
