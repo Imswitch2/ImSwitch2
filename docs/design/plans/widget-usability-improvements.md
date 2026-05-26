@@ -1,0 +1,104 @@
+# Widget Usability Improvements
+
+## Goal
+
+Make ImControl widgets usable on small screens and reduce fragile widget-level
+UI behavior. The first baseline is that docked widgets must remain reachable by
+scrolling rather than being clipped by minimum-size constraints.
+
+## Landed Baseline
+
+- Dock insertion remains direct through `Dock.addWidget(widget)` so default and
+  JSON-defined dock placement keeps the original pyqtgraph DockArea sizing
+  behavior. A global dock-level scroll wrapper was avoided because it perturbed
+  dock proportions even when setup positions were still read correctly.
+- Scan widgets no longer force their scroll area and parent widget to the
+  full content minimum width.
+- Laser widgets no longer force their scroll area and parent widget to the
+  full content minimum width.
+- Recording keeps Snap/REC controls visible while its settings grid scrolls
+  internally.
+- Positioner keeps its existing controls and signals but places the per-axis
+  grid inside an internal scroll area.
+- Advanced scan center spin boxes allow negative center positions.
+- Advanced Scan no longer exposes partial BeadRec center/axial controls; it
+  keeps only the scan-geometry interface consumed by BeadRec reconstruction.
+- Source-level contract tests cover direct dock insertion, scan/laser scroll
+  behavior, Recording and Positioner scrolling, negative Advanced scan centers,
+  and absence of orphaned Advanced Scan BeadRec controls.
+
+## Follow-Up Ideas
+
+- **Numeric field consistency**
+  - Replace free-form numeric `QLineEdit` controls with `QDoubleSpinBox`,
+    `QSpinBox`, or validated line edits where free-form lists are not needed.
+  - Audit all coordinate, offset, delay, power, size, and timing fields for
+    explicit ranges and units.
+  - Add setup-aware ranges where hardware metadata provides travel limits,
+    voltage limits, exposure limits, or power limits.
+
+- **Responsive layout pass**
+  - Replace very wide grid rows with grouped vertical sections in dense widgets
+    such as Scan, Advanced Scan, Recording, SLMs, EtSTED, and EtMonalisa.
+  - Avoid fixed graph heights where they crowd controls on small displays;
+    use splitter or collapsible advanced sections where appropriate.
+  - Prefer horizontal scrolling only for table-like controls; prefer wrapping
+    or sectioning for normal forms.
+  - Current hard-size audit still flags several legitimate but review-worthy
+    fixed/minimum sizes in dialogs, small numeric inputs, SLM controls, graph
+    heights, and the BeadRec list panel. These should be reviewed case by case
+    rather than removed globally.
+  - Napari/Image dock minimum-height behavior still needs a safer fix. Do not
+    override the Image widget's top-level `minimumSizeHint()` globally, because
+    that can collapse the pyqtgraph dock layout during startup.
+
+- **Advanced Scan**
+  - Make phase delay and D3 step delay validated numeric controls with explicit
+    units and allowed negative/positive semantics documented in tooltips.
+  - Clarify the difference between line repeats, advanced line program, and
+    per-line-step power controls.
+  - Move advanced intra-pixel pulse editing into a collapsible section.
+  - If Advanced Scan should support BeadRec auto-axial workflows later, add the
+    full MoNaLISA-equivalent workflow explicitly instead of reintroducing
+    partial center controls.
+
+- **Recording**
+  - Split capture target, output path, format, and acquisition mode into clearer
+    sections.
+  - Add inline validation for unwritable folders and incompatible file/mode
+    combinations.
+
+- **EtSTED / EtMonalisa**
+  - Add visible status and validation messages consistently across both widgets.
+  - Move pipeline/transform/scanning prerequisites into a compact preflight
+    section.
+  - Hide or collapse calibration-only controls during normal acquisition.
+
+- **Laser / Positioner / Rotator**
+  - Add setup-derived min/max ranges where available.
+  - Avoid fixed-width rows for setups with many devices; use per-device
+    collapsible rows or a table with scrollbars.
+  - Positioner scrollability is only a containment fix. A later pass should
+    still make large multi-axis setups denser and easier to scan visually.
+
+- **Testing**
+  - ✅ Added `test_widget_sizing_audit()` in `test_widget_responsiveness_contract.py`:
+    scans all widget source files for problematic hard-sizing patterns
+    (`scrollArea.setMinimumWidth`, `ScrollBarAlwaysOff`). Uses an allowlist
+    approach for known exceptions. Currently flags SLMsWidget horizontal
+    scroll-disable pattern for future review.
+  - Add a lightweight Qt smoke test for creating representative no-hardware
+    widget sets inside a constrained viewport.
+  - Add targeted tests for fields that must allow negative coordinates or
+    offsets.
+
+## Suggested Work Order
+
+1. Finish the scrollability baseline widget by widget, preserving dock placement
+   semantics and adding internal scroll areas only where the widget owns its
+   layout.
+2. Audit and normalize numeric ranges for Scan, Advanced Scan, Positioner,
+   Rotator, and Laser widgets.
+3. Refactor the densest widgets into clear sections or collapsible panels.
+4. Add constrained-viewport smoke tests once full UI collection no longer pulls
+   in incompatible GUI dependencies.

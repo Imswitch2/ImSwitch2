@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -12,6 +13,7 @@ LASER_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'Lase
 RECORDING_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'RecordingWidget.py'
 POSITIONER_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'PositionerWidget.py'
 BEAD_REC_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'BeadRecWidget.py'
+WIDGETS_DIR = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets'
 
 
 def test_main_view_keeps_direct_dock_widget_insertion():
@@ -100,3 +102,84 @@ def test_advanced_scan_has_no_partial_bead_rec_controls():
     assert 'beadRecWorkflow.update_bead_rec_center' not in controller_source
     assert 'beadRecWorkflow.show_bead_rec_center_cross' not in controller_source
     assert 'beadRecWorkflow.set_auto_axial' not in controller_source
+
+
+def test_widget_sizing_audit():
+    """
+    Source-level audit for problematic hard-sizing patterns in widget files.
+
+    This test scans all widget source files for patterns that are known to
+    break responsive layouts, specifically:
+    - scrollArea.setMinimumWidth(...) - forces scroll areas to minimum width
+    - ScrollBarAlwaysOff - prevents scrolling when content overflows
+
+    NOTE: This is a conservative audit focused on narrow, agreed-upon
+    problematic patterns. A broader hard-size audit (e.g., all setFixedHeight,
+    all setMinimumWidth) would flag many legitimate uses in dialogs, numeric
+    inputs, graph controls, and specialized widgets. Those require case-by-case
+    review and are documented in docs/design/plans/widget-usability-improvements.md.
+
+    Known legitimate sizing patterns NOT flagged here:
+    - Small numeric field widths (e.g., coordinate inputs, power controls)
+    - Graph/plot minimum heights (e.g., FFT displays, line profiles)
+    - Dialog fixed sizes (e.g., about boxes, simple input dialogs)
+    - Specialized widget constraints (e.g., BeadRec list panel minimum width)
+    """
+    # Patterns to flag (problematic for responsive layouts)
+    problematic_patterns = [
+        (r'scrollArea\.setMinimumWidth\s*\(', 'scrollArea.setMinimumWidth('),
+        (r'ScrollBarAlwaysOff', 'ScrollBarAlwaysOff'),
+    ]
+
+    # Files with known, reviewed exceptions (allowlist)
+    # These files contain sizing patterns that have been reviewed and deemed
+    # legitimate for specific use cases. Add entries here only after review.
+    allowlist = {
+        'SLMsWidget.py': {
+            'ScrollBarAlwaysOff': (
+                'Existing pattern: disables horizontal scrolling for SLM image preview. '
+                'Consider reviewing if this breaks small-screen usability.'
+            ),
+        },
+    }
+
+    violations = []
+    widget_files = sorted(WIDGETS_DIR.glob('*.py'))
+    assert len(widget_files) > 0, "No widget files found for audit"
+
+    for widget_file in widget_files:
+        if widget_file.name in ('__init__.py', 'basewidgets.py'):
+            continue
+
+        source = widget_file.read_text()
+        file_allowlist = allowlist.get(widget_file.name, {})
+
+        for pattern_re, pattern_name in problematic_patterns:
+            # Skip if this pattern is allowlisted for this file
+            if pattern_name in file_allowlist:
+                continue
+
+            matches = list(re.finditer(pattern_re, source))
+            if matches:
+                for match in matches:
+                    # Find line number
+                    line_num = source[:match.start()].count('\n') + 1
+                    # Get context line
+                    lines = source.split('\n')
+                    context_line = lines[line_num - 1].strip() if line_num <= len(lines) else ''
+
+                    violations.append(
+                        f"{widget_file.name}:{line_num}: {pattern_name}\n"
+                        f"  Context: {context_line}"
+                    )
+
+    # Generate detailed failure message if violations found
+    if violations:
+        msg = (
+            "\nProblematic widget sizing patterns found:\n\n"
+            + "\n\n".join(violations)
+            + "\n\nThese patterns break responsive layouts. "
+            "If a use is legitimate, add it to the allowlist in this test "
+            "with a clear justification."
+        )
+        assert False, msg
