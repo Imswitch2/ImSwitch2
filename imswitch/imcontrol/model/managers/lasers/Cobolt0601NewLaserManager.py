@@ -82,43 +82,90 @@ class Cobolt0601NewLaserManager(LaserManager):
             err = traceback.format_exc()
             self.__logger.warning(f'Laser could not be turned off properly: {err}.')
 
-    # Set to True once we've confirmed the firmware accepts SCPI `las:paus`.
-    # Older 06-01 firmware rejects it with "Syntax error: illegal command";
-    # we fall back to constant_current(0) in that case for the rest of the
-    # session so we don't spam the laser with rejected commands.
-    _pause_supported = None
+    # Cached "off method" — set on first successful shutdown so we don't
+    # spam the laser with commands its firmware rejects.
+    # Values: None (unknown), 'paus' (SCPI las:paus), 'power0' (set_power 0),
+    # 'l0' (full turn_off — nuclear option, requires warm-up to re-enable).
+    _off_method = None
+
+    @staticmethod
+    def _is_illegal(reply):
+        """True if a Cobolt reply indicates the command was rejected."""
+        if reply is None:
+            return False
+        r = str(reply).lower()
+        return 'illegal command' in r or 'syntax error' in r
 
     def _pause_emission_safe(self):
-        if self._pause_supported is False:
-            self._laser.constant_current(0)
+        """Turn the beam off. Cascade through methods until one succeeds and
+        cache the winner for the rest of the session."""
+        # Cached path
+        if self._off_method == 'paus':
+            self._laser.pause_emission()
             return
+        if self._off_method == 'power0':
+            self._laser.set_power(0)
+            self._laser.constant_power()
+            return
+        if self._off_method == 'l0':
+            self._laser.turn_off()
+            return
+
+        # First call — try in order of "least invasive that actually works".
+        # 1. SCPI las:paus (newer firmware).
         try:
             reply = self._laser.pause_emission()
-        except Exception:
-            self._pause_supported = False
-            self._laser.constant_current(0)
-            return
-        if reply and ('illegal command' in reply.lower() or 'syntax error' in reply.lower()):
-            self.__logger.warning(
-                'Laser firmware does not support `las:paus`; using constant_current(0) instead.'
-            )
-            self._pause_supported = False
-            self._laser.constant_current(0)
-        else:
-            self._pause_supported = True
+            if not self._is_illegal(reply):
+                self._off_method = 'paus'
+                return
+        except Exception as e:
+            self.__logger.debug(f'pause_emission raised: {e}')
+
+        # 2. Older 06-01: set_power(0) + constant_power. Should result in
+        #    zero emission since power setpoint is zero.
+        try:
+            self._laser.set_power(0)
+            reply = self._laser.constant_power()
+            if not self._is_illegal(reply):
+                self.__logger.warning(
+                    'Laser firmware rejects `las:paus`; using set_power(0) to dark the beam.'
+                )
+                self._off_method = 'power0'
+                return
+        except Exception as e:
+            self.__logger.debug(f'set_power(0) path raised: {e}')
+
+        # 3. Nuclear option — full shutdown. The laser will need an autostart
+        #    (`@cob1`) and warm-up to come back, but the beam will be OFF.
+        self.__logger.warning(
+            'Falling back to full turn_off (l0) — laser will require warm-up to re-enable.'
+        )
+        try:
+            self._laser.turn_off()
+            self._off_method = 'l0'
+        except Exception as e:
+            self.__logger.error(f'CRITICAL: could not turn off laser via any path: {e}')
+            raise
 
     def _resume_emission_safe(self):
-        if self._pause_supported is False:
-            return  # nothing to resume; constant_power() below will re-enable output
-        try:
+        """Resume emission. Matches whichever shutdown method was cached."""
+        if self._off_method == 'paus':
             self._laser.resume_emission()
-        except Exception:
-            self._pause_supported = False
+        elif self._off_method == 'l0':
+            # Came from a full shutdown — restart with autostart sequence.
+            try:
+                self._laser.turn_on()
+            except Exception as e:
+                self.__logger.warning(f'turn_on after l0 failed: {e}')
+        # For 'power0' and None, the constant_power() call in setEnabled(True)
+        # below restores emission once the power setpoint is set.
 
     def setEnabled(self, enabled):  # toggle laser on or off
         if enabled:  # laser is toggled on
             self._resume_emission_safe()
-            self._laser.constant_power()  # set laser to constant power mode
+            # constant_power() with no arg just enters CP mode; the actual
+            # power setpoint is whatever setValue last wrote.
+            self._laser.constant_power()
         else:
             self._pause_emission_safe()
 
