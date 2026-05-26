@@ -30,7 +30,8 @@ Quick Start
 
       QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
         imswitch/imcontrol/_test/unit \
-        imswitch/test_no_hardware_profile.py -q
+        imswitch/test_no_hardware_profile.py \
+        imswitch/test_no_hardware_ui_smoke.py -q
 
 3. **Run linting** to check code style:
 
@@ -98,7 +99,8 @@ No-Hardware Work (Safe)
 
    QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
      imswitch/imcontrol/_test/unit \
-     imswitch/test_no_hardware_profile.py -v
+     imswitch/test_no_hardware_profile.py \
+     imswitch/test_no_hardware_ui_smoke.py -v
 
 **No physical hardware required.** Mock devices and simulated DAQ are sufficient.
 
@@ -157,7 +159,8 @@ Run these checks locally before pushing:
 
       QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
         imswitch/imcontrol/_test/unit \
-        imswitch/test_no_hardware_profile.py -v
+        imswitch/test_no_hardware_profile.py \
+        imswitch/test_no_hardware_ui_smoke.py -v
 
 3. **Whitespace check** (no trailing whitespace, newline at EOF):
 

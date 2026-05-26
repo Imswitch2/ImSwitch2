@@ -22,7 +22,8 @@ To run the complete no-hardware test suite, use the following command from the r
 ```bash
 QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
   imswitch/imcontrol/_test/unit \
-  imswitch/test_no_hardware_profile.py -q
+  imswitch/test_no_hardware_profile.py \
+  imswitch/test_no_hardware_ui_smoke.py -q
 ```
 
 ### What This Command Does
@@ -36,6 +37,12 @@ QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.pl
    - Tests controllers, managers, and model logic
    - Uses mock hardware and Qt test fixtures
    - Validates contracts, state persistence, and workflows
+
+3. **Runs ImControl startup smoke validation** (`imswitch/test_no_hardware_ui_smoke.py`)
+   - Constructs the ImControl view/controller graph with the no-hardware setup
+   - Verifies expected widgets and controllers are present
+   - Stubs heavy GUI rendering dependencies so local napari/vispy/matplotlib
+     incompatibilities do not block no-hardware startup validation
 
 ---
 
@@ -280,7 +287,8 @@ protection rule.
 ```bash
 QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
   imswitch/imcontrol/_test/unit \
-  imswitch/test_no_hardware_profile.py -v
+  imswitch/test_no_hardware_profile.py \
+  imswitch/test_no_hardware_ui_smoke.py -v
 ```
 
 **Exit criteria:**

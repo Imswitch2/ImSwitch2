@@ -14,9 +14,11 @@ The current no-hardware validation baseline is:
 
    QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
      imswitch/imcontrol/_test/unit \
-     imswitch/test_no_hardware_profile.py -q
+     imswitch/test_no_hardware_profile.py \
+     imswitch/test_no_hardware_ui_smoke.py -q
 
-The latest local run passed with ``196 passed, 4 skipped``.
+The latest local no-hardware validation run passed with
+``322 passed, 4 skipped``.
 
 This validates configuration parsing, mock/simulated manager construction,
 controller/model contracts, and no-hardware workflow logic. It does not validate
@@ -32,6 +34,7 @@ development, subject to the red-zone rules in ``AGENTS.md``:
 * Core import/package baseline with Python ``>=3.10``.
 * Optional hardware extras split from the core install.
 * No-hardware configuration profile and unit-test suite.
+* No-hardware ImControl startup smoke test for the default no-hardware setup.
 * Communication-channel signal inventory and compatibility aliases.
 * Widget state persistence framework and UI save/load integration.
 * Detector and scan controller state persistence for passive settings.
@@ -81,20 +84,12 @@ The active roadmap areas are:
 
 * Milestone 7 documentation:
 
-  * architecture map and no-hardware validation guide are present,
-  * current-state documentation is this page,
-  * SetupInfo configuration reference and developer onboarding remain open.
+  * architecture map, no-hardware validation guide, current-state page,
+    SetupInfo reference, developer onboarding, microscope-KB guide, and agent
+    task templates are present.
 
 Known Issues and Limitations
 ----------------------------
-
-No-hardware UI startup
-~~~~~~~~~~~~~~~~~~~~~~
-
-The full application UI launch on a clean no-hardware setup is not yet a stable
-automated validation target. Legacy UI tests can still import the full
-napari/matplotlib stack during collection. This needs a dedicated dependency and
-test-isolation pass before becoming a required CI check.
 
 Sphinx documentation build
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -164,7 +159,8 @@ Recommended Near-Term Priorities
    * developer onboarding guide,
    * agent task templates.
 
-2. Add representative no-hardware startup or widget-set smoke tests.
+2. Extend representative startup/widget smoke coverage beyond the default
+   no-hardware widget set.
 
 3. Continue widget usability cleanup in small, isolated passes.
 

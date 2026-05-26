@@ -19,7 +19,8 @@ Run the current no-hardware suite from the repository root:
 
    QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin \
      imswitch/imcontrol/_test/unit \
-     imswitch/test_no_hardware_profile.py -q
+     imswitch/test_no_hardware_profile.py \
+     imswitch/test_no_hardware_ui_smoke.py -q
 
 ``QT_QPA_PLATFORM=offscreen`` keeps Qt headless. This is required for CI and
 for local runs where no display server should be used.
@@ -59,6 +60,11 @@ It uses mock/simulated devices and must remain free of physical IO channels.
 The corresponding validation entry point is:
 
 ``imswitch/test_no_hardware_profile.py``
+
+``imswitch/test_no_hardware_ui_smoke.py`` constructs the ImControl
+view/controller graph with the no-hardware setup. It stubs heavy GUI rendering
+dependencies at the test boundary so the smoke test validates ImSwitch startup
+without requiring a compatible local napari/vispy/matplotlib stack.
 
 Adding tests
 ------------
