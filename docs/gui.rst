@@ -22,6 +22,58 @@ intuitive to explore for both users and developers.
    :align: center
 
 
+Keyboard shortcuts
+==================
+
+The following keyboard shortcuts are available for common operations:
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 0
+
+   * - ``Ctrl+R``
+     - Record start/stop
+   * - ``Ctrl+L``
+     - Liveview toggle
+   * - ``Ctrl+U``
+     - Update image levels
+   * - ``Ctrl+N``
+     - Next detector
+   * - ``Ctrl+Shift+S``
+     - Save widget state
+   * - ``Ctrl+Shift+L``
+     - Load widget state
+
+
+Positioner stepping
+-------------------
+
+The following shortcuts step the active positioner by the amount
+configured in the per-axis **Step** field of the Positioner widget:
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 0
+
+   * - ``Ctrl+Left`` / ``Ctrl+Right``
+     - Step X − / +
+   * - ``Ctrl+Up`` / ``Ctrl+Down``
+     - Step Y − / +
+   * - ``Ctrl+Q`` / ``Ctrl+A``
+     - Step Z + / −
+
+**Notes:**
+
+* The shortcuts target the first positioner declared with that axis in
+  the active setup; setups without that axis silently ignore the
+  shortcut.
+* Step size for each press is the value in the per-axis Step field of
+  the Positioner widget.
+* On some Linux desktops ``Ctrl+Q`` is bound to "Quit" at the window
+  manager level.  ImSwitch claims it via QAction so it should work
+  while the application is focused; report if it does not.
+
+
 Detector Settings
 =================
 
