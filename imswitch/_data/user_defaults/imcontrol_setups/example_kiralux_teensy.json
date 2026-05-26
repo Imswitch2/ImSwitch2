@@ -54,11 +54,12 @@
                 "scale": "MLS203",
                 "isRackSystem": true,
                 "homeOnInit": false,
-                "unitsPerUm": 1.0
+                "driverUnitsPerPositionUnit": 1.0
             },
             "axes": ["X", "Y"],
             "forPositioning": true,
-            "forScanning": false
+            "forScanning": false,
+            "resetOnClose": false
         },
         "Z": {
             "analogChannel": null,

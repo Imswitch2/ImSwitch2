@@ -33,7 +33,8 @@ The abstract base requires that at least one of ``forPositioning`` or
             "managerProperties": { "...": "..." },
             "axes": ["X", "Y"],
             "forPositioning": true,
-            "forScanning": false
+            "forScanning": false,
+            "resetOnClose": false
         }
     }
 
@@ -223,7 +224,8 @@ Thorlabs MLS203 two-axis motorized stage driven via the Kinesis stack.
                 "snr": "12345678",
                 "scale": "MLS203",
                 "isRackSystem": true,
-                "homeOnInit": false
+                "homeOnInit": false,
+                "driverUnitsPerPositionUnit": 1.0
             },
             "axes": ["X", "Y"],
             "forPositioning": true,
@@ -257,6 +259,13 @@ Thorlabs MLS203 two-axis motorized stage driven via the Kinesis stack.
      - bool
      - ``false``
      - If true, home both axes during construction.
+   * - ``driverUnitsPerPositionUnit``
+     - float
+     - ``1.0``
+     - Conversion factor between ImSwitch position units and the raw values
+       accepted/reported by the pylablib driver. Keep at ``1.0`` when pylablib
+       recognizes the stage scale. Set only when pylablib falls back to raw
+       internal units.
 
 **PositionerInfo fields used**
 
@@ -273,6 +282,14 @@ Two-axis (X/Y).  Axis labels are validated at use time by
 
 Supported.  Defines ``jog_start(axis, sign)`` and ``jog_stop(axis)``;
 both delegate to the pylablib continuous-jog API.
+
+**Shutdown behavior**
+
+Set ``resetOnClose`` to ``false`` for Kinesis stages unless the setup
+explicitly requires returning both axes to zero during shutdown. The generic
+positioner controller resets all positioners with ``resetOnClose=true`` by
+calling ``setPosition(0, axis)`` for every axis before the manager connection
+is closed.
 
 **Low-level dependencies**
 

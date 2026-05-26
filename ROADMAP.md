@@ -22,10 +22,14 @@ This roadmap tracks the major milestones for the ImSwitch2 migration. Each miles
     `imswitch/imcontrol/_test/unit` directory
   - Qt-backed no-hardware unit tests run with explicit `pytest-qt` loading and
     third-party pytest plugin autoload disabled
-- ⬜ Ensure the full application UI launches without errors on a clean install
+- ✅ Ensure the full application UI launches without errors on a clean install
   using a no-hardware setup
-  - Current blocker: legacy UI tests still import the full napari/matplotlib
-    stack during collection; this needs a dedicated dependency/isolation pass
+  - Manual no-hardware launch regressions found during widget/layout work were
+    fixed, including the empty-main-window regression
+  - `imswitch/test_no_hardware_ui_smoke.py` now constructs the ImControl
+    view/controller graph with the no-hardware setup under Qt offscreen mode
+  - The smoke test isolates napari/vispy/matplotlib/colour dependencies so
+    incompatible local GUI stacks do not block no-hardware startup validation
 
 ## Milestone 2: Packaging Cleanup 🔄
 
@@ -68,7 +72,7 @@ breaking existing controller/API signal contracts.
 - ✅ Add domain event aliases
   - `scanEvents`, `recordingEvents`, `eventTriggeredEvents`, `beadRecEvents`,
     and related read-only groups preserve legacy `sigX` attributes
-- 🔄 Introduce workflow services for multi-step coordination
+- ✅ Introduce workflow services for multi-step coordination
   - `ScanWorkflowService`: scan parameter requests, scan-start notifications,
     recording-triggered scan coordination, axis-center updates
   - `BeadRecWorkflowService`: MoNaLISA/bead-recognition center-query and
@@ -76,30 +80,56 @@ breaking existing controller/API signal contracts.
   - EtSTED, EtMonalisa, RecordingController, ScanControllerMoNaLISA,
     ScanControllerAdvanced, and BeadRecController now route selected workflow
     interactions through these services
+  - Covered by `test_workflow_services.py` and communication-channel contract
+    tests
 - ⬜ Continue extracting remaining broad signal usage where it is covered by
   no-hardware tests
 - ⬜ Remove deprecated signals only after public API compatibility review
   and representative no-hardware startup/widget-set tests
 
-## Milestone 4: Hardware Abstraction Cleanup
+## Milestone 4: Hardware Abstraction Cleanup 🔄
 
 **Goal:** Improve the hardware abstraction layer for clarity and safety.
 
-- Document all hardware interfaces
-- Standardize manager/controller patterns
-- Add type hints to hardware interfaces
-- Improve error handling in hardware communication
-- Add timeout mechanisms where missing
+- 🔄 Document hardware interfaces
+  - Architecture manager inventory and device reference pages now cover the
+    active manager layer
+  - Positioner docs include Kinesis shutdown/reset behavior and raw-driver-unit
+    scaling guidance
+  - Remaining work: fill gaps for older interfaces and mock/real separation
+- 🔄 Standardize manager/controller patterns
+  - Workflow services and no-hardware workflow facades reduce broad manager and
+    communication-channel coupling in selected paths
+  - Remaining work: apply the pattern gradually to older managers/controllers
+- 🔄 Add type hints to hardware interfaces
+  - New and touched workflow/manager helpers use typed dataclasses or typed
+    method signatures
+  - Remaining work: older manager/interface modules are still inconsistent
+- 🔄 Improve error handling in hardware communication
+  - Cobolt 06-01 pause fallback handles firmware that rejects `las:paus`
+  - Jena/Kinesis setup configuration issues are documented and no-hardware
+    contract tested
+  - Remaining work: broader serial/driver error taxonomy
+- ⬜ Add timeout mechanisms where missing
 
-## Milestone 5: Detector Manager Refactor
+## Milestone 5: Detector Manager Refactor 🔄
 
 **Goal:** Modernize and simplify detector management.
 
-- Map current detector manager dependencies
-- Define clean detector interface
-- Refactor with backward compatibility
-- Add comprehensive tests
-- Document the new architecture
+- ✅ Map current detector manager dependencies
+  - Captured in `docs/design/ARCHITECTURE.md` and detector reference docs
+- 🔄 Define clean detector interface
+  - Existing detector manager contract is documented; a formal narrow facade is
+    still pending
+- 🔄 Refactor with backward compatibility
+  - Detector state persistence and selected detector fixes have landed without
+    breaking current controller APIs
+- 🔄 Add comprehensive tests
+  - Existing no-hardware tests cover configuration and selected detector
+    contracts; full detector manager fake coverage remains incomplete
+- ✅ Document the current architecture
+  - See `docs/devices/detectors.rst`, `docs/setupinfo-reference.rst`, and
+    `docs/design/ARCHITECTURE.md`
 
 ## Milestone 6: DAQ Safety Layer
 
@@ -118,7 +148,7 @@ breaking existing controller/API signal contracts.
 - ✅ Architecture map (`docs/design/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
 - ✅ Document no-hardware validation workflow
   - Complete guide at `docs/no-hardware-validation.md`
-  - Command: `QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin imswitch/imcontrol/_test/unit imswitch/test_no_hardware_profile.py -q`
+  - Command: `QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin imswitch/imcontrol/_test/unit imswitch/test_no_hardware_profile.py imswitch/test_no_hardware_ui_smoke.py -q`
   - Explains `QT_QPA_PLATFORM=offscreen` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
   - Documents test categories: `nohardware`, `ui`, `redzone`, `hardware`
   - Rules for adding future no-hardware tests without importing the full UI stack
@@ -135,7 +165,10 @@ breaking existing controller/API signal contracts.
   - Covers all top-level sections: detectors, lasers, positioners, rotators, scan, nidaq, availableWidgets, widgetLayout, and additional sections
   - Includes minimal examples for each section
   - Cross-links to existing device-specific documentation
-- ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
+- ✅ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
+  - Includes README, schema notes, generation/system prompts, and editable YAML
+    templates for hardware, limits, procedures, troubleshooting, software
+    config, and safety
 - ✅ Create agent task templates for common operations
   - Reusable prompt templates and review checklist are documented in
     `docs/agent-task-templates.rst`
@@ -208,7 +241,7 @@ breaking existing controller/API signal contracts.
   - Remaining work: Start/Stop UX, richer worker error reporting, optional
     ROI/default persistence, controller fake tests
   - Plan: `docs/design/plans/beadrec-2.0.md`
-- 🔄 Event-triggered EtSTED / EtMonalisa shared base hardening
+- ✅ Event-triggered EtSTED / EtMonalisa shared base hardening
   - Shared base owns session state and cleanup contracts for both modalities
   - Interrupted binary-mask recording is cleaned up on stop/close
   - Fast-laser enable failures abort arming/resume instead of silently entering
@@ -218,6 +251,8 @@ breaking existing controller/API signal contracts.
     are passing
   - Plans: `docs/design/plans/etsted-2-0.md`,
     `docs/design/plans/etmonalisa-2-0.md`
+  - Remaining work: hardware-facing validation and richer UI/UX improvements
+    belong in follow-up issues, not the shared-base hardening phase
 
 ## Milestone 9: Scanning & Galvo Modernization
 
@@ -303,3 +338,35 @@ in. The GPU path (`GaussProcessorGPU`) should be an optional extra.
 - ⬜ Port the `imreconstruct` live-reconstruction pipeline as a separate phase;
   rename the `karl_*` packages to descriptive names; gate GPU behind an extra.
 - ⬜ Build further recording-manager improvements from that foundation.
+
+## Milestone 11: Scriptable WFS Workflow Ports 🔄
+
+**Goal:** Port WidefieldStarss workflow logic into no-hardware-testable
+ImSwitch model workflows that can be driven from the Console/Scripting module.
+
+- ✅ Create the WFS workflow porting plan
+  - Plan: `docs/design/plans/wfs-workflows-port.md`
+  - Defines facade-first design, model-only workflow constraints, phasing,
+    and parallel-agent task split
+- ✅ Add headless microscope facade baseline
+  - `MicroscopeFacade` and sub-facades expose the WFS-shaped API over ImSwitch
+    managers
+  - `MockMicroscopeFacade` supports no-hardware workflow tests and call
+    assertions
+  - Covered by `test_microscope_facade.py`
+- ✅ Port first single-device workflows
+  - `RecordingWorkflow`
+  - `ZStackWorkflow`
+  - `CWSTARSSWorkflow`
+  - `CalibrationWorkflow`
+  - Covered by workflow-specific no-hardware tests
+- ⬜ Port composite workflows
+  - `TilingWorkflow`
+  - `DefocusScanWorkflow`
+  - `SerialCWSTARSSWorkflow`
+  - `MultiWellTilingWorkflow`
+- ⬜ Add scripting examples and cookbook docs
+  - Example scripts should live under
+    `imswitch/_data/user_defaults/scripts/wfs/`
+  - Add a short scripting-cookbook page after the composite workflow API is
+    stable

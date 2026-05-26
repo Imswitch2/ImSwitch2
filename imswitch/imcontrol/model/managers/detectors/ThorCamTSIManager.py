@@ -33,6 +33,7 @@ class ThorCamTSIManager(DetectorManager):
         serial = props.get('cameraSerial', None)
         dll_location = props.get('dllLocation', 'dlls/64_lib')
         defaults = props.get('defaults', {})
+        self._flushFrameLimit = int(props.get('flushFrameLimit', 256))
         
         # Get default values
         default_exposure_us = defaults.get('exposure_us', 50000)
@@ -237,8 +238,15 @@ class ThorCamTSIManager(DetectorManager):
     
     def flushBuffers(self):
         """Flush internal buffers by polling all pending frames."""
+        frames_flushed = 0
         while self._camera.get_pending_frame() is not None:
-            pass
+            frames_flushed += 1
+            if frames_flushed >= self._flushFrameLimit:
+                self.__logger.warning(
+                    f'Stopped ThorCam buffer flush after {frames_flushed} frames; '
+                    'camera still reports pending frames.'
+                )
+                break
     
     def crop(self, hpos, vpos, hsize, vsize):
         """Crop the detector readout region.
