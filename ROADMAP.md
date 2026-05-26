@@ -130,7 +130,11 @@ breaking existing controller/API signal contracts.
   - Environment setup, validation commands, no-hardware vs red-zone work
   - Pre-commit checklist, PR guidelines, commit message format
   - Links to architecture, no-hardware validation, and AGENTS rules
-- ⬜ Document all configuration options in `SetupInfo`
+- ✅ Document all configuration options in `SetupInfo`
+  - Complete reference at `docs/setupinfo-reference.rst`
+  - Covers all top-level sections: detectors, lasers, positioners, rotators, scan, nidaq, availableWidgets, widgetLayout, and additional sections
+  - Includes minimal examples for each section
+  - Cross-links to existing device-specific documentation
 - ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
 - ⬜ Create agent task templates for common operations
 

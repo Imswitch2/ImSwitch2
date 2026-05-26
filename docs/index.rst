@@ -51,6 +51,7 @@ config files).
     :caption: Hardware reference
 
     imcontrol-setups
+    setupinfo-reference
     devices/detectors
     devices/lasers
     devices/positioners
