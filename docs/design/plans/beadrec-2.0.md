@@ -87,8 +87,8 @@ Phase 3 now removes broad controller access from `BeadWorker`. The worker
 receives narrow callables for scan-running state, detector chunks, and ROI
 bounds, owns its reconstruction buffer/index internally, and emits reconstructed
 buffers back through `sigNewChunk(object)`. Controller/widget updates remain on
-the controller side. A fully immutable acquisition config object and richer
-progress/error result object are still planned for later hardening.
+the controller side. Phase 7 completed the later acquisition-config and
+structured-update hardening that was identified here.
 
 ## Phase 4: Analysis Extraction
 
@@ -114,13 +114,9 @@ Status: **implemented**.
 
 - Make the widget internally scrollable/responsive without changing dock
   placement semantics.
-- Split the UI into image view, acquisition controls, result list, and analysis
-  controls/status.
-- Replace the run checkbox with explicit Start/Stop state.
-- Show scan dims, ROI size, filled-pixel progress, current axial mode, and last
-  error/status.
-- Widen or redesign the result list; the current `setMaximumWidth(100)` is too
-  restrictive for named runs.
+- Add status/progress feedback without changing existing BeadRec signals.
+- Remove the restrictive `setMaximumWidth(100)` result-list behavior.
+- Keep deeper acquisition-control UX changes for follow-up work.
 
 Phase 5 now adds a first UI containment/status pass without changing BeadRec
 signals: the image viewer can shrink, the result list no longer has a hard
@@ -168,8 +164,8 @@ timing, detector flushing, TTL behavior, or hardware control paths.
 
 ## Remaining Work
 
-All seven phases are implemented. The following optional improvements remain
-scoped but not yet scheduled:
+The core seven-phase architecture pass is implemented. The following optional
+improvements remain scoped but not yet scheduled:
 
 - **Start/Stop UX**: Replace the legacy run checkbox with explicit Start/Stop
   button controls for clearer acquisition state management.

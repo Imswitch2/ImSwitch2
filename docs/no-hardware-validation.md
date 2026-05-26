@@ -2,9 +2,14 @@
 
 ## Overview
 
-ImSwitch2 provides **no-hardware validation** to enable testing and development without requiring physical microscope hardware. This guide explains how to run these tests, what they validate, and how to add new tests safely.
+ImSwitch2 provides **no-hardware validation** to enable testing and development
+without requiring physical microscope hardware. This guide explains how to run
+these tests, what they validate, and how to add new tests safely.
 
-> **Important:** No-hardware validation tests configuration parsing, manager construction, and control logic—**not hardware safety**. Physical hardware testing requires actual devices and is outside the scope of this validation layer.
+> **Important:** No-hardware validation tests configuration parsing, manager
+> construction, and control logic. It is **not hardware safety validation**.
+> Physical hardware testing requires actual devices and is outside the scope of
+> this validation layer.
 
 ---
 
@@ -84,7 +89,7 @@ ImSwitch2 organizes tests into four categories by pytest marker:
 
 ## What No-Hardware Tests May and May Not Do
 
-### ✅ No-Hardware Tests SHOULD:
+### No-Hardware Tests SHOULD:
 
 - Parse configuration files (`SetupInfo.from_json`)
 - Instantiate managers with mock devices
@@ -94,7 +99,7 @@ ImSwitch2 organizes tests into four categories by pytest marker:
 - Verify contracts and interfaces (signal signatures, method existence)
 - Check error handling for invalid configurations
 
-### ❌ No-Hardware Tests MUST NOT:
+### No-Hardware Tests MUST NOT:
 
 - Trigger physical hardware actions (laser enable, stage movement, DAQ acquisition)
 - Import the full napari/matplotlib stack during collection
@@ -102,11 +107,13 @@ ImSwitch2 organizes tests into four categories by pytest marker:
 - Depend on hardware timing or synchronization
 - Modify hardware configuration files outside the test environment
 
-### 🚨 Safety Rules:
+### Safety Rules:
 
-1. **Never enable hardware in test fixtures** — use `MockPositionerManager`, `AVManager` with `"cameraListIndex": "mock"`, and `nidaq.simulation = true`
+1. **Never enable hardware in test fixtures**: use `MockPositionerManager`,
+   `AVManager` with `"cameraListIndex": "mock"`, and `nidaq.simulation = true`
 2. **Never modify red-zone files** without explicit maintainer approval (see `AGENTS.md`)
-3. **Never assume hardware safety validation** — no-hardware tests validate logic, not physical safety
+3. **Never assume hardware safety validation**: no-hardware tests validate
+   logic, not physical safety
 
 ---
 
@@ -154,10 +161,10 @@ Location: `imswitch/_data/user_defaults/imcontrol_setups/example_no_hardware.jso
 
 1. **Import only what you need:**
    ```python
-   # ✅ Good — imports only the manager
+   # Good: imports only the manager
    from imswitch.imcontrol.model.managers import LaserManager
    
-   # ❌ Bad — imports the full GUI stack
+   # Bad: imports the full GUI stack
    from imswitch.imcontrol.view.widgets import LaserWidget
    ```
 
@@ -186,7 +193,7 @@ Location: `imswitch/_data/user_defaults/imcontrol_setups/example_no_hardware.jso
    def test_nidaq_simulation_mode():
        setup_info = SetupInfo.from_json(NO_HARDWARE_CONFIG)
        assert setup_info.nidaq.simulation is True
-       # ❌ Do NOT: actually initialize NidaqManager and send commands
+       # Do NOT: actually initialize NidaqManager and send commands
    ```
 
 ### Example Test
@@ -198,25 +205,32 @@ import pytest
 pytestmark = pytest.mark.nohardware
 
 
-def test_laser_preset_state_persistence(tmp_path):
-    """Verify laser presets can be saved and loaded without hardware."""
+def test_widget_state_persistence_round_trip(tmp_path, monkeypatch):
+    """Verify widget state can be saved and loaded without hardware."""
     from imswitch.imcontrol.model import getWidgetStatePersistence
     
     persistence = getWidgetStatePersistence()
-    persistence._base_dir = tmp_path  # Use temp directory
+    monkeypatch.setattr(persistence, "_stateDir", str(tmp_path / "widget_states"))
     
-    # Create a mock laser state
-    state = {
-        "laser_1_power": 50.0,
-        "laser_1_modulation": True,
-        "selected_preset": "scanning"
-    }
+    class MockController:
+        def __init__(self):
+            self.state = {"laser_value": 50.0, "exposure": 100.0}
+
+        def getWidgetState(self):
+            return self.state
+
+        def setWidgetState(self, state):
+            self.state = state
+
+    controller = MockController()
+    persistence.register("MockController", controller)
     
-    # Save and reload
-    persistence.saveState("LaserController", "test_preset", state)
-    loaded = persistence.loadState("LaserController", "test_preset")
+    assert persistence.saveWidgetState("MockController", "test_state")
+    controller.state = {}
+    loaded = persistence.loadWidgetState("MockController", "test_state")
     
-    assert loaded == state
+    assert loaded == {"laser_value": 50.0, "exposure": 100.0}
+    assert controller.state == loaded
 ```
 
 ---
@@ -256,9 +270,11 @@ def test_widget(qtbot):
 
 ## CI Integration
 
-The no-hardware validation runs automatically on every push via GitHub Actions.
+The no-hardware validation should run in CI wherever the project test workflow
+is enabled. Check the active GitHub Actions workflow before relying on a branch
+protection rule.
 
-**CI job:** `.github/workflows/test.yml` → "No-Hardware Validation"
+**Expected CI job name:** "No-Hardware Validation"
 
 **Command used:**
 ```bash
@@ -270,7 +286,7 @@ QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.pl
 **Exit criteria:**
 - All tests pass
 - No import errors from missing hardware libraries
-- Execution time < 5 minutes (typical: 30-90 seconds)
+- Execution time < 5 minutes on a typical local or CI runner
 
 ---
 
@@ -306,10 +322,10 @@ To add a new no-hardware test:
 
 ## Related Documentation
 
-- [AGENTS.md](../AGENTS.md) — AI agent rules and red-zone files
-- [Contributing Guide](contributing.rst) — Development workflow
-- [Architecture Overview](design/ARCHITECTURE.md) — System structure
-- [Adding Device Support](adding-device-support.rst) — Hardware integration
+- [AGENTS.md](../AGENTS.md): AI agent rules and red-zone files
+- [Contributing Guide](contributing.rst): Development workflow
+- [Architecture Overview](design/ARCHITECTURE.md): System structure
+- [Adding Device Support](adding-device-support.rst): Hardware integration
 
 ---
 

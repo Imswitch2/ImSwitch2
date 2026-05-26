@@ -82,11 +82,11 @@ scrolling rather than being clipped by minimum-size constraints.
     still make large multi-axis setups denser and easier to scan visually.
 
 - **Testing**
-  - ✅ Added `test_widget_sizing_audit()` in `test_widget_responsiveness_contract.py`:
+  - Added `test_widget_sizing_audit()` in `test_widget_responsiveness_contract.py`:
     scans all widget source files for problematic hard-sizing patterns
     (`scrollArea.setMinimumWidth`, `ScrollBarAlwaysOff`). Uses an allowlist
-    approach for known exceptions. Currently flags SLMsWidget horizontal
-    scroll-disable pattern for future review.
+    approach for known exceptions. The existing SLMsWidget horizontal
+    scroll-disable pattern is allowlisted with a review note.
   - Add a lightweight Qt smoke test for creating representative no-hardware
     widget sets inside a constrained viewport.
   - Add targeted tests for fields that must allow negative coordinates or
