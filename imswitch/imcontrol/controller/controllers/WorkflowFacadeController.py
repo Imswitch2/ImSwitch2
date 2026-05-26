@@ -5,6 +5,8 @@ for constructing a MicroscopeFacade without requiring user scripts to import
 internal facade modules or access api._master directly.
 """
 
+from typing import Any
+
 from imswitch.imcommon.model import APIExport
 from ..basecontrollers import ImConWidgetController
 
@@ -16,8 +18,22 @@ class WorkflowFacadeController(ImConWidgetController):
     build_facade_from_master via the API.
     """
 
+    def build(self, **kwargs: Any) -> Any:
+        """Build a MicroscopeFacade from the current master controller.
+
+        Args:
+            **kwargs: Forwarded to ``build_facade_from_master``.
+
+        Returns:
+            MicroscopeFacade: facade object with WFS-shaped sub-facades.
+        """
+        # Lazy import to avoid slowing down ImSwitch startup
+        from imswitch.imcontrol.model.workflows.facade import build_facade_from_master
+
+        return build_facade_from_master(self._master, **kwargs)
+
     @APIExport()
-    def buildWorkflowFacade(self, **kwargs):
+    def buildWorkflowFacade(self, **kwargs: Any) -> Any:
         """Build a MicroscopeFacade from the current master controller.
 
         ImSwitch's ``generateAPI`` flattens every ``@APIExport``'d method to
@@ -47,10 +63,7 @@ class WorkflowFacadeController(ImConWidgetController):
             ... )
             >>> facade.laser_con.set_constant_power(['488'], [50.0])
         """
-        # Lazy import to avoid slowing down ImSwitch startup
-        from imswitch.imcontrol.model.workflows.facade import build_facade_from_master
-
-        return build_facade_from_master(self._master, **kwargs)
+        return self.build(**kwargs)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

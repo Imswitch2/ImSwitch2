@@ -17,6 +17,8 @@ Tests cover:
 - SCPI modulation-power unit (Watts) — pins the conversion deliberately
 """
 
+import logging
+
 import pytest
 
 from imswitch.imcontrol.model.managers.lasers.Cobolt0601NewLaserManager import (
@@ -86,6 +88,16 @@ def test_detect_firmware_legacy():
     # Both probes were attempted
     assert 'LASer:RUNMode?' in laser.cmds
     assert 'LASer:POWer:SETPoint?' in laser.cmds
+
+
+def test_detect_firmware_legacy_suppresses_expected_probe_warnings(caplog):
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser)
+
+    with caplog.at_level(logging.WARNING, logger='test.Cobolt0601NewLaserManager'):
+        m._detect_firmware()
+
+    assert caplog.records == []
 
 
 def test_detect_firmware_scpi():

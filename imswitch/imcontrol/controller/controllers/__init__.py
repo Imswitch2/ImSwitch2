@@ -1,35 +1,62 @@
-from .AlignAverageController import AlignAverageController
-from .AlignmentLineController import AlignmentLineController
-from .AlignXYController import AlignXYController
-from .AutofocusController import AutofocusController
-from .BeadRecController import BeadRecController
-from .ConsoleController import ConsoleController
-from .EtSTEDController import EtSTEDController
-from .EtMonalisaController import EtMonalisaController
-from .FFTController import FFTController
-from .FLIMHistController import FLIMHistController
-from .FocusLockController import FocusLockController
-from .ImageController import ImageController
-from .LaserController import LaserController
-from .LeicaStandController import LeicaStandController
-from .LineProfileController import LineProfileController
-from .MotCorrController import MotCorrController
-from .PositionerController import PositionerController
-from .RecordingController import RecordingController
-from .SLMsController import SLMsController
-from .ScanControllerBase import ScanControllerBase
-from .ScanControllerMoNaLISA import ScanControllerMoNaLISA
-from .ScanControllerPointScan import ScanControllerPointScan
-from .ScanControllerAdvanced import ScanControllerAdvanced
-from .RotationScanController import RotationScanController
-from .RotatorController import RotatorController
-from .SettingsController import SettingsController
-from .SLMController import SLMController
-from .TilingController import TilingController
-from .ULensesController import ULensesController
-from .ViewController import ViewController
-from .ViewerToolsController import ViewerToolsController
-from .WatcherController import WatcherController
-from .WorkflowFacadeController import WorkflowFacadeController
-from .BFTimelapseController import BFTimelapseController
-# from .EtController import EtController # Current prototype on old Monalisa machine needs rework and is not tracked currently.
+"""Lazy controller exports.
+
+Importing this package used to import every controller eagerly, which made
+single-controller unit tests load optional GUI and hardware dependencies during
+collection. Resolve controller classes on demand instead.
+"""
+
+from importlib import import_module
+
+
+_CONTROLLER_MODULES = {
+    "AlignAverageController": "AlignAverageController",
+    "AlignmentLineController": "AlignmentLineController",
+    "AlignXYController": "AlignXYController",
+    "AutofocusController": "AutofocusController",
+    "BeadRecController": "BeadRecController",
+    "BFTimelapseController": "BFTimelapseController",
+    "ConsoleController": "ConsoleController",
+    "EtMonalisaController": "EtMonalisaController",
+    "EtSTEDController": "EtSTEDController",
+    # "EtController": "EtController",  # Prototype on old Monalisa machine.
+    "FFTController": "FFTController",
+    "FLIMHistController": "FLIMHistController",
+    "FocusLockController": "FocusLockController",
+    "ImageController": "ImageController",
+    "LaserController": "LaserController",
+    "LeicaStandController": "LeicaStandController",
+    "LineProfileController": "LineProfileController",
+    "MotCorrController": "MotCorrController",
+    "PositionerController": "PositionerController",
+    "RecordingController": "RecordingController",
+    "RotationScanController": "RotationScanController",
+    "RotatorController": "RotatorController",
+    "ScanControllerAdvanced": "ScanControllerAdvanced",
+    "ScanControllerBase": "ScanControllerBase",
+    "ScanControllerMoNaLISA": "ScanControllerMoNaLISA",
+    "ScanControllerPointScan": "ScanControllerPointScan",
+    "SettingsController": "SettingsController",
+    "SLMController": "SLMController",
+    "SLMsController": "SLMsController",
+    "TilingController": "TilingController",
+    "ULensesController": "ULensesController",
+    "ViewController": "ViewController",
+    "ViewerToolsController": "ViewerToolsController",
+    "WatcherController": "WatcherController",
+    "WorkflowFacadeController": "WorkflowFacadeController",
+}
+
+
+def __getattr__(name):
+    try:
+        module_name = _CONTROLLER_MODULES[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(f".{module_name}", __name__)
+    controller_class = getattr(module, name)
+    globals()[name] = controller_class
+    return controller_class
+
+
+__all__ = list(_CONTROLLER_MODULES)

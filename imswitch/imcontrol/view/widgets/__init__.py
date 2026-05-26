@@ -1,35 +1,61 @@
-from .AlignAverageWidget import AlignAverageWidget
-from .AlignmentLineWidget import AlignmentLineWidget
-from .AlignXYWidget import AlignXYWidget
-from .AutofocusWidget import AutofocusWidget
-from .basewidgets import WidgetFactory
-from .BeadRecWidget import BeadRecWidget
-from .ConsoleWidget import ConsoleWidget
-from .EtSTEDWidget import EtSTEDWidget
-from .EtMonalisaWidget import EtMonalisaWidget
-from .FFTWidget import FFTWidget
-from .FLIMHistWidget import FLIMHistWidget
-from .FocusLockWidget import FocusLockWidget
-from .ImageWidget import ImageWidget
-from .LaserWidget import LaserWidget
-from .LeicaStandWidget import LeicaStandWidget
-from .LineProfileWidget import LineProfileWidget
-from .MotCorrWidget import MotCorrWidget
-from .PositionerWidget import PositionerWidget
-from .RecordingWidget import RecordingWidget
-from .SLMsWidget import SLMsWidget
-from .ScanWidgetBase import ScanWidgetBase
-from .ScanWidgetMoNaLISA import ScanWidgetMoNaLISA
-from .ScanWidgetPointScan import ScanWidgetPointScan
-from .ScanWidgetAdvanced import ScanWidgetAdvanced
-from .RotationScanWidget import RotationScanWidget
-from .RotatorWidget import RotatorWidget
-from .SettingsWidget import SettingsWidget
-from .SLMWidget import SLMWidget
-from .TilingWidget import TilingWidget
-from .ULensesWidget import ULensesWidget
-from .ViewWidget import ViewWidget
-from .ViewerToolsWidget import ViewerToolsWidget
-from .WatcherWidget import WatcherWidget
-from .BFTimelapseWidget import BFTimelapseWidget
-# from .EtWidget import EtWidget # Current prototype on old Monalisa machine needs rework, hardcoded paths, not tracked, etc. for now commented!
+"""Lazy widget exports.
+
+Import widget classes on demand so tests for a single widget do not import
+optional Napari-backed widgets and their GUI dependencies.
+"""
+
+from importlib import import_module
+
+
+_WIDGET_MODULES = {
+    "AlignAverageWidget": "AlignAverageWidget",
+    "AlignmentLineWidget": "AlignmentLineWidget",
+    "AlignXYWidget": "AlignXYWidget",
+    "AutofocusWidget": "AutofocusWidget",
+    "BeadRecWidget": "BeadRecWidget",
+    "BFTimelapseWidget": "BFTimelapseWidget",
+    "ConsoleWidget": "ConsoleWidget",
+    "EtMonalisaWidget": "EtMonalisaWidget",
+    "EtSTEDWidget": "EtSTEDWidget",
+    # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
+    "FFTWidget": "FFTWidget",
+    "FLIMHistWidget": "FLIMHistWidget",
+    "FocusLockWidget": "FocusLockWidget",
+    "ImageWidget": "ImageWidget",
+    "LaserWidget": "LaserWidget",
+    "LeicaStandWidget": "LeicaStandWidget",
+    "LineProfileWidget": "LineProfileWidget",
+    "MotCorrWidget": "MotCorrWidget",
+    "PositionerWidget": "PositionerWidget",
+    "RecordingWidget": "RecordingWidget",
+    "RotationScanWidget": "RotationScanWidget",
+    "RotatorWidget": "RotatorWidget",
+    "ScanWidgetAdvanced": "ScanWidgetAdvanced",
+    "ScanWidgetBase": "ScanWidgetBase",
+    "ScanWidgetMoNaLISA": "ScanWidgetMoNaLISA",
+    "ScanWidgetPointScan": "ScanWidgetPointScan",
+    "SettingsWidget": "SettingsWidget",
+    "SLMWidget": "SLMWidget",
+    "SLMsWidget": "SLMsWidget",
+    "TilingWidget": "TilingWidget",
+    "ULensesWidget": "ULensesWidget",
+    "ViewWidget": "ViewWidget",
+    "ViewerToolsWidget": "ViewerToolsWidget",
+    "WatcherWidget": "WatcherWidget",
+    "WidgetFactory": "basewidgets",
+}
+
+
+def __getattr__(name):
+    try:
+        module_name = _WIDGET_MODULES[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(f".{module_name}", __name__)
+    widget_class = getattr(module, name)
+    globals()[name] = widget_class
+    return widget_class
+
+
+__all__ = list(_WIDGET_MODULES)

@@ -3,10 +3,12 @@ import os
 
 from abc import abstractmethod
 
-from imswitch.imcommon.controller import WidgetController, WidgetControllerFactory
+from imswitch.imcommon.controller.basecontrollers import (
+    WidgetController,
+    WidgetControllerFactory,
+)
 from imswitch.imcontrol.model import InvalidChildClassError
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
-from imswitch.imcontrol.view import guitools
 
 
 class ImConWidgetControllerFactory(WidgetControllerFactory):
@@ -182,6 +184,8 @@ class SuperScanController(ImConWidgetController):
 
     def saveScan(self):
         """ Save scan parameters template. """
+        from imswitch.imcontrol.view import guitools
+
         fileName = guitools.askForFilePath(
             self._widget, 'Save scan', self.scanDir,
             nameFilter='Scan parameters (*.json)', isSaving=True
@@ -192,6 +196,8 @@ class SuperScanController(ImConWidgetController):
 
     def loadScan(self):
         """ Load scan parameters template. """
+        from imswitch.imcontrol.view import guitools
+
         fileName = guitools.askForFilePath(
             self._widget, 'Load scan', self.scanDir,
             nameFilter='Scan parameters (*.json)'
