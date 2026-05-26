@@ -33,8 +33,10 @@ config files).
     :caption: Software info
 
     installation
+    developer-onboarding
     changelog
     contributing
+    current-state-and-known-issues
 
 .. toctree::
     :hidden:

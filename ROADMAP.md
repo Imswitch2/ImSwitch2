@@ -122,9 +122,15 @@ breaking existing controller/API signal contracts.
   - Explains `QT_QPA_PLATFORM=offscreen` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
   - Documents test categories: `nohardware`, `ui`, `redzone`, `hardware`
   - Rules for adding future no-hardware tests without importing the full UI stack
-- ⬜ Document current state and known issues (moved from Milestone 1)
+- ✅ Document current state and known issues
+  - Current baseline, active work, known limitations, and near-term priorities
+    are summarized in `docs/current-state-and-known-issues.rst`
+- ✅ Write developer onboarding guide
+  - Practical guide at `docs/developer-onboarding.rst`
+  - Environment setup, validation commands, no-hardware vs red-zone work
+  - Pre-commit checklist, PR guidelines, commit message format
+  - Links to architecture, no-hardware validation, and AGENTS rules
 - ⬜ Document all configuration options in `SetupInfo`
-- ⬜ Write developer onboarding guide
 - ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
 - ⬜ Create agent task templates for common operations
 
