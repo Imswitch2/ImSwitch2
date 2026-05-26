@@ -36,7 +36,7 @@ a polarisation-resolved image stack:
    # 2. Build the facade via the API helper (the controller wraps
    #    build_facade_from_master so you do not need to touch the
    #    internal master controller).
-   facade = api.imcontrol.workflowFacade.build(
+   facade = api.imcontrol.buildWorkflowFacade(
        laser_aliases={
            "488": "488 (EXC) sn27311",
            "405": "405 (ACT) sn26647",
@@ -77,10 +77,10 @@ a polarisation-resolved image stack:
 ``api``
     The global scripting API object, available in every script executed
     from the ImSwitch Scripting widget. ``api.imcontrol`` is the main
-    microscope API; ``api.imcontrol.workflowFacade.build(...)`` is the
+    microscope API; ``api.imcontrol.buildWorkflowFacade(...)`` is the
     helper for assembling a workflow facade.
 
-``api.imcontrol.workflowFacade.build``
+``api.imcontrol.buildWorkflowFacade``
     Wraps ImSwitch managers in WFS-shaped sub-facades. Resolves managers
     by name from the running setup and returns a ``MicroscopeFacade``
     object with attributes ``laser_con``, ``cam``, ``trig``,
@@ -107,7 +107,7 @@ a polarisation-resolved image stack:
 The MicroscopeFacade
 ====================
 
-``api.imcontrol.workflowFacade.build(...)`` returns a ``MicroscopeFacade``
+``api.imcontrol.buildWorkflowFacade(...)`` returns a ``MicroscopeFacade``
 with the following sub-facades. Each wraps one or more ImSwitch managers
 and presents a WFS-compatible API:
 
@@ -232,11 +232,11 @@ refer to lasers. Your setup JSON, however, may define devices with longer
 cosmetic names like ``"488 (EXC) sn27311"`` or ``"Laser 488nm Oxxius"``.
 
 The ``laser_aliases`` dictionary on
-``api.imcontrol.workflowFacade.build`` bridges this gap:
+``api.imcontrol.buildWorkflowFacade`` bridges this gap:
 
 .. code-block:: python
 
-   facade = api.imcontrol.workflowFacade.build(
+   facade = api.imcontrol.buildWorkflowFacade(
        laser_aliases={
            "488": "488 (EXC) sn27311",
            "405": "Laser 405nm Oxxius",
@@ -366,7 +366,7 @@ then pass them to the parent:
        ZStackParams,
    )
 
-   facade = api.imcontrol.workflowFacade.build(
+   facade = api.imcontrol.buildWorkflowFacade(
        laser_aliases={"488": "488 (EXC) sn27311"},
        detector_name="Kiralux",
        xy_positioner_name="XY",

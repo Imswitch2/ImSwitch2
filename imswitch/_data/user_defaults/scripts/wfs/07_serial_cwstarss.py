@@ -17,7 +17,7 @@ from imswitch.imcontrol.model.workflows import (
     SerialCWSTARSSParams,
 )
 
-facade = api.workflowFacade.build(
+facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
     detector_name="Kiralux",
     xy_positioner_name="XY",

@@ -141,7 +141,12 @@ class ThorTSICamera:
     
     def set_trigger_mode(self, mode):
         """Set trigger/operation mode.
-        
+
+        The Thorlabs SDK rejects ``operation_mode`` writes while the camera is
+        armed (error 1004, "Invalid operation"). We disarm transparently and
+        re-arm with the previous buffer size so callers can change mode at
+        runtime from the GUI.
+
         Args:
             mode: One of 'software', 'hardware', 'bulb'
         """
@@ -152,9 +157,17 @@ class ThorTSICamera:
         }
         if mode not in mode_map:
             raise ValueError(f"Invalid mode '{mode}'. Use: {list(mode_map.keys())}")
-        
+
+        was_armed = bool(getattr(self._camera, 'is_armed', False))
+        buffer_size = int(getattr(self._camera, 'frames_per_trigger_zero_for_unlimited', 2)) or 2
+        if was_armed:
+            self._camera.disarm()
+
         self._camera.operation_mode = mode_map[mode]
         logger.debug(f"Set trigger mode: {mode}")
+
+        if was_armed:
+            self._camera.arm(buffer_size)
     
     def set_trigger_polarity(self, polarity):
         """Set trigger polarity.

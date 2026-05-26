@@ -1,3 +1,4 @@
+import argparse
 import importlib
 import traceback
 
@@ -5,10 +6,18 @@ import imswitch
 from imswitch.imcommon import prepareApp, launchApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel, MultiModuleWindowController
 from imswitch.imcommon.model import modulesconfigtools, pythontools, initLogger
+from imswitch.imcommon.model.logging import setLogLevel
 from imswitch.imcommon.view import MultiModuleWindow, ModuleLoadErrorView
 
 
 def main():
+    parser = argparse.ArgumentParser(prog='imswitch', description='ImSwitch launcher')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable DEBUG-level log output from all managers.')
+    args, _unused = parser.parse_known_args()
+    if args.debug:
+        setLogLevel('DEBUG')
+
     logger = initLogger('main')
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 

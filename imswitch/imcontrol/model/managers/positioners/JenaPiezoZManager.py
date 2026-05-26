@@ -41,15 +41,20 @@ class JenaPiezoZManager(PositionerManager):
 
         self._ext_active = False
 
-        time.sleep(0.2)
-        self._send_command('cl')
-
+        # Initial handshake — must not break ImSwitch startup if the piezo is
+        # offline, busy, or wired wrong. Log and continue with the configured
+        # minimum position so the rest of the system comes up.
         try:
+            time.sleep(0.2)
+            self._send_command('cl')
             current_pos = self._read_position_um()
             self._position[self.axes[0]] = current_pos
             self.__logger.info(f"Jena piezo initialized at {current_pos:.2f} µm")
         except Exception as e:
-            self.__logger.warning(f"Could not read initial position: {e}")
+            self.__logger.warning(
+                f"Jena piezo init failed ({e!s}); continuing with position={self._posRangeUm[0]} µm. "
+                f"Check COM port, baudrate (9600), and that the controller is in remote mode."
+            )
             self._position[self.axes[0]] = self._posRangeUm[0]
 
     def move(self, dist, axis):

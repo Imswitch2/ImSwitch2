@@ -17,34 +17,39 @@ class WorkflowFacadeController(ImConWidgetController):
     """
 
     @APIExport()
-    def build(self, **kwargs):
+    def buildWorkflowFacade(self, **kwargs):
         """Build a MicroscopeFacade from the current master controller.
-        
-        Returns a facade object providing simplified access to hardware managers
-        for use in headless workflow scripts.
-        
+
+        ImSwitch's ``generateAPI`` flattens every ``@APIExport``'d method to
+        the top level of ``api.imcontrol`` — so this method is reachable as
+        ``api.imcontrol.buildWorkflowFacade(...)`` (not via a sub-namespace).
+
         Args:
-            **kwargs: Forwarded to build_facade_from_master. Common arguments:
-                - laser_aliases (dict[str, str]): Map facade names to setupInfo laser names
-                - detector_name (str): Name of detector/camera to expose
-                - z_stage_name (str): Name of Z positioner to expose
-                - rotation_stage_name (str): Name of rotation stage to expose
-                - trig_device_name (str): Name of TTL trigger device
-        
+            **kwargs: Forwarded to ``build_facade_from_master``. Common arguments:
+                - ``laser_aliases`` (dict[str, str]): logical → setup laser names
+                - ``detector_name`` (str): name of detector/camera to expose
+                - ``xy_positioner_name`` (str): name of XY positioner
+                - ``z_positioner_name`` (str): name of Z positioner
+                - ``hwp_name`` / ``qwp_name`` (str): rotator names
+                - ``hwp_presets`` / ``qwp_presets`` (RotatorPresets)
+
         Returns:
-            MicroscopeFacade: Facade object with hardware manager wrappers.
-        
+            MicroscopeFacade: facade object with WFS-shaped sub-facades.
+
         Example:
-            >>> facade = api.workflowFacade.build(
-            ...     laser_aliases={'488': 'Laser488', '405': 'Laser405'},
+            >>> facade = api.imcontrol.buildWorkflowFacade(
+            ...     laser_aliases={'488': '488 (EXC) sn27311',
+            ...                    '405': '405 (ACT) sn26647'},
             ...     detector_name='Kiralux',
-            ...     z_stage_name='Z-Piezo'
+            ...     xy_positioner_name='XY',
+            ...     z_positioner_name='Z',
+            ...     hwp_name='HWP', qwp_name='QWP',
             ... )
-            >>> facade.laser_con.set_constant_power('488', 50.0)
+            >>> facade.laser_con.set_constant_power(['488'], [50.0])
         """
         # Lazy import to avoid slowing down ImSwitch startup
         from imswitch.imcontrol.model.workflows.facade import build_facade_from_master
-        
+
         return build_facade_from_master(self._master, **kwargs)
 
 

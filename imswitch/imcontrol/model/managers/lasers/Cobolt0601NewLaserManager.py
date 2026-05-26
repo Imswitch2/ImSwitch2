@@ -40,11 +40,12 @@ class Cobolt0601NewLaserManager(LaserManager):
 
             # start up by turning on modulation power -> laser is off
             self._laser.constant_current(0)
-            # check mode of laser
-            mode = self._laser.get_mode()
-            # mode = 1
-
-            # self.__logger.debug(f'Laser mode is: {mode}, might have to turn the key.')
+            # check mode of laser — older firmware rejects `laser:runmode?`,
+            # so treat it as informational only.
+            try:
+                mode = self._laser.get_mode()
+            except Exception:
+                mode = '<unknown — firmware rejected laser:runmode?>'
             super().__init__(laserInfo, name, isBinary=False, valueUnits='mW', valueDecimals=0)
 
             if not self._laser.is_on():
