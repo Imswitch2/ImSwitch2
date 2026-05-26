@@ -253,6 +253,11 @@ breaking existing controller/API signal contracts.
     `docs/design/plans/etmonalisa-2-0.md`
   - Remaining work: hardware-facing validation and richer UI/UX improvements
     belong in follow-up issues, not the shared-base hardening phase
+- ✅ Keyboard shortcuts for positioner stepping
+  - Ctrl+Left/Right → X, Ctrl+Up/Down → Y, Ctrl+Q/Ctrl+A → Z
+  - Targets the first positioner declaring the axis; step size from the existing per-axis Step field
+  - Implemented via the existing `@shortcut` decorator in `imswitch/imcontrol/view/widgets/PositionerWidget.py`
+  - Documented in `docs/gui.rst`
 
 ## Milestone 9: Scanning & Galvo Modernization
 
