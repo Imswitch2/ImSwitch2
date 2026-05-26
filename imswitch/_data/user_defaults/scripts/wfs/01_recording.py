@@ -9,7 +9,10 @@ Prerequisites:
 Output: ~/ImSwitchMeasurements/<timestamp>_horizontal.tiff
         ~/ImSwitchMeasurements/<timestamp>_vertical.tiff
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import RecordingWorkflow, RecordingParams
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -36,7 +39,7 @@ params = RecordingParams(
     move_waveplate=True,
     record_h=True,
     record_v=True,
-    measurements_root=None,  # defaults to ~/ImSwitchMeasurements/
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 wf = RecordingWorkflow(facade, params)

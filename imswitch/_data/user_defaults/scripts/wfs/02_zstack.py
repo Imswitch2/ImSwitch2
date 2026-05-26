@@ -8,7 +8,10 @@ Prerequisites:
 
 Output: ~/ImSwitchMeasurements/<timestamp>_zstack.tiff
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import ZStackWorkflow, ZStackParams
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -27,7 +30,7 @@ params = ZStackParams(
     pulsed=True,
     laser_power_488_mw=50.0,
     exposure_us=50_000,
-    measurements_root=None,  # defaults to ~/ImSwitchMeasurements/
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 wf = ZStackWorkflow(facade, params)

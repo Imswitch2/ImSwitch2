@@ -392,10 +392,7 @@ def test_cwstarss_save_uses_default_root_when_params_root_is_none(tmp_path, monk
     workflow = CWSTARSSWorkflow(build_mock_facade(), params)
     saved_files = []
 
-    monkeypatch.setattr(
-        "imswitch.imcontrol.model.workflows.cwstarss.DEFAULT_MEASUREMENTS_ROOT",
-        tmp_path,
-    )
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
     monkeypatch.setattr("tifffile.imwrite", lambda filename, data: saved_files.append(Path(filename)))
 
     workflow._save(np.zeros((1, 8, 8), dtype=np.uint16), "test")

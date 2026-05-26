@@ -9,7 +9,10 @@ Prerequisites:
 Output: ~/ImSwitchMeasurements/<timestamp>/stitched_image.png
         ~/ImSwitchMeasurements/<timestamp>/tile_*.npy (if save_individual=True)
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import TilingWorkflow, TilingParams
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -31,7 +34,7 @@ params = TilingParams(
     tile_display_size=256,
     save_individual=True,
     skip_cell_targeting=True,
-    measurements_root=None,  # defaults to ~/ImSwitchMeasurements/
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 wf = TilingWorkflow(facade, params)

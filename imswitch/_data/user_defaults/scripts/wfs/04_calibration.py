@@ -9,7 +9,10 @@ Prerequisites:
 Output: ~/ImSwitchMeasurements/<timestamp>_calibration.tiff
         ~/ImSwitchMeasurements/<timestamp>_calibration_metadata.json
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import CalibrationWorkflow, CalibrationParams
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -28,7 +31,7 @@ params = CalibrationParams(
     laser_pin=8,
     camera_pin=11,
     pulsed=True,
-    measurements_root=None,  # defaults to ~/ImSwitchMeasurements/
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 wf = CalibrationWorkflow(facade, params)

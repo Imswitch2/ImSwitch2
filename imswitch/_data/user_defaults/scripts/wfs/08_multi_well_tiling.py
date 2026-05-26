@@ -10,6 +10,7 @@ Prerequisites:
 Output: ~/ImSwitchMeasurements/<timestamp>/well_r0_c0/stitched_image.png (per well)
         ~/ImSwitchMeasurements/<timestamp>/well_r0_c0/tile_*.npy (if save_individual=True)
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (
     MultiWellTilingWorkflow,
     MultiWellTilingParams,
@@ -18,6 +19,8 @@ from imswitch.imcontrol.model.workflows import (
     ZStackWorkflow,
     ZStackParams,
 )
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -39,6 +42,7 @@ tiling_params = TilingParams(
     tile_display_size=256,
     save_individual=True,
     skip_cell_targeting=True,
+    measurements_root=MEASUREMENTS_ROOT,
 )
 tiling_wf = TilingWorkflow(facade, tiling_params)
 
@@ -50,6 +54,7 @@ zstack_params = ZStackParams(
     pulsed=True,
     laser_power_488_mw=50.0,
     exposure_us=50_000,
+    measurements_root=MEASUREMENTS_ROOT,
 )
 zstack_wf = ZStackWorkflow(facade, zstack_params)
 
@@ -62,7 +67,7 @@ multi_well_params = MultiWellTilingParams(
     autofocus_step_um=2.0,
     autofocus_z_center_um=None,
     tiling_n_tiles=9,
-    measurements_root=None,  # defaults to ~/ImSwitchMeasurements/
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 multi_well_wf = MultiWellTilingWorkflow(facade, tiling_wf, zstack_wf, multi_well_params)

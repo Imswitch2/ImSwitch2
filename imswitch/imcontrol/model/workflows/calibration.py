@@ -17,12 +17,17 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
+
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MEASUREMENTS_ROOT = Path.home() / "ImSwitchMeasurements"
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -178,8 +183,7 @@ class CalibrationWorkflow:
             now = datetime.now()
             date_folder = now.strftime("%Y_%m_%d")
             time_str = now.strftime("%H%M%S")
-            measurements_root = self.params.measurements_root or DEFAULT_MEASUREMENTS_ROOT
-            folder = Path(measurements_root).expanduser() / date_folder
+            folder = resolve_measurements_root(self.params.measurements_root) / date_folder
             folder.mkdir(parents=True, exist_ok=True)
             out_path = folder / f"polcal_{time_str}.csv"
         else:

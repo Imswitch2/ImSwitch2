@@ -7,12 +7,15 @@ Prerequisites:
 
 Output: One recording per Z plane under ~/ImSwitchMeasurements/.
 """
+# ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (
     DefocusScanParams,
     DefocusScanWorkflow,
     RecordingParams,
     RecordingWorkflow,
 )
+
+MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
 facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={"488": "488 (EXC) sn27311", "405": "405 (ACT) sn26647"},
@@ -46,7 +49,7 @@ recording_params = RecordingParams(
     move_waveplate=True,
     record_h=True,
     record_v=True,
-    measurements_root=None,
+    measurements_root=MEASUREMENTS_ROOT,
 )
 
 recording = RecordingWorkflow(facade, recording_params)

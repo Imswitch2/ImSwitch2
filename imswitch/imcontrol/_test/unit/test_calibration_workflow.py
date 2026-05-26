@@ -174,10 +174,7 @@ def test_polarisation_calibration_uses_default_root_when_params_root_is_none(tmp
     facade = build_mock_facade()
     facade.cam.set_canned_data(np.ones((1, 20, 20), dtype=np.uint16))
 
-    monkeypatch.setattr(
-        "imswitch.imcontrol.model.workflows.calibration.DEFAULT_MEASUREMENTS_ROOT",
-        tmp_path,
-    )
+    monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
 
     params = CalibrationParams(n_steps_qwp=1, n_steps_hwp=1, measurements_root=None)
     wf = CalibrationWorkflow(facade, params)

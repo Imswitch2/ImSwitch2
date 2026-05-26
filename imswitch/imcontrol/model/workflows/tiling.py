@@ -36,6 +36,10 @@ from typing import TYPE_CHECKING, Callable, Optional
 import numpy as np
 
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
+from imswitch.imcontrol.model.workflows.paths import (
+    default_measurements_root,
+    resolve_measurements_root,
+)
 from imswitch.imcontrol.model.workflows.stitched_image import StitchedImage
 
 if TYPE_CHECKING:
@@ -45,7 +49,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Default base folder when none is provided.
-DEFAULT_MEASUREMENTS_ROOT = Path.home() / "ImSwitchMeasurements"
+DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 
 
 @dataclass
@@ -259,8 +263,7 @@ class TilingWorkflow:
 
     def _default_save_folder(self) -> Path:
         """Return a timestamped tiling folder under the configured measurements root."""
-        measurements_root = self.params.measurements_root or DEFAULT_MEASUREMENTS_ROOT
-        root = Path(measurements_root).expanduser()
+        root = resolve_measurements_root(self.params.measurements_root)
         now = datetime.now()
         return root / now.strftime("%Y_%m_%d") / f"tiling_{now.strftime('%H%M%S')}"
 
