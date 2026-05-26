@@ -288,10 +288,10 @@ class RecordingWorkflow:
                 are signal and odd frames are background.
         """
         img = img[0::2]  # Keep only signal frames
-        img_0degree = img[:, 1::2, 1::2]
-        img_45degree = img[:, 1::2, ::2]
-        img_90degree = img[:, ::2, ::2]
-        img_135degree = img[:, ::2, 1::2]
+        img_0degree = img[1::2, 1::2]
+        img_45degree = img[1::2, ::2]
+        img_90degree = img[::2, ::2]
+        img_135degree = img[::2, 1::2]
 
         p_0 = np.sum(np.mean(img_0degree, axis=0)) / 250_000
         p_45 = np.sum(np.mean(img_45degree, axis=0)) / 250_000

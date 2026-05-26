@@ -436,7 +436,7 @@ class TilingWorkflow:
             logger.warning("Hardware snap: empty data, falling back to software")
             return self._grab_image(savepath=savepath, filehandle=filehandle, pulsed_laser=False)
         
-        img = data[0, :, :]
+        img = data[:, :]
         
         if savepath is not None:
             np.save(str(savepath).replace(".npy", "") + ".npy", img)
