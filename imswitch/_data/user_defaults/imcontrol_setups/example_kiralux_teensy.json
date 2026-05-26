@@ -1,0 +1,135 @@
+{
+    "detectors": {
+        "Kiralux": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "ThorCamTSIManager",
+            "managerProperties": {
+                "cameraSerial": "29718",
+                "dllLocation": "dlls/64_lib",
+                "defaults": {
+                    "exposure_us": 50000,
+                    "gain": 0,
+                    "operation_mode": "Hardware",
+                    "trigger_polarity": "Active High",
+                    "frame_rate": 30
+                }
+            },
+            "forAcquisition": true
+        }
+    },
+    "lasers": {
+        "488 (EXC) sn27311": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "Cobolt0601NewLaserManager",
+            "managerProperties": {
+                "digitalPorts": ["COM17"]
+            },
+            "wavelength": 488,
+            "valueRangeMin": 0.0,
+            "valueRangeMax": 200.0,
+            "valueRangeStep": 1.0
+        },
+        "405 (ACT) sn26647": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "Cobolt0601NewLaserManager",
+            "managerProperties": {
+                "digitalPorts": ["COM4"]
+            },
+            "wavelength": 405,
+            "valueRangeMin": 0.0,
+            "valueRangeMax": 200.0,
+            "valueRangeStep": 1.0
+        }
+    },
+    "positioners": {
+        "XY": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "KinesisStageManager",
+            "managerProperties": {
+                "snr": "103410304",
+                "scale": "MLS203",
+                "isRackSystem": true,
+                "homeOnInit": false
+            },
+            "axes": ["X", "Y"],
+            "forPositioning": true,
+            "forScanning": false
+        },
+        "Z": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "JenaPiezoZManager",
+            "managerProperties": {
+                "rs232device": "jenaPiezo",
+                "posRangeUm": [0, 100],
+                "waitForSettle": true,
+                "settleToleranceUm": 0.1,
+                "settleTimeoutS": 1.0
+            },
+            "axes": ["Z"],
+            "forPositioning": true
+        }
+    },
+    "rotators": {
+        "HWP": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "COM20",
+                "address": 1,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        },
+        "QWP": {
+            "managerName": "ElliptecRotatorManager",
+            "managerProperties": {
+                "port": "COM20",
+                "address": 2,
+                "scale": "stage",
+                "homeOnInit": false
+            }
+        }
+    },
+    "rs232devices": {
+        "jenaPiezo": {
+            "managerName": "RS232Manager",
+            "managerProperties": {
+                "port": "COM19",
+                "baudrate": 115200,
+                "bytesize": 8,
+                "parity": "none",
+                "stopbits": 1,
+                "encoding": "ascii",
+                "recv_termination": "\n",
+                "send_termination": "\n",
+                "rtscts": "false",
+                "dsrdtr": "false",
+                "xonxoff": "false"
+            }
+        }
+    },
+    "teensyPulse": {
+        "port": "COM7",
+        "baud": 115200,
+        "pinMap": {
+            "laser488": 8,
+            "laser405": 6,
+            "camera": 11
+        },
+        "useMockOnFailure": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Laser",
+        "Positioner",
+        "Rotator",
+        "Console"
+    ]
+}

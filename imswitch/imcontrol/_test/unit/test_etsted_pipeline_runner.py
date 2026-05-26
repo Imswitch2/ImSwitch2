@@ -52,6 +52,46 @@ def valid_pipeline(img, prev_frames, binary_mask, testmode, exinfo, threshold=2.
     assert result.analysis_image is None
 
 
+def test_pipeline_runner_normalizes_single_coordinate_to_two_dimensional_array(tmp_path, monkeypatch):
+    _write_pipeline(
+        tmp_path,
+        'single_coord_pipeline',
+        """
+import numpy as np
+
+def single_coord_pipeline(img, prev_frames, binary_mask, testmode, exinfo):
+    return np.array([7.0, 9.0]), exinfo
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    runner = EtSTEDPipelineRunner()
+    runner.load('single_coord_pipeline')
+    result = runner.execute(np.zeros((4, 4)), deque(), None, False, None, [])
+
+    np.testing.assert_allclose(result.coords_detected, [[7.0, 9.0]])
+
+
+def test_pipeline_runner_rejects_invalid_coordinate_shape(tmp_path, monkeypatch):
+    _write_pipeline(
+        tmp_path,
+        'bad_coord_pipeline',
+        """
+import numpy as np
+
+def bad_coord_pipeline(img, prev_frames, binary_mask, testmode, exinfo):
+    return np.array([1.0, 2.0, 3.0]), exinfo
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    runner = EtSTEDPipelineRunner()
+    runner.load('bad_coord_pipeline')
+
+    with pytest.raises(RuntimeError, match='expected \\(2,\\) or \\(N, 2\\)'):
+        runner.execute(np.zeros((4, 4)), deque(), None, False, None, [])
+
+
 def test_pipeline_runner_validates_signature(tmp_path, monkeypatch):
     _write_pipeline(
         tmp_path,

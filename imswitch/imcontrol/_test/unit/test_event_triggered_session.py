@@ -16,6 +16,7 @@ def test_event_triggered_session_resets_runtime_counters_only():
         busy=True,
         imageSignalConnected=True,
         scanEndSignalConnected=True,
+        binaryMaskSignalConnected=True,
         frame=8,
         validationFrames=3,
         tCallMs=12.5,
@@ -31,6 +32,7 @@ def test_event_triggered_session_resets_runtime_counters_only():
     assert state.laserFast == 'laser488'
     assert state.imageSignalConnected is True
     assert state.scanEndSignalConnected is True
+    assert state.binaryMaskSignalConnected is True
     assert state.detLog == {'pipeline': 'demo'}
     assert state.running is False
     assert state.validating is False

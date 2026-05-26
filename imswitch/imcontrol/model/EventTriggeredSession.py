@@ -36,6 +36,7 @@ class EventTriggeredSessionState:
     busy: bool = False
     imageSignalConnected: bool = False
     scanEndSignalConnected: bool = False
+    binaryMaskSignalConnected: bool = False
     frame: int = 0
     validationFrames: int = 0
     tCallMs: float = 0

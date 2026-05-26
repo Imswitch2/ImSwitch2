@@ -175,5 +175,29 @@ def test_controller_stop_and_close_cleanup_contract_disables_fast_laser():
     assert 'def stopExperiment' in source
     assert 'self._disconnectRunSignals()' in source
     assert 'self._setFastLaserEnabled(False)' in source
+    assert 'self._cleanupBinaryMaskRecording()' in source
     assert 'def closeEvent' in source
     assert 'self.stopExperiment(resetParams=True)' in source
+
+
+def test_controller_arming_requires_fast_laser_enable_success_and_cleans_binary_mask():
+    source = BASE_CONTROLLER_PATH.read_text()
+
+    assert 'self._setFastLaserEnabled(True, require_success=True)' in source
+    assert 'def _setFastLaserEnabled(self, enabled: bool, *, require_success: bool = False)' in source
+    assert 'if require_success:' in source
+    assert 'raise' in source
+    assert 'def _cleanupBinaryMaskRecording(self) -> None:' in source
+    assert 'self._state.binaryMaskSignalConnected = False' in source
+    assert "self._widget.recordBinaryMaskButton.setText('Record binary mask')" in source
+
+
+def test_continue_fast_modality_handles_resume_failures_without_leaking_signals():
+    source = BASE_CONTROLLER_PATH.read_text()
+
+    assert 'def continueFastModality(self) -> None:' in source
+    assert f"Failed to resume {{self.MODALITY_LABEL}} fast modality" in source
+    assert 'self._disconnectRunSignals()' in source
+    assert 'self._setFastLaserEnabled(False)' in source
+    assert 'self._state.busy = False' in source
+    assert "self._set_status('error', str(e))" in source

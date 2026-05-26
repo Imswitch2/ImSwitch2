@@ -116,7 +116,17 @@ class EtSTEDPipelineRunner:
     def _normalize_coords(self, coords_detected) -> np.ndarray:
         if coords_detected is None:
             return np.empty((0, 2))
-        return np.asarray(coords_detected)
+        coords = np.asarray(coords_detected, dtype=float)
+        if coords.size == 0:
+            return np.empty((0, 2))
+        if coords.shape == (2,):
+            return coords.reshape(1, 2)
+        if coords.ndim != 2 or coords.shape[1] != 2:
+            raise RuntimeError(
+                f'Pipeline {self.name} returned coordinates with shape {coords.shape}; '
+                'expected (2,) or (N, 2).'
+            )
+        return coords
 
     def _ensure_loaded(self) -> None:
         if self.function is None:

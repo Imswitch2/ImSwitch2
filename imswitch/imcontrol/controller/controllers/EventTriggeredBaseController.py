@@ -226,7 +226,7 @@ class EventTriggeredControllerBase(ImConWidgetController):
             self._prepareExperiment()
             self._pre_arm_hook()
             self._connectRunSignals()
-            self._setFastLaserEnabled(True)
+            self._setFastLaserEnabled(True, require_success=True)
 
             self._widget.initiateButton.setText('Stop')
             self._set_controls_armed(True)
@@ -246,6 +246,7 @@ class EventTriggeredControllerBase(ImConWidgetController):
         try:
             self._setFastLaserEnabled(False)
         finally:
+            self._cleanupBinaryMaskRecording()
             self._widget.initiateButton.setText('Initiate')
             self._set_controls_armed(False)
             if resetParams:
@@ -345,7 +346,7 @@ class EventTriggeredControllerBase(ImConWidgetController):
         except (TypeError, RuntimeError):
             pass
 
-    def _setFastLaserEnabled(self, enabled: bool) -> None:
+    def _setFastLaserEnabled(self, enabled: bool, *, require_success: bool = False) -> None:
         if self._state.laserFast is None:
             return
         try:
@@ -357,6 +358,8 @@ class EventTriggeredControllerBase(ImConWidgetController):
                 f'Failed to set fast laser {self._state.laserFast} enabled={enabled}: {e}',
                 exc_info=True,
             )
+            if require_success:
+                raise
 
     # ── Pipeline & transform loading ─────────────────────────────────────── #
 
@@ -404,6 +407,7 @@ class EventTriggeredControllerBase(ImConWidgetController):
             self._state.laserFast, lambda l: l.setEnabled(True)
         )
         self._commChannel.sigUpdateImage.connect(self.addImgBinStack)
+        self._state.binaryMaskSignalConnected = True
         self._widget.recordBinaryMaskButton.setText('Recording...')
 
     def addImgBinStack(self, detectorName, img, init, scale, isCurrentDetector) -> None:
@@ -415,6 +419,7 @@ class EventTriggeredControllerBase(ImConWidgetController):
         self._binary_stack_list.append(np.asarray(img))
         if len(self._binary_stack_list) >= self.BINARY_FRAMES:
             self._safeDisconnect(self._commChannel.sigUpdateImage, self.addImgBinStack)
+            self._state.binaryMaskSignalConnected = False
             self._master.lasersManager.execOn(
                 self._state.laserFast, lambda l: l.setEnabled(False)
             )
@@ -429,6 +434,15 @@ class EventTriggeredControllerBase(ImConWidgetController):
         self._widget.recordBinaryMaskButton.setText('Record binary mask')
         self.setAnalysisHelpImg(self._binary_mask)
         self.launchHelpWidget()
+
+    def _cleanupBinaryMaskRecording(self) -> None:
+        """Stop any interrupted binary-mask capture without touching acquisition."""
+        if self._state.binaryMaskSignalConnected:
+            self._safeDisconnect(self._commChannel.sigUpdateImage, self.addImgBinStack)
+            self._state.binaryMaskSignalConnected = False
+        self._binary_stack_list = []
+        if hasattr(self._widget, 'recordBinaryMaskButton'):
+            self._widget.recordBinaryMaskButton.setText('Record binary mask')
 
     def setAnalysisHelpImg(self, img_ana: np.ndarray, exinfo=None) -> None:
         if np.max(img_ana) > self._state.maxAnaImgVal:
@@ -745,13 +759,26 @@ class EventTriggeredControllerBase(ImConWidgetController):
 
     def continueFastModality(self) -> None:
         if self._widget.endlessScanCheck.isChecked() and not self._state.running:
-            self._on_resume_modality_hook()
-            self._connectRunSignals()
-            self._setFastLaserEnabled(True)
-            self._widget.initiateButton.setText('Stop')
-            self._set_controls_armed(True)
-            self._set_status('detecting')
-            self._state.running = True
+            try:
+                self._on_resume_modality_hook()
+                self._connectRunSignals()
+                self._setFastLaserEnabled(True, require_success=True)
+            except Exception as e:
+                self._logger.error(
+                    f'Failed to resume {self.MODALITY_LABEL} fast modality: {e}',
+                    exc_info=True,
+                )
+                self._disconnectRunSignals()
+                self._setFastLaserEnabled(False)
+                self._state.running = False
+                self._state.busy = False
+                self._set_status('error', str(e))
+                return
+            else:
+                self._widget.initiateButton.setText('Stop')
+                self._set_controls_armed(True)
+                self._set_status('detecting')
+                self._state.running = True
         elif not self._widget.endlessScanCheck.isChecked():
             self.stopExperiment(resetParams=True)
 

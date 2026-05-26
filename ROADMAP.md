@@ -192,6 +192,16 @@ breaking existing controller/API signal contracts.
   - Phase 7 adds immutable acquisition configuration plus structured worker
     updates for explicit progress metadata while preserving scan behavior
   - Plan: `docs/design/plans/beadrec-2.0.md`
+- 🔄 Event-triggered EtSTED / EtMonalisa shared base hardening
+  - Shared base owns session state and cleanup contracts for both modalities
+  - Interrupted binary-mask recording is cleaned up on stop/close
+  - Fast-laser enable failures abort arming/resume instead of silently entering
+    detecting state
+  - Pipeline coordinates normalize to `(N, 2)` with invalid-shape rejection
+  - Focused event-triggered no-hardware tests and full unit no-hardware suite
+    are passing
+  - Plans: `docs/design/plans/etsted-2-0.md`,
+    `docs/design/plans/etmonalisa-2-0.md`
 
 ## Milestone 9: Scanning & Galvo Modernization
 
