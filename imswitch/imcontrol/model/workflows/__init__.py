@@ -17,6 +17,7 @@ from .facade import (
     build_facade_from_master,
 )
 from .mock_facade import MockMicroscopeFacade, build_mock_facade
+from .multi_well_tiling import MultiWellTilingParams, MultiWellTilingWorkflow
 from .recording import RecordingParams, RecordingWorkflow
 from .serial_cwstarss import SerialCWSTARSSParams, SerialCWSTARSSWorkflow
 from .stitched_image import StitchedImage
@@ -34,6 +35,8 @@ __all__ = [
     "LaserConFacade",
     "MicroscopeFacade",
     "MockMicroscopeFacade",
+    "MultiWellTilingParams",
+    "MultiWellTilingWorkflow",
     "RecordingParams",
     "RecordingWorkflow",
     "RotatorFacade",
