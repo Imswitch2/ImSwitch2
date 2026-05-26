@@ -60,6 +60,7 @@ config files).
     :caption: Extending Imswitch2
 
     adding-device-support
+    no-hardware-validation
     how-to/wire-teensy
     how-to/add-pulse-generator-backend
     how-to/port-from-third-party
