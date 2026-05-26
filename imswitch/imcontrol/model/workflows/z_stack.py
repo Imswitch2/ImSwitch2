@@ -301,7 +301,7 @@ class ZStackWorkflow:
         timestamp = time.strftime("%H%M%S")
         out_path = date_folder / f"zstack_{timestamp}.tif"
 
-        tf.imsave(out_path, stack)
+        tf.imwrite(out_path, stack)
         logger.info("Z-stack saved to %s", out_path)
 
 
