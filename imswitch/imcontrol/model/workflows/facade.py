@@ -265,9 +265,19 @@ class TrigFacade:
         """
         import time
         if self._wfs is None:
+            driver = getattr(self._pulsegen, "driver", None)
+            send_recv = getattr(driver, "_send_recv", None)
+            if callable(send_recv):
+                line = send_recv(
+                    payload,
+                    terminal=("DONE", "ERR"),
+                    timeout=overall_timeout,
+                )
+                return [line] if line else []
             raise RuntimeError(
                 "WFS Teensy serial is not connected. Configure TrigFacade "
-                "with wfs_serial_port to use the WFS pass-through path."
+                "with wfs_serial_port or an ImSwitch Teensy pulse generator "
+                "that exposes the legacy serial driver."
             )
         self._wfs.reset_input_buffer()
         self._wfs.reset_output_buffer()
@@ -302,6 +312,14 @@ class TrigFacade:
         ``pulsegen.snap``.
         """
         if self._wfs is not None:
+            payload = f"Snap,{int(laser_pin)},{int(camera_pin)},{int(exposure_us)}\n"
+            timeout = int(exposure_us) * 1e-6 + 1.0
+            self._wfs_write_read(payload, overall_timeout=timeout)
+            return
+
+        driver = getattr(self._pulsegen, "driver", None)
+        send_recv = getattr(driver, "_send_recv", None)
+        if callable(send_recv):
             payload = f"Snap,{int(laser_pin)},{int(camera_pin)},{int(exposure_us)}\n"
             timeout = int(exposure_us) * 1e-6 + 1.0
             self._wfs_write_read(payload, overall_timeout=timeout)
@@ -585,6 +603,19 @@ class RotatorFacade:
             follow_up_callable()
 
 
+def _rotator_presets_from_manager(rotator) -> Optional[RotatorPresets]:
+    """Read workflow H/V presets from a rotator's setup managerProperties."""
+    rotator_info = getattr(rotator, "_rotatorInfo", None)
+    props = getattr(rotator_info, "managerProperties", None) or {}
+    raw = props.get("workflowPresets") or props.get("workflow_presets")
+    if raw is None:
+        return None
+    return RotatorPresets(
+        h_deg=float(raw.get("h_deg", raw.get("h", 0.0))),
+        v_deg=float(raw.get("v_deg", raw.get("v", 90.0))),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Aggregate facade + builder
 # ---------------------------------------------------------------------------
@@ -680,7 +711,11 @@ def build_facade_from_master(
     if rotators_manager is not None:
         if hwp_name:
             try:
-                facade.rotator_hwp = RotatorFacade(rotators_manager[hwp_name], hwp_presets)
+                hwp = rotators_manager[hwp_name]
+                facade.rotator_hwp = RotatorFacade(
+                    hwp,
+                    hwp_presets or _rotator_presets_from_manager(hwp),
+                )
             except Exception as exc:
                 # Either the rotator is not in the config, or the manager
                 # raised. Either way leave facade.rotator_hwp = None and
@@ -691,7 +726,11 @@ def build_facade_from_master(
                 )
         if qwp_name:
             try:
-                facade.rotator_qwp = RotatorFacade(rotators_manager[qwp_name], qwp_presets)
+                qwp = rotators_manager[qwp_name]
+                facade.rotator_qwp = RotatorFacade(
+                    qwp,
+                    qwp_presets or _rotator_presets_from_manager(qwp),
+                )
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).warning(

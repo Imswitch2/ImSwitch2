@@ -10,6 +10,8 @@ class _FakeRS232Manager:
         self.queries = []
         self.writes = []
         self.external_active = False
+        self._settings = {'recv_termination': '\n'}
+        self._rs232port = _FakeRS232Port()
 
     def query(self, command):
         self.queries.append(command)
@@ -29,6 +31,16 @@ class _FakeRS232Manager:
 
 class _FakeRS232sManager(dict):
     pass
+
+
+class _FakeRS232Port:
+    def __init__(self):
+        self._resource = _FakeResource()
+
+
+class _FakeResource:
+    def __init__(self):
+        self.read_termination = '\n'
 
 
 def _positioner_info(manager_properties):
@@ -63,3 +75,5 @@ def test_jena_write_only_commands_do_not_query_for_replies():
     assert rs232.queries == ['rd', 'rd']
     assert rs232.writes == ['cl', 'i1', 'wr, 40.0', 'i0']
     assert manager._position['Z'] == 40.0
+    assert rs232._settings['recv_termination'] == '\r'
+    assert rs232._rs232port._resource.read_termination == '\r'

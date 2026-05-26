@@ -126,6 +126,10 @@ class KinesisStageManager(PositionerManager):
             raw = self._stage.get_position(channel=channel)
             self._position[axis] = raw / self._driver_units_per_position_unit
 
+    def updatePosition(self) -> None:
+        """Refresh cached widget/API positions in ImSwitch position units."""
+        self._update_position()
+
     def _read_driver_units_per_position_unit(self, manager_properties: dict) -> float:
         """Return the configured raw-driver scaling factor."""
         value = manager_properties.get(

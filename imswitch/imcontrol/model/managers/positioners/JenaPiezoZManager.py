@@ -33,6 +33,7 @@ class JenaPiezoZManager(PositionerManager):
         self._rs232Manager = lowLevelManagers['rs232sManager'][
             positionerInfo.managerProperties['rs232device']
         ]
+        self._configure_rs232_for_jena()
 
         self._posRangeUm = positionerInfo.managerProperties.get('posRangeUm', [0, 100])
         self._waitForSettle = positionerInfo.managerProperties.get('waitForSettle', True)
@@ -146,6 +147,15 @@ class JenaPiezoZManager(PositionerManager):
     def _query_command(self, cmd: str) -> str:
         """Send a command that is expected to return a response."""
         return self._rs232Manager.query(cmd)
+
+    def _configure_rs232_for_jena(self) -> None:
+        """Apply the Jena controller's CR-terminated serial framing."""
+        try:
+            self._rs232Manager._settings['recv_termination'] = '\r'
+            resource = self._rs232Manager._rs232port._resource
+            resource.read_termination = '\r'
+        except Exception as e:
+            self.__logger.debug(f"Could not force Jena read termination to CR: {e!s}")
 
     def _write_command(self, cmd: str) -> None:
         """Send a command that is not expected to return a response.

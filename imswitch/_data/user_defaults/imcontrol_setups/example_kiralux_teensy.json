@@ -83,7 +83,11 @@
                 "port": "COM20",
                 "address": 1,
                 "scale": "stage",
-                "homeOnInit": false
+                "homeOnInit": false,
+                "workflowPresets": {
+                    "h_deg": 0,
+                    "v_deg": 90
+                }
             }
         },
         "QWP": {
@@ -92,7 +96,11 @@
                 "port": "COM20",
                 "address": 2,
                 "scale": "stage",
-                "homeOnInit": false
+                "homeOnInit": false,
+                "workflowPresets": {
+                    "h_deg": 0,
+                    "v_deg": 90
+                }
             }
         }
     },

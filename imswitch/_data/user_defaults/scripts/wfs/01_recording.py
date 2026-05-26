@@ -18,10 +18,6 @@ facade = api.imcontrol.buildWorkflowFacade(
     z_positioner_name="Z",
     hwp_name="HWP",
     qwp_name="QWP",
-    # WFS Teensy pass-through — opens COM7 directly with WFS firmware
-    # protocol (Snap/Parameters lines). Remove this if you flash the
-    # Teensy with ImSwitch firmware instead.
-    wfs_teensy_port="COM7",
 )
 
 params = RecordingParams(

@@ -64,6 +64,29 @@ def test_kinesis_stage_scaling_uses_neutral_driver_units(monkeypatch):
     assert manager.position['X'] == 3.0
 
 
+def test_kinesis_stage_public_update_reports_position_units(monkeypatch):
+    stage = _FakeStage()
+    stage.positions[1] = 25.0
+    monkeypatch.setattr(
+        KinesisStageManager,
+        '_getStageObj',
+        lambda self, snr, scale, is_rack_system: stage,
+    )
+
+    manager = KinesisStageManager(
+        _positioner_info({
+            'snr': 'MOCK_MLS203',
+            'driverUnitsPerPositionUnit': 10.0,
+        }),
+        'XY',
+    )
+
+    stage.positions[1] = 40.0
+    manager.updatePosition()
+
+    assert manager.position['X'] == 4.0
+
+
 def test_kinesis_stage_rejects_zero_scaling(monkeypatch):
     monkeypatch.setattr(
         KinesisStageManager,
