@@ -116,12 +116,14 @@ breaking existing controller/API signal contracts.
 **Goal:** Comprehensive documentation for developers, agents, and users.
 
 - ✅ Architecture map (`docs/design/ARCHITECTURE.md` + SVG) — manager inventory, controller→manager matrix, startup flow
+- ✅ Document no-hardware validation workflow
+  - Complete guide at `docs/no-hardware-validation.md`
+  - Command: `QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -p pytestqt.plugin imswitch/imcontrol/_test/unit imswitch/test_no_hardware_profile.py -q`
+  - Explains `QT_QPA_PLATFORM=offscreen` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+  - Documents test categories: `nohardware`, `ui`, `redzone`, `hardware`
+  - Rules for adding future no-hardware tests without importing the full UI stack
 - ⬜ Document current state and known issues (moved from Milestone 1)
 - ⬜ Document all configuration options in `SetupInfo`
-- ⬜ Document no-hardware validation workflow
-  - How to run `pytest imswitch/test_no_hardware_profile.py -v`
-  - Difference between `nohardware`, `ui`, `redzone`, and `hardware` tests
-  - Rules for adding future no-hardware tests without importing the full UI stack
 - ⬜ Write developer onboarding guide
 - ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
 - ⬜ Create agent task templates for common operations
@@ -176,21 +178,23 @@ breaking existing controller/API signal contracts.
   - Advanced Scan no longer exposes partial BeadRec center/axial controls;
     BeadRec integration remains via scan geometry only
   - Follow-up plan: `docs/design/plans/widget-usability-improvements.md`
-- 🔄 BeadRec 2.0
-  - Phase 1 pure model baseline added for analysis defaults, ROI clipping,
+- ✅ BeadRec 2.0 (all phases implemented)
+  - Phase 1: Pure model baseline for analysis defaults, ROI clipping,
     reconstruction buffering, and physical-step-size scaling
-  - Phase 2 routes controller reconstruction math through the pure model while
+  - Phase 2: Controller reconstruction math routed through pure model while
     preserving existing scan/detector lifecycle behavior
-  - Phase 3 removes broad controller/widget/master access from `BeadWorker`;
-    the worker now uses narrow callables and emits reconstructed buffers
-  - Phase 4 extracts foci/donut center finding and donut metrics into pure
+  - Phase 3: Broad controller/widget/master access removed from `BeadWorker`;
+    worker now uses narrow callables and emits reconstructed buffers
+  - Phase 4: Foci/donut center finding and donut metrics extracted into pure
     model functions with structured result objects
-  - Phase 5 starts widget 2.0: responsive BeadRec sizing, wider result list,
+  - Phase 5: Widget 2.0 — responsive BeadRec sizing, wider result list,
     and status/progress feedback hooks
-  - Phase 6 adds typed result records and passive widget-state persistence
-    without restoring image data or active reconstruction state
-  - Phase 7 adds immutable acquisition configuration plus structured worker
-    updates for explicit progress metadata while preserving scan behavior
+  - Phase 6: Typed result records and passive widget-state persistence
+    (image data and active reconstruction state not restored)
+  - Phase 7: Immutable acquisition configuration plus structured worker
+    updates for explicit progress metadata (scan behavior preserved)
+  - Remaining work: Start/Stop UX, richer worker error reporting, optional
+    ROI/default persistence, controller fake tests
   - Plan: `docs/design/plans/beadrec-2.0.md`
 - 🔄 Event-triggered EtSTED / EtMonalisa shared base hardening
   - Shared base owns session state and cleanup contracts for both modalities
