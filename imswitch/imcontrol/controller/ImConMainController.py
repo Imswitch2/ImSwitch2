@@ -1,4 +1,5 @@
 import dataclasses
+from typing import Any, Dict
 
 import h5py
 from qtpy import QtWidgets
@@ -92,6 +93,9 @@ class ImConMainController(MainController):
         shorcutObjs = list(self.__mainView.widgets.values())
         self.__shortcuts = generateShortcuts(shorcutObjs)
         self.__mainView.addShortcuts(self.__shortcuts)
+
+        self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
+        getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
 
         # Auto-restore widget states after all controllers are ready
         try:
@@ -235,6 +239,25 @@ class ImConMainController(MainController):
             self.__logger.warning(f'Failed to auto-save widget states: {e}')
         self.__factory.closeAllCreatedControllers()
         self.__masterController.closeEvent()
+
+
+class _GuiLayoutStateAdapter:
+    """Persistence adapter for passive imcontrol dock layout state."""
+
+    def __init__(self, view: Any) -> None:
+        self._view = view
+
+    def getWidgetState(self) -> Dict[str, Any]:
+        """Return the current GUI layout state."""
+        return self._view.getLayoutState()
+
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        """Restore GUI layout state without triggering hardware actions."""
+        self._view.setLayoutState(state)
+
+    def getStateSchemaVersion(self) -> int:
+        """Return the GUI layout persistence schema version."""
+        return 1
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

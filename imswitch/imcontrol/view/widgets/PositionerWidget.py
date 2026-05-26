@@ -168,7 +168,7 @@ class PositionerWidget(Widget):
         """Step Y axis in negative direction."""
         self._emitStep('Y', up=False)
 
-    @shortcut("Ctrl+Q", "Positioner Z +")
+    @shortcut("Ctrl+Y", "Positioner Z +")
     def stepZPlus(self):
         """Step Z axis in positive direction."""
         self._emitStep('Z', up=True)
