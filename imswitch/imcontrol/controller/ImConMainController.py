@@ -70,9 +70,16 @@ class ImConMainController(MainController):
                 **_extraKwargs.get(widgetKey, {})
             )
 
+        # Create API-only controllers (no widget needed)
+        # WorkflowFacadeController provides build_facade_from_master via API
+        self.workflowFacadeController = self.__factory.createController(
+            controllers.WorkflowFacadeController,
+            widget=None,  # API-only, no widget
+        )
+        
         # Generate API
         self.__api = None
-        apiObjs = list(self.controllers.values()) + [self.__commChannel]
+        apiObjs = list(self.controllers.values()) + [self.__commChannel, self.workflowFacadeController]
         self.__api = generateAPI(
             apiObjs,
             missingAttributeErrorMsg=lambda attr: f'The imcontrol API does either not have any'
