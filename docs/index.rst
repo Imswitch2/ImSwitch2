@@ -46,6 +46,7 @@ config files).
     gui
     use-cases
     scripting
+    scripting-wfs-workflows
 
 .. toctree::
     :hidden:
