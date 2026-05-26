@@ -113,16 +113,34 @@ class TestTilingWorkflow:
         workflow = TilingWorkflow(facade, recording, params, seg_filter)
         assert workflow.seg_filter == seg_filter
     
-    def test_run_raises_without_save_folder(self):
-        """Test run() raises ValueError if no save_folder provided."""
+    def test_workflow_initialization_without_recording_workflow(self):
+        """Test backward-compatible TilingWorkflow(facade, params) initialization."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
         params = TilingParams(n_tiles=4)
         
-        workflow = TilingWorkflow(facade, recording, params)
-        
-        with pytest.raises(ValueError, match="save_folder must be provided"):
-            workflow.run()
+        workflow = TilingWorkflow(facade, params)
+
+        assert workflow.facade is facade
+        assert workflow._recording is None
+        assert workflow.params is params
+
+    def test_run_creates_default_save_folder(self, monkeypatch, tmp_path):
+        """Test run() creates a timestamped folder from measurements_root."""
+        facade = build_mock_facade()
+        params = TilingParams(
+            n_tiles=1,
+            measurements_root=tmp_path,
+            save_individual=False,
+            pulsed=False,
+        )
+        workflow = TilingWorkflow(facade, params)
+
+        monkeypatch.setattr("imswitch.imcontrol.model.workflows.tiling.time.sleep", lambda _seconds: None)
+        workflow.run()
+
+        assert workflow.params.save_folder is not None
+        assert workflow.params.save_folder.is_relative_to(tmp_path)
+        assert workflow.params.save_folder.exists()
     
     def test_run_creates_tiles(self):
         """Test run() executes tiling scan."""

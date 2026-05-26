@@ -29,6 +29,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -65,7 +66,8 @@ class TilingParams:
         skip_cell_targeting: If True, skip automatic cell segmentation/targeting.
         measurements_root: Base directory for saving tiles. Defaults to
             ``~/ImSwitchMeasurements`` if not provided.
-        save_folder: Pre-set save folder path (optional; if None, must be provided to run()).
+        save_folder: Pre-set save folder path. If None, run() creates a timestamped
+            folder under measurements_root.
     """
     
     n_tiles: int
@@ -78,7 +80,7 @@ class TilingParams:
     tile_display_size: int = 256
     save_individual: bool = True
     skip_cell_targeting: bool = False
-    measurements_root: Path = field(default_factory=lambda: DEFAULT_MEASUREMENTS_ROOT)
+    measurements_root: Optional[Path | str] = field(default_factory=lambda: DEFAULT_MEASUREMENTS_ROOT)
     save_folder: Optional[Path] = None
 
 
@@ -87,7 +89,8 @@ class TilingWorkflow:
     
     Args:
         facade: MicroscopeFacade providing access to hardware managers.
-        recording_workflow: RecordingWorkflow instance for per-cell acquisitions.
+        recording_workflow: Optional RecordingWorkflow instance for per-cell acquisitions.
+            For overview-only tiling, callers may use ``TilingWorkflow(facade, params)``.
         params: TilingParams configuration for this scan.
         seg_filter: Optional dict of cell segmentation filter parameters.
             Example: {
@@ -106,10 +109,23 @@ class TilingWorkflow:
     def __init__(
         self,
         facade: MicroscopeFacade,
-        recording_workflow: RecordingWorkflow,
-        params: TilingParams,
+        recording_workflow: Optional[RecordingWorkflow | TilingParams] = None,
+        params: Optional[TilingParams] = None,
         seg_filter: Optional[dict] = None,
     ) -> None:
+        if isinstance(recording_workflow, TilingParams):
+            if params is not None:
+                if seg_filter is not None:
+                    raise TypeError(
+                        "TilingWorkflow received both positional params and seg_filter"
+                    )
+                seg_filter = params  # Backward-compatible TilingWorkflow(facade, params, seg_filter)
+            params = recording_workflow
+            recording_workflow = None
+
+        if params is None:
+            raise TypeError("TilingWorkflow requires TilingParams")
+
         self.facade = facade
         self._recording = recording_workflow
         self.params = params
@@ -132,19 +148,16 @@ class TilingWorkflow:
         """Execute the full tiling scan.
         
         Args:
-            save_folder: Directory to save tiles and H5 file. If None, uses params.save_folder.
+            save_folder: Directory to save tiles and H5 file. If None, uses params.save_folder
+                or creates a timestamped folder under params.measurements_root.
             tile_callback: Optional callback ``f(image, grid_x, grid_y, tile_idx, n_total)``
                 called after each tile is acquired — use for live preview updates.
-        
-        Raises:
-            ValueError: If no save_folder is provided and params.save_folder is None.
         """
-        save_folder = save_folder or self.params.save_folder
-        if save_folder is None:
-            raise ValueError("save_folder must be provided either to run() or in TilingParams")
+        save_folder = save_folder or self.params.save_folder or self._default_save_folder()
         
         save_folder = Path(save_folder)
         save_folder.mkdir(parents=True, exist_ok=True)
+        self.params.save_folder = save_folder
         
         # Round n_tiles up to perfect square for spiral
         n_steps = int(np.ceil(np.sqrt(self.params.n_tiles)) ** 2)
@@ -243,6 +256,13 @@ class TilingWorkflow:
             self.facade.stage_con.move_to(min_x, min_y)
         
         logger.info("Tiling scan complete")
+
+    def _default_save_folder(self) -> Path:
+        """Return a timestamped tiling folder under the configured measurements root."""
+        measurements_root = self.params.measurements_root or DEFAULT_MEASUREMENTS_ROOT
+        root = Path(measurements_root).expanduser()
+        now = datetime.now()
+        return root / now.strftime("%Y_%m_%d") / f"tiling_{now.strftime('%H%M%S')}"
 
     def run_cell_targeting(
         self,
@@ -358,6 +378,8 @@ class TilingWorkflow:
                 # Run H polarization
                 self.facade.rotator_qwp.chained_move_to_h(self.facade.rotator_hwp.move_to_h)
                 logger.info("Cell %d/%d — horizontal polarization", i + 1, len(idx_valid))
+                if self._recording is None:
+                    raise RuntimeError("Cell targeting requires a recording workflow")
                 self._recording.run(measurement_name_addition=f"_{i + 1}_h")
                 
                 # Run V polarization

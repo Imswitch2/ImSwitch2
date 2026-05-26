@@ -46,7 +46,7 @@ class JenaPiezoZManager(PositionerManager):
         # minimum position so the rest of the system comes up.
         try:
             time.sleep(0.2)
-            self._send_command('cl')
+            self._write_command('cl')
             current_pos = self._read_position_um()
             self._position[self.axes[0]] = current_pos
             self.__logger.info(f"Jena piezo initialized at {current_pos:.2f} µm")
@@ -85,7 +85,7 @@ class JenaPiezoZManager(PositionerManager):
                     return
 
             value = round(value, 2)
-            self._send_command(f'wr, {value}')
+            self._write_command(f'wr, {value}')
 
             if self._waitForSettle:
                 self._wait_for_settle(value)
@@ -126,7 +126,7 @@ class JenaPiezoZManager(PositionerManager):
                 
                 if not retried and time.time() >= retry_time:
                     self.__logger.debug(f"Retrying write command at {elapsed:.2f}s")
-                    self._send_command(f'wr, {target_pos}')
+                    self._write_command(f'wr, {target_pos}')
                     retried = True
                 
             except Exception as e:
@@ -136,32 +136,38 @@ class JenaPiezoZManager(PositionerManager):
 
     def _read_position_um(self):
         """Read the current position in micrometres."""
-        reply = self._send_command('rd')
+        reply = self._query_command('rd')
         parts = reply.split(',')
         if len(parts) >= 2:
             return float(parts[1].strip())
         else:
             raise ValueError(f"Unexpected position reply format: {reply}")
 
-    def _send_command(self, cmd):
-        """Send a command and return the response.
-
-        The RS232 layer appends the configured ``send_termination`` itself,
-        so callers pass the bare command. For a Jena controller this means
-        ``send_termination`` must be ``"\\r"`` in the rs232 config.
-        """
+    def _query_command(self, cmd: str) -> str:
+        """Send a command that is expected to return a response."""
         return self._rs232Manager.query(cmd)
+
+    def _write_command(self, cmd: str) -> None:
+        """Send a command that is not expected to return a response.
+
+        The Jena controller accepts commands such as ``i1``, ``i0``, ``cl``,
+        and ``wr,<pos>`` without returning a line. Using ``query`` for these
+        commands makes pyvisa wait for a response until it raises
+        ``VI_ERROR_TMO``; the legacy pyserial code silently tolerated the
+        empty response. The RS232 layer appends the configured
+        ``send_termination`` itself, so callers pass the bare command.
+        """
+        self._rs232Manager.write(cmd)
 
     def activate_ext_control(self):
         """Enter external control mode (enables serial commands).
 
-        If the controller times out on ``i1`` (no reply within the pyvisa
-        timeout) we log a warning and leave ``_ext_active`` False so the
-        next call retries. Importantly we do NOT raise — a single timeout
-        must not bring down a multi-step workflow.
+        If the write fails, we log a warning and leave ``_ext_active`` False
+        so the next call retries. Importantly we do NOT raise — a single
+        serial failure must not bring down a multi-step workflow.
         """
         try:
-            self._send_command('i1')
+            self._write_command('i1')
             self._ext_active = True
             self.__logger.debug("External control mode activated")
         except Exception as e:
@@ -174,7 +180,7 @@ class JenaPiezoZManager(PositionerManager):
 
     def deactivate_ext_control(self):
         """Exit external control mode (returns control to front panel)."""
-        self._send_command('i0')
+        self._write_command('i0')
         self._ext_active = False
         self.__logger.debug("External control mode deactivated")
 
