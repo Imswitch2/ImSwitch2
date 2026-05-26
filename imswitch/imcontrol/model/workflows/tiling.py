@@ -551,7 +551,7 @@ class TilingWorkflow:
         mask = img_blur > threshold
         
         # Remove small objects
-        mask = remove_small_objects(mask, min_size=min_area_px)
+        mask = remove_small_objects(mask, max_size=min_area_px - 1)
         
         # Label connected components
         labels = label(mask)

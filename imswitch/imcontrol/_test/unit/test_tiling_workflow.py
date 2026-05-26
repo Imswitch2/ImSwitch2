@@ -492,6 +492,23 @@ class TestTilingWorkflow:
         
         assert pos == (12345.0, 67890.0)
     
+    def test_segment_cells_no_future_warning(self):
+        """_segment_cells must not raise FutureWarning from skimage deprecations."""
+        import warnings
+
+        facade = build_mock_facade()
+        recording = MockRecordingWorkflow()
+        params = TilingParams(n_tiles=4)
+
+        workflow = TilingWorkflow(facade, recording, params)
+
+        overview = np.zeros((512, 512), dtype=np.float32)
+        overview[100:200, 100:200] = 0.8
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            workflow._segment_cells(overview, pixel_size_um=6.5)
+
     def test_segment_cells_returns_dict(self):
         """Test _segment_cells returns proper dict structure."""
         facade = build_mock_facade()
