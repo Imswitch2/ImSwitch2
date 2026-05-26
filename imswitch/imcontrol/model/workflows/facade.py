@@ -672,12 +672,31 @@ def build_facade_from_master(
             master.positionersManager[z_positioner_name]
         )
 
+    # NB: MultiManager (parent of RotatorsManager) defines __getitem__ and
+    # __iter__ (yielding `(name, manager)` tuples) but NOT __contains__, so
+    # ``name in rotators_manager`` always returns False. We must look up by
+    # key via __getitem__ and catch the NoSuchSubManagerError.
     rotators_manager = getattr(master, "rotatorsManager", None)
     if rotators_manager is not None:
-        if hwp_name and hwp_name in rotators_manager:
-            facade.rotator_hwp = RotatorFacade(rotators_manager[hwp_name], hwp_presets)
-        if qwp_name and qwp_name in rotators_manager:
-            facade.rotator_qwp = RotatorFacade(rotators_manager[qwp_name], qwp_presets)
+        if hwp_name:
+            try:
+                facade.rotator_hwp = RotatorFacade(rotators_manager[hwp_name], hwp_presets)
+            except Exception as exc:
+                # Either the rotator is not in the config, or the manager
+                # raised. Either way leave facade.rotator_hwp = None and
+                # let the workflow fail loudly when it tries to use it.
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Could not attach HWP rotator named {hwp_name!r}: {exc}"
+                )
+        if qwp_name:
+            try:
+                facade.rotator_qwp = RotatorFacade(rotators_manager[qwp_name], qwp_presets)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Could not attach QWP rotator named {qwp_name!r}: {exc}"
+                )
 
     return facade
 

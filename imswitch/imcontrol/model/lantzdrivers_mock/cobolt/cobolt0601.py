@@ -2,15 +2,55 @@ from imswitch.imcommon.model import initLogger
 
 
 class MockCobolt06:
-    """Mock driver matching the Cobolt06 API used by Cobolt0601NewLaserManager."""
+    """Mock driver matching the Cobolt06 API used by Cobolt0601NewLaserManager.
+
+    Includes a ``send_cmd`` method so the manager's raw-command path
+    (``Cobolt0601NewLaserManager._cmd``) can be exercised without
+    hardware. Every command is appended to ``self.cmds`` (publicly
+    accessible for assertions in tests).
+
+    By default the mock simulates **legacy firmware**: it returns
+    ``'Syntax error: illegal command'`` for SCPI variants
+    (prefix ``LASer:`` / ``LAS:`` / ``las:``) and ``'OK'`` for legacy
+    short-form commands. Set ``mock.firmware = 'scpi'`` to flip the
+    behaviour for SCPI-firmware tests.
+    """
 
     def __init__(self, *args, **kwargs):
-        self.__logger = initLogger(self, tryInheritParent=True)
+        # ``tryInheritParent`` walks the call stack and weakrefs frame
+        # locals — that fails under pytest's HookCaller. Plain initLogger
+        # is safe and gives the same coloured output at runtime.
+        self.__logger = initLogger(self)
         self._on = False
         self._power = 0.0
         self._mod_power = 0.0
         self._mod_current = 0.1
         self._paused = False
+
+        # Test/observability hooks
+        self.cmds = []                # ordered log of every send_cmd argument
+        self.firmware = 'legacy'      # 'legacy' or 'scpi'
+
+    def send_cmd(self, command):
+        """Record the command and return a canned reply.
+
+        Legacy short-form commands always succeed. SCPI commands succeed
+        only when ``self.firmware == 'scpi'``; otherwise they return
+        ``'Syntax error: illegal command'`` so the manager's autodetect
+        and fail-closed logic can be exercised against the mock.
+        """
+        self.cmds.append(command)
+        cl = command.lower().strip()
+        is_scpi = cl.startswith(('laser:', 'las:'))
+        if is_scpi and self.firmware != 'scpi':
+            return 'Syntax error: illegal command'
+        if cl == 'laser:runmode?':
+            return 'ConstantPower'
+        if cl == 'laser:power:setpoint?':
+            return f'{self._power / 1000.0:.6f}'
+        if cl.endswith('?'):
+            return '0'
+        return 'OK'
 
     def initialize(self):
         pass
