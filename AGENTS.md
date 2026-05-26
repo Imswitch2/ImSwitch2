@@ -91,6 +91,41 @@ Budget limits (configured in `.env`):
 
 ## Recent Additions
 
+### WorkflowFacadeController (2026-05-26)
+
+An API-only controller providing programmatic facade construction without requiring internal module imports or `api._master` access.
+
+**What it does:**
+- Exposes `api.workflowFacade.build()` method for constructing `MicroscopeFacade` objects
+- Forwards arguments to internal `build_facade_from_master` function
+- Returns configured facade with hardware manager wrappers (laser, camera, positioners, TTL)
+- Supports all facade parameters: `laser_aliases`, `detector_name`, `z_stage_name`, `rotation_stage_name`, `trig_device_name`
+
+**Why it was added:**
+- Eliminate need for user scripts to import `imswitch.imcontrol.model.workflows.facade`
+- Hide internal implementation details behind clean API
+- Preserve encapsulation (no `api._master` access required)
+- Improve API discoverability and documentation
+
+**Location:**
+- Implementation: `imswitch/imcontrol/controller/controllers/WorkflowFacadeController.py`
+- Registration: `ImConMainController.py` (added to apiObjs, no widget)
+- Tests: `imswitch/imcontrol/_test/unit/test_workflow_facade_controller.py` (5 tests, all passing)
+- Documentation: `docs/api/workflow_facade_controller.md`
+- Example: `examples/workflow_facade_api_demo.py`
+
+**Usage:**
+```python
+facade = api.workflowFacade.build(
+    laser_aliases={'488': 'Laser488', '405': 'Laser405'},
+    detector_name='Kiralux',
+    z_stage_name='Z-Piezo'
+)
+facade.laser_con.set_constant_power('488', 50.0)
+```
+
+**Status:** Fully implemented and tested. Commit 30e5e6b0. Safe to use, zero breaking changes.
+
 ### ViewerToolManager (2026-05-12)
 
 A new `ViewerToolManager` class was added to `imswitch/imcommon/view/guitools/naparitools.py` to provide napari Shape layer-based viewer interaction tools.
