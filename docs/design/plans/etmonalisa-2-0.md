@@ -117,3 +117,21 @@ Add mock-backed tests for:
 - coordinate transform application.
 
 These tests must not start physical hardware, DAQ tasks, laser emission, microscope stand commands, or stage movement.
+
+## Phase 8: Shared Base Hardening
+
+Status: implemented.
+
+- `EventTriggeredControllerBase` now owns the shared EtSTED/EtMonalisa
+  session state and cleanup contracts.
+- The EtMonalisa controller contract verifies that modality-specific code stays
+  thin and does not reintroduce duplicated private runtime flags.
+- Interrupted binary-mask acquisition is explicitly cleaned up during stop and
+  close paths.
+- Fast-laser enable failures abort arming/resume instead of silently entering a
+  detecting state.
+- Pipeline coordinate outputs are normalized to `(N, 2)` and invalid shapes are
+  rejected with a clear error.
+- The focused event-triggered no-hardware suite passes without starting
+  hardware, DAQ tasks, laser emission, microscope stand commands, or stage
+  movement.

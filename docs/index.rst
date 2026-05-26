@@ -34,6 +34,7 @@ config files).
 
     installation
     developer-onboarding
+    agent-task-templates
     changelog
     contributing
     current-state-and-known-issues

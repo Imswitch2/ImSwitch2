@@ -173,3 +173,19 @@ Acceptance criteria:
 - The focused no-hardware EtSTED test suite runs without importing napari widgets or starting physical managers.
 
 Status: implemented as the Phase 7 no-hardware validation suite.
+
+## Phase 8: Shared Base Hardening
+
+Status: implemented.
+
+- `EventTriggeredControllerBase` now owns the shared EtSTED/EtMonalisa
+  session state and cleanup contracts.
+- Interrupted binary-mask acquisition is explicitly cleaned up during stop and
+  close paths: the image signal is disconnected, the temporary frame stack is
+  cleared, and the record button text is restored.
+- Fast-laser enable failures abort arming/resume instead of silently entering a
+  detecting state.
+- Pipeline coordinate outputs are normalized to `(N, 2)` and invalid shapes are
+  rejected with a clear error.
+- No-hardware tests cover the shared state contract, pipeline coordinate
+  normalization, cleanup contracts, and the focused event-triggered workflow.

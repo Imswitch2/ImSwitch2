@@ -72,7 +72,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         """ Turn off laser — always attempt turn_off regardless of is_on(),
         because l? is absent on older firmware and always returns False. """
         try:
-            self._laser.pause_emission()   # safest first: gate off
+            self._pause_emission_safe()   # safest first: gate off (or current=0 on older firmware)
         except Exception:
             pass
         try:
@@ -81,14 +81,45 @@ class Cobolt0601NewLaserManager(LaserManager):
             err = traceback.format_exc()
             self.__logger.warning(f'Laser could not be turned off properly: {err}.')
 
+    # Set to True once we've confirmed the firmware accepts SCPI `las:paus`.
+    # Older 06-01 firmware rejects it with "Syntax error: illegal command";
+    # we fall back to constant_current(0) in that case for the rest of the
+    # session so we don't spam the laser with rejected commands.
+    _pause_supported = None
+
+    def _pause_emission_safe(self):
+        if self._pause_supported is False:
+            self._laser.constant_current(0)
+            return
+        try:
+            reply = self._laser.pause_emission()
+        except Exception:
+            self._pause_supported = False
+            self._laser.constant_current(0)
+            return
+        if reply and ('illegal command' in reply.lower() or 'syntax error' in reply.lower()):
+            self.__logger.warning(
+                'Laser firmware does not support `las:paus`; using constant_current(0) instead.'
+            )
+            self._pause_supported = False
+            self._laser.constant_current(0)
+        else:
+            self._pause_supported = True
+
+    def _resume_emission_safe(self):
+        if self._pause_supported is False:
+            return  # nothing to resume; constant_power() below will re-enable output
+        try:
+            self._laser.resume_emission()
+        except Exception:
+            self._pause_supported = False
+
     def setEnabled(self, enabled):  # toggle laser on or off
         if enabled:  # laser is toggled on
-            self._laser.resume_emission()
+            self._resume_emission_safe()
             self._laser.constant_power()  # set laser to constant power mode
         else:
-
-            self._laser.pause_emission()
-            #self._laser.constant_current(0)  # If laser should be disabled, turn off by setting scanmode to active -> modulation mode
+            self._pause_emission_safe()
 
     def setValue(self, power):
         power = int(power)

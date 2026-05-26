@@ -40,9 +40,10 @@ class JenaPiezoZManager(PositionerManager):
         self._settleTimeoutS = positionerInfo.managerProperties.get('settleTimeoutS', 1.0)
 
         self._ext_active = False
-        
+
+        time.sleep(0.2)
         self._send_command('cl')
-        
+
         try:
             current_pos = self._read_position_um()
             self._position[self.axes[0]] = current_pos
@@ -122,8 +123,13 @@ class JenaPiezoZManager(PositionerManager):
             raise ValueError(f"Unexpected position reply format: {reply}")
 
     def _send_command(self, cmd):
-        """Send a command and return the response."""
-        return self._rs232Manager.query(cmd + '\r')
+        """Send a command and return the response.
+
+        The RS232 layer appends the configured ``send_termination`` itself,
+        so callers pass the bare command. For a Jena controller this means
+        ``send_termination`` must be ``"\\r"`` in the rs232 config.
+        """
+        return self._rs232Manager.query(cmd)
 
     def activate_ext_control(self):
         """Enter external control mode (enables serial commands)."""

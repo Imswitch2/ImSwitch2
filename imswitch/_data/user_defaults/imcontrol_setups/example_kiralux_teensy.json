@@ -10,7 +10,7 @@
                 "defaults": {
                     "exposure_us": 50000,
                     "gain": 0,
-                    "operation_mode": "Hardware",
+                    "operation_mode": "Software",
                     "trigger_polarity": "Active High",
                     "frame_rate": 30
                 }
@@ -53,7 +53,8 @@
                 "snr": "103410304",
                 "scale": "MLS203",
                 "isRackSystem": true,
-                "homeOnInit": false
+                "homeOnInit": false,
+                "unitsPerUm": 1.0
             },
             "axes": ["X", "Y"],
             "forPositioning": true,
@@ -99,13 +100,13 @@
             "managerName": "RS232Manager",
             "managerProperties": {
                 "port": "COM19",
-                "baudrate": 115200,
+                "baudrate": 9600,
                 "bytesize": 8,
                 "parity": "none",
                 "stopbits": 1,
                 "encoding": "ascii",
                 "recv_termination": "\n",
-                "send_termination": "\n",
+                "send_termination": "\r",
                 "rtscts": "false",
                 "dsrdtr": "false",
                 "xonxoff": "false"

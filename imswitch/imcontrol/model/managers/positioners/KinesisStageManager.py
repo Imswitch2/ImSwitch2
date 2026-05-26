@@ -15,6 +15,14 @@ class KinesisStageManager(PositionerManager):
         - scale (str, default "MLS203"): Stage scale identifier.
         - isRackSystem (bool, default True): Whether the device is rack-mounted.
         - homeOnInit (bool, default False): If True, home both axes on init.
+        - unitsPerUm (float, default 1.0): Conversion factor between the raw
+          values reported/accepted by pylablib and physical micrometres.
+          Set this when pylablib doesn't recognize the controller model and
+          falls back to internal encoder counts (warns at startup:
+          "can't recognize motor model ..., setting all scales to internal
+          units"). All positions exposed to the rest of ImSwitch — `move`,
+          `setPosition`, `position` — are in µm; raw values are
+          (µm * unitsPerUm).
     """
 
     def __init__(self, positionerInfo, name: str, **lowLevelManagers):
@@ -30,6 +38,7 @@ class KinesisStageManager(PositionerManager):
         self._scale = positionerInfo.managerProperties.get('scale', 'MLS203')
         self._is_rack_system = positionerInfo.managerProperties.get('isRackSystem', True)
         home_on_init = positionerInfo.managerProperties.get('homeOnInit', False)
+        self._units_per_um = float(positionerInfo.managerProperties.get('unitsPerUm', 1.0))
 
         self._stage = self._getStageObj(self._snr, self._scale, self._is_rack_system)
 
@@ -42,25 +51,25 @@ class KinesisStageManager(PositionerManager):
         self._update_position()
 
     def move(self, dist: float, axis: str) -> None:
-        """Move by a relative displacement in mm.
-        
+        """Move by a relative displacement in µm.
+
         Args:
-            dist: Relative displacement in mm.
+            dist: Relative displacement in µm.
             axis: The axis to move ('X' or 'Y').
         """
         channel = self._axis_to_channel(axis)
-        self._stage.move_by(dist, channel=channel)
+        self._stage.move_by(dist * self._units_per_um, channel=channel)
         self._update_position()
 
     def setPosition(self, position: float, axis: str) -> None:
-        """Move to an absolute position in mm.
-        
+        """Move to an absolute position in µm.
+
         Args:
-            position: Target position in mm.
+            position: Target position in µm.
             axis: The axis to move ('X' or 'Y').
         """
         channel = self._axis_to_channel(axis)
-        self._stage.move_to(position, channel=channel)
+        self._stage.move_to(position * self._units_per_um, channel=channel)
         self._update_position()
 
     def jog_start(self, axis: str, sign: int) -> None:
@@ -106,10 +115,11 @@ class KinesisStageManager(PositionerManager):
             raise ValueError(f'Unknown axis: {axis}. Must be X or Y.')
 
     def _update_position(self) -> None:
-        """Read current positions from hardware and update internal state."""
+        """Read current positions from hardware and update internal state (µm)."""
         for axis in self.axes:
             channel = self._axis_to_channel(axis)
-            self._position[axis] = self._stage.get_position(channel=channel)
+            raw = self._stage.get_position(channel=channel)
+            self._position[axis] = raw / self._units_per_um
 
     def _getStageObj(self, snr: str, scale: str, is_rack_system: bool):
         """Instantiate the stage driver with real-then-mock fallback."""

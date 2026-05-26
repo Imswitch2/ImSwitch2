@@ -136,7 +136,9 @@ breaking existing controller/API signal contracts.
   - Includes minimal examples for each section
   - Cross-links to existing device-specific documentation
 - ⬜ Ship the microscope-KB building guide (schema + prompts, [ScopeAId](https://github.com/LREIN663/ScopeAId)-based) under `docs/microscope-kb/`; users build their own KB locally and feed it to an external LLM project (Claude Project / Custom GPT / etc.) — ImSwitch ships no KB content and no in-app LLM
-- ⬜ Create agent task templates for common operations
+- ✅ Create agent task templates for common operations
+  - Reusable prompt templates and review checklist are documented in
+    `docs/agent-task-templates.rst`
 
 ## Milestone 8: ImControl UI & Workflow Enhancements ✅
 
