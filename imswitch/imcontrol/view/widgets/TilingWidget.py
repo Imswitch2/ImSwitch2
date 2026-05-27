@@ -13,6 +13,8 @@ class TilingWidget(Widget):
     sigStopTiling = QtCore.Signal()
     sigParamsChanged = QtCore.Signal()
     sigClickOnOverview = QtCore.Signal(int, int)  # row, col in stitched canvas
+    sigTuneSegmentation = QtCore.Signal()
+    sigRunCellTargeting = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -58,7 +60,15 @@ class TilingWidget(Widget):
         self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(self.progressLabel, 3, 0, 1, 4)
 
-        # Rows 4+: Stitched overview display
+        # Row 4: Cell targeting controls
+        self.tuneSegmentationButton = guitools.BetterPushButton('Tune segmentation...')
+        self.tuneSegmentationButton.setEnabled(False)
+        self.runCellTargetingButton = guitools.BetterPushButton('Run cell targeting')
+        self.runCellTargetingButton.setEnabled(False)
+        layout.addWidget(self.tuneSegmentationButton, 4, 0, 1, 2)
+        layout.addWidget(self.runCellTargetingButton, 4, 2, 1, 2)
+
+        # Rows 5+: Stitched overview display
         self.overviewView = pg.GraphicsLayoutWidget()
         self.overviewItem = pg.ImageItem()
         self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
@@ -66,11 +76,25 @@ class TilingWidget(Widget):
         self._overviewVB.setAspectLocked(True)
         self._overviewVB.invertY(True)
         self._overviewVB.addItem(self.overviewItem)
-        layout.addWidget(self.overviewView, 4, 0, 4, 4)
+        
+        # Cell marker overlays
+        self.cellMarkers = pg.ScatterPlotItem(
+            symbol='+', size=14, pen=pg.mkPen('y', width=2), brush=None
+        )
+        self.currentCellMarker = pg.ScatterPlotItem(
+            symbol='o', size=24, pen=pg.mkPen('r', width=3), brush=None
+        )
+        self._overviewVB.addItem(self.cellMarkers)
+        self._overviewVB.addItem(self.currentCellMarker)
+        self._cellPositions = None  # Store positions for highlightCurrentCell
+        
+        layout.addWidget(self.overviewView, 5, 0, 4, 4)
 
         # Wire signals
         self.startButton.clicked.connect(self.sigStartTiling)
         self.stopButton.clicked.connect(self.sigStopTiling)
+        self.tuneSegmentationButton.clicked.connect(self.sigTuneSegmentation)
+        self.runCellTargetingButton.clicked.connect(self.sigRunCellTargeting)
         self.nTilesSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
@@ -114,6 +138,52 @@ class TilingWidget(Widget):
 
     def setLabel(self, label: str) -> None:
         self.progressLabel.setText(label)
+
+    def showCellMarkers(self, positions: np.ndarray) -> None:
+        """Display cell position markers on the overview.
+        
+        Args:
+            positions: (N, 2) array of (row, col) pixel coordinates.
+        """
+        if positions is None or len(positions) == 0:
+            self.cellMarkers.clear()
+            self._cellPositions = None
+            return
+        
+        self._cellPositions = positions
+        # ScatterPlotItem expects x, y where x=col, y=row (with invertY enabled)
+        x = positions[:, 1]  # col
+        y = positions[:, 0]  # row
+        self.cellMarkers.setData(x=x, y=y)
+
+    def highlightCurrentCell(self, idx: int) -> None:
+        """Highlight a specific cell with a red circle.
+        
+        Args:
+            idx: Index into the positions array from showCellMarkers.
+                 Use -1 to clear the highlight.
+        """
+        if idx < 0 or self._cellPositions is None or idx >= len(self._cellPositions):
+            self.currentCellMarker.clear()
+            return
+        
+        row, col = self._cellPositions[idx]
+        self.currentCellMarker.setData(x=[col], y=[row])
+
+    def clearCellMarkers(self) -> None:
+        """Clear all cell markers from the overview."""
+        self.cellMarkers.clear()
+        self.currentCellMarker.clear()
+        self._cellPositions = None
+
+    def setCellTargetingEnabled(self, enabled: bool) -> None:
+        """Enable or disable cell targeting controls.
+        
+        Args:
+            enabled: True to enable the segmentation and targeting buttons.
+        """
+        self.tuneSegmentationButton.setEnabled(enabled)
+        self.runCellTargetingButton.setEnabled(enabled)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
