@@ -1,9 +1,7 @@
 <div align="center">
 
 <!-- TODO: replace with a project logo (e.g. docs/images/logo.svg).  Suggested width: 320 px. -->
-<a href="#"><img src="docs/images/logo.png" alt="Imswitch2 logo" width="320"/></a>
-
-# Imswitch2
+<a href="#"><img src="docs/images/imswitch2_logo.png" alt="Imswitch2 logo" width="320"/></a>
 
 **Modular, configuration-driven microscope control — built for safety, testability, and AI-assisted development.**
 
