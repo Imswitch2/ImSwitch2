@@ -244,9 +244,8 @@ class SegmentationParamsWidget(QtWidgets.QDialog):
     def _refresh(self, reseg=False):
         """Re-segment and/or re-filter the image, update previews."""
         if reseg or self._labels is None:
-            # Call segmenter - need to create new instance with updated params
             if hasattr(self._segmenter, '__class__') and self._segmenter.__class__.__name__ == '_StubSegmenter':
-                # Stub segmenter returns extended result dict
+                # Stub segmenter (fallback when Segmenter import fails)
                 result = self._segmenter.segment(
                     self._image,
                     self._pixel_size_um,
@@ -258,33 +257,17 @@ class SegmentationParamsWidget(QtWidgets.QDialog):
                 self._img_blur = result.get('img_blur')
                 self._props = result.get('props')
             else:
-                # Real Segmenter: create new instance with current params
+                # Real Segmenter: rebuild with current params and read
+                # mask/labels/img_blur from the segmenter attrs (set by segment()).
                 from imswitch.imcontrol.model.workflows.segmentation import Segmenter
                 seg = Segmenter(
                     blur_sigma_px=self._blur_sigma_px,
                     threshold=self._threshold,
                 )
                 self._props = seg.segment(self._image, self._pixel_size_um)
-                
-                # Compute mask and labels for visualization
-                if self._props:
-                    from scipy.ndimage import gaussian_filter
-                    self._img_blur = gaussian_filter(self._image, sigma=self._blur_sigma_px)
-                    img_blur_norm = self._img_blur - np.min(self._img_blur)
-                    mx = np.max(img_blur_norm)
-                    if mx > 0:
-                        img_blur_norm = img_blur_norm / mx
-                    self._mask = img_blur_norm > self._threshold
-                    
-                    # Create labels image from props
-                    self._labels = np.zeros(self._image.shape, dtype=np.int32)
-                    for i, bbox in enumerate(self._props['bbox']):
-                        minr, minc, maxr, maxc = bbox
-                        self._labels[minr:maxr, minc:maxc] = self._props['label'][i]
-                else:
-                    self._mask = np.zeros(self._image.shape, dtype=bool)
-                    self._labels = np.zeros(self._image.shape, dtype=np.int32)
-                    self._img_blur = self._image
+                self._mask = seg.mask
+                self._labels = seg.labels
+                self._img_blur = seg.img_blur
         
         # Apply filters
         if self._props and len(self._props.get("area_um2", [])) > 0:
@@ -300,13 +283,13 @@ class SegmentationParamsWidget(QtWidgets.QDialog):
                 f"Total cells: {len(self._props['area_um2'])}   |   "
                 f"After filter: {len(idx)}"
             )
-            valid_x = self._props["centroid_x_um"][idx] if len(idx) else None
-            valid_y = self._props["centroid_y_um"][idx] if len(idx) else None
+            valid_col = self._props["centroid_col"][idx] if len(idx) else None
+            valid_row = self._props["centroid_row"][idx] if len(idx) else None
         else:
             self._lbl_count.setText("No cells found")
-            valid_x = valid_y = None
-        
-        self._update_previews(valid_x, valid_y)
+            valid_col = valid_row = None
+
+        self._update_previews(valid_col, valid_row)
     
     def _apply_filters(self, props, filt):
         """Apply area/intensity/eccentricity filters to cell properties."""
@@ -322,20 +305,24 @@ class SegmentationParamsWidget(QtWidgets.QDialog):
         )[0]
         return idx
     
-    def _update_previews(self, valid_x, valid_y):
-        """Render preview images as QPixmaps."""
+    def _update_previews(self, valid_col, valid_row):
+        """Render preview images as QPixmaps.
+
+        Args:
+            valid_col, valid_row: arrays of centroid column/row in original-image
+                pixel coordinates (or None).
+        """
         if self._img_blur is None or self._mask is None or self._labels is None:
             return
-        
+
         vmax = float(np.percentile(self._image, 99.5))
-        
+
         px_left = self._to_pixmap(
             self._img_blur,
             vmax=vmax,
             mask=self._mask,
-            scatter_x=valid_x,
-            scatter_y=valid_y,
-            pixel_size_um=self._pixel_size_um,
+            scatter_col=valid_col,
+            scatter_row=valid_row,
         )
         px_right = self._to_pixmap(
             self._image,
@@ -357,11 +344,14 @@ class SegmentationParamsWidget(QtWidgets.QDialog):
         vmax=None,
         mask=None,
         labels=None,
-        scatter_x=None,
-        scatter_y=None,
-        pixel_size_um=1.0,
+        scatter_col=None,
+        scatter_row=None,
     ):
-        """Convert a 2-D float array to a QPixmap with optional overlays."""
+        """Convert a 2-D float array to a QPixmap with optional overlays.
+
+        ``scatter_col`` / ``scatter_row`` are in original-image pixel
+        coordinates and are rescaled together with the image.
+        """
         # Downsample for display
         h, w = arr.shape
         scale = min(1.0, SegmentationParamsWidget._PREVIEW_PX / max(h, w))
@@ -398,13 +388,11 @@ class SegmentationParamsWidget(QtWidgets.QDialog):
             rgb[nz, 1] = (rgb[nz, 1].astype(np.float32) * 0.3).astype(np.uint8)
             rgb[nz, 2] = (rgb[nz, 2].astype(np.float32) * 0.3 + (255 - hue).astype(np.float32) * 0.7).clip(0, 255).astype(np.uint8)
         
-        if scatter_x is not None and scatter_y is not None and len(scatter_x):
-            # Draw small cross markers for accepted cells
-            # Convert µm coords to pixel coords (approximate linear mapping)
-            img_extent_x_um = w * pixel_size_um * scale
-            img_extent_y_um = h * pixel_size_um * scale
-            x_px = (scatter_x / img_extent_x_um * w).astype(int)
-            y_px = (scatter_y / img_extent_y_um * h).astype(int)
+        if scatter_col is not None and scatter_row is not None and len(scatter_col):
+            # Cross markers for accepted cells; rescale original-image pixel
+            # coords to the downsampled display.
+            x_px = (np.asarray(scatter_col) * scale).astype(int)
+            y_px = (np.asarray(scatter_row) * scale).astype(int)
             for xi, yi in zip(x_px, y_px):
                 for d in range(-4, 5):
                     if 0 <= yi + d < h and 0 <= xi < w:

@@ -86,14 +86,23 @@ class Segmenter:
         self.peak_min_dist_um = peak_min_dist_um
         self._min_area_px_override = min_area_px
         self._peak_min_dist_px_override = peak_min_dist_px
+
+        # Populated by segment(); exposed for visualization
+        self.mask: Optional[np.ndarray] = None
+        self.labels: Optional[np.ndarray] = None
+        self.img_blur: Optional[np.ndarray] = None
     
     def segment(self, img: np.ndarray, pixel_size_um: float) -> Dict[str, np.ndarray]:
         """Segment cells in a 2-D image.
-        
+
+        After calling, the intermediate ``mask``, ``labels`` and ``img_blur``
+        arrays are also accessible as attributes on the Segmenter instance,
+        for visualization.
+
         Args:
             img: 2-D float array (normalized 0-1 or arbitrary range).
             pixel_size_um: Pixel size in µm.
-        
+
         Returns:
             Dict of numpy arrays with keys:
                 label, area, centroid_row, centroid_col, centroid_x_um, centroid_y_um,
@@ -126,14 +135,19 @@ class Segmenter:
             thresh_val = float(self.threshold)
         
         mask = img_blur > thresh_val
-        
+
         # Handle scikit-image API drift (0.26+ renamed min_size → max_size)
         remove_small_objects_params = inspect.signature(remove_small_objects).parameters
         if "max_size" in remove_small_objects_params:
             mask = remove_small_objects(mask, max_size=min_area_px - 1)
         else:
             mask = remove_small_objects(mask, min_size=min_area_px)
-        
+
+        # Cache intermediates for visualization regardless of outcome
+        self.img_blur = img_blur
+        self.mask = mask
+        self.labels = np.zeros(img.shape, dtype=np.int32)
+
         if not np.any(mask):
             return {}
         
@@ -159,7 +173,8 @@ class Segmenter:
             markers[mask] = 1
         
         labels = watershed(-distance, markers, mask=mask)
-        
+        self.labels = labels
+
         if labels.max() == 0:
             return {}
         

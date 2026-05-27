@@ -1,4 +1,6 @@
-"""Record polarised CWSTARSS image stacks with Teensy TTL pulse generation.
+"""WidefieldSTARSS example — polarisation-resolved widefield acquisition.
+
+Records H/V polarised image stacks with Teensy TTL pulse generation.
 
 Prerequisites:
   - Setup loaded: example_kiralux_teensy.json (or equivalent)

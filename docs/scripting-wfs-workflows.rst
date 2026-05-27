@@ -337,6 +337,24 @@ The composite workflows reuse the singles:
     Internally uses ``RecordingWorkflow`` or a custom tile callback to
     acquire individual tiles.
 
+    Cell targeting is split by use case. In the main GUI, the tiling widget's
+    ``Detect cells`` action segments the stitched overview and displays target
+    markers only; it does not move the stage. Automated scripts can use
+    ``TilingWorkflow.run_cell_targeting(...)`` with a ``for_each_feature``
+    callback to move to each detected target and run a per-cell sub-workflow:
+
+    .. code-block:: python
+
+       def run_per_cell(idx, props, stage_xy):
+           recording_wf.run(measurement_name_addition=f"_cell_{idx + 1}")
+
+       tiling_wf.run_cell_targeting(
+           stitched=stitched_image,
+           pixel_size_um=0.5,
+           canvas_origin_stage=(origin_x_um, origin_y_um),
+           for_each_feature=run_per_cell,
+       )
+
 **MultiWellTilingWorkflow**
     Iterates over a rectangular grid of well positions (e.g., 4x6 plate).
     At each well, runs ``ZStackWorkflow.run_autofocus()`` to find the

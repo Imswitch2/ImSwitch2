@@ -404,6 +404,8 @@ Multi-position tiled acquisition manager:
 - Grid-based position list generation
 - Integration with positioner and recording managers
 - Automated stage movement and acquisition sequencing
+- Stitched-overview cell detection with passive GUI marker overlay
+- Explicit automated cell-target iteration for API/workflow callbacks
 
 ### FLIMHistWidget / FLIMHistController
 **Location:** `imswitch/imcontrol/view/widgets/FLIMHistWidget.py`

@@ -63,7 +63,7 @@ class TilingWidget(Widget):
         # Row 4: Cell targeting controls
         self.tuneSegmentationButton = guitools.BetterPushButton('Tune segmentation...')
         self.tuneSegmentationButton.setEnabled(False)
-        self.runCellTargetingButton = guitools.BetterPushButton('Run cell targeting')
+        self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
         self.runCellTargetingButton.setEnabled(False)
         layout.addWidget(self.tuneSegmentationButton, 4, 0, 1, 2)
         layout.addWidget(self.runCellTargetingButton, 4, 2, 1, 2)
@@ -177,7 +177,7 @@ class TilingWidget(Widget):
         self._cellPositions = None
 
     def setCellTargetingEnabled(self, enabled: bool) -> None:
-        """Enable or disable cell targeting controls.
+        """Enable or disable cell-target detection controls.
         
         Args:
             enabled: True to enable the segmentation and targeting buttons.

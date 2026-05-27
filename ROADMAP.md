@@ -189,11 +189,26 @@ breaking existing controller/API signal contracts.
   - `FLIMHistWidget.py` (histogram display), `FLIMHistController.py`
   - Optimized pipeline with cached scan-invariant tables
   - `SwabianTimeTaggerManager` fixes (live preview, signal duplication, init=True per frame)
+  - Phasor fit uses configured laser repetition rate (`laser_rep_rate_mhz`)
+    for ω instead of assuming the histogram window equals one laser period
+  - Automatic IRF peak detection per frame: moment subtracts `t_peak` from
+    the mean, exp1 fits only bins ≥ peak with shifted t-axis, phasor
+    rotates the measured (g, s) by −ω·t_peak. All three methods now
+    converge toward the same τ on known dyes.
+  - `FLIMHistWidget` mode toggle: "Lifetime dist." (per-pixel τ histogram)
+    or "Decay" (aggregated TCSPC histogram with global τ marker)
+  - `scripts/diagnostics/measure_laser_rep_rate.py` — TimeTagger.Countrate
+    helper for filling in the `laser_rep_rate_mhz` parameter
 - ✅ Tiling/stitching workflow
   - `TilingController.py` + `TilingWidget.py` (replaced stub implementation)
   - Spiral scan pattern (`spiral_moves` utility)
   - `StitchedImage` in-memory tile stitcher (workflows)
   - `TilingInfo` config dataclass
+  - Cell target detection on stitched overviews via reusable `Segmenter`
+  - GUI path is passive: "Detect cells" only shows markers; manual movement
+    still uses click-to-navigate
+  - Automated workflow/API path can explicitly iterate detected targets and
+    call a per-cell callback after moving to each stage coordinate
 - ✅ Napari viewer enhancements
   - `ViewerToolManager` (ROI, line, pan tools via napari Shapes layer)
   - Zoom-stable edge widths (shape edges in screen pixels)

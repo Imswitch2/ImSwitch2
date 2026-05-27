@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -298,133 +300,144 @@ class TestTilingWorkflow:
             npy_files = list(Path(tmpdir).glob("img_new_*.npy"))
             assert len(npy_files) == 0
     
-    def test_run_cell_targeting_no_overview(self):
-        """Test run_cell_targeting() handles missing overview gracefully."""
-        facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
-        params = TilingParams(n_tiles=4)
-        
-        workflow = TilingWorkflow(facade, recording, params)
-        
-        # Should not crash when no overview is available
-        workflow.run_cell_targeting()
-    
-    def test_run_cell_targeting_with_overview(self):
-        """Test run_cell_targeting() segments and targets cells."""
-        facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
-        params = TilingParams(n_tiles=4)
-        
-        workflow = TilingWorkflow(facade, recording, params)
-        workflow._origin_stage_xy = (10000.0, 20000.0)
-        
-        # Create fake overview with some bright regions (cells)
-        overview = np.zeros((512, 512), dtype=np.float32)
-        overview[100:150, 100:150] = 0.8  # Bright region (cell 1)
-        overview[300:350, 300:350] = 0.7  # Bright region (cell 2)
-        
-        found_calls = []
-        started_calls = []
-        done_calls = []
-        
-        def cells_found_cb(positions, n_cells):
-            found_calls.append((positions, n_cells))
-        
-        def cell_started_cb(idx):
-            started_calls.append(idx)
-        
-        def cell_done_cb(idx, success):
-            done_calls.append((idx, success))
-        
-        workflow.run_cell_targeting(
-            overview_image=overview,
-            cells_found_cb=cells_found_cb,
-            cell_started_cb=cell_started_cb,
-            cell_done_cb=cell_done_cb,
+    def _stitched_with_blob(self) -> object:
+        """Helper: build a real StitchedImage containing a single bright tile."""
+        from imswitch.imcontrol.model.workflows.stitched_image import StitchedImage
+        tile = np.zeros((128, 128), dtype=np.float32)
+        tile[40:90, 40:90] = 0.8
+        s = StitchedImage(
+            tile_size_px=128,
+            tile_step_um=64.0,
+            tile_shape_px=(128, 128),
+            pixel_size_um=0.5,
         )
-        
-        # Verify cells were found
-        assert len(found_calls) == 1
-        assert found_calls[0][1] > 0  # At least one cell found
-        
-        # Verify recording was called for each cell (H + V)
-        n_cells = found_calls[0][1]
-        assert len(recording.run_calls) == n_cells * 2  # H and V for each cell
-    
-    def test_run_cell_targeting_applies_filter(self):
-        """Test run_cell_targeting() applies segmentation filter."""
+        s.add_tile(tile, 0, 0)
+        return s
+
+    def _controller_with_blob_stitcher(self) -> tuple[object, MagicMock]:
+        """Build a TilingController shell around a stitched overview."""
+        from qtpy import QtCore
+
+        from imswitch.imcontrol.controller.controllers.TilingController import (
+            TilingController,
+        )
+
+        controller = TilingController.__new__(TilingController)
+        QtCore.QObject.__init__(controller)
+        controller._stitcher = self._stitched_with_blob()
+        controller._originXY = (100.0, 200.0)
+        controller._gridPositions = [(0, 0)]
+        controller._lastStepUm = 64.0
+        controller._segParams = {}
+        controller._cellPositionsRC = None
+        controller._cellProps = None
+        controller._cellTargetingRunning = False
+        controller._logger = MagicMock()
+
+        positioner = MagicMock()
+        controller._master = SimpleNamespace(positionersManager={"xy": positioner})
+        controller._setupInfo = SimpleNamespace(
+            tiling=SimpleNamespace(xyPositioner="xy"),
+            positioners={"xy": SimpleNamespace(axes=("x", "y"))},
+        )
+        return controller, positioner
+
+    def test_run_cell_targeting_invokes_for_each_feature(self):
+        """run_cell_targeting iterates accepted cells through for_each_feature."""
         facade = build_mock_facade()
         recording = MockRecordingWorkflow()
-        
-        # Restrictive filter that should reject small regions
-        seg_filter = {
-            "area_um2_min": 50000.0,  # Very large minimum area (> 16,900 µm² for 20x20 @ 6.5µm)
-            "area_enabled": True,
-        }
-        
         params = TilingParams(n_tiles=4)
+        workflow = TilingWorkflow(facade, recording, params)
+
+        stitched = self._stitched_with_blob()
+        seen = []
+
+        workflow.run_cell_targeting(
+            stitched=stitched,
+            pixel_size_um=0.5,
+            canvas_origin_stage=(0.0, 0.0),
+            for_each_feature=lambda i, props, xy: seen.append((i, xy)),
+        )
+
+        assert len(seen) >= 1
+        assert facade.stage_con.move_to.call_count >= len(seen)
+
+    def test_run_cell_targeting_filter_rejects_small(self):
+        """Restrictive area filter yields zero accepted cells."""
+        facade = build_mock_facade()
+        recording = MockRecordingWorkflow()
+        params = TilingParams(n_tiles=4)
+        seg_filter = {"area_enabled": True, "area_um2_min": 1e9, "area_um2_max": 1e10}
         workflow = TilingWorkflow(facade, recording, params, seg_filter)
-        workflow._origin_stage_xy = (10000.0, 20000.0)
-        
-        # Create fake overview with small bright regions
-        overview = np.zeros((512, 512), dtype=np.float32)
-        overview[100:120, 100:120] = 0.8  # Small region (~16,900 µm² at 6.5 µm/px)
-        
-        found_calls = []
-        
-        def cells_found_cb(positions, n_cells):
-            found_calls.append((positions, n_cells))
-        
+
+        stitched = self._stitched_with_blob()
+        found = []
+
         workflow.run_cell_targeting(
-            overview_image=overview,
-            pixel_size_um=6.5,
-            cells_found_cb=cells_found_cb,
+            stitched=stitched,
+            pixel_size_um=0.5,
+            canvas_origin_stage=(0.0, 0.0),
+            cells_found_cb=lambda positions, n: found.append(n),
         )
-        
-        # Small region should be filtered out
-        if len(found_calls) > 0:
-            # Either no cells found, or cells found but filtered out
-            assert found_calls[0][1] == 0
-    
-    def test_run_cell_targeting_moves_stage_to_cells(self):
-        """Test run_cell_targeting() moves stage to each cell."""
-        facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
-        params = TilingParams(n_tiles=4)
-        
-        workflow = TilingWorkflow(facade, recording, params)
-        workflow._origin_stage_xy = (10000.0, 20000.0)
-        
-        # Create fake overview with cells
-        overview = np.zeros((512, 512), dtype=np.float32)
-        overview[100:150, 100:150] = 0.8
-        
-        initial_move_count = facade.stage_con.move_to.call_count
-        
-        workflow.run_cell_targeting(overview_image=overview)
-        
-        # Verify stage moves occurred (at least once per cell found)
-        assert facade.stage_con.move_to.call_count > initial_move_count
-    
-    def test_run_cell_targeting_calls_rotators(self):
-        """Test run_cell_targeting() moves rotators for H and V."""
-        facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
-        params = TilingParams(n_tiles=4)
-        
-        workflow = TilingWorkflow(facade, recording, params)
-        workflow._origin_stage_xy = (10000.0, 20000.0)
-        
-        # Create fake overview with one cell
-        overview = np.zeros((512, 512), dtype=np.float32)
-        overview[100:150, 100:150] = 0.8
-        
-        workflow.run_cell_targeting(overview_image=overview)
-        
-        # Verify rotator moves for H and V
-        assert facade.rotator_qwp.chained_move_to_h.call_count > 0
-        assert facade.rotator_qwp.chained_move_to_v.call_count > 0
-    
+
+        assert found == [0]
+
+    def test_controller_detect_cell_targets_does_not_move_stage(self) -> None:
+        """GUI-safe cell detection should only show/cache markers."""
+        controller, positioner = self._controller_with_blob_stitcher()
+
+        positions = controller.detectCellTargets()
+
+        assert len(positions) >= 1
+        positioner.setPosition.assert_not_called()
+        assert controller._cellPositionsRC is not None
+
+    def test_controller_run_cell_targeting_without_callback_does_not_move(
+        self,
+    ) -> None:
+        """runCellTargeting without an explicit workflow is detection-only."""
+        controller, positioner = self._controller_with_blob_stitcher()
+
+        controller.runCellTargeting()
+
+        positioner.setPosition.assert_not_called()
+        assert controller._cellPositionsRC is not None
+
+    def test_controller_run_cell_targeting_moves_only_when_explicit(
+        self, monkeypatch
+    ) -> None:
+        """Automated controller path moves and invokes the per-cell callback."""
+        import importlib
+
+        module = importlib.import_module(
+            "imswitch.imcontrol.controller.controllers.TilingController"
+        )
+
+        class ImmediateThread:
+            def __init__(
+                self, target: Any, args: tuple = (), daemon: bool | None = None
+            ) -> None:
+                self._target = target
+                self._args = args
+
+            def start(self) -> None:
+                self._target(*self._args)
+
+        monkeypatch.setattr(module.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+        controller, positioner = self._controller_with_blob_stitcher()
+        seen = []
+
+        controller.runCellTargeting(
+            feature_callback=lambda i, props, xy: seen.append((i, props, xy))
+        )
+
+        assert len(seen) >= 1
+        assert positioner.setPosition.call_count >= 2 * len(seen)
+        assert isinstance(seen[0][1], dict)
+        assert len(seen[0][2]) == 2
+
+
     def test_grab_image_hw_fallback_on_timeout(self):
         """Test _grab_image_hw falls back to software on timeout."""
         facade = build_mock_facade()
@@ -510,43 +523,32 @@ class TestTilingWorkflow:
         
         assert pos == (12345.0, 67890.0)
     
-    def test_segment_cells_no_future_warning(self):
-        """_segment_cells must not raise FutureWarning from skimage deprecations."""
+    def test_segmenter_no_future_warning(self):
+        """Segmenter must not raise FutureWarning from skimage deprecations."""
         import warnings
-
-        facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
-        params = TilingParams(n_tiles=4)
-
-        workflow = TilingWorkflow(facade, recording, params)
+        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
 
         overview = np.zeros((512, 512), dtype=np.float32)
         overview[100:200, 100:200] = 0.8
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", FutureWarning)
-            workflow._segment_cells(overview, pixel_size_um=6.5)
+            Segmenter(threshold=0.3).segment(overview, pixel_size_um=6.5)
 
-    def test_segment_cells_returns_dict(self):
-        """Test _segment_cells returns proper dict structure."""
-        facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
-        params = TilingParams(n_tiles=4)
-        
-        workflow = TilingWorkflow(facade, recording, params)
-        
-        # Create simple test image with bright region
+    def test_segmenter_returns_dict(self):
+        """Segmenter.segment returns the documented dict schema."""
+        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
+
         overview = np.zeros((512, 512), dtype=np.float32)
         overview[100:200, 100:200] = 0.8
-        
-        result = workflow._segment_cells(overview, pixel_size_um=6.5)
-        
-        # Should return dict with expected keys
+
+        result = Segmenter(threshold=0.3).segment(overview, pixel_size_um=6.5)
+
         assert isinstance(result, dict)
-        if len(result) > 0:  # If cells were found
-            assert "centroid_x_um" in result
-            assert "centroid_y_um" in result
-            assert "area_um2" in result
-            assert "mean_intensity" in result
-            assert "max_intensity" in result
-            assert "eccentricity" in result
+        if result:
+            for key in (
+                "centroid_row", "centroid_col",
+                "centroid_x_um", "centroid_y_um",
+                "area_um2", "mean_intensity", "max_intensity", "eccentricity",
+            ):
+                assert key in result

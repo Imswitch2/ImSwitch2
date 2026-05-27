@@ -27,8 +27,6 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import animation
 
 
 def write_stitching_animation(
@@ -87,8 +85,11 @@ def write_stitching_animation(
     ...     outfile='stitch.gif', fps=2
     ... )
     """
+    import matplotlib.pyplot as plt
+    from matplotlib import animation
+
     outfile = Path(outfile)
-    
+
     if not tiles:
         raise ValueError("tiles list cannot be empty")
     
