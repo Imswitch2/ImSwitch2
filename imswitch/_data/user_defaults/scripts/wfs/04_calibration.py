@@ -6,8 +6,7 @@ Prerequisites:
   - Laser: 488 nm (EXC)
   - Teensy device available (if pulsed=True)
 
-Output: ~/ImSwitchMeasurements/<timestamp>_calibration.tiff
-        ~/ImSwitchMeasurements/<timestamp>_calibration_metadata.json
+Output: <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/polcal_<HHMMSS>.csv
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import CalibrationWorkflow, CalibrationParams

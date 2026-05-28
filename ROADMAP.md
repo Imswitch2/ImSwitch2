@@ -375,7 +375,7 @@ ImSwitch model workflows that can be driven from the Console/Scripting module.
     assertions
   - Covered by `test_microscope_facade.py`
 - ✅ Port first single-device workflows
-  - `RecordingWorkflow`
+  - `WidefieldStarssWorkflow`
   - `ZStackWorkflow`
   - `CWSTARSSWorkflow`
   - `CalibrationWorkflow`

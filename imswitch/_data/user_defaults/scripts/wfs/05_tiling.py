@@ -6,8 +6,9 @@ Prerequisites:
   - Laser: 488 nm (EXC)
   - Teensy device available (if pulsed=True)
 
-Output: ~/ImSwitchMeasurements/<timestamp>/stitched_image.png
-        ~/ImSwitchMeasurements/<timestamp>/tile_*.npy (if save_individual=True)
+Output: <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/tiling_<HHMMSS>/Tiling_measurement.h5
+        <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/tiling_<HHMMSS>/img_new_*.npy
+        if save_individual=True.
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import TilingWorkflow, TilingParams

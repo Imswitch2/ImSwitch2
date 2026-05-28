@@ -5,20 +5,22 @@ Composition pipeline:
   2. Run a 10x10 spiral tiling with 20% overlap of that FOV.
   3. Stitch tiles into a live overview, segment cells.
   4. At each accepted cell, move the stage and run a WidefieldSTARSS
-     recording (H + V polarisation stack).
+     acquisition (H + V polarisation stack).
 
 Prerequisites:
   - Setup loaded: example_kiralux_teensy.json (or equivalent)
   - XY positioner, Teensy, 488 nm laser, HWP/QWP rotators
 
 Output:
-  - ~/ImSwitchMeasurements/<timestamp>/tile_*.npy + Tiling_measurement.h5
-  - ~/ImSwitchMeasurements/<timestamp>_cell_<i>_horizontal.tiff (and _vertical)
+  - <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/tiling_<HHMMSS>/img_new_*.npy
+    + Tiling_measurement.h5
+  - <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/data_stack_cell_<i>_h.tif
+    and data_stack_cell_<i>_v.tif
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (
-    RecordingParams,
-    RecordingWorkflow,
+    WidefieldStarssParams,
+    WidefieldStarssWorkflow,
     StitchedImage,
     TilingParams,
     TilingWorkflow,
@@ -63,9 +65,9 @@ step_um = min(fov_x_um, fov_y_um) * (1.0 - OVERLAP_FRACTION)
 print(f"FOV: {fov_x_um:.1f} x {fov_y_um:.1f} µm  |  step_um (20% overlap) = {step_um:.1f}")
 
 # ---------------------------------------------------------------------------
-# 2. Per-cell sub-workflow (WidefieldSTARSS recording)
+# 2. Per-cell sub-workflow (WidefieldSTARSS acquisition)
 # ---------------------------------------------------------------------------
-recording_params = RecordingParams(
+widefield_starss_params = WidefieldStarssParams(
     pin488=8, pin405=6, camerapin=11,
     start488=0, start405=25_000, start_camera=0,
     width488=20_000, width405=20_000, width_camera=50_000,
@@ -73,7 +75,7 @@ recording_params = RecordingParams(
     move_waveplate=True, record_h=True, record_v=True,
     measurements_root=MEASUREMENTS_ROOT,
 )
-recording_wf = RecordingWorkflow(facade, recording_params)
+widefield_starss_wf = WidefieldStarssWorkflow(facade, widefield_starss_params)
 
 # ---------------------------------------------------------------------------
 # 3. Tiling — build a live stitcher via the tile_callback hook
@@ -103,7 +105,7 @@ tiling_params = TilingParams(
     save_individual=True,
     measurements_root=MEASUREMENTS_ROOT,
 )
-tiling_wf = TilingWorkflow(facade, recording_wf, tiling_params, SEG_FILTER)
+tiling_wf = TilingWorkflow(facade, widefield_starss_wf, tiling_params, SEG_FILTER)
 
 initial_pos = facade.stage_con.get_position()
 tiling_wf.run(tile_callback=feed_stitcher)
@@ -125,7 +127,7 @@ canvas_origin = (
 def acquire_at_cell(idx, cell_props, stage_xy):
     print(f"Cell {idx}: stage=({stage_xy[0]:.1f}, {stage_xy[1]:.1f}) µm  "
           f"area={float(cell_props['area_um2']):.1f} µm²")
-    recording_wf.run(measurement_name_addition=f"_cell_{idx}")
+    widefield_starss_wf.run(measurement_name_addition=f"_cell_{idx}")
 
 tiling_wf.run_cell_targeting(
     stitched=stitcher,

@@ -8,11 +8,11 @@ Prerequisites:
   - Lasers: 488 nm (EXC), 405 nm (ACT)
   - Rotators: HWP, QWP configured with presets
 
-Output: ~/ImSwitchMeasurements/<timestamp>_horizontal.tiff
-        ~/ImSwitchMeasurements/<timestamp>_vertical.tiff
+Output: <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/data_stack_h.tif
+        <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/data_stack_v.tif
 """
 # ruff: noqa: F821
-from imswitch.imcontrol.model.workflows import RecordingWorkflow, RecordingParams
+from imswitch.imcontrol.model.workflows import WidefieldStarssWorkflow, WidefieldStarssParams
 
 MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
 
@@ -25,7 +25,7 @@ facade = api.imcontrol.buildWorkflowFacade(
     qwp_name="QWP",
 )
 
-params = RecordingParams(
+params = WidefieldStarssParams(
     pin488=8,
     pin405=6,
     camerapin=11,
@@ -44,7 +44,7 @@ params = RecordingParams(
     measurements_root=MEASUREMENTS_ROOT,
 )
 
-wf = RecordingWorkflow(facade, params)
+wf = WidefieldStarssWorkflow(facade, params)
 wf.run()
 
-print("Recording complete. Check ~/ImSwitchMeasurements/ for TIFF files.")
+print("WidefieldStarss complete. Check ~/ImSwitchMeasurements/ for TIFF files.")

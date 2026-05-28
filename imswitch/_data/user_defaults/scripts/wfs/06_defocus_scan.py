@@ -5,14 +5,14 @@ Prerequisites:
   - Z positioner available
   - Camera configured for image acquisition
 
-Output: One recording per Z plane under ~/ImSwitchMeasurements/.
+Output: One WidefieldStarss acquisition per Z plane under ~/ImSwitchMeasurements/.
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (
     DefocusScanParams,
     DefocusScanWorkflow,
-    RecordingParams,
-    RecordingWorkflow,
+    WidefieldStarssParams,
+    WidefieldStarssWorkflow,
 )
 
 MEASUREMENTS_ROOT = "D:/Measurements"  # Adapt to your preferred measurement folder.
@@ -33,7 +33,7 @@ params = DefocusScanParams(
     scramble=False,
 )
 
-recording_params = RecordingParams(
+widefield_starss_params = WidefieldStarssParams(
     pin488=8,
     pin405=6,
     camerapin=11,
@@ -52,8 +52,8 @@ recording_params = RecordingParams(
     measurements_root=MEASUREMENTS_ROOT,
 )
 
-recording = RecordingWorkflow(facade, recording_params)
-wf = DefocusScanWorkflow(facade, recording, params)
+widefield_starss = WidefieldStarssWorkflow(facade, widefield_starss_params)
+wf = DefocusScanWorkflow(facade, widefield_starss, params)
 z_positions = wf.run()
 
 print(f"Defocus scan complete: {len(z_positions)} planes acquired.")

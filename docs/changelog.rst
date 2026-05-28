@@ -11,6 +11,7 @@ Unreleased
 - Added ``laser_rep_rate_mhz`` parameter to ``SwabianTimeTaggerManager`` so the phasor fit uses the true ω = 2π·f_rep instead of assuming the histogram window equals one laser period
 - Added ``scripts/diagnostics/measure_laser_rep_rate.py`` — a TimeTagger.Countrate helper that prints the measured laser repetition rate for plugging into ``laser_rep_rate_mhz``
 - Added stitched-overview cell target detection for tiling workflows. The GUI "Detect cells" action is passive and only overlays markers; automated/API cell targeting explicitly moves through detected targets and can invoke a per-cell workflow callback.
+- Renamed the WFS polarisation-resolved acquisition workflow to ``WidefieldStarssWorkflow`` / ``WidefieldStarssParams``. The old ``RecordingWorkflow`` / ``RecordingParams`` names remain available as compatibility aliases.
 
 **Bug Fixes**
 

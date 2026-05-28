@@ -14,8 +14,8 @@ import pytest
 from imswitch.imcontrol.model.workflows import TilingParams, TilingWorkflow
 
 
-class MockRecordingWorkflow:
-    """Mock recording workflow for testing."""
+class MockWidefieldStarssWorkflow:
+    """Mock WidefieldStarss workflow for testing."""
     
     def __init__(self):
         self.run_calls = []
@@ -92,19 +92,19 @@ class TestTilingWorkflow:
     def test_workflow_initialization(self):
         """Test TilingWorkflow initialization."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=4)
         
-        workflow = TilingWorkflow(facade, recording, params)
+        workflow = TilingWorkflow(facade, widefield_starss, params)
         assert workflow.facade is facade
-        assert workflow._recording is recording
+        assert workflow._recording is widefield_starss
         assert workflow.params is params
         assert workflow.seg_filter == {}
     
     def test_workflow_with_seg_filter(self):
         """Test TilingWorkflow with segmentation filter."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=4)
         seg_filter = {
             "area_um2_min": 100.0,
@@ -112,10 +112,10 @@ class TestTilingWorkflow:
             "area_enabled": True,
         }
         
-        workflow = TilingWorkflow(facade, recording, params, seg_filter)
+        workflow = TilingWorkflow(facade, widefield_starss, params, seg_filter)
         assert workflow.seg_filter == seg_filter
     
-    def test_workflow_initialization_without_recording_workflow(self):
+    def test_workflow_initialization_without_widefield_starss_workflow(self):
         """Test backward-compatible TilingWorkflow(facade, params) initialization."""
         facade = build_mock_facade()
         params = TilingParams(n_tiles=4)
@@ -147,7 +147,7 @@ class TestTilingWorkflow:
     def test_run_creates_tiles(self):
         """Test run() executes tiling scan."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         with tempfile.TemporaryDirectory() as tmpdir:
             params = TilingParams(
@@ -157,7 +157,7 @@ class TestTilingWorkflow:
                 pulsed=False,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run()
             
             # Verify stage moves (4 tiles + 1 move to origin at end)
@@ -171,7 +171,7 @@ class TestTilingWorkflow:
     def test_run_rounds_n_tiles_to_perfect_square(self):
         """Test run() rounds n_tiles up to perfect square."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         with tempfile.TemporaryDirectory() as tmpdir:
             # 5 tiles should round to 9 (3x3)
@@ -182,7 +182,7 @@ class TestTilingWorkflow:
                 pulsed=False,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run()
             
             # Verify 9 tiles were acquired (3x3 spiral) + 1 move to origin
@@ -191,7 +191,7 @@ class TestTilingWorkflow:
     def test_run_hardware_triggered_mode(self):
         """Test run() uses hardware triggering when configured."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         with tempfile.TemporaryDirectory() as tmpdir:
             params = TilingParams(
@@ -203,7 +203,7 @@ class TestTilingWorkflow:
                 camera_pin=3,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run()
             
             # Verify triggered mode was set
@@ -216,7 +216,7 @@ class TestTilingWorkflow:
         """Test run() uses software pulsing when no trigger available."""
         facade = build_mock_facade()
         facade.trig.connected = False
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         with tempfile.TemporaryDirectory() as tmpdir:
             params = TilingParams(
@@ -226,7 +226,7 @@ class TestTilingWorkflow:
                 pulsed=True,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run()
             
             # Verify constant power mode was used
@@ -239,7 +239,7 @@ class TestTilingWorkflow:
     def test_run_tile_callback(self):
         """Test run() calls tile_callback for each tile."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         callback_calls = []
         
@@ -253,7 +253,7 @@ class TestTilingWorkflow:
                 save_individual=False,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run(tile_callback=tile_callback)
             
             # Verify callback was called for each tile
@@ -265,7 +265,7 @@ class TestTilingWorkflow:
     def test_run_saves_individual_tiles(self):
         """Test run() saves individual .npy files when configured."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         with tempfile.TemporaryDirectory() as tmpdir:
             params = TilingParams(
@@ -274,7 +274,7 @@ class TestTilingWorkflow:
                 save_individual=True,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run()
             
             # Verify .npy files were created
@@ -284,7 +284,7 @@ class TestTilingWorkflow:
     def test_run_skips_individual_tiles_when_disabled(self):
         """Test run() does not save individual files when save_individual=False."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         
         with tempfile.TemporaryDirectory() as tmpdir:
             params = TilingParams(
@@ -293,7 +293,7 @@ class TestTilingWorkflow:
                 save_individual=False,
             )
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow.run()
             
             # Verify no .npy files were created
@@ -345,9 +345,9 @@ class TestTilingWorkflow:
     def test_run_cell_targeting_invokes_for_each_feature(self):
         """run_cell_targeting iterates accepted cells through for_each_feature."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=4)
-        workflow = TilingWorkflow(facade, recording, params)
+        workflow = TilingWorkflow(facade, widefield_starss, params)
 
         stitched = self._stitched_with_blob()
         seen = []
@@ -365,10 +365,10 @@ class TestTilingWorkflow:
     def test_run_cell_targeting_filter_rejects_small(self):
         """Restrictive area filter yields zero accepted cells."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=4)
         seg_filter = {"area_enabled": True, "area_um2_min": 1e9, "area_um2_max": 1e10}
-        workflow = TilingWorkflow(facade, recording, params, seg_filter)
+        workflow = TilingWorkflow(facade, widefield_starss, params, seg_filter)
 
         stitched = self._stitched_with_blob()
         found = []
@@ -442,10 +442,10 @@ class TestTilingWorkflow:
         """Test _grab_image_hw falls back to software on timeout."""
         facade = build_mock_facade()
         facade.cam.wait_for_frame = MagicMock(return_value=False)  # Timeout
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=1)
         
-        workflow = TilingWorkflow(facade, recording, params)
+        workflow = TilingWorkflow(facade, widefield_starss, params)
         
         # Should fall back to software acquisition
         img = workflow._grab_image_hw(laser_pin=0, camera_pin=1)
@@ -467,10 +467,10 @@ class TestTilingWorkflow:
             return np.array([fake_frame])
         
         facade.cam.get_data = MagicMock(side_effect=get_data_side_effect)
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=1)
         
-        workflow = TilingWorkflow(facade, recording, params)
+        workflow = TilingWorkflow(facade, widefield_starss, params)
         
         # Should retry and succeed on second attempt
         img = workflow._grab_image()
@@ -481,10 +481,10 @@ class TestTilingWorkflow:
         """Test _grab_image raises after max retries."""
         facade = build_mock_facade()
         facade.cam.get_data = MagicMock(return_value=None)  # Always fail
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=1)
         
-        workflow = TilingWorkflow(facade, recording, params)
+        workflow = TilingWorkflow(facade, widefield_starss, params)
         
         with pytest.raises(RuntimeError, match="failed to acquire image"):
             workflow._grab_image()
@@ -492,7 +492,7 @@ class TestTilingWorkflow:
     def test_prepare_h5_removes_old_files(self):
         """Test _prepare_h5 removes existing files."""
         facade = build_mock_facade()
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=4)
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -503,7 +503,7 @@ class TestTilingWorkflow:
             (tmpdir / "img_new_0_0.npy").touch()
             (tmpdir / "img_new_1_0.npy").touch()
             
-            workflow = TilingWorkflow(facade, recording, params)
+            workflow = TilingWorkflow(facade, widefield_starss, params)
             workflow._prepare_h5(tmpdir)
             
             # Verify old files were removed
@@ -515,10 +515,10 @@ class TestTilingWorkflow:
         """Test _get_stage_position returns facade position."""
         facade = build_mock_facade()
         facade.stage_con.get_position = MagicMock(return_value=(12345.0, 67890.0))
-        recording = MockRecordingWorkflow()
+        widefield_starss = MockWidefieldStarssWorkflow()
         params = TilingParams(n_tiles=4)
         
-        workflow = TilingWorkflow(facade, recording, params)
+        workflow = TilingWorkflow(facade, widefield_starss, params)
         pos = workflow._get_stage_position()
         
         assert pos == (12345.0, 67890.0)

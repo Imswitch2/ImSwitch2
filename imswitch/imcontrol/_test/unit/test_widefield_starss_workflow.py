@@ -1,4 +1,4 @@
-"""Unit tests for RecordingWorkflow — polarisation-resolved acquisition."""
+"""Unit tests for WidefieldStarssWorkflow — polarisation-resolved acquisition."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import pytest
 import tifffile as tf
 
 from imswitch.imcontrol.model.workflows import (
-    RecordingParams,
-    RecordingWorkflow,
+    WidefieldStarssParams,
+    WidefieldStarssWorkflow,
     build_mock_facade,
 )
 
@@ -29,8 +29,8 @@ def mock_facade():
 
 @pytest.fixture
 def default_params():
-    """Provide default RecordingParams for a typical run."""
-    return RecordingParams(
+    """Provide default WidefieldStarssParams for a typical run."""
+    return WidefieldStarssParams(
         pin488=1,
         pin405=2,
         camerapin=3,
@@ -49,21 +49,34 @@ def default_params():
     )
 
 
-class TestRecordingWorkflow:
-    """Test suite for RecordingWorkflow."""
+class TestWidefieldStarssWorkflow:
+    """Test suite for WidefieldStarssWorkflow."""
 
     def test_import(self):
-        """Verify RecordingWorkflow and RecordingParams are importable."""
+        """Verify WidefieldStarssWorkflow and WidefieldStarssParams are importable."""
         from imswitch.imcontrol.model.workflows import (
-            RecordingParams,
-            RecordingWorkflow,
+            WidefieldStarssParams,
+            WidefieldStarssWorkflow,
         )
-        assert RecordingWorkflow is not None
-        assert RecordingParams is not None
+        assert WidefieldStarssWorkflow is not None
+        assert WidefieldStarssParams is not None
+
+    def test_legacy_recording_aliases(self):
+        """Old RecordingWorkflow imports remain aliases for user scripts."""
+        from imswitch.imcontrol.model.workflows import RecordingParams, RecordingWorkflow
+        from imswitch.imcontrol.model.workflows.recording import (
+            RecordingParams as ModuleRecordingParams,
+            RecordingWorkflow as ModuleRecordingWorkflow,
+        )
+
+        assert RecordingWorkflow is WidefieldStarssWorkflow
+        assert RecordingParams is WidefieldStarssParams
+        assert ModuleRecordingWorkflow is WidefieldStarssWorkflow
+        assert ModuleRecordingParams is WidefieldStarssParams
 
     def test_workflow_initialization(self, mock_facade, default_params):
         """Verify workflow can be instantiated with facade and params."""
-        workflow = RecordingWorkflow(mock_facade, default_params)
+        workflow = WidefieldStarssWorkflow(mock_facade, default_params)
         assert workflow.facade is mock_facade
         assert workflow.params is default_params
         assert isinstance(workflow.measurements_root, Path)
@@ -78,7 +91,7 @@ class TestRecordingWorkflow:
         monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
         default_params.measurements_root = None
 
-        workflow = RecordingWorkflow(mock_facade, default_params)
+        workflow = WidefieldStarssWorkflow(mock_facade, default_params)
 
         assert workflow.measurements_root == tmp_path
 
@@ -88,7 +101,7 @@ class TestRecordingWorkflow:
         """String roots should be accepted and normalized to Path."""
         default_params.measurements_root = str(tmp_path)
 
-        workflow = RecordingWorkflow(mock_facade, default_params)
+        workflow = WidefieldStarssWorkflow(mock_facade, default_params)
 
         assert workflow.measurements_root == tmp_path
 
@@ -96,7 +109,7 @@ class TestRecordingWorkflow:
         """Verify H and V stacks are both acquired when both flags are True."""
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             # Check that both H and V stacks were saved
@@ -119,7 +132,7 @@ class TestRecordingWorkflow:
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
             default_params.record_v = False
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             assert workflow.datastack_h is not None
@@ -135,7 +148,7 @@ class TestRecordingWorkflow:
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
             default_params.record_h = False
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             assert workflow.datastack_h is None
@@ -152,7 +165,7 @@ class TestRecordingWorkflow:
             default_params.measurements_root = Path(tmpdir)
             default_params.record_h = False
             default_params.record_v = False
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             # No acquisitions should have been triggered
@@ -167,7 +180,7 @@ class TestRecordingWorkflow:
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
             default_params.measurement_name_addition = "_test"
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             # Check that TIFF files were created
@@ -183,7 +196,7 @@ class TestRecordingWorkflow:
         """Verify saved TIFF files can be read and have correct shape."""
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             saved_files = list(Path(tmpdir).rglob("*.tif"))
@@ -197,7 +210,7 @@ class TestRecordingWorkflow:
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
             default_params.move_waveplate = False
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             call_names = mock_facade.call_names()
@@ -210,7 +223,7 @@ class TestRecordingWorkflow:
         """Verify laser modulation is disabled at workflow start."""
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             # First call should be set_modulation_mode(None)
@@ -222,7 +235,7 @@ class TestRecordingWorkflow:
         """Verify trig.command is called once and reused for both polarisations."""
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             # trig.command should be called exactly once (pulse scheme computed once)
@@ -239,13 +252,13 @@ class TestRecordingWorkflow:
         stack = np.random.randint(100, 5000, size=(10, 64, 64), dtype=np.uint16)
         
         # Should not raise an exception
-        RecordingWorkflow._calculate_r(stack)
+        WidefieldStarssWorkflow._calculate_r(stack)
         # Note: _calculate_r returns None (just logs), so we only verify no crash
 
     def test_compute_anisotropy_map_returns_valid_shape(self):
         """Verify compute_anisotropy_map produces correct output shape."""
         stack = np.random.randint(100, 5000, size=(10, 64, 64), dtype=np.uint16)
-        r_map = RecordingWorkflow.compute_anisotropy_map(stack)
+        r_map = WidefieldStarssWorkflow.compute_anisotropy_map(stack)
         
         # Output should be downsampled by factor of 2 in each spatial dimension
         assert r_map.shape == (32, 32)
@@ -256,7 +269,7 @@ class TestRecordingWorkflow:
         stack_h = np.random.randint(100, 5000, size=(10, 64, 64), dtype=np.uint16)
         stack_v = np.random.randint(100, 5000, size=(10, 64, 64), dtype=np.uint16)
         
-        r_map = RecordingWorkflow.compute_full_anisotropy_map(stack_h, stack_v)
+        r_map = WidefieldStarssWorkflow.compute_full_anisotropy_map(stack_h, stack_v)
         
         assert r_map.shape == (32, 32)
         assert r_map.dtype == np.float32
@@ -269,7 +282,7 @@ class TestRecordingWorkflow:
              tempfile.TemporaryDirectory() as tmpdir2:
             default_params.measurements_root = Path(tmpdir1)
             # Constructor override should take precedence
-            workflow = RecordingWorkflow(
+            workflow = WidefieldStarssWorkflow(
                 mock_facade, default_params, measurements_root=Path(tmpdir2)
             )
             workflow.run()
@@ -283,13 +296,29 @@ class TestRecordingWorkflow:
         with tempfile.TemporaryDirectory() as tmpdir:
             default_params.measurements_root = Path(tmpdir)
             default_params.measurement_name_addition = "_myexperiment"
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             saved_files = list(Path(tmpdir).rglob("*.tif"))
             filenames = [f.name for f in saved_files]
             assert any("_myexperiment_h.tif" in name for name in filenames)
             assert any("_myexperiment_v.tif" in name for name in filenames)
+
+    def test_run_accepts_temporary_measurement_name_addition(
+        self, mock_facade, default_params
+    ):
+        """Per-cell workflows can override the filename suffix per run."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            default_params.measurements_root = Path(tmpdir)
+            default_params.measurement_name_addition = "_base"
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
+            workflow.run(measurement_name_addition="_cell_1")
+
+            saved_files = list(Path(tmpdir).rglob("*.tif"))
+            filenames = [f.name for f in saved_files]
+            assert any("_cell_1_h.tif" in name for name in filenames)
+            assert any("_cell_1_v.tif" in name for name in filenames)
+            assert default_params.measurement_name_addition == "_base"
 
     def test_camera_frame_count_correct(self, mock_facade, default_params):
         """Verify camera is prepared for 2×frame_number frames."""
@@ -300,7 +329,7 @@ class TestRecordingWorkflow:
             mock_facade.cam.set_canned_data(
                 np.random.randint(100, 5000, size=(14, 64, 64), dtype=np.uint16)
             )
-            workflow = RecordingWorkflow(mock_facade, default_params)
+            workflow = WidefieldStarssWorkflow(mock_facade, default_params)
             workflow.run()
 
             # Check prepare_acquisition calls

@@ -10,11 +10,11 @@ Before this controller, users had to:
 1. Import `build_facade_from_master` from internal workflow modules
 2. Access `api._master` directly (breaking encapsulation)
 
-With `WorkflowFacadeController`, facade construction is exposed as a public API method: `api.workflowFacade.build()`.
+With `WorkflowFacadeController`, facade construction is exposed as a public API method: `api.imcontrol.buildWorkflowFacade(...)`.
 
 ## API Method
 
-### `api.workflowFacade.build(**kwargs)`
+### `api.imcontrol.buildWorkflowFacade(**kwargs)`
 
 Constructs a `MicroscopeFacade` from the current ImSwitch master controller.
 
@@ -22,9 +22,12 @@ Constructs a `MicroscopeFacade` from the current ImSwitch master controller.
 - `laser_aliases` (dict[str, str], optional): Map facade laser names to setupInfo laser names
   - Example: `{'488': 'Laser488', '405': 'Laser405'}`
 - `detector_name` (str, optional): Name of detector/camera to expose
-- `z_stage_name` (str, optional): Name of Z positioner to expose
-- `rotation_stage_name` (str, optional): Name of rotation stage to expose
-- `trig_device_name` (str, optional): Name of TTL trigger device
+- `xy_positioner_name` (str, optional): Name of XY positioner to expose
+- `z_positioner_name` (str, optional): Name of Z positioner to expose
+- `hwp_name` / `qwp_name` (str, optional): Names of HWP/QWP rotators
+- `hwp_presets` / `qwp_presets` (`RotatorPresets`, optional): Script-level H/V angle overrides
+- `pulsegen_name` (str, optional): Name of the ImSwitch pulse generator manager
+- `wfs_teensy_port` / `wfs_teensy_baudrate` (optional): Direct serial connection for WFS Teensy firmware
 
 **Returns:**
 - `MicroscopeFacade`: Facade object with hardware manager wrappers
@@ -32,16 +35,24 @@ Constructs a `MicroscopeFacade` from the current ImSwitch master controller.
 **Example:**
 ```python
 # Construct a facade with specific hardware
-facade = api.workflowFacade.build(
+from imswitch.imcontrol.model.workflows import RotatorPresets
+
+facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={'488': 'Laser488', '405': 'Laser405'},
     detector_name='Kiralux',
-    z_stage_name='Z-Piezo'
+    xy_positioner_name='XY',
+    z_positioner_name='Z',
+    hwp_name='HWP',
+    qwp_name='QWP',
+    hwp_presets=RotatorPresets(h_deg=0.0, v_deg=90.0),
+    qwp_presets=RotatorPresets(h_deg=0.0, v_deg=90.0),
 )
 
 # Use the facade in workflows
-facade.laser_con.set_constant_power('488', 50.0)
-facade.laser_con.enable('488')
-facade.cam.snap_image()
+facade.laser_con.set_constant_power(['488'], [50.0])
+facade.cam.prepare_live()
+facade.cam.start_live()
+facade.cam.stop_live()
 ```
 
 ## Implementation Details
@@ -49,7 +60,7 @@ facade.cam.snap_image()
 - **Controller Type**: API-only (no widget)
 - **Registration**: Automatically registered in `ImConMainController.apiObjs`
 - **Base Class**: `ImConWidgetController`
-- **Exports**: `build()` method via `@APIExport` decorator
+- **Exports**: `buildWorkflowFacade()` method via `@APIExport` decorator
 
 ## Usage in Workflows
 
@@ -68,7 +79,7 @@ facade = build_facade_from_master(
 ### After (clean API):
 ```python
 # Good: Using public API method
-facade = api.workflowFacade.build(
+facade = api.imcontrol.buildWorkflowFacade(
     laser_aliases={'488': 'Laser488'},
     detector_name='Kiralux'
 )
@@ -79,7 +90,7 @@ facade = api.workflowFacade.build(
 1. **Encapsulation**: No need to access `api._master`
 2. **Cleaner API**: Single entry point for facade construction
 3. **Maintainability**: Internal facade builder can be refactored without breaking user scripts
-4. **Discoverability**: `api.workflowFacade.build()` is self-documenting
+4. **Discoverability**: `api.imcontrol.buildWorkflowFacade(...)` is self-documenting
 
 ## Testing
 

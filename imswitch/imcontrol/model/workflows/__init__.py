@@ -18,11 +18,14 @@ from .facade import (
 )
 from .mock_facade import MockMicroscopeFacade, build_mock_facade
 from .multi_well_tiling import MultiWellTilingParams, MultiWellTilingWorkflow
-from .recording import RecordingParams, RecordingWorkflow
+from .widefield_starss import WidefieldStarssParams, WidefieldStarssWorkflow
 from .serial_cwstarss import SerialCWSTARSSParams, SerialCWSTARSSWorkflow
 from .stitched_image import StitchedImage
 from .tiling import TilingParams, TilingWorkflow
 from .z_stack import ZStackParams, ZStackWorkflow
+
+RecordingParams = WidefieldStarssParams
+RecordingWorkflow = WidefieldStarssWorkflow
 
 __all__ = [
     "CalibrationParams",
@@ -39,6 +42,8 @@ __all__ = [
     "MultiWellTilingWorkflow",
     "RecordingParams",
     "RecordingWorkflow",
+    "WidefieldStarssParams",
+    "WidefieldStarssWorkflow",
     "RotatorFacade",
     "RotatorPresets",
     "SerialCWSTARSSParams",

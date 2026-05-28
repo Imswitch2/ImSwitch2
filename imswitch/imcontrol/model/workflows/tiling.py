@@ -2,7 +2,7 @@
 
 Ported from WFS TilingWorkflow. Executes a spiral XY scan, snaps one frame per
 tile (software or hardware-triggered), saves tiles to disk and H5, stitches the
-overview, and optionally segments cells then drives per-cell RecordingWorkflow
+overview, and optionally segments cells then drives per-cell WidefieldStarssWorkflow
 acquisitions.
 
 Copyright (C) 2020-2026 ImSwitch developers
@@ -42,7 +42,7 @@ from imswitch.imcontrol.model.workflows.stitched_image import StitchedImage
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
-    from imswitch.imcontrol.model.workflows.recording import RecordingWorkflow
+    from imswitch.imcontrol.model.workflows.widefield_starss import WidefieldStarssWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,9 @@ class TilingWorkflow:
     
     Args:
         facade: MicroscopeFacade providing access to hardware managers.
-        recording_workflow: Optional RecordingWorkflow instance for per-cell acquisitions.
+        widefield_starss_workflow: Optional WidefieldStarssWorkflow instance for
+            per-cell acquisitions.
+        recording_workflow: Deprecated alias for ``widefield_starss_workflow``.
             For overview-only tiling, callers may use ``TilingWorkflow(facade, params)``.
         params: TilingParams configuration for this scan.
         seg_filter: Optional dict of cell segmentation filter parameters.
@@ -111,25 +113,31 @@ class TilingWorkflow:
     def __init__(
         self,
         facade: MicroscopeFacade,
-        recording_workflow: Optional[RecordingWorkflow | TilingParams] = None,
+        widefield_starss_workflow: Optional[WidefieldStarssWorkflow | TilingParams] = None,
         params: Optional[TilingParams] = None,
         seg_filter: Optional[dict] = None,
+        *,
+        recording_workflow: Optional[WidefieldStarssWorkflow] = None,
     ) -> None:
-        if isinstance(recording_workflow, TilingParams):
+        if widefield_starss_workflow is None:
+            widefield_starss_workflow = recording_workflow
+
+        if isinstance(widefield_starss_workflow, TilingParams):
             if params is not None:
                 if seg_filter is not None:
                     raise TypeError(
                         "TilingWorkflow received both positional params and seg_filter"
                     )
                 seg_filter = params  # Backward-compatible TilingWorkflow(facade, params, seg_filter)
-            params = recording_workflow
-            recording_workflow = None
+            params = widefield_starss_workflow
+            widefield_starss_workflow = None
 
         if params is None:
             raise TypeError("TilingWorkflow requires TilingParams")
 
         self.facade = facade
-        self._recording = recording_workflow
+        self._widefield_starss = widefield_starss_workflow
+        self._recording = widefield_starss_workflow  # Deprecated compatibility attribute
         self.params = params
         self.seg_filter = seg_filter or {}
         

@@ -68,6 +68,7 @@ class _MockCam:
         self._canned: Optional[np.ndarray] = None
         self._live = False
         self._idx = 0
+        self._n_planned: Optional[int] = None
         self.expo: float = 50000.0
 
     def set_canned_data(self, arr: np.ndarray) -> None:
@@ -85,18 +86,19 @@ class _MockCam:
     def prepare_acquisition(self, n_frames: int) -> None:
         self._r.record("cam.prepare_acquisition", (int(n_frames),))
         self._live = False
-        self._idx = 0
+        self._n_planned = int(n_frames)
 
     def start_acquisition(self) -> None:
         self._r.record("cam.start_acquisition")
 
     def stop_acquisition(self) -> None:
         self._r.record("cam.stop_acquisition")
+        self._n_planned = None
 
     def prepare_live(self) -> None:
         self._r.record("cam.prepare_live")
         self._live = True
-        self._idx = 0
+        self._n_planned = None
 
     def start_live(self) -> None:
         self._r.record("cam.start_live")
@@ -106,7 +108,12 @@ class _MockCam:
 
     def get_data(self):
         self._r.record("cam.get_data")
-        if self._live and self._canned is not None and self._canned.ndim == 3 and self._canned.shape[0] > 1:
+        if (
+            self._canned is not None
+            and self._canned.ndim == 3
+            and self._canned.shape[0] > 1
+            and (self._live or self._n_planned == 1)
+        ):
             i = self._idx % self._canned.shape[0]
             self._idx += 1
             return self._canned[i:i + 1]
