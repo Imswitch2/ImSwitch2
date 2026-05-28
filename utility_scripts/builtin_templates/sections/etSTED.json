@@ -1,0 +1,13 @@
+{
+  "section": true,
+  "key": "etSTED",
+  "group": "system",
+  "display": "etSTED",
+  "summary": "Event-triggered STED coordinate-transform flags. Required for the EtSTED widget.",
+  "requires_widget": "EtSTED",
+  "fields": [
+    {"key": "swapXY",  "label": "Swap X/Y", "type": "bool", "default": false, "req": false, "grp": "Basic", "tip": "Swap X and Y axes before transforming detected-event coordinates into scanner space.", "opts": []},
+    {"key": "invertX", "label": "Invert X", "type": "bool", "default": false, "req": false, "grp": "Basic", "tip": "Invert X before transforming detected-event coordinates.", "opts": []},
+    {"key": "invertY", "label": "Invert Y", "type": "bool", "default": false, "req": false, "grp": "Basic", "tip": "Invert Y before transforming detected-event coordinates.", "opts": []}
+  ]
+}

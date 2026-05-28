@@ -1,0 +1,14 @@
+{
+  "section": true,
+  "key": "tiling",
+  "group": "system",
+  "display": "Tiling",
+  "summary": "Multi-position tiled acquisition. Required for the Tiling widget.",
+  "requires_widget": "Tiling",
+  "fields": [
+    {"key": "xyPositioner",     "label": "XY Positioner",      "type": "ref",  "default": "",   "req": true,  "grp": "Devices", "tip": "Stage that moves between tile centres (must match a positioner in the setup).", "opts": ["positioners"]},
+    {"key": "zPositioner",      "label": "Z Positioner (opt.)","type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Z positioner used for per-tile autofocus. Leave empty to disable.", "opts": ["positioners"]},
+    {"key": "camera",           "label": "Detector (opt.)",    "type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Detector for tile capture. Empty = first forAcquisition detector.", "opts": ["detectors"]},
+    {"key": "defaultTileStepUm","label": "Default tile step (µm)","type": "float","default": 100.0,"req": false,"grp": "Basic",  "tip": "Default stage step between tile centres, in micrometres.", "opts": []}
+  ]
+}

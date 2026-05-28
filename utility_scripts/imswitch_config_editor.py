@@ -31,12 +31,17 @@ from PyQt5.QtWidgets import (
 # Schema loading – reads builtin_templates/{category}/*.json at startup
 # =============================================================================
 def _load_schemas() -> dict:
-    """Load all built-in manager schemas from builtin_templates/ subdirectories."""
+    """Load all built-in manager schemas from builtin_templates/ subdirectories.
+
+    Singleton-section schemas (those with ``"section": true``) live in
+    ``builtin_templates/sections/`` and are handled by ``_load_section_schemas``;
+    they are skipped here so they don't appear in the per-device manager picker.
+    """
     schemas: dict = {}
     base = Path(__file__).resolve().parent / "builtin_templates"
     if base.is_dir():
         for cat_dir in sorted(base.iterdir()):
-            if not cat_dir.is_dir():
+            if not cat_dir.is_dir() or cat_dir.name == "sections":
                 continue
             for f in sorted(cat_dir.glob("*.json")):
                 try:
@@ -45,6 +50,28 @@ def _load_schemas() -> dict:
                 except Exception:
                     pass
     return schemas
+
+
+def _load_section_schemas() -> dict:
+    """Load singleton-section schemas from builtin_templates/sections/.
+
+    Returns a dict keyed by the top-level JSON key (e.g. ``"focusLock"``,
+    ``"scan"``). Each value has the same shape as a device schema but with a
+    flat ``fields`` list (no ``top``/``props``/``nested``), plus ``section``,
+    ``group`` (``"system"`` or ``"extras"``), and optional ``legacy`` flags.
+    """
+    sections: dict = {}
+    base = Path(__file__).resolve().parent / "builtin_templates" / "sections"
+    if base.is_dir():
+        for f in sorted(base.glob("*.json")):
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                continue
+            key = data.get("key") or f.stem
+            sections[key] = data
+    return sections
 
 
 def _hsv_palette(n: int, saturation: float = 0.60, value: float = 0.78) -> list:
@@ -95,6 +122,7 @@ def _f(key, label, tp="text", default="", req=False,
 
 
 SCHEMAS = _load_schemas()
+SECTION_SCHEMAS = _load_section_schemas()
 CAT_COLOR, CAT_LABEL = _build_cat_palette(SCHEMAS)
 DEVICE_CATS = sorted({s["category"] for s in SCHEMAS.values() if s.get("category")})
 # "others" is a permanent catch-all — always last, never stored in schemas
@@ -168,6 +196,31 @@ def _build_default_device(manager_name: str) -> dict:
     return d
 
 
+def _build_default_section(schema: dict) -> dict:
+    """Return a new section dict pre-filled with this schema's field defaults."""
+    out: dict = {}
+    for f in schema.get("fields", []):
+        v = f.get("default", "")
+        tp = f.get("type", "text")
+        if tp == "bool":
+            out[f["key"]] = bool(v) if isinstance(v, bool) else False
+        elif tp == "json":
+            if isinstance(v, str) and v.strip():
+                try:
+                    out[f["key"]] = json.loads(v)
+                except json.JSONDecodeError:
+                    out[f["key"]] = {}
+            else:
+                out[f["key"]] = v if isinstance(v, (dict, list)) else {}
+        elif v == "null":
+            out[f["key"]] = None
+        elif v == "" and tp in ("ref", "text", "path", "select"):
+            out[f["key"]] = ""
+        else:
+            out[f["key"]] = _display_to_json(str(v), tp) if not isinstance(v, (int, float, bool)) else v
+    return out
+
+
 def _collect_daq_channels(data: dict) -> dict:
     """Return {channel_string: [device_name, ...]} for all assigned DAQ lines."""
     used: dict = {}
@@ -178,6 +231,133 @@ def _collect_daq_channels(data: dict) -> dict:
                 if val and val != "null":
                     used.setdefault(val, []).append(name)
     return used
+
+
+# Maps each widget in availableWidgets that needs a section to the section key.
+_WIDGET_REQUIRES_SECTION = {
+    "FocusLock": "focusLock",
+    "Autofocus": "autofocus",
+    "Tiling": "tiling",
+    "EtSTED": "etSTED",
+    "Scan": "scan",
+}
+
+
+def _collect_xref_issues(data: dict) -> list:
+    """Return cross-reference issues as a list of ``(severity, message)`` tuples.
+
+    ``severity`` is ``"error"`` (red — real config problem), ``"warning"``
+    (orange — likely problem), or ``"note"`` (grey — legacy / dormant).
+    The checks here cover what falls silently between device flags and
+    system sections, e.g. a detector flagged ``forFocusLock: true`` while
+    the ``focusLock`` section is missing.
+    """
+    out: list = []
+
+    detectors = data.get("detectors") or {}
+    positioners = data.get("positioners") or {}
+    rs232s = data.get("rs232devices") or {}
+    widgets = data.get("availableWidgets") or []
+
+    # ── focusLock ⇄ detector forFocusLock ────────────────────────────────
+    focus_dets = [n for n, d in detectors.items() if d.get("forFocusLock")]
+    fl = data.get("focusLock")
+    if focus_dets and not fl:
+        out.append(("error",
+            f"Detector(s) flagged forFocusLock={focus_dets} but no "
+            f"<b>focusLock</b> section — flag has no effect."))
+    if fl:
+        if not focus_dets:
+            out.append(("error",
+                "<b>focusLock</b> section present but no detector has "
+                "forFocusLock=true."))
+        cam = fl.get("camera")
+        pos = fl.get("positioner")
+        if cam and cam not in detectors:
+            out.append(("error",
+                f"<b>focusLock.camera</b>='{cam}' is not a defined detector."))
+        elif cam and not detectors.get(cam, {}).get("forFocusLock"):
+            out.append(("warning",
+                f"focusLock.camera='{cam}' exists but does not have "
+                f"forFocusLock=true."))
+        if pos and pos not in positioners:
+            out.append(("error",
+                f"<b>focusLock.positioner</b>='{pos}' is not a defined "
+                f"positioner."))
+
+    # ── autofocus ⇄ devices ──────────────────────────────────────────────
+    af = data.get("autofocus")
+    if af:
+        cam = af.get("camera")
+        pos = af.get("positioner")
+        if cam and cam not in detectors:
+            out.append(("error",
+                f"<b>autofocus.camera</b>='{cam}' is not a defined detector."))
+        if pos and pos not in positioners:
+            out.append(("error",
+                f"<b>autofocus.positioner</b>='{pos}' is not a defined "
+                f"positioner."))
+
+    # ── tiling ⇄ positioners + optional camera ───────────────────────────
+    tl = data.get("tiling")
+    if tl:
+        xy = tl.get("xyPositioner")
+        z = tl.get("zPositioner")
+        cam = tl.get("camera")
+        if xy and xy not in positioners:
+            out.append(("error",
+                f"<b>tiling.xyPositioner</b>='{xy}' is not a defined "
+                f"positioner."))
+        if z and z not in positioners:
+            out.append(("error",
+                f"<b>tiling.zPositioner</b>='{z}' is not a defined "
+                f"positioner."))
+        if cam and cam not in detectors:
+            out.append(("error",
+                f"<b>tiling.camera</b>='{cam}' is not a defined detector."))
+
+    # ── scan ⇄ forScanning positioners ───────────────────────────────────
+    if data.get("scan"):
+        scanning = [n for n, p in positioners.items() if p.get("forScanning")]
+        if not scanning:
+            out.append(("warning",
+                "<b>scan</b> section present but no positioner has "
+                "forScanning=true."))
+
+    # ── etSTED ⇄ scan ────────────────────────────────────────────────────
+    if data.get("etSTED") and not data.get("scan"):
+        out.append(("warning",
+            "<b>etSTED</b> present but no <b>scan</b> section — "
+            "coordinate transforms have nothing to drive."))
+
+    # ── microscopeStand ⇄ rs232devices ───────────────────────────────────
+    ms = data.get("microscopeStand")
+    if ms:
+        port = ms.get("rs232device")
+        if port and port not in rs232s:
+            out.append(("error",
+                f"<b>microscopeStand.rs232device</b>='{port}' is not a "
+                f"defined RS232 connection."))
+
+    # ── availableWidgets ↔ matching sections ─────────────────────────────
+    for widget, section_key in _WIDGET_REQUIRES_SECTION.items():
+        if widget in widgets and not data.get(section_key):
+            out.append(("warning",
+                f"Widget <b>{widget}</b> is enabled but no <b>{section_key}"
+                f"</b> section is configured — widget will not initialize."))
+
+    # ── Legacy / dormant section notes ───────────────────────────────────
+    if data.get("pulseStreamer") and (data["pulseStreamer"] or {}).get("ipAddress"):
+        out.append(("note",
+            "<b>pulseStreamer</b> is configured but MasterController no "
+            "longer constructs PulseStreamerManager. Use <b>teensyPulse</b> "
+            "instead."))
+    if data.get("slm"):
+        out.append(("note",
+            "<b>slm</b> (singular) is deprecated — prefer <b>slms</b> "
+            "(plural) for new setups."))
+
+    return out
 
 
 # =============================================================================
@@ -604,9 +784,12 @@ class DeviceCanvas(QScrollArea):
 # FieldWidget – single editable field row
 # =============================================================================
 class FieldWidget(QWidget):
-    def __init__(self, field_def: dict, current_value, parent=None):
+    def __init__(self, field_def: dict, current_value, parent=None, device_pool: dict | None = None):
         super().__init__(parent)
         self._def = field_def
+        # device_pool: {category_name: [device_name, ...]} — used to populate
+        # ref-type combo boxes that reference devices in the live config.
+        self._device_pool = device_pool or {}
         self._init_widget(current_value)
 
     def _init_widget(self, value):
@@ -631,6 +814,35 @@ class FieldWidget(QWidget):
             idx = self._w.findText(str(value) if value is not None else "")
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
+        elif tp == "ref":
+            # Cross-reference to a device in the live config. opts is the list
+            # of categories ("detectors", "positioners", ...) to draw names from.
+            self._w = QComboBox()
+            self._w.setEditable(True)  # allow names that don't exist yet
+            self._w.addItem("")
+            seen: set = set()
+            for cat in self._def.get("opts", []) or []:
+                for name in self._device_pool.get(cat, []):
+                    if name not in seen:
+                        self._w.addItem(name)
+                        seen.add(name)
+            current = "" if value is None else str(value)
+            if current and self._w.findText(current) < 0:
+                self._w.addItem(current)  # preserve dangling reference
+            idx = self._w.findText(current)
+            if idx >= 0:
+                self._w.setCurrentIndex(idx)
+        elif tp == "json":
+            # Free-form JSON value rendered as a single-line edit, parsed on
+            # read. Used for dicts like scanDesignerParams.
+            if value in (None, "", "null"):
+                display = "{}"
+            elif isinstance(value, str):
+                # Treat a string default like "{}" as the JSON literal.
+                display = value
+            else:
+                display = json.dumps(value)
+            self._w = QLineEdit(display)
         elif tp == "path":
             row = QWidget()
             rl = QHBoxLayout(row)
@@ -672,6 +884,17 @@ class FieldWidget(QWidget):
             return self._w.value()
         if tp == "select":
             return self._w.currentText()
+        if tp == "ref":
+            txt = self._w.currentText().strip()
+            return txt if txt else ""
+        if tp == "json":
+            txt = self._w.text().strip()
+            if not txt or txt.lower() == "null":
+                return None
+            try:
+                return json.loads(txt)
+            except json.JSONDecodeError:
+                return txt  # caller validates; preserve raw on error
         # text / path
         txt = self._w.text().strip()
         if txt.lower() == "null":
@@ -840,24 +1063,52 @@ class PropertyEditor(QWidget):
         
         inner_lay.addWidget(w_section)
         
-        # ── Other Sections ──
+        # ── System Sections (schema-driven singletons) ──
+        sys_section = QFrame()
+        sys_section.setStyleSheet(f"QFrame {{ background:{colors['card_bg']}; border:1px solid {colors['card_border']}; border-radius:4px; }}")
+        sys_lay = QVBoxLayout(sys_section)
+        sys_lay.setContentsMargins(10, 10, 10, 10)
+        sys_lay.setSpacing(8)
+
+        sys_hdr = QLabel("<b>System</b> <span style='color:#888;font-size:8pt;'>— focusLock, scan, nidaq, …</span>")
+        sys_hdr.setTextFormat(Qt.RichText)
+        sys_hdr.setToolTip(
+            "Integral system sections referenced by detector/positioner flags "
+            "(forFocusLock, forScanning) and by feature widgets (FocusLock, "
+            "Tiling, EtSTED, …). Use the structured editor here instead of "
+            "raw JSON."
+        )
+        sys_lay.addWidget(sys_hdr)
+
+        self._sys_sections_inner = QWidget()
+        self._sys_sections_lay = QVBoxLayout(self._sys_sections_inner)
+        self._sys_sections_lay.setContentsMargins(0, 0, 0, 0)
+        self._sys_sections_lay.setSpacing(4)
+        sys_lay.addWidget(self._sys_sections_inner)
+
+        inner_lay.addWidget(sys_section)
+
+        # ── Extras (anything still in the file with no schema) ──
         s_section = QFrame()
         s_section.setStyleSheet(f"QFrame {{ background:{colors['card_bg']}; border:1px solid {colors['card_border']}; border-radius:4px; }}")
         s_lay = QVBoxLayout(s_section)
         s_lay.setContentsMargins(10, 10, 10, 10)
         s_lay.setSpacing(8)
-        
-        s_hdr = QLabel("<b>Other Sections</b>")
+
+        s_hdr = QLabel("<b>Extras</b> <span style='color:#888;font-size:8pt;'>— rois, laserPresets, widgetLayout, …</span>")
         s_hdr.setTextFormat(Qt.RichText)
+        s_hdr.setToolTip(
+            "Sections without a structured schema. Opens a raw-JSON editor."
+        )
         s_lay.addWidget(s_hdr)
-        
+
         # Section buttons container
         self._sections_inner = QWidget()
         self._sections_lay = QVBoxLayout(self._sections_inner)
         self._sections_lay.setContentsMargins(0, 0, 0, 0)
         self._sections_lay.setSpacing(4)
         s_lay.addWidget(self._sections_inner)
-        
+
         inner_lay.addWidget(s_section)
         inner_lay.addStretch()
         
@@ -1195,16 +1446,61 @@ class PropertyEditor(QWidget):
     # ── Section buttons (from ConfigExtrasBar) ───────────────────────────────
 
     def _refresh_sections(self):
-        """Refresh the section buttons display."""
-        while self._sections_lay.count():
-            item = self._sections_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        excluded = set(DEVICE_CATS) | {"availableWidgets"}
+        """Refresh the System + Extras section listings.
+
+        System: one row per *currently configured* section schema, plus an
+        ＋ Add picker for the remaining schemas.
+        Extras: top-level keys still in the file that aren't devices,
+        availableWidgets, or covered by a section schema; plus an ＋ Add
+        button for arbitrary new keys.
+        """
+        for layout in (self._sys_sections_lay, self._sections_lay):
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
         colors = get_themed_colors(is_dark_mode())
-        for key, val in self._data.items():
-            if key in excluded:
-                continue
+        excluded_extras = set(DEVICE_CATS) | {"availableWidgets"} | set(SECTION_SCHEMAS.keys())
+
+        # ── System: only configured sections, sorted; + Add at the end ──
+        configured = [
+            k for k in sorted(SECTION_SCHEMAS.keys())
+            if k in self._data and self._data[k] not in (None, {}, [])
+        ]
+        if configured:
+            for key in configured:
+                self._sys_sections_lay.addWidget(
+                    self._make_system_row(key, SECTION_SCHEMAS[key], True, colors)
+                )
+        else:
+            empty = QLabel(
+                "<span style='color:#888;font-size:8pt;'>No system sections "
+                "configured yet.</span>"
+            )
+            empty.setTextFormat(Qt.RichText)
+            self._sys_sections_lay.addWidget(empty)
+
+        unconfigured = [k for k in sorted(SECTION_SCHEMAS.keys()) if k not in configured]
+        if unconfigured:
+            add_sys_btn = QPushButton("＋ Add System Section…")
+            add_sys_btn.setFixedHeight(26)
+            add_sys_btn.setStyleSheet(
+                f"QPushButton {{ font-size:8pt; padding:0 8px; border:1px solid "
+                f"{colors['chip_border']}; border-radius:3px; "
+                f"background:{colors['button_bg']}; }}"
+                f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+            )
+            add_sys_btn.setToolTip(
+                f"{len(unconfigured)} section(s) available: "
+                + ", ".join(unconfigured)
+            )
+            add_sys_btn.clicked.connect(self._open_section_picker)
+            self._sys_sections_lay.addWidget(add_sys_btn)
+
+        # ── Extras: unknown sections, raw-JSON fallback ──
+        extras_keys = [k for k in self._data.keys() if k not in excluded_extras]
+        for key in extras_keys:
             btn = QPushButton(key)
             btn.setFixedHeight(26)
             btn.setStyleSheet(
@@ -1212,12 +1508,145 @@ class PropertyEditor(QWidget):
                 f"border-radius:3px; background:{colors['button_bg']}; }}"
                 f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
             )
-            btn.setToolTip(f"View / edit '{key}' section")
-            btn.clicked.connect(lambda _, k=key: self._open_section(k))
+            btn.setToolTip(f"View / edit '{key}' section (raw JSON)")
+            btn.clicked.connect(lambda _, k=key: self._open_section_raw(k))
             self._sections_lay.addWidget(btn)
 
-    def _open_section(self, key: str):
-        """Open the JSON editor for a config section."""
+        # Always show ＋ Add custom for free-form keys
+        add_extra_btn = QPushButton("＋ Add Custom Section…")
+        add_extra_btn.setFixedHeight(26)
+        add_extra_btn.setStyleSheet(
+            f"QPushButton {{ font-size:8pt; padding:0 8px; border:1px solid "
+            f"{colors['chip_border']}; border-radius:3px; "
+            f"background:{colors['button_bg']}; }}"
+            f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+        )
+        add_extra_btn.setToolTip(
+            "Add a new arbitrary top-level key with a free-form JSON value."
+        )
+        add_extra_btn.clicked.connect(self._add_custom_section)
+        self._sections_lay.addWidget(add_extra_btn)
+
+    def _make_system_row(self, key: str, schema: dict, present: bool, colors: dict) -> QWidget:
+        """Build one row for the System group: name, status, Edit/Add, Remove."""
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(6)
+
+        legacy = bool(schema.get("legacy"))
+        display = schema.get("display", key)
+        status = "✓" if present else "+"
+        status_color = "#4CAF50" if present else "#888"
+        label_html = (
+            f"<span style='color:{status_color};'>{status}</span> "
+            f"<b>{display}</b> "
+            f"<span style='color:#888;font-size:8pt;'>({key})</span>"
+        )
+        if legacy:
+            label_html += " <span style='color:#C04000;font-size:8pt;'>[legacy]</span>"
+        lbl = QLabel(label_html)
+        lbl.setTextFormat(Qt.RichText)
+        tip = schema.get("summary", "")
+        if legacy and schema.get("legacy_note"):
+            tip = (tip + "\n\n" + schema["legacy_note"]).strip()
+        if tip:
+            lbl.setToolTip(tip)
+        rl.addWidget(lbl, 1)
+
+        # All rows here are present (the System group only shows configured
+        # sections now); ＋ Add is handled by the picker below.
+        edit_btn = QPushButton("Edit…")
+        edit_btn.setFixedHeight(22)
+        edit_btn.setStyleSheet(
+            f"QPushButton {{ font-size:8pt; padding:0 8px; border:1px solid {colors['chip_border']}; "
+            f"border-radius:3px; background:{colors['button_bg']}; }}"
+            f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+        )
+        edit_btn.clicked.connect(lambda _, k=key: self._open_section_schema(k))
+        rl.addWidget(edit_btn)
+
+        if present:
+            rm_btn = QPushButton("×")
+            rm_btn.setFixedSize(22, 22)
+            rm_btn.setToolTip(f"Remove '{key}' from the config")
+            rm_btn.setStyleSheet(
+                "QPushButton { border:none; color:#888; background:transparent; font-size:11pt; }"
+                "QPushButton:hover { color:#C00; }"
+            )
+            rm_btn.clicked.connect(lambda _, k=key: self._remove_section(k))
+            rl.addWidget(rm_btn)
+        return row
+
+    def _open_section_schema(self, key: str):
+        """Open the structured editor for a known system section."""
+        schema = SECTION_SCHEMAS.get(key)
+        if schema is None:
+            self._open_section_raw(key)
+            return
+        current = self._data.get(key) if isinstance(self._data.get(key), dict) else None
+        dlg = SectionEditorDialog(key, schema, current, self._data, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._data[key] = dlg.result_data
+            self._refresh_sections()
+            self.sig_modified.emit()
+
+    def _open_section_picker(self):
+        """Open the picker for adding a new system section."""
+        candidates = [
+            (k, SECTION_SCHEMAS[k]) for k in sorted(SECTION_SCHEMAS.keys())
+            if k not in self._data or self._data[k] in (None, {}, [])
+        ]
+        if not candidates:
+            return
+        picker = SectionPickerDialog(candidates, self)
+        if picker.exec_() != QDialog.Accepted:
+            return
+        key = picker.chosen_key
+        if not key:
+            return
+        schema = SECTION_SCHEMAS[key]
+        # Pre-populate with schema defaults so the editor opens with sensible
+        # values that the user can then refine.
+        defaults = _build_default_section(schema)
+        dlg = SectionEditorDialog(key, schema, defaults, self._data, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._data[key] = dlg.result_data
+            self._refresh_sections()
+            self.sig_modified.emit()
+
+    def _add_custom_section(self):
+        """Prompt for a new free-form top-level key and open the raw editor."""
+        reserved = (
+            set(DEVICE_CATS) | {"availableWidgets"} | set(SECTION_SCHEMAS.keys())
+            | set(self._data.keys())
+        )
+        key, ok = QInputDialog.getText(
+            self, "Add custom section",
+            "Top-level key name (e.g. myCustomConfig):",
+        )
+        if not ok or not key.strip():
+            return
+        key = key.strip()
+        if key in reserved:
+            QMessageBox.warning(
+                self, "Name in use",
+                f"'{key}' is already in use. Pick a different name."
+            )
+            return
+        # Start with an empty dict — the JSON editor lets the user replace
+        # it with any JSON value.
+        self._data[key] = {}
+        dlg = JsonEditorDialog(key, self._data[key], self)
+        dlg.exec_()
+        if dlg.changed:
+            self._data[key] = dlg.result_data
+        # Even if the user closed without changes, the key now exists; refresh.
+        self._refresh_sections()
+        self.sig_modified.emit()
+
+    def _open_section_raw(self, key: str):
+        """Open the raw-JSON editor for an Extras section."""
         val = self._data.get(key)
         dlg = JsonEditorDialog(key, val, self)
         dlg.exec_()
@@ -1225,6 +1654,19 @@ class PropertyEditor(QWidget):
             self._data[key] = dlg.result_data
             self._refresh_sections()
             self.sig_modified.emit()
+
+    def _remove_section(self, key: str):
+        """Remove a system section from the config after confirmation."""
+        r = QMessageBox.question(
+            self, "Remove section",
+            f"Remove the '{key}' section from this config?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+        self._data.pop(key, None)
+        self._refresh_sections()
+        self.sig_modified.emit()
 
     def clear(self):
         self._cat = ""
@@ -1517,6 +1959,238 @@ WIDGET_GROUPS = _load_widget_registry()  # auto-discovered from ViewSetupInfo.py
 
 # Flat set of all known widget names for fast lookup
 _ALL_KNOWN_WIDGETS = {name for group in WIDGET_GROUPS.values() for name, _ in group}
+
+
+# =============================================================================
+# SectionPickerDialog – choose a system section schema to add
+# =============================================================================
+class SectionPickerDialog(QDialog):
+    """Modal picker for choosing which system section to add.
+
+    Lists the section schemas that are NOT yet present in the config, each
+    with a one-line summary and (optionally) a legacy badge. Single-select.
+    """
+
+    def __init__(self, schemas: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add system section")
+        self.resize(520, 420)
+        self._chosen: str = ""
+        self._schemas = schemas  # list of (key, schema)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        hint = QLabel(
+            "<span style='color:#666;font-size:9pt;'>Select a system section "
+            "to add to this config. The next dialog will let you fill in its "
+            "fields.</span>"
+        )
+        hint.setTextFormat(Qt.RichText)
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(4, 4, 4, 4)
+        inner_lay.setSpacing(4)
+
+        colors = get_themed_colors(is_dark_mode())
+        self._buttons: list = []
+        for key, schema in schemas:
+            btn = self._make_row(key, schema, colors)
+            inner_lay.addWidget(btn)
+            self._buttons.append(btn)
+        inner_lay.addStretch()
+        scroll.setWidget(inner)
+        lay.addWidget(scroll, 1)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(cancel_btn)
+        lay.addLayout(btns)
+
+    def _make_row(self, key: str, schema: dict, colors: dict) -> QPushButton:
+        legacy = bool(schema.get("legacy"))
+        display = schema.get("display", key)
+        summary = schema.get("summary", "")
+        label_html = f"<b>{display}</b>"
+        if legacy:
+            label_html += " <span style='color:#C04000;font-size:8pt;'>[legacy]</span>"
+        label_html += f" <span style='color:#888;font-size:8pt;'>({key})</span>"
+        if summary:
+            label_html += f"<br><span style='color:#666;font-size:8pt;'>{summary}</span>"
+        btn = QPushButton()
+        btn.setStyleSheet(
+            f"QPushButton {{ text-align:left; padding:8px 10px; border:1px solid "
+            f"{colors['chip_border']}; border-radius:4px; background:{colors['button_bg']}; }}"
+            f"QPushButton:hover {{ background:{colors['button_bg_hover']}; }}"
+        )
+        # Use a child QLabel for rich text rendering inside the button.
+        bl = QVBoxLayout(btn)
+        bl.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label_html)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setWordWrap(True)
+        lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+        bl.addWidget(lbl)
+        btn.clicked.connect(lambda _, k=key: self._choose(k))
+        return btn
+
+    def _choose(self, key: str):
+        self._chosen = key
+        self.accept()
+
+    @property
+    def chosen_key(self) -> str:
+        return self._chosen
+
+
+# =============================================================================
+# SectionEditorDialog – schema-driven editor for singleton sections
+# =============================================================================
+class SectionEditorDialog(QDialog):
+    """Modal form editor for one top-level system section (focusLock, scan, …).
+
+    Reuses :class:`FieldWidget` so its inputs match the device editor.
+    Ref-type fields are populated from the live config data dict so that
+    e.g. ``focusLock.camera`` is a dropdown of existing detector names.
+    """
+
+    def __init__(self, key: str, schema: dict, current: dict | None, data: dict, parent=None):
+        super().__init__(parent)
+        self._key = key
+        self._schema = schema
+        self._data = data  # reference, used to populate ref combos
+        self._result: dict = {}
+
+        legacy = schema.get("legacy")
+        title = f"Edit section: {schema.get('display', key)}"
+        if legacy:
+            title += " (legacy)"
+        self.setWindowTitle(title)
+        self.resize(560, 520)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        # ── Header summary ──
+        summary = schema.get("summary", "")
+        if summary:
+            hint = QLabel(f"<span style='color:#666;font-size:9pt;'>{summary}</span>")
+            hint.setTextFormat(Qt.RichText)
+            hint.setWordWrap(True)
+            lay.addWidget(hint)
+        requires = schema.get("requires_widget")
+        if requires:
+            req = QLabel(
+                f"<span style='color:#3A7FC1;font-size:8pt;'>Pairs with widget: "
+                f"<b>{requires}</b></span>"
+            )
+            req.setTextFormat(Qt.RichText)
+            lay.addWidget(req)
+        if legacy and schema.get("legacy_note"):
+            warn = QLabel(
+                f"<span style='color:#C04000;font-size:8pt;'>⚠ legacy — "
+                f"{schema['legacy_note']}</span>"
+            )
+            warn.setTextFormat(Qt.RichText)
+            warn.setWordWrap(True)
+            lay.addWidget(warn)
+
+        # ── Build device pool for ref fields ──
+        pool: dict = {}
+        for cat in DEVICE_CATS:
+            pool[cat] = sorted(list((self._data.get(cat) or {}).keys()))
+
+        # ── Tabs grouped by `grp` ──
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        lay.addWidget(tabs, 1)
+
+        self._field_widgets: dict = {}  # key → FieldWidget
+        groups: dict[str, list] = {}
+        for f in schema.get("fields", []):
+            groups.setdefault(f.get("grp", "Basic"), []).append(f)
+        ordered = sorted(groups.keys(), key=lambda g: (0 if g == "Basic" else 2 if g == "Advanced" else 1))
+
+        for grp in ordered:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            inner = QWidget()
+            form = QFormLayout(inner)
+            form.setContentsMargins(8, 8, 8, 8)
+            form.setSpacing(6)
+            form.setLabelAlignment(Qt.AlignRight)
+            for f in groups[grp]:
+                cur = (current or {}).get(f["key"], f.get("default", ""))
+                # Normalize default sentinels.
+                if cur == "null":
+                    cur = None
+                fw = FieldWidget(f, cur, device_pool=pool)
+                label = f["label"]
+                if f.get("req"):
+                    label = f"<b>{label}</b> *"
+                lbl = QLabel(label)
+                lbl.setTextFormat(Qt.RichText)
+                lbl.setToolTip(f.get("tip", ""))
+                form.addRow(lbl, fw)
+                self._field_widgets[f["key"]] = fw
+            scroll.setWidget(inner)
+            tabs.addTab(scroll, grp)
+
+        # ── Validation label ──
+        self._err_lbl = QLabel()
+        self._err_lbl.setStyleSheet("color:#C04000; font-size:8pt;")
+        self._err_lbl.setWordWrap(True)
+        lay.addWidget(self._err_lbl)
+
+        # ── Buttons ──
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("Apply")
+        ok_btn.setDefault(True)
+        ok_btn.setStyleSheet(
+            "QPushButton { background:#3A7FC1; color:white; padding:4px 16px; }"
+            "QPushButton:hover { background:#2A6FAF; }"
+        )
+        ok_btn.clicked.connect(self._try_apply)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        lay.addLayout(btns)
+
+    def _try_apply(self):
+        out: dict = {}
+        missing: list = []
+        for f in self._schema.get("fields", []):
+            fw = self._field_widgets.get(f["key"])
+            if fw is None:
+                continue
+            val = fw.get_value()
+            if f.get("req") and (val is None or val == ""):
+                missing.append(f["label"])
+            out[f["key"]] = val
+        if missing:
+            self._err_lbl.setText(
+                "Missing required: " + ", ".join(missing)
+            )
+            return
+        self._result = out
+        self.accept()
+
+    @property
+    def result_data(self) -> dict:
+        return self._result
 
 
 class WidgetPickerDialog(QDialog):
@@ -1978,32 +2652,58 @@ class ValidationPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMaximumHeight(120)
+        self.setMaximumHeight(180)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 4, 6, 4)
         lbl = QLabel("<b>Validation</b>")
         lbl.setTextFormat(Qt.RichText)
         lay.addWidget(lbl)
+        # Use a scrollable label so long lists are reachable.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
         self._text = QLabel("No config loaded.")
         self._text.setWordWrap(True)
         self._text.setTextFormat(Qt.RichText)
         self._text.setStyleSheet("font-size:8pt;")
-        lay.addWidget(self._text)
+        self._text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._scroll.setWidget(self._text)
+        lay.addWidget(self._scroll)
 
     def validate(self, data: dict):
-        issues = []
+        errors: list = []
+        warnings: list = []
+        notes: list = []
+
+        # Existing DAQ conflict check
         used = _collect_daq_channels(data)
         for ch, names in used.items():
             if len(names) > 1:
-                issues.append(f"⚠ DAQ conflict <b>{ch}</b>: {', '.join(names)}")
+                errors.append(f"DAQ conflict <b>{ch}</b>: {', '.join(names)}")
 
-        # All device categories are optional — only flag real conflicts
+        # Cross-reference checks between system sections and devices
+        for severity, msg in _collect_xref_issues(data):
+            if severity == "error":
+                errors.append(msg)
+            elif severity == "warning":
+                warnings.append(msg)
+            else:
+                notes.append(msg)
+
         present = [CAT_LABEL[c] for c in DEVICE_CATS if data.get(c)]
         devcount = sum(len(data.get(c) or {}) for c in DEVICE_CATS)
 
-        if issues:
-            self._text.setText("<br>".join(issues))
-            self._text.setStyleSheet("font-size:8pt; color:#C04000;")
+        lines: list = []
+        for m in errors:
+            lines.append(f"<span style='color:#C04000;'>⚠ {m}</span>")
+        for m in warnings:
+            lines.append(f"<span style='color:#B07000;'>⚠ {m}</span>")
+        for m in notes:
+            lines.append(f"<span style='color:#666;'>ℹ {m}</span>")
+
+        if lines:
+            self._text.setText("<br>".join(lines))
+            self._text.setStyleSheet("font-size:8pt;")
         else:
             cats_str = ", ".join(present) if present else "none"
             self._text.setText(
@@ -2384,6 +3084,9 @@ class MainWindow(QMainWindow):
         t = self.windowTitle()
         if not t.endswith(" *"):
             self.setWindowTitle(t + " *")
+        # Re-run validation so cross-reference issues update live as the user
+        # adds, edits, or removes system sections.
+        self._val_panel.validate(self._data)
 
     # ── Active config / options file ──────────────────────────────────────
     def _detect_options_file(self):

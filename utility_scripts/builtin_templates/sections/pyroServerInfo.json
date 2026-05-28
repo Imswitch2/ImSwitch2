@@ -1,0 +1,13 @@
+{
+  "section": true,
+  "key": "pyroServerInfo",
+  "group": "system",
+  "display": "Pyro5 Server",
+  "summary": "Optional Pyro5 + FastAPI remote-control server. Disabled by default; set active=true to start it.",
+  "fields": [
+    {"key": "name",   "label": "Service name", "type": "text", "default": "ImSwitchServer", "req": false, "grp": "Basic", "tip": "Pyro5 service name.", "opts": []},
+    {"key": "host",   "label": "Host",         "type": "text", "default": "127.0.0.1",     "req": false, "grp": "Basic", "tip": "Bind host. 127.0.0.1 = localhost only; 0.0.0.0 = all interfaces.", "opts": []},
+    {"key": "port",   "label": "Port",         "type": "int",  "default": 54333,            "req": false, "grp": "Basic", "tip": "Pyro5 TCP port.", "opts": []},
+    {"key": "active", "label": "Active",       "type": "bool", "default": false,            "req": false, "grp": "Basic", "tip": "Start the server on ImSwitch boot. Off by default.", "opts": []}
+  ]
+}
