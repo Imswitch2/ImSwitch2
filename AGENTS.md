@@ -406,7 +406,7 @@ A new ImProcess reconstructor plugin for geometric deskew of obliquely-illuminat
 
 **What it does:**
 - Transforms camera-space data (planes, cam_y, cam_x) → sample-space (Z, Y, X)
-- CPU-based deskew processing (Phase D.1; GPU arrives in D.2)
+- CPU and GPU deskew processing (GPU requires CuPy)
 - Supports single- and multi-timepoint timelapse data
 - MS-RESOLFT cycle de-interlacing (restacks interleaved planes)
 - Auto-detects geometry parameters from HDF5 metadata
@@ -415,26 +415,26 @@ A new ImProcess reconstructor plugin for geometric deskew of obliquely-illuminat
 **Why it was added:**
 - Enable in-GUI lightsheet reconstruction without external tools
 - Integrate with ImProcess viewer and plugin architecture
-- Provide foundation for GPU acceleration (Phase D.2)
+- Provide GPU acceleration for large datasets (Phase D.2)
 - Support MS-RESOLFT workflows with plane de-interlacing
 
 **Location:**
 - Package: `imswitch/improcess/reconstructors/snouty/`
   - `deskew_cpu.py` — CPU deskew processor (vendored from Mini_Recon)
-  - `deskew_gpu.py` — GPU stub (Phase D.2)
+  - `deskew_gpu.py` — GPU deskew processor (Phase D.2, requires CuPy)
   - `restack.py` — MS-RESOLFT de-interlacing helper
   - `metadata.py` — HDF5 attribute → parameter extraction
   - `result.py` — SnoutyResult class (3D/4D output with view modes)
   - `params_widget.py` — PyQtGraph parameter tree widget
-  - `reconstructor.py` — Main plugin class
+  - `reconstructor.py` — Main plugin class (auto-detects GPU availability)
 - Registration: `imswitch/improcess/reconstructors/__init__.py`
-- Tests: `imswitch/improcess/_test/test_snouty.py` (19 tests, metadata + restack passing)
+- Tests: `imswitch/improcess/_test/test_snouty.py` (23 tests, 10 core passing)
 - Design doc: `docs/design/plans/snouty-reconstructor.md`
 
 **Parameters:**
 - **Geometry**: Camera pixel size (nm), tilt angle (°), scan step (nm), output voxel size (nm)
 - **Acquisition**: Camera offset (ADU), flip data, cycles, planes per cycle, restack
-- **Device**: CPU / GPU (GPU Phase D.2)
+- **Device**: CPU / GPU (auto-detects CuPy availability)
 - **Timelapse**: Number of timepoints (splits stack along axis 0)
 
 **Data flow:**
@@ -444,7 +444,9 @@ HDF5 file → DataObj → SnoutyReconstructor.process()
 1. Load 3D stack (planes, cam_y, cam_x)
 2. De-interlace if MS-RESOLFT (restack_interleaved)
 3. Split into timepoints if n_timepoints > 1
-4. DeskewProcessorCPU.process_stack() per timepoint
+4. DeskewProcessorCPU/GPU.process_stack() per timepoint
+   - GPU: cp.asarray(stack) → process → cp.asnumpy(result)
+   - GPU: free_all_blocks() between timepoints
 5. Stack results into 3D (Z, Y, X) or 4D (T, Z, Y, X)
     ↓
 SnoutyResult → ImProcess viewer / save to TIFF or HDF5
@@ -497,20 +499,33 @@ result.save('output.tiff', fmt='tiff')  # or 'hdf5'
 **Test coverage:**
 - Metadata extraction (7 tests, all passing)
 - MS-RESOLFT de-interlacing (3 tests, all passing)
+- GPU module smoke import (1 test, passing)
+- GPU tests skip gracefully when CuPy unavailable (2 tests)
 - CPU deskew processor (manual verification — works)
 - Result save/load (manual verification — works)
 - Plugin registration (verified)
 
-**Known limitations (Phase D.1):**
-- CPU-only (GPU arrives Phase D.2)
+**GPU support (Phase D.2):**
+- Vendored `DeskewProcessorGPU` from Mini_Recon
+- Guarded CuPy imports (module loads cleanly on non-CUDA systems)
+- `cupy_available()` function for runtime detection
+- Constructor raises clear error when CuPy missing
+- Auto-converts numpy↔cupy at plugin boundary (result always numpy)
+- Memory management: `free_all_blocks()` between timepoints
+- Identical API to CPU processor
+- Optional runtime dependency (no pyproject.toml changes)
+
+**Known limitations:**
 - DataObj has pre-existing zarr version issue (affects full integration tests)
 - Widget tests crash in headless mode (Qt GUI issue)
+- GPU tests require CuPy installation to verify behavior
 
 **Safety:**
 - Zero hardware interaction
 - Pure post-processing of recorded data
 - No red-zone files touched
 - No breaking changes to existing plugins
+- CuPy optional (fails gracefully when missing)
 
-**Status:** Phase D.1 complete and committed. CPU deskew functional, plugin registered, core tests passing. GPU path stubbed for Phase D.2.
+**Status:** Phase D.1 + D.2 complete. CPU and GPU deskew functional, plugin registered, core tests passing. GPU path requires CuPy but gracefully degrades when unavailable.
 

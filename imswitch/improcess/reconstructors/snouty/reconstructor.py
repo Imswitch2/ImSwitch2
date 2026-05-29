@@ -25,11 +25,9 @@ class SnoutyReconstructor(Reconstructor):
     to sample space (sample_z, sample_y, sample_x).
     
     Supports:
-    - CPU-only deskew (Phase D.1)
+    - CPU and GPU deskew (GPU requires CuPy)
     - Single- and multi-timepoint data
     - MS-RESOLFT cycle de-interlacing
-    
-    GPU path arrives in Phase D.2.
     """
     
     name = "SNOUTY deskew"
@@ -98,10 +96,18 @@ class SnoutyReconstructor(Reconstructor):
         
         # Pick processor (CPU or GPU)
         device = params.get('device', 'CPU').upper()
+        use_gpu = False
         if device == 'GPU':
             try:
-                from .deskew_gpu import DeskewProcessorGPU
+                from .deskew_gpu import DeskewProcessorGPU, cupy_available
+                if not cupy_available():
+                    raise RuntimeError(
+                        "CuPy not available. Install with: pip install cupy-cuda12x"
+                    )
+                import cupy as cp
                 processor_class = DeskewProcessorGPU
+                use_gpu = True
+                self._logger.info('GPU deskew enabled (CuPy detected)')
             except (ImportError, RuntimeError) as e:
                 raise RuntimeError(
                     f'GPU deskew unavailable: {e}. Use device="CPU" or install CuPy.'
@@ -131,7 +137,21 @@ class SnoutyReconstructor(Reconstructor):
             deskewed_timepoints = []
             for t, tp_stack in enumerate(timepoint_stacks):
                 self._logger.info(f'  Timepoint {t+1}/{n_timepoints}...')
-                deskewed = processor.process_stack(tp_stack)
+                
+                if use_gpu:
+                    # Convert to CuPy array for GPU processing
+                    tp_stack_gpu = cp.asarray(tp_stack)
+                    deskewed_gpu = processor.process_stack(tp_stack_gpu)
+                    # Convert back to NumPy for result storage
+                    deskewed = cp.asnumpy(deskewed_gpu)
+                    # Free GPU memory between timepoints
+                    try:
+                        cp.get_default_memory_pool().free_all_blocks()
+                    except Exception:
+                        pass  # graceful degradation if memory management fails
+                else:
+                    deskewed = processor.process_stack(tp_stack)
+                
                 deskewed_timepoints.append(deskewed)
             # Stack into 4D: (T, Z, Y, X)
             result_data = np.stack(deskewed_timepoints, axis=0)
@@ -140,7 +160,16 @@ class SnoutyReconstructor(Reconstructor):
             )
         else:
             self._logger.info(f'Processing single timepoint with {device} deskew...')
-            result_data = processor.process_stack(stack)
+            
+            if use_gpu:
+                # Convert to CuPy array for GPU processing
+                stack_gpu = cp.asarray(stack)
+                deskewed_gpu = processor.process_stack(stack_gpu)
+                # Convert back to NumPy for result storage
+                result_data = cp.asnumpy(deskewed_gpu)
+            else:
+                result_data = processor.process_stack(stack)
+            
             self._logger.info(
                 f'Reconstruction complete: {result_data.shape} (Z, Y, X)'
             )
