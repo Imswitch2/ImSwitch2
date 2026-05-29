@@ -237,55 +237,69 @@ Each phase ends with a working app. No big-bang switch.
   `UNet.py` and `UNetRCAN.py`.
 - Fix `PatternFinder.findBestPeak` L91 likely-bug `(h1-h2)/(h1-h2)`.
 
-### Phase B — Define interfaces + move MoNaLISA behind the registry
+### Phase B.1 — Contracts, plugin scaffolding, side-channel features ✅
 
-1. Add `improcess/reconstructors/{__init__.py, base.py, registry.py}` with
-   the three contracts above.
-2. Create `improcess/reconstructors/monalisa/` and move into it:
-   - `PatternFinder`, `SignalExtractor`
-   - `ReconObj.coeffsToImage` logic (the rest of `ReconObj` becomes the
-     generic `ProcessingResult` base in `improcess/model/`)
-   - `ScanParamsDialog`, `ScanParamsController` (rewritten as
-     `MonalisaParamsDialog` / `MonalisaParamWidget`)
-   - The MoNaLISA-specific section of `ReconParTree` (pattern, FWHM, BG
-     modelling, denoiser name) becomes `MonalisaReconstructor.make_param_widget`.
-3. Rewrite `ImProcessMainViewController` to dispatch through the registry:
-   ```python
-   plugin = self._registry.get(self._current_plugin_id)
-   params = self._param_widget.get_values()
-   result = plugin.process(data_obj, params)
-   self._widget.addNewResult(result)
-   ```
-4. Rewrite `ReconstructionViewController` to operate on
-   `ProcessingResult.data` + `axis_labels` + `view_modes` (no `ReconObj` import).
-5. Rewrite `WatcherFrameController.saveImage` to call `result.save(...)`.
+Status as of 2026-05-29:
 
-**Exit criteria for Phase B:**
-1. Existing MoNaLISA workflow works end-to-end through the registry.
-   MoNaLISA is one entry in `registry.reconstructors()`.
-2. `setup.json` `processing:` block drives which plugins load; absence of
-   the block means standalone defaults (view-only + universal processors).
-3. **Standalone launch works** without a setup: `python -m imswitch.improcess`
-   opens the app with the default plugin set, no SetupInfo required.
-4. **Drag-and-drop ingest works** for every file format ImControl produces
-   (HDF5, Zarr, TIFF). Dropping files onto the main window calls
-   `MultiDataFrameController.addDataObjs(...)` — implementation is a
-   `dragEnterEvent` / `dropEvent` on `ImProcessMainView` that walks
-   `event.mimeData().urls()`. `DataObj._open` already handles all three
-   formats, so no new I/O code is required.
-5. At least one `Processor` ships (drift correction is the natural first
-   one — useful for every modality with a time axis) to prove the
-   processing-chain wiring works.
+1. ✅ `improcess/reconstructors/{base.py, registry.py}` with `Reconstructor`,
+   `PluginRegistry`, and `ProcessingResult` (in `model/result.py`).
+2. ✅ `improcess/processors/base.py` with `Processor` ABC.
+3. ✅ `improcess/reconstructors/monalisa/` plugin: `PatternFinder`,
+   `SignalExtractor`, `coeffs_to_image`, `MonalisaParamsWidget`,
+   `MonalisaProcessingResult`, `MonalisaReconstructor`.
+4. ✅ `improcess/reconstructors/view_only/` — fallback for any modality.
+5. ✅ `improcess/processors/drift_correct/` — first `Processor` (FFT-based
+   cross-correlation drift correction).
+6. ✅ Registry populated from setup.json `processing:` block; absent block
+   falls back to standalone defaults.
+7. ✅ Standalone launch (`python -m imswitch.improcess`) works without a
+   SetupInfo.
+8. ✅ Drag-and-drop ingest on `ImProcessMainView` (HDF5 / Zarr / TIFF).
 
-### Phase C — View-only fallback
+**Known limitation flagged for B.2:** the MoNaLISA plugin exists but is not
+yet on the live reconstruction path. `ImProcessMainViewController` still
+imports `PatternFinder` / `SignalExtractor` and calls them directly (now
+from the plugin module, not the legacy `model/` copies). `ReconstructionView`
+still consumes `ReconObj.reconstructed` rather than `ProcessingResult.data`.
+The registry initialises plugins at startup but nothing dispatches through
+it yet — the plugin code is wired in import-wise but not call-flow-wise.
 
-1. Add `improcess/reconstructors/view_only/` — minimal `Reconstructor` whose
-   `process()` returns the raw `DataObj.data` wrapped as a `ProcessingResult`.
-2. `registry.auto_select()` returns view-only for any dataset without a
-   modality tag.
-3. **Outcome:** loading any STED / FLIM / confocal / widefield / SNOUTY
-   dataset shows frames immediately, with the existing data-edit, multi-data,
-   and watcher tooling — no reconstruction algorithm needed.
+### Phase B.2 — Flip controllers onto the registry (pending)
+
+The mechanical follow-up to B.1. Risk-mitigated by needing Windows + the
+proprietary `GPU_acc_recon.dll` to verify MoNaLISA still works end-to-end,
+so this lands when a Windows verification setup is available.
+
+1. Rewrite `ImProcessMainViewController.reconstruct` / `.reconstructCurrent`
+   / `.extractData` / `.findPattern` / `.denoiseCurrent` to dispatch through
+   `registry.get(self._current_plugin_id)` instead of calling
+   `self._signalExtractor` / `self._patternFinder` directly.
+2. Either swap `ReconParTree` for `plugin.make_param_widget(parent)`, or
+   translate the existing widget values → plugin param dict inside the
+   controller (cheaper, keeps the existing UI).
+3. Rewrite `ReconstructionViewController` to operate on
+   `ProcessingResult.data` + `axis_labels` + `view_modes` — no `ReconObj`
+   import, no hard-coded standard/bottom/left radio buttons.
+4. Rewrite `WatcherFrameController.saveImage` to call `result.save(...)`.
+5. Add a plugin picker (combo box) to the left panel — currently the active
+   reconstructor is implicit ("the MoNaLISA one").
+6. Verification: load a known MoNaLISA dataset, run reconstruction, confirm
+   numerically identical output to pre-B.2.
+
+After B.2, `ImProcessMainViewController` has no `import` of `PatternFinder`,
+`SignalExtractor`, `Denoiser`, or `ReconObj`.
+
+### Phase C — View-only fallback ✅
+
+1. ✅ `improcess/reconstructors/view_only/` — minimal `Reconstructor` whose
+   `process()` returns the raw `DataObj.data` wrapped as a `ViewOnlyResult`
+   (`ProcessingResult` subclass) with axis labels inferred from `ndim`.
+2. ⏳ `registry.auto_select()` returns view-only for any dataset without a
+   modality tag. Lands with B.2 (needs the call-site to exist).
+3. **Outcome (once B.2 lands):** loading any STED / FLIM / confocal /
+   widefield / SNOUTY dataset shows frames immediately, with the existing
+   data-edit, multi-data, and watcher tooling — no reconstruction algorithm
+   needed.
 
 ### Phase D — Per-modality plugins
 

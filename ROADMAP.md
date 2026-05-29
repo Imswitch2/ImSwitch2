@@ -126,15 +126,17 @@ post-processing, not just reconstruction.
 [docs/design/plans/imreconstruct-2-0.md](docs/design/plans/imreconstruct-2-0.md)
 for the unified design and per-layer audit appendices.
 
-**Background:** Today `improcess` is hard-wired around MoNaLISA-style
+**Background (pre-M12):** `improcess` was hard-wired around MoNaLISA-style
 reconstruction:
 
-- `model/PatternFinder.py`, `model/SignalExtractor.py`, `model/ReconObj.py`
-  encode SIM-pattern recovery and the MoNaLISA acquisition layout.
+- `PatternFinder`, `SignalExtractor`, and `ReconObj.coeffsToImage` encoded
+  SIM-pattern recovery and the MoNaLISA acquisition layout. As of Phase B.1
+  these live under `reconstructors/monalisa/`.
 - `controller/ScanParamsController.py` and `view/ScanParamsDialog.py`
   expose scan-pattern parameters specific to that pipeline.
 - The U-Net / U-Net-RCAN denoiser entry points (`model/UNet.py`,
-  `model/UNetRCAN.py`) are MoNaLISA-trained.
+  `model/UNetRCAN.py`) are MoNaLISA-trained but architecturally generic
+  and remain shared infrastructure.
 
 Generic infrastructure already exists alongside the MoNaLISA code:
 `DataObj`, `MultiDataFrame`, `WatcherFrame`, the main view shell, and the
@@ -150,17 +152,26 @@ currently cannot do anything useful.
   or `mixed`. Captured in
   [docs/design/plans/imreconstruct-2-0.md](docs/design/plans/imreconstruct-2-0.md)
   plus per-layer audits (`.model.md`, `.controller.md`, `.view.md`).
-- ⬜ **Define a `Reconstructor` plugin interface.** Narrow contract:
-  ingest a typed acquisition + config, return one or more reconstructed
-  arrays + metadata. Modality picks its implementation via a registry,
-  not via hard-coded paths in the main controller.
-- ⬜ **Move MoNaLISA reconstruction behind the new interface.** First
-  client of the registry; everything that was previously assumed-default
-  becomes one entry in `reconstructors/monalisa/`.
-- ⬜ **Add a "view-only" reconstructor.** Default for modalities that
-  don't need reconstruction (STED, FLIM, confocal, widefield) so loading
-  any ImSwitch dataset in `improcess` at least shows the raw frames
-  with the same data-edit / multi-data / scan-params tooling.
+- ✅ **Rename module to `improcess`** + clean up legacy references
+  (Phase A, 2026-05-29).
+- ✅ **Define plugin contracts:** `Reconstructor`, `Processor`,
+  `ProcessingResult`, `PluginRegistry`. Registry populated from
+  `setup.json` `processing:` block; falls back to standalone defaults.
+  (Phase B.1, 2026-05-29).
+- ✅ **MoNaLISA reconstructor plugin** under `reconstructors/monalisa/`
+  (PatternFinder, SignalExtractor, coeffs_to_image, MonalisaParamsWidget,
+  MonalisaProcessingResult, MonalisaReconstructor).
+- ✅ **View-only reconstructor** under `reconstructors/view_only/`.
+- ✅ **First Processor:** FFT-based drift correction
+  (`processors/drift_correct/`).
+- ✅ **Drag-and-drop ingest** on the main window for HDF5/Zarr/TIFF.
+- ✅ **Standalone launch** (`python -m imswitch.improcess`) without a
+  SetupInfo.
+- 🔄 **Flip controllers onto the registry (Phase B.2 — pending).**
+  Plugin code is in place but `ImProcessMainViewController` and
+  `ReconstructionViewController` still use the legacy direct-call path.
+  Verification needs Windows + `GPU_acc_recon.dll`; lands when that
+  setup is available.
 - ⬜ **Per-modality reconstructors.** Surface-level targets — flesh out
   with owners later:
   - STED / confocal: frame-averaging, drift correction, lifetime overlay

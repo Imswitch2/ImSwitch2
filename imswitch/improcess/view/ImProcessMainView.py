@@ -33,11 +33,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigShowScanParamsClicked = QtCore.Signal()
     sigPatternParamsChanged = QtCore.Signal()
 
+    sigFilesDropped = QtCore.Signal(list)  # List of pathlib.Path objects
+    
     sigClosing = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setWindowTitle('Image Processing')
+        self.setAcceptDrops(True)
 
         # self parameters
         self.r_l_text = 'Right/Left'
@@ -232,6 +235,51 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.sigClosing.emit()
         event.accept()
+
+    def dragEnterEvent(self, event):
+        """Accept drag events containing file URLs."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event):
+        """Process dropped files and emit sigFilesDropped signal."""
+        from pathlib import Path
+        
+        urls = event.mimeData().urls()
+        paths = []
+        rejected = []
+        
+        # Supported extensions
+        supported_exts = {'.hdf5', '.hdf', '.tiff', '.tif', '.zarr'}
+        
+        for url in urls:
+            path = Path(url.toLocalFile())
+            
+            if not path.exists():
+                continue
+            
+            # Check file extension
+            if path.suffix.lower() in supported_exts:
+                paths.append(path)
+            else:
+                rejected.append(path.name)
+        
+        # Show rejection message if any files were rejected
+        if rejected:
+            self.statusBar().showMessage(
+                f"Rejected unsupported files: {', '.join(rejected)} "
+                f"(supported: HDF5, Zarr, TIFF)",
+                5000
+            )
+        
+        # Emit signal with accepted paths
+        if paths:
+            self.sigFilesDropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def getDenoiseCropSize(self):
         return self.parTree.p.param('Denoising options').param('Crop size (px)').value()
