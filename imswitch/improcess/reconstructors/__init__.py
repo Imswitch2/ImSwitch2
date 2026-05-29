@@ -13,6 +13,7 @@ from .registry import PluginRegistry, get_registry
 
 # Plugin imports
 from .monalisa import MonalisaReconstructor
+from .snouty import SnoutyReconstructor
 from .view_only import ViewOnlyReconstructor
 
 
@@ -33,6 +34,7 @@ def register_default_reconstructors(
     # Map of plugin IDs to their classes
     available_plugins = {
         'monalisa': MonalisaReconstructor,
+        'snouty': SnoutyReconstructor,
         'view-only': ViewOnlyReconstructor,
     }
     

@@ -400,3 +400,117 @@ The scan module's TTL device list (`ttlDeviceList`) is now the single source of 
 
 **Status:** Committed (commits cb64772e). No functional changes to working code paths. Documentation change only.
 
+### SNOUTY Deskew Reconstructor (2026-05-28)
+
+A new ImProcess reconstructor plugin for geometric deskew of obliquely-illuminated lightsheet data (SNOUTY / OPM / MS-RESOLFT).
+
+**What it does:**
+- Transforms camera-space data (planes, cam_y, cam_x) → sample-space (Z, Y, X)
+- CPU-based deskew processing (Phase D.1; GPU arrives in D.2)
+- Supports single- and multi-timepoint timelapse data
+- MS-RESOLFT cycle de-interlacing (restacks interleaved planes)
+- Auto-detects geometry parameters from HDF5 metadata
+- Saves results as ImageJ-compatible TIFF or HDF5
+
+**Why it was added:**
+- Enable in-GUI lightsheet reconstruction without external tools
+- Integrate with ImProcess viewer and plugin architecture
+- Provide foundation for GPU acceleration (Phase D.2)
+- Support MS-RESOLFT workflows with plane de-interlacing
+
+**Location:**
+- Package: `imswitch/improcess/reconstructors/snouty/`
+  - `deskew_cpu.py` — CPU deskew processor (vendored from Mini_Recon)
+  - `deskew_gpu.py` — GPU stub (Phase D.2)
+  - `restack.py` — MS-RESOLFT de-interlacing helper
+  - `metadata.py` — HDF5 attribute → parameter extraction
+  - `result.py` — SnoutyResult class (3D/4D output with view modes)
+  - `params_widget.py` — PyQtGraph parameter tree widget
+  - `reconstructor.py` — Main plugin class
+- Registration: `imswitch/improcess/reconstructors/__init__.py`
+- Tests: `imswitch/improcess/_test/test_snouty.py` (19 tests, metadata + restack passing)
+- Design doc: `docs/design/plans/snouty-reconstructor.md`
+
+**Parameters:**
+- **Geometry**: Camera pixel size (nm), tilt angle (°), scan step (nm), output voxel size (nm)
+- **Acquisition**: Camera offset (ADU), flip data, cycles, planes per cycle, restack
+- **Device**: CPU / GPU (GPU Phase D.2)
+- **Timelapse**: Number of timepoints (splits stack along axis 0)
+
+**Data flow:**
+```
+HDF5 file → DataObj → SnoutyReconstructor.process()
+    ↓
+1. Load 3D stack (planes, cam_y, cam_x)
+2. De-interlace if MS-RESOLFT (restack_interleaved)
+3. Split into timepoints if n_timepoints > 1
+4. DeskewProcessorCPU.process_stack() per timepoint
+5. Stack results into 3D (Z, Y, X) or 4D (T, Z, Y, X)
+    ↓
+SnoutyResult → ImProcess viewer / save to TIFF or HDF5
+```
+
+**View modes:**
+- XY: (Z, Y, X) — standard projection
+- XZ: (Z, X, Y) — swap Y/X (projects along Y)
+- YZ: (X, Y, Z) — swap Z/X (projects along X)
+
+**Metadata auto-detection:**
+Extracts from HDF5 attributes:
+- `Detector:*:Camera pixel size` (µm → nm)
+- `MS-RESOLFT_Scan:cycleStepSizeUm` (µm → nm)
+- `MS-RESOLFT_Scan:cycleSteps` → cycles
+- `MS-RESOLFT_Scan:roSteps` → planes_in_cycle
+- `ScanStage:positive_direction` → flip_data
+
+**Usage:**
+```python
+from imswitch.improcess.reconstructors import get_registry, register_default_reconstructors
+
+# Register plugins
+registry = get_registry()
+register_default_reconstructors(registry)
+
+# Get SNOUTY plugin
+snouty = registry.get_reconstructor('snouty')
+
+# Process data
+params = {
+    'device': 'CPU',
+    'n_timepoints': 1,
+    'c_px': 108.0,  # nm
+    'alpha_deg': 35.0,
+    'dy': 210.0,  # nm
+    'sample_vx_size': 200.0,  # nm
+    'camera_offset': 100.0,
+    'flip_data': False,
+    'cycles': 1,
+    'planes_in_cycle': 1,
+    'restack': True
+}
+result = snouty.process(data_obj, params)
+
+# Save result
+result.save('output.tiff', fmt='tiff')  # or 'hdf5'
+```
+
+**Test coverage:**
+- Metadata extraction (7 tests, all passing)
+- MS-RESOLFT de-interlacing (3 tests, all passing)
+- CPU deskew processor (manual verification — works)
+- Result save/load (manual verification — works)
+- Plugin registration (verified)
+
+**Known limitations (Phase D.1):**
+- CPU-only (GPU arrives Phase D.2)
+- DataObj has pre-existing zarr version issue (affects full integration tests)
+- Widget tests crash in headless mode (Qt GUI issue)
+
+**Safety:**
+- Zero hardware interaction
+- Pure post-processing of recorded data
+- No red-zone files touched
+- No breaking changes to existing plugins
+
+**Status:** Phase D.1 complete and committed. CPU deskew functional, plugin registered, core tests passing. GPU path stubbed for Phase D.2.
+
