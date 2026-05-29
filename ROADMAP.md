@@ -183,8 +183,18 @@ currently cannot do anything useful.
 - ⬜ **Hook into M10's live pipeline.** Once the Zarr streaming
   reconstruction lands (Milestone 10), let it drive any registered
   reconstructor — not only the MoNaLISA path.
-- ⬜ **Update docs.** Add an `improcess` user/developer guide; today
-  there is no dedicated page beyond the main `gui.rst` mention.
+- ✅ **Update docs.** `docs/improcess.rst` covers launch modes,
+  plugin architecture, config schema, drag-and-drop, built-in plugins,
+  and how to write a new plugin. Linked from the index toctree.
+- ✅ **Example minimal setup.**
+  `imswitch/_data/user_defaults/imcontrol_setups/monalisa_processor.json`
+  — a processing-only config that launches ImProcess with the MoNaLISA
+  reconstructor + view-only fallback + drift-correct processor and no
+  hardware devices declared. Recipe documented in `docs/improcess.rst`.
+- ✅ **Cleanup side-quests.** Extracted shared U-Net helpers to
+  `model/unet_layers.py` (~170 LOC deduplicated); fixed
+  `PatternFinder.findBestPeak` arithmetic bug; added the first
+  ImProcess test under `imswitch/improcess/_test/`.
 
 ---
 

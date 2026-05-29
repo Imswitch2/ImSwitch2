@@ -43,15 +43,23 @@ class ImProcessMainController(MainController):
         
         registry = get_registry()
         
-        # Check if we have a setup configuration
+        # Check if we have a setup configuration.
+        #
+        # The `processing` block is an ImProcess-specific addition. It is not a
+        # typed field on SetupInfo, so it lands in `_catchAll` (because the
+        # dataclass uses `@dataclass_json(undefined=Undefined.INCLUDE)`).
+        processing_config = {}
         try:
-            from imswitch.imcommon.model import configfiletools
-            setupInfo = configfiletools.loadSetupInfo()
-            processing_config = setupInfo.get('processing', {})
+            from imswitch.imcontrol.model import configfiletools
+            from imswitch.imcontrol.model.SetupInfo import SetupInfo
+            options, _ = configfiletools.loadOptions()
+            setupInfo = configfiletools.loadSetupInfo(options, SetupInfo)
+            catchAll = getattr(setupInfo, '_catchAll', None) or {}
+            processing_config = catchAll.get('processing', {}) or {}
         except Exception as e:
-            # Standalone mode: no setup.json
-            self.__logger.info(f"No setup configuration found ({e}), using standalone defaults")
-            processing_config = {}
+            self.__logger.info(
+                f"No setup configuration available ({e!r}); using standalone defaults"
+            )
         
         # Determine which plugins to load
         if processing_config:
@@ -68,10 +76,9 @@ class ImProcessMainController(MainController):
             processor_ids = ['drift-correct']
             self.__logger.info("Using standalone defaults: view-only + drift-correct")
         
-        # Register all available reconstructors and processors
-        # (The register functions will only instantiate the ones in config)
+        # Register only the plugins requested by config / standalone defaults.
         register_default_reconstructors(registry, reconstructor_ids)
-        register_default_processors(registry)  # TODO: filter by processor_ids
+        register_default_processors(registry, processor_ids)
         
         self.__logger.info(
             f"Plugin registry initialized: "

@@ -9,14 +9,23 @@ from .base import Processor
 from .drift_correct import DriftCorrectProcessor
 
 
-def register_default_processors(registry) -> None:
+def register_default_processors(registry, filter_ids: list[str] | None = None) -> None:
     """
     Register built-in processors.
-    
-    Called at module startup. Individual processors are instantiated and
-    registered here as they're implemented (Agent 2's scope).
+
+    Args:
+        registry: Plugin registry to populate.
+        filter_ids: Optional list of processor ids to register. None registers all.
     """
-    registry.register_processor(DriftCorrectProcessor())
+    available_plugins = {
+        'drift-correct': DriftCorrectProcessor,
+    }
+    if filter_ids is None:
+        to_register = available_plugins.items()
+    else:
+        to_register = [(pid, cls) for pid, cls in available_plugins.items() if pid in filter_ids]
+    for _pid, plugin_cls in to_register:
+        registry.register_processor(plugin_cls())
 
 
 __all__ = [
