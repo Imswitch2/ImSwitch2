@@ -88,7 +88,10 @@ class PatternFinder:
         if abs((prom1 - prom2) / (prom1 + prom2)) < 0.2:
             height1 = peaks[1]['peak_heights'][bestTwoPeaks[0]]
             height2 = peaks[1]['peak_heights'][bestTwoPeaks[1]]
-            if (height1 - height2) / (height1 - height2) < 0.2:
+            # Compute relative difference in heights: abs((h1-h2)/(h1+h2))
+            # This gives a normalized measure of similarity in [0, 1]
+            # where 0 means identical heights and 1 means maximally different
+            if abs((height1 - height2) / (height1 + height2)) < 0.2:
                 bestPeak = bestTwoPeaks.min()
             else:
                 heights = np.array([height1, height2])
