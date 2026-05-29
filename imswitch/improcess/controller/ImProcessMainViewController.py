@@ -6,7 +6,12 @@ import tifffile as tiff
 
 import imswitch.improcess.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
-from imswitch.improcess.model import DataObj, ReconObj, PatternFinder, SignalExtractor,Denoiser
+from imswitch.improcess.model import DataObj, ReconObj, Denoiser
+# NOTE: PatternFinder and SignalExtractor live in the MoNaLISA plugin.
+# The controller still uses them directly during the Phase B.1 transition;
+# Phase B.2 will replace the direct calls with registry dispatch.
+from imswitch.improcess.reconstructors.monalisa.pattern_finder import PatternFinder
+from imswitch.improcess.reconstructors.monalisa.signal_extractor import SignalExtractor
 from .DataFrameController import DataFrameController
 from .MultiDataFrameController import MultiDataFrameController
 from .WatcherFrameController import WatcherFrameController
