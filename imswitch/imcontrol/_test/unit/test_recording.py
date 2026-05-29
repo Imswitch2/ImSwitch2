@@ -381,6 +381,142 @@ def test_zarr_streaming_structured_layout(tmp_path) -> None:
     assert meta_group['scan'].attrs['frames'] == 3
 
 
+def test_zarr_streaming_multi_detector_single_file(tmp_path) -> None:
+    """Test that multiple detectors can stream into one structured Zarr store."""
+    detectorsManager = DetectorsManager(detectorInfosMulti, updatePeriod=100)
+    detectorNames = list(detectorInfosMulti.keys())
+    store_path = str(tmp_path / 'test_zarr_multidetector.zarr')
+    attrs = {name: {'detector:index': index} for index, name in enumerate(detectorNames)}
+
+    frames = {
+        detectorNames[0]: np.full((2, 4, 5), 11, dtype=np.uint16),
+        detectorNames[1]: np.full((3, 6, 7), 22, dtype=np.uint16),
+    }
+
+    storer = ZarrStorer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests={name: store_path for name in detectorNames},
+        detectorNames=detectorNames,
+        shapes={name: frames[name].shape[-2:] for name in detectorNames},
+        attrs=attrs,
+        singleMultiDetectorFile=True,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    for name in detectorNames:
+        storer.writeFrames(name, frames[name])
+    storer.finalizeStream(
+        currentFrames={name: frames[name].shape[0] for name in detectorNames},
+        filePaths={name: store_path for name in detectorNames},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+
+    root = zarr.open(store_path, mode='r')
+    assert sorted(root.keys()) == sorted(detectorNames)
+    for index, name in enumerate(detectorNames):
+        dataset = root[name]['data']
+        assert dataset.shape == frames[name].shape
+        assert dataset.dtype == np.uint16
+        assert dataset.attrs['writing'] is False
+        assert root[name]['metadata']['detector'].attrs['index'] == index
+        np.testing.assert_array_equal(dataset[:], frames[name])
+
+
+def test_zarr_streaming_per_detector_files(tmp_path) -> None:
+    """Test that per-detector mode writes each detector to a separate Zarr store."""
+    detectorsManager = DetectorsManager(detectorInfosMulti, updatePeriod=100)
+    detectorNames = list(detectorInfosMulti.keys())
+    fileDests = {
+        name: str(tmp_path / f'test_zarr_{index}.zarr')
+        for index, name in enumerate(detectorNames)
+    }
+    frames = {
+        detectorNames[0]: np.full((2, 3, 4), 7, dtype=np.uint16),
+        detectorNames[1]: np.full((2, 5, 6), 9, dtype=np.uint16),
+    }
+
+    storer = ZarrStorer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests=fileDests,
+        detectorNames=detectorNames,
+        shapes={name: frames[name].shape[-2:] for name in detectorNames},
+        attrs={name: {} for name in detectorNames},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    for name in detectorNames:
+        storer.writeFrames(name, frames[name])
+    storer.finalizeStream(
+        currentFrames={name: frames[name].shape[0] for name in detectorNames},
+        filePaths=fileDests,
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+
+    for name in detectorNames:
+        root = zarr.open(fileDests[name], mode='r')
+        assert list(root.keys()) == [name]
+        np.testing.assert_array_equal(root[name]['data'][:], frames[name])
+
+
+def test_zarr_streaming_single_lapse_adds_scan_groups(tmp_path) -> None:
+    """Test repeated single-lapse streams append scan groups in one Zarr store."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    store_path = str(tmp_path / 'test_zarr_lapse.zarr')
+
+    for scan_index in range(2):
+        frames = np.full((1, 4, 5), scan_index + 1, dtype=np.uint16)
+        storer = ZarrStorer(str(tmp_path / f'unused_{scan_index}'), detectorsManager)
+        storer.openStream(
+            fileDests={detectorName: store_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames.shape[-2:]},
+            attrs={detectorName: {'scan:index': scan_index}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=True,
+            saveMode=SaveMode.Disk,
+        )
+        storer.writeFrames(detectorName, frames)
+        storer.finalizeStream(
+            currentFrames={detectorName: frames.shape[0]},
+            filePaths={detectorName: store_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+
+    root = zarr.open(store_path, mode='r')
+    assert sorted(root.keys()) == ['scan0', 'scan1']
+    for scan_index in range(2):
+        dataset = root[f'scan{scan_index}'][detectorName]['data']
+        assert dataset.shape == (1, 4, 5)
+        assert dataset.attrs['writing'] is False
+        assert root[f'scan{scan_index}'][detectorName]['metadata']['scan'].attrs['index'] == scan_index
+        np.testing.assert_array_equal(
+            dataset[:], np.full((1, 4, 5), scan_index + 1, dtype=np.uint16)
+        )
+
+
+def test_zarr_ram_streaming_is_explicitly_unsupported(tmp_path) -> None:
+    """Document current Zarr RAM-mode boundary until MemoryStore support is added."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    storer = ZarrStorer(str(tmp_path / 'unused'), detectorsManager)
+
+    with pytest.raises(NotImplementedError):
+        storer.openStream(
+            fileDests={detectorName: str(tmp_path / 'memory.zarr')},
+            detectorNames=[detectorName],
+            shapes={detectorName: (4, 5)},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.RAM,
+        )
+
+
 def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
     """Test that the stall watchdog detects and aborts recordings when no frames arrive."""
     import time

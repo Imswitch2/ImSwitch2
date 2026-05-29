@@ -314,8 +314,11 @@ class ZarrStorer(Storer):
             self._close_store(store)
             logger.info(f"Saved image to zarr store {path} with structured layout")
     
-    def openStream(self, fileDests, detectorNames, shapes, attrs, *,
-                   singleMultiDetectorFile, singleLapseFile, saveMode):
+    def openStream(self, fileDests: Dict[str, Union[str, BytesIO]],
+                   detectorNames: List[str], shapes: Dict[str, tuple],
+                   attrs: Dict[str, Dict[str, Any]], *,
+                   singleMultiDetectorFile: bool, singleLapseFile: bool,
+                   saveMode: 'SaveMode') -> None:
         """Initialize Zarr streaming session.
 
         The first pass supports disk-backed stores. RAM-backed Zarr recording
@@ -356,7 +359,7 @@ class ZarrStorer(Storer):
 
             self._currentFrames[detectorName] = 0
     
-    def writeFrames(self, detectorName, frames):
+    def writeFrames(self, detectorName: str, frames: np.ndarray) -> None:
         """Write frames to Zarr dataset, lazily creating it from frame dtype."""
         if len(frames) == 0:
             return
@@ -385,7 +388,8 @@ class ZarrStorer(Storer):
         
         self._currentFrames[detectorName] += len(frames)
     
-    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+    def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
+                       recordingManager, saveMode: 'SaveMode') -> None:
         """Close Zarr stores and emit memory-recording signals when applicable."""
         for detectorName, dataset in self._datasets.items():
             dataset.attrs['writing'] = False
