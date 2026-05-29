@@ -1,15 +1,20 @@
 from imswitch.imcommon.controller import MainController
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.processing_config import (
+    load_processing_config,
+    plugin_ids_from_config,
+)
 from .CommunicationChannel import CommunicationChannel
 from .ImProcessMainViewController import ImProcessMainViewController
 from .basecontrollers import ImProcessWidgetControllerFactory
 
 
 class ImProcessMainController(MainController):
-    def __init__(self, mainView, moduleCommChannel):
+    def __init__(self, mainView, moduleCommChannel, processingConfig=None):
         self.__mainView = mainView
         self.__moduleCommChannel = moduleCommChannel
         self.__logger = initLogger(self, tryInheritParent=False)
+        self.__processingConfig = processingConfig
 
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
@@ -48,32 +53,21 @@ class ImProcessMainController(MainController):
         # The `processing` block is an ImProcess-specific addition. It is not a
         # typed field on SetupInfo, so it lands in `_catchAll` (because the
         # dataclass uses `@dataclass_json(undefined=Undefined.INCLUDE)`).
-        processing_config = {}
-        try:
-            from imswitch.imcontrol.model import configfiletools
-            from imswitch.imcontrol.model.SetupInfo import SetupInfo
-            options, _ = configfiletools.loadOptions()
-            setupInfo = configfiletools.loadSetupInfo(options, SetupInfo)
-            catchAll = getattr(setupInfo, '_catchAll', None) or {}
-            processing_config = catchAll.get('processing', {}) or {}
-        except Exception as e:
-            self.__logger.info(
-                f"No setup configuration available ({e!r}); using standalone defaults"
-            )
+        processing_config = self.__processingConfig
+        if processing_config is None:
+            processing_config = load_processing_config(self.__logger)
         
-        # Determine which plugins to load
-        if processing_config:
+        reconstructor_ids, processor_ids, has_plugin_config = plugin_ids_from_config(
+            processing_config
+        )
+        if has_plugin_config:
             # Config-driven mode
-            reconstructor_ids = processing_config.get('reconstructors', ['monalisa'])
-            processor_ids = processing_config.get('processors', ['drift-correct'])
             self.__logger.info(
                 f"Loading plugins from config: reconstructors={reconstructor_ids}, "
                 f"processors={processor_ids}"
             )
         else:
             # Standalone defaults
-            reconstructor_ids = ['view-only']
-            processor_ids = ['drift-correct']
             self.__logger.info("Using standalone defaults: view-only + drift-correct")
         
         # Register only the plugins requested by config / standalone defaults.

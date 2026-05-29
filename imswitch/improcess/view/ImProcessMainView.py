@@ -38,7 +38,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     
     sigClosing = QtCore.Signal()
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, showGraphPanel: bool = True, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setWindowTitle('Image Processing')
         self.setAcceptDrops(True)
@@ -102,7 +102,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame.sigDenoiseCurrent.connect(self.sigDenoiseCurrent)
 
         self.reconstructionWidget = ReconstructionView()
-        self.graphWidget = GraphWidget()
+        self.graphWidget = GraphWidget() if showGraphPanel else None
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -157,13 +157,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         leftContainer.addWidget(parameterFrame, 1)
         leftContainer.addWidget(btnFrame, 0)
         leftContainer.addWidget(DataDock, 1)
-        rightSplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        rightSplitter.addWidget(self.reconstructionWidget)
-        rightSplitter.addWidget(self.graphWidget)
-        rightSplitter.setStretchFactor(0, 4)
-        rightSplitter.setStretchFactor(1, 1)
-
-        rightContainer.addWidget(rightSplitter)
+        if self.graphWidget is not None:
+            rightSplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            rightSplitter.addWidget(self.reconstructionWidget)
+            rightSplitter.addWidget(self.graphWidget)
+            rightSplitter.setStretchFactor(0, 4)
+            rightSplitter.setStretchFactor(1, 1)
+            rightContainer.addWidget(rightSplitter)
+        else:
+            rightContainer.addWidget(self.reconstructionWidget)
 
         layout.addLayout(leftContainer, 1)
         layout.addLayout(rightContainer, 3)

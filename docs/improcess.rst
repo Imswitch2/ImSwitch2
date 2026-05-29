@@ -89,8 +89,21 @@ ID            Type           Purpose
 ============= ============== ====================================================
 monalisa      Reconstructor  MoNaLISA point-scanning SIM (Windows + CUDA DLL)
 view-only     Reconstructor  Pass-through; raw frames wrapped as a result
-drift-correct Processor      FFT cross-correlation drift correction (T-axis req.)
+drift-correct Processor      FFT cross-correlation drift correction with drift trace plots
 ============= ============== ====================================================
+
+Result graph panel
+==================
+
+ImProcess can show a generic graph panel below the reconstruction viewer.  The
+panel is controlled by the setup JSON and defaults to enabled.  When enabled, it
+renders optional plot payloads exposed by the currently selected
+``ProcessingResult``.
+
+The first built-in producer is ``drift-correct``: drift-corrected results expose
+Y and X drift traces over frame number.  The same graph contract is intended for
+future processing units such as WidefieldSTARSS anisotropy histograms, region
+scatter plots, batch summaries, FLIM traces and line-profile tools.
 
 Config schema
 =============
@@ -101,6 +114,7 @@ to your Imcontrol setup file (the same JSON you select via
 
     {
         "processing": {
+            "graphPanel": true,
             "reconstructors": ["monalisa", "view-only"],
             "processors":     ["drift-correct"]
         }
@@ -115,6 +129,9 @@ read at all, e.g. in standalone mode) the registry falls back to::
 Only the plugin IDs you list are instantiated.  IDs not in the list
 are not registered, even if their code is present.
 
+Set ``"graphPanel": false`` in the ``processing`` block to hide the optional
+graph panel.  When the key is absent, ImProcess shows the panel.
+
 Example: MoNaLISA-only configuration
 ====================================
 
@@ -123,6 +140,7 @@ A ready-to-use minimal config ships under
 
     {
         "processing": {
+            "graphPanel": true,
             "reconstructors": ["monalisa", "view-only"],
             "processors":     ["drift-correct"]
         }
@@ -170,6 +188,8 @@ Done (as of writing):
 * Plugin contracts + registry, MoNaLISA / view-only reconstructors,
   drift-correct processor, drag-and-drop ingest, standalone launch,
   config-driven plugin loading (Phase B.1)
+* Optional result graph panel + ``PlotPayload`` contract, with drift-correct
+  publishing Y/X drift traces
 * Cleanup: duplicate file removal, shared U-Net helpers extracted,
   ``PatternFinder.findBestPeak`` arithmetic fix
 
@@ -217,6 +237,10 @@ Register it by adding the class to ``available_plugins`` in
 A ``Processor`` follows the same pattern but its ``apply(result, params)``
 takes a ``ProcessingResult`` and returns a new one — see
 :py:mod:`imswitch.improcess.processors.drift_correct` as a reference.
+
+To publish plots in the graph panel, implement ``plot_payloads()`` on the
+returned ``ProcessingResult`` and return ``PlotPayload`` objects from
+``imswitch.improcess.model``.
 
 See also
 ========

@@ -38,9 +38,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget
         )
-        self.graphController = self._factory.createController(
-            GraphController, self._widget.graphWidget
-        )
+        self.graphController = None
+        if self._widget.graphWidget is not None:
+            self.graphController = self._factory.createController(
+                GraphController, self._widget.graphWidget
+            )
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog
         )
