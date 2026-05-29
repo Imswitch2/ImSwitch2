@@ -14,9 +14,9 @@ Why the rename
 ==============
 
 The audit that opened Milestone 12 (see
-:ref:`docs/design/plans/imreconstruct-2-0.md <improcess-design>`)
-showed that ~70 % of the old ``imreconstruct`` code was already
-modality-agnostic.  The MoNaLISA-specific bits were concentrated in a
+``docs/design/plans/imreconstruct-2-0.md`` and the per-layer audit
+appendices alongside it) showed that ~70 % of the old ``imreconstruct``
+code was already modality-agnostic.  The MoNaLISA-specific bits were concentrated in a
 handful of files.  The rename signals the new scope: this module is
 about *processing in general*, not just SIM reconstruction.  The
 MoNaLISA pipeline lives on as one plugin
@@ -139,9 +139,21 @@ the MoNaLISA reconstructor + drift correction:
 
        {"setupFileName": "monalisa_processor.json"}
 
-3. Launch the app normally.  The reconstructor picker will show
-   *MoNaLISA* and *View only*; drift correction will be the only
-   processor in the chain panel.
+3. Launch the app normally.  At startup the registry is populated with
+   ``monalisa``, ``view-only`` and ``drift-correct``; the corresponding
+   plugin objects are reachable from the controllers and can be
+   inspected programmatically.
+
+.. note::
+
+   Until Phase B.2 lands, the *live* reconstruction button still goes
+   through the legacy MoNaLISA path inside
+   ``ImProcessMainViewController``.  The reconstructor / processor
+   picker UI is not yet wired into the main window — the
+   ``processing:`` block today controls which plugins are *registered
+   and configured*, not which one the *Reconstruct* button executes.
+   Phase B.2 replaces the direct-call path with registry dispatch and
+   adds the picker controls.
 
 This is the recommended setup for users who treat Imswitch2 as a
 post-processing tool only — e.g. opening MoNaLISA acquisitions taken
@@ -150,8 +162,7 @@ on a different machine for batch reconstruction.
 Status (Milestone 12)
 =====================
 
-ImProcess is delivered in phases, tracked in
-:ref:`Roadmap.md <roadmap>` Milestone 12.
+ImProcess is delivered in phases, tracked in ``ROADMAP.md`` Milestone 12.
 
 Done (as of writing):
 
@@ -210,7 +221,7 @@ takes a ``ProcessingResult`` and returns a new one — see
 See also
 ========
 
-* :ref:`docs/design/plans/imreconstruct-2-0.md <improcess-design>`
-  — unified Milestone 12 design and per-layer audits
+* ``docs/design/plans/imreconstruct-2-0.md`` — unified Milestone 12 design
+  and per-layer audits
 * :doc:`gui` — main GUI overview (Imcontrol)
 * :doc:`modules` — list of Imswitch2 modules

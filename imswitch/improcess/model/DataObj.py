@@ -109,7 +109,7 @@ class DataObj:
     @staticmethod
     def _open(path, datasetName=None, allowMultipleDatasets=False):
         ext = os.path.splitext(path)[1]
-        if ext in ['.hdf5', '.hdf']:
+        if ext in ['.hdf5', '.hdf', '.h5']:
             file = h5py.File(path, 'r')
             if len(file) < 1:
                 raise RuntimeError('File does not contain any datasets')

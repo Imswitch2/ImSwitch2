@@ -252,7 +252,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         rejected = []
         
         # Supported extensions
-        supported_exts = {'.hdf5', '.hdf', '.tiff', '.tif', '.zarr'}
+        supported_exts = {'.hdf5', '.hdf', '.h5', '.tiff', '.tif', '.zarr'}
         
         for url in urls:
             path = Path(url.toLocalFile())

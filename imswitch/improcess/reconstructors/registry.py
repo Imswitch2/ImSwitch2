@@ -68,14 +68,25 @@ class PluginRegistry:
         Returns:
             The best-match reconstructor
         """
-        # Heuristic 1: modality tag in attrs
-        modality_tag = data_obj.attrs.get("modality", "").lower()
+        # Heuristic 1: modality tag in attrs. DataObj.attrs is None for plain
+        # TIFFs and may be missing entirely on synthetic objects, so guard it.
+        attrs = getattr(data_obj, "attrs", None) or {}
+        modality_tag = ""
+        try:
+            modality_tag = str(attrs.get("modality", "")).lower()
+        except AttributeError:
+            # attrs is something we cannot .get() on (e.g. h5py AttributeManager
+            # in edge cases). Fall through to extension-based detection.
+            pass
         if modality_tag and modality_tag in self._reconstructors:
             self.__logger.debug(f"Auto-selected reconstructor '{modality_tag}' from modality tag")
             return self._reconstructors[modality_tag]
-        
-        # Heuristic 2: file extension match
-        file_ext = data_obj.filePath.suffix.lstrip(".").lower() if data_obj.filePath else ""
+
+        # Heuristic 2: file extension match. The DataObj attribute is dataPath,
+        # not filePath, and it may be a str rather than a Path.
+        from pathlib import Path
+        data_path = getattr(data_obj, "dataPath", None)
+        file_ext = Path(data_path).suffix.lstrip(".").lower() if data_path else ""
         for recon in self._reconstructors.values():
             if file_ext in recon.file_extensions:
                 self.__logger.debug(
