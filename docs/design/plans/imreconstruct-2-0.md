@@ -90,13 +90,30 @@ These are MoNaLISA contracts dressed up as generic ones. They get moved
 
 ---
 
-## 3. The three new contracts
+## 3. The new contracts
+
+ImProcess loads its capabilities from config the same way ImControl loads
+managers: setup.json declares which reconstructors and processors are
+available, and the registry instantiates exactly those. Standalone launches
+(no setup) get a sensible default set.
+
+Two plugin shapes:
+
+- **`Reconstructor`** — chosen *per dataset*, turns raw `DataObj` into a
+  `ProcessingResult`. Examples: MoNaLISA SIM, SNOUTY deskew, view-only.
+  One reconstructor per result.
+- **`Processor`** — operates *on a `ProcessingResult`*, produces a new one.
+  Stackable. Examples: drift correction, denoising, max-projection,
+  registration, FLIM lifetime overlay. Any number can be chained.
+
+Both are first-class plugins, both registered the same way, both gated by
+config.
 
 ### 3.1 `Reconstructor` (plugin)
 
 ```python
 class Reconstructor(ABC):
-    """A single processing pipeline (MoNaLISA SIM, deskew, drift-correct, …)."""
+    """Turns raw DataObj into a ProcessingResult. One per dataset."""
 
     name: str                       # human-readable, shown in plugin picker
     id: str                         # stable, e.g. "monalisa", "view-only", "snouty-deskew"
@@ -142,21 +159,63 @@ class ProcessingResult(ABC):
 hard-coded standard/bottom/left radio buttons in `ReconstructionView`. The
 view dynamically generates one radio button per `view_mode`.
 
-### 3.3 `ReconstructorRegistry`
+### 3.3 `Processor` (plugin)
 
 ```python
-class ReconstructorRegistry:
-    def register(self, plugin: type[Reconstructor]) -> None: ...
-    def list(self) -> list[Reconstructor]: ...
-    def get(self, plugin_id: str) -> Reconstructor: ...
-    def auto_select(self, data_obj: DataObj) -> Reconstructor:
-        """Pick a default plugin based on data_obj.attrs (modality tag,
+class Processor(ABC):
+    """Operates on a ProcessingResult, returns a new one. Stackable."""
+
+    name: str
+    id: str                         # stable, e.g. "drift-correct", "denoise"
+    applies_to: Callable[[ProcessingResult], bool]  # gate by axis_labels/shape
+
+    @abstractmethod
+    def make_param_widget(self, parent) -> QWidget: ...
+
+    @abstractmethod
+    def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult: ...
+```
+
+Processors are modality-agnostic by design — `drift-correct` works on
+anything with a time axis regardless of which `Reconstructor` produced it.
+The view shell shows a "processing chain" panel; empty for setups that
+declare no processors.
+
+### 3.4 `PluginRegistry` + `ProcessingInfo` config
+
+```python
+class PluginRegistry:
+    def register_reconstructor(self, cls: type[Reconstructor]) -> None: ...
+    def register_processor(self, cls: type[Processor]) -> None: ...
+    def reconstructors(self) -> list[Reconstructor]: ...
+    def processors(self) -> list[Processor]: ...
+    def get(self, plugin_id: str) -> Reconstructor | Processor: ...
+    def auto_select_reconstructor(self, data_obj: DataObj) -> Reconstructor:
+        """Pick a default reconstructor based on data_obj.attrs (modality tag,
         shape, file format). Fall back to view-only."""
 ```
 
-Registration is explicit at module load — entry-points / dynamic discovery
-can come later. For now, `improcess/reconstructors/__init__.py` imports
-each built-in plugin and calls `registry.register(...)`.
+The registry is **populated from config** at startup, mirroring how
+ImControl's `SetupInfo` drives manager loading:
+
+```jsonc
+// setup.json — new optional "processing" block
+"processing": {
+  "reconstructors": ["monalisa", "view-only"],
+  "processors": ["drift-correct", "denoise"]
+}
+```
+
+- **With a setup:** the listed plugins are loaded and offered in the UI.
+  A MoNaLISA setup enables `monalisa` + universal processors;
+  a widefield setup enables only `view-only` + whichever processors apply.
+- **Without a setup (standalone ImProcess):** defaults to `view-only` plus
+  a safe set of universal processors. Lets a user start the app purely as
+  a post-acquisition viewer, drag a file in, and process it.
+- **All available plugin classes** are imported in
+  `improcess/reconstructors/__init__.py` and `improcess/processors/__init__.py`
+  but only *instantiated* when the config lists their id. Out-of-tree
+  plugins (entry-points) can come later — the contract is forward-compatible.
 
 ---
 
@@ -201,8 +260,22 @@ Each phase ends with a working app. No big-bang switch.
    `ProcessingResult.data` + `axis_labels` + `view_modes` (no `ReconObj` import).
 5. Rewrite `WatcherFrameController.saveImage` to call `result.save(...)`.
 
-**Exit criterion:** existing MoNaLISA workflow works end-to-end through the
-registry. MoNaLISA is one entry in `registry.list()`.
+**Exit criteria for Phase B:**
+1. Existing MoNaLISA workflow works end-to-end through the registry.
+   MoNaLISA is one entry in `registry.reconstructors()`.
+2. `setup.json` `processing:` block drives which plugins load; absence of
+   the block means standalone defaults (view-only + universal processors).
+3. **Standalone launch works** without a setup: `python -m imswitch.improcess`
+   opens the app with the default plugin set, no SetupInfo required.
+4. **Drag-and-drop ingest works** for every file format ImControl produces
+   (HDF5, Zarr, TIFF). Dropping files onto the main window calls
+   `MultiDataFrameController.addDataObjs(...)` — implementation is a
+   `dragEnterEvent` / `dropEvent` on `ImProcessMainView` that walks
+   `event.mimeData().urls()`. `DataObj._open` already handles all three
+   formats, so no new I/O code is required.
+5. At least one `Processor` ships (drift correction is the natural first
+   one — useful for every modality with a time axis) to prove the
+   processing-chain wiring works.
 
 ### Phase C — View-only fallback
 
@@ -238,8 +311,11 @@ MoNaLISA pipeline. Out of scope for M12 itself; called out in the roadmap.
 
 ## 5. Risks and open questions
 
-1. **Plugin discovery.** Built-in registration is fine for now; revisit
-   when third parties want to ship out-of-tree reconstructors.
+1. **Plugin discovery.** Config-driven instantiation from setup.json (plus
+   standalone defaults) covers ImSwitch's own needs. Out-of-tree plugins
+   via Python entry-points can be layered on later without changing the
+   contracts — the registry already separates "known classes" from
+   "instantiated plugins".
 2. **Cross-platform SignalExtractor.** Still Windows-only (proprietary
    `GPU_acc_recon.dll`). Acceptable as a *plugin* limitation. The rest of
    ImProcess becomes loadable on macOS/Linux.
