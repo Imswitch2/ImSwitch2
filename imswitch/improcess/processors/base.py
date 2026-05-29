@@ -1,0 +1,83 @@
+"""Base contract for ImProcess processor plugins."""
+
+from abc import ABC, abstractmethod
+from typing import Callable
+
+from qtpy import QtWidgets
+
+from imswitch.improcess.model.result import ProcessingResult
+
+
+class Processor(ABC):
+    """
+    Operates on a ProcessingResult, returns a new one. Stackable.
+    
+    Processors are modality-agnostic by design — drift correction works
+    on anything with a time axis regardless of which Reconstructor produced it.
+    
+    Examples:
+    - Drift correction (requires time axis)
+    - Denoising (works on any array)
+    - Max-projection along an axis
+    - FLIM lifetime overlay (requires FLIM metadata)
+    """
+    
+    # Class attributes (override in subclasses)
+    name: str = "Unnamed Processor"  # Human-readable
+    id: str = "unnamed"  # Stable identifier for config + registry
+    
+    @property
+    @abstractmethod
+    def applies_to(self) -> Callable[[ProcessingResult], bool]:
+        """
+        Gate function: return True if this processor can handle the given result.
+        
+        Examples:
+        - Drift correction: lambda r: "T" in r.axis_labels
+        - Z-projection: lambda r: "Z" in r.axis_labels
+        - Denoising: lambda r: True  # works on anything
+        """
+        ...
+    
+    @abstractmethod
+    def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        """
+        Return the parameter editor widget shown in the processing chain panel.
+        
+        Should expose a `get_values() -> dict` method.
+        """
+        ...
+    
+    @abstractmethod
+    def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
+        """
+        Apply the processing step.
+        
+        Pure function: no side effects, no GUI updates.
+        Returns a new ProcessingResult (may reuse the input data array or copy).
+        
+        Args:
+            result: Input result from a reconstructor or previous processor
+            params: Parameter dict from `make_param_widget().get_values()`
+        
+        Returns:
+            New ProcessingResult with updated data/axis_labels/view_modes
+        """
+        ...
+
+
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
