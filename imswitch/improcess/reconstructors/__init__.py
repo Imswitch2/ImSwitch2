@@ -11,9 +11,9 @@ For now, plugins are hard-coded imports here. Entry-point loading can come later
 from .base import Reconstructor
 from .registry import PluginRegistry, get_registry
 
-# Plugin imports will be added as they are implemented:
-# from .monalisa import MonalisaReconstructor
-# from .view_only import ViewOnlyReconstructor
+# Plugin imports
+from .monalisa import MonalisaReconstructor
+# from .view_only import ViewOnlyReconstructor  # TODO: future plugins
 
 
 def register_default_reconstructors(registry: PluginRegistry) -> None:
@@ -23,8 +23,7 @@ def register_default_reconstructors(registry: PluginRegistry) -> None:
     Called at module startup or when ImProcess launches standalone without
     a setup file. Individual plugins are instantiated and registered here.
     """
-    # Plugins will be registered here as they're implemented
-    pass
+    registry.register_reconstructor(MonalisaReconstructor())
 
 
 __all__ = [
