@@ -126,6 +126,13 @@ class Storer(abc.ABC):
             Dict mapping category to sub-dict of keys within that category
         """
         grouped = {}
+        if not isinstance(attrs, dict):
+            # Defensive: callers occasionally pass a scalar (e.g. a single
+            # description string) where a flat per-detector attribute dict is
+            # expected. Treat that as "no metadata" rather than blowing up
+            # inside .items(), since the structured detector group is still
+            # valid without metadata.
+            return grouped
         for key, value in attrs.items():
             if ':' in key:
                 category, _, rest = key.partition(':')
