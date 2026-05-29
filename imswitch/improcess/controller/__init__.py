@@ -1,1 +1,1 @@
-from .ImRecMainController import ImRecMainController
+from .ImProcessMainController import ImProcessMainController

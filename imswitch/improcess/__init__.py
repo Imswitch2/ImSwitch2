@@ -1,5 +1,5 @@
 __imswitch_module__ = True
-__title__ = 'Image Reconstruction'
+__title__ = 'Image Processing'
 
 
 def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
@@ -7,12 +7,12 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
     from imswitch.imcommon.model import dirtools
     os.environ['PATH'] = os.environ['PATH'] + ';' + dirtools.DataFileDirs.Libs
 
-    from .controller import ImRecMainController
-    from .view import ImRecMainView
+    from .controller import ImProcessMainController
+    from .view import ImProcessMainView
 
-    view = ImRecMainView()
+    view = ImProcessMainView()
     try:
-        controller = ImRecMainController(view, moduleCommChannel)
+        controller = ImProcessMainController(view, moduleCommChannel)
     except Exception as e:
         view.close()
         raise e

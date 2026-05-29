@@ -1,4 +1,4 @@
-from imswitch import imreconstruct
+from imswitch import improcess
 from imswitch.imcommon import prepareApp, launchApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel
 
@@ -6,8 +6,8 @@ from imswitch.imcommon.controller import ModuleCommunicationChannel
 def main():
     app = prepareApp()
     moduleCommChannel = ModuleCommunicationChannel()
-    moduleCommChannel.register(imreconstruct)
-    mainView, mainController = imreconstruct.getMainViewAndController(moduleCommChannel)
+    moduleCommChannel.register(improcess)
+    mainView, mainController = improcess.getMainViewAndController(moduleCommChannel)
     launchApp(app, mainView, [mainController])
 
 

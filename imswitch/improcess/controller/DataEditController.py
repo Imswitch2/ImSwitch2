@@ -1,9 +1,9 @@
 import numpy as np
 
-from .basecontrollers import ImRecWidgetController
+from .basecontrollers import ImProcessWidgetController
 
 
-class DataEditController(ImRecWidgetController):
+class DataEditController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._dataObj = None

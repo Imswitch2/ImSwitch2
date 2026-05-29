@@ -1,10 +1,10 @@
 from imswitch.imcommon.controller import MainController
 from .CommunicationChannel import CommunicationChannel
-from .ImRecMainViewController import ImRecMainViewController
-from .basecontrollers import ImRecWidgetControllerFactory
+from .ImProcessMainViewController import ImProcessMainViewController
+from .basecontrollers import ImProcessWidgetControllerFactory
 
 
-class ImRecMainController(MainController):
+class ImProcessMainController(MainController):
     def __init__(self, mainView, moduleCommChannel):
         self.__mainView = mainView
         self.__moduleCommChannel = moduleCommChannel
@@ -16,12 +16,12 @@ class ImRecMainController(MainController):
         self.__commChannel = CommunicationChannel()
 
         # List of Controllers for the GUI Widgets
-        self.__factory = ImRecWidgetControllerFactory(
+        self.__factory = ImProcessWidgetControllerFactory(
             self.__commChannel, self.__moduleCommChannel
         )
 
         self.mainViewController = self.__factory.createController(
-            ImRecMainViewController, self.__mainView
+            ImProcessMainViewController, self.__mainView
         )
 
     def closeEvent(self):

@@ -40,7 +40,7 @@ class RecordingController(ImConWidgetController):
 
         self._widget.setRecSaveMode(SaveMode.Disk.value)
         self._widget.setRecSaveModeVisible(
-            self._moduleCommChannel.isModuleRegistered('imreconstruct')
+            self._moduleCommChannel.isModuleRegistered('improcess')
         )
 
         self.untilStop()

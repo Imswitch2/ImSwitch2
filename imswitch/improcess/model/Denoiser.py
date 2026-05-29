@@ -13,8 +13,8 @@ class Denoiser:
         try:
             import torch
             from torchvision import transforms
-            from imswitch.imreconstruct.model.UNet import UNet_PosEncod
-            from imswitch.imreconstruct.model.UNetRCAN import UNetRCAN
+            from imswitch.improcess.model.UNet import UNet_PosEncod
+            from imswitch.improcess.model.UNetRCAN import UNetRCAN
             
             if torch.cuda.is_available():
                 self.device = torch.device("cuda")

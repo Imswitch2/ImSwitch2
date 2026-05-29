@@ -1,7 +1,7 @@
 from imswitch.imcommon.view.guitools.FileWatcher import FileWatcher
-from imswitch.imreconstruct.model import DataObj
+from imswitch.improcess.model import DataObj
 import os
-from .basecontrollers import ImRecWidgetController
+from .basecontrollers import ImProcessWidgetController
 from imswitch.imcommon.model.logging import initLogger
 import zarr
 import numpy as np
@@ -12,7 +12,7 @@ import tifffile as tiff
 import h5py
 import time
 
-class WatcherFrameController(ImRecWidgetController):
+class WatcherFrameController(ImProcessWidgetController):
     """ Linked to WatcherFrame. """
 
     def __init__(self, *args, **kwargs):

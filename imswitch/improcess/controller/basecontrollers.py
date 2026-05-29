@@ -1,15 +1,15 @@
 from imswitch.imcommon.controller import WidgetController, WidgetControllerFactory
 
 
-class ImRecWidgetControllerFactory(WidgetControllerFactory):
-    """ Factory class for creating a ImRecWidgetController object. """
+class ImProcessWidgetControllerFactory(WidgetControllerFactory):
+    """ Factory class for creating a ImProcessWidgetController object. """
 
     def __init__(self, commChannel, moduleCommChannel):
         super().__init__(commChannel=commChannel, moduleCommChannel=moduleCommChannel)
 
 
-class ImRecWidgetController(WidgetController):
-    """ Superclass for all ImRecWidgetController. """
+class ImProcessWidgetController(WidgetController):
+    """ Superclass for all ImProcessWidgetController. """
 
     def __init__(self, commChannel, *args, **kwargs):
         # Protected attributes, which should only be accessed from controller and its subclasses

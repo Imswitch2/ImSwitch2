@@ -1,1 +1,1 @@
-from .ImRecMainView import ImRecMainView
+from .ImProcessMainView import ImProcessMainView
