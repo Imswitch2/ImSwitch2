@@ -6,6 +6,7 @@ in the global registry alongside reconstructors.
 """
 
 from .base import Processor
+from .drift_correct import DriftCorrectProcessor
 
 
 def register_default_processors(registry) -> None:
@@ -15,12 +16,12 @@ def register_default_processors(registry) -> None:
     Called at module startup. Individual processors are instantiated and
     registered here as they're implemented (Agent 2's scope).
     """
-    # Processors will be registered here as they're implemented
-    pass
+    registry.register_processor(DriftCorrectProcessor())
 
 
 __all__ = [
     "Processor",
+    "DriftCorrectProcessor",
     "register_default_processors",
 ]
 

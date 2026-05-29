@@ -16,14 +16,36 @@ from .monalisa import MonalisaReconstructor
 # from .view_only import ViewOnlyReconstructor  # TODO: future plugins
 
 
-def register_default_reconstructors(registry: PluginRegistry) -> None:
+def register_default_reconstructors(
+    registry: PluginRegistry,
+    filter_ids: list[str] | None = None
+) -> None:
     """
     Register built-in reconstructors.
     
     Called at module startup or when ImProcess launches standalone without
     a setup file. Individual plugins are instantiated and registered here.
+    
+    Args:
+        registry: The plugin registry to populate
+        filter_ids: Optional list of plugin IDs to register. If None, all are registered.
     """
-    registry.register_reconstructor(MonalisaReconstructor())
+    # Map of plugin IDs to their classes
+    available_plugins = {
+        'monalisa': MonalisaReconstructor,
+        # 'view-only': ViewOnlyReconstructor,  # TODO: implement
+    }
+    
+    # Register requested plugins
+    if filter_ids is None:
+        # Register all
+        to_register = available_plugins.items()
+    else:
+        # Register only the filtered ones
+        to_register = [(pid, cls) for pid, cls in available_plugins.items() if pid in filter_ids]
+    
+    for plugin_id, plugin_class in to_register:
+        registry.register_reconstructor(plugin_class())
 
 
 __all__ = [

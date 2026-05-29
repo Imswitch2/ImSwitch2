@@ -86,6 +86,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigShowScanParamsClicked.connect(self.showScanParamsDialog)
         self._widget.sigPatternParamsChanged.connect(self.updatePattern)
         self._widget.sigDenoiseCurrent.connect(self.denoiseCurrent)
+        self._widget.sigFilesDropped.connect(self.handleDroppedFiles)
         self.updatePattern()
         self.updateScanParams()
     
@@ -434,6 +435,50 @@ class ImProcessMainViewController(ImProcessWidgetController):
         tiff.imwrite(filePath, coeffs,
                      imagej=True, resolution=(1, 1),
                      metadata={'spacing': 1, 'unit': 'px', 'axes': 'TZCYX'})
+
+    def handleDroppedFiles(self, paths):
+        """
+        Process files dropped onto the main view via drag-and-drop.
+        
+        For each file:
+        - Check if it contains multiple datasets (HDF5/Zarr) and prompt user to select
+        - Add each dataset to the multi-data list
+        - Raise the multi-data dock to show the loaded files
+        """
+        from pathlib import Path
+        
+        for path in paths:
+            try:
+                # Get available datasets in the file
+                datasetsInFile = DataObj.getDatasetNames(str(path))
+                
+                # If multiple datasets, let user pick which ones to load
+                if len(datasetsInFile) > 1:
+                    self.pickDatasetsController.setDatasetNames(datasetsInFile)
+                    if not self._widget.showPickDatasetsDialog(blocking=True):
+                        continue  # User cancelled
+                    
+                    # Add only selected datasets
+                    selectedDatasets = self.pickDatasetsController.getSelectedDatasets()
+                    for datasetName in selectedDatasets:
+                        self.multiDataFrameController.makeAndAddDataObj(
+                            path.name, datasetName, path=str(path)
+                        )
+                else:
+                    # Single dataset - add directly
+                    for datasetName in datasetsInFile:
+                        self.multiDataFrameController.makeAndAddDataObj(
+                            path.name, datasetName, path=str(path)
+                        )
+                
+                self._logger.info(f"Loaded file via drag-and-drop: {path.name}")
+                
+            except Exception as e:
+                self._logger.error(f"Failed to load dropped file {path.name}: {e}")
+        
+        # Raise the multi-data dock to show the loaded files
+        if paths:
+            self._widget.raiseMultiDataDock()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
