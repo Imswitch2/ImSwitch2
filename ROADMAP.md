@@ -91,7 +91,7 @@ live-reconstruction developments from upstream ImSwitch 1.
 **Background:** The upstream branch
 [`ImSwitch/ImSwitch@testalab_liveRec_dev`](https://github.com/ImSwitch/ImSwitch/tree/testalab_liveRec_dev)
 contains live-recording work (a ZARR streaming save path) and a larger
-`imreconstruct` live-reconstruction pipeline (Zarr stream/save/load/process
+`improcess` (formerly `imreconstruct`) live-reconstruction pipeline (Zarr stream/save/load/process
 workers + Gauss processor CPU/GPU + localizer/geometry models). As of
 2026-05-22 that branch is still WIP — commit history is prototyping-grade,
 4 files conflict with ImSwitch2's own divergence, and it carries debug
@@ -107,7 +107,7 @@ should be an optional extra.
 **Plan (deferred until upstream is ready):**
 
 - ⬜ Port the recording-side ZARR streaming save into `RecordingManager`.
-- ⬜ Port the `imreconstruct` live-reconstruction pipeline as a separate
+- ⬜ Port the `improcess` live-reconstruction pipeline as a separate
   phase; rename the `karl_*` packages to descriptive names; gate GPU
   behind an extra. Coordinates with Milestone 12.
 - ⬜ Build further recording-manager improvements from that foundation.
@@ -116,8 +116,8 @@ should be an optional extra.
 
 ## Milestone 12: ImProcess (post-processing module)
 
-**Goal:** Take ImSwitch's post-processing module (`imswitch/imreconstruct`,
-to be renamed `imswitch/improcess`) from a MoNaLISA-only viewer/reconstructor
+**Goal:** Take ImSwitch's post-processing module (`imswitch/improcess`,
+formerly `imswitch/imreconstruct`) from a MoNaLISA-only viewer/reconstructor
 to a modality-agnostic post-processing app that handles every acquisition the
 rest of ImSwitch can produce. The rename underlines that this is generalized
 post-processing, not just reconstruction.
@@ -126,7 +126,7 @@ post-processing, not just reconstruction.
 [docs/design/plans/imreconstruct-2-0.md](docs/design/plans/imreconstruct-2-0.md)
 for the unified design and per-layer audit appendices.
 
-**Background:** Today `imreconstruct` is hard-wired around MoNaLISA-style
+**Background:** Today `improcess` is hard-wired around MoNaLISA-style
 reconstruction:
 
 - `model/PatternFinder.py`, `model/SignalExtractor.py`, `model/ReconObj.py`
@@ -140,13 +140,13 @@ Generic infrastructure already exists alongside the MoNaLISA code:
 `DataObj`, `MultiDataFrame`, `WatcherFrame`, the main view shell, and the
 data-edit pipeline are not modality-specific and can be reused as the
 backbone of the generalized app. We also have STED / FLIM / confocal /
-WidefieldSTARSS / lightsheet acquisitions for which `imreconstruct`
+WidefieldSTARSS / lightsheet acquisitions for which `improcess`
 currently cannot do anything useful.
 
 **Surface-level plan (to be refined):**
 
 - ✅ **Audit + classification pass.** For every file in
-  `imswitch/imreconstruct/`, tag it as `generic`, `monalisa-specific`,
+  `imswitch/improcess/`, tag it as `generic`, `monalisa-specific`,
   or `mixed`. Captured in
   [docs/design/plans/imreconstruct-2-0.md](docs/design/plans/imreconstruct-2-0.md)
   plus per-layer audits (`.model.md`, `.controller.md`, `.view.md`).
@@ -159,7 +159,7 @@ currently cannot do anything useful.
   becomes one entry in `reconstructors/monalisa/`.
 - ⬜ **Add a "view-only" reconstructor.** Default for modalities that
   don't need reconstruction (STED, FLIM, confocal, widefield) so loading
-  any ImSwitch dataset in `imreconstruct` at least shows the raw frames
+  any ImSwitch dataset in `improcess` at least shows the raw frames
   with the same data-edit / multi-data / scan-params tooling.
 - ⬜ **Per-modality reconstructors.** Surface-level targets — flesh out
   with owners later:
@@ -172,7 +172,7 @@ currently cannot do anything useful.
 - ⬜ **Hook into M10's live pipeline.** Once the Zarr streaming
   reconstruction lands (Milestone 10), let it drive any registered
   reconstructor — not only the MoNaLISA path.
-- ⬜ **Update docs.** Add an `imreconstruct` user/developer guide; today
+- ⬜ **Update docs.** Add an `improcess` user/developer guide; today
   there is no dedicated page beyond the main `gui.rst` mention.
 
 ---
@@ -226,7 +226,7 @@ schemes, stage scanning, tiling.
 - ⬜ Advanced pulse-scheme TTL output verified on scope vs. designed
   signal.
 - ⬜ Multicolor camera channel mapping correct end-to-end (acquisition
-  → save → `imreconstruct` view).
+  → save → `improcess` view).
 - ⬜ Stage scanning: drift, hysteresis, return-to-origin.
 - ⬜ Tiling with multicolor stitching.
 
@@ -242,7 +242,7 @@ acquisition schemes, bead scanning, XYZ stage scanning, time-lapse.
 - ⬜ XYZ stage scanning trajectories: bounds + step accuracy.
 - ⬜ Time-lapse acquisitions: stability + scheduled cadence over
   ≥ 1 h.
-- ⬜ MoNaLISA reconstruction in the generalized `imreconstruct`
+- ⬜ MoNaLISA reconstruction in the generalized `improcess`
   (Milestone 12).
 
 ### 13.D — WidefieldSTARSS setup

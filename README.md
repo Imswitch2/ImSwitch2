@@ -255,7 +255,7 @@ Imswitch2/
 │   │   ├── view/                   # Qt widgets + napari viewer
 │   │   └── _data/user_defaults/    # Example setup files
 │   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
-│   ├── imreconstruct/              # SIM reconstruction module
+│   ├── improcess/                  # Post-acquisition processing module (was: imreconstruct)
 │   └── imscripting/                # Scripting console module
 ├── utility_scripts/                # Config editor GUI + device templates
 ├── tools/                          # Maintenance scripts (screenshots, codegen, …)

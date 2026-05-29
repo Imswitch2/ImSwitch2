@@ -9,7 +9,7 @@ ImSwitch consists of multiple different modules:
 +======================+===================+
 | Hardware Control     | ``imcontrol``     |
 +----------------------+-------------------+
-| Image Reconstruction | ``imreconstruct`` |
+| Image Processing     | ``improcess``     |
 +----------------------+-------------------+
 | Scripting            | ``imscripting``   |
 +----------------------+-------------------+
