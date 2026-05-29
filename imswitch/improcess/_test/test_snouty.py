@@ -99,27 +99,29 @@ class TestRestackInterleaved:
         assert result[3, 0, 0] == 3
 
 
+@pytest.fixture
+def synthetic_3d_stack():
+    """Create small synthetic 3D stack for testing."""
+    rng = np.random.RandomState(42)
+    # (planes, cam_y, cam_x)
+    stack = rng.rand(8, 16, 16).astype(np.float32) * 100.0
+    return stack
+
+
+@pytest.fixture
+def data_obj_3d(synthetic_3d_stack, tmp_path):
+    """Create DataObj with synthetic 3D HDF5 data."""
+    h5_path = tmp_path / "test_snouty_3d.h5"
+    with h5py.File(h5_path, 'w') as f:
+        f.create_dataset('data', data=synthetic_3d_stack)
+        f.attrs['Detector:Cam:Camera pixel size'] = 0.1  # 100 nm
+    
+    data_obj = DataObj(str(h5_path), "test_3d")
+    return data_obj
+
+
 class TestSnoutyReconstructor:
     """Test SNOUTY reconstructor integration."""
-    
-    @pytest.fixture
-    def synthetic_3d_stack(self):
-        """Create small synthetic 3D stack for testing."""
-        rng = np.random.RandomState(42)
-        # (planes, cam_y, cam_x)
-        stack = rng.rand(8, 16, 16).astype(np.float32) * 100.0
-        return stack
-    
-    @pytest.fixture
-    def data_obj_3d(self, synthetic_3d_stack, tmp_path):
-        """Create DataObj with synthetic 3D HDF5 data."""
-        h5_path = tmp_path / "test_snouty_3d.h5"
-        with h5py.File(h5_path, 'w') as f:
-            f.create_dataset('data', data=synthetic_3d_stack)
-            f.attrs['Detector:Cam:Camera pixel size'] = 0.1  # 100 nm
-        
-        data_obj = DataObj(str(h5_path), "test_3d")
-        return data_obj
     
     def test_reconstructor_attributes(self):
         """Test reconstructor class attributes."""
@@ -331,6 +333,137 @@ class TestSnoutyParamsWidget:
         assert values['flip_data'] is True
         # Other values should remain default
         assert values['alpha_deg'] == DEFAULT_PARAMS['alpha_deg']
+
+
+class TestSnoutyGPU:
+    """Test GPU deskew path (Phase D.2)."""
+    
+    def test_cupy_available_detection(self):
+        """Test cupy_available() function."""
+        from imswitch.improcess.reconstructors.snouty.deskew_gpu import cupy_available
+        
+        # Should return bool without raising
+        result = cupy_available()
+        assert isinstance(result, bool)
+    
+    def test_gpu_path_raises_clear_error_without_cupy(self, data_obj_3d):
+        """When CuPy is missing, GPU path should raise a clear error."""
+        import importlib.util
+        
+        # Check if cupy is actually available
+        cupy_spec = importlib.util.find_spec("cupy")
+        if cupy_spec is not None:
+            pytest.skip("cupy is installed; cannot test missing-cupy error path")
+        
+        reconstructor = SnoutyReconstructor()
+        params = DEFAULT_PARAMS.copy()
+        params['device'] = 'GPU'
+        params['n_timepoints'] = 1
+        
+        # Should raise RuntimeError mentioning cupy
+        with pytest.raises(RuntimeError, match="(?i)cupy"):
+            reconstructor.process(data_obj_3d, params)
+    
+    def test_gpu_path_runs_when_cupy_available(self, synthetic_3d_stack):
+        """When CuPy is available, GPU path should produce valid output."""
+        import importlib.util
+        
+        # Check if cupy is installed
+        cupy_spec = importlib.util.find_spec("cupy")
+        if cupy_spec is None:
+            pytest.skip("cupy not installed")
+        
+        # Import now (after checking availability)
+        from imswitch.improcess.reconstructors.snouty.deskew_gpu import cupy_available
+        if not cupy_available():
+            pytest.skip("cupy not available")
+        
+        # Create temp HDF5 file
+        with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        try:
+            with h5py.File(tmp_path, 'w') as f:
+                f.create_dataset('data', data=synthetic_3d_stack)
+            
+            data_obj = DataObj(tmp_path, "test_gpu")
+            
+            reconstructor = SnoutyReconstructor()
+            params = DEFAULT_PARAMS.copy()
+            params['device'] = 'GPU'
+            params['n_timepoints'] = 1
+            
+            result = reconstructor.process(data_obj, params)
+            
+            # Check result is valid
+            assert result.data.ndim == 3, "Should be 3D (Z, Y, X)"
+            assert result.data.dtype in (np.float32, np.float64)
+            assert not np.isnan(result.data).any()
+            assert np.max(result.data) > 0
+            
+            # Should match expected shape from geometry
+            c_px = 100.0
+            alpha_deg = 35.0
+            dy = 210.0
+            vx = 200.0
+            
+            alpha = np.deg2rad(alpha_deg)
+            M = np.array([
+                [c_px * np.sin(alpha), 0.0, 0.0],
+                [c_px * np.cos(alpha), dy, 0.0],
+                [0.0, 0.0, c_px],
+            ]) / vx
+            
+            transposed_shape = np.array([16, 8, 16], dtype=np.float32)
+            expected_shape = tuple(int(s) for s in np.ceil(M @ transposed_shape).astype(int))
+            
+            assert result.data.shape == expected_shape, \
+                f"Expected {expected_shape}, got {result.data.shape}"
+        finally:
+            Path(tmp_path).unlink()
+    
+    def test_gpu_cpu_parity(self, synthetic_3d_stack):
+        """GPU and CPU paths should produce similar results."""
+        import importlib.util
+        
+        cupy_spec = importlib.util.find_spec("cupy")
+        if cupy_spec is None:
+            pytest.skip("cupy not installed")
+        
+        from imswitch.improcess.reconstructors.snouty.deskew_gpu import cupy_available
+        if not cupy_available():
+            pytest.skip("cupy not available")
+        
+        # Create temp HDF5 file
+        with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        try:
+            with h5py.File(tmp_path, 'w') as f:
+                f.create_dataset('data', data=synthetic_3d_stack)
+            
+            data_obj = DataObj(tmp_path, "test_parity")
+            
+            reconstructor = SnoutyReconstructor()
+            params = DEFAULT_PARAMS.copy()
+            params['n_timepoints'] = 1
+            
+            # Run CPU
+            params['device'] = 'CPU'
+            result_cpu = reconstructor.process(data_obj, params)
+            
+            # Run GPU
+            params['device'] = 'GPU'
+            result_gpu = reconstructor.process(data_obj, params)
+            
+            # Shapes should match exactly
+            assert result_cpu.data.shape == result_gpu.data.shape
+            
+            # Results should be close (small differences due to float precision)
+            assert np.allclose(result_cpu.data, result_gpu.data, rtol=1e-4, atol=1e-4), \
+                "CPU and GPU results differ beyond tolerance"
+        finally:
+            Path(tmp_path).unlink()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
