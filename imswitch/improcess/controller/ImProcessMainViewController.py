@@ -44,7 +44,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
             PickDatasetsController, self._widget.pickDatasetsDialog
         )
 
-        self._signalExtractor = SignalExtractor()
+        # SignalExtractor is MoNaLISA-only and Windows-only (CUDA DLL). Defer
+        # construction until the user actually triggers a MoNaLISA reconstruction;
+        # otherwise the module fails to launch on macOS/Linux even when the user
+        # only wants view-only / drag-and-drop.
+        self._signalExtractor = None
         self._patternFinder = PatternFinder()
         self._denoiser = Denoiser()
 
@@ -291,6 +295,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
         device = self._widget.getComputeDevice()
         pattern = self._pattern
         if device == 'CPU' or device == 'GPU':
+            if self._signalExtractor is None:
+                self._signalExtractor = SignalExtractor()
             coeffs = self._signalExtractor.extractSignal(data, sigmas, pattern, device.lower())
         else:
             raise ValueError(f'Invalid device "{device}" specified; must be either "CPU" or "GPU"')
@@ -459,7 +465,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
                 
                 # If multiple datasets, let user pick which ones to load
                 if len(datasetsInFile) > 1:
-                    self.pickDatasetsController.setDatasetNames(datasetsInFile)
+                    self.pickDatasetsController.setDatasets(str(path), datasetsInFile)
                     if not self._widget.showPickDatasetsDialog(blocking=True):
                         continue  # User cancelled
                     

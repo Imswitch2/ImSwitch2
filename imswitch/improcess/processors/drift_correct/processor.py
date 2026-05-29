@@ -262,10 +262,10 @@ class DriftCorrectProcessor(Processor):
         Applies shift to last 2 dimensions, preserving other dimensions.
         """
         if data.ndim == 2:
-            # Simple 2D case
-            return ndimage.fourier_shift(
-                np.fft.fftn(data),
-                shift_yx
+            # Simple 2D case. fourier_shift returns a frequency-domain array;
+            # an explicit inverse FFT is required to get the shifted image.
+            return np.fft.ifftn(
+                ndimage.fourier_shift(np.fft.fftn(data), shift_yx)
             ).real
         
         # Higher-dimensional case: apply shift to each 2D slice
@@ -274,24 +274,21 @@ class DriftCorrectProcessor(Processor):
         # Iterate over all slices in extra dimensions
         if data.ndim == 3:
             for z in range(data.shape[0]):
-                result[z] = ndimage.fourier_shift(
-                    np.fft.fftn(data[z]),
-                    shift_yx
+                result[z] = np.fft.ifftn(
+                    ndimage.fourier_shift(np.fft.fftn(data[z]), shift_yx)
                 ).real
         elif data.ndim == 4:
             for z in range(data.shape[0]):
                 for c in range(data.shape[1]):
-                    result[z, c] = ndimage.fourier_shift(
-                        np.fft.fftn(data[z, c]),
-                        shift_yx
+                    result[z, c] = np.fft.ifftn(
+                        ndimage.fourier_shift(np.fft.fftn(data[z, c]), shift_yx)
                     ).real
         elif data.ndim == 5:
             for z in range(data.shape[0]):
                 for c in range(data.shape[1]):
                     for b in range(data.shape[2]):
-                        result[z, c, b] = ndimage.fourier_shift(
-                            np.fft.fftn(data[z, c, b]),
-                            shift_yx
+                        result[z, c, b] = np.fft.ifftn(
+                            ndimage.fourier_shift(np.fft.fftn(data[z, c, b]), shift_yx)
                         ).real
         else:
             # Fallback: flatten extra dims, process, reshape
@@ -301,9 +298,8 @@ class DriftCorrectProcessor(Processor):
             flat_result = np.zeros_like(flat_data)
             
             for i in range(n_extra):
-                flat_result[i] = ndimage.fourier_shift(
-                    np.fft.fftn(flat_data[i]),
-                    shift_yx
+                flat_result[i] = np.fft.ifftn(
+                    ndimage.fourier_shift(np.fft.fftn(flat_data[i]), shift_yx)
                 ).real
             
             result = flat_result.reshape(data.shape)
