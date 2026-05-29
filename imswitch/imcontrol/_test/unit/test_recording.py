@@ -3,8 +3,10 @@ import pytest
 
 import h5py
 import numpy as np
+import zarr
 
 from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
+from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
 
 
@@ -279,6 +281,104 @@ def test_snap_axis_ordering():
             assert saved_data[0, :, 0].sum() == 100  # First column of frame 0
             assert saved_data[1, 0, :].sum() == 100  # First row of frame 1
             assert saved_data[2, :, :].sum() == 3 * 100 * 50  # All of frame 2
+
+
+def test_snap_zarr_structured_layout(tmp_path) -> None:
+    """Test that Zarr snapshots mirror the structured HDF5 layout."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+
+    detectorName = list(detectorInfosBasic.keys())[0]
+    test_image = np.zeros((3, 100, 50), dtype=np.uint16)
+    test_image[0, :, 0] = 1
+    test_image[1, 0, :] = 2
+    test_image[2, :, :] = 3
+
+    test_attrs = {
+        detectorName: {
+            'detector:exposure': 0.01,
+            'detector:gain': 1.5,
+            'lasers:laser1:power': 50,
+            'scan:size_um': 100.0,
+            'uncategorized_key': 'value',
+        }
+    }
+
+    savepath = str(tmp_path / 'test_zarr_snap')
+    recordingManager.snapImagePrev(detectorName, savepath, SaveFormat.ZARR, test_image, test_attrs)
+
+    snap_store = f'{savepath}.zarr'
+    assert os.path.exists(snap_store), f"Zarr snapshot not created: {snap_store}"
+
+    root = zarr.open(snap_store, mode='r')
+    assert root.attrs['rec_mode'] == 'snap'
+    assert detectorName in root
+
+    det_group = root[detectorName]
+    assert 'data' in det_group
+    dataset = det_group['data']
+    assert dataset.shape == test_image.shape
+    assert dataset.dtype == np.uint16
+    assert dataset.attrs['detector_name'] == detectorName
+    assert dataset.attrs['axes'] == ['T', 'Y', 'X']
+    assert dataset.attrs['writing'] is False
+    np.testing.assert_array_equal(dataset[:], test_image)
+
+    assert 'metadata' in det_group
+    meta_group = det_group['metadata']
+    assert meta_group.attrs['uncategorized_key'] == 'value'
+    assert meta_group['detector'].attrs['exposure'] == 0.01
+    assert meta_group['detector'].attrs['gain'] == 1.5
+    assert meta_group['lasers'].attrs['laser1:power'] == 50
+    assert meta_group['scan'].attrs['size_um'] == 100.0
+
+
+def test_zarr_streaming_structured_layout(tmp_path) -> None:
+    """Test that Zarr streaming creates a structured, dtype-preserving array."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    store_path = str(tmp_path / 'test_zarr_stream.zarr')
+    attrs = {
+        detectorName: {
+            'detector:exposure': 0.02,
+            'scan:frames': 3,
+        }
+    }
+
+    storer = ZarrStorer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests={detectorName: store_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: (50, 100)},
+        attrs=attrs,
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+
+    frames_a = np.arange(2 * 7 * 5, dtype=np.uint16).reshape(2, 7, 5)
+    frames_b = np.full((1, 7, 5), 50000, dtype=np.uint16)
+    storer.writeFrames(detectorName, frames_a)
+    storer.writeFrames(detectorName, frames_b)
+    storer.finalizeStream(
+        currentFrames={detectorName: 3},
+        filePaths={detectorName: store_path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+
+    root = zarr.open(store_path, mode='r')
+    dataset = root[detectorName]['data']
+    expected = np.concatenate([frames_a, frames_b], axis=0)
+    assert dataset.shape == expected.shape
+    assert dataset.dtype == np.uint16
+    assert dataset.attrs['writing'] is False
+    assert dataset.attrs['axes'] == ['T', 'Y', 'X']
+    np.testing.assert_array_equal(dataset[:], expected)
+
+    meta_group = root[detectorName]['metadata']
+    assert meta_group['detector'].attrs['exposure'] == 0.02
+    assert meta_group['scan'].attrs['frames'] == 3
 
 
 def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
