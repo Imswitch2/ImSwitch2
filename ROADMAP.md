@@ -106,11 +106,29 @@ should be an optional extra.
 
 **Plan (deferred until upstream is ready):**
 
-- ⬜ Port the recording-side ZARR streaming save into `RecordingManager`.
+- ✅ **Structured Zarr save format** (2026-05-29). `ZarrStorer` rewritten
+  to mirror the HDF5 layout: per-detector groups containing a `data`
+  array (`(T, Y, X)`, dtype preserved from frames — no more hard-coded
+  `i2`) plus a `metadata/` subgroup keyed by category (`detector`,
+  `lasers`, `scan`, …). Streaming uses `resize`/slice-assign instead of
+  `append`, so it works on Zarr v3. `snapImagePrev` now routes through
+  `ZarrStorer.snap` for parity with HDF5. Multi-detector behaviour
+  fixed: per-detector mode writes one `.zarr` per detector, single-file
+  mode writes one root with multiple detector groups. RAM-backed Zarr
+  recording explicitly raises `NotImplementedError` until a `MemoryStore`
+  policy is designed. `ImProcess.DataObj` updated in parallel to read
+  the structured layout (HDF5 and Zarr) so reconstructors see the same
+  shape and merged metadata regardless of file format. Six new unit
+  tests under `imswitch/imcontrol/_test/unit/test_recording.py` cover
+  snap layout, streaming layout, multi-detector single-file vs
+  per-detector, scan-lapse grouping, and the explicit RAM
+  `NotImplementedError`.
 - ⬜ Port the `improcess` live-reconstruction pipeline as a separate
   phase; rename the `karl_*` packages to descriptive names; gate GPU
   behind an extra. Coordinates with Milestone 12.
-- ⬜ Build further recording-manager improvements from that foundation.
+- ⬜ Build further recording-manager improvements from that foundation
+  (live monitoring hooks, MemoryStore for in-RAM Zarr, dtype-aware
+  compression presets).
 
 ---
 

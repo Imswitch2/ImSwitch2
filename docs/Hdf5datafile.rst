@@ -1,54 +1,144 @@
-**************
-HDF5 datafiles
-**************
+**********************
+HDF5 and Zarr datafiles
+**********************
 
-In ImSwitch we use `HDF5 files <https://www.hdfgroup.org/solutions/hdf5/>`_ to store the images and metadata containing the experiment's parameters.
-The HDF5 files can be opened in for example `ImageJ <https://imagej.net>`_ and Matlab with the right extensions. For the metadata, `HDFView <https://www.hdfgroup.org/downloads/>`_ can display the attributes and datasets of the file.
+Imswitch2 saves images as either `HDF5
+<https://www.hdfgroup.org/solutions/hdf5/>`_ or `Zarr
+<https://zarr.readthedocs.io/>`_ files.  HDF5 is the default and the
+right choice for single-file portability; Zarr is the right choice for
+long timelapses or distributed reading (each chunk is a separate file
+on disk).
 
-It is possible to import the experiment parameters in ImSwitch from the File menu (File -> Load parameters from saved HDF5 file...), and the GUI will load and display all the parameters directly in the widgets.
-When recording multiple detectors simultaneously, one file will be created for each recorded detector.
+Both formats share **the same logical layout** so downstream tools —
+ImProcess in particular — see the same data and metadata regardless of
+how the recording was saved.  Switching format is a one-knob change
+(``SaveFormat.HDF5`` ↔ ``SaveFormat.ZARR``) with no code adjustments
+required on the reading side.
 
-Datasets
-=========
-Each image recording is saved in a dataset with dimensions Z × Y × X, where Z is the number of frames while Y and X are the vertical and horizontal axes respectively.
-Two special parameters are stored in the dataset:
+Snapshot layout
+===============
 
-- ``detector_name``: name of the detector (camera or point-detector) that provided the images.
-- ``element_size_um``: pixel size of the image, this parameter will be automatically read by ImageJ when opening the file.
+A snap (single shot, no streaming) lays out as follows:
 
+.. code-block:: text
 
-Object attributes
-==================
-The rest of the metadata is also stored as HDF5 attributes in the datasets, containing information about the detectors, lasers, recording, and scanning.
+    <file>.{h5|zarr}/
+        @timestamp
+        @rec_mode = "snap"
+        <detectorName>/
+            data                 # (T, Y, X) or (Y, X), dtype preserved from frame
+                @detector_name
+                @element_size_um
+                @axes            # e.g. ["T", "Y", "X"]
+            metadata/
+                @key = value     # uncategorised flat attrs
+                <category>/      # e.g. "detector", "lasers", "scan"
+                    @key = value # attrs within category
+
+Key properties:
+
+* **Dtype is preserved** from the frame array — ``uint16`` stays
+  ``uint16``.  There is no hard-coded ``i2`` cast.
+* **Axes are not reversed.**  Frames arrive as ``(T, Y, X)`` and are
+  stored as ``(T, Y, X)``.
+* **Metadata is grouped by category.**  Attributes whose key follows the
+  ``Category:Subkey`` convention are placed under a ``metadata/Category``
+  subgroup with the subkey as a leaf attribute.  Uncategorised keys land
+  directly on ``metadata/``.  Readers can flatten this back into the
+  legacy ``Category:Subkey`` form trivially — :py:class:`ImProcess
+  DataObj <imswitch.improcess.model.DataObj>` does this automatically.
+
+Streaming (timelapse) layout
+============================
+
+For continuous recording the layout is the same, except:
+
+* ``@rec_mode = "recording"`` on the root.
+* The ``data`` array is created with an initial shape of ``(0, Y, X)``
+  and resized as frames arrive (no ``append``-style writes — works on
+  Zarr v3).
+* Each detector's ``data/@writing`` is ``True`` while the recording is
+  active and flips to ``False`` on finalise.
+* For ``ScanLapse`` recordings with ``singleLapseFile=True``, each scan
+  gets its own ``scan0/``, ``scan1/`` … subgroup inside the file before
+  the per-detector groups.
+
+Multi-detector behaviour
+========================
+
+Single-file mode (``singleMultiDetectorFile=True``)
+    One file/store with one top-level detector group per detector.
+    Useful when all detectors run on the same clock and you want a
+    single file per acquisition.
+
+Per-detector mode (default)
+    One file/store per detector.  The filename gets a ``_<detector>``
+    suffix.  Useful when detectors have different framerates or you
+    want to load only one detector downstream.
+
+Both modes work identically for HDF5 and Zarr.
+
+Metadata categories
+===================
+
+Recording attributes are emitted by the various managers and follow
+these category conventions:
 
 Detectors
-----------
-There is one attribute for each detector property that is listed in the DetectorManager being used.
-For example, for HamamatsuManager: Binning, model, camera pixel size, readout time, ROI, etc.
-
-The detector's attributes follow the form:
-
-- ``Detector:NameDetector:DetectorProperty``
+    ``Detector:NameDetector:Property`` — properties listed by the
+    relevant ``DetectorManager`` (e.g. binning, model, camera pixel
+    size, readout time, ROI for ``HamamatsuManager``).
 
 Lasers
--------
-The power and whether it was ON/OFF for each laser is stored in the form:
+    One pair per laser:
 
-- ``Laser:LaserName:Enabled`` (boolean)
-- ``Laser:LaserName:Value``
+    * ``Laser:LaserName:Enabled`` (boolean)
+    * ``Laser:LaserName:Value`` (power)
 
 Positioners
-------------
-The value for each positioner is stored to encode in which area the image was taken:
+    Per-axis stage position at acquisition time:
 
-- ``Positioner:PostionerName:PostionerAxis:Position``
+    * ``Positioner:PositionerName:Axis:Position``
 
 Recording and scanning
-------------------------
-The parameters of the recording and scanning are attributes as well. They include all the parameters in the RecordingWidget
-and ScanWidget, regarding the pulse scheme, the stage positions and step sizes, the type of recording, number of frames, etc.
-It can vary depending on the setup used, but they generally follow the form shown below:
+    All parameters from ``RecordingWidget`` and ``ScanWidget``: pulse
+    scheme, stage positions, step sizes, recording mode, frame count.
+    Setup-dependent, but the prefixes are stable:
 
-- ``Rec:PropertyName``
-- ``ScanStage:PropertyName``
-- ``ScanTTL:PropertyName``
+    * ``Rec:Property``
+    * ``ScanStage:Property``
+    * ``ScanTTL:Property``
+
+Reading back
+============
+
+In Imswitch2 itself
+    From ``File → Load parameters from saved HDF5 file…`` the GUI
+    reads the attributes and re-populates every widget.  Works on
+    files produced by either storer.
+
+In ImProcess
+    Drop a file onto the main window or load via the *Load* button.
+    :py:class:`DataObj <imswitch.improcess.model.DataObj>` recognises
+    the structured layout for both HDF5 and Zarr and exposes
+    ``DataObj.attrs`` as a flat dict in the legacy
+    ``Category:Subkey`` form so existing reconstructor metadata
+    adapters work unchanged.
+
+In ImageJ
+    HDF5 files open with the *HDF5* plugin; Zarr files open via the
+    `n5-ij <https://github.com/saalfeldlab/n5-ij>`_ plugin (which also
+    reads Zarr v3).  Both honour ``element_size_um`` for voxel size.
+
+In other tools
+    Standard HDF5 / Zarr readers (``h5py``, ``zarr``, ``HDFView``)
+    work directly.  The on-disk structure is plain-vanilla — no
+    Imswitch-specific decoding required.
+
+Known limitation
+================
+
+RAM-backed Zarr recording (``SaveMode.RAM`` or ``DiskAndRAM`` with the
+Zarr storer) is not implemented yet — it raises
+``NotImplementedError`` at stream-open time.  Use HDF5 for in-memory
+recording until a ``MemoryStore`` policy is added.
