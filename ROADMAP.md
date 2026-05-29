@@ -114,12 +114,17 @@ should be an optional extra.
 
 ---
 
-## Milestone 12: ImReconstruct Generalization 
+## Milestone 12: ImProcess (post-processing module)
 
-**Goal:** Take ImSwitch's post-processing module (`imswitch/imreconstruct`)
-from a MoNaLISA-only viewer/reconstructor to a modality-agnostic
-post-processing app that handles every acquisition the rest of ImSwitch
-can produce.
+**Goal:** Take ImSwitch's post-processing module (`imswitch/imreconstruct`,
+to be renamed `imswitch/improcess`) from a MoNaLISA-only viewer/reconstructor
+to a modality-agnostic post-processing app that handles every acquisition the
+rest of ImSwitch can produce. The rename underlines that this is generalized
+post-processing, not just reconstruction.
+
+**Audit status:** ✅ complete (2026-05-29) — see
+[docs/design/plans/imreconstruct-2-0.md](docs/design/plans/imreconstruct-2-0.md)
+for the unified design and per-layer audit appendices.
 
 **Background:** Today `imreconstruct` is hard-wired around MoNaLISA-style
 reconstruction:
@@ -140,10 +145,11 @@ currently cannot do anything useful.
 
 **Surface-level plan (to be refined):**
 
-- ⬜ **Audit + classification pass.** For every file in
+- ✅ **Audit + classification pass.** For every file in
   `imswitch/imreconstruct/`, tag it as `generic`, `monalisa-specific`,
-  or `mixed`. Capture the result in a short design doc under
-  `docs/design/plans/imreconstruct-2-0.md`.
+  or `mixed`. Captured in
+  [docs/design/plans/imreconstruct-2-0.md](docs/design/plans/imreconstruct-2-0.md)
+  plus per-layer audits (`.model.md`, `.controller.md`, `.view.md`).
 - ⬜ **Define a `Reconstructor` plugin interface.** Narrow contract:
   ingest a typed acquisition + config, return one or more reconstructed
   arrays + metadata. Modality picks its implementation via a registry,
