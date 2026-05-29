@@ -44,6 +44,7 @@ config files).
     :caption: Usage
 
     gui
+    improcess
     use-cases
     scripting
     scripting-wfs-workflows
