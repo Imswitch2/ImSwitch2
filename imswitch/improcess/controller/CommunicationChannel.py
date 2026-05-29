@@ -25,6 +25,8 @@ class CommunicationChannel(SignalInterface):
 
     sigExecutionFinished = Signal(object)
 
+    sigCurrentResultChanged = Signal(object)  # (processingResult/reconObj or None)
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

@@ -42,6 +42,7 @@ class ReconstructionViewController(ImProcessWidgetController):
                             levels=self._widget.getCurrentItemData().getDispLevels())
 
         self._currItemInd = self._widget.getCurrentItemIndex()
+        self._commChannel.sigCurrentResultChanged.emit(self._widget.getCurrentItemData())
 
     def fullUpdate(self, autoLevels=False, levels=None):
         reconObj = self._widget.getCurrentItemData()

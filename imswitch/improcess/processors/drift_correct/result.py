@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import tifffile as tiff
 
+from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
 from imswitch.improcess.model.result import ProcessingResult
 
 
@@ -67,6 +68,21 @@ class DriftCorrectedResult(ProcessingResult):
         
         else:
             raise ValueError(f"Unsupported format: {fmt}")
+
+    def plot_payloads(self) -> list[PlotPayload]:
+        """Return drift trace plots for the generic ImProcess graph widget."""
+        frames = np.arange(self.drift_xy.shape[0])
+        return [
+            PlotPayload(
+                title="Drift correction",
+                x_label="Frame",
+                y_label="Shift (px)",
+                series=[
+                    PlotSeries(name="Y shift", x=frames, y=self.drift_xy[:, 0], kind="line"),
+                    PlotSeries(name="X shift", x=frames, y=self.drift_xy[:, 1], kind="line"),
+                ],
+            )
+        ]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

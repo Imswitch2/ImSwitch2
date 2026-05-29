@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+from .plotting import PlotPayload
+
 
 @dataclass
 class ViewMode:
@@ -67,6 +69,10 @@ class ProcessingResult(ABC):
         with specific axis order, STED might save multi-channel TIFFs, etc.
         """
         ...
+
+    def plot_payloads(self) -> list[PlotPayload]:
+        """Return optional graph payloads for the ImProcess graph widget."""
+        return []
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

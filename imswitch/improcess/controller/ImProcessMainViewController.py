@@ -16,6 +16,7 @@ from .DataFrameController import DataFrameController
 from .MultiDataFrameController import MultiDataFrameController
 from .WatcherFrameController import WatcherFrameController
 from .ReconstructionViewController import ReconstructionViewController
+from .GraphController import GraphController
 from .ScanParamsController import ScanParamsController
 from .basecontrollers import ImProcessWidgetController
 
@@ -36,6 +37,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
         )
         self.reconstructionController = self._factory.createController(
             ReconstructionViewController, self._widget.reconstructionWidget
+        )
+        self.graphController = self._factory.createController(
+            GraphController, self._widget.graphWidget
         )
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog

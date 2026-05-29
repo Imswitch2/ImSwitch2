@@ -9,6 +9,7 @@ from .DataFrame import DataFrame
 from .MultiDataFrame import MultiDataFrame
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
+from .GraphWidget import GraphWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .guitools import BetterPushButton
 
@@ -101,6 +102,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame.sigDenoiseCurrent.connect(self.sigDenoiseCurrent)
 
         self.reconstructionWidget = ReconstructionView()
+        self.graphWidget = GraphWidget()
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -155,7 +157,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         leftContainer.addWidget(parameterFrame, 1)
         leftContainer.addWidget(btnFrame, 0)
         leftContainer.addWidget(DataDock, 1)
-        rightContainer.addWidget(self.reconstructionWidget)
+        rightSplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        rightSplitter.addWidget(self.reconstructionWidget)
+        rightSplitter.addWidget(self.graphWidget)
+        rightSplitter.setStretchFactor(0, 4)
+        rightSplitter.setStretchFactor(1, 1)
+
+        rightContainer.addWidget(rightSplitter)
 
         layout.addLayout(leftContainer, 1)
         layout.addLayout(rightContainer, 3)
