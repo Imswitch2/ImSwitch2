@@ -7,7 +7,7 @@ ImSwitch follows a strict **Model-View-Presenter (MVP)** architecture organized 
 | Module | Purpose | Package |
 |---|---|---|
 | **imcontrol** | Hardware control (lasers, stages, DAQ, detectors) | `imswitch.imcontrol` |
-| **imreconstruct** | SIM image reconstruction | `imswitch.imreconstruct` |
+| **improcess** | Image processing and reconstruction | `imswitch.improcess` |
 | **imscripting** | Python scripting console & editor | `imswitch.imscripting` |
 | **imcommon** | Shared framework, signals, utilities | `imswitch.imcommon` |
 

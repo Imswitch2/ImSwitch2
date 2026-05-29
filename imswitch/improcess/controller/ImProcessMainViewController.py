@@ -4,18 +4,18 @@ import os
 import numpy as np
 import tifffile as tiff
 
-import imswitch.imreconstruct.view.guitools as guitools
+import imswitch.improcess.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
-from imswitch.imreconstruct.model import DataObj, ReconObj, PatternFinder, SignalExtractor,Denoiser
+from imswitch.improcess.model import DataObj, ReconObj, PatternFinder, SignalExtractor,Denoiser
 from .DataFrameController import DataFrameController
 from .MultiDataFrameController import MultiDataFrameController
 from .WatcherFrameController import WatcherFrameController
 from .ReconstructionViewController import ReconstructionViewController
 from .ScanParamsController import ScanParamsController
-from .basecontrollers import ImRecWidgetController
+from .basecontrollers import ImProcessWidgetController
 
 
-class ImRecMainViewController(ImRecWidgetController):
+class ImProcessMainViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._commChannel.extension = self._widget.extension

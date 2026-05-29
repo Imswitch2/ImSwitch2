@@ -2,11 +2,11 @@ import os
 
 import h5py
 
-from imswitch.imreconstruct.model import DataObj
-from .basecontrollers import ImRecWidgetController
+from imswitch.improcess.model import DataObj
+from .basecontrollers import ImProcessWidgetController
 
 
-class MultiDataFrameController(ImRecWidgetController):
+class MultiDataFrameController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

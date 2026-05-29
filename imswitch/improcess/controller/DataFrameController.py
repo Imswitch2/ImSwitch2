@@ -1,10 +1,10 @@
 import numpy as np
 
 from .DataEditController import DataEditController
-from .basecontrollers import ImRecWidgetController
+from .basecontrollers import ImProcessWidgetController
 
 
-class DataFrameController(ImRecWidgetController):
+class DataFrameController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

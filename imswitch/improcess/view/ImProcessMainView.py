@@ -13,7 +13,7 @@ from .ScanParamsDialog import ScanParamsDialog
 from .guitools import BetterPushButton
 
 
-class ImRecMainView(QtWidgets.QMainWindow):
+class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstruction = QtCore.Signal()
     sigSaveReconstructionAll = QtCore.Signal()
     sigSaveCoeffs = QtCore.Signal()
@@ -37,7 +37,7 @@ class ImRecMainView(QtWidgets.QMainWindow):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.setWindowTitle('Image Reconstruction')
+        self.setWindowTitle('Image Processing')
 
         # self parameters
         self.r_l_text = 'Right/Left'

@@ -1,9 +1,9 @@
 import copy
 
-from .basecontrollers import ImRecWidgetController
+from .basecontrollers import ImProcessWidgetController
 
 
-class ScanParamsController(ImRecWidgetController):
+class ScanParamsController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
