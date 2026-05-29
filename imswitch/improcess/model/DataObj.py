@@ -5,6 +5,11 @@ import numpy as np
 import tifffile as tiff
 import zarr
 import time
+
+# zarr v2 placed the Group class under _ZarrGroup; v3 lifted it
+# to the top level. Use a single name (`_ZarrGroup`) for isinstance checks
+# regardless of which version is installed.
+_ZarrGroup = getattr(zarr, "Group", None) or getattr(getattr(zarr, "hierarchy", None), "Group", None)
 from imswitch.imcommon.model import initLogger
 
 
@@ -31,7 +36,7 @@ class DataObj:
             self._data = np.array(self._file.get(self._datasetName)[:])
         elif isinstance(self._file, tiff.TiffFile):
             self._data = self._file.asarray()
-        elif isinstance(self._file, zarr.hierarchy.Group):
+        elif isinstance(self._file, _ZarrGroup):
             self._data = np.array(self._file[self._datasetName])
         return self._data
 
@@ -44,7 +49,7 @@ class DataObj:
             attrs = dict(self._file.attrs)
             attrs.update(dict(self._file[self.datasetName].attrs))
             self._attrs = attrs
-        if isinstance(self._file, zarr.hierarchy.Group):
+        if isinstance(self._file, _ZarrGroup):
             attrs = dict(self._file.attrs)
             attrs.update(dict(self._file[self.datasetName].attrs))
             self._attrs = attrs
@@ -96,7 +101,7 @@ class DataObj:
     def getDatasetNames(path):
         file, _ = DataObj._open(path, allowMultipleDatasets=True)
         try:
-            if isinstance(file, h5py.File) or isinstance(file, zarr.hierarchy.Group):
+            if isinstance(file, h5py.File) or isinstance(file, _ZarrGroup):
                 return list(file.keys())
             elif isinstance(file, tiff.TiffFile):
                 return ['default']
