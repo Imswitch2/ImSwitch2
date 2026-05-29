@@ -15,6 +15,7 @@ from .registry import PluginRegistry, get_registry
 from .monalisa import MonalisaReconstructor
 from .snouty import SnoutyReconstructor
 from .view_only import ViewOnlyReconstructor
+from .snouty_projections import SnoutyProjectionsReconstructor
 
 
 def register_default_reconstructors(
@@ -36,6 +37,7 @@ def register_default_reconstructors(
         'monalisa': MonalisaReconstructor,
         'snouty': SnoutyReconstructor,
         'view-only': ViewOnlyReconstructor,
+        'snouty-projections': SnoutyProjectionsReconstructor,
     }
     
     # Register requested plugins
