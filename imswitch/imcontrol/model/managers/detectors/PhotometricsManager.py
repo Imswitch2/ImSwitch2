@@ -13,6 +13,10 @@ class PhotometricsManager(DetectorManager):
 
     - ``cameraListIndex`` -- the camera's index in the Photometrics camera list
       (list indexing starts at 0)
+    - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
+      micrometers, i.e. physical sensor pitch divided by total optical
+      magnification. Exposed at runtime as the 'Camera pixel size' detector
+      parameter. Default: 0.15 µm.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -46,8 +50,7 @@ class PhotometricsManager(DetectorManager):
                                                   options=['Sensitivity',
                                                            'Speed',
                                                            'Dynamic range'], editable=True),
-            'Camera pixel size': DetectorNumberParameter(group='Miscellaneous', value=1.0,
-                                                         valueUnits='µm', editable=True),
+            'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(detectorInfo),
             'Number of frames per chunk': DetectorNumberParameter(group='Recording', value=self.__chunkFrameSize,
                                                          valueUnits='frames', editable=True)
         }
@@ -63,10 +66,6 @@ class PhotometricsManager(DetectorManager):
                 self.__logger.info(f'Updating user-supplied value for {key}')
                 self.setParameter(key, value)
             self._updatePropertiesFromCamera()
-    @property
-    def pixelSizeUm(self):
-        umxpx = self.parameters['Camera pixel size'].value
-        return [1, umxpx, umxpx]
 
     def getLatestFrame(self):
         try:

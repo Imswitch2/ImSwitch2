@@ -14,6 +14,10 @@ class TISManager(DetectorManager):
       indexing starts at 0); set this string to an invalid value, e.g. the
       string "mock" to load a mocker
     - ``tis`` -- dictionary of TIS camera properties
+    - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
+      micrometers, i.e. physical sensor pitch divided by total optical
+      magnification. Exposed at runtime as the 'Camera pixel size' detector
+      parameter. Default: 0.15 µm.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -41,6 +45,9 @@ class TISManager(DetectorManager):
                                             editable=True),
             'brightness': DetectorNumberParameter(group='Misc', value=1, valueUnits='arb.u.',
                                                   editable=True),
+            'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(
+                detectorInfo
+            ),
         }
 
         # Prepare actions
@@ -106,10 +113,6 @@ class TISManager(DetectorManager):
     def stopAcquisitionForROIChange(self):
         self._running = False
         self._camera.stop_live()
-
-    @property
-    def pixelSizeUm(self):
-        return [1, 1, 1]
 
     def crop(self, hpos, vpos, hsize, vsize):
         def cropAction():

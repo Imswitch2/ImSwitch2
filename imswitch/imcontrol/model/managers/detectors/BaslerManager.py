@@ -14,6 +14,10 @@ class BaslerManager(DetectorManager):
       indexing starts at 0); set this string to an invalid value, e.g. the
       string "mock" to load a mocker
     - ``basler`` -- dictionary of Basler camera properties
+    - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
+      micrometers, i.e. physical sensor pitch divided by total optical
+      magnification. Exposed at runtime as the 'Camera pixel size' detector
+      parameter. Default: 0.15 µm.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -45,7 +49,8 @@ class BaslerManager(DetectorManager):
             'image_width': DetectorNumberParameter(group='Misc', value=fullShape[0], valueUnits='arb.u.',
                         editable=False),
             'image_height': DetectorNumberParameter(group='Misc', value=fullShape[1], valueUnits='arb.u.',
-                        editable=False)
+                        editable=False),
+            'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(detectorInfo)
             }            
 
         # Prepare actions
@@ -121,10 +126,6 @@ class BaslerManager(DetectorManager):
         super().finalize()
         self.__logger.debug('Safely disconnecting the camera...')
         self._camera.close()
-
-    @property
-    def pixelSizeUm(self):
-        return [1, 1, 1]
 
     def crop(self, hpos, vpos, hsize, vsize):
         def cropAction():

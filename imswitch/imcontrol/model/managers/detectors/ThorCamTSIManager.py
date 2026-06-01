@@ -17,6 +17,11 @@ class ThorCamTSIManager(DetectorManager):
       the first available camera. Set to a string starting with "MOCK_" to
       load a mock camera for headless testing.
     - ``dllLocation`` -- path to ThorCam DLLs (Windows only). Default: "dlls/64_lib"
+    - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
+      micrometers, i.e. physical sensor pitch divided by total optical
+      magnification. Used by downstream modules such as tiling and stitching.
+      Exposed at runtime as the ``'Camera pixel size'`` detector parameter.
+      Default: 0.15 µm.
     - ``defaults`` -- dict of default values:
         - ``exposure_us``: exposure time in microseconds (default: 50000)
         - ``gain``: camera gain (default: 0)
@@ -90,6 +95,10 @@ class ThorCamTSIManager(DetectorManager):
             'ROI Y1': DetectorNumberParameter(
                 group='ROI', value=fullShape[1] - 1,
                 valueUnits='px', editable=True
+            ),
+            # Effective (sample-plane) pixel size — see base-class helper.
+            'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(
+                detectorInfo
             ),
         }
         
@@ -290,13 +299,3 @@ class ThorCamTSIManager(DetectorManager):
             self._camera.dispose()
             self._camera = None
     
-    @property
-    def pixelSizeUm(self):
-        """Pixel size in micrometers [z, y, x].
-        
-        Thorlabs scientific cameras typically have 3.45µm pixels.
-        """
-        # Standard pixel size for Zelux/Kiralux cameras
-        # TODO: Make this configurable via managerProperties if needed
-        pixel_size = 3.45
-        return [1, pixel_size, pixel_size]
