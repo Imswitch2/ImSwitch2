@@ -517,17 +517,20 @@ class SwabianTimeTaggerManager(DetectorManager):
 # Lifetime fit helpers — pure numpy, no Qt                                     #
 # --------------------------------------------------------------------------- #
 
-def _fit_moment(cube, t_axis):
+def _fit_moment(cube, t_axis, peak_bin: int = 0):
     """
     Mean photon arrival time (1st moment of the histogram).
-    Fastest method. Biased by background and IRF width, but requires no model.
+    For an exp decay starting at t_peak the measured mean equals
+    t_peak + τ, so we subtract t_peak. Fastest method, still biased by
+    background and IRF width but no model required.
     Returns (intensity, lifetime) both shape (Ny, Nx).
     """
     intensity = cube.sum(axis=2)
     numer = (cube * t_axis[None, None, :]).sum(axis=2)
     lifetime = np.zeros_like(intensity, dtype=np.float32)
     good = intensity > 0
-    lifetime[good] = numer[good] / intensity[good]
+    t_peak = float(t_axis[int(peak_bin)]) if 0 <= peak_bin < len(t_axis) else 0.0
+    lifetime[good] = (numer[good] / intensity[good]) - t_peak
     return intensity.astype(np.float32), lifetime
 
 
@@ -722,12 +725,27 @@ class _TTFlimWorker(Worker):
     def _emit_frame(self, cube, t_axis, t_axis_f64, fit_method,
                     omega, cos_table, sin_table, min_counts, rep_rate_hz,
                     *, is_final=False):
-        if fit_method == 'phasor':
-            intensity, lifetime = self._fit_phasor_cached(cube, omega, cos_table, sin_table)
-        elif fit_method == 'exp1':
-            intensity, lifetime = self._fit_exp1_cached(cube, t_axis_f64)
+        # Pre-pass: intensity image + aggregated decay over valid pixels.
+        # The aggregated decay drives IRF peak detection — every fitter is
+        # then shifted by t_peak so the reported τ is referenced from the
+        # rising edge of the laser pulse, not from t=0 of the histogram.
+        intensity = cube.sum(axis=2).astype(np.float32)
+        valid_mask = intensity >= min_counts
+        if valid_mask.any():
+            decay_counts = cube[valid_mask].sum(axis=0).astype(np.float32)
         else:
-            intensity, lifetime = _fit_moment(cube, t_axis)
+            decay_counts = cube.sum(axis=(0, 1)).astype(np.float32)
+
+        peak_bin = int(np.argmax(decay_counts)) if decay_counts.sum() > 0 else 0
+        t_peak = float(t_axis[peak_bin])
+
+        if fit_method == 'phasor':
+            lifetime = self._fit_phasor_cached(
+                cube, intensity, omega, cos_table, sin_table, t_peak)
+        elif fit_method == 'exp1':
+            lifetime = self._fit_exp1_cached(cube, t_axis_f64, peak_bin)
+        else:
+            _, lifetime = _fit_moment(cube, t_axis, peak_bin)
 
         lifetime[intensity < min_counts] = 0.0
         lifetime[~np.isfinite(lifetime)] = 0.0
@@ -744,20 +762,16 @@ class _TTFlimWorker(Worker):
             f'FLIM emit: total={int(total)} '
             f'max_pix={int(intensity.max())} '
             f'nonzero_px={int((intensity > 0).sum())} '
+            f'peak_bin={peak_bin} t_peak={t_peak * 1e9:.3f}ns '
             f'is_final={is_final}'
         )
 
-        # Aggregate TCSPC decay across valid pixels, then refit globally with
-        # the selected method so the red marker matches what the per-pixel
-        # mode would imply.
-        valid_mask = intensity >= min_counts
         if valid_mask.any():
-            decay_counts = cube[valid_mask].sum(axis=0).astype(np.float32)
             global_tau_ns = self._global_tau_ns(
-                decay_counts, t_axis, t_axis_f64, fit_method, rep_rate_hz
+                decay_counts, t_axis, t_axis_f64, fit_method, rep_rate_hz,
+                peak_bin,
             )
         else:
-            decay_counts = cube.sum(axis=(0, 1)).astype(np.float32)
             global_tau_ns = 0.0
         t_axis_ns = (t_axis * 1e9).astype(np.float32)
 
@@ -771,41 +785,65 @@ class _TTFlimWorker(Worker):
         )
 
     def _global_tau_ns(self, decay_counts, t_axis, t_axis_f64,
-                       fit_method, rep_rate_hz):
+                       fit_method, rep_rate_hz, peak_bin: int):
         """Fit a single τ to the aggregated decay using the selected method."""
         cube1 = decay_counts.reshape(1, 1, -1).astype(np.float32)
+        intensity1 = cube1.sum(axis=2).astype(np.float32)
+        t_peak = float(t_axis[peak_bin])
         if fit_method == 'phasor':
             T_rep_s = 1.0 / rep_rate_hz
             omega = 2.0 * np.pi / T_rep_s
             t_s = t_axis.astype(np.float64)
             cos_t = np.cos(omega * t_s)
             sin_t = np.sin(omega * t_s)
-            _, tau_s = self._fit_phasor_cached(cube1, omega, cos_t, sin_t)
+            tau_s = self._fit_phasor_cached(
+                cube1, intensity1, omega, cos_t, sin_t, t_peak)
         elif fit_method == 'exp1':
-            _, tau_s = self._fit_exp1_cached(cube1, t_axis_f64)
+            tau_s = self._fit_exp1_cached(cube1, t_axis_f64, peak_bin)
         else:
-            _, tau_s = _fit_moment(cube1, t_axis)
+            _, tau_s = _fit_moment(cube1, t_axis, peak_bin)
         tau_ns = float(tau_s[0, 0]) * 1e9
         if not np.isfinite(tau_ns) or tau_ns <= 0:
             return 0.0
         return tau_ns
 
-    def _fit_phasor_cached(self, cube, omega, cos_table, sin_table):
-        """Phasor fit using precomputed cos/sin tables. No per-call allocations."""
-        intensity = cube.sum(axis=2).astype(np.float32)
+    def _fit_phasor_cached(self, cube, intensity, omega, cos_table, sin_table,
+                           t_peak: float):
+        """Phasor fit with IRF offset compensation.
+
+        Projects onto cos/sin of the original time axis, then rotates the
+        (g, s) phasor by −ω·t_peak.  With the e^{+iωt} convention used
+        below (P = g + i·s = ⟨e^{+iωt}⟩) and a shifted decay
+        h_meas(t) = h_true(t − t_peak), we have P_meas = e^{+iω·t_peak}·P_true,
+        so P_true = e^{−iω·t_peak}·P_meas, i.e.
+            g_true = g·cos(φ) + s·sin(φ),
+            s_true = s·cos(φ) − g·sin(φ),  with φ = ω·t_peak.
+        τ = s_true / (ω · g_true).
+        """
         h = cube.astype(np.float64) / intensity.clip(1).astype(np.float64)[:, :, None]
         g = (h * cos_table[None, None, :]).sum(axis=2)
         s = (h * sin_table[None, None, :]).sum(axis=2)
-        denom = omega * g
-        with np.errstate(invalid='ignore', divide='ignore'):
-            lifetime = np.where(np.abs(denom) > 1e-30, s / denom, 0.0).astype(np.float32)
-        return intensity, lifetime
 
-    def _fit_exp1_cached(self, cube, t_axis_f64):
-        """Exp1 fit using precomputed t_axis in float64 with correct shape."""
-        intensity = cube.sum(axis=2).astype(np.float32)
-        h = cube.astype(np.float64)
-        t = t_axis_f64  # Already (1, 1, n_bins) in float64
+        phi = omega * t_peak
+        cphi, sphi = np.cos(phi), np.sin(phi)
+        g_true = g * cphi + s * sphi
+        s_true = s * cphi - g * sphi
+
+        denom = omega * g_true
+        with np.errstate(invalid='ignore', divide='ignore'):
+            lifetime = np.where(np.abs(denom) > 1e-30, s_true / denom, 0.0)
+        return lifetime.astype(np.float32)
+
+    def _fit_exp1_cached(self, cube, t_axis_f64, peak_bin: int):
+        """Exp1 fit, restricted to bins ≥ peak_bin with t-axis shifted so
+        the IRF peak is at t=0. This removes the IRF rising edge from the
+        fit, which otherwise tilts the slope."""
+        n_bins = t_axis_f64.shape[-1]
+        k0 = max(0, min(int(peak_bin), n_bins - 2))
+        sub_cube = cube[..., k0:]
+        # Shift so peak lands at t=0; keeps the fit anchored to the decay only.
+        t = (t_axis_f64[..., k0:] - t_axis_f64[..., k0:k0 + 1])
+        h = sub_cube.astype(np.float64)
 
         w = np.sqrt(np.where(h > 0, h, 0.0))
         log_h = np.where(h > 0, np.log(h), 0.0)
@@ -823,4 +861,4 @@ class _TTFlimWorker(Worker):
                             0.0)
 
         lifetime = np.where(slope < 0, (-1.0 / slope).astype(np.float32), 0.0)
-        return intensity, lifetime.astype(np.float32)
+        return lifetime.astype(np.float32)

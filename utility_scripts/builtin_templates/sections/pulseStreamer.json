@@ -1,0 +1,12 @@
+{
+  "section": true,
+  "key": "pulseStreamer",
+  "group": "system",
+  "display": "Pulse Streamer (legacy)",
+  "summary": "Swabian PulseStreamer hardware. Legacy: MasterController no longer constructs this manager — the active pulse-generator path is teensyPulse.",
+  "legacy": true,
+  "legacy_note": "PulseStreamerManager instantiation is commented out in MasterController. Preserved for older configs; new setups should use teensyPulse.",
+  "fields": [
+    {"key": "ipAddress", "label": "IP address", "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "PulseStreamer host IP. null = disabled.", "opts": []}
+  ]
+}

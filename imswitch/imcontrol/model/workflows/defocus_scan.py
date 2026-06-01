@@ -1,6 +1,6 @@
-"""Defocus scan workflow — acquire recordings at multiple Z positions.
+"""Defocus scan workflow — run WidefieldStarss at multiple Z positions.
 
-Runs a full RecordingWorkflow at each Z plane to characterise the effect of
+Runs a full WidefieldStarssWorkflow at each Z plane to characterise the effect of
 defocus on polarisation-resolved measurements.
 
 Ported from WFS DefocusScanWorkflow to ImSwitch model/workflows pattern.
@@ -17,7 +17,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
-    from imswitch.imcontrol.model.workflows.recording import RecordingWorkflow
+    from imswitch.imcontrol.model.workflows.widefield_starss import WidefieldStarssWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -40,26 +40,37 @@ class DefocusScanParams:
 
 
 class DefocusScanWorkflow:
-    """Acquire a full recording at each of N Z positions.
+    """Run a full WidefieldStarss acquisition at each of N Z positions.
 
     Args:
         facade: WFS-shaped hardware facade exposing z_stage_con.
-        recording_workflow: RecordingWorkflow instance for acquisitions.
+        widefield_starss_workflow: WidefieldStarssWorkflow instance for acquisitions.
+        recording_workflow: Deprecated alias for ``widefield_starss_workflow``.
         params: Defocus scan parameters.
     """
 
     def __init__(
         self,
         facade: MicroscopeFacade,
-        recording_workflow: RecordingWorkflow,
-        params: DefocusScanParams,
+        widefield_starss_workflow: Optional[WidefieldStarssWorkflow] = None,
+        params: Optional[DefocusScanParams] = None,
+        *,
+        recording_workflow: Optional[WidefieldStarssWorkflow] = None,
     ) -> None:
+        if widefield_starss_workflow is None:
+            widefield_starss_workflow = recording_workflow
+        if widefield_starss_workflow is None:
+            raise TypeError("DefocusScanWorkflow requires a WidefieldStarssWorkflow")
+        if params is None:
+            raise TypeError("DefocusScanWorkflow requires DefocusScanParams")
+
         self.facade = facade
-        self.recording = recording_workflow
+        self.widefield_starss = widefield_starss_workflow
+        self.recording = widefield_starss_workflow  # Deprecated compatibility attribute
         self.params = params
 
     def run(self) -> list[float]:
-        """Execute defocus scan: recording at each Z position.
+        """Execute defocus scan: WidefieldStarss acquisition at each Z position.
 
         Returns:
             List of Z positions (in micrometers) actually visited.
@@ -119,9 +130,9 @@ class DefocusScanWorkflow:
                 self.facade.z_stage_con.set_pos_um(z)
                 time.sleep(0.3)  # Allow piezo to settle
 
-                # Update measurement name suffix and run recording
-                self.recording.params.measurement_name_addition = f"_z{z:.2f}um"
-                self.recording.run()
+                # Update measurement name suffix and run WidefieldStarss.
+                self.widefield_starss.params.measurement_name_addition = f"_z{z:.2f}um"
+                self.widefield_starss.run()
 
         finally:
             # Restore original position

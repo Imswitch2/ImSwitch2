@@ -7,8 +7,8 @@ Prerequisites:
   - Laser: 488 nm (EXC)
   - Teensy device available (if pulsed=True)
 
-Output: ~/ImSwitchMeasurements/<timestamp>/well_r0_c0/stitched_image.png (per well)
-        ~/ImSwitchMeasurements/<timestamp>/well_r0_c0/tile_*.npy (if save_individual=True)
+Output: <MEASUREMENTS_ROOT>/well_r0_c0/Tiling_measurement.h5 (per well)
+        <MEASUREMENTS_ROOT>/well_r0_c0/img_new_*.npy if save_individual=True.
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (

@@ -6,9 +6,8 @@ Prerequisites:
   - Lasers: 488 nm (EXC), 405 nm (ACT)
   - Camera configured for continuous streaming
 
-Output: ~/ImSwitchMeasurements/<timestamp>_<powers>/signal_bwd.csv (per combination)
-        ~/ImSwitchMeasurements/<timestamp>_<powers>/combined_bwd.csv
-        ~/ImSwitchMeasurements/<timestamp>_<powers>/background_bwd.csv
+Output: CWSTARSS TIFF stacks under <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/
+        for each power combination.
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import (

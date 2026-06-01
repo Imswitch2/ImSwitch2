@@ -2,7 +2,7 @@
 
 Ported from WFS TilingWorkflow. Executes a spiral XY scan, snaps one frame per
 tile (software or hardware-triggered), saves tiles to disk and H5, stitches the
-overview, and optionally segments cells then drives per-cell RecordingWorkflow
+overview, and optionally segments cells then drives per-cell WidefieldStarssWorkflow
 acquisitions.
 
 Copyright (C) 2020-2026 ImSwitch developers
@@ -24,9 +24,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 from __future__ import annotations
 
-import glob
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -44,7 +42,7 @@ from imswitch.imcontrol.model.workflows.stitched_image import StitchedImage
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
-    from imswitch.imcontrol.model.workflows.recording import RecordingWorkflow
+    from imswitch.imcontrol.model.workflows.widefield_starss import WidefieldStarssWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +91,9 @@ class TilingWorkflow:
     
     Args:
         facade: MicroscopeFacade providing access to hardware managers.
-        recording_workflow: Optional RecordingWorkflow instance for per-cell acquisitions.
+        widefield_starss_workflow: Optional WidefieldStarssWorkflow instance for
+            per-cell acquisitions.
+        recording_workflow: Deprecated alias for ``widefield_starss_workflow``.
             For overview-only tiling, callers may use ``TilingWorkflow(facade, params)``.
         params: TilingParams configuration for this scan.
         seg_filter: Optional dict of cell segmentation filter parameters.
@@ -113,25 +113,31 @@ class TilingWorkflow:
     def __init__(
         self,
         facade: MicroscopeFacade,
-        recording_workflow: Optional[RecordingWorkflow | TilingParams] = None,
+        widefield_starss_workflow: Optional[WidefieldStarssWorkflow | TilingParams] = None,
         params: Optional[TilingParams] = None,
         seg_filter: Optional[dict] = None,
+        *,
+        recording_workflow: Optional[WidefieldStarssWorkflow] = None,
     ) -> None:
-        if isinstance(recording_workflow, TilingParams):
+        if widefield_starss_workflow is None:
+            widefield_starss_workflow = recording_workflow
+
+        if isinstance(widefield_starss_workflow, TilingParams):
             if params is not None:
                 if seg_filter is not None:
                     raise TypeError(
                         "TilingWorkflow received both positional params and seg_filter"
                     )
                 seg_filter = params  # Backward-compatible TilingWorkflow(facade, params, seg_filter)
-            params = recording_workflow
-            recording_workflow = None
+            params = widefield_starss_workflow
+            widefield_starss_workflow = None
 
         if params is None:
             raise TypeError("TilingWorkflow requires TilingParams")
 
         self.facade = facade
-        self._recording = recording_workflow
+        self._widefield_starss = widefield_starss_workflow
+        self._recording = widefield_starss_workflow  # Deprecated compatibility attribute
         self.params = params
         self.seg_filter = seg_filter or {}
         
@@ -269,134 +275,87 @@ class TilingWorkflow:
 
     def run_cell_targeting(
         self,
-        overview_image: Optional[np.ndarray] = None,
-        pixel_size_um: float = 6.5,
+        stitched: StitchedImage,
+        pixel_size_um: float,
+        canvas_origin_stage: tuple[float, float],
+        for_each_feature: Optional[Callable] = None,
         cells_found_cb: Optional[Callable] = None,
         cell_started_cb: Optional[Callable] = None,
         cell_done_cb: Optional[Callable] = None,
-        autofocus: bool = False,
-        z_center: Optional[float] = None,
-        autofocus_params: Optional[tuple] = None,
     ) -> None:
-        """Segment cells in the stitched overview and drive per-cell recordings.
-        
+        """Segment cells in a live stitched overview and iterate over them.
+
         Args:
-            overview_image: Pre-computed stitched overview (2-D float32 in [0, 1]).
-                If None, will be loaded from saved tiles (requires self.run() was called).
-            pixel_size_um: Pixel size in µm (for area calculations).
-            cells_found_cb: Optional callback ``f(positions, n_cells)`` called after segmentation.
-                positions is an (N, 2) array of (row, col) centroids in the overview image.
-            cell_started_cb: Optional callback ``f(cell_index)`` called before each cell recording.
-            cell_done_cb: Optional callback ``f(cell_index, success)`` called after each cell.
-            autofocus: Whether to run autofocus before each cell recording.
-            z_center: Z position (µm) to start autofocus from.
-            autofocus_params: Tuple of (n_planes, step_um) for autofocus.
+            stitched: A live ``StitchedImage`` containing the overview to segment.
+            pixel_size_um: Pixel size in µm for the overview (matches ``stitched``).
+            canvas_origin_stage: ``(stage_x, stage_y)`` corresponding to overview
+                pixel (0, 0). Used to convert centroid coords to stage moves.
+            for_each_feature: Optional ``f(idx, props_for_cell, stage_xy) -> None``
+                callable invoked once per accepted cell after the stage has moved
+                to it. Plug in a sub-workflow (recording, z-stack, etc.) here.
+            cells_found_cb: ``f(positions, n_cells)`` — (N, 2) row/col positions.
+            cell_started_cb: ``f(cell_index)`` called before each cell.
+            cell_done_cb: ``f(cell_index, success)`` called after each cell.
         """
-        if overview_image is None:
-            logger.info("Building stitched overview from saved tiles...")
-            overview_image = self._build_stitched_overview()
-        
-        if overview_image is None or overview_image.size == 0:
-            logger.warning("No overview image available for cell targeting")
+        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
+
+        overview = np.asarray(stitched.get_overview(), dtype=np.float32)
+        if overview.size == 0:
+            logger.warning("Empty overview — nothing to segment")
             return
-        
-        logger.info("Segmenting cells in stitched overview...")
-        cell_props = self._segment_cells(overview_image, pixel_size_um)
-        
-        if not cell_props or len(cell_props.get("centroid_x_um", [])) == 0:
-            logger.warning("No cells found in overview")
+
+        params = self.seg_filter or {}
+        seg = Segmenter(
+            blur_sigma_px=params.get("blur_sigma_px", 3.0),
+            threshold=params.get("threshold"),
+        )
+        props = seg.segment(overview, pixel_size_um)
+        if not props:
+            logger.info("No cells found in overview")
             if cells_found_cb is not None:
                 cells_found_cb(np.empty((0, 2)), 0)
             return
-        
-        # Apply filtering
-        n_all = len(cell_props["centroid_x_um"])
-        keep = np.ones(n_all, dtype=bool)
-        
-        filt = self.seg_filter
-        if filt:
-            # Convert to numpy arrays for comparison
-            area_um2 = np.array(cell_props["area_um2"])
-            mean_intensity = np.array(cell_props["mean_intensity"])
-            eccentricity = np.array(cell_props["eccentricity"])
-            max_intensity = np.array(cell_props["max_intensity"])
-            
-            if filt.get("area_enabled", False):
-                keep &= (
-                    (area_um2 >= filt.get("area_um2_min", 0.0))
-                    & (area_um2 <= filt.get("area_um2_max", np.inf))
-                )
-            if filt.get("mean_intensity_enabled", False):
-                keep &= mean_intensity > filt.get("mean_intensity", 0.0)
-            if filt.get("eccentricity_enabled", False):
-                keep &= eccentricity < filt.get("eccentricity", 1.0)
-            if filt.get("max_intensity_enabled", False):
-                keep &= max_intensity > filt.get("max_intensity", 0.0)
-        
+
+        keep = Segmenter.apply_filters(props, params)
         idx_valid = np.where(keep)[0]
-        logger.info("Found %d valid target cells (filtered from %d)", len(idx_valid), n_all)
-        
+        logger.info("Found %d valid target cells (filtered from %d)",
+                    len(idx_valid), len(props["label"]))
+
         if len(idx_valid) == 0:
             if cells_found_cb is not None:
                 cells_found_cb(np.empty((0, 2)), 0)
             return
-        
-        # Build positions array for callback
+
+        positions = np.column_stack([
+            props["centroid_row"][idx_valid],
+            props["centroid_col"][idx_valid],
+        ])
         if cells_found_cb is not None:
-            positions = np.column_stack([
-                np.array(cell_props["centroid_row"])[idx_valid],
-                np.array(cell_props["centroid_col"])[idx_valid],
-            ])
             cells_found_cb(positions, len(idx_valid))
-        
-        # Per-cell recording loop
-        if autofocus and autofocus_params is None:
-            autofocus_params = (10, 2.0)  # Default: 10 planes, 2 µm step
-        
+
         for i, cell_idx in enumerate(idx_valid):
             if cell_started_cb is not None:
                 cell_started_cb(i)
-            
             success = False
             try:
-                # Move stage to cell centroid
-                cell_x_um = cell_props["centroid_x_um"][cell_idx]
-                cell_y_um = cell_props["centroid_y_um"][cell_idx]
-                
-                if self._origin_stage_xy is None:
-                    logger.warning("Origin stage position unknown; skipping cell %d", i + 1)
-                    continue
-                
-                stage_x = self._origin_stage_xy[0] + cell_x_um
-                stage_y = self._origin_stage_xy[1] + cell_y_um
-                self.facade.stage_con.move_to(int(stage_x), int(stage_y))
-                
-                logger.info("Cell %d/%d at (%.1f, %.1f) µm", i + 1, len(idx_valid), cell_x_um, cell_y_um)
-                
-                # Autofocus if requested
-                if autofocus:
-                    # TODO: Implement autofocus via facade when z_stack workflow is available
-                    logger.debug("Autofocus requested but not yet implemented")
-                
-                # Run H polarization
-                self.facade.rotator_qwp.chained_move_to_h(self.facade.rotator_hwp.move_to_h)
-                logger.info("Cell %d/%d — horizontal polarization", i + 1, len(idx_valid))
-                if self._recording is None:
-                    raise RuntimeError("Cell targeting requires a recording workflow")
-                self._recording.run(measurement_name_addition=f"_{i + 1}_h")
-                
-                # Run V polarization
-                self.facade.rotator_qwp.chained_move_to_v(self.facade.rotator_hwp.move_to_v)
-                logger.info("Cell %d/%d — vertical polarization", i + 1, len(idx_valid))
-                self._recording.run(measurement_name_addition=f"_{i + 1}_v")
-                
+                row = int(props["centroid_row"][cell_idx])
+                col = int(props["centroid_col"][cell_idx])
+                stage_x, stage_y = stitched.pixel_to_stage(row, col, canvas_origin_stage)
+                self.facade.stage_con.move_to(stage_x, stage_y)
+                logger.info("Cell %d/%d at stage (%.2f, %.2f)",
+                            i + 1, len(idx_valid), stage_x, stage_y)
+
+                if for_each_feature is not None:
+                    cell_props = {k: v[cell_idx] for k, v in props.items()}
+                    for_each_feature(i, cell_props, (stage_x, stage_y))
+
                 success = True
             except Exception as exc:
-                logger.warning("Cell %d/%d failed: %s — skipping", i + 1, len(idx_valid), exc)
-            
+                logger.warning("Cell %d/%d failed: %s — skipping",
+                               i + 1, len(idx_valid), exc)
             if cell_done_cb is not None:
                 cell_done_cb(i, success)
-        
+
         logger.info("Cell targeting complete")
 
     # ------------------------------------------------------------------
@@ -504,114 +463,3 @@ class TilingWorkflow:
         
         for old_npy in save_folder.glob("img_new_*.npy"):
             old_npy.unlink()
-
-    def _build_stitched_overview(self) -> Optional[np.ndarray]:
-        """Build stitched overview from saved tile files.
-        
-        Returns:
-            2-D float32 overview image in [0, 1], or None if tiles cannot be loaded.
-        """
-        save_folder = self.params.save_folder
-        if save_folder is None:
-            logger.warning("Cannot build overview: no save_folder set")
-            return None
-        
-        save_folder = Path(save_folder)
-        tile_files = sorted(save_folder.glob("img_new_*.npy"))
-        
-        if not tile_files:
-            logger.warning("No tile files found in %s", save_folder)
-            return None
-        
-        # Load first tile to get shape
-        first_tile = np.load(str(tile_files[0]))
-        tile_shape = first_tile.shape
-        
-        # Initialize StitchedImage
-        # Assume square pixels; pixel_size_um will be passed separately for cell segmentation
-        pixel_size_um = 6.5  # Default; should match detector config
-        self.stitched_image = StitchedImage(
-            tile_size_px=None,
-            tile_step_um=self.params.step_units,  # Assuming 1:1 units to µm
-            tile_shape_px=tile_shape,
-            pixel_size_um=pixel_size_um,
-        )
-        
-        # Add tiles
-        for tile_file in tile_files:
-            # Parse grid position from filename: img_new_{gx}_{gy}.npy
-            parts = tile_file.stem.split("_")
-            if len(parts) >= 4:
-                gx = int(parts[2])
-                gy = int(parts[3])
-                tile_data = np.load(str(tile_file))
-                self.stitched_image.add_tile(tile_data, gx, gy)
-        
-        return self.stitched_image.get_overview()
-
-    def _segment_cells(self, overview: np.ndarray, pixel_size_um: float) -> dict:
-        """Segment cells in the stitched overview image.
-        
-        Returns a dict with keys:
-            "centroid_row", "centroid_col", "centroid_x_um", "centroid_y_um",
-            "area_um2", "mean_intensity", "max_intensity", "eccentricity"
-        
-        Each value is a list or array of length N_cells.
-        """
-        try:
-            from skimage import filters
-            from skimage.measure import label, regionprops_table
-            from skimage.morphology import remove_small_objects
-        except ImportError:
-            logger.error("scikit-image not available; cannot segment cells")
-            return {}
-        
-        # Simple threshold-based segmentation
-        blur_sigma = 2.0
-        threshold = 0.15
-        min_area_px = 400
-        
-        # Blur and threshold
-        img_blur = filters.gaussian(overview, sigma=blur_sigma, preserve_range=True)
-        mask = img_blur > threshold
-        
-        # Remove small objects
-        mask = remove_small_objects(mask, max_size=min_area_px - 1)
-        
-        # Label connected components
-        labels = label(mask)
-        
-        if labels.max() == 0:
-            logger.info("No cells found in overview")
-            return {}
-        
-        # Extract region properties
-        props = regionprops_table(
-            labels,
-            intensity_image=overview,
-            properties=(
-                "label",
-                "area",
-                "centroid",
-                "bbox",
-                "eccentricity",
-                "mean_intensity",
-                "max_intensity",
-            ),
-        )
-        
-        # Convert to µm coordinates
-        area_um2 = props["area"] * (pixel_size_um ** 2)
-        centroid_x_um = props["centroid-1"] * pixel_size_um
-        centroid_y_um = props["centroid-0"] * pixel_size_um
-        
-        return {
-            "centroid_row": props["centroid-0"].tolist(),
-            "centroid_col": props["centroid-1"].tolist(),
-            "centroid_x_um": centroid_x_um.tolist(),
-            "centroid_y_um": centroid_y_um.tolist(),
-            "area_um2": area_um2.tolist(),
-            "mean_intensity": props["mean_intensity"].tolist(),
-            "max_intensity": props["max_intensity"].tolist(),
-            "eccentricity": props["eccentricity"].tolist(),
-        }

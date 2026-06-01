@@ -1,0 +1,9 @@
+{
+    "// description": "Minimal setup for running ImProcess as a stand-alone post-acquisition processor with the MoNaLISA reconstruction pipeline. No hardware devices are declared - this setup is meant for opening existing acquisitions (HDF5/Zarr/TIFF), reconstructing them, and saving the result. Set processing.graphPanel to false to hide the optional graph panel. To use, also set 'enabled' to ['improcess'] in modules.json.",
+
+    "processing": {
+        "graphPanel": true,
+        "reconstructors": ["monalisa", "view-only"],
+        "processors":     ["drift-correct"]
+    }
+}

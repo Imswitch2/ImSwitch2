@@ -1,0 +1,12 @@
+{
+  "section": true,
+  "key": "nidaq",
+  "group": "system",
+  "display": "NI-DAQ",
+  "summary": "NI-DAQ card behavior. NidaqManager is always constructed (even with no DAQ — use simulation=true).",
+  "fields": [
+    {"key": "timerCounterChannel", "label": "Timer counter channel", "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "Output counter channel for timing, e.g. Dev1/ctr2. Integer N is also accepted and translated to Dev1/ctr{N}.", "opts": []},
+    {"key": "startTrigger",        "label": "Start trigger",         "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Enable start-trigger sync between AO/AI/DO/counter tasks.", "opts": []},
+    {"key": "simulation",          "label": "Simulation mode",       "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "Allow NI-DAQ commands without physical hardware (no-op).", "opts": []}
+  ]
+}

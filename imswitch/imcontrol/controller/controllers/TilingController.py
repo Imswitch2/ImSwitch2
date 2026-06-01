@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from qtpy import QtCore
@@ -11,6 +11,7 @@ from imswitch.imcontrol.model.workflows.spiral import spiral_moves
 from ..basecontrollers import ImConWidgetController
 
 _SETTLE_S = 0.15  # stage settle time after each move (seconds)
+CellFeatureCallback = Callable[[int, dict, Tuple[float, float]], None]
 
 
 class TilingController(ImConWidgetController):
@@ -19,6 +20,9 @@ class TilingController(ImConWidgetController):
     sigOverviewUpdated = QtCore.Signal(object)   # np.ndarray
     sigProgressUpdated = QtCore.Signal(int, int)  # current, total
     sigRunningChanged = QtCore.Signal(bool)       # routes setRunning across threads
+    sigShowCellMarkers = QtCore.Signal(object)    # (N, 2) row/col array
+    sigHighlightCell = QtCore.Signal(int)
+    sigCellTargetingEnabled = QtCore.Signal(bool)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -29,6 +33,10 @@ class TilingController(ImConWidgetController):
         self._originXY: Optional[Tuple[float, float]] = None
         self._gridPositions: List[Tuple[int, int]] = []
         self._lastStepUm: float = 100.0
+        self._segParams: dict = {}
+        self._cellPositionsRC: Optional[np.ndarray] = None  # (N, 2) row/col in overview
+        self._cellProps: Optional[dict[str, np.ndarray]] = None
+        self._cellTargetingRunning = False
 
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
@@ -39,9 +47,14 @@ class TilingController(ImConWidgetController):
         self._widget.sigStartTiling.connect(self.startTiling)
         self._widget.sigStopTiling.connect(self.stopTiling)
         self._widget.sigClickOnOverview.connect(self._navigateToPixel)
+        self._widget.sigTuneSegmentation.connect(self._onTuneSegmentation)
+        self._widget.sigRunCellTargeting.connect(self.detectCellTargets)
         self.sigOverviewUpdated.connect(self._widget.updateOverview)
         self.sigProgressUpdated.connect(self._widget.setProgress)
         self.sigRunningChanged.connect(self._widget.setRunning)
+        self.sigShowCellMarkers.connect(self._widget.showCellMarkers)
+        self.sigHighlightCell.connect(self._widget.highlightCurrentCell)
+        self.sigCellTargetingEnabled.connect(self._widget.setCellTargetingEnabled)
 
     # ------------------------------------------------------------------
     # Public API
@@ -69,6 +82,10 @@ class TilingController(ImConWidgetController):
 
         self._widget.setRunning(True)
         self._widget.setProgress(0, n_tiles)
+        self._widget.clearCellMarkers()
+        self._widget.setCellTargetingEnabled(False)
+        self._cellPositionsRC = None
+        self._cellProps = None
 
         t = threading.Thread(
             target=self._runScan,
@@ -157,6 +174,9 @@ class TilingController(ImConWidgetController):
             positioner.setPosition(self._originXY[0], x_axis)
             positioner.setPosition(self._originXY[1], y_axis)
 
+            if self._stitcher is not None and not self._stopRequested:
+                self.sigCellTargetingEnabled.emit(True)
+
         except Exception as e:
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
         finally:
@@ -191,27 +211,169 @@ class TilingController(ImConWidgetController):
                 ' (return-to-origin). Wait for the run to finish.'
             )
             return
-        if self._stitcher is None or self._originXY is None or not self._gridPositions:
-            return
-        tilingInfo = self._setupInfo.tiling
-        if tilingInfo is None:
-            return
+        self._moveStageToPixel(row, col)
 
+    def _canvasOrigin(self) -> Optional[Tuple[float, float]]:
+        if self._stitcher is None or self._originXY is None or not self._gridPositions:
+            return None
         min_gx = min(g[0] for g in self._gridPositions)
         min_gy = min(g[1] for g in self._gridPositions)
-        canvas_origin = (
+        return (
             self._originXY[0] + min_gx * self._lastStepUm
             - (self._stitcher.tile_shape_px[1] / 2) / self._stitcher.px_per_um_x,
             self._originXY[1] + min_gy * self._lastStepUm
             - (self._stitcher.tile_shape_px[0] / 2) / self._stitcher.px_per_um_y,
         )
 
+    def _moveStageToPixel(self, row: int, col: int) -> Optional[Tuple[float, float]]:
+        canvas_origin = self._canvasOrigin()
+        if canvas_origin is None:
+            return None
+        tilingInfo = self._setupInfo.tiling
+        if tilingInfo is None:
+            return None
         stage_x, stage_y = self._stitcher.pixel_to_stage(row, col, canvas_origin)
-
         axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
         positioner = self._master.positionersManager[tilingInfo.xyPositioner]
         positioner.setPosition(stage_x, axes[0])
         positioner.setPosition(stage_y, axes[1])
+        return stage_x, stage_y
+
+    # ------------------------------------------------------------------
+    # Cell targeting
+    # ------------------------------------------------------------------
+
+    def _onTuneSegmentation(self) -> None:
+        if self._stitcher is None:
+            return
+        from imswitch.imcontrol.view.widgets.SegmentationParamsWidget import (
+            SegmentationParamsWidget,
+        )
+        overview = self._stitcher.get_overview()
+        pixel_size_um = 1.0 / self._stitcher.px_per_um_y
+        dlg = SegmentationParamsWidget(
+            image=np.asarray(overview, dtype=np.float32),
+            pixel_size_um=pixel_size_um,
+            initial_params=self._segParams or None,
+            parent=self._widget,
+        )
+        dlg.sigParamsAccepted.connect(self._onSegParamsAccepted)
+        dlg.exec_()
+
+    def _onSegParamsAccepted(self, params: dict) -> None:
+        self._segParams = params
+        self._logger.info(f'Segmentation parameters updated: {params}')
+
+    @APIExport()
+    def detectCellTargets(self) -> np.ndarray:
+        """Segment cells in the current overview and show target markers.
+
+        This GUI-safe path does not move the stage. It only updates the cached
+        target list and the overview marker overlay.
+        """
+        positions, props = self._detectCellTargets()
+        self._cellPositionsRC = positions
+        self._cellProps = props
+        self.sigShowCellMarkers.emit(positions)
+        return positions
+
+    @APIExport()
+    def runCellTargeting(
+        self,
+        feature_callback: Optional[CellFeatureCallback] = None,
+        move_only: bool = False,
+    ) -> None:
+        """Move through detected cells and optionally run a per-cell workflow.
+
+        Args:
+            feature_callback: Optional ``f(idx, props_for_cell, stage_xy)``
+                invoked after moving to each accepted cell.
+            move_only: If True, move through targets even without a callback.
+
+        If neither ``feature_callback`` nor ``move_only`` is supplied this
+        method behaves like ``detectCellTargets()`` and does not move hardware.
+        """
+        positions, props = self._detectCellTargets()
+        self._cellPositionsRC = positions
+        self._cellProps = props
+        self.sigShowCellMarkers.emit(positions)
+
+        if len(positions) == 0:
+            return
+        if feature_callback is None and not move_only:
+            self._logger.info(
+                'Cell targets detected; no per-cell workflow requested, so stage iteration is skipped'
+            )
+            return
+        if self._cellTargetingRunning:
+            self._logger.warning('Cell targeting already running; ignoring duplicate request')
+            return
+
+        self._cellTargetingRunning = True
+        t = threading.Thread(
+            target=self._iterateCells,
+            args=(positions, props, feature_callback),
+            daemon=True,
+        )
+        t.start()
+
+    def _detectCellTargets(self) -> Tuple[np.ndarray, dict[str, np.ndarray]]:
+        if self._stitcher is None:
+            self._logger.warning('Cell targeting requested but no stitcher exists')
+            return np.empty((0, 2)), {}
+
+        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
+        overview = np.asarray(self._stitcher.get_overview(), dtype=np.float32)
+        pixel_size_um = 1.0 / self._stitcher.px_per_um_y
+
+        params = self._segParams
+        seg = Segmenter(
+            blur_sigma_px=params.get('blur_sigma_px', 3.0),
+            threshold=params.get('threshold'),
+        )
+        props = seg.segment(overview, pixel_size_um)
+        if not props:
+            self._logger.info('No cells found in overview')
+            return np.empty((0, 2)), {}
+
+        keep = Segmenter.apply_filters(props, params)
+        idx_valid = np.where(keep)[0]
+        n_all = len(props['label'])
+        self._logger.info(f'Cell targeting: {len(idx_valid)} / {n_all} cells pass filters')
+
+        if len(idx_valid) == 0:
+            return np.empty((0, 2)), props
+
+        positions = np.column_stack([
+            props['centroid_row'][idx_valid],
+            props['centroid_col'][idx_valid],
+        ])
+        filtered_props = {key: value[idx_valid] for key, value in props.items()}
+        return positions, filtered_props
+
+    def _iterateCells(
+        self,
+        positions: np.ndarray,
+        props: dict[str, np.ndarray],
+        feature_callback: Optional[CellFeatureCallback],
+    ) -> None:
+        try:
+            for i, (row, col) in enumerate(positions):
+                self.sigHighlightCell.emit(i)
+                stage_xy = self._moveStageToPixel(int(row), int(col))
+                if stage_xy is None:
+                    self._logger.warning(f'Cell {i}: stage coordinate conversion failed')
+                    continue
+                time.sleep(_SETTLE_S)
+                if feature_callback is not None:
+                    try:
+                        cell_props = {key: value[i] for key, value in props.items()}
+                        feature_callback(i, cell_props, stage_xy)
+                    except Exception as exc:
+                        self._logger.warning(f'Cell {i}: feature_callback failed: {exc}')
+        finally:
+            self._cellTargetingRunning = False
+            self.sigHighlightCell.emit(-1)
 
     # ------------------------------------------------------------------
     # Helpers

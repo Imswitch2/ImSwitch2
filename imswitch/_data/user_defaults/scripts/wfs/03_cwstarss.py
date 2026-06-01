@@ -5,9 +5,9 @@ Prerequisites:
   - Lasers: 488 nm (EXC), 405 nm (ACT)
   - Camera configured for continuous streaming
 
-Output: ~/ImSwitchMeasurements/<timestamp>/signal_bwd.csv
-        ~/ImSwitchMeasurements/<timestamp>/combined_bwd.csv
-        ~/ImSwitchMeasurements/<timestamp>/background_bwd.csv
+Output: <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/cwstarss_H_488_<HHMMSS>.tif
+        <MEASUREMENTS_ROOT>/<YYYY_MM_DD>/cwstarss_H_488_405_<HHMMSS>.tif
+        and matching V-polarisation TIFF stacks.
 """
 # ruff: noqa: F821
 from imswitch.imcontrol.model.workflows import CWSTARSSWorkflow, CWSTARSSParams
@@ -34,4 +34,4 @@ params = CWSTARSSParams(
 wf = CWSTARSSWorkflow(facade, params)
 wf.run()
 
-print(f"CWSTARSS complete: {params.duration_s}s phases, CSV files saved.")
+print(f"CWSTARSS complete: {params.duration_s}s phases, TIFF stacks saved.")

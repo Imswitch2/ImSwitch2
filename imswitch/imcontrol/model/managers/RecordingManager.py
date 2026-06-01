@@ -3,7 +3,7 @@ import json
 import os
 import time
 from io import BytesIO
-from typing import Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union
 
 import h5py
 import zarr
@@ -126,6 +126,13 @@ class Storer(abc.ABC):
             Dict mapping category to sub-dict of keys within that category
         """
         grouped = {}
+        if not isinstance(attrs, dict):
+            # Defensive: callers occasionally pass a scalar (e.g. a single
+            # description string) where a flat per-detector attribute dict is
+            # expected. Treat that as "no metadata" rather than blowing up
+            # inside .items(), since the structured detector group is still
+            # valid without metadata.
+            return grouped
         for key, value in attrs.items():
             if ':' in key:
                 category, _, rest = key.partition(':')
@@ -140,19 +147,24 @@ class Storer(abc.ABC):
 
 
 class ZarrStorer(Storer):
-    """A storer that stores the images in a zarr file store.
-    
-    Note: Streaming implementation preserves legacy behavior with hardcoded 'i2' dtype.
-    This is isolated for future migration to dtype-aware zarr.
-    """
+    """Storer for Zarr format with the same structured layout as HDF5."""
+
     @staticmethod
-    def _make_store(path: str):
+    def _make_store(path: str) -> Any:
         if hasattr(zarr.storage, 'DirectoryStore'):
             return zarr.storage.DirectoryStore(path)
         return zarr.storage.LocalStore(path)
 
     @staticmethod
-    def _create_array(root, name: str, *, data=None, shape=None, chunks=None, dtype=None):
+    def _close_store(store) -> None:
+        close = getattr(store, 'close', None)
+        if close is not None:
+            close()
+
+    @staticmethod
+    def _create_array(root: Any, name: str, *, data: Any = None,
+                      shape: tuple | None = None, chunks: tuple | None = None,
+                      dtype: Any = None) -> Any:
         if hasattr(root, 'create_dataset'):
             kwargs = {'chunks': chunks}
             if data is not None:
@@ -171,76 +183,236 @@ class ZarrStorer(Storer):
             kwargs['dtype'] = dtype
         return root.create_array(name, **kwargs)
 
-    def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, str] = None):
+    @staticmethod
+    def _require_group(parent: Any, name: str) -> Any:
+        if name in parent:
+            return parent[name]
+        return parent.create_group(name)
+
+    @staticmethod
+    def _zarr_attr_value(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, bytes):
+            return value.decode(errors='replace')
+        if isinstance(value, (list, tuple)):
+            return [ZarrStorer._zarr_attr_value(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): ZarrStorer._zarr_attr_value(val)
+                    for key, val in value.items()}
+        return value
+
+    def _set_attrs(self, target: Any, attrs: Dict[str, Any], context: str) -> None:
+        for key, value in attrs.items():
+            try:
+                target.attrs[key] = self._zarr_attr_value(value)
+            except Exception as e:
+                logger.debug(f'Could not save Zarr metadata {context}/{key}={value}: {e}')
+
+    def _createDetectorGroup(self, root: Any, detectorName: str, dtype: Any,
+                             attrs: Dict[str, Any], *, data: Any = None,
+                             groupPath: str | None = None, writing: bool = False) -> Any:
+        """Create structured Zarr detector group with ``data`` and ``metadata``."""
+        parent = root
+        if groupPath:
+            parent = self._require_group(root, groupPath)
+
+        det_group = self._require_group(parent, detectorName)
+        if 'data' in det_group:
+            raise ValueError(f'Zarr data array already exists for detector {detectorName}')
+
+        if data is not None:
+            data = np.asarray(data)
+            if data.ndim == 2:
+                data = data[np.newaxis, ...]
+            spatialShape = data.shape[-2:]
+            chunks = (1, *spatialShape)
+            dataset = self._create_array(
+                det_group,
+                'data',
+                data=data,
+                chunks=chunks,
+                dtype=dtype,
+            )
+        else:
+            spatialShape = None
+            dataset = None
+
+        if dataset is None:
+            raise ValueError('Zarr detector group creation requires data or streaming frames')
+
+        dataset.attrs['detector_name'] = detectorName
+        dataset.attrs['element_size_um'] = self._zarr_attr_value(
+            self.detectorManager[detectorName].pixelSizeUm
+        )
+        dataset.attrs['axes'] = ['T', 'Y', 'X']
+        dataset.attrs['writing'] = writing
+
+        grouped = self._group_metadata_by_category(attrs)
+        if grouped:
+            meta_group = det_group.create_group('metadata')
+            for category, cat_attrs in grouped.items():
+                if category:
+                    cat_group = meta_group.create_group(category)
+                    self._set_attrs(cat_group, cat_attrs, category)
+                else:
+                    self._set_attrs(meta_group, cat_attrs, 'metadata')
+
+        return dataset
+
+    def _createStreamingDetectorGroup(self, root: Any, detectorName: str,
+                                      frames: np.ndarray, attrs: Dict[str, Any],
+                                      groupPath: str | None = None) -> Any:
+        parent = root
+        if groupPath:
+            parent = self._require_group(root, groupPath)
+
+        det_group = self._require_group(parent, detectorName)
+        if 'data' in det_group:
+            raise ValueError(f'Zarr data array already exists for detector {detectorName}')
+
+        spatialShape = frames.shape[-2:]
+        dataset = self._create_array(
+            det_group,
+            'data',
+            shape=(0, *spatialShape),
+            dtype=frames.dtype,
+            chunks=(1, *spatialShape),
+        )
+        dataset.attrs['detector_name'] = detectorName
+        dataset.attrs['element_size_um'] = self._zarr_attr_value(
+            self.detectorManager[detectorName].pixelSizeUm
+        )
+        dataset.attrs['axes'] = ['T', 'Y', 'X']
+        dataset.attrs['writing'] = True
+
+        grouped = self._group_metadata_by_category(attrs)
+        if grouped:
+            meta_group = det_group.create_group('metadata')
+            for category, cat_attrs in grouped.items():
+                if category:
+                    cat_group = meta_group.create_group(category)
+                    self._set_attrs(cat_group, cat_attrs, category)
+                else:
+                    self._set_attrs(meta_group, cat_attrs, 'metadata')
+
+        return dataset
+
+    def snap(self, images: Dict[str, np.ndarray],
+             attrs: Dict[str, Dict[str, Any]] = None) -> None:
+        attrs = attrs or {}
         with AsTemporaryFile(f'{self.filepath}.zarr') as path:
             store = self._make_store(path)
-            root = zarr.group(store=store)
+            root = zarr.group(store=store, overwrite=True)
+            root.attrs['timestamp'] = time.time()
+            root.attrs['rec_mode'] = 'snap'
 
             for channel, image in images.items():
-                shape = self.detectorManager[channel].shape
-                d = self._create_array(
+                channel_attrs = attrs.get(channel, {})
+                self._createDetectorGroup(
                     root,
                     channel,
-                    data=image.astype('i2', copy=False),
-                    shape=tuple(reversed(shape)),
-                    chunks=(512, 512),
-                ) #TODO: why not dynamic chunking?
-                d.attrs["ImSwitchData"] = attrs[channel]
-            logger.info(f"Saved image to zarr file {path}")
+                    np.asarray(image).dtype,
+                    channel_attrs,
+                    data=image,
+                )
+            self._close_store(store)
+            logger.info(f"Saved image to zarr store {path} with structured layout")
     
-    def openStream(self, fileDests, detectorNames, shapes, attrs, *,
-                   singleMultiDetectorFile, singleLapseFile, saveMode):
-        """Initialize ZARR streaming session (legacy behavior preserved)."""
-        self._store = self._make_store(list(fileDests.values())[0])
-        self._root = zarr.group(store=self._store, overwrite=True)
+    def openStream(self, fileDests: Dict[str, Union[str, BytesIO]],
+                   detectorNames: List[str], shapes: Dict[str, tuple],
+                   attrs: Dict[str, Dict[str, Any]], *,
+                   singleMultiDetectorFile: bool, singleLapseFile: bool,
+                   saveMode: 'SaveMode') -> None:
+        """Initialize Zarr streaming session.
+
+        The first pass supports disk-backed stores. RAM-backed Zarr recording
+        needs a separate MemoryStore policy because a Zarr directory cannot be
+        represented by the existing BytesIO memory-recording signal contract.
+        """
+        if saveMode == SaveMode.RAM:
+            raise NotImplementedError('Zarr RAM streaming is not supported yet')
+
+        self._stores = {}
+        self._roots = {}
         self._datasets = {}
         self._attrs = attrs
-        self._shapes = shapes
+        self._fileDests = fileDests
         self._currentFrames = {}
+        self._groupPaths = {}
         
-        # Create datasets up-front (legacy behavior)
         for detectorName in detectorNames:
-            shape = shapes[detectorName]
-            if len(shape) > 2:
-                shape = shape[-2:]
-            
-            self._datasets[detectorName] = self._create_array(
-                self._root,
-                detectorName,
-                shape=(1, *reversed(shape)),
-                dtype='i2',
-                chunks=(1, 512, 512),
-            )
-            self._datasets[detectorName].attrs['ImSwitchData'] = attrs[detectorName]
-            self._datasets[detectorName].attrs['detector_name'] = detectorName
-            self._datasets[detectorName].attrs['element_size_um'] = \
-                self.detectorManager[detectorName].pixelSizeUm
-            self._datasets[detectorName].attrs['writing'] = True
+            dest = fileDests[detectorName]
+            if dest not in self._stores:
+                store = self._make_store(dest)
+                self._stores[dest] = store
+                root = zarr.group(store=store, overwrite=not singleLapseFile)
+                root.attrs['timestamp'] = time.time()
+                root.attrs['rec_mode'] = 'recording'
+                self._roots[dest] = root
+
+            if singleLapseFile:
+                scanNum = 0
+                scanGroup = f'scan{scanNum}'
+                root = self._roots[dest]
+                while scanGroup in root:
+                    scanNum += 1
+                    scanGroup = f'scan{scanNum}'
+                self._groupPaths[detectorName] = scanGroup
+            else:
+                self._groupPaths[detectorName] = None
+
             self._currentFrames[detectorName] = 0
     
-    def writeFrames(self, detectorName, frames):
-        """Write frames to ZARR dataset (legacy append behavior)."""
+    def writeFrames(self, detectorName: str, frames: np.ndarray) -> None:
+        """Write frames to Zarr dataset, lazily creating it from frame dtype."""
         if len(frames) == 0:
             return
-        
+
+        frames = np.asarray(frames)
+        if frames.ndim == 2:
+            frames = frames[np.newaxis, ...]
+
+        if detectorName not in self._datasets:
+            root = self._roots.get(self._fileDests[detectorName])
+            if root is None:
+                raise RuntimeError(f'No Zarr root available for detector {detectorName}')
+            self._datasets[detectorName] = self._createStreamingDetectorGroup(
+                root,
+                detectorName,
+                frames,
+                self._attrs[detectorName],
+                groupPath=self._groupPaths[detectorName],
+            )
+
         dataset = self._datasets[detectorName]
         it = self._currentFrames[detectorName]
-        
-        # Legacy behavior: first frame uses index 0, subsequent frames append
-        if it == 0:
-            dataset[0, :, :] = frames[0, :, :]
-            if len(frames) > 1:
-                dataset.append(frames[1:, :, :])
-        else:
-            dataset.append(frames)
+        newSize = it + len(frames)
+        dataset.resize((newSize, *dataset.shape[-2:]))
+        dataset[it:newSize, :, :] = frames
         
         self._currentFrames[detectorName] += len(frames)
     
-    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
-        """Close ZARR store."""
+    def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
+                       recordingManager, saveMode: 'SaveMode') -> None:
+        """Close Zarr stores and emit memory-recording signals when applicable."""
         for detectorName, dataset in self._datasets.items():
             dataset.attrs['writing'] = False
-        self._store.close()
+            if currentFrames[detectorName] < 1:
+                dataset.resize((0, *dataset.shape[-2:]))
+
+        if saveMode == SaveMode.DiskAndRAM:
+            for detectorName in self._datasets:
+                filePath = filePaths[detectorName]
+                name = os.path.basename(filePath)
+                recordingManager.sigMemoryRecordingAvailable.emit(
+                    name, self._roots[self._fileDests[detectorName]], filePath, True
+                )
+
+        for store in self._stores.values():
+            self._close_store(store)
 
 
 class HDF5Storer(Storer):
@@ -758,25 +930,12 @@ class RecordingManager(SignalInterface):
             image: Image array to save (T, Y, X) or (Y, X)
             attrs: Dict mapping detector name to flat metadata dict
         """
-        if saveFormat == SaveFormat.ZARR:
-            # ZARR kept as-is (deferred - will be unified in upstream merge)
-            fileExtension = str(saveFormat.name).lower()
-            path = self.getSaveFilePath(f'{savename}.{fileExtension}')
-            store = zarr.storage.DirectoryStore(path)
-            root = zarr.group(store=store)
-            shape = self.__detectorsManager[detectorName].shape
-            d = root.create_dataset(detectorName, data=image, shape=tuple(reversed(shape)), chunks=(512, 512),
-                                    dtype='i2')
-            d.attrs["ImSwitchData"] = attrs[detectorName]
-            store.close()
-        else:
-            # Route through Storer for HDF5 and TIFF
-            storer = self.__storerMap[saveFormat]
-            store = storer(savename, self.__detectorsManager)
-            
-            # Wrap single detector in dict for storer interface
-            images = {detectorName: image}
-            store.snap(images, attrs)
+        storer = self.__storerMap[saveFormat]
+        store = storer(savename, self.__detectorsManager)
+
+        # Wrap single detector in dict for storer interface
+        images = {detectorName: image}
+        store.snap(images, attrs)
 
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path

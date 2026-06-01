@@ -1,0 +1,20 @@
+{
+  "section": true,
+  "key": "focusLock",
+  "group": "system",
+  "display": "Focus Lock",
+  "summary": "IR-camera + Z-piezo PI feedback. Required for the FocusLock widget.",
+  "requires_widget": "FocusLock",
+  "fields": [
+    {"key": "camera",       "label": "Detector",        "type": "ref",   "default": "",  "req": true,  "grp": "Devices",  "tip": "Detector used for the focus-lock IR spot. The detector should have forFocusLock=true.", "opts": ["detectors"]},
+    {"key": "positioner",   "label": "Z Positioner",    "type": "ref",   "default": "",  "req": true,  "grp": "Devices",  "tip": "Z positioner used to apply focus corrections.", "opts": ["positioners"]},
+    {"key": "updateFreq",   "label": "Update freq (ms)","type": "int",   "default": 10,  "req": true,  "grp": "Basic",    "tip": "Loop tick period in milliseconds.", "opts": []},
+    {"key": "frameCropx",   "label": "Crop X",          "type": "int",   "default": 0,   "req": true,  "grp": "Crop",     "tip": "Starting X position of camera frame crop.", "opts": []},
+    {"key": "frameCropy",   "label": "Crop Y",          "type": "int",   "default": 0,   "req": true,  "grp": "Crop",     "tip": "Starting Y position of camera frame crop.", "opts": []},
+    {"key": "frameCropw",   "label": "Crop width",      "type": "int",   "default": 600, "req": true,  "grp": "Crop",     "tip": "Width of camera frame crop.", "opts": []},
+    {"key": "frameCroph",   "label": "Crop height",     "type": "int",   "default": 200, "req": true,  "grp": "Crop",     "tip": "Height of camera frame crop.", "opts": []},
+    {"key": "swapImageAxes","label": "Swap image axes", "type": "bool",  "default": false, "req": false, "grp": "Crop",   "tip": "Transpose the camera frame before locating the spot.", "opts": []},
+    {"key": "piKp",         "label": "PI Kp",           "type": "float", "default": 25.0,"req": true,  "grp": "Control",  "tip": "Proportional gain of the feedback loop.", "opts": []},
+    {"key": "piKi",         "label": "PI Ki",           "type": "float", "default": 0.1, "req": true,  "grp": "Control",  "tip": "Integral gain of the feedback loop.", "opts": []}
+  ]
+}

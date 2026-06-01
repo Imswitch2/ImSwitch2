@@ -1,9 +1,7 @@
 <div align="center">
 
 <!-- TODO: replace with a project logo (e.g. docs/images/logo.svg).  Suggested width: 320 px. -->
-<a href="#"><img src="docs/images/logo.png" alt="Imswitch2 logo" width="320"/></a>
-
-# Imswitch2
+<a href="#"><img src="docs/images/imswitch2_logo.png" alt="Imswitch2 logo" width="320"/></a>
 
 **Modular, configuration-driven microscope control — built for safety, testability, and AI-assisted development.**
 
@@ -257,7 +255,7 @@ Imswitch2/
 │   │   ├── view/                   # Qt widgets + napari viewer
 │   │   └── _data/user_defaults/    # Example setup files
 │   ├── imcommon/                   # Shared framework (Qt layer, signals, logging)
-│   ├── imreconstruct/              # SIM reconstruction module
+│   ├── improcess/                  # Post-acquisition processing module (was: imreconstruct)
 │   └── imscripting/                # Scripting console module
 ├── utility_scripts/                # Config editor GUI + device templates
 ├── tools/                          # Maintenance scripts (screenshots, codegen, …)

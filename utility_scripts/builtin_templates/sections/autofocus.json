@@ -1,0 +1,17 @@
+{
+  "section": true,
+  "key": "autofocus",
+  "group": "system",
+  "display": "Autofocus",
+  "summary": "Software autofocus over a Z stack. Required for the Autofocus widget.",
+  "requires_widget": "Autofocus",
+  "fields": [
+    {"key": "camera",     "label": "Detector",         "type": "ref",  "default": "", "req": true, "grp": "Devices", "tip": "Detector used to grab focus-search frames.", "opts": ["detectors"]},
+    {"key": "positioner", "label": "Z Positioner",     "type": "ref",  "default": "", "req": true, "grp": "Devices", "tip": "Z positioner stepped during the search.",   "opts": ["positioners"]},
+    {"key": "updateFreq", "label": "Update freq (ms)", "type": "int",  "default": 10, "req": false,"grp": "Basic",   "tip": "Frame update period during search.", "opts": []},
+    {"key": "frameCropx", "label": "Crop X",           "type": "int",  "default": 0,  "req": true, "grp": "Crop",    "tip": "Starting X of the focus-metric region.", "opts": []},
+    {"key": "frameCropy", "label": "Crop Y",           "type": "int",  "default": 0,  "req": true, "grp": "Crop",    "tip": "Starting Y of the focus-metric region.", "opts": []},
+    {"key": "frameCropw", "label": "Crop width",       "type": "int",  "default": 2000,"req": true,"grp": "Crop",    "tip": "Width of the focus-metric region.", "opts": []},
+    {"key": "frameCroph", "label": "Crop height",      "type": "int",  "default": 2000,"req": true,"grp": "Crop",    "tip": "Height of the focus-metric region.", "opts": []}
+  ]
+}

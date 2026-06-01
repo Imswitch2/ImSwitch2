@@ -7,7 +7,7 @@ ImSwitch follows a strict **Model-View-Presenter (MVP)** architecture organized 
 | Module | Purpose | Package |
 |---|---|---|
 | **imcontrol** | Hardware control (lasers, stages, DAQ, detectors) | `imswitch.imcontrol` |
-| **imreconstruct** | SIM image reconstruction | `imswitch.imreconstruct` |
+| **improcess** | Image processing and reconstruction | `imswitch.improcess` |
 | **imscripting** | Python scripting console & editor | `imswitch.imscripting` |
 | **imcommon** | Shared framework, signals, utilities | `imswitch.imcommon` |
 
@@ -404,6 +404,8 @@ Multi-position tiled acquisition manager:
 - Grid-based position list generation
 - Integration with positioner and recording managers
 - Automated stage movement and acquisition sequencing
+- Stitched-overview cell detection with passive GUI marker overlay
+- Explicit automated cell-target iteration for API/workflow callbacks
 
 ### FLIMHistWidget / FLIMHistController
 **Location:** `imswitch/imcontrol/view/widgets/FLIMHistWidget.py`

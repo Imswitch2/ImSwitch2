@@ -49,6 +49,9 @@ Example skeleton:
            "Stage": { /* PositionerInfo fields */ }
        },
        "scan": { /* ScanInfo fields */ },
+       "focusLock": { /* FocusLockInfo fields */ },
+       "tiling": { /* TilingInfo fields */ },
+       "etSTED": { /* EtSTEDInfo fields */ },
        "nidaq": { /* NidaqInfo fields */ },
        "availableWidgets": [
            "Settings", "View", "Recording", "Image", "Laser"
@@ -203,14 +206,16 @@ Required if you want to use the ``Scan`` widget.
 
 Key fields:
 
-* ``scanWidgetType``: Widget variant (``"Base"``, ``"PointScan"``, ``"MoNaLISA"``, etc.)
+* ``scanWidgetType``: Widget variant — one of ``"Base"``, ``"PointScan"``, ``"MoNaLISA"``, or ``"Advanced"``
 * ``scanDesigner``: Scan trajectory class (e.g., ``"GalvoScanDesigner"``)
 * ``scanDesignerParams``: Parameters for the scan designer
-* ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``)
+* ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters for TTL cycle (e.g., ``{"ttlDeviceList": ["Laser405"]}``}
 * ``sampleRate``: DAQ sample rate in Hz
+* ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
+* ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
 
-**Example** (minimal):
+**Example** (minimal Base scan):
 
 .. code-block:: json
 
@@ -228,6 +233,27 @@ Key fields:
        "frameStartClockLine": null,
        "frameEndClockLine": null
    }
+
+**Example** (Advanced scan with line clock):
+
+.. code-block:: json
+
+   "scan": {
+       "scanWidgetType": "Advanced",
+       "scanDesigner": "GalvoScanDesigner",
+       "scanDesignerParams": {},
+       "TTLCycleDesigner": "AdvancedScanTTLCycleDesigner",
+       "TTLCycleDesignerParams": {},
+       "sampleRate": 100000,
+       "lineClockLine": "Dev1/port0/line6",
+       "frameStartClockLine": null,
+       "frameEndClockLine": null
+   }
+
+**Required devices**: At least one positioner with ``forScanning: true``.  For
+galvo-based scans, the positioners' ``analogChannel`` fields must reference
+valid NI-DAQ analog output channels.  Lasers referenced in
+``TTLCycleDesignerParams.ttlDeviceList`` must have ``digitalLine`` set.
 
 **See also**: :class:`~imswitch.imcontrol.model.SetupInfo.ScanInfo`,
 :ref:`Signal designers <Signal designers>`
@@ -345,21 +371,465 @@ are stacked vertically.
 Additional sections
 ===================
 
-The following sections are less commonly used but available for specific
-hardware or workflows:
+The following sections support specialized hardware or workflows.  Each is
+documented below with full field lists and examples:
 
-* ``slm`` / ``slms``: Spatial light modulator settings (:class:`~imswitch.imcontrol.model.SetupInfo.SLMInfo`, :class:`~imswitch.imcontrol.model.SetupInfo.SLMsInfo`)
-* ``focusLock``: Focus lock configuration (:class:`~imswitch.imcontrol.model.SetupInfo.FocusLockInfo`)
-* ``autofocus``: Autofocus configuration (:class:`~imswitch.imcontrol.model.SetupInfo.AutofocusInfo`)
-* ``tiling``: Tiling scan settings (:class:`~imswitch.imcontrol.model.SetupInfo.TilingInfo`)
-* ``microscopeStand``: Leica microscope stand integration (:class:`~imswitch.imcontrol.model.SetupInfo.MicroscopeStandInfo`)
-* ``etSTED``: Event-triggered STED settings (:class:`~imswitch.imcontrol.model.SetupInfo.EtSTEDInfo`)
-* ``pulseStreamer``: Swabian PulseStreamer settings (:class:`~imswitch.imcontrol.model.SetupInfo.PulseStreamerInfo`)
-* ``teensyPulse``: Teensy/Arduino pulse generator settings (:class:`~imswitch.imcontrol.model.SetupInfo.TeensyPulseInfo`; see :doc:`how-to/wire-teensy` and :doc:`how-to/add-pulse-generator-backend`)
-* ``pyroServerInfo``: Pyro remote control server settings
-* ``rois``: Additional detector ROI presets (:class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.ROIInfo`)
-* ``laserPresets``: Laser power/modulation presets (:class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.LaserPresetInfo`)
-* ``defaultLaserPresetForScan``: Auto-load laser preset when scanning
+* `focusLock`_
+* `autofocus`_
+* `tiling`_
+* `etSTED`_
+* `microscopeStand`_
+* `slms`_ (modern multi-SLM support)
+* `teensyPulse`_
+* `pyroServerInfo`_
+* `rois`_
+* `laserPresets and defaultLaserPresetForScan`_
+
+**Legacy / deprecated sections**:
+
+* `slm (singular)`_ — superseded by ``slms``; only used by old ``SLMController``
+* `pulseStreamer`_ — dormant; ``PulseStreamerManager`` no longer constructed at runtime
+
+
+focusLock
+---------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.FocusLockInfo` object.
+**Required if you use the FocusLock widget** or want focus-lock functionality.
+
+Key fields:
+
+* ``camera`` (str): Detector name (must match a detector with ``forFocusLock: true``)
+* ``positioner`` (str): Positioner name (typically a Z-axis piezo)
+* ``updateFreq`` (int): Update frequency in milliseconds
+* ``frameCropx`` / ``frameCropy`` (int): Starting X/Y position of camera frame crop in pixels
+* ``frameCropw`` / ``frameCroph`` (int): Width/height of camera frame crop in pixels
+* ``swapImageAxes`` (bool): Swap camera image axes when grabbing frame
+* ``piKp`` (float): Default kp (proportional gain) of feedback loop
+* ``piKi`` (float): Default ki (integral gain) of feedback loop
+
+**Example**:
+
+.. code-block:: json
+
+   "focusLock": {
+       "camera": "FocusLockCamera",
+       "positioner": "PiezoZ",
+       "updateFreq": 10,
+       "frameCropx": 544,
+       "frameCropy": 462,
+       "frameCropw": 600,
+       "frameCroph": 210,
+       "swapImageAxes": true,
+       "piKp": 25.0,
+       "piKi": 0.1
+   }
+
+**Required devices**: One detector with ``forFocusLock: true``, one positioner
+(typically Z-axis).
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.FocusLockInfo`
+
+
+autofocus
+---------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.AutofocusInfo` object.
+**Required if you use the Autofocus widget** or want autofocus functionality.
+
+Key fields:
+
+* ``camera`` (str): Detector name
+* ``positioner`` (str): Positioner name (typically Z-axis)
+* ``updateFreq`` (int): Update frequency in milliseconds
+* ``frameCropx`` / ``frameCropy`` (int): Starting X/Y position of frame crop in pixels
+* ``frameCropw`` / ``frameCroph`` (int): Width/height of frame crop in pixels
+
+**Example**:
+
+.. code-block:: json
+
+   "autofocus": {
+       "camera": "Camera",
+       "positioner": "PiezoZ",
+       "updateFreq": 100,
+       "frameCropx": 0,
+       "frameCropy": 0,
+       "frameCropw": 512,
+       "frameCroph": 512
+   }
+
+**Required devices**: One detector, one positioner (typically Z-axis).
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.AutofocusInfo`
+
+
+tiling
+------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.TilingInfo` object.
+**Required if you use the Tiling widget** for spiral tiling scans.
+
+Key fields:
+
+* ``xyPositioner`` (str): Name of the XY positioner (must match a positioner in the setup)
+* ``zPositioner`` (str, optional): Name of the Z positioner for per-tile autofocus (empty string = disabled)
+* ``camera`` (str, optional): Detector to use for tile acquisition (empty string = first ``forAcquisition`` detector)
+* ``defaultTileStepUm`` (float): Default stage step between tile centres in micrometers
+
+**Example**:
+
+.. code-block:: json
+
+   "tiling": {
+       "xyPositioner": "StageXY",
+       "zPositioner": "",
+       "camera": "Camera",
+       "defaultTileStepUm": 100.0
+   }
+
+**Required devices**: One XY positioner.  Optional Z positioner and camera.
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.TilingInfo`
+
+
+etSTED
+------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.EtSTEDInfo` object.
+**Required if you use the EtSTED widget** for event-triggered STED microscopy.
+
+Key fields:
+
+* ``swapXY`` (bool): Swap X and Y axes before transforming coordinates of a detected event (default ``false``)
+* ``invertX`` (bool): Invert X value before transforming coordinates (default ``false``)
+* ``invertY`` (bool): Invert Y value before transforming coordinates (default ``false``)
+
+**Example**:
+
+.. code-block:: json
+
+   "etSTED": {
+       "swapXY": true,
+       "invertX": true,
+       "invertY": true
+   }
+
+**Required devices**: Typically paired with a scanning setup (see ``scan``
+section) and a STED-capable laser.
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.EtSTEDInfo`
+
+
+microscopeStand
+---------------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.MicroscopeStandInfo` object.
+**Required if you use the MotCorr widget** for Leica motorized correction collar
+or other microscope stand integration.
+
+Key fields:
+
+* ``managerName`` (str): Manager class (e.g., ``"LeicaDMIManager"``)
+* ``rs232device`` (str): Name of the RS232 device to use (must match an entry in ``rs232devices``)
+* ``managerProperties`` (dict, optional): Manager-specific settings (e.g., available cube positions)
+
+**Example**:
+
+.. code-block:: json
+
+   "microscopeStand": {
+       "managerName": "LeicaDMIManager",
+       "rs232device": "LeicaStand",
+       "managerProperties": {
+           "availableCubes": ["BF", "GFP", "RFP"]
+       }
+   }
+
+**Required devices**: One RS232 connection.
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.MicroscopeStandInfo`
+
+
+slms
+----
+
+Map of SLM names to :class:`~imswitch.imcontrol.model.SetupInfo.SLMsInfo` objects.
+**This is the modern plural form**; use this for new setups.  Required if you use
+the ``SLMs`` widget.
+
+Key fields (per SLM):
+
+* ``managerName`` (str): Manager class (e.g., ``"HamamatsuSLMdviManager"``)
+* ``managerProperties`` (dict): Manager-specific settings
+* ``monitorIdx`` (int): Monitor index in system list (starts at 0)
+* ``serial_number`` (str): Unique serial number of the SLM head
+* ``width`` / ``height`` (int): SLM dimensions in pixels
+* ``wavelength`` (int): Wavelength of the laser line used with the SLM, in nm
+* ``pixelSize`` (float): Pixel pitch in millimeters
+* ``nSections`` (int, optional): Number of sections the SLM is divided into (e.g., 2 for double-pass)
+* ``widgetOptions`` (dict, optional): Widget options (e.g., patterns to display)
+* ``correctionPatternsDir`` (str): Directory of .bmp images for flatness correction
+* ``wavelengthTableFile`` (str): JSON file with wavelength correction table
+
+**Example** (Hamamatsu SLM):
+
+.. code-block:: json
+
+   "slms": {
+       "SLM STED": {
+           "managerName": "HamamatsuSLMdviManager",
+           "managerProperties": {
+               "mockermode": false,
+               "startConfig": "C:\\\\Users\\\\user\\\\Documents\\\\ImSwitchConfig\\\\imcontrol_slm\\\\configs\\\\LSH0701153/2D_STED_Default.h5"
+           },
+           "monitorIdx": 2,
+           "serial_number": "LSH0701153",
+           "width": 792,
+           "height": 600,
+           "wavelength": 775,
+           "pixelSize": 20,
+           "nSections": 2,
+           "widgetOptions": {
+               "patterns": ["vortex", "top_hat", "half_moon_x", "half_moon_y", "linear_phase"],
+               "cgh": false,
+               "aberrations": true
+           },
+           "correctionPatternsDir": "C:\\\\Users\\\\user\\\\Documents\\\\ImSwitchConfig\\\\imcontrol_slm\\\\slm_defcorrpattern\\\\",
+           "wavelengthTableFile": "none"
+       }
+   }
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.SLMsInfo`
+
+
+teensyPulse
+-----------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.TeensyPulseInfo` object.
+**Required if you want to use a Teensy/Arduino pulse generator** (ImSwitch v4
+firmware with v3 fallback).  See :doc:`how-to/wire-teensy` for wiring guide and
+:doc:`how-to/add-pulse-generator-backend` for backend details.
+
+Key fields:
+
+* ``port`` (str or null): Serial port (e.g., ``"COM7"`` or ``"/dev/ttyACM0"``; ``null`` = pulse generator disabled)
+* ``baud`` (int): Baud rate (default 115200)
+* ``pinMap`` (dict, optional): Name-to-channel mapping for convenience (e.g., ``{"laser488": 3}``)
+* ``useMockOnFailure`` (bool): Fall back to in-process mock if port can't be opened (default ``true``)
+* ``mockNChannels`` / ``mockMinPulseUs`` / ``mockMaxSteps`` (int): Mock capabilities when real device unavailable
+
+**Example**:
+
+.. code-block:: json
+
+   "teensyPulse": {
+       "port": "COM7",
+       "baud": 115200,
+       "pinMap": {
+           "laser405": 1,
+           "laser488": 2,
+           "camera_trigger": 3
+       },
+       "useMockOnFailure": true
+   }
+
+**Required devices**: None (standalone serial device).
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.TeensyPulseInfo`,
+:doc:`how-to/wire-teensy`
+
+
+pyroServerInfo
+--------------
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.PyroServerInfo` object.
+Controls the Pyro remote control server for scripting access.
+
+Key fields:
+
+* ``name`` (str): Server name (default ``"ImSwitchServer"``)
+* ``host`` (str): Host address (default ``"127.0.0.1"``)
+* ``port`` (int): Port number (default ``54333``)
+* ``active`` (bool): Enable server at startup (default ``false``)
+
+**Example**:
+
+.. code-block:: json
+
+   "pyroServerInfo": {
+       "name": "ImSwitchServer",
+       "host": "127.0.0.1",
+       "port": 54333,
+       "active": false
+   }
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.PyroServerInfo`
+
+
+rois
+----
+
+Optional map of ROI preset names to :class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.ROIInfo` objects.
+Additional detector ROI presets available in the detector settings widget.
+
+Key fields (per ROI):
+
+* ``x`` (int): Starting X position in pixels
+* ``y`` (int): Starting Y position in pixels
+* ``w`` (int): Width in pixels
+* ``h`` (int): Height in pixels
+
+**Example**:
+
+.. code-block:: json
+
+   "rois": {
+       "Full chip": {
+           "x": 0,
+           "y": 0,
+           "w": 2448,
+           "h": 2048
+       },
+       "Center 200x200": {
+           "x": 1124,
+           "y": 924,
+           "w": 200,
+           "h": 200
+       }
+   }
+
+**See also**: :class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.ROIInfo`
+
+
+laserPresets and defaultLaserPresetForScan
+------------------------------------------
+
+Optional laser power/modulation preset system.
+
+* ``laserPresets`` (dict): Map of preset names to ``{laserName: LaserPresetInfo}`` nested dicts
+* ``defaultLaserPresetForScan`` (str or null): Name of preset to auto-load when scanning starts
+
+**LaserPresetInfo fields** (per laser, per preset):
+
+* ``value`` (float): Laser power or intensity value
+
+**Example**:
+
+.. code-block:: json
+
+   "laserPresets": {
+       "HighPower": {
+           "Laser405": {
+               "value": 200.0
+           },
+           "Laser488": {
+               "value": 150.0
+           }
+       },
+       "LowPower": {
+           "Laser405": {
+               "value": 50.0
+           },
+           "Laser488": {
+               "value": 30.0
+           }
+       }
+   },
+   "defaultLaserPresetForScan": "HighPower"
+
+**See also**: :class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.LaserPresetInfo`
+
+
+slm (singular)
+--------------
+
+.. deprecated:: ImSwitch2
+   Use ``slms`` (plural) for new setups.  The ``slm`` field is only read by
+   the legacy ``SLMController`` and is superseded by the multi-SLM ``slms``
+   map.
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.SLMInfo` object.  Prefer
+``slms`` for all new configurations.
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.SLMInfo`, `slms`_
+
+
+pulseStreamer
+-------------
+
+.. deprecated:: ImSwitch2
+   **Legacy / not constructed at runtime.**  ``MasterController`` no longer
+   constructs ``PulseStreamerManager`` (instantiation is commented out at
+   ``imswitch/imcontrol/controller/MasterController.py:23``).  The active
+   pulse-generator path is ``teensyPulse`` → ``TeensyPulseManager``.  This
+   field remains for backward compatibility with old configs but has no
+   runtime effect.
+
+Optional :class:`~imswitch.imcontrol.model.SetupInfo.PulseStreamerInfo` object.
+
+Key fields:
+
+* ``ipAddress`` (str or null): IP address of PulseStreamer hardware
+
+**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.PulseStreamerInfo`,
+`teensyPulse`_
+
+
+Cross-references between sections and devices
+=============================================
+
+This table explains which sections depend on which device flags or device
+references, and what fails silently if references are missing or incorrect.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 30 30 20
+
+   * - Section
+     - Device flags / managers required
+     - Device fields referenced by name
+     - Failure mode if missing/wrong
+   * - ``focusLock``
+     - One detector with ``forFocusLock: true``
+     - ``camera``, ``positioner``
+     - Widget fails to initialize
+   * - ``autofocus``
+     - One detector, one positioner
+     - ``camera``, ``positioner``
+     - Widget fails to initialize
+   * - ``tiling``
+     - One XY positioner
+     - ``xyPositioner``, optional ``zPositioner``, ``camera``
+     - Widget fails if XY positioner missing; silently skips optional fields
+   * - ``scan``
+     - Positioners with ``forScanning: true``; lasers with ``digitalLine`` set (for TTL targets)
+     - Lasers in ``TTLCycleDesignerParams.ttlDeviceList``; ``lineClockLine`` references NI-DAQ port
+     - Widget fails if no forScanning positioners; TTL signals silently omitted if laser references invalid
+   * - ``etSTED``
+     - Paired with ``scan`` + STED laser
+     - None (coordinate transform only)
+     - No immediate failure; incorrect transforms applied
+   * - ``microscopeStand``
+     - One RS232 connection
+     - ``rs232device``
+     - Widget fails if RS232 device missing
+   * - ``teensyPulse``
+     - None (standalone serial device)
+     - None
+     - Falls back to mock if ``useMockOnFailure: true``; hard failure otherwise
+   * - ``slms``
+     - None (manager constructs per device)
+     - None (each SLM is independent)
+     - Widget fails if manager instantiation fails
+   * - ``nidaq``
+     - NI-DAQ hardware (or ``simulation: true``)
+     - ``timerCounterChannel`` references counter channel
+     - Silent failure if simulation disabled + no hardware
+   * - ``laserPresets``
+     - Lasers in setup
+     - Laser names in preset map
+     - Preset silently skips unknown lasers
 
 
 Complete examples

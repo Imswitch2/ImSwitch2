@@ -1,0 +1,16 @@
+{
+  "section": true,
+  "key": "teensyPulse",
+  "group": "system",
+  "display": "Teensy Pulse Generator",
+  "summary": "Teensy / Arduino pulse generator (v4 firmware, v3 fallback). Modern pulse-generator path — preferred over the legacy pulseStreamer.",
+  "fields": [
+    {"key": "port",             "label": "Serial port",        "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "Serial port, e.g. COM7 or /dev/ttyACM0. null = pulse generator disabled.", "opts": []},
+    {"key": "baud",             "label": "Baud",               "type": "int",  "default": 115200, "req": false, "grp": "Basic", "tip": "Serial baud rate.", "opts": []},
+    {"key": "useMockOnFailure", "label": "Mock on failure",    "type": "bool", "default": true,   "req": false, "grp": "Basic", "tip": "Fall back to the in-process mock when the port can't be opened. Set false to make a missing device a hard failure.", "opts": []},
+    {"key": "pinMap",           "label": "Pin map",            "type": "json", "default": "{}",   "req": false, "grp": "Advanced","tip": "Optional name→channel mapping, e.g. {\"laser488\": 0}. Convenience for scripts.", "opts": []},
+    {"key": "mockNChannels",    "label": "Mock channels",      "type": "int",  "default": 16,     "req": false, "grp": "Advanced","tip": "Channels the mock advertises when no real device is connected.", "opts": []},
+    {"key": "mockMinPulseUs",   "label": "Mock min pulse (µs)","type": "int",  "default": 1,      "req": false, "grp": "Advanced","tip": "Mock minimum pulse width.", "opts": []},
+    {"key": "mockMaxSteps",     "label": "Mock max steps",     "type": "int",  "default": 256,    "req": false, "grp": "Advanced","tip": "Mock maximum timeline steps.", "opts": []}
+  ]
+}

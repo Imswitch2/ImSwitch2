@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 from imswitch.imcontrol.model.workflows import (
     DefocusScanParams,
     DefocusScanWorkflow,
-    RecordingParams,
-    RecordingWorkflow,
+    WidefieldStarssParams,
+    WidefieldStarssWorkflow,
     build_mock_facade,
 )
 
@@ -18,8 +18,8 @@ def test_defocus_scan_basic():
     """Basic defocus scan: correct number of z positions, recordings called."""
     facade = build_mock_facade()
     
-    # Create a real RecordingParams and mock RecordingWorkflow
-    recording_params = RecordingParams(
+    # Create a real WidefieldStarssParams and mock WidefieldStarssWorkflow
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -39,10 +39,10 @@ def test_defocus_scan_basic():
         measurement_name_addition="",
     )
     
-    # Mock RecordingWorkflow
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
-    recording.run = MagicMock()
+    # Mock WidefieldStarssWorkflow
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
+    widefield_starss.run = MagicMock()
     
     # Configure defocus scan
     params = DefocusScanParams(
@@ -52,7 +52,7 @@ def test_defocus_scan_basic():
         scramble=False,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     z_positions = workflow.run()
     
     # Verify correct number of z positions
@@ -62,8 +62,8 @@ def test_defocus_scan_basic():
     expected_positions = [46.0, 48.0, 50.0, 52.0, 54.0]
     np.testing.assert_allclose(z_positions, expected_positions, atol=0.01)
     
-    # Verify recording.run() was called 5 times
-    assert recording.run.call_count == 5
+    # Verify widefield_starss.run() was called 5 times
+    assert widefield_starss.run.call_count == 5
     
     # Verify method call sequence
     call_names = facade.call_names()
@@ -73,7 +73,7 @@ def test_defocus_scan_basic():
     # Verify measurement_name_addition was set correctly for each z position
     # (We can't directly verify this through the mock, but we can check that
     # the params object was modified)
-    assert "_z" in recording.params.measurement_name_addition
+    assert "_z" in widefield_starss.params.measurement_name_addition
 
 
 @pytest.mark.nohardware
@@ -84,7 +84,7 @@ def test_defocus_scan_current_position():
     # Set current z position to 60.0 µm
     facade.z_stage_con._pos = 60.0
     
-    recording_params = RecordingParams(
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -99,9 +99,9 @@ def test_defocus_scan_current_position():
         frame_number=10,
     )
     
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
-    recording.run = MagicMock()
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
+    widefield_starss.run = MagicMock()
     
     params = DefocusScanParams(
         n_z_planes=3,
@@ -110,7 +110,7 @@ def test_defocus_scan_current_position():
         scramble=False,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     z_positions = workflow.run()
     
     # Verify positions centered around 60.0 µm
@@ -124,7 +124,7 @@ def test_defocus_scan_position_clamping():
     facade = build_mock_facade()
     
     # MockZStageConFacade has pos_range_um = (0.0, 100.0)
-    recording_params = RecordingParams(
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -139,9 +139,9 @@ def test_defocus_scan_position_clamping():
         frame_number=10,
     )
     
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
-    recording.run = MagicMock()
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
+    widefield_starss.run = MagicMock()
     
     # Request scan that would go below 0.0 µm
     params = DefocusScanParams(
@@ -151,7 +151,7 @@ def test_defocus_scan_position_clamping():
         scramble=False,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     z_positions = workflow.run()
     
     # Verify first position is clamped to 0.0
@@ -165,7 +165,7 @@ def test_defocus_scan_position_clamping():
         scramble=False,
     )
     
-    workflow2 = DefocusScanWorkflow(facade, recording, params2)
+    workflow2 = DefocusScanWorkflow(facade, widefield_starss, params2)
     z_positions2 = workflow2.run()
     
     # Verify last position is clamped to 100.0
@@ -177,7 +177,7 @@ def test_defocus_scan_scramble_order():
     """Scramble option randomizes Z position order."""
     facade = build_mock_facade()
     
-    recording_params = RecordingParams(
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -192,9 +192,9 @@ def test_defocus_scan_scramble_order():
         frame_number=10,
     )
     
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
-    recording.run = MagicMock()
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
+    widefield_starss.run = MagicMock()
     
     # Set random seed for reproducibility
     np.random.seed(42)
@@ -206,7 +206,7 @@ def test_defocus_scan_scramble_order():
         scramble=True,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     z_positions = workflow.run()
     
     # Verify we got all 10 positions
@@ -228,7 +228,7 @@ def test_defocus_scan_return_to_start():
     # Set starting position
     facade.z_stage_con._pos = 30.0
     
-    recording_params = RecordingParams(
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -243,9 +243,9 @@ def test_defocus_scan_return_to_start():
         frame_number=10,
     )
     
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
-    recording.run = MagicMock()
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
+    widefield_starss.run = MagicMock()
     
     params = DefocusScanParams(
         n_z_planes=5,
@@ -254,7 +254,7 @@ def test_defocus_scan_return_to_start():
         scramble=False,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     workflow.run()
     
     # Verify last set_pos_um call returns to 30.0
@@ -268,7 +268,7 @@ def test_defocus_scan_missing_z_stage():
     facade = build_mock_facade()
     facade.z_stage_con = None
     
-    recording_params = RecordingParams(
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -283,9 +283,9 @@ def test_defocus_scan_missing_z_stage():
         frame_number=10,
     )
     
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
-    recording.run = MagicMock()
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
+    widefield_starss.run = MagicMock()
     
     params = DefocusScanParams(
         n_z_planes=5,
@@ -293,7 +293,7 @@ def test_defocus_scan_missing_z_stage():
         z_center_um=50.0,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     
     with pytest.raises(RuntimeError, match="z_stage_con"):
         workflow.run()
@@ -304,7 +304,7 @@ def test_defocus_scan_measurement_name_additions():
     """Verify measurement_name_addition is set correctly for each z position."""
     facade = build_mock_facade()
     
-    recording_params = RecordingParams(
+    widefield_starss_params = WidefieldStarssParams(
         pin488=3,
         pin405=4,
         camerapin=5,
@@ -320,16 +320,16 @@ def test_defocus_scan_measurement_name_additions():
         measurement_name_addition="",  # Start empty
     )
     
-    recording = MagicMock(spec=RecordingWorkflow)
-    recording.params = recording_params
+    widefield_starss = MagicMock(spec=WidefieldStarssWorkflow)
+    widefield_starss.params = widefield_starss_params
     
     # Track what measurement_name_addition was set before each run() call
     name_additions = []
     
     def capture_name_addition():
-        name_additions.append(recording.params.measurement_name_addition)
+        name_additions.append(widefield_starss.params.measurement_name_addition)
     
-    recording.run = MagicMock(side_effect=capture_name_addition)
+    widefield_starss.run = MagicMock(side_effect=capture_name_addition)
     
     params = DefocusScanParams(
         n_z_planes=3,
@@ -338,7 +338,7 @@ def test_defocus_scan_measurement_name_additions():
         scramble=False,
     )
     
-    workflow = DefocusScanWorkflow(facade, recording, params)
+    workflow = DefocusScanWorkflow(facade, widefield_starss, params)
     z_positions = workflow.run()
     
     # Verify we captured 3 name additions

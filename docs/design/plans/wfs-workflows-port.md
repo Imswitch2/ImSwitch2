@@ -10,11 +10,11 @@ scripting module.
 A user opens the Console / Scripting widget, runs:
 
 ```python
-from imswitch.imcontrol.model.workflows import RecordingWorkflow, RecordingParams
+from imswitch.imcontrol.model.workflows import WidefieldStarssWorkflow, WidefieldStarssParams
 from imswitch.imcontrol.model.workflows.facade import build_facade_from_master
 
 facade = build_facade_from_master(api._master)   # one-liner per script
-wf = RecordingWorkflow(facade, RecordingParams(...))
+wf = WidefieldStarssWorkflow(facade, WidefieldStarssParams(...))
 wf.run()
 ```
 
@@ -31,7 +31,7 @@ wf.run()
 2. **Model-only.** Workflows live under `model/workflows/` and depend on
    nothing in `controller/` or `view/`. No PyQt5/qtpy. No tkinter dialogs;
    all parameters arrive via typed dataclasses passed to `__init__`.
-3. **No napari display from workflows.** The WFS recording workflow
+3. **No napari display from workflows.** The WFS WidefieldStarss workflow
    pokes napari directly; we drop that from the ports and defer
    visualization to a future widget task.
 4. **No widget reads.** WFS reads spin-box values like
@@ -59,7 +59,7 @@ wf.run()
 Four independent ports — run as parallel subagents (see prompts at end
 of this doc):
 
-- `RecordingWorkflow` — H/V polarimetric acquisition.
+- `WidefieldStarssWorkflow` — H/V polarimetric acquisition.
 - `ZStackWorkflow` (+ `run_autofocus`).
 - `CWSTARSSWorkflow` — photoselection sequence.
 - `CalibrationWorkflow` — QWP/HWP sweep + segmentation check.
@@ -68,8 +68,8 @@ Each delivers: implementation + tests in one commit; no push.
 
 ### Phase 2 — Composite workflows (sequential)
 
-- `TilingWorkflow` (depends on `RecordingWorkflow`, `StitchedImage`).
-- `DefocusScanWorkflow` (depends on `RecordingWorkflow` + `ZStackWorkflow`).
+- `TilingWorkflow` (depends on `WidefieldStarssWorkflow`, `StitchedImage`).
+- `DefocusScanWorkflow` (depends on `WidefieldStarssWorkflow` + `ZStackWorkflow`).
 - `SerialCWSTARSSWorkflow` (depends on `CWSTARSSWorkflow`).
 - `MultiWellTilingWorkflow` (depends on `TilingWorkflow` + autofocus).
 

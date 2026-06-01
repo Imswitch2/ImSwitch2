@@ -659,6 +659,7 @@ scan.
                 "t0_ps": 0,
                 "min_counts_per_pixel": 20,
                 "fit_method": "moment",
+                "laser_rep_rate_mhz": 80.0,
                 "trigger_levels": { "1": 0.5, "2": 0.5, "3": 0.5 },
                 "enabled": true
             },
@@ -707,7 +708,11 @@ scan.
    * - ``fit_method``
      - str
      - ``"moment"``
-     - Lifetime fit method; one of ``"moment"``, ``"phasor"``, ``"exp1"``.
+     - Lifetime fit method; one of ``"moment"``, ``"phasor"``, ``"exp1"``.  All three apply automatic IRF-peak compensation (see "Lifetime fitting" below); ``exp1`` is the most accurate for clean mono-exponential decays.
+   * - ``laser_rep_rate_mhz``
+     - float
+     - ``80.0``
+     - Laser repetition rate in MHz.  Used by the phasor fit to set ω = 2π·f_rep.  The Swabian ``Flim`` API does not expose the rate, so it must be supplied here; measure it once with ``scripts/diagnostics/measure_laser_rep_rate.py`` if unsure.
    * - ``trigger_levels``
      - dict
      - ``{}``
@@ -716,6 +721,42 @@ scan.
      - bool
      - ``true``
      - If ``false`` the manager is constructed but ``initiateScan`` is a no-op.
+
+**Lifetime fitting**
+
+The worker fits a lifetime per pixel using the selected ``fit_method``.
+Before any fit runs, the aggregated TCSPC decay over valid pixels
+(``intensity ≥ min_counts_per_pixel``) is summed and the IRF peak bin is
+located by ``argmax``.  Each fit then compensates for the resulting
+``t_peak`` offset:
+
+* ``moment`` — reports ``mean − t_peak``.  Simple and fast, but biased
+  low when τ approaches the histogram window (tail truncation).
+* ``exp1`` — weighted log-linear fit restricted to bins ≥ peak with the
+  time axis shifted so the peak is at ``t=0``.  Removes the IRF rising
+  edge from the fit; most accurate of the three for clean
+  single-exponential decays.
+* ``phasor`` — computes the first-harmonic phasor ``(g, s)`` at
+  ω = 2π · ``laser_rep_rate_mhz``, then rotates by ``−ω·t_peak`` to
+  undo the time-shift's phase contribution.  Close to the true τ when
+  τ ≪ T_rep; residual underestimate grows as τ approaches T_rep.
+
+In addition to the per-pixel lifetime image, the worker also emits the
+aggregated decay and a global τ fit (using the same method) for the
+``FLIMHistWidget`` decay view.
+
+**FLIM histogram widget modes**
+
+``FLIMHistWidget`` has two display modes selectable from the toolbar:
+
+* ``Lifetime dist.`` — histogram of per-pixel fitted lifetimes (ns).
+  The red marker is the mean of the displayed distribution.  Switching
+  fit methods changes both the bars (because each pixel's τ is
+  recomputed) and the marker.
+* ``Decay`` — aggregated TCSPC photon-arrival histogram across all
+  valid pixels.  The bars are independent of fit method (raw photon
+  counts vs. arrival time); only the red global-τ marker moves when
+  the method changes.  Useful for sanity-checking the fit itself.
 
 **Low-level dependencies**
 

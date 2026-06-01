@@ -26,7 +26,10 @@ def test_zarr_storer(tmpdir, fake_manager):
     """Test that the zarr storer can be instantiated and that the zarr store is created"""
     path = os.path.join(tmpdir, "test")
     storer = ZarrStorer(path, {"test_channel": fake_manager})
-    storer.snap({"test_channel": np.zeros((100,100))}, {"test_channel": "test"})
+    # Structured storers expect attrs to be a flat per-detector dict
+    # (matching the HDF5 / TIFF storers below). Use the same shape here so
+    # the test exercises the real on-disk metadata grouping.
+    storer.snap({"test_channel": np.zeros((100,100))}, {"test_channel": {"test": 3}})
     assert os.path.exists(path+".zarr"), "path does not exist"
 
 

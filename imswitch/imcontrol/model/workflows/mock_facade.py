@@ -66,23 +66,39 @@ class _MockCam:
     def __init__(self, recorder: _Recorder) -> None:
         self._r = recorder
         self._canned: Optional[np.ndarray] = None
+        self._live = False
+        self._idx = 0
+        self._n_planned: Optional[int] = None
         self.expo: float = 50000.0
 
     def set_canned_data(self, arr: np.ndarray) -> None:
-        """Set the array returned by :meth:`get_data` / :meth:`wait_for_frame`."""
+        """Set the array returned by :meth:`get_data` / :meth:`wait_for_frame`.
+
+        In acquisition mode (after :meth:`prepare_acquisition`) ``get_data``
+        returns the full canned array — matching real cameras that buffer a
+        full sequence. In live mode (after :meth:`prepare_live`) ``get_data``
+        instead returns a single ``(1, H, W)`` frame and advances through the
+        canned stack so successive snaps see different frames.
+        """
         self._canned = arr
+        self._idx = 0
 
     def prepare_acquisition(self, n_frames: int) -> None:
         self._r.record("cam.prepare_acquisition", (int(n_frames),))
+        self._live = False
+        self._n_planned = int(n_frames)
 
     def start_acquisition(self) -> None:
         self._r.record("cam.start_acquisition")
 
     def stop_acquisition(self) -> None:
         self._r.record("cam.stop_acquisition")
+        self._n_planned = None
 
     def prepare_live(self) -> None:
         self._r.record("cam.prepare_live")
+        self._live = True
+        self._n_planned = None
 
     def start_live(self) -> None:
         self._r.record("cam.start_live")
@@ -92,6 +108,15 @@ class _MockCam:
 
     def get_data(self):
         self._r.record("cam.get_data")
+        if (
+            self._canned is not None
+            and self._canned.ndim == 3
+            and self._canned.shape[0] > 1
+            and (self._live or self._n_planned == 1)
+        ):
+            i = self._idx % self._canned.shape[0]
+            self._idx += 1
+            return self._canned[i:i + 1]
         return self._canned
 
     def wait_for_frame(self, timeout_s: float = 2.0) -> bool:

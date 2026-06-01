@@ -2,6 +2,23 @@
 Changelog
 *********
 
+Unreleased
+==========
+
+**New Features**
+
+- FLIM histogram widget gained a "Decay" mode that plots the aggregated TCSPC photon-arrival histogram with a red marker showing the global single-τ fit for the selected method; the original per-pixel lifetime distribution remains as "Lifetime dist." mode
+- Added ``laser_rep_rate_mhz`` parameter to ``SwabianTimeTaggerManager`` so the phasor fit uses the true ω = 2π·f_rep instead of assuming the histogram window equals one laser period
+- Added ``scripts/diagnostics/measure_laser_rep_rate.py`` — a TimeTagger.Countrate helper that prints the measured laser repetition rate for plugging into ``laser_rep_rate_mhz``
+- Added stitched-overview cell target detection for tiling workflows. The GUI "Detect cells" action is passive and only overlays markers; automated/API cell targeting explicitly moves through detected targets and can invoke a per-cell workflow callback.
+- Renamed the WFS polarisation-resolved acquisition workflow to ``WidefieldStarssWorkflow`` / ``WidefieldStarssParams``. The old ``RecordingWorkflow`` / ``RecordingParams`` names remain available as compatibility aliases.
+
+**Bug Fixes**
+
+- FLIM lifetimes from the three fit methods (moment, phasor, exp1) no longer diverge when the IRF peak is offset from t=0. The worker now auto-detects the IRF peak bin from the aggregated decay each frame and compensates each fitter: moment subtracts ``t_peak`` from the mean, exp1 restricts the fit to bins ≥ peak with a shifted time axis, phasor rotates the measured (g, s) by −ω·t_peak. On known dyes the three methods now converge toward the true lifetime.
+- Phasor fit previously assumed the laser repetition period equalled ``n_bins * binwidth_ps``, which silently scaled τ by an arbitrary factor whenever the histogram window did not happen to span exactly one laser period
+- The tiling GUI cell-detection path no longer iterates the stage through every detected target. Stage iteration is reserved for explicit automated/API cell targeting calls or manual click-to-navigate.
+
 v0.1.0 (2026-05-17)
 ===================
 

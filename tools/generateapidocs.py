@@ -1,7 +1,7 @@
 import inspect
 import os
 
-from imswitch import imcontrol, imreconstruct
+from imswitch import imcontrol, improcess
 from imswitch.imcommon import prepareApp
 from imswitch.imcommon.controller import ModuleCommunicationChannel, MultiModuleWindowController
 from imswitch.imcontrol.model import Options
@@ -72,7 +72,7 @@ os.makedirs(apiDocsDir, exist_ok=True)
 dummyApp = prepareApp()
 dummyModuleCommChannel = ModuleCommunicationChannel()
 
-modules = [imcontrol, imreconstruct]  # imscripting excluded
+modules = [imcontrol, improcess]  # imscripting excluded
 for modulePackage in modules:
     kwargs = {}
     if modulePackage == imcontrol:
