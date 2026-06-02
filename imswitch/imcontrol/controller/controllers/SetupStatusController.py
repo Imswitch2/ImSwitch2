@@ -82,8 +82,7 @@ class SetupStatusController(ImConWidgetController):
             'Straight detection': straightDetectionParamDict,
         }
 
-        self._widget.sigKeyReleased.connect(self._commChannel.sigKeyReleased)
-        self._commChannel.sigKeyReleased.connect(self.keyReleased)
+        self._widget.sigKeyReleased.connect(self.keyReleased)
         self._commChannel.sigSetConfig.connect(
             lambda config_name: self.setConfig(self.setupConfigs[config_name])
         )

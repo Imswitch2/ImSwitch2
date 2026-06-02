@@ -55,6 +55,8 @@ class CommunicationChannel(SignalInterface):
     sigCrosshairToggled = Signal(bool)  # (enabled)
     sigAddItemToVb = Signal(object)  # (item)
     sigRemoveItemFromVb = Signal(object)  # (item)
+    sigSetVisibleLayers = Signal(object)  # (detectorNameTuple) — Snouty setup switching
+    sigSetConfig = Signal(str)  # (configName) — Snouty setup switching
 
     # Recording events.
     sigRecordingStarted = Signal()
@@ -64,6 +66,8 @@ class CommunicationChannel(SignalInterface):
     sigMemorySnapAvailable = Signal(
         str, np.ndarray, object, bool
     )  # (name, image, filePath, savedToDisk)
+    sigStartRecording = Signal()
+    sigStopRecording = Signal()
 
     # Scan orchestration events. These are hardware-adjacent and must keep
     # their current semantics unless reviewed with hardware access.
@@ -99,8 +103,10 @@ class CommunicationChannel(SignalInterface):
     # Event-triggered workflow events.
     sigInitiateEtMonalisa = Signal(bool)
     sigInitiateEt = Signal(bool)
+    sigInitiateEtSnouty = Signal(bool)
     # Deprecated compatibility signal.
     sigClockWidefield = Signal()
+    sigRunScanTriggerScopePLSRMulticolor = Signal()
 
     # Bead-recognition and MoNaLISA scan helper events.
     sigQueryCenterCoord = Signal(str)  # (search mode)

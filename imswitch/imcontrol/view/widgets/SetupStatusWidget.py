@@ -118,3 +118,5 @@ class SetupStatusWidget(Widget):
         currentRow += 1
         grid.addWidget(self.detHK2info, currentRow, 0, 1, 1)
         grid.addWidget(self.detHK2, currentRow, 1, 1, 1)
+
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)

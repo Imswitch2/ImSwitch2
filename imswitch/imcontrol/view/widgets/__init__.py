@@ -8,6 +8,7 @@ from importlib import import_module
 
 
 _WIDGET_MODULES = {
+    "BSC203Widget": "BSC203Widget",
     "AlignAverageWidget": "AlignAverageWidget",
     "AlignmentLineWidget": "AlignmentLineWidget",
     "AlignXYWidget": "AlignXYWidget",
@@ -17,12 +18,14 @@ _WIDGET_MODULES = {
     "ConsoleWidget": "ConsoleWidget",
     "EtMonalisaWidget": "EtMonalisaWidget",
     "EtSTEDWidget": "EtSTEDWidget",
+    "EtSnoutyWidget": "EtSnoutyWidget",
     # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
     "FFTWidget": "FFTWidget",
     "FLIMHistWidget": "FLIMHistWidget",
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",
     "LaserWidget": "LaserWidget",
+    "LightSheetMulticolorWidget": "LightSheetMulticolorWidget",
     "LeicaStandWidget": "LeicaStandWidget",
     "LineProfileWidget": "LineProfileWidget",
     "MotCorrWidget": "MotCorrWidget",
@@ -35,9 +38,15 @@ _WIDGET_MODULES = {
     "ScanWidgetMoNaLISA": "ScanWidgetMoNaLISA",
     "ScanWidgetPointScan": "ScanWidgetPointScan",
     "SettingsWidget": "SettingsWidget",
+    "SetupStatusWidget": "SetupStatusWidget",
     "SLMWidget": "SLMWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",
+    "TriggerScopeLSXYRWidget": "TriggerScopeLSXYRWidget",
+    "TriggerScopeRasterWidget": "TriggerScopeRasterWidget",
+    "TriggerScopePLSRWidget": "TriggerScopePLSRWidget",
+    "TriggerScopePLSRMulticolorWidget": "TriggerScopePLSRMulticolorWidget",
+    "TriggerScopeGalvoDetectionWidget": "TriggerScopeGalvoDetectionWidget",
     "ULensesWidget": "ULensesWidget",
     "ViewWidget": "ViewWidget",
     "ViewerToolsWidget": "ViewerToolsWidget",

@@ -45,6 +45,7 @@ class Widget(QtWidgets.QWidget, metaclass=_QObjectABCMeta):
 
     def keyReleaseEvent(self, event):
         self.sigKeyReleased.emit(event)
+        super().keyReleaseEvent(event)
 
     def replaceWithError(self, errorText):
         errorLabel = QtWidgets.QLabel(errorText)

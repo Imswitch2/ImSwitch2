@@ -263,6 +263,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'EtSTED':        _DockInfo(name='EtSTED',                        yPosition=0),
     'EtMonalisa':    _DockInfo(name='EtMonalisa',                    yPosition=0),
     'Positioner':    _DockInfo(name='Positioner',                    yPosition=0),
+    'BSC203':        _DockInfo(name='BSC203 Stage',                  yPosition=0),
     'Laser':         _DockInfo(name='Laser Control',                 yPosition=0),
     'Rotator':       _DockInfo(name='Rotator',                       yPosition=1),
     'MotCorr':       _DockInfo(name='Motorized Correction Collar',   yPosition=1),
