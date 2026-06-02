@@ -35,7 +35,8 @@ class PositionerController(ImConWidgetController):
                 self._widget.addJoystick(pName)
 
             speed = hasattr(pManager, 'speed')
-            self._widget.addPositioner(pName, pManager.axes, speed, pManager.joystick)
+            self._widget.addPositioner(pName, pManager.axes, speed, pManager.joystick,
+                                       shortcutModifier=pManager.shortcutModifier)
             for axis in pManager.axes:
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:

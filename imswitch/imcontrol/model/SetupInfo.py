@@ -96,6 +96,12 @@ class PositionerInfo(DeviceInfo):
     liveUpdate: bool = False
     """ Whether the positioner position should be updated live. """
 
+    shortcutModifier: Optional[str] = None
+    """ Keyboard-shortcut group used to jog this positioner from the Positioner
+    widget. ``"ctrl"`` binds the Ctrl+Arrow set; ``"ctrl-shift"`` binds the
+    Ctrl+Shift+Arrow set; ``null`` (default) keeps the legacy behaviour where the
+    first positioner declaring a given axis claims the Ctrl+Arrow set. """
+
 
 
 
