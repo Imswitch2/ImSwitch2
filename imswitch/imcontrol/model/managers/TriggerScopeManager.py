@@ -1,7 +1,19 @@
 import time
 
 import numpy as np
-from pyvisa.errors import VisaIOError, InvalidSession
+try:
+    from pyvisa.errors import VisaIOError, InvalidSession
+except ImportError:
+    # pyvisa is an optional, hardware-only dependency. Provide fallbacks so this
+    # module can be imported without it (e.g. in CI or hardware-free installs).
+    # The TriggerScope cannot operate without pyvisa anyway, so these stand-ins
+    # are never actually raised in that case — they only keep the ``except``
+    # clause below valid.
+    class VisaIOError(Exception):
+        pass
+
+    class InvalidSession(Exception):
+        pass
 from serial.serialutil import SerialException
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
