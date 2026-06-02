@@ -43,6 +43,21 @@ class RS232Manager:
         """ Read from RS232 device and returns as string"""
         return self._rs232port.read(arg, recv_args=(self._settings["recv_termination"], None))
 
+    def setTimeout(self, timeout_ms: int):
+        """Set the serial read timeout.
+
+        :param timeout_ms: timeout in milliseconds (pyvisa convention).
+        """
+        resource = getattr(self._rs232port, '_resource', None)
+        if resource is None:
+            return
+        if hasattr(resource, 'timeout'):
+            # pyvisa resource — timeout attribute is in ms
+            resource.timeout = timeout_ms
+        elif hasattr(resource, '_ser'):
+            # _SerialAdapter (raw pyserial fallback) — timeout is in seconds
+            resource._ser.timeout = timeout_ms / 1000
+
     def finalize(self):
         self._rs232port.close()
 

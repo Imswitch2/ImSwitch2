@@ -1,8 +1,8 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
     DetectorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
-    ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, StandManager, RotatorsManager, SLMsManager,
-    ScanManagerAdvanced
+    ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
+    RotatorsManager, SLMsManager, ScanManagerAdvanced, TriggerScopeManager
 )
 
 
@@ -44,6 +44,10 @@ class MasterController:
             'rs232sManager': self.rs232sManager
         }
 
+        if self.__setupInfo.triggerScope:
+            self.triggerScopeManager = TriggerScopeManager(self.__setupInfo, self.rs232sManager)
+            lowLevelManagers['triggerScopeManager'] = self.triggerScopeManager
+
         self.detectorsManager = DetectorsManager(self.__setupInfo.detectors, updatePeriod=300,
                                                  **lowLevelManagers)
 
@@ -72,10 +76,13 @@ class MasterController:
                 self.scanManager = ScanManagerMoNaLISA(self.__setupInfo)
             elif self.__setupInfo.scan.scanWidgetType == "Advanced":
                 self.scanManager = ScanManagerAdvanced(self.__setupInfo)
+            elif self.__setupInfo.scan.scanWidgetType == "TriggerScope":
+                self.scanManager = ScanManagerTriggerScope(self.__setupInfo,
+                                                           self.triggerScopeManager)
             else:
                 self.__logger.error(
                     'ScanWidgetType in SetupInfo["scan"] not recognized, choose one of the following:'
-                    ' ["Base", "PointScan", "MoNaLISA", "Advanced"].'
+                    ' ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"].'
                 )
                 return
 

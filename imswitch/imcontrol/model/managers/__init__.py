@@ -11,5 +11,7 @@ from .ScanManagerPointScan import ScanManagerPointScan
 from .ScanManagerBase import ScanManagerBase
 from .ScanManagerMoNaLISA import ScanManagerMoNaLISA
 from .ScanManagerAdvanced import ScanManagerAdvanced
+from .ScanManagerTriggerScope import ScanManagerTriggerScope
 from .StandManager import StandManager
 from .RotatorsManager import RotatorsManager
+from .TriggerScopeManager import TriggerScopeManager

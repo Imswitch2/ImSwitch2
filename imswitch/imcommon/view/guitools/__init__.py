@@ -1,4 +1,7 @@
 from .BetterPushButton import BetterPushButton
+from .BetterSpinBox import BetterSpinBox
+from .BetterDoubleSpinBox import BetterDoubleSpinBox
+from .BetterComboBox import BetterComboBox
 from .BetterSlider import BetterSlider
 from .CheckableComboBox import CheckableComboBox
 from .FloatSlider import FloatSlider

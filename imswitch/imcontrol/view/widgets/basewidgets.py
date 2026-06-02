@@ -36,10 +36,16 @@ class WidgetFactory:
 class Widget(QtWidgets.QWidget, metaclass=_QObjectABCMeta):
     """ Superclass for all Widgets. All Widgets are subclasses of QWidget. """
 
+    sigKeyReleased = QtCore.Signal(object)
+
     @abstractmethod
     def __init__(self, options, *_args, **_kwargs):
         self._options = options
         QtWidgets.QWidget.__init__(self)
+
+    def keyReleaseEvent(self, event):
+        self.sigKeyReleased.emit(event)
+        super().keyReleaseEvent(event)
 
     def replaceWithError(self, errorText):
         errorLabel = QtWidgets.QLabel(errorText)

@@ -16,9 +16,9 @@ class BSC203StageManager(PositionerManager):
             axis: 0 for axis in positionerInfo.axes
         })
         self.__logger = initLogger(self, instanceName=name)
-        home = False
-        port = 'COM9'
-        
+        home = positionerInfo.managerProperties.get('home', False)
+        port = positionerInfo.managerProperties.get('port', 'COM9')
+
         try:
             from thorlabs_apt_device.devices.bsc import BSC
             from serial.serialutil import SerialException

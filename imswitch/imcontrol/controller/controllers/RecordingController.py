@@ -55,6 +55,8 @@ class RecordingController(ImConWidgetController):
         self._commChannel.sigSnapImg.connect(self.snap)
         self._commChannel.sigSnapImgPrev.connect(self.snapImagePrev)
         self._commChannel.sigStartRecordingExternal.connect(self.startRecording)
+        self._commChannel.sigStartRecording.connect(self.startRecording)
+        self._commChannel.sigStopRecording.connect(self.stopRecording)
         self._commChannel.sigRequestScanFreq.connect(self.sendScanFreq)
 
         # Connect RecordingWidget signals

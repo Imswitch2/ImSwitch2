@@ -9,6 +9,7 @@ from importlib import import_module
 
 
 _CONTROLLER_MODULES = {
+    "BSC203Controller": "BSC203Controller",
     "AlignAverageController": "AlignAverageController",
     "AlignmentLineController": "AlignmentLineController",
     "AlignXYController": "AlignXYController",
@@ -18,12 +19,14 @@ _CONTROLLER_MODULES = {
     "ConsoleController": "ConsoleController",
     "EtMonalisaController": "EtMonalisaController",
     "EtSTEDController": "EtSTEDController",
+    "EtSnoutyController": "EtSnoutyController",
     # "EtController": "EtController",  # Prototype on old Monalisa machine.
     "FFTController": "FFTController",
     "FLIMHistController": "FLIMHistController",
     "FocusLockController": "FocusLockController",
     "ImageController": "ImageController",
     "LaserController": "LaserController",
+    "LightSheetMulticolorController": "LightSheetMulticolorController",
     "LeicaStandController": "LeicaStandController",
     "LineProfileController": "LineProfileController",
     "MotCorrController": "MotCorrController",
@@ -36,9 +39,15 @@ _CONTROLLER_MODULES = {
     "ScanControllerMoNaLISA": "ScanControllerMoNaLISA",
     "ScanControllerPointScan": "ScanControllerPointScan",
     "SettingsController": "SettingsController",
+    "SetupStatusController": "SetupStatusController",
     "SLMController": "SLMController",
     "SLMsController": "SLMsController",
     "TilingController": "TilingController",
+    "TriggerScopeRasterController": "TriggerScopeRasterController",
+    "TriggerScopePLSRController": "TriggerScopePLSRController",
+    "TriggerScopeGalvoDetectionController": "TriggerScopeGalvoDetectionController",
+    "TriggerScopePLSRMulticolorController": "TriggerScopePLSRMulticolorController",
+    "TriggerScopeLSXYRController": "TriggerScopeLSXYRController",
     "ULensesController": "ULensesController",
     "ViewController": "ViewController",
     "ViewerToolsController": "ViewerToolsController",
