@@ -128,6 +128,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         parameterGrid = QtWidgets.QGridLayout()
         parameterFrame.setLayout(parameterGrid)
         parameterGrid.addWidget(self.parTree, 0, 0)
+        self.parameterGrid = parameterGrid
 
         DataDock = DockArea()
 
@@ -191,6 +192,55 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def addNewData(self, reconObj, name):
         self.reconstructionWidget.addNewData(reconObj, name)
 
+    def setParameterWidget(self, widget):
+        """Replace the legacy parameter tree with the active reconstructor UI."""
+        old = self.parameterGrid.itemAtPosition(0, 0)
+        if old is not None and old.widget() is not None:
+            old.widget().setParent(None)
+        self.parTree = widget
+        self.parameterGrid.addWidget(widget, 0, 0)
+
+        self.showPatBool = None
+        self.bleachBool = None
+        self.extension = None
+        self.findPatBtn = None
+        self.scanParWinBtn = None
+
+        p = getattr(widget, "p", None)
+        if p is None:
+            return
+        try:
+            self.showPatBool = p.param('Show pattern')
+            self.showPatBool.sigValueChanged.connect(
+                lambda _, v: self.sigShowPatternChanged.emit(v)
+            )
+        except Exception:
+            pass
+        try:
+            self.bleachBool = p.param('Bleaching correction')
+        except Exception:
+            pass
+        try:
+            self.extension = p.param('File extension')
+        except Exception:
+            pass
+        try:
+            self.findPatBtn = p.param('Pattern').param('Find pattern')
+            self.findPatBtn.sigActivated.connect(self.sigFindPattern)
+            p.param('Pattern').sigTreeStateChanged.connect(self.sigPatternParamsChanged)
+        except Exception:
+            pass
+        try:
+            self.scanParWinBtn = p.param('Scanning parameters')
+            self.scanParWinBtn.sigActivated.connect(self.sigShowScanParamsClicked)
+        except Exception:
+            pass
+
+    def getReconstructionParams(self):
+        if hasattr(self.parTree, "get_values"):
+            return self.parTree.get_values()
+        return {}
+
     def getMultiDatas(self):
         dataList = self.multiDataFrame.dataList
         for i in range(dataList.count()):
@@ -211,6 +261,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.pickDatasetsDialog.show()
 
     def getPatternParams(self):
+        if getattr(self, "findPatBtn", None) is None:
+            return (0, 0, 1, 1)
         patternPars = self.parTree.p.param('Pattern')
         return (np.mod(patternPars.param('Row-offset').value(),
                        patternPars.param('Row-period').value()),
@@ -220,6 +272,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 patternPars.param('Col-period').value())
 
     def setPatternParams(self, rowOffset, colOffset, rowPeriod, colPeriod):
+        if getattr(self, "findPatBtn", None) is None:
+            return
         patternPars = self.parTree.p.param('Pattern')
         patternPars.param('Row-offset').setValue(rowOffset)
         patternPars.param('Col-offset').setValue(colOffset)
@@ -227,18 +281,28 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         patternPars.param('Col-period').setValue(colPeriod)
 
     def getComputeDevice(self):
+        if getattr(self, "parTree", None) is None:
+            return "CPU"
         return self.parTree.p.param('CPU/GPU').value()
 
     def getPixelSizeNm(self):
+        if getattr(self, "parTree", None) is None:
+            return 1
         return self.parTree.p.param('Pixel size').value()
 
     def getFwhmNm(self):
+        if getattr(self, "parTree", None) is None:
+            return 1
         return self.parTree.p.param('Reconstruction options').param('PSF FWHM').value()
 
     def getBgModelling(self):
+        if getattr(self, "parTree", None) is None:
+            return "Constant"
         return self.parTree.p.param('Reconstruction options').param('BG modelling').value()
 
     def getBgGaussianSize(self):
+        if getattr(self, "parTree", None) is None:
+            return 1
         return self.parTree.p.param('Reconstruction options').param('BG modelling') \
             .param('BG Gaussian size').value()
 
@@ -292,12 +356,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             event.ignore()
 
     def getDenoiseCropSize(self):
+        if not hasattr(self.parTree, "p") or self.parTree.p.param('Denoising options') is None:
+            return 800
         return self.parTree.p.param('Denoising options').param('Crop size (px)').value()
     
     def getDenoiseBoolPad(self):
+        if not hasattr(self.parTree, "p") or self.parTree.p.param('Denoising options') is None:
+            return False
         return self.parTree.p.param('Denoising options').param('Padding').value()
 
     def getDenoiseModelName(self):
+        if not hasattr(self.parTree, "p") or self.parTree.p.param('Denoising options') is None:
+            return ""
         return self.parTree.p.param('Denoising options').param('Model name').value()
 
 

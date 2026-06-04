@@ -14,6 +14,10 @@ class ESP32CamManager(DetectorManager):
       indexing starts at 0); set this string to an invalid value, e.g. the
       string "mock" to load a mocker
     - ``picamera`` -- dictionary of Allied Vision camera properties
+    - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
+      micrometers, i.e. physical sensor pitch divided by total optical
+      magnification. Exposed at runtime as the 'Camera pixel size' detector
+      parameter. Default: 0.15 µm.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -48,6 +52,9 @@ class ESP32CamManager(DetectorManager):
                         editable=False),
             'image_height': DetectorNumberParameter(group='Misc', value=fullShape[1], valueUnits='arb.u.',
                         editable=False),
+            'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(
+                detectorInfo
+            ),
             
             }            
 
@@ -120,10 +127,6 @@ class ESP32CamManager(DetectorManager):
         super().finalize()
         self.__logger.debug('Safely disconnecting the camera...')
         self._camera.close()
-
-    @property
-    def pixelSizeUm(self):
-        return [1, 1, 1]
 
     def crop(self, hpos, vpos, hsize, vsize):
         if(0):

@@ -61,6 +61,11 @@ class ReconstructionView(QtWidgets.QFrame):
 
         # Set initial states
         self.standardView.setChecked(True)
+        self._defaultViewLabels = [
+            (self.standardView, 'Standard view', 'standard'),
+            (self.bottomView, 'Bottom side view', 'bottom'),
+            (self.leftView, 'Left side view', 'left'),
+        ]
 
         # Set layout
         layout = QtWidgets.QGridLayout()
@@ -110,6 +115,26 @@ class ReconstructionView(QtWidgets.QFrame):
 
     def getViewName(self):
         return self.chooseViewGroup.checkedButton().viewName
+
+    def setViewModes(self, viewModes):
+        if not viewModes:
+            for button, text, view_name in self._defaultViewLabels:
+                button.setText(text)
+                button.viewName = view_name
+                button.setVisible(True)
+            self.standardView.setChecked(True)
+            return
+
+        buttons = [self.standardView, self.bottomView, self.leftView]
+        for index, button in enumerate(buttons):
+            if index < len(viewModes):
+                mode = viewModes[index]
+                button.setText(mode.name)
+                button.viewName = mode.name
+                button.setVisible(True)
+            else:
+                button.setVisible(False)
+        buttons[0].setChecked(True)
 
     def getImage(self):
         return self.imgLayer.data

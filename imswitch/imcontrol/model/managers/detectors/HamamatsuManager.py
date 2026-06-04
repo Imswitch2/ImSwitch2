@@ -14,6 +14,10 @@ class HamamatsuManager(DetectorManager):
       (list indexing starts at 0); set this to an invalid value, e.g. the
       string "mock" to load a mocker
     - ``hamamatsu`` -- dictionary of DCAM API properties to pass to the driver
+    - ``cameraPixelSizeUm`` -- optically effective (sample-plane) pixel size in
+      micrometers, i.e. physical sensor pitch divided by total optical
+      magnification. Exposed at runtime as the 'Camera pixel size' detector
+      parameter. Default: 0.15 µm.
     """
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
@@ -48,20 +52,13 @@ class HamamatsuManager(DetectorManager):
                                                              'External "start-trigger"',
                                                              'External "frame-trigger"'],
                                                     editable=True),
-            'Camera pixel size': DetectorNumberParameter(group='Miscellaneous', value=1.0,
-                                                         valueUnits='µm', editable=True)
+            'Camera pixel size': DetectorManager.makeCameraPixelSizeParameter(detectorInfo)
         }
 
         super().__init__(detectorInfo, name, fullShape=fullShape, supportedBinnings=[1, 2, 4],
                          model=model, parameters=parameters, croppable=True)
         self._updatePropertiesFromCamera()
         super().setParameter('Set exposure time', self.parameters['Real exposure time'].value)
-
-    @property
-    def pixelSizeUm(self):
-        umxpx = self.parameters['Camera pixel size'].value
-        return [1, umxpx, umxpx]
-
 
     def wait_and_get_NewFrame(self, properFrame=False):
         self.__logger.info("start wait_and_get_NewFrame")

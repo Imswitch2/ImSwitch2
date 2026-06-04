@@ -59,12 +59,44 @@ class DetectorListParameter(DetectorParameter):
     """ The available values to pick from. """
 
 
+#: Standard parameter name for the optically effective (sample-plane) pixel
+#: size of camera detectors. Used by ``DetectorManager.pixelSizeUm`` and by
+#: downstream modules such as tiling, scale bars and stitching.
+CAMERA_PIXEL_SIZE_PARAM = 'Camera pixel size'
+
+
 class DetectorManager(SignalInterface):
     """ Abstract base class for managers that control detectors. Each type of
     detector corresponds to a manager derived from this class. """
 
     sigImageUpdated = Signal(np.ndarray, bool, list)
     sigNewFrame = Signal()
+
+    @staticmethod
+    def makeCameraPixelSizeParameter(detectorInfo,
+                                     default: float = 0.15
+                                     ) -> 'DetectorNumberParameter':
+        """ Build the standard ``'Camera pixel size'`` parameter for camera
+        detector managers.
+
+        IMPORTANT: this is the *optically effective* pixel size at the sample
+        plane (physical sensor pitch divided by total optical magnification),
+        in micrometers. It is **not** the physical sensor pitch — downstream
+        consumers (tiling, scale bars, stitching, ...) only care about the
+        sample-plane value, so that is what is exposed at runtime.
+
+        The default value is read from
+        ``detectorInfo.managerProperties['cameraPixelSizeUm']`` if present,
+        otherwise falls back to ``default`` (0.15 µm, a typical high-mag
+        value).
+        """
+        value = float(
+            detectorInfo.managerProperties.get('cameraPixelSizeUm', default)
+        )
+        return DetectorNumberParameter(
+            group='Miscellaneous', value=value,
+            valueUnits='µm', editable=True,
+        )
 
     @abstractmethod
     def __init__(self, detectorInfo, name: str, fullShape: Tuple[int, int],
@@ -214,11 +246,22 @@ class DetectorManager(SignalInterface):
         return self.pixelSizeUm[1:]
 
     @property
-    @abstractmethod
     def pixelSizeUm(self) -> List[float]:
-        """ The pixel size in micrometers, in 3D, in the format
-        ``[Z, Y, X]``. Non-scanned ``Z`` set to 1. """
-        pass
+        """ The optically effective pixel size in micrometers, in 3D, in the
+        format ``[Z, Y, X]``. Non-scanned ``Z`` set to 1.
+
+        Default implementation reads from the standard
+        ``'Camera pixel size'`` parameter (see
+        :meth:`makeCameraPixelSizeParameter`) — this is the value used by
+        all camera detectors. Scan-driven detectors (APD, PMT, Swabian, ...)
+        override this property to derive pixel sizes from the scan
+        configuration instead.
+        """
+        param = self.__parameters.get(CAMERA_PIXEL_SIZE_PARAM)
+        if param is None:
+            return [1.0, 1.0, 1.0]
+        v = float(param.value)
+        return [1.0, v, v]
 
     @abstractmethod
     def crop(self, hpos: int, vpos: int, hsize: int, vsize: int) -> None:

@@ -32,12 +32,14 @@ class ReconstructionViewController(ImProcessWidgetController):
             prevItem.setDispLevels(currHistLevels)
 
             currItem = self._widget.getCurrentItemData()
+            self._syncViewModes(currItem)
             retrievedLevels = \
                 self._widget.getCurrentItemData().getDispLevels() if currItem is not None else None
             self.fullUpdate(levels=retrievedLevels)
             if retrievedLevels is not None:
                 self._widget.setImageDisplayLevels(retrievedLevels[0], retrievedLevels[1])
         else:
+            self._syncViewModes(self._widget.getCurrentItemData())
             self.fullUpdate(autoLevels=True,
                             levels=self._widget.getCurrentItemData().getDispLevels())
 
@@ -57,7 +59,12 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._prevViewId = self.getViewId()
 
     def setImgSlice(self, autoLevels=False, levels=None):
-        data = self._widget.getCurrentItemData().reconstructed
+        current = self._widget.getCurrentItemData()
+        if hasattr(current, "data") and hasattr(current, "view_modes"):
+            self._setProcessingResultSlice(current, autoLevels=autoLevels, levels=levels)
+            return
+
+        data = current.reconstructed
 
         if self.getViewId() == 3:
             transposeOrder = [0, 1, 2, 3, 4, 5]
@@ -75,6 +82,31 @@ class ReconstructionViewController(ImProcessWidgetController):
             self.updateLevelsRange()
         elif levels is not None:
             self._widget.setImageDisplayLevels(*levels)
+
+    def _setProcessingResultSlice(self, result, autoLevels=False, levels=None):
+        mode = self._processingViewMode(result)
+        im = result.data.transpose(*mode.transpose)
+        axisLabels = np.array(result.axis_labels)[list(mode.transpose)]
+        self._transposeOrder = list(mode.transpose)
+
+        self._widget.setImage(im, axisLabels)
+        if levels is not None:
+            self._widget.setImageDisplayLevels(*levels)
+        elif autoLevels:
+            self.updateLevelsRange(base=None)
+
+    def _processingViewMode(self, result):
+        view_name = self._widget.getViewName()
+        for mode in result.view_modes:
+            if mode.name == view_name:
+                return mode
+        return result.view_modes[0]
+
+    def _syncViewModes(self, item):
+        if hasattr(item, "view_modes"):
+            self._widget.setViewModes(item.view_modes)
+        else:
+            self._widget.setViewModes(None)
 
     def getViewId(self):
         viewName = self._widget.getViewName()

@@ -55,6 +55,14 @@ class ProcessingResult(ABC):
             self.view_modes = [ViewMode("Standard", tuple(range(data.ndim)))]
         else:
             self.view_modes = view_modes
+
+    def setDispLevels(self, levels) -> None:
+        """Compatibility hook for the legacy ReconstructionViewController."""
+        self.display_levels = levels
+
+    def getDispLevels(self):
+        """Compatibility hook for the legacy ReconstructionViewController."""
+        return self.display_levels
     
     @abstractmethod
     def save(self, path: Path, fmt: str) -> None:

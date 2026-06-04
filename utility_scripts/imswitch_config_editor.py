@@ -21,7 +21,7 @@ from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QStatusBar, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QAction, QGridLayout,
     QDialog, QTextEdit, QLayout, QLayoutItem,
@@ -70,8 +70,38 @@ def _load_section_schemas() -> dict:
             except Exception:
                 continue
             key = data.get("key") or f.stem
+            _resolve_section_dynamic_options(data)
             sections[key] = data
     return sections
+
+
+def _resolve_section_dynamic_options(schema: dict) -> None:
+    """Replace supported option placeholders with runtime-discovered values."""
+    fallback = {
+        "__improcess_reconstructors__": [
+            "monalisa",
+            "snouty",
+            "snouty-projections",
+            "view-only",
+        ],
+        "__improcess_processors__": [
+            "drift-correct",
+        ],
+    }
+    resolved = dict(fallback)
+    try:
+        from imswitch.improcess.reconstructors import available_reconstructor_ids
+        from imswitch.improcess.processors import available_processor_ids
+
+        resolved["__improcess_reconstructors__"] = available_reconstructor_ids()
+        resolved["__improcess_processors__"] = available_processor_ids()
+    except Exception:
+        pass
+
+    for field in schema.get("fields", []):
+        opts = field.get("opts") or []
+        if len(opts) == 1 and opts[0] in resolved:
+            field["opts"] = resolved[opts[0]]
 
 
 def _hsv_palette(n: int, saturation: float = 0.60, value: float = 0.78) -> list:
@@ -204,6 +234,13 @@ def _build_default_section(schema: dict) -> dict:
         tp = f.get("type", "text")
         if tp == "bool":
             out[f["key"]] = bool(v) if isinstance(v, bool) else False
+        elif tp == "multiselect":
+            if isinstance(v, list):
+                out[f["key"]] = list(v)
+            elif isinstance(v, str) and v.strip():
+                out[f["key"]] = [x.strip() for x in v.split(",") if x.strip()]
+            else:
+                out[f["key"]] = []
         elif tp == "json":
             if isinstance(v, str) and v.strip():
                 try:
@@ -330,6 +367,36 @@ def _collect_xref_issues(data: dict) -> list:
             "<b>etSTED</b> present but no <b>scan</b> section — "
             "coordinate transforms have nothing to drive."))
 
+    # ── ImProcess processing plugin ids ──────────────────────────────────
+    processing = data.get("processing")
+    if processing:
+        known_reconstructors = set(_section_option_values("processing", "reconstructors"))
+        known_processors = set(_section_option_values("processing", "processors"))
+        reconstructors = processing.get("reconstructors")
+        processors = processing.get("processors")
+        if reconstructors is not None:
+            if not isinstance(reconstructors, list) or not reconstructors:
+                out.append(("error",
+                    "<b>processing.reconstructors</b> must be a non-empty list "
+                    "of ImProcess reconstructor IDs."))
+            else:
+                unknown = [r for r in reconstructors if r not in known_reconstructors]
+                if unknown:
+                    out.append(("error",
+                        f"<b>processing.reconstructors</b> contains unknown "
+                        f"plugin ID(s): {unknown}."))
+        if processors is not None:
+            if not isinstance(processors, list):
+                out.append(("error",
+                    "<b>processing.processors</b> must be a list of ImProcess "
+                    "processor IDs."))
+            else:
+                unknown = [p for p in processors if p not in known_processors]
+                if unknown:
+                    out.append(("error",
+                        f"<b>processing.processors</b> contains unknown "
+                        f"plugin ID(s): {unknown}."))
+
     # ── microscopeStand ⇄ rs232devices ───────────────────────────────────
     ms = data.get("microscopeStand")
     if ms:
@@ -358,6 +425,14 @@ def _collect_xref_issues(data: dict) -> list:
             "(plural) for new setups."))
 
     return out
+
+
+def _section_option_values(section_key: str, field_key: str) -> list:
+    schema = SECTION_SCHEMAS.get(section_key) or {}
+    for field in schema.get("fields", []):
+        if field.get("key") == field_key:
+            return list(field.get("opts") or [])
+    return []
 
 
 # =============================================================================
@@ -814,6 +889,16 @@ class FieldWidget(QWidget):
             idx = self._w.findText(str(value) if value is not None else "")
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
+        elif tp == "multiselect":
+            self._w = QListWidget()
+            self._w.setMinimumHeight(92)
+            self._w.setMaximumHeight(150)
+            selected = set(value if isinstance(value, list) else [])
+            for opt in self._def.get("opts", []) or []:
+                item = QListWidgetItem(str(opt))
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if str(opt) in selected else Qt.Unchecked)
+                self._w.addItem(item)
         elif tp == "ref":
             # Cross-reference to a device in the live config. opts is the list
             # of categories ("detectors", "positioners", ...) to draw names from.
@@ -884,6 +969,12 @@ class FieldWidget(QWidget):
             return self._w.value()
         if tp == "select":
             return self._w.currentText()
+        if tp == "multiselect":
+            return [
+                self._w.item(i).text()
+                for i in range(self._w.count())
+                if self._w.item(i).checkState() == Qt.Checked
+            ]
         if tp == "ref":
             txt = self._w.currentText().strip()
             return txt if txt else ""
@@ -1070,7 +1161,7 @@ class PropertyEditor(QWidget):
         sys_lay.setContentsMargins(10, 10, 10, 10)
         sys_lay.setSpacing(8)
 
-        sys_hdr = QLabel("<b>System</b> <span style='color:#888;font-size:8pt;'>— focusLock, scan, nidaq, …</span>")
+        sys_hdr = QLabel("<b>System</b> <span style='color:#888;font-size:8pt;'>— processing, scan, focusLock, nidaq, …</span>")
         sys_hdr.setTextFormat(Qt.RichText)
         sys_hdr.setToolTip(
             "Integral system sections referenced by detector/positioner flags "
@@ -2177,7 +2268,7 @@ class SectionEditorDialog(QDialog):
             if fw is None:
                 continue
             val = fw.get_value()
-            if f.get("req") and (val is None or val == ""):
+            if f.get("req") and (val is None or val == "" or val == []):
                 missing.append(f["label"])
             out[f["key"]] = val
         if missing:
