@@ -1,0 +1,39 @@
+{
+  "section": true,
+  "key": "processing",
+  "group": "system",
+  "display": "ImProcess",
+  "summary": "ImProcess module configuration. Select which reconstructors and processors are loaded for this setup.",
+  "fields": [
+    {
+      "key": "graphPanel",
+      "label": "Show graph panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional plot/graph panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "reconstructors",
+      "label": "Reconstructors",
+      "type": "multiselect",
+      "default": ["view-only"],
+      "req": true,
+      "grp": "Plugins",
+      "tip": "Built-in reconstructor plugin IDs to register for this setup.",
+      "opts": ["__improcess_reconstructors__"]
+    },
+    {
+      "key": "processors",
+      "label": "Processors",
+      "type": "multiselect",
+      "default": ["drift-correct"],
+      "req": false,
+      "grp": "Plugins",
+      "tip": "Built-in processor plugin IDs to register for this setup. Leave empty to disable processors.",
+      "opts": ["__improcess_processors__"]
+    }
+  ]
+}

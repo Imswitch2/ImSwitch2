@@ -9,6 +9,16 @@ from .base import Processor
 from .drift_correct import DriftCorrectProcessor
 
 
+_AVAILABLE_PROCESSOR_CLASSES = {
+    'drift-correct': DriftCorrectProcessor,
+}
+
+
+def available_processor_ids() -> list[str]:
+    """Return built-in processor IDs accepted by setup processing config."""
+    return sorted(_AVAILABLE_PROCESSOR_CLASSES)
+
+
 def register_default_processors(registry, filter_ids: list[str] | None = None) -> None:
     """
     Register built-in processors.
@@ -17,13 +27,14 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
         registry: Plugin registry to populate.
         filter_ids: Optional list of processor ids to register. None registers all.
     """
-    available_plugins = {
-        'drift-correct': DriftCorrectProcessor,
-    }
     if filter_ids is None:
-        to_register = available_plugins.items()
+        to_register = _AVAILABLE_PROCESSOR_CLASSES.items()
     else:
-        to_register = [(pid, cls) for pid, cls in available_plugins.items() if pid in filter_ids]
+        to_register = [
+            (pid, cls)
+            for pid, cls in _AVAILABLE_PROCESSOR_CLASSES.items()
+            if pid in filter_ids
+        ]
     for _pid, plugin_cls in to_register:
         registry.register_processor(plugin_cls())
 
@@ -31,6 +42,7 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 __all__ = [
     "Processor",
     "DriftCorrectProcessor",
+    "available_processor_ids",
     "register_default_processors",
 ]
 

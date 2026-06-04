@@ -1,5 +1,6 @@
 import copy
 import os
+from pathlib import Path
 
 import numpy as np
 import tifffile as tiff
@@ -58,6 +59,10 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._patternFinder = PatternFinder()
         self._denoiser = Denoiser()
 
+        self._activeReconstructor = self._select_reconstructor()
+        if self._activeReconstructor is not None:
+            self._install_reconstructor_params(self._activeReconstructor)
+
         self._currentDataObj = None
         self._pattern = self._widget.getPatternParams()
         self._settingPatternParams = False
@@ -104,6 +109,27 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigFilesDropped.connect(self.handleDroppedFiles)
         self.updatePattern()
         self.updateScanParams()
+
+    def _select_reconstructor(self):
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        reconstructors = get_registry().reconstructors()
+        if not reconstructors:
+            self._logger.warning("No ImProcess reconstructors registered")
+            return None
+        reconstructor = reconstructors[0]
+        self._logger.info(
+            f"Using active reconstructor: {reconstructor.id} ({reconstructor.name})"
+        )
+        return reconstructor
+
+    def _install_reconstructor_params(self, reconstructor):
+        if reconstructor.id == "monalisa":
+            # Keep the legacy MoNaLISA parameter tree until the whole
+            # scan-params/find-pattern path is migrated to plugin widgets.
+            return
+        widget = reconstructor.make_param_widget(self._widget)
+        self._widget.setParameterWidget(widget)
     
     def denoiseCurrent(self) -> None:
         if not self._denoiser.denoising_available:
@@ -196,10 +222,12 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.showScanParamsDialog()
 
     def quickLoadData(self):
-        extension = self._widget.extension.value()
+        extension = self._widget.extension.value() if self._widget.extension is not None else 'hdf5'
         if extension == 'zarr':
             dataPath = guitools.askForFolderPath(self._widget, defaultFolder=self._dataFolder)
         elif extension == 'hdf5':
+            dataPath = guitools.askForFilePath(self._widget, defaultFolder=self._dataFolder)
+        else:
             dataPath = guitools.askForFilePath(self._widget, defaultFolder=self._dataFolder)
 
         if dataPath:
@@ -243,6 +271,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
 
     def currentDataChanged(self, dataObj):
         self._currentDataObj = dataObj
+        if hasattr(self._widget.parTree, "load_from_attrs"):
+            try:
+                self._widget.parTree.load_from_attrs(dataObj.attrs or {})
+            except Exception as exc:
+                self._logger.warning(f"Could not load reconstructor params from metadata: {exc}")
 
         # Update scan params based on new data
         # TODO: What if the attribute names change in imcontrol?
@@ -319,6 +352,10 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
     def reconstruct(self, dataObjs, consolidate):
+        if self._activeReconstructor is not None and self._activeReconstructor.id != "monalisa":
+            self._reconstruct_with_plugin(dataObjs, consolidate)
+            return
+
         reconObj = None
         for index, dataObj in enumerate(dataObjs):
             preloaded = dataObj.dataLoaded
@@ -358,6 +395,23 @@ class ImProcessMainViewController(ImProcessWidgetController):
             self._widget.addNewData(reconObj, f'{reconObj.name}_multi')
             self._commChannel.sigExecutionFinished.emit(self.reconstructionController.getImage())
 
+    def _reconstruct_with_plugin(self, dataObjs, consolidate):
+        if self._activeReconstructor is None:
+            return
+        if consolidate:
+            self._logger.warning(
+                f"{self._activeReconstructor.name} does not support consolidated "
+                "multi-data reconstruction yet; processing items individually."
+            )
+        for dataObj in dataObjs:
+            params = self._widget.getReconstructionParams()
+            self._logger.info(
+                f"Running {self._activeReconstructor.id} reconstruction for {dataObj.name}"
+            )
+            result = self._activeReconstructor.process(dataObj, params)
+            self._widget.addNewData(result, result.name)
+            self._commChannel.sigCurrentResultChanged.emit(result)
+
     def bleachingCorrection(self, data):
         correctedData = data.copy()
         energy = np.sum(data, axis=(1, 2))
@@ -380,6 +434,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
             if dataType == 'reconstruction':
                 self.saveReconstruction(reconObj, filePath)
             elif dataType == 'coefficients':
+                if hasattr(reconObj, "data") and hasattr(reconObj, "save"):
+                    self._logger.error("Coefficient export is only available for legacy MoNaLISA results")
+                    return
                 self.saveCoefficients(reconObj, filePath)
             else:
                 raise ValueError(f'Invalid save data type "{dataType}"')
@@ -408,11 +465,22 @@ class ImProcessMainViewController(ImProcessWidgetController):
                 if dataType == 'reconstruction':
                     self.saveReconstruction(reconObj, filePath)
                 elif dataType == 'coefficients':
+                    if hasattr(reconObj, "data") and hasattr(reconObj, "save"):
+                        self._logger.error(
+                            f"Skipping coefficient export for {name}; not a legacy MoNaLISA result"
+                        )
+                        continue
                     self.saveCoefficients(reconObj, filePath)
                 else:
                     raise ValueError(f'Invalid save data type "{dataType}"')
 
     def saveReconstruction(self, reconObj, filePath):
+        if hasattr(reconObj, "data") and hasattr(reconObj, "save"):
+            suffix = Path(filePath).suffix.lower().lstrip(".") or "tiff"
+            fmt = "tiff" if suffix in ("tif", "tiff") else suffix
+            reconObj.save(Path(filePath), fmt)
+            return
+
         scanParDict = reconObj.getScanParams()
         vxsizec = int(float(
             scanParDict['step_sizes'][scanParDict['dimensions'].index(

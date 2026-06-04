@@ -36,6 +36,11 @@ class PluginRegistry:
             self.__logger.warning(f"Processor '{plugin.id}' already registered, replacing")
         self._processors[plugin.id] = plugin
         self.__logger.debug(f"Registered processor: {plugin.id} ({plugin.name})")
+
+    def clear(self) -> None:
+        """Remove all registered plugins before applying a new setup config."""
+        self._reconstructors.clear()
+        self._processors.clear()
     
     def reconstructors(self) -> list['Reconstructor']:
         """Return all registered reconstructors."""

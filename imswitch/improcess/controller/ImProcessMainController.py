@@ -47,6 +47,7 @@ class ImProcessMainController(MainController):
         from imswitch.improcess.processors import register_default_processors
         
         registry = get_registry()
+        registry.clear()
         
         # Check if we have a setup configuration.
         #

@@ -18,6 +18,19 @@ from .view_only import ViewOnlyReconstructor
 from .snouty_projections import SnoutyProjectionsReconstructor
 
 
+_AVAILABLE_RECONSTRUCTOR_CLASSES = {
+    'monalisa': MonalisaReconstructor,
+    'snouty': SnoutyReconstructor,
+    'view-only': ViewOnlyReconstructor,
+    'snouty-projections': SnoutyProjectionsReconstructor,
+}
+
+
+def available_reconstructor_ids() -> list[str]:
+    """Return built-in reconstructor IDs accepted by setup processing config."""
+    return sorted(_AVAILABLE_RECONSTRUCTOR_CLASSES)
+
+
 def register_default_reconstructors(
     registry: PluginRegistry,
     filter_ids: list[str] | None = None
@@ -32,21 +45,17 @@ def register_default_reconstructors(
         registry: The plugin registry to populate
         filter_ids: Optional list of plugin IDs to register. If None, all are registered.
     """
-    # Map of plugin IDs to their classes
-    available_plugins = {
-        'monalisa': MonalisaReconstructor,
-        'snouty': SnoutyReconstructor,
-        'view-only': ViewOnlyReconstructor,
-        'snouty-projections': SnoutyProjectionsReconstructor,
-    }
-    
     # Register requested plugins
     if filter_ids is None:
         # Register all
-        to_register = available_plugins.items()
+        to_register = _AVAILABLE_RECONSTRUCTOR_CLASSES.items()
     else:
         # Register only the filtered ones
-        to_register = [(pid, cls) for pid, cls in available_plugins.items() if pid in filter_ids]
+        to_register = [
+            (pid, cls)
+            for pid, cls in _AVAILABLE_RECONSTRUCTOR_CLASSES.items()
+            if pid in filter_ids
+        ]
     
     for plugin_id, plugin_class in to_register:
         registry.register_reconstructor(plugin_class())
@@ -56,6 +65,7 @@ __all__ = [
     "Reconstructor",
     "PluginRegistry",
     "get_registry",
+    "available_reconstructor_ids",
     "register_default_reconstructors",
 ]
 
