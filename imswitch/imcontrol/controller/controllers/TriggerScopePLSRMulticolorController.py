@@ -188,6 +188,13 @@ class TriggerScopePLSRMulticolorController(ImConWidgetController):
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
             if not sigScanStartingEmitted:
                 self.emitScanSignal(self._commChannel.sigScanStarting)
+            # Tell the LaserController which lasers this scan uses so it can
+            # arm them (digital-modulation / external-control mode) and leave
+            # the rest off. The TriggerScope firmware runs the scan
+            # autonomously, so unlike the Advanced/Nidaq path this signal must
+            # be emitted here rather than from the DAQ manager.
+            self.emitScanSignal(self._commChannel.sigScanBuilt,
+                                self._getScanLaserDevices())
             triggerscopeParameters = self.getTriggerscopeParameters()
             self._master.scanManager.runScan(triggerscopeParameters,
                                              scan_type='pLS-RESOLFT_multicolor_Scan')
@@ -201,6 +208,13 @@ class TriggerScopePLSRMulticolorController(ImConWidgetController):
             self.scanFailed()
 
     def scanDone(self):
+        # All TriggerScope scan controllers share the board-level sigScanDone, so
+        # every one of them receives this when the firmware reports end-of-scan.
+        # Only the controller that actually started the scan should tear down;
+        # the rest must ignore it (their isRunning is False) to avoid redundant
+        # laser disarm rounds and duplicate sigScanEnded emissions.
+        if not self.isRunning:
+            return
         self._logger.debug('Scan done')
         self.isRunning = False
         self.emitScanSignal(self._commChannel.sigScanDone)
@@ -257,6 +271,24 @@ class TriggerScopePLSRMulticolorController(ImConWidgetController):
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)
+
+    def _getScanLaserDevices(self):
+        """Return the unique laser names used by this scan.
+
+        The multicolor scan assigns lasers to roles (on/off/readout plus the
+        extra Laser2/Laser3 channels). We collect the device chosen for each
+        role, drop anything that isn't a registered laser (e.g. the CameraTTL
+        role or an unset/empty field), and de-duplicate. The LaserController
+        uses this list (via sigScanBuilt) to arm exactly these lasers.
+        """
+        self.getParameters()
+        laserRoles = ('onLaser', 'offLaser', 'roLaser', 'Laser2', 'Laser3')
+        devices = []
+        for role in laserRoles:
+            device = self._deviceParameterDict.get(role)
+            if device and device in self._setupInfo.lasers and device not in devices:
+                devices.append(device)
+        return devices
 
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters."""

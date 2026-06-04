@@ -255,7 +255,6 @@ class CoboltLaser:
         try:
             utf8_msg = message.encode()
             self.address.write(utf8_msg)
-            logger.debug(f"sent laser [{self}] message [{utf8_msg}]")
         except Exception as e:
             raise RuntimeError("Error: write failed") from e
 
@@ -269,8 +268,12 @@ class CoboltLaser:
 
             raise RuntimeError(f"Syntax Error: No response on {message}")
         else:
-            # print(message.replace("\r",""),received_string)
-            logger.debug(f"received from laser [{self}] message [{received_string}]")
+            # One terse line per command instead of a verbose sent+received
+            # pair that each embedded the full laser repr. Keeps debug
+            # traceability without flooding the log during scans, where every
+            # mode change issues a burst of queries.
+            logger.debug("cobolt %s: %s -> %r", self.port,
+                         message.rstrip("\r"), received_string)
         return received_string
 
     def __enter__(self):

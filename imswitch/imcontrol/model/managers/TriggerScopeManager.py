@@ -146,7 +146,9 @@ class TriggerScopeManager(SignalInterface):
     # ------------------------------------------------------------------
 
     def _unknownMsg(self, msg):
-        self.__logger.info(f'[TriggerScope serial] {msg}')
+        # repr() so any stray/invisible control characters (e.g. a trailing
+        # '\r') are visible in the log and don't masquerade as a clean string.
+        self.__logger.info(f'[TriggerScope serial] {msg!r}')
 
 
 class SerialMonitor(Worker):
@@ -159,9 +161,13 @@ class SerialMonitor(Worker):
 
     def __init__(self, rs232Manager, updatePeriod):
         super().__init__()
+        self.__logger = initLogger(self)
         self._rs232Manager = rs232Manager
         self._updatePeriod = updatePeriod
         self._vtimer = None
+        # Diagnostic: throttle repeated read-timeout log lines so a quiet port
+        # doesn't spam the log, while still proving the monitor thread is alive.
+        self._emptyReads = 0
 
     def run(self):
         self._vtimer = Timer()
@@ -175,11 +181,42 @@ class SerialMonitor(Worker):
 
     def checkSerial(self):
         try:
-            msg = self._rs232Manager.read(termination='\r\n')
-        except (VisaIOError, InvalidSession, SerialException, TypeError):
+            # RS232Manager.read() takes an optional positional arg and applies
+            # the port's configured recv_termination itself. The previous
+            # read(termination='\r\n') passed an unsupported keyword, so every
+            # poll raised TypeError and the monitor never read a single byte —
+            # "Scan done" was never seen and scans hung. Call it with no args.
+            msg = self._rs232Manager.read()
+        except (VisaIOError, InvalidSession, SerialException, TypeError) as exc:
+            # A read timeout (no data within the port timeout) is normal while
+            # the firmware is busy/idle. Log it occasionally so we can confirm
+            # the monitor thread is alive but receiving nothing — which would
+            # point at a recv_termination mismatch rather than a code bug.
+            self._emptyReads += 1
+            if self._emptyReads <= 3 or self._emptyReads % 20 == 0:
+                self.__logger.debug(
+                    '[TriggerScope RX] read() returned nothing (%s); '
+                    'empty-read count=%d',
+                    type(exc).__name__, self._emptyReads,
+                )
             msg = None
 
         if msg is not None:
+            # Diagnostic: log exactly what came off the wire, with repr() so any
+            # invisible terminators (\r, \n) are visible. This is how we tell
+            # what the firmware actually sends at end-of-scan.
+            self.__logger.info('[TriggerScope RX] %r', msg)
+            # Normalise line endings/whitespace before matching. The RS232
+            # layer's read() ignores the requested termination and relies on
+            # the port's configured recv_termination, which can leave a
+            # trailing '\r' (CR/LF mismatch). An unstripped "Scan done\r"
+            # fails the exact match below, so scanDone() never fires and the
+            # scan/laser widgets stay stuck (laser left armed). strip() makes
+            # the match tolerant of every CR/LF variant and also prevents the
+            # MSG branch from doing int("5\r") -> ValueError.
+            msg = msg.strip()
+            if not msg:
+                return
             if msg == 'Scan done':
                 self.sigScanDone.emit()
             elif msg[:3] == 'MSG':

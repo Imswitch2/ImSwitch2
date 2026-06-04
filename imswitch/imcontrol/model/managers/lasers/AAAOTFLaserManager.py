@@ -119,6 +119,23 @@ class AAAOTFLaserManager(LaserManager):
     #    cmd = 'L' + str(self._channel) + 'O0'
     #    self._rs232manager.write(cmd)
 
+    def setScanModeActive(self, active):
+        """Arm/disarm the channel for TTL-gated triggering during a scan.
+
+        When a scan starts the channel is switched to external control so
+        the scanner's TTL line gates the diffracted beam on/off. When the
+        scan ends it returns to internal control so ImSwitch governs the
+        output again.
+
+        Note: light is only produced while active if (1) the channel
+        amplitude was set to a non-zero value via setValue, and (2) the
+        scanner actually drives this channel's TTL line HIGH.
+        """
+        if active:
+            self.externalControl()
+        else:
+            self.internalControl()
+
     def internalControl(self):
         """Switch the channel to internal control"""
         cmd = 'L' + str(self._channel) + 'I1' + 'O0'

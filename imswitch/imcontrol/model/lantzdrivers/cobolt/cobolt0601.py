@@ -199,12 +199,9 @@ class Cobolt0601_f2(Cobolt0601):
 
     @power_mod.setter
     def power_mod(self, value):
+        # slmp/glmp? use mW directly (same as Cobolt06MLD), unlike p/p? which use W
         self._power_mod = float(value)
-        resp = self._safe_query(f'slmp {float(value):.4f}')  # mW, no conversion
-        import logging
-        logging.getLogger(__name__).debug(
-            f'slmp {float(value):.4f} → {resp!r}  |  glmp? → {self._safe_query("glmp?")!r}'
-        )
+        self._safe_query(f'slmp {float(value):.4f}')  # mW, no conversion
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
