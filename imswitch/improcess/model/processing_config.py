@@ -25,7 +25,12 @@ def load_processing_config(logger: Any = None) -> dict[str, Any]:
 
 def is_graph_panel_enabled(processing_config: dict[str, Any]) -> bool:
     """Return whether the optional ImProcess graph panel should be shown."""
-    return bool(processing_config.get("graphPanel", True))
+    return bool(processing_config.get("graphPanel", False))
+
+
+def is_profile_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess profile panel should be shown."""
+    return bool(processing_config.get("profilePanel", False))
 
 
 def plugin_ids_from_config(

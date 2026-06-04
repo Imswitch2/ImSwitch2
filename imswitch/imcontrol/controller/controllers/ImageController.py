@@ -1,5 +1,6 @@
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import LiveUpdatedController
+from ..display_transform import apply_display_transform, display_transform_from_properties
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
@@ -55,14 +56,25 @@ class ImageController(LiveUpdatedController):
     def update(self, detectorName, im, init, scale, isCurrentDetector):
         """ Update new image in the viewbox. """
         if np.prod(im.shape)>1:
+            display_im, display_scale = apply_display_transform(
+                im,
+                scale,
+                self._getDisplayTransform(detectorName),
+            )
 
             if not init:
-                self.autoLevels([detectorName], im)
+                self.autoLevels([detectorName], display_im)
 
-            self._widget.setImage(detectorName, im, scale)
+            self._widget.setImage(detectorName, display_im, display_scale)
 
             if not init or self._shouldResetView:
-                self.adjustFrame(instantResetView=True)
+                self.adjustFrame(shape=display_im.shape, instantResetView=True)
+
+    def _getDisplayTransform(self, detectorName):
+        detector_info = self._setupInfo.detectors.get(detectorName)
+        if detector_info is None:
+            return display_transform_from_properties(None)
+        return display_transform_from_properties(detector_info.managerProperties)
 
     def adjustFrame(self, shape=None, instantResetView=False):
         """ Adjusts the viewbox to a new width and height. """

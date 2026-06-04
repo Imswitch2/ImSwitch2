@@ -87,9 +87,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         mode = self._processingViewMode(result)
         im = result.data.transpose(*mode.transpose)
         axisLabels = np.array(result.axis_labels)[list(mode.transpose)]
+        axisScales = np.array(result.axis_scales, dtype=float)[list(mode.transpose)]
         self._transposeOrder = list(mode.transpose)
 
-        self._widget.setImage(im, axisLabels)
+        self._widget.setImage(im, axisLabels, axisScales, result.scale_unit)
         if levels is not None:
             self._widget.setImageDisplayLevels(*levels)
         elif autoLevels:

@@ -9,10 +9,20 @@
       "key": "graphPanel",
       "label": "Show graph panel",
       "type": "bool",
-      "default": true,
+      "default": false,
       "req": false,
       "grp": "Basic",
       "tip": "Show the optional plot/graph panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "profilePanel",
+      "label": "Show profile panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional line/rectangle profile and fitting panel in the ImProcess window.",
       "opts": []
     },
     {
