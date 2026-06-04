@@ -130,6 +130,21 @@ class TestSnoutyReconstructor:
         assert reconstructor.name == "SNOUTY deskew"
         assert "hdf5" in reconstructor.file_extensions
         assert "tiff" in reconstructor.file_extensions
+
+    def test_result_physical_axis_scales(self):
+        """SNOUTY result exposes voxel size as micrometer axis scales."""
+        from imswitch.improcess.reconstructors.snouty.result import SnoutyResult
+
+        params = DEFAULT_PARAMS.copy()
+        params["sample_vx_size"] = 250.0
+        result = SnoutyResult(
+            name="scaled",
+            data=np.zeros((2, 3, 4), dtype=np.float32),
+            params=params,
+        )
+
+        assert result.axis_scales == [0.25, 0.25, 0.25]
+        assert result.scale_unit == "um"
     
     def test_process_single_timepoint(self, data_obj_3d):
         """Test single-timepoint deskew."""

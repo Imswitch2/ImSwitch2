@@ -137,6 +137,16 @@ class TestSnoutyProjections:
         result_mt = reconstructor.process(data_obj_mt, params)
         assert result_mt.axis_labels == ["T", "projection", "Y", "X"], \
             f"Expected ['T', 'projection', 'Y', 'X'], got {result_mt.axis_labels}"
+
+    def test_physical_axis_scales(self, data_obj, default_params):
+        """Projection result exposes physical Y/X scales and unit metadata."""
+        reconstructor = SnoutyProjectionsReconstructor()
+        params = default_params.copy()
+        params["sample_vx_size"] = 500.0
+        result = reconstructor.process(data_obj, params)
+
+        assert result.axis_scales == [1.0, 0.5, 0.5]
+        assert result.scale_unit == "um"
     
     def test_display_levels(self, data_obj, default_params):
         """Test that display levels are computed."""

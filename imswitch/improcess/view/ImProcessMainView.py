@@ -10,6 +10,7 @@ from .MultiDataFrame import MultiDataFrame
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
+from .ProfileWidget import ProfileWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .guitools import BetterPushButton
 
@@ -38,7 +39,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     
     sigClosing = QtCore.Signal()
 
-    def __init__(self, showGraphPanel: bool = True, *args, **kwargs):
+    def __init__(
+        self,
+        showGraphPanel: bool = True,
+        showProfilePanel: bool = True,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.setWindowTitle('Image Processing')
         self.setAcceptDrops(True)
@@ -103,6 +110,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self.reconstructionWidget = ReconstructionView()
         self.graphWidget = GraphWidget() if showGraphPanel else None
+        self.profileWidget = (
+            ProfileWidget(self.reconstructionWidget.napariViewer)
+            if showProfilePanel
+            else None
+        )
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -158,15 +170,21 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         leftContainer.addWidget(parameterFrame, 1)
         leftContainer.addWidget(btnFrame, 0)
         leftContainer.addWidget(DataDock, 1)
+        rightSplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        rightSplitter.addWidget(self.reconstructionWidget)
         if self.graphWidget is not None:
-            rightSplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-            rightSplitter.addWidget(self.reconstructionWidget)
             rightSplitter.addWidget(self.graphWidget)
-            rightSplitter.setStretchFactor(0, 4)
+        if self.profileWidget is not None:
+            rightSplitter.addWidget(self.profileWidget)
+        rightSplitter.setStretchFactor(0, 5)
+        if self.graphWidget is not None and self.profileWidget is not None:
             rightSplitter.setStretchFactor(1, 1)
-            rightContainer.addWidget(rightSplitter)
+            rightSplitter.setStretchFactor(2, 1)
+        elif self.graphWidget is not None or self.profileWidget is not None:
+            rightSplitter.setStretchFactor(1, 1)
         else:
-            rightContainer.addWidget(self.reconstructionWidget)
+            rightSplitter.setStretchFactor(0, 1)
+        rightContainer.addWidget(rightSplitter)
 
         layout.addLayout(leftContainer, 1)
         layout.addLayout(rightContainer, 3)

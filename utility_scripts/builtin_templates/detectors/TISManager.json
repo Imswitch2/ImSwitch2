@@ -8,7 +8,10 @@
     {"key": "forFocusLock",   "label": "For Focus Lock",  "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "", "opts": []}
   ],
   "props": [
-    {"key": "cameraListIndex", "label": "Camera List Index", "type": "int", "default": 0, "req": true, "grp": "Basic", "tip": "", "opts": []}
+    {"key": "cameraListIndex", "label": "Camera List Index", "type": "int", "default": 0, "req": true, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": "0", "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": ["0", "90", "180", "270"]},
+    {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
+    {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}
   ],
   "nested": {
     "tis": [

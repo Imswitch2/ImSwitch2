@@ -39,8 +39,10 @@ class SnoutyResult(ProcessingResult):
             display_levels: Optional (min, max) display range
         """
         ndim = data.ndim
+        sample_vx_um = float(params.get("sample_vx_size", 1.0)) / 1000.0
         if ndim == 3:
             axis_labels = ["Z", "Y", "X"]
+            axis_scales = [sample_vx_um, sample_vx_um, sample_vx_um]
             view_modes = [
                 ViewMode("XY", (0, 1, 2)),  # Z, Y, X (identity)
                 ViewMode("XZ", (0, 2, 1)),  # Z, X, Y (swap Y/X → projects along Y)
@@ -48,6 +50,7 @@ class SnoutyResult(ProcessingResult):
             ]
         elif ndim == 4:
             axis_labels = ["T", "Z", "Y", "X"]
+            axis_scales = [1.0, sample_vx_um, sample_vx_um, sample_vx_um]
             view_modes = [
                 ViewMode("XY", (0, 1, 2, 3)),  # T, Z, Y, X (identity)
                 ViewMode("XZ", (0, 1, 3, 2)),  # T, Z, X, Y (swap Y/X → projects along Y)
@@ -61,7 +64,9 @@ class SnoutyResult(ProcessingResult):
             data=data,
             axis_labels=axis_labels,
             view_modes=view_modes,
-            display_levels=display_levels
+            display_levels=display_levels,
+            axis_scales=axis_scales,
+            scale_unit="um",
         )
         
         self.params = params

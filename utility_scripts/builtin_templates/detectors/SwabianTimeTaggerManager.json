@@ -19,6 +19,9 @@
     {"key": "t0_ps",                "label": "T0 Offset (ps)",      "type": "int",    "default": 0,       "req": false, "grp": "TCSPC",    "tip": "IRF peak position in ps — applied via setInputDelay on click channel", "opts": []},
     {"key": "min_counts_per_pixel", "label": "Min Counts/Pixel",    "type": "int",    "default": 20,      "req": false, "grp": "TCSPC",    "tip": "",                                                        "opts": []},
     {"key": "fit_method",           "label": "Fit Method",          "type": "select", "default": "moment","req": false, "grp": "TCSPC",       "tip": "",                                                                              "opts": ["moment","phasor","exp1"]},
-    {"key": "accumulate_mode",      "label": "Accumulate Mode",     "type": "select", "default": "off",  "req": false, "grp": "Accumulation","tip": "Reuse Flim object across scans so photons accumulate — reset by toggling off", "opts": ["off","on"]}
+    {"key": "accumulate_mode",      "label": "Accumulate Mode",     "type": "select", "default": "off",  "req": false, "grp": "Accumulation","tip": "Reuse Flim object across scans so photons accumulate — reset by toggling off", "opts": ["off","on"]},
+    {"key": "displayRotation", "label": "Display Rotation", "type": "select", "default": "0", "req": false, "grp": "Display", "tip": "Display-only live image rotation.", "opts": ["0", "90", "180", "270"]},
+    {"key": "displayFlipX", "label": "Mirror X", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only horizontal mirror.", "opts": []},
+    {"key": "displayFlipY", "label": "Mirror Y", "type": "bool", "default": false, "req": false, "grp": "Display", "tip": "Display-only vertical mirror.", "opts": []}
   ]
 }

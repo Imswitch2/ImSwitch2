@@ -32,7 +32,9 @@ class ProcessingResult(ABC):
         data: np.ndarray | Any,  # Allow zarr.Array in future
         axis_labels: list[str],
         view_modes: list[ViewMode] | None = None,
-        display_levels: tuple[float, float] | None = None
+        display_levels: tuple[float, float] | None = None,
+        axis_scales: list[float] | None = None,
+        scale_unit: str = "px",
     ):
         """
         Args:
@@ -49,6 +51,12 @@ class ProcessingResult(ABC):
         self.data = data
         self.axis_labels = axis_labels
         self.display_levels = display_levels
+        self.axis_scales = (
+            axis_scales
+            if axis_scales is not None
+            else [1.0 for _ in range(data.ndim)]
+        )
+        self.scale_unit = scale_unit
         
         if view_modes is None:
             # Default: single standard view with identity permutation

@@ -40,13 +40,16 @@ class SnoutyProjectionsResult(ProcessingResult):
             display_levels: Optional (min, max) display range
         """
         ndim = data.ndim
+        sample_vx_um = float(params.get("sample_vx_size", 1.0)) / 1000.0
         if ndim == 3:
             axis_labels = ["projection", "Y", "X"]
+            axis_scales = [1.0, sample_vx_um, sample_vx_um]
             view_modes = [
                 ViewMode("Standard", (0, 1, 2)),  # Scroll through projections
             ]
         elif ndim == 4:
             axis_labels = ["T", "projection", "Y", "X"]
+            axis_scales = [1.0, 1.0, sample_vx_um, sample_vx_um]
             view_modes = [
                 ViewMode("Standard", (0, 1, 2, 3)),  # Scroll through time and projections
             ]
@@ -60,7 +63,9 @@ class SnoutyProjectionsResult(ProcessingResult):
             data=data,
             axis_labels=axis_labels,
             view_modes=view_modes,
-            display_levels=display_levels
+            display_levels=display_levels,
+            axis_scales=axis_scales,
+            scale_unit="um",
         )
         
         self.params = params

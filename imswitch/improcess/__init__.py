@@ -8,12 +8,17 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
     os.environ['PATH'] = os.environ['PATH'] + ';' + dirtools.DataFileDirs.Libs
 
     from .controller import ImProcessMainController
-    from .model.processing_config import is_graph_panel_enabled, load_processing_config
+    from .model.processing_config import (
+        is_graph_panel_enabled,
+        is_profile_panel_enabled,
+        load_processing_config,
+    )
     from .view import ImProcessMainView
 
     processing_config = load_processing_config()
     view = ImProcessMainView(
-        showGraphPanel=is_graph_panel_enabled(processing_config)
+        showGraphPanel=is_graph_panel_enabled(processing_config),
+        showProfilePanel=is_profile_panel_enabled(processing_config),
     )
     try:
         controller = ImProcessMainController(

@@ -139,9 +139,17 @@ class ReconstructionView(QtWidgets.QFrame):
     def getImage(self):
         return self.imgLayer.data
 
-    def setImage(self, im, axisLabels):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px"):
         self.imgLayer.data = im
         self.napariViewer.dims.axis_labels = tuple(axisLabels)
+        if axisScales is None:
+            axisScales = [1.0 for _ in range(np.asarray(im).ndim)]
+        try:
+            self.imgLayer.scale = tuple(axisScales)
+            self.imgLayer.metadata["scale_unit"] = scaleUnit
+            self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
+        except Exception:
+            pass
 
     def clearImage(self):
         self.imgLayer.data = np.zeros((1, 1))
