@@ -42,6 +42,9 @@ class BeadRecController(ImConWidgetController):
         self.listRecs = []
         self.ongoingScan = False
         self.currentRunImgs = {}
+        # Set once we've warned that no generic 'Scan' widget is present
+        # (e.g. TriggerScope setups), so we don't spam the log every scan.
+        self._warnedNoScanWidget = False
 
         self.beadWorker = BeadWorker(
             isScanRunning=self._commChannel.isScanRunning,
@@ -362,10 +365,27 @@ class BeadRecController(ImConWidgetController):
         self._widget.removeCurrentRunItems()
 
     def updateParameters(self):
+        try:
+            dims = np.array(self._commChannel.getDimsScan()).astype(int)
+            stepSizes = np.array(self._commChannel.getScanStepSizes(), dtype=float)
+        except RuntimeError:
+            # No generic 'Scan' controller in this setup (e.g. a TriggerScope
+            # scanner registers its own scan widget, not 'Scan'). Bead
+            # reconstruction needs scan dimensions it cannot obtain here, so
+            # skip instead of raising on every scan start. Warn only once.
+            if not self._warnedNoScanWidget:
+                self._logger.warning(
+                    'Bead reconstruction inactive: no scan widget available to '
+                    'provide scan dimensions (getDimsScan). Skipping parameter '
+                    'update on scan start.'
+                )
+                self._warnedNoScanWidget = True
+            return
+
         prior_dims = self.dims
         prior_stepSizes = self.stepSizes
-        self.dims = np.array(self._commChannel.getDimsScan()).astype(int)
-        self.stepSizes = np.array(self._commChannel.getScanStepSizes(),dtype=float)[self.dims!=0]
+        self.dims = dims
+        self.stepSizes = stepSizes[dims != 0]
         self.dims = self.dims[self.dims != 0]
         if len(self.dims)>2:
             self.dims = self.dims[:2]

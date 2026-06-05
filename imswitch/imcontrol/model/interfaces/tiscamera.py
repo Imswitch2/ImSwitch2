@@ -70,7 +70,7 @@ class CameraTIS:
         left = self.cam.frame_filter_get_parameter(self.roi_filter, 'Left')
         hei = self.cam.frame_filter_get_parameter(self.roi_filter, 'Height')
         wid = self.cam.frame_filter_get_parameter(self.roi_filter, 'Width')
-        self.__logger.info(
+        self.__logger.debug(
             f'ROI set: w{wid} x h{hei} at l{left},t{top}'
         )
 

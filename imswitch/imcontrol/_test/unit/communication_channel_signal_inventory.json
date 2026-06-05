@@ -59,6 +59,18 @@
     ]
   },
   {
+    "name": "sigSetVisibleLayers",
+    "args": [
+      "object"
+    ]
+  },
+  {
+    "name": "sigSetConfig",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigRecordingStarted",
     "args": []
   },
@@ -86,6 +98,14 @@
       "object",
       "bool"
     ]
+  },
+  {
+    "name": "sigStartRecording",
+    "args": []
+  },
+  {
+    "name": "sigStopRecording",
+    "args": []
   },
   {
     "name": "sigRunScan",
@@ -213,7 +233,17 @@
     ]
   },
   {
+    "name": "sigInitiateEtSnouty",
+    "args": [
+      "bool"
+    ]
+  },
+  {
     "name": "sigClockWidefield",
+    "args": []
+  },
+  {
+    "name": "sigRunScanTriggerScopePLSRMulticolor",
     "args": []
   },
   {

@@ -150,19 +150,71 @@ def test_axis_shortcuts_missing_axis_noop(qtbot):
 
 
 def test_generate_shortcuts_picks_up_all_six(qtbot):
-    """Test that generateShortcuts() picks up all six shortcut methods."""
+    """Test that generateShortcuts() picks up all twelve shortcut methods."""
     widget = PositionerWidget({})
     qtbot.addWidget(widget)
-    
+
     # Generate shortcuts
     shortcuts = generateShortcuts([widget])
-    
-    # Should have 6 shortcuts (stepXPlus, stepXMinus, stepYPlus, stepYMinus, stepZPlus, stepZMinus)
+
+    # Primary (Ctrl) + secondary (Ctrl+Shift) sets = 12 shortcuts.
     expected_keys = {
         'stepXPlus', 'stepXMinus',
         'stepYPlus', 'stepYMinus',
-        'stepZPlus', 'stepZMinus'
+        'stepZPlus', 'stepZMinus',
+        'stepXPlusSecondary', 'stepXMinusSecondary',
+        'stepYPlusSecondary', 'stepYMinusSecondary',
+        'stepZPlusSecondary', 'stepZMinusSecondary',
     }
-    
+
     actual_keys = set(shortcuts.keys())
     assert expected_keys.issubset(actual_keys), f"Missing shortcuts: {expected_keys - actual_keys}"
+    assert shortcuts['stepXPlusSecondary']['key'] == 'Ctrl+Shift+Right'
+
+
+def test_explicit_modifier_targets_named_positioner(qtbot):
+    """An explicit 'ctrl' positioner wins the primary set over a legacy
+    (no-modifier) positioner registered earlier, and a 'ctrl-shift' positioner
+    drives the secondary set."""
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+
+    # Order mirrors the setup file: piezo Stage on ctrl-shift first, an
+    # unmodified Galvo claiming X, then the mechanical BSC203 on ctrl.
+    widget.addPositioner('Stage X', ['X'], speed=False, joystick=False,
+                         shortcutModifier='ctrl-shift')
+    widget.addPositioner('Galvo', ['X'], speed=False, joystick=False)
+    widget.addPositioner('BSC203', ['X', 'Y', 'Z'], speed=False, joystick=False,
+                         shortcutModifier='ctrl')
+
+    up = []
+    widget.sigStepUpClicked.connect(lambda p, a: up.append((p, a)))
+
+    # Primary Ctrl set -> BSC203 (explicit), despite Galvo's earlier legacy claim
+    widget.stepXPlus()
+    assert up == [('BSC203', 'X')]
+    up.clear()
+
+    # Secondary Ctrl+Shift set -> the piezo stage
+    widget.stepXPlusSecondary()
+    assert up == [('Stage X', 'X')]
+
+
+def test_secondary_set_empty_without_modifier(qtbot):
+    """Legacy configs (no shortcutModifier) leave the secondary set unbound,
+    so Ctrl+Shift shortcuts are a no-op."""
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+    widget.addPositioner('Stage', ['X', 'Y', 'Z'], speed=False, joystick=False)
+
+    up = []
+    widget.sigStepUpClicked.connect(lambda p, a: up.append((p, a)))
+
+    widget.stepXPlusSecondary()
+    widget.stepYPlusSecondary()
+    widget.stepZPlusSecondary()
+    assert up == []
+
+    # Primary still works as before (legacy first-wins)
+    widget.stepXPlus()
+    assert up == [('Stage', 'X')]

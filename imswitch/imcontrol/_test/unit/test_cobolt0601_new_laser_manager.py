@@ -57,7 +57,8 @@ class FakeLaser:
         return 'OK'
 
 
-def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0):
+def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
+                   pause_mode: bool = False):
     """Build a manager bound to ``laser`` without running the real __init__."""
     m = object.__new__(Cobolt0601NewLaserManager)
     m._laser = laser
@@ -67,6 +68,7 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0):
     m._enabled = False
     m._real_hw = True
     m._scpi = None
+    m._pause_mode = pause_mode
     # Real manager uses name-mangled logger; tests don't need its output.
     import logging
     m._Cobolt0601NewLaserManager__logger = logging.getLogger(
@@ -293,6 +295,79 @@ def test_scan_mode_inactive_returns_to_enable_state():
 
     # Should have driven back to safe-off state (l0 + modulation safe state).
     assert 'l0' in laser.cmds
+
+
+# ---------------------------------------------------------------------------
+# Pause mode (emissionControl='pause') — OEM-locked firmware that aborts on l0
+# ---------------------------------------------------------------------------
+
+
+def test_pause_mode_init_gated_and_paused_without_autostart():
+    """Pause-mode safe state: enter the modulation safe state (gate on) and
+    pause the beam. Must NOT send @cob1 — on the OEM-locked firmware that primes
+    a pending turn-on which fires on the next interlock cycle (uncontrolled
+    emission). Must also never send l0 or @cobas."""
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, modulation_power_mw=5.0, pause_mode=True)
+    m._scpi = True
+    m._init_safe_state()
+
+    assert laser.cmds == [
+        'LASer:PowerModulation:POWer:SETPoint 0.005',
+        'LAS:RUNM PowerModulation',
+        'las:pm:dig:ena 1',
+        'las:paus 1',
+    ]
+    assert '@cob1' not in laser.cmds
+    assert 'l0' not in laser.cmds
+    assert '@cobas 0' not in laser.cmds
+    assert m._enabled is False
+
+
+def test_pause_mode_enable_resumes_without_l1():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert laser.cmds == ['las:paus 0', 'LAS:RUNM ConstantPower', 'p 0.050000']
+    assert 'l1' not in laser.cmds
+    assert m._enabled is True
+
+
+def test_pause_mode_disable_pauses_without_l0():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._enabled = True
+    m.setEnabled(False)
+
+    assert laser.cmds == ['las:paus 1']
+    assert 'l0' not in laser.cmds
+    assert m._enabled is False
+
+
+def test_pause_mode_scan_arm_resumes_without_l1():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._setpoint_mw = 100
+    m.setScanModeActive(True)
+
+    assert 'las:paus 0' in laser.cmds
+    assert 'l1' not in laser.cmds
+    assert 'l0' not in laser.cmds
+
+
+def test_pause_mode_finalize_pauses_not_l0():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m.finalize()
+
+    assert laser.cmds == ['las:paus 1']
+    assert 'l0' not in laser.cmds
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ class PositionerManager(ABC):
         self.__resetOnClose = positionerInfo.resetOnClose
         self.__joystick = positionerInfo.joystick
         self.__liveUpdate = positionerInfo.liveUpdate
+        self.__shortcutModifier = getattr(positionerInfo, 'shortcutModifier', None)
         if not positionerInfo.forPositioning and not positionerInfo.forScanning:
             raise ValueError('At least one of forPositioning and forScanning must be set in'
                              ' PositionerInfo.')
@@ -71,6 +72,12 @@ class PositionerManager(ABC):
     def liveUpdate(self) -> bool:
         """ Whether the positioner position should be updated live. """
         return self.__liveUpdate
+
+    @property
+    def shortcutModifier(self):
+        """ Keyboard-shortcut group used to jog this positioner from the
+        Positioner widget: ``"ctrl"``, ``"ctrl-shift"``, or ``None``. """
+        return self.__shortcutModifier
 
     @abstractmethod
     def move(self, dist: float, axis: str):

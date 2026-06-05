@@ -623,7 +623,7 @@ class RecordingController(ImConWidgetController):
             except Exception as e:
                 self.__logger.warning(f'Failed to restore rec mode: {e}')
             
-            self.__logger.info('Widget state restored successfully')
+            self.__logger.debug('Widget state restored successfully')
         
         except Exception as e:
             self.__logger.error(f'Failed to restore widget state: {e}')

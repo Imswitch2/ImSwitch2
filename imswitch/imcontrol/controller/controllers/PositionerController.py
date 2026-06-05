@@ -35,7 +35,8 @@ class PositionerController(ImConWidgetController):
                 self._widget.addJoystick(pName)
 
             speed = hasattr(pManager, 'speed')
-            self._widget.addPositioner(pName, pManager.axes, speed, pManager.joystick)
+            self._widget.addPositioner(pName, pManager.axes, speed, pManager.joystick,
+                                       shortcutModifier=pManager.shortcutModifier)
             for axis in pManager.axes:
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:
@@ -358,7 +359,7 @@ class PositionerController(ImConWidgetController):
                             f'Failed to restore step size for positioner {pName}, axis {axis}: {e}'
                         )
             
-            self._logger.info('Widget state restored successfully')
+            self._logger.debug('Widget state restored successfully')
         
         except Exception as e:
             self._logger.error(f'Failed to restore widget state: {e}')

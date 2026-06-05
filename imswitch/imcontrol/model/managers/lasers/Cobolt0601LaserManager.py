@@ -19,6 +19,12 @@ class Cobolt0601LaserManager(LantzLaserManager):
                          driver='cobolt.cobolt0601.Cobolt0601_f2', **_lowLevelManagers)
 
         self._digitalMod = False
+        # Tracks the GUI on/off state so we can restore it when a scan ends.
+        # During a scan the master switch (l1) is forced on so the TTL gate
+        # can pulse light; on scan exit we must return the master switch to
+        # whatever the user had selected, otherwise the laser would emit
+        # continuously in constant-power mode.
+        self._enabled = False
         self._laser.enabled = False      # l0 first — ensure laser is off before any mode changes
         self._laser.digital_mod = False  # sdmes 0 — disable TTL gate
         self._laser.query('cp')          # enter constant-power mode (known clean state)
@@ -27,6 +33,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
 
     def setEnabled(self, enabled):
         self.__logger.debug(f'Laser turning {enabled}')
+        self._enabled = enabled
         self._laser.enabled = enabled
 
     def setValue(self, power, enabled=True, for_scanning=False):
@@ -39,21 +46,38 @@ class Cobolt0601LaserManager(LantzLaserManager):
     def setScanModeActive(self, active):
         if active:
             powerQ = self._laser.power_sp * self._numLasers
-            self.__logger.debug(f'setScanModeActive → active, powerQ={powerQ:.3f} mW, gam={self._laser._safe_query("gam?")}')
             self._laser.enter_mod_mode()   # em — enter modulation mode
-            self.__logger.debug(f'  after em: gam={self._laser._safe_query("gam?")}')
             self._laser.digital_mod = True # sdmes 1 — enable TTL gate
-            self.__logger.debug(f'  after sdmes 1: gdmes={self._laser._safe_query("gdmes?")}')
             self._setModPower(powerQ)      # slmp X — power when TTL is HIGH
-            self.__logger.debug(f'  after slmp: glmp={self._laser._safe_query("glmp?")}')
+            # Master switch ON so the TTL gate can produce light. This is
+            # safe in digital-modulation mode: with sdmes 1 the beam stays
+            # dark until the scanner drives this laser's TTL line HIGH.
+            self._laser.enabled = True
+            self.__logger.debug(
+                'scan mode ON: digital-mod armed, master ON, '
+                'P=%.1f mW (TTL-gated)', powerQ)
         else:
+            # SAFETY ORDER: drop the master switch BEFORE disabling the TTL
+            # gate or changing modes. The master was forced ON during arming
+            # (sdmes 1 keeps the beam dark until the scanner's TTL goes HIGH).
+            # If we cleared the gate (sdmes 0) while the master was still ON,
+            # the beam would emit at the modulation power for the serial-command
+            # latency window before 'cp'/l0 land — the end-of-scan flash. Going
+            # master-off first closes that window completely.
+            self._laser.enabled = False
             self._laser.digital_mod = False
             # we go back to the mode before the scan
             if self._laser.mode == 'ACC':
                 self._laser.query('ci')
             else:
                 self._laser.query('cp')
-            self.__logger.debug('setScanModeActive → inactive, returned to CP/CC')
+            # Restore the master switch to the user's pre-scan selection.
+            # Without this the laser would emit continuously in constant
+            # power mode once the TTL gate is gone.
+            self._laser.enabled = self._enabled
+            self.__logger.debug('scan mode OFF: master forced off before mode '
+                                'change, CP/CC restored, master=%s',
+                                self._enabled)
 
         self._digitalMod = active
 

@@ -47,6 +47,7 @@ _CONTROLLER_MODULES = {
     "TriggerScopePLSRController": "TriggerScopePLSRController",
     "TriggerScopeGalvoDetectionController": "TriggerScopeGalvoDetectionController",
     "TriggerScopePLSRMulticolorController": "TriggerScopePLSRMulticolorController",
+    "TriggerScopeScanController": "TriggerScopeScanController",
     "TriggerScopeLSXYRController": "TriggerScopeLSXYRController",
     "ULensesController": "ULensesController",
     "ViewController": "ViewController",

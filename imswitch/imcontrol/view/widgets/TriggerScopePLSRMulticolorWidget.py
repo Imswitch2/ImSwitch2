@@ -23,11 +23,13 @@ class TriggerScopePLSRMulticolorWidget(Widget):
         self.saveScanBtn = guitools.BetterPushButton('Save Scan')
         self.loadScanBtn = guitools.BetterPushButton('Load Scan')
 
-        autoStartRecLabel = QtWidgets.QLabel('Auto-start REC')
-        autoStartRecLabel.setAlignment(QtCore.Qt.AlignRight)
+        self.autoStartRecLabel = QtWidgets.QLabel('Auto-start REC')
+        self.autoStartRecLabel.setAlignment(QtCore.Qt.AlignRight)
+        autoStartRecLabel = self.autoStartRecLabel
         self.autoStartRec = QtWidgets.QCheckBox()
-        autoStopRecLabel = QtWidgets.QLabel('Auto-stop REC')
-        autoStopRecLabel.setAlignment(QtCore.Qt.AlignRight)
+        self.autoStopRecLabel = QtWidgets.QLabel('Auto-stop REC')
+        self.autoStopRecLabel.setAlignment(QtCore.Qt.AlignRight)
+        autoStopRecLabel = self.autoStopRecLabel
         self.autoStopRec = QtWidgets.QCheckBox()
         self.scanButton = guitools.BetterPushButton('Run Scan')
 
@@ -525,6 +527,15 @@ class TriggerScopePLSRMulticolorWidget(Widget):
 
     def setRepeatEnabled(self, enabled):
         pass
+
+    def hideChrome(self):
+        """Hide this panel's own scanner label, run/save/load buttons and
+        auto-REC controls so it can be embedded behind shared chrome (see
+        TriggerScopeScanWidget)."""
+        for obj in (self.scannerLabel, self.saveScanBtn, self.loadScanBtn,
+                    self.scanButton, self.autoStartRec, self.autoStopRec,
+                    self.autoStartRecLabel, self.autoStopRecLabel):
+            obj.hide()
 
     def setScanButtonChecked(self, checked):
         self.scanButton.setEnabled(not checked)

@@ -24,6 +24,17 @@ class MockRS232Driver:
         self.__logger.info(f"Writing to {self._settings['port']}: {arg}")
         pass
 
+    def read(self, *args, **kwargs):
+        """No-op read for the mock driver.
+
+        Returns None to mean "no data", matching how a real RS232 read
+        behaves on a timeout. Without this method, callers that poll read()
+        on a tight loop (e.g. the TriggerScope SerialMonitor, every few ms)
+        raise AttributeError on every poll and flood the log whenever a port
+        falls back to the mock because the real device could not be opened.
+        """
+        return None
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

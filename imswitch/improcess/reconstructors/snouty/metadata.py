@@ -1,13 +1,17 @@
 """
 ImSwitch HDF5 metadata → SNOUTY deskew parameters.
 
-Extracts geometry and scan parameters from DataObj.attrs (the HDF5 attributes
-dict) and returns a dict consumable by DeskewProcessor constructors.
+Extracts geometry and scan parameters from DataObj.attrs (the merged dict of
+HDF5 root attributes + dataset attributes) and returns a dict consumable by
+DeskewProcessor constructors.
 """
 
-import re
+import logging
 from typing import Any
 
+import numpy as np
+
+_logger = logging.getLogger(__name__)
 
 # Defaults from Mini_Recon
 DEFAULT_PARAMS = {
@@ -26,68 +30,146 @@ DEFAULT_PARAMS = {
 def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     """
     Extract SNOUTY deskew parameters from ImSwitch HDF5 attributes.
-    
+
     Args:
-        attrs: DataObj.attrs dict (HDF5 root attributes)
-    
+        attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes)
+
     Returns:
         Parameter dict with keys: c_px, alpha_deg, dy, sample_vx_size,
         camera_offset, flip_data, cycles, planes_in_cycle, restack.
         Missing keys are filled with Mini_Recon defaults.
-    
+
     Examples:
-        >>> attrs = {"Detector:Cam:Camera pixel size": 0.108}
+        >>> attrs = {"Detector:Cam:Param:Camera pixel size": 0.108}
         >>> snouty_params_from_attrs(attrs)
         {'c_px': 108.0, 'alpha_deg': 35.0, ...}
     """
     params = DEFAULT_PARAMS.copy()
-    
-    # Camera pixel size: search for "Detector:*:Camera pixel size" or "Detector:*:Pixel size"
-    # Convert µm → nm (×1000)
-    c_px_key_pattern = re.compile(r"^Detector:[^:]+:(Camera pixel size|Pixel size)$", re.IGNORECASE)
+    _found: dict[str, Any] = {}   # collects what was actually read, for debug log
+
+    _logger.debug(
+        "snouty_params_from_attrs: inspecting %d attribute keys", len(attrs)
+    )
+
+    # ------------------------------------------------------------------
+    # Camera pixel size  (c_px)
+    #
+    # Search priority:
+    #   1. Detector:*:Camera pixel size           — scalar µm (any depth)
+    #      e.g. "Detector:Orca:Camera pixel size"
+    #      e.g. "Detector:Orca:Param:Camera pixel size"   ← actual key in files
+    #   2. Detector:*:Pixel size                  — array µm [z, y, x]
+    #      e.g. "Detector:Orca:Pixel size": array([1., 0.1, 0.1])
+    #      lateral pixel = last element (x-axis)
+    #
+    # The regex uses a greedy middle segment (?:.*:)? to tolerate any number
+    # of intermediate sub-keys (e.g. "Param").
+    # ------------------------------------------------------------------
+    c_px_um = None
+
+    # Pass 1 — prefer keys whose last segment is "Camera pixel size"
     for key, value in attrs.items():
-        if c_px_key_pattern.match(key):
+        parts = key.split(":")
+        if (
+            len(parts) >= 3
+            and parts[0].lower() == "detector"
+            and parts[-1].lower() == "camera pixel size"
+        ):
             try:
-                params["c_px"] = float(value) * 1000.0  # µm → nm
+                arr = np.asarray(value, dtype=float)
+                c_px_um = float(arr.flat[-1])   # scalar or last element of array
+                _found["c_px_key"] = key
+                _found["c_px_raw_um"] = c_px_um
                 break
-            except (TypeError, ValueError):
-                pass
-    
-    # Scan step (dy): MS-RESOLFT_Scan:cycleStepSizeUm
-    # Convert µm → nm (×1000)
+            except (TypeError, ValueError) as exc:
+                _logger.debug("  c_px: could not convert %r=%r: %s", key, value, exc)
+
+    # Pass 2 — fallback to "Pixel size" array keys
+    if c_px_um is None:
+        for key, value in attrs.items():
+            parts = key.split(":")
+            if (
+                len(parts) >= 3
+                and parts[0].lower() == "detector"
+                and parts[-1].lower() == "pixel size"
+            ):
+                try:
+                    arr = np.asarray(value, dtype=float)
+                    # Array is (z, y, x) pixel sizes in µm; lateral = last element
+                    c_px_um = float(arr.flat[-1])
+                    _found["c_px_key"] = key
+                    _found["c_px_raw_um"] = c_px_um
+                    _found["c_px_note"] = "array fallback — took last element"
+                    break
+                except (TypeError, ValueError) as exc:
+                    _logger.debug("  c_px fallback: could not convert %r=%r: %s", key, value, exc)
+
+    if c_px_um is not None:
+        params["c_px"] = c_px_um * 1000.0   # µm → nm
+        _found["c_px_nm"] = params["c_px"]
+
+    # ------------------------------------------------------------------
+    # Scan step  (dy): MS-RESOLFT_Scan:cycleStepSizeUm  [µm → nm]
+    # ------------------------------------------------------------------
     dy_val = attrs.get("MS-RESOLFT_Scan:cycleStepSizeUm")
     if dy_val is not None:
         try:
             params["dy"] = float(dy_val) * 1000.0
-        except (TypeError, ValueError):
-            pass
-    
+            _found["dy_raw_um"] = float(dy_val)
+            _found["dy_nm"] = params["dy"]
+        except (TypeError, ValueError) as exc:
+            _logger.debug("  dy: could not convert %r: %s", dy_val, exc)
+
+    # ------------------------------------------------------------------
     # MS-RESOLFT cycles
+    # ------------------------------------------------------------------
     cycles_val = attrs.get("MS-RESOLFT_Scan:cycleSteps")
     if cycles_val is not None:
         try:
             params["cycles"] = int(cycles_val)
-        except (TypeError, ValueError):
-            pass
-    
-    # Planes in cycle
+            _found["cycles"] = params["cycles"]
+        except (TypeError, ValueError) as exc:
+            _logger.debug("  cycles: could not convert %r: %s", cycles_val, exc)
+
+    # ------------------------------------------------------------------
+    # Planes per cycle
+    # ------------------------------------------------------------------
     planes_val = attrs.get("MS-RESOLFT_Scan:roSteps")
     if planes_val is not None:
         try:
             params["planes_in_cycle"] = int(planes_val)
-        except (TypeError, ValueError):
-            pass
-    
+            _found["planes_in_cycle"] = params["planes_in_cycle"]
+        except (TypeError, ValueError) as exc:
+            _logger.debug("  planes_in_cycle: could not convert %r: %s", planes_val, exc)
+
+    # ------------------------------------------------------------------
     # Flip data: ScanStage:positive_direction
+    # The attribute is usually a bool array; index 0 is the primary scan axis.
+    # ------------------------------------------------------------------
     flip_val = attrs.get("ScanStage:positive_direction")
     if flip_val is not None:
         try:
-            # Convert scalar or array to bool
-            import numpy as np
             params["flip_data"] = bool(np.asarray(flip_val).flat[0])
-        except (TypeError, ValueError, IndexError):
-            pass
-    
+            _found["flip_data"] = params["flip_data"]
+        except (TypeError, ValueError, IndexError) as exc:
+            _logger.debug("  flip_data: could not convert %r: %s", flip_val, exc)
+
+    # ------------------------------------------------------------------
+    # Summary debug log
+    # ------------------------------------------------------------------
+    _logger.debug(
+        "snouty_params_from_attrs: resolved from file: %s",
+        {k: v for k, v in _found.items()},
+    )
+    _logger.debug(
+        "snouty_params_from_attrs: final params: "
+        "c_px=%.1f nm  alpha_deg=%.1f°  dy=%.1f nm  sample_vx=%.1f nm  "
+        "camera_offset=%.1f ADU  flip=%s  cycles=%d  planes/cycle=%d",
+        params["c_px"], params["alpha_deg"], params["dy"], params["sample_vx_size"],
+        params["camera_offset"], params["flip_data"],
+        params["cycles"], params["planes_in_cycle"],
+    )
+
     return params
 
 

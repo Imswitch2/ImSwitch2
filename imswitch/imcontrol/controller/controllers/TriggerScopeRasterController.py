@@ -169,6 +169,13 @@ class TriggerScopeRasterController(ImConWidgetController):
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
             if not sigScanStartingEmitted:
                 self.emitScanSignal(self._commChannel.sigScanStarting)
+            # Tell the LaserController which lasers participate in this scan so
+            # it can arm them (digital-modulation / external-control mode) and
+            # leave the rest off. The TriggerScope firmware runs the scan
+            # autonomously, so unlike the Advanced/Nidaq path this signal must
+            # be emitted here rather than from the DAQ manager.
+            self.emitScanSignal(self._commChannel.sigScanBuilt,
+                                self._getScanLaserDevices())
             triggerscopeParameters = self.getTriggerscopeParameters()
             self._master.scanManager.runScan(triggerscopeParameters, scan_type='rasterScan')
         except Exception:
@@ -181,6 +188,13 @@ class TriggerScopeRasterController(ImConWidgetController):
             self.scanFailed()
 
     def scanDone(self):
+        # All TriggerScope scan controllers share the board-level sigScanDone, so
+        # every one of them receives this when the firmware reports end-of-scan.
+        # Only the controller that actually started the scan should tear down;
+        # the rest must ignore it (their isRunning is False) to avoid redundant
+        # laser disarm rounds and duplicate sigScanEnded emissions.
+        if not self.isRunning:
+            return
         self._logger.debug('Scan done')
         self.isRunning = False
         if not self._widget.repeatEnabled():
@@ -298,6 +312,17 @@ class TriggerScopeRasterController(ImConWidgetController):
         self.getParameters()
         for key, value in self._digitalParameterDict.items():
             self.setSharedAttr(_attrCategoryTTL, key, value)
+
+    def _getScanLaserDevices(self):
+        """Return the names of the lasers included in this scan.
+
+        These are the TTL-included devices that are also registered as
+        lasers in the setup. The LaserController uses this list (via
+        sigScanBuilt) to arm exactly these lasers for the scan.
+        """
+        self.getParameters()
+        return [d for d in self._digitalParameterDict['target_device']
+                if d in self._setupInfo.lasers]
 
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters."""

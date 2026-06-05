@@ -1,6 +1,9 @@
+import warnings
+
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
 from . import guitools
 
@@ -16,6 +19,7 @@ class ReconstructionView(QtWidgets.QFrame):
     # Methods
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._logger = initLogger(self)
 
         # Image Widget
         naparitools.addNapariGrayclipColormap()
@@ -140,16 +144,68 @@ class ReconstructionView(QtWidgets.QFrame):
         return self.imgLayer.data
 
     def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px"):
-        self.imgLayer.data = im
-        self.napariViewer.dims.axis_labels = tuple(axisLabels)
+        im = np.asarray(im)
+        old_ndim = self.imgLayer.data.ndim
+        new_ndim = im.ndim
         if axisScales is None:
-            axisScales = [1.0 for _ in range(np.asarray(im).ndim)]
+            axisScales = [1.0] * new_ndim
+
+        self._logger.debug(
+            "setImage: shape=%s  ndim %d→%d  labels=%s  scales=%s  unit=%s",
+            im.shape, old_ndim, new_ndim,
+            list(axisLabels), [f"{s:.4g}" for s in axisScales], scaleUnit,
+        )
+
+        # --- Fix napari 0.7 ndim-change bug -----------------------------------
+        # VispyBaseLayer._world_to_layer_units_scale is a tuple set ONCE at
+        # layer construction as (1,)*ndim and is NEVER updated when layer.data
+        # ndim changes.  The set_data event fires _on_matrix_change which
+        # indexes _world_to_layer_units_scale with dims_displayed for the NEW
+        # ndim → IndexError when ndim grows (e.g. 2D placeholder → 3D result).
+        #
+        # Fix: reach into the vispy layer and pre-size the tuple to match the
+        # incoming ndim before we touch layer.data so the callback is safe.
+        # Access path confirmed by napari's own test suite:
+        #   viewer.window._qt_viewer.canvas.layer_to_visual[layer]
+        if old_ndim != new_ndim:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    canvas = self.napariViewer.window._qt_viewer.canvas
+                vispy_layer = canvas.layer_to_visual[self.imgLayer]
+                old_wts = vispy_layer._world_to_layer_units_scale
+                vispy_layer._world_to_layer_units_scale = (1,) * new_ndim
+                self._logger.debug(
+                    "setImage: patched vispy _world_to_layer_units_scale  "
+                    "len %d → len %d  (was %s)",
+                    len(old_wts), new_ndim, old_wts,
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "setImage: could not patch vispy _world_to_layer_units_scale "
+                    "(ndim %d→%d): %s — IndexError may still fire in napari callback",
+                    old_ndim, new_ndim, exc,
+                )
+
+        # Set data — fires set_data → _on_matrix_change (safe now)
+        self.imgLayer.data = im
+
+        # Set scale after data so layer.ndim is already correct
         try:
             self.imgLayer.scale = tuple(axisScales)
+        except Exception as exc:
+            self._logger.warning("setImage: could not set layer scale %s: %s", axisScales, exc)
+
+        try:
+            self.napariViewer.dims.axis_labels = tuple(axisLabels)
+        except Exception as exc:
+            self._logger.warning("setImage: could not set axis_labels %s: %s", axisLabels, exc)
+
+        try:
             self.imgLayer.metadata["scale_unit"] = scaleUnit
             self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
-        except Exception:
-            pass
+        except Exception as exc:
+            self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
 
     def clearImage(self):
         self.imgLayer.data = np.zeros((1, 1))

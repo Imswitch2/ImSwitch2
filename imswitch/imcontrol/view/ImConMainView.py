@@ -244,6 +244,7 @@ _DOCK_DISPLAY_NAMES = {
     'TriggerScopePLSR': 'TriggerScope pLS-RESOLFT',
     'TriggerScopeGalvoDetection': 'TriggerScope Galvo Detection',
     'TriggerScopePLSRMulticolor': 'TriggerScope pLS-RESOLFT Multicolor',
+    'TriggerScopeScan': 'TriggerScope Scan',
     'TriggerScopeLSXYR': 'TriggerScope LS-XY-RESOLFT',
     'LeicaStand': 'Stand',
     'Settings': 'Detector Settings',
@@ -288,6 +289,7 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'TriggerScopePLSR':            _DockInfo(name='TriggerScope pLS-RESOLFT',               yPosition=3),
     'TriggerScopeGalvoDetection':  _DockInfo(name='TriggerScope Galvo Detection',           yPosition=3),
     'TriggerScopePLSRMulticolor':  _DockInfo(name='TriggerScope pLS-RESOLFT Multicolor',    yPosition=3),
+    'TriggerScopeScan':            _DockInfo(name='TriggerScope Scan',                       yPosition=3),
     'TriggerScopeLSXYR':           _DockInfo(name='TriggerScope LS-XY-RESOLFT',             yPosition=3),
 }
 _DEFAULT_LEFT_DOCK_INFOS = {

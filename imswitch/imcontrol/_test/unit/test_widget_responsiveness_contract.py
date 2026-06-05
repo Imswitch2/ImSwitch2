@@ -141,6 +141,35 @@ def test_widget_sizing_audit():
                 'Consider reviewing if this breaks small-screen usability.'
             ),
         },
+        # TriggerScope-family scanner panels: dense fixed-column parameter
+        # forms wrapped in a vertical-only scroll area. The min-width keeps all
+        # parameter columns visible and the horizontal scrollbar is disabled by
+        # design (vertical scrolling only). Reviewed: legitimate for these
+        # instrument-control panels.
+        'LightSheetMulticolorWidget.py': {
+            'scrollArea.setMinimumWidth(': 'Fixed-column scanner parameter panel; keep columns visible.',
+            'ScrollBarAlwaysOff': 'Vertical-only scroll for the scanner parameter panel.',
+        },
+        'TriggerScopeGalvoDetectionWidget.py': {
+            'scrollArea.setMinimumWidth(': 'Fixed-column scanner parameter panel; keep columns visible.',
+            'ScrollBarAlwaysOff': 'Vertical-only scroll for the scanner parameter panel.',
+        },
+        'TriggerScopeLSXYRWidget.py': {
+            'scrollArea.setMinimumWidth(': 'Fixed-column scanner parameter panel; keep columns visible.',
+            'ScrollBarAlwaysOff': 'Vertical-only scroll for the scanner parameter panel.',
+        },
+        'TriggerScopePLSRMulticolorWidget.py': {
+            'scrollArea.setMinimumWidth(': 'Fixed-column scanner parameter panel; keep columns visible.',
+            'ScrollBarAlwaysOff': 'Vertical-only scroll for the scanner parameter panel.',
+        },
+        'TriggerScopePLSRWidget.py': {
+            'scrollArea.setMinimumWidth(': 'Fixed-column scanner parameter panel; keep columns visible.',
+            'ScrollBarAlwaysOff': 'Vertical-only scroll for the scanner parameter panel.',
+        },
+        'TriggerScopeRasterWidget.py': {
+            'scrollArea.setMinimumWidth(': 'Fixed-column scanner parameter panel; keep columns visible.',
+            'ScrollBarAlwaysOff': 'Vertical-only scroll for the scanner parameter panel.',
+        },
     }
 
     violations = []

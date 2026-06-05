@@ -231,17 +231,30 @@ class LaserController(ImConWidgetController):
             self.setLaserValue(laserName, laserPresetInfo.value)
 
     def scanChanged(self, isScanning):
-        """ Handles what happens when a scan is started/stopped. """
+        """ Handles what happens when a scan is started/stopped.
+
+        Arming individual lasers is the job of :meth:`scanBuilt`, which
+        receives the authoritative list of lasers participating in the scan.
+        scanChanged only handles UI editability, the optional scan-default
+        power preset, and the safe teardown (disarming every laser) when the
+        scan ends. This makes the scan module's device list the single source
+        of truth for which lasers emit — there is no "all lasers" pre-arm
+        window and no zero-power preset workaround is needed.
+        """
 
         self.is_scanning = isScanning
         if not isScanning:
-            # Scan sequence finished — re-arm the one-shot scanBuilt force-off.
+            # Scan sequence finished — re-arm the one-shot scanBuilt logic.
             self._scanBuiltApplied = False
 
         for lName, _ in self._master.lasersManager:
             self._widget.setLaserEditable(lName, not isScanning)
-            self._master.lasersManager[lName].setScanModeActive(isScanning)
-        #self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(isScanning))
+            if not isScanning:
+                # Teardown: disarm every laser so none is left in scan
+                # (digital-modulation / external-control) mode after the scan.
+                # Arming is deferred to scanBuilt; scanChanged only ever
+                # disarms, never arms.
+                self._master.lasersManager[lName].setScanModeActive(False)
 
         defaultScanPresetName = self._setupInfo.defaultLaserPresetForScan
         if defaultScanPresetName in self._setupInfo.laserPresets:
@@ -255,36 +268,50 @@ class LaserController(ImConWidgetController):
                 self.presetBeforeScan = None
 
     def scanBuilt(self, deviceList):
-        """ Force-disable lasers not in the scan's TTL device list.
-        The scan module's TTL device list is the sole authority for emission.
+        """ Arm exactly the lasers participating in the scan.
 
-        scanBuilt fires on every repeated scan frame; the hardware force-off
-        runs only once per scan sequence (guarded by _scanBuiltApplied) so
-        blocking serial laser commands are not re-issued every frame. """
+        The scan module's device list (delivered via sigScanBuilt) is the sole
+        authority for which lasers emit:
+
+        - Lasers in the list are armed for TTL-gated emission at their current
+          widget power (``setScanModeActive(True)``).
+        - Lasers not in the list that the scan can drive via the DAQ /
+          TriggerScope (they have an analog channel or a digital line) are
+          force-disabled.
+        - Pure RS232 lasers with no scan line are left in the state the user
+          set, since the scan cannot gate them.
+
+        The blocking hardware commands run once per scan sequence (guarded by
+        ``_scanBuiltApplied``) so serial commands are not re-issued on every
+        repeated scan frame; UI editability is refreshed cheaply every call. """
         for lName, _ in self._master.lasersManager:
-            if lName not in deviceList:
-                # Cheap UI update — safe to repeat every frame.
-                self._widget.setLaserEditable(lName, True)
-                if self._scanBuiltApplied:
-                    continue
-                # Only force off lasers the scan can actually drive via the
-                # DAQ (analog or digital channel). Pure RS232-controlled
-                # lasers (e.g. AA AOTF) never appear in deviceList and cannot
-                # be gated by the DAQ — leave them in the state the user set,
-                # otherwise every scan frame disables them.
-                info = self._setupInfo.lasers.get(lName)
-                hasDaqChannel = info is not None and (
-                    info.getAnalogChannel() is not None
-                    or info.getDigitalLine() is not None
-                )
-                if not hasDaqChannel:
-                    continue
-                # Disarm and force off lasers not participating in this scan
-                self._master.lasersManager[lName].setScanModeActive(False)
-                self._master.lasersManager[lName].setEnabled(False)
-                # Sync the UI toggle silently so it reflects the forced-off
-                # hardware state without re-triggering toggleLaser.
-                self._widget.setLaserActive(lName, False, emitSignal=False)
+            inScan = lName in deviceList
+            # Cheap UI update — safe to repeat on every frame.
+            self._widget.setLaserEditable(lName, not inScan)
+            if self._scanBuiltApplied:
+                continue
+            if inScan:
+                # Arm: scan/digital-modulation mode at the laser's current
+                # widget power. Emission stays gated by the scanner's TTL line.
+                self._master.lasersManager[lName].setScanModeActive(True)
+                continue
+            # Not participating. Only force off lasers the scan can actually
+            # drive via the DAQ/TriggerScope (analog channel or digital line).
+            # Pure RS232-controlled lasers with no scan line cannot be gated,
+            # so we leave them in the state the user set.
+            info = self._setupInfo.lasers.get(lName)
+            hasScanChannel = info is not None and (
+                info.getAnalogChannel() is not None
+                or info.getDigitalLine() is not None
+            )
+            if not hasScanChannel:
+                continue
+            # Disarm and force off lasers not participating in this scan.
+            self._master.lasersManager[lName].setScanModeActive(False)
+            self._master.lasersManager[lName].setEnabled(False)
+            # Sync the UI toggle silently so it reflects the forced-off
+            # hardware state without re-triggering toggleLaser.
+            self._widget.setLaserActive(lName, False, emitSignal=False)
         self._scanBuiltApplied = True
 
     def attrChanged(self, key, value):
@@ -434,7 +461,7 @@ class LaserController(ImConWidgetController):
             if selected_preset and selected_preset in self._setupInfo.laserPresets:
                 self._widget.setCurrentPreset(selected_preset)
 
-            self._logger.info('Widget state restored successfully')
+            self._logger.debug('Widget state restored successfully')
 
         except Exception as e:
             self._logger.error(f'Failed to restore widget state: {e}')

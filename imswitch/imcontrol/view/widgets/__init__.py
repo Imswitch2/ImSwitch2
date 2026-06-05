@@ -46,6 +46,7 @@ _WIDGET_MODULES = {
     "TriggerScopeRasterWidget": "TriggerScopeRasterWidget",
     "TriggerScopePLSRWidget": "TriggerScopePLSRWidget",
     "TriggerScopePLSRMulticolorWidget": "TriggerScopePLSRMulticolorWidget",
+    "TriggerScopeScanWidget": "TriggerScopeScanWidget",
     "TriggerScopeGalvoDetectionWidget": "TriggerScopeGalvoDetectionWidget",
     "ULensesWidget": "ULensesWidget",
     "ViewWidget": "ViewWidget",

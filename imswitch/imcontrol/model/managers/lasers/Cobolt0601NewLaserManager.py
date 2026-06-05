@@ -54,6 +54,16 @@ class Cobolt0601NewLaserManager(LaserManager):
         self._modulation_power_mw = float(
             laserInfo.managerProperties.get('modulationPowerMw', 5.0)
         )
+        # Emission-control strategy (opt-in per laser):
+        #   'master' (default) -> l0/l1 master switch. Unchanged behavior for
+        #     every existing setup.
+        #   'pause' -> start the laser ONCE with @cob1 at init, then toggle the
+        #     beam with las:paus 1 / las:paus 0 (pause/resume) and NEVER send
+        #     l0. Needed for OEM-locked firmware (e.g. 1.2.1.0) where l0 aborts
+        #     the laser into a state only a physical interlock edge can clear.
+        self._pause_mode = str(
+            laserInfo.managerProperties.get('emissionControl', 'master')
+        ).lower() == 'pause'
 
         # Cached state — power setpoint chosen by GUI/script; only flushed
         # to the laser when _enabled is True.
@@ -175,13 +185,13 @@ class Cobolt0601NewLaserManager(LaserManager):
 
         if scpi_ok:
             self._scpi = True
-            self.__logger.info(
+            self.__logger.debug(
                 f'Cobolt {self._port}: SCPI firmware detected; '
                 f'using SCPI command set.'
             )
         elif ok_legacy_probe:
             self._scpi = False
-            self.__logger.info(
+            self.__logger.debug(
                 f'Cobolt {self._port}: legacy firmware detected; '
                 f'using em/slmp/sdmes/cp command set.'
             )
@@ -248,21 +258,55 @@ class Cobolt0601NewLaserManager(LaserManager):
         ERROR. The mode-entry is best-effort because the master switch
         already guarantees the beam is dark.
         """
-        self._cmd_or_warn('@cobas 0')
-        self._enter_modulation_mode(self._modulation_power_mw)
-
-        ok_off, _ = self._cmd('l0')
-        if not ok_off:
-            self.__logger.error(
-                f'CRITICAL: master-off l0 failed during safe-state init for '
-                f'Cobolt {self._port}. Verify the controller is responsive '
-                f'before opening the shutter.'
+        if self._pause_mode:
+            # SAFETY: do NOT send '@cob1' here. On this OEM-locked firmware
+            # '@cob1' does not start the laser immediately (the controller is in
+            # standby until a physical interlock edge) — instead it PRIMES a
+            # pending turn-on that fires the moment the operator cycles the
+            # interlock at startup. The laser would then emit by itself even
+            # though it is "off" in the GUI. We therefore leave the laser in the
+            # modulation safe state only: PowerModulation + digital gate on, so
+            # with the scanner's TTL idle-low the beam is held dark, plus
+            # 'las:paus 1'. The once-per-start interlock cycle then only CLEARS
+            # the standby state; light is produced solely when the user turns the
+            # laser on in the GUI (setEnabled -> las:paus 0 + constant power).
+            #
+            # TODO(640 / OEM-locked Cobolt fw 1.2.1.0): the once-per-start
+            # interlock cycle itself is still required because the controller
+            # parks in a standby/aborted state that only a physical interlock
+            # edge clears, and '@cobas' (autostart config) is permission-denied
+            # over serial. A real fix needs vendor reconfiguration of the
+            # controller. Revisit if Cobolt/HUBNER provide an unlock/restart.
+            self._enter_modulation_mode(self._modulation_power_mw)
+            ok_pause, _ = self._cmd('las:paus 1')
+            if not ok_pause:
+                self.__logger.error(
+                    f'CRITICAL: emission-pause (las:paus 1) failed during '
+                    f'safe-state init for Cobolt {self._port}. Verify the '
+                    f'controller is responsive before opening the shutter.'
+                )
+            self._enabled = False
+            self.__logger.debug(
+                f'Cobolt {self._port} initialised in safe state '
+                f'(SCPI pause mode: modulation-gated + paused, autostart NOT '
+                f'armed — no emission until turned on in the GUI).'
             )
-        self._enabled = False
-        self.__logger.info(
-            f'Cobolt {self._port} initialised in safe state '
-            f'({"SCPI" if self._scpi else "legacy"} commands, master off).'
-        )
+        else:
+            self._cmd_or_warn('@cobas 0')
+            self._enter_modulation_mode(self._modulation_power_mw)
+
+            ok_off, _ = self._cmd('l0')
+            if not ok_off:
+                self.__logger.error(
+                    f'CRITICAL: master-off l0 failed during safe-state init for '
+                    f'Cobolt {self._port}. Verify the controller is responsive '
+                    f'before opening the shutter.'
+                )
+            self._enabled = False
+            self.__logger.debug(
+                f'Cobolt {self._port} initialised in safe state '
+                f'({"SCPI" if self._scpi else "legacy"} commands, master off).'
+            )
 
     def setEnabled(self, enabled: bool) -> None:
         """ImSwitch on/off toggle. Fail-closed: ``_enabled`` is only
@@ -270,7 +314,14 @@ class Cobolt0601NewLaserManager(LaserManager):
 
         - ``False`` → modulation mode + ``l0`` (beam cannot emit).
         - ``True``  → constant-power mode at the cached setpoint + ``l1``.
+
+        In ``emissionControl='pause'`` mode the on/off is delegated to
+        :meth:`_set_enabled_pause`, which pauses/resumes the beam without ever
+        sending ``l0`` (see ``__init__``).
         """
+        if self._pause_mode:
+            self._set_enabled_pause(enabled)
+            return
         if enabled:
             ok_power = True
             if self._setpoint_mw > 0:
@@ -310,6 +361,43 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._enter_modulation_mode(self._modulation_power_mw)
             self._enabled = False
 
+    def _set_enabled_pause(self, enabled: bool) -> None:
+        """On/off for ``emissionControl='pause'``.
+
+        The laser was started once at init (``@cob1``) and stays started; here
+        we only resume (``las:paus 0``) or pause (``las:paus 1``) the beam, so
+        the OEM interlock-re-arm is never triggered. Fail-closed like the
+        master path: ``_enabled`` only goes True if the whole on-sequence
+        succeeded; an off that fails to pause leaves ``_enabled`` True so the
+        caller knows the beam may still be live.
+        """
+        if enabled:
+            ok_resume, _ = self._cmd('las:paus 0')
+            ok_mode = self._enter_constant_power()
+            ok_power = True
+            if self._setpoint_mw > 0:
+                ok_power = self._set_cw_power_mw(self._setpoint_mw)
+            if not (ok_resume and ok_mode and ok_power):
+                self.__logger.error(
+                    f'Cobolt {self._port} failed to enable in pause mode '
+                    f'(resume_ok={ok_resume}, mode_ok={ok_mode}, '
+                    f'power_ok={ok_power}); pausing emission.'
+                )
+                self._cmd_or_warn('las:paus 1')
+                self._enabled = False
+                return
+            self._enabled = True
+        else:
+            ok_pause, _ = self._cmd('las:paus 1')
+            if not ok_pause:
+                self.__logger.error(
+                    f'CRITICAL: Cobolt {self._port} emission-pause '
+                    f'(las:paus 1) failed; _enabled remains True. Verify '
+                    f'shutter state manually.'
+                )
+                return
+            self._enabled = False
+
     def setValue(self, power) -> None:
         """Update the constant-power setpoint.
 
@@ -340,7 +428,13 @@ class Cobolt0601NewLaserManager(LaserManager):
             mod_power = self._setpoint_mw if self._setpoint_mw > 0 \
                 else self._modulation_power_mw
             self._enter_modulation_mode(mod_power)
-            self._cmd('l1')   # master on; TTL gates the actual emission
+            if self._pause_mode:
+                # Laser is already started; just un-pause. The digital gate
+                # (las:pm:dig:ena 1, set by _enter_modulation_mode) keeps the
+                # beam dark until the scanner drives the TTL line HIGH.
+                self._cmd('las:paus 0')
+            else:
+                self._cmd('l1')   # master on; TTL gates the actual emission
         else:
             # Leave scan mode — back to the saved enable state.
             self.setEnabled(self._enabled)
@@ -370,9 +464,15 @@ class Cobolt0601NewLaserManager(LaserManager):
             return self._modulation_power_mw
 
     def finalize(self) -> None:
-        """Drive the laser to a hard-off state on shutdown."""
+        """Drive the laser to a safe-off state on shutdown."""
         try:
-            self._cmd('l0')
+            if self._pause_mode:
+                # Pause the beam but keep the laser STARTED. Sending l0 here
+                # would abort it into the interlock-re-arm state, forcing a
+                # physical re-arm at the next session start.
+                self._cmd('las:paus 1')
+            else:
+                self._cmd('l0')
         except Exception:
             self.__logger.error(
                 f'Could not turn off Cobolt {self._port} during finalize:\n'
