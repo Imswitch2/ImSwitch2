@@ -212,7 +212,7 @@ class SerialMonitor(Worker):
             # Diagnostic: log exactly what came off the wire, with repr() so any
             # invisible terminators (\r, \n) are visible. This is how we tell
             # what the firmware actually sends at end-of-scan.
-            self.__logger.info('[TriggerScope RX] %r', msg)
+            self.__logger.debug('[TriggerScope RX] %r', msg)
             # Normalise line endings/whitespace before matching. The RS232
             # layer's read() ignores the requested termination and relies on
             # the port's configured recv_termination, which can leave a
