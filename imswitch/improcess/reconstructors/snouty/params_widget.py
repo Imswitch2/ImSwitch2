@@ -87,22 +87,25 @@ class SnoutyParamsWidget(QtWidgets.QWidget):
             'restack': acq.param('Restack').value()
         }
     
-    def set_from_attrs(self, attrs: dict) -> None:
+    def load_from_attrs(self, attrs: dict) -> None:
         """
         Load parameters from HDF5 attributes (metadata auto-detection).
-        
+
+        Called automatically by ImProcessMainViewController.currentDataChanged
+        whenever a new data file is selected.
+
         Args:
-            attrs: DataObj.attrs dict (HDF5 root attributes)
+            attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes)
         """
         params = snouty_params_from_attrs(attrs)
-        
+
         # Update geometry
         geom = self.p.param('Geometry')
         geom.param('Camera pixel size').setValue(params['c_px'])
         geom.param('Tilt angle').setValue(params['alpha_deg'])
         geom.param('Scan step').setValue(params['dy'])
         geom.param('Output voxel size').setValue(params['sample_vx_size'])
-        
+
         # Update acquisition
         acq = self.p.param('Acquisition')
         acq.param('Camera offset').setValue(params['camera_offset'])
@@ -110,6 +113,9 @@ class SnoutyParamsWidget(QtWidgets.QWidget):
         acq.param('Cycles').setValue(params['cycles'])
         acq.param('Planes per cycle').setValue(params['planes_in_cycle'])
         acq.param('Restack').setValue(params['restack'])
+
+    # Backward-compatible alias used by unit tests and any direct callers.
+    set_from_attrs = load_from_attrs
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

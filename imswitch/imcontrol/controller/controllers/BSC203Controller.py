@@ -6,8 +6,8 @@ from ..basecontrollers import ImConWidgetController
 STEPS_PER_REV = 409600
 REV_PER_MM = 2
 
-Xchan = 1
-Ychan = 0
+Xchan = 0   # physical X motor is on bay 0
+Ychan = 1   # physical Y motor is on bay 1 (APT-forward = physical-negative on this bay)
 Zchan = 2
 
 
@@ -45,6 +45,7 @@ class BSC203Controller(ImConWidgetController):
         self._widget.sigHomeAll.connect(self.homeAll)
         self._widget.sigKeyPressed.connect(self.keyPressed)
         self._widget.sigKeyReleased.connect(self.keyReleased)
+        self._widget.sigFocusLost.connect(self.stopAll)
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.getPosition_mm)
@@ -141,6 +142,11 @@ class BSC203Controller(ImConWidgetController):
         self._widget.pos0EditLabel.setText(str(x * 1000))
         self._widget.pos1EditLabel.setText(str(y * 1000))
         self._widget.pos2EditLabel.setText(str(z * 1000))
+        # Keep manager._position in sync with hardware so the Positioner widget
+        # always shows the real hardware position, not a stale tracked value.
+        self._stageManager._position['X'] = x * 1000
+        self._stageManager._position['Y'] = y * 1000
+        self._stageManager._position['Z'] = z * 1000
         return [x, y, z]
 
     # ------------------------------------------------------------------
@@ -150,15 +156,25 @@ class BSC203Controller(ImConWidgetController):
     def keyPressed(self, event):
         if event.isAutoRepeat():
             return
+        # Ctrl+Arrow (and Ctrl+Q/A) are claimed by the PositionerWidget as
+        # discrete step shortcuts.  If we also start a continuous velocity move
+        # here the stage runs until key-release and can travel hundreds of µm
+        # instead of the intended small step.  Bail out whenever any modifier
+        # is held so the two systems never fight each other.
+        if event.modifiers() & QtCore.Qt.ControlModifier:
+            return
         key = event.key()
+        # Bay 0 (X): APT-forward = physical positive  → True=+X, False=-X
+        # Bay 1 (Y): APT-forward = physical negative  → False=+Y, True=-Y  (inverted)
+        # Bay 2 (Z): APT-forward = physical positive  → True=+Z, False=-Z
         if key == QtCore.Qt.Key_Right:
-            self.move_constant(False, Xchan)
-        elif key == QtCore.Qt.Key_Left:
             self.move_constant(True, Xchan)
+        elif key == QtCore.Qt.Key_Left:
+            self.move_constant(False, Xchan)
         elif key == QtCore.Qt.Key_Up:
-            self.move_constant(True, Ychan)
-        elif key == QtCore.Qt.Key_Down:
             self.move_constant(False, Ychan)
+        elif key == QtCore.Qt.Key_Down:
+            self.move_constant(True, Ychan)
         elif key == QtCore.Qt.Key_Q:
             self.move_constant(True, Zchan)
         elif key == QtCore.Qt.Key_A:
@@ -166,6 +182,10 @@ class BSC203Controller(ImConWidgetController):
 
     def keyReleased(self, event):
         if event.isAutoRepeat():
+            return
+        # Mirror the modifier guard from keyPressed: if Ctrl is held we never
+        # started a velocity move, so there is nothing to stop here either.
+        if event.modifiers() & QtCore.Qt.ControlModifier:
             return
         key = event.key()
         if key in (QtCore.Qt.Key_Right, QtCore.Qt.Key_Left):

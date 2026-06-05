@@ -342,8 +342,8 @@ class NidaqManager(SignalInterface):
                 clockDO = scanclock
                 if len(AOsignals) > 0:
                     scanSampsInScan = len(AOsignals[0])
-                    self.__logger.info(f'Total scan samples in scan: {scanSampsInScan}')
-                    self.__logger.info(f'Total scan time: {scanSampsInScan / 0.1e6} s')
+                    self.__logger.debug(f'Total scan samples in scan: {scanSampsInScan}')
+                    self.__logger.debug(f'Total scan time: {scanSampsInScan / 0.1e6} s')
                     self.aoTask = self.__createChanAOTask('ScanAOTask', AOchannels,
                                                           acquisitionTypeFinite, scanclock,
                                                           100000, min_val=-10, max_val=10,
@@ -397,7 +397,7 @@ class NidaqManager(SignalInterface):
                         self.tasks['ao'].start()
                         self.aoTaskWaiter.start()
                 self.sigScanStarted.emit()
-                self.__logger.info('Nidaq scan started!')
+                self.__logger.debug('Nidaq scan started!')
 
     def stopTask(self, taskName):
         self.tasks[taskName].stop()
@@ -419,7 +419,7 @@ class NidaqManager(SignalInterface):
     def scanDone(self):
         self.signalSent = True
         self.busy = False
-        self.__logger.info('Nidaq scan finished!')
+        self.__logger.debug('Nidaq scan finished!')
         self.sigScanDone.emit()
 
     def finishExternalMock(self):

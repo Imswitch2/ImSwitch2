@@ -10,6 +10,7 @@ class BSC203Widget(Widget):
     sigHomeAll = QtCore.Signal()
     sigKeyPressed = QtCore.Signal(object)
     sigKeyReleased = QtCore.Signal(object)
+    sigFocusLost = QtCore.Signal()  # emitted when widget loses keyboard focus
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -92,3 +93,14 @@ class BSC203Widget(Widget):
 
     def keyReleaseEvent(self, event):
         self.sigKeyReleased.emit(event)
+
+    def focusOutEvent(self, event):
+        """Stop all stage motion when the widget loses keyboard focus.
+
+        Qt does not deliver keyReleaseEvent if a key is held while focus
+        moves to another widget.  Without this guard a velocity move started
+        by an arrow-key press would keep running until it hits the hardware
+        end-stop (~-2500 µm).
+        """
+        self.sigFocusLost.emit()
+        super().focusOutEvent(event)

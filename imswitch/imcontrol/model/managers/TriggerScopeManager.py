@@ -187,6 +187,13 @@ class SerialMonitor(Worker):
             # poll raised TypeError and the monitor never read a single byte —
             # "Scan done" was never seen and scans hung. Call it with no args.
             msg = self._rs232Manager.read()
+        except (OSError, AttributeError):
+            # The serial resource was closed during application shutdown while
+            # a timer callback was still pending. Stop the timer and exit
+            # quietly — this is expected during teardown, not a real error.
+            if self._vtimer is not None:
+                self._vtimer.stop()
+            return
         except (VisaIOError, InvalidSession, SerialException, TypeError) as exc:
             # A read timeout (no data within the port timeout) is normal while
             # the firmware is busy/idle. Log it occasionally so we can confirm

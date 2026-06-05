@@ -1,11 +1,13 @@
 import numpy as np
 
+from imswitch.imcommon.model import initLogger
 from .basecontrollers import ImProcessWidgetController
 
 
 class ReconstructionViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._logger = initLogger(self)
 
         self._currItemInd = None
         self._prevViewId = None
@@ -90,6 +92,15 @@ class ReconstructionViewController(ImProcessWidgetController):
         axisScales = np.array(result.axis_scales, dtype=float)[list(mode.transpose)]
         self._transposeOrder = list(mode.transpose)
 
+        self._logger.debug(
+            "_setProcessingResultSlice: result=%s  view_mode=%s  "
+            "data.shape=%s  transposed.shape=%s  "
+            "axis_labels=%s  axis_scales=%s  scale_unit=%s",
+            type(result).__name__, mode.name,
+            result.data.shape, im.shape,
+            list(axisLabels), [f"{s:.4g}" for s in axisScales], result.scale_unit,
+        )
+
         self._widget.setImage(im, axisLabels, axisScales, result.scale_unit)
         if levels is not None:
             self._widget.setImageDisplayLevels(*levels)
@@ -110,7 +121,9 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.setViewModes(None)
 
     def getViewId(self):
+        """Return a hashable ID for the current view, used only for change detection."""
         viewName = self._widget.getViewName()
+        # Legacy numeric IDs for the three hard-coded standard views.
         if viewName == 'standard':
             return 3
         elif viewName == 'bottom':
@@ -118,7 +131,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         elif viewName == 'left':
             return 5
         else:
-            raise ValueError(f'Unsupported view "{viewName}"')
+            # Custom view mode from ProcessingResult.view_modes (e.g. "XY", "XZ", "YZ").
+            # Return the name itself — getViewId() is only compared for equality in fullUpdate.
+            self._logger.debug("getViewId: custom view mode %r → using name as ID", viewName)
+            return viewName
 
     def axisStepChanged(self, newAxisStep):
         baseAxisIndex = self._transposeOrder.index(1)

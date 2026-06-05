@@ -132,6 +132,7 @@ class DeskewProcessorGPU:
 
     def process_stack(self, stack: 'cp.ndarray') -> 'cp.ndarray':
         """(planes, cam_y, cam_x) → (sample_z, sample_y, sample_x)"""
+        stack = cp.asarray(stack)
         if self.flip_data:
             stack = stack[::-1]
         data = cp.transpose(stack, (1, 0, 2)).astype(cp.float32)
@@ -163,6 +164,7 @@ class DeskewProcessorGPU:
 
     def process_projections(self, stack: 'cp.ndarray') -> dict:
         """Scatter to 3-D canvas then max-project; no FFT convolution."""
+        stack = cp.asarray(stack)
         if self.flip_data:
             stack = stack[::-1]
         data = cp.transpose(stack, (1, 0, 2)).astype(cp.float32)

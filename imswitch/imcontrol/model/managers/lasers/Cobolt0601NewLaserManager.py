@@ -185,13 +185,13 @@ class Cobolt0601NewLaserManager(LaserManager):
 
         if scpi_ok:
             self._scpi = True
-            self.__logger.info(
+            self.__logger.debug(
                 f'Cobolt {self._port}: SCPI firmware detected; '
                 f'using SCPI command set.'
             )
         elif ok_legacy_probe:
             self._scpi = False
-            self.__logger.info(
+            self.__logger.debug(
                 f'Cobolt {self._port}: legacy firmware detected; '
                 f'using em/slmp/sdmes/cp command set.'
             )
@@ -259,24 +259,25 @@ class Cobolt0601NewLaserManager(LaserManager):
         already guarantees the beam is dark.
         """
         if self._pause_mode:
-            # TODO(640 / OEM-locked Cobolt fw 1.2.1.0): this controller parks
-            # the laser in a standby/aborted state at every power-up and after
-            # the serial port is (re)opened on each ImSwitch start, and ONLY a
-            # physical interlock open->close edge clears it. '@cob1' returns OK
-            # but does not start emission, '@cobas' is permission-denied, and
-            # the standalone Cobolt tool cannot start it either — i.e. this is a
-            # hardware safety lock with no serial workaround we have found. So
-            # the operator must cycle the interlock ONCE per ImSwitch start;
-            # pause mode then keeps the laser alive for the rest of the session
-            # (never sends l0). A proper fix needs vendor reconfiguration of the
-            # controller (enable software autostart / change operating mode).
-            # Revisit if Cobolt/HUBNER provide an unlock or a restart command.
+            # SAFETY: do NOT send '@cob1' here. On this OEM-locked firmware
+            # '@cob1' does not start the laser immediately (the controller is in
+            # standby until a physical interlock edge) — instead it PRIMES a
+            # pending turn-on that fires the moment the operator cycles the
+            # interlock at startup. The laser would then emit by itself even
+            # though it is "off" in the GUI. We therefore leave the laser in the
+            # modulation safe state only: PowerModulation + digital gate on, so
+            # with the scanner's TTL idle-low the beam is held dark, plus
+            # 'las:paus 1'. The once-per-start interlock cycle then only CLEARS
+            # the standby state; light is produced solely when the user turns the
+            # laser on in the GUI (setEnabled -> las:paus 0 + constant power).
             #
-            # Pause-control init: enter the modulation safe state (gate on, idle
-            # TTL keeps it dark), START the laser once with @cob1 while fresh,
-            # then hold the beam dark with las:paus 1. On/off is pause/resume.
+            # TODO(640 / OEM-locked Cobolt fw 1.2.1.0): the once-per-start
+            # interlock cycle itself is still required because the controller
+            # parks in a standby/aborted state that only a physical interlock
+            # edge clears, and '@cobas' (autostart config) is permission-denied
+            # over serial. A real fix needs vendor reconfiguration of the
+            # controller. Revisit if Cobolt/HUBNER provide an unlock/restart.
             self._enter_modulation_mode(self._modulation_power_mw)
-            self._cmd_or_warn('@cob1')
             ok_pause, _ = self._cmd('las:paus 1')
             if not ok_pause:
                 self.__logger.error(
@@ -285,9 +286,10 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'controller is responsive before opening the shutter.'
                 )
             self._enabled = False
-            self.__logger.info(
+            self.__logger.debug(
                 f'Cobolt {self._port} initialised in safe state '
-                f'(SCPI pause mode: laser started, emission paused).'
+                f'(SCPI pause mode: modulation-gated + paused, autostart NOT '
+                f'armed — no emission until turned on in the GUI).'
             )
         else:
             self._cmd_or_warn('@cobas 0')
@@ -301,7 +303,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'before opening the shutter.'
                 )
             self._enabled = False
-            self.__logger.info(
+            self.__logger.debug(
                 f'Cobolt {self._port} initialised in safe state '
                 f'({"SCPI" if self._scpi else "legacy"} commands, master off).'
             )

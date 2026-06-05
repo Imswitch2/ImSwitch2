@@ -167,12 +167,18 @@ class RS232Driver:
         self.finalize()
 
     def query(self, command):
+        if self._resource is None:
+            raise OSError('RS232 resource already closed')
         return self._resource.query(command)
 
     def write(self, command):
+        if self._resource is None:
+            raise OSError('RS232 resource already closed')
         return self._resource.write(command)
 
     def read(self, *args, **kwargs):
+        if self._resource is None:
+            raise OSError('RS232 resource already closed')
         return self._resource.read()
 
     @classmethod

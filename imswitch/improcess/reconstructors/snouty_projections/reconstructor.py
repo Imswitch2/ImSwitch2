@@ -98,10 +98,13 @@ class SnoutyProjectionsReconstructor(Reconstructor):
         
         # Pick processor (CPU or GPU)
         device = params.get('device', 'CPU').upper()
+        use_gpu = False
         if device == 'GPU':
             try:
                 from imswitch.improcess.reconstructors.snouty.deskew_gpu import DeskewProcessorGPU
+                import cupy as cp
                 processor_class = DeskewProcessorGPU
+                use_gpu = True
             except (ImportError, RuntimeError) as e:
                 raise RuntimeError(
                     f'GPU deskew unavailable: {e}. Use device="CPU" or install CuPy.'
@@ -131,10 +134,14 @@ class SnoutyProjectionsReconstructor(Reconstructor):
             projection_timepoints = []
             for t, tp_stack in enumerate(timepoint_stacks):
                 self._logger.info(f'  Timepoint {t+1}/{n_timepoints}...')
-                projections = processor.process_projections(tp_stack)
-                # GPU returns cupy arrays, convert to numpy
-                if device == 'GPU':
-                    projections = {k: self._to_numpy(v) for k, v in projections.items()}
+                if use_gpu:
+                    projections = processor.process_projections(cp.asarray(tp_stack))
+                    try:
+                        cp.get_default_memory_pool().free_all_blocks()
+                    except Exception:
+                        pass
+                else:
+                    projections = processor.process_projections(tp_stack)
                 # Pad and stack projections
                 padded = self._pad_and_stack_projections(projections)
                 projection_timepoints.append(padded)
@@ -145,10 +152,10 @@ class SnoutyProjectionsReconstructor(Reconstructor):
             )
         else:
             self._logger.info(f'Processing single timepoint projections with {device} deskew...')
-            projections = processor.process_projections(stack)
-            # GPU returns cupy arrays, convert to numpy
-            if device == 'GPU':
-                projections = {k: self._to_numpy(v) for k, v in projections.items()}
+            if use_gpu:
+                projections = processor.process_projections(cp.asarray(stack))
+            else:
+                projections = processor.process_projections(stack)
             # Pad and stack projections
             result_data = self._pad_and_stack_projections(projections)
             self._logger.info(
