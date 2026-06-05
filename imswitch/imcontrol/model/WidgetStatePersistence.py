@@ -166,9 +166,9 @@ class WidgetStatePersistence:
                 
                 # Apply the state (controller is responsible for safety checks)
                 controller.setWidgetState(state)
-                self._logger.info(f'Loaded and applied widget state: {controller_name}/{state_name}')
+                self._logger.debug(f'Loaded and applied widget state: {controller_name}/{state_name}')
             else:
-                self._logger.info(f'Loaded widget state (not applied): {controller_name}/{state_name}')
+                self._logger.debug(f'Loaded widget state (not applied): {controller_name}/{state_name}')
             
             return state
             

@@ -461,7 +461,7 @@ class LaserController(ImConWidgetController):
             if selected_preset and selected_preset in self._setupInfo.laserPresets:
                 self._widget.setCurrentPreset(selected_preset)
 
-            self._logger.info('Widget state restored successfully')
+            self._logger.debug('Widget state restored successfully')
 
         except Exception as e:
             self._logger.error(f'Failed to restore widget state: {e}')

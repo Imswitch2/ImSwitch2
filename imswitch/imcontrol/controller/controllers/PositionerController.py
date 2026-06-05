@@ -359,7 +359,7 @@ class PositionerController(ImConWidgetController):
                             f'Failed to restore step size for positioner {pName}, axis {axis}: {e}'
                         )
             
-            self._logger.info('Widget state restored successfully')
+            self._logger.debug('Widget state restored successfully')
         
         except Exception as e:
             self._logger.error(f'Failed to restore widget state: {e}')
