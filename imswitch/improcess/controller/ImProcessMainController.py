@@ -51,7 +51,9 @@ class ImProcessMainController(MainController):
         try:
             from imswitch.imcontrol.model import getWidgetStatePersistence
 
-            self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
+            self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(
+                self.__mainView, main_controller=self,
+            )
             persistence = getWidgetStatePersistence()
             persistence.register(_GUI_LAYOUT_STATE_KEY, self.__guiLayoutStateAdapter)
             try:
@@ -137,6 +139,37 @@ class ImProcessMainController(MainController):
             [(processor.id, processor.name) for processor in loaded_processors]
         )
 
+    def _restore_runtime_processor(self, processor_id: str) -> None:
+        """Re-register a processor that was runtime-loaded last session.
+
+        Called from the persistence adapter before the view recreates the
+        matching widget dock. Unknown ids and processor-less tools (like
+        ``roi-manager``) are silently skipped — the widget restore handles
+        them on the view side.
+        """
+        from imswitch.improcess.reconstructors.registry import get_registry
+        from imswitch.improcess.processors import (
+            available_processor_ids,
+            register_processor_by_id,
+        )
+
+        if processor_id not in set(available_processor_ids()):
+            return
+        registry = get_registry()
+        if registry.get_processor(processor_id) is not None:
+            return
+        try:
+            plugin = register_processor_by_id(registry, processor_id)
+        except Exception:
+            self.__logger.exception(
+                f"Failed to restore runtime processor {processor_id!r} from "
+                f"persisted layout state"
+            )
+            return
+        self.__logger.info(
+            f"Restored runtime-loaded processor: {plugin.id} ({plugin.name})"
+        )
+
     def _load_runtime_processor(self, processor_id: str):
         from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.processors import (
@@ -150,8 +183,20 @@ class ImProcessMainController(MainController):
         if plugin is not None:
             self.__logger.info(f"Processor already loaded: {processor_id}")
         elif is_processor:
-            plugin = register_processor_by_id(registry, processor_id)
-            self.__logger.info(f"Runtime-loaded processor: {plugin.id} ({plugin.name})")
+            # Wrap register_processor_by_id: a processor whose import or
+            # __init__ raises must not crash the load handler — log the
+            # traceback so the user can see *why* nothing showed up.
+            try:
+                plugin = register_processor_by_id(registry, processor_id)
+                self.__logger.info(
+                    f"Runtime-loaded processor: {plugin.id} ({plugin.name})"
+                )
+            except Exception:
+                self.__logger.exception(
+                    f"Failed to register processor {processor_id!r}"
+                )
+                self._refresh_runtime_processor_choices()
+                return
         dock_title = self.__mainView.ensureRuntimeAnalysisWidget(processor_id)
         if dock_title is not None:
             self.__logger.info(f"Runtime-opened analysis tool: {dock_title}")
@@ -179,20 +224,39 @@ class ImProcessMainController(MainController):
 class _GuiLayoutStateAdapter:
     """Persistence adapter for ImProcess's passive dock layout state."""
 
-    def __init__(self, view: Any) -> None:
+    def __init__(self, view: Any, main_controller: Any = None) -> None:
         self._view = view
+        self._main_controller = main_controller
 
     def getWidgetState(self) -> Dict[str, Any]:
         """Return the current GUI layout state."""
         return self._view.getLayoutState()
 
     def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """Restore GUI layout state without triggering hardware actions."""
+        """Restore GUI layout state without triggering hardware actions.
+
+        Re-registers any processors that were runtime-loaded last session so
+        their UI docks come back wired to a live registry entry. Then asks
+        the view to recreate the matching widget docks (via setLayoutState
+        → ensureRuntimeAnalysisWidget) before applying the DockArea state.
+        """
+        controller = self._main_controller
+        if controller is not None and isinstance(state, dict):
+            tool_ids = state.get('runtime_analysis_tool_ids', []) or []
+            for tool_id in tool_ids:
+                try:
+                    controller._restore_runtime_processor(tool_id)
+                except Exception:
+                    # The hook is best-effort; the view-side widget restore
+                    # below will still bring the dock back even if the
+                    # processor cannot be re-registered.
+                    pass
+            controller._refresh_runtime_processor_choices()
         self._view.setLayoutState(state)
 
     def getStateSchemaVersion(self) -> int:
         """Return the GUI layout persistence schema version."""
-        return 1
+        return 2
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

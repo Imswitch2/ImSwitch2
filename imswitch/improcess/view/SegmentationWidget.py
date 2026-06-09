@@ -105,6 +105,14 @@ class SegmentationWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.summaryLabel.setText(str(exc))
 
+    def setRoiManagerWidget(self, roiManagerWidget) -> None:
+        """Wire (or rewire) the ROI Manager dependency at runtime.
+
+        Called by the main view after a runtime-loaded ROI manager dock comes
+        up so 'Push to ROI manager' starts working without restarting the app.
+        """
+        self._roiManagerWidget = roiManagerWidget
+
     def add_rois_to_manager(self) -> None:
         if self._last_analysis is None:
             self.summaryLabel.setText("Run segmentation first.")

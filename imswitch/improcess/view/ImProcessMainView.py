@@ -4,6 +4,7 @@ from pyqtgraph.dockarea import Dock, DockArea
 from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
@@ -67,6 +68,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         super().__init__(*args, **kwargs)
         self.setWindowTitle('Image Processing')
         self.setAcceptDrops(True)
+        self._logger = initLogger(self, tryInheritParent=False)
 
         # self parameters
         self.r_l_text = 'Right/Left'
@@ -383,10 +385,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.sigLoadProcessorRequested.emit(str(processor_id))
 
     def ensureRuntimeAnalysisWidget(self, processor_id: str) -> str | None:
-        """Create/show the matching analysis dock for a runtime-loaded processor."""
+        """Create/show the matching analysis dock for a runtime-loaded processor.
+
+        Returns the dock title on success, ``None`` when the request cannot be
+        satisfied (unknown processor id, widget construction crashed, dock
+        assembly failed).  All construction work is wrapped in try/except so
+        a single misbehaving widget never leaves the dock area half-built or
+        crashes ImProcess.
+        """
         specs = self._runtimeAnalysisToolSpecs()
         spec = specs.get(processor_id)
         if spec is None:
+            self._logger.warning(
+                f'No runtime analysis widget registered for id {processor_id!r}'
+            )
             return None
         title, factory = spec
         dock = self.docks.get(title)
@@ -398,25 +410,58 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self._syncDockVisibilityActions()
             return title
 
-        widget = factory()
-        dock = Dock(title, size=(3, 3))
-        dock.addWidget(widget)
-        anchor = self._runtimeAnalysisDockAnchor
-        if anchor is None:
-            self.dockArea.addDock(dock, 'right', self._reconstructionDock)
-        else:
-            self.dockArea.addDock(dock, 'bottom', anchor)
-        self.docks[title] = dock
-        self._runtimeAnalysisDockAnchor = dock
-        attr_name = self._runtimeAnalysisToolAttributes()[processor_id]
-        setattr(self, attr_name, widget)
-        if processor_id == 'roi-manager':
-            self._wireROIManagerToDependentWidgets()
-        self._addDockVisibilityAction(title, dock)
-        dock.show()
-        dock.raiseDock()
-        self._syncDockVisibilityActions()
+        try:
+            widget = factory()
+        except Exception:
+            self._logger.exception(
+                f'Failed to construct runtime analysis widget for {processor_id!r}'
+            )
+            self._showStatusMessage(
+                f'Could not open {title}; see log for traceback.', 6000
+            )
+            return None
+
+        try:
+            dock = Dock(title, size=(3, 3))
+            dock.addWidget(widget)
+            anchor = self._runtimeAnalysisDockAnchor
+            if anchor is None:
+                self.dockArea.addDock(dock, 'right', self._reconstructionDock)
+            else:
+                self.dockArea.addDock(dock, 'bottom', anchor)
+            self.docks[title] = dock
+            self._runtimeAnalysisDockAnchor = dock
+            attr_name = self._runtimeAnalysisToolAttributes()[processor_id]
+            setattr(self, attr_name, widget)
+            if processor_id == 'roi-manager':
+                self._wireROIManagerToDependentWidgets()
+            self._addDockVisibilityAction(title, dock)
+            dock.show()
+            dock.raiseDock()
+            self._syncDockVisibilityActions()
+        except Exception:
+            # Roll back partial dock state so subsequent attempts can retry
+            # without colliding with an orphaned dock entry.
+            self._logger.exception(
+                f'Failed to install runtime analysis dock for {processor_id!r}'
+            )
+            self.docks.pop(title, None)
+            try:
+                widget.setParent(None)
+            except Exception:
+                pass
+            self._showStatusMessage(
+                f'Could not dock {title}; see log for traceback.', 6000
+            )
+            return None
         return title
+
+    def _showStatusMessage(self, message: str, timeout_ms: int = 4000) -> None:
+        """Best-effort status-bar message for runtime-loader failures."""
+        try:
+            self.statusBar().showMessage(message, timeout_ms)
+        except Exception:
+            pass
 
     def isRuntimeAnalysisToolLoaded(self, tool_id: str) -> bool:
         spec = self._runtimeAnalysisToolSpecs().get(tool_id)
@@ -467,12 +512,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         }
 
     def _wireROIManagerToDependentWidgets(self) -> None:
+        """Late-binding: hand the ROI Manager to widgets that already exist
+        but were constructed before it. Uses the public setRoiManagerWidget
+        contract on each consumer rather than poking the private attribute,
+        so consumers can refresh internal state on the swap if they need to."""
         roi_manager = getattr(self, 'roiManagerWidget', None)
         if roi_manager is None:
             return
         for attr in ('segmentationWidget', 'psfResolutionWidget', 'colocalizationWidget'):
             widget = getattr(self, attr, None)
-            if widget is not None and hasattr(widget, '_roiManagerWidget'):
+            if widget is None:
+                continue
+            setter = getattr(widget, 'setRoiManagerWidget', None)
+            if callable(setter):
+                try:
+                    setter(roi_manager)
+                except Exception:
+                    self._logger.exception(
+                        f'Could not wire ROI Manager into {attr}'
+                    )
+            elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
 
     def _setReconListPaneVisible(self, visible: bool) -> None:
@@ -601,15 +660,38 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.multiDataDock.raiseDock()
 
     def getLayoutState(self) -> dict:
-        """Return passive GUI layout state for persistence."""
-        return {'dock_area': self.dockArea.saveState()}
+        """Return passive GUI layout state for persistence.
+
+        Also serializes the list of runtime-loaded analysis tool ids so
+        :meth:`setLayoutState` can recreate their docks before applying
+        ``dockArea.restoreState`` — otherwise napari-side docks added at
+        runtime would be silently dropped by ``missing='ignore'``.
+        """
+        loaded_ids = self.runtimeAnalysisToolIdsLoaded()
+        return {
+            'dock_area': self.dockArea.saveState(),
+            'runtime_analysis_tool_ids': loaded_ids,
+        }
 
     def setLayoutState(self, state: dict) -> None:
         """Restore passive GUI layout state if it is compatible with this setup."""
         if not isinstance(state, dict):
             return
+
+        # Recreate runtime-loaded docks BEFORE restoreState so the dock area
+        # has the matching titles to restore positions for.
+        for tool_id in state.get('runtime_analysis_tool_ids', []) or []:
+            try:
+                self.ensureRuntimeAnalysisWidget(tool_id)
+            except Exception:
+                self._logger.exception(
+                    f'Failed to recreate runtime analysis tool {tool_id!r} during '
+                    f'layout restore'
+                )
+
         dockAreaState = state.get('dock_area')
         if dockAreaState is None:
+            self._syncDockVisibilityActions()
             return
         try:
             self.dockArea.restoreState(
@@ -620,6 +702,17 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             # fall back to the default placement silently.
             pass
         self._syncDockVisibilityActions()
+
+    def runtimeAnalysisToolIdsLoaded(self) -> list[str]:
+        """Return ids of runtime analysis tools whose docks currently exist.
+
+        Used by ``getLayoutState`` and the controller's choice refresher.
+        """
+        return [
+            tool_id
+            for tool_id, (title, _factory) in self._runtimeAnalysisToolSpecs().items()
+            if title in self.docks
+        ]
 
     def resetLayout(self) -> None:
         """Restore the default dock arrangement captured at construction."""

@@ -122,6 +122,10 @@ class ColocalizationWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.summaryLabel.setText(str(exc))
 
+    def setRoiManagerWidget(self, roiManagerWidget) -> None:
+        """Wire (or rewire) the ROI Manager dependency at runtime."""
+        self._roiManagerWidget = roiManagerWidget
+
     def export_csv(self) -> None:
         if self._last_analysis is None:
             self.summaryLabel.setText("Run colocalization first.")
