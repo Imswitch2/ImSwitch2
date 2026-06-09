@@ -152,12 +152,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         # Parameter tree lives inside a host frame so setParameterWidget can
         # swap the active reconstructor's parameter widget without disturbing
-        # the surrounding dock.
+        # the surrounding dock. A small header label above the tree always
+        # shows which reconstructor's parameters are currently displayed.
         parameterFrame = QtWidgets.QFrame()
         parameterGrid = QtWidgets.QGridLayout()
         parameterGrid.setContentsMargins(0, 0, 0, 0)
+        parameterGrid.setVerticalSpacing(2)
         parameterFrame.setLayout(parameterGrid)
-        parameterGrid.addWidget(self.parTree, 0, 0)
+        self._activeReconstructorLabel = QtWidgets.QLabel('Reconstructor: —')
+        self._activeReconstructorLabel.setStyleSheet(
+            'color: palette(mid); font-size: 9pt; padding: 2px 4px;'
+        )
+        self._activeReconstructorLabel.setToolTip(
+            'Active reconstructor whose parameters are shown below'
+        )
+        parameterGrid.addWidget(self._activeReconstructorLabel, 0, 0)
+        parameterGrid.addWidget(self.parTree, 1, 0)
         self.parameterGrid = parameterGrid
 
         # Single DockArea backs the central widget so every panel is a
@@ -250,6 +260,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def requestFolderPathFromUser(self, caption=None, defaultFolder=None):
         return QtWidgets.QFileDialog.getExistingDirectory(caption=caption, directory=defaultFolder)
 
+    def setActiveReconstructorName(self, name: str) -> None:
+        """Update the Parameters header label and dock title to show the
+        active reconstructor's display name."""
+        display = name.strip() if name else ''
+        self._activeReconstructorLabel.setText(
+            f'Reconstructor: {display}' if display else 'Reconstructor: —'
+        )
+        dock = self.docks.get('Parameters') if hasattr(self, 'docks') else None
+        if dock is not None:
+            try:
+                dock.setTitle(f'Parameters — {display}' if display else 'Parameters')
+            except Exception:
+                pass
+
     def raiseCurrentDataDock(self):
         self.currentDataDock.raiseDock()
 
@@ -310,11 +334,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def setParameterWidget(self, widget):
         """Replace the legacy parameter tree with the active reconstructor UI."""
-        old = self.parameterGrid.itemAtPosition(0, 0)
+        old = self.parameterGrid.itemAtPosition(1, 0)
         if old is not None and old.widget() is not None:
             old.widget().setParent(None)
         self.parTree = widget
-        self.parameterGrid.addWidget(widget, 0, 0)
+        self.parameterGrid.addWidget(widget, 1, 0)
 
         self.showPatBool = None
         self.bleachBool = None

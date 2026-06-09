@@ -124,6 +124,13 @@ class ImProcessMainViewController(ImProcessWidgetController):
         return reconstructor
 
     def _install_reconstructor_params(self, reconstructor):
+        # Always reflect the active reconstructor in the Parameters dock so
+        # the user can tell at a glance which plugin's parameters they are
+        # editing — even for plugins that keep the legacy parameter tree.
+        try:
+            self._widget.setActiveReconstructorName(reconstructor.name)
+        except Exception:
+            pass
         if reconstructor.id == "monalisa":
             # Keep the legacy MoNaLISA parameter tree until the whole
             # scan-params/find-pattern path is migrated to plugin widgets.
