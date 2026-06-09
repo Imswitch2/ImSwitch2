@@ -7,7 +7,7 @@ import tifffile as tiff
 
 import imswitch.improcess.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
-from imswitch.improcess.model import DataObj, ReconObj, Denoiser
+from imswitch.improcess.model import DataObj, ReconObj
 # NOTE: PatternFinder and SignalExtractor live in the MoNaLISA plugin.
 # The controller still uses them directly during the Phase B.1 transition;
 # Phase B.2 will replace the direct calls with registry dispatch.
@@ -57,7 +57,6 @@ class ImProcessMainViewController(ImProcessWidgetController):
         # only wants view-only / drag-and-drop.
         self._signalExtractor = None
         self._patternFinder = PatternFinder()
-        self._denoiser = Denoiser()
 
         self._activeReconstructor = self._select_reconstructor()
         if self._activeReconstructor is not None:
@@ -105,7 +104,6 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigFindPattern.connect(self.findPattern)
         self._widget.sigShowScanParamsClicked.connect(self.showScanParamsDialog)
         self._widget.sigPatternParamsChanged.connect(self.updatePattern)
-        self._widget.sigDenoiseCurrent.connect(self.denoiseCurrent)
         self._widget.sigFilesDropped.connect(self.handleDroppedFiles)
         self.updatePattern()
         self.updateScanParams()
@@ -138,35 +136,6 @@ class ImProcessMainViewController(ImProcessWidgetController):
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
     
-    def denoiseCurrent(self) -> None:
-        if not self._denoiser.denoising_available:
-            self._logger.error("Denoising not available")
-            return
-        reconObj = self.reconstructionController.getActiveReconObj()
-        if reconObj  is None:
-            return
-        crop_size = int(self._widget.getDenoiseCropSize())
-        pad = self._widget.getDenoiseBoolPad()
-        model_name = self._widget.getDenoiseModelName()
-        
-        if 'RCAN' in model_name:
-            model_type = 'UNetRCAN'
-        else:
-            model_type = 'UNet'
-
-        reconstrData = copy.deepcopy(reconObj.getReconstruction())
-        reconstrData = reconstrData[:, 0, 0, 0, :, :]
-
-        self._denoiser.init_model(model_name,model_type)
-        self._denoiser.load_model(model_name)
-        predict = self._denoiser.predict(data=reconstrData,crop_size=crop_size,pad=pad).astype('float32')
-        predict = np.expand_dims(predict,axis=(1,2,3))
-
-        denoiseObj = copy.deepcopy(reconObj)
-        denoiseObj.updateReconstructed(predict)
-        name = reconObj.name + "_denoise"
-        self._widget.addNewData(denoiseObj, name)
-
     def dataFolderChanged(self, dataFolder):
         self._dataFolder = dataFolder
 
