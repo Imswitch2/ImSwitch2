@@ -50,13 +50,22 @@ It contains all the scanning pulses and hardware parameters related to the exper
     :align: center
 
 
-Image processing module for image reconstruction
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-The raw data can be either manually loaded into the reconstruction module or automatically retreived from the scanning if selected in the Recording widget. The user can further analyze the data using Napari image viewer.
-In this module we use our custom-designed DLLs for reconstruction, since this is a rather specific type of algorithm for our method. But the idea is that different microscope techniques implement their own modules as well.
-"Multidata management" stacks all the data incomming from the hardware control module.
+Image processing module
+^^^^^^^^^^^^^^^^^^^^^^^
+The raw data can be manually loaded into ImProcess or automatically retrieved
+from scanning if selected in the Recording widget. The user can inspect and
+analyze the data in the embedded napari viewer.
 
-* The Image processing module is illustrated in the following image:
+For the MoNaLISA use case, ImProcess can run the MoNaLISA reconstruction
+plugin, which uses the custom reconstruction DLLs for that microscope. The
+same module also supports other post-processing plugins and analysis panels,
+including view-only display, drift correction, WidefieldSTARSS analysis, FRC,
+and ROI statistics.
+
+"Multidata management" stacks all the data incoming from the hardware control
+module.
+
+* The Image Processing module is illustrated in the following image:
 
 .. image:: ./images/reconstruction.png
     :width: 600px

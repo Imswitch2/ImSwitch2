@@ -159,9 +159,9 @@ reconstruction:
 Generic infrastructure already exists alongside the MoNaLISA code:
 `DataObj`, `MultiDataFrame`, `WatcherFrame`, the main view shell, and the
 data-edit pipeline are not modality-specific and can be reused as the
-backbone of the generalized app. We also have STED / FLIM / confocal /
-WidefieldSTARSS / lightsheet acquisitions for which `improcess`
-currently cannot do anything useful.
+backbone of the generalized app. The first modality-specific plugins now cover
+WidefieldSTARSS analysis and SNOUTY deskew/projection previews; STED, FLIM and
+confocal processing remain the main open modality targets.
 
 **Surface-level plan (to be refined):**
 
@@ -180,30 +180,36 @@ currently cannot do anything useful.
   (PatternFinder, SignalExtractor, coeffs_to_image, MonalisaParamsWidget,
   MonalisaProcessingResult, MonalisaReconstructor).
 - ✅ **View-only reconstructor** under `reconstructors/view_only/`.
-- ✅ **First Processor:** FFT-based drift correction
-  (`processors/drift_correct/`).
+- ✅ **First processors:** FFT-based drift correction
+  (`processors/drift_correct/`) and FRC / single-image FRC
+  (`processors/frc/`).
 - ✅ **Drag-and-drop ingest** on the main window for HDF5/Zarr/TIFF.
 - ✅ **Standalone launch** (`python -m imswitch.improcess`) without a
   SetupInfo.
+- ✅ **Generic analysis panels.** Optional graph, profile, FRC and ROI
+  statistics panels are available through the `processing:` config block.
 - 🔄 **Flip controllers onto the registry (Phase B.2 — pending).**
   Plugin code is in place but `ImProcessMainViewController` and
   `ReconstructionViewController` still use the legacy direct-call path.
   Verification needs Windows + `GPU_acc_recon.dll`; lands when that
   setup is available.
-- ⬜ **Per-modality reconstructors.** Surface-level targets — flesh out
+- 🔄 **Per-modality reconstructors.** Surface-level targets — flesh out
   with owners later:
   - STED / confocal: frame-averaging, drift correction, lifetime overlay
     when FLIM data is present.
-  - WidefieldSTARSS: polarization-channel demux + per-cell metrics
-    derived from the tiling workflow output.
-  - Lightsheet (SNOUTY): deskew / deconvolution hooks.
+  - ✅ WidefieldSTARSS first slice: H/V TIFF pairing, polarization-channel
+    demux, anisotropy maps, per-region metrics, graph payloads and HDF5/TIFF
+    save. Batch folder mode, table UI and richer layer display remain pending.
+  - ✅ Lightsheet (SNOUTY): deskew and projection-preview reconstructors are
+    implemented; deconvolution and real setup validation remain pending.
   - SIM / MoNaLISA: existing pipeline as one registered reconstructor.
 - ⬜ **Hook into M10's live pipeline.** Once the Zarr streaming
   reconstruction lands (Milestone 10), let it drive any registered
   reconstructor — not only the MoNaLISA path.
 - ✅ **Update docs.** `docs/improcess.rst` covers launch modes,
   plugin architecture, config schema, drag-and-drop, built-in plugins,
-  and how to write a new plugin. Linked from the index toctree.
+  optional analysis panels, WFS pairing and how to write a new plugin.
+  Linked from the index toctree.
 - ✅ **Example minimal setup.**
   `imswitch/_data/user_defaults/imcontrol_setups/monalisa_processor.json`
   — a processing-only config that launches ImProcess with the MoNaLISA

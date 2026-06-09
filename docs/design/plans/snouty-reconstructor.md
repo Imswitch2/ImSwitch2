@@ -186,15 +186,16 @@ friction.
 ### Phased delivery
 
 * **D.1 — CPU Snouty plugin with timelapse.** Lands the folder above
-  using only `deskew_cpu`. GPU import is guarded; selecting `device=GPU`
-  raises a clear error in D.1. Synthetic regression test included.
+  using `deskew_cpu`. Synthetic regression test included. **Implemented.**
 * **D.2 — GPU path.** Add `deskew_gpu` behind `try: import cupy`.
-  Selecting `device=GPU` then works when CuPy is installed.
+  Selecting `device=GPU` works when CuPy is installed and raises a clear
+  dependency error otherwise. **Implemented with guarded CuPy import.**
 * **D.3 — Projection-only sibling plugin** (`snouty-projections`).
   Same widget, different `process()`, returns the 3-projection stack.
+  **Implemented.**
 
-D.2 and D.3 are independent and can each run as their own agent task
-after D.1 is in.
+D.1-D.3 are implemented in `imswitch/improcess/reconstructors/snouty`
+and `imswitch/improcess/reconstructors/snouty_projections`.
 
 ### Wiring into the registry
 
@@ -202,8 +203,12 @@ Two lines in `imswitch/improcess/reconstructors/__init__.py`:
 
 ```python
 from .snouty import SnoutyReconstructor
-# in available_plugins:
-'snouty': SnoutyReconstructor,
+from .snouty_projections import SnoutyProjectionsReconstructor
+
+DEFAULT_RECONSTRUCTORS = {
+    'snouty': SnoutyReconstructor,
+    'snouty-projections': SnoutyProjectionsReconstructor,
+}
 ```
 
 Users opt in via the existing `processing:` config block:

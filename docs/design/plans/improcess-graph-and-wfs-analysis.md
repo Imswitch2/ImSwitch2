@@ -1,15 +1,21 @@
 # ImProcess Graph Widget + WidefieldSTARSS Analysis Plan
 
-**Status:** Active plan - graph widget first, WidefieldSTARSS reconstructor later
+**Status:** In progress - graph widget implemented; first WidefieldSTARSS
+ImProcess reconstructor slice implemented for H/V TIFF pairs; FRC and ROI
+statistics panels added as generic ImProcess analysis widgets
 **Date:** 2026-05-29
 **Scope:** `imswitch/improcess/`, with source analysis reference from
 `/Users/lenny/PycharmProjects/WidefieldStarss/src/WFS/analysis`
 
 This plan captures two related pieces of work:
 
-1. Add a general-purpose graph/result widget to ImProcess.
-2. Later port the WidefieldSTARSS anisotropy analysis as an ImProcess
-   processing unit that uses that graph widget.
+1. Add a general-purpose graph/result widget to ImProcess. Implemented.
+2. Port the WidefieldSTARSS anisotropy analysis as an ImProcess processing
+   unit that uses that graph widget. First single-pair implementation is in
+   place; batch/table/layer polish remains follow-up work.
+3. Add generic quantitative ImProcess widgets that can reuse the same result
+   and graph infrastructure. First implementations: FRC / single-image FRC and
+   ROI statistics.
 
 The graph widget should land first because it is broadly useful beyond
 WidefieldSTARSS: drift correction, FLIM summaries, STED/confocal projections,
@@ -80,6 +86,10 @@ result metadata.
 ---
 
 ## 3. Phase 1 - General ImProcess Graph Widget
+
+**Implementation status:** Done.  The graph panel, `PlotPayload` /
+`PlotSeries` model contract and `GraphController` are in place.  Built-in
+payload producers now include drift correction, WidefieldSTARSS and FRC.
 
 ### 3.1 Proposed Files
 
@@ -164,7 +174,12 @@ many derived arrays.
 
 ## 4. Phase 2 - WidefieldSTARSS Kernel Port
 
-Create a local package under the future WFS reconstructor:
+**Implementation status:** First slice done.  Pure kernels now live under
+`imswitch/improcess/reconstructors/widefield_starss/analysis/` with synthetic
+tests covering mosaic splitting, alternating frame splitting, anisotropy,
+standard H/V analysis, split-detection analysis and result save behavior.
+
+The implemented WFS reconstructor uses this local package shape:
 
 ```text
 imswitch/improcess/reconstructors/widefield_starss/
@@ -180,23 +195,21 @@ imswitch/improcess/reconstructors/widefield_starss/
     `-- segmentation.py
 ```
 
-Port only pure kernels first. Keep file dialogs, folder scanning, matplotlib
-plotting, and threaded UI workers out of the kernel package.
+The numerical kernels stay pure: file dialogs, folder scanning, matplotlib
+plotting and threaded UI workers are kept out of the kernel package.
 
-Recommended pure API:
+Implemented pure API:
 
 ```python
 def analyze_widefield_starss_pair(
-    signal_h: np.ndarray,
-    background_h: np.ndarray,
-    signal_v: np.ndarray,
-    background_v: np.ndarray,
-    params: WidefieldStarssParams,
+    stack_h: np.ndarray,
+    stack_v: np.ndarray,
+    params: WidefieldStarssParams | None = None,
 ) -> WidefieldStarssAnalysis:
     ...
 ```
 
-Where `WidefieldStarssAnalysis` contains:
+`WidefieldStarssAnalysis` contains:
 
 - `regions: pandas.DataFrame`
 - `mask: np.ndarray`
@@ -210,8 +223,14 @@ Where `WidefieldStarssAnalysis` contains:
 
 ## 5. Phase 3 - WidefieldSTARSS Reconstructor
 
-Add `WidefieldStarssReconstructor` as a modality-specific ImProcess
-reconstructor.
+**Implementation status:** First slice done.  `widefield-starss` is registered
+as a built-in reconstructor.  It supports `_h.tif` / `_v.tif` auto-pairing,
+manual counterpart selection, standard mosaic mode, split-detection mode,
+presets, map-stack display, HDF5/TIFF save and graph payloads.  Dedicated table
+and multi-layer viewer display remain Phase 4 work.
+
+`WidefieldStarssReconstructor` is now registered as a modality-specific
+ImProcess reconstructor.
 
 ### 5.1 Input Model
 
@@ -233,11 +252,11 @@ integration question. Candidate approaches:
    When the current file ends in `_h.tif` or `_v.tif`, auto-discover the
    counterpart. Useful as a convenience, not enough as the only path.
 
-Recommended first version: option 1 plus auto-pair convenience.
+Implemented first version: option 1 plus auto-pair convenience.
 
 ### 5.2 Parameter Surface
 
-Use the controls already proven in the WFS analysis widget:
+The parameter widget exposes the core controls from the WFS analysis widget:
 
 - H file, V file
 - loading convention: `alternating` or `block`
@@ -258,7 +277,7 @@ Use the controls already proven in the WFS analysis widget:
 - map params: `smooth_sigma`, optional `intensity_threshold`
 - optional ROI
 
-Add named presets:
+Implemented named presets:
 
 - `Widefield cells`: alternating, `start_frame=20`, Otsu,
   `min_size=200`, `smooth_sigma=10`
@@ -267,17 +286,22 @@ Add named presets:
 
 ### 5.3 Result Object
 
-`WidefieldStarssProcessingResult(ProcessingResult)` should:
+Initial implementation note: `WidefieldStarssResult` currently exposes a
+4-channel map stack (`r_smooth`, `r_raw`, label mask, segmentation base image)
+so the existing ImProcess viewer can browse all first-pass outputs without a
+new multi-layer UI.  The richer table/layer UI remains Phase 4 work.
 
-- use `r_smooth` as primary `data`
-- expose `axis_labels=["Y", "X"]`
+`WidefieldStarssResult(ProcessingResult)` currently:
+
+- exposes a small map stack until generic layer support exists
+- exposes `axis_labels=["C", "Y", "X"]`
 - include all maps in `maps`
-- include region table in `regions`
-- implement `plot_payloads()` for the graph widget:
+- includes the region table in `analysis.regions`
+- implements `plot_payloads()` for the graph widget:
   - histogram of `anisotropy_direct`
   - scatter: `area_superpixels` vs `anisotropy_direct`
   - line/scatter: label vs anisotropy with error bars later
-- implement `save(path, fmt)` for HDF5 first
+- implements `save(path, fmt)` for TIFF and HDF5
 
 ---
 
@@ -304,29 +328,65 @@ cancellation, and careful memory handling.
 
 ---
 
+## 6.5 Generic Analysis Widgets Added During This Work
+
+### FRC / Single-Image FRC
+
+Implemented:
+
+- pure numerical kernels in `imswitch/improcess/analysis/frc.py`
+- registered `frc` processor under `imswitch/improcess/processors/frc/`
+- `FRCResult` with graph payloads and HDF5/CSV save
+- optional `FRCWidget`, enabled by `processing.frcPanel`
+- two-image FRC across an image axis
+- single-image FRC with checkerboard or odd/even splitting
+- Hann/no windowing and fixed 1/7 threshold
+
+Remaining follow-up:
+
+- half-bit / three-sigma thresholds
+- ROI-cropped FRC driven by rectangle selection
+- random repeated split mode with confidence intervals
+- processor-chain UI integration
+
+### ROI Statistics
+
+Implemented:
+
+- pure ROI statistics helper in `imswitch/improcess/analysis/roi_stats.py`
+- optional `ROIStatsWidget`, enabled by `processing.roiStatsPanel`
+- full-image or rectangle-ROI area, finite pixel count, mean, median, standard
+  deviation, min, max and sum
+
+Remaining follow-up:
+
+- CSV export from the panel
+- per-timepoint / per-channel table mode
+- table-linked ROI persistence
+
+---
+
 ## 7. Testing Plan
 
-Graph widget:
+Implemented tests:
 
-- unit-test `PlotPayload` construction and result `plot_payloads()` behavior
-- Qt smoke test for `GraphWidget.setPlotPayloads()` if the existing test
-  stack supports Qt widgets
-- no screenshot dependency in the first pass
+- graph payload behavior for drift correction, WFS and FRC results
+- WFS synthetic 2x2 mosaic splitting
+- WFS known-intensity anisotropy formula
+- WFS alternating frame splitting
+- WFS standard H/V pair analysis with one finite region
+- WFS split-detection pair analysis
+- WFS temporary TIFF H/V auto-pairing
+- WFS HDF5 result save
+- FRC two-image and single-image numerical behavior
+- ROI statistics full-image and clipped rectangle behavior
 
-WFS kernels:
+Remaining useful tests:
 
-- synthetic 2x2 mosaic splitting test
-- known-intensity anisotropy formula test
-- variance/weighted-pooling tests
-- simple Otsu mask test on synthetic blobs
-- line-PSF segmentation test on synthetic stripe
-- full synthetic H/V pair test that returns one region and finite anisotropy
-
-WFS reconstructor:
-
-- no-hardware test with temporary TIFF H/V pair
-- verifies output maps, region table columns, `plot_payloads()`, and HDF5 save
-- split-detection test with synthetic upper/lower halves
+- Qt smoke tests for optional panels when the local Qt test environment is
+  stable
+- WFS Otsu/PSF segmentation edge cases on synthetic blobs/stripes
+- FRC ROI-cropped analysis once ROI FRC is added
 
 ---
 
@@ -345,10 +405,13 @@ WFS reconstructor:
 
 ## 9. Recommended Next Work
 
-1. Implement the general ImProcess graph widget and `PlotPayload` contract.
-2. Wire it to current `ProcessingResult` changes without changing existing
-   reconstruction behavior.
-3. Add graph payloads to `DriftCorrectedResult` as the first simple user.
-4. Port WFS kernels after the graph widget API is stable.
-5. Add `WidefieldStarssProcessingResult.plot_payloads()` as part of the WFS
-   reconstructor work.
+1. Add a general processor-chain UI so registered processors such as `frc` and
+   `drift-correct` can be run interactively without bespoke panels.
+2. Add WFS table/layer display: show region tables in Qt and expose `r_raw`,
+   `r_smooth`, masks and base image as separate viewer layers.
+3. Add WFS batch folder processing with progress, cancellation and source-aware
+   region-table concatenation.
+4. Extend FRC with ROI-cropped analysis, half-bit threshold and repeated
+   single-image split confidence intervals.
+5. Add projection and histogram/threshold panels as the next generic ImProcess
+   widgets.

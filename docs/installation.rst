@@ -11,9 +11,9 @@ Requirements
 
 * **Python 3.10 or later** (CPython, 64-bit).
 * **PyQt5** (installed automatically as a dependency).
-* Windows, macOS, or Linux.  A few optional components (the image
-  reconstruction module, TIS cameras) are Windows-only — everything
-  else runs on all three platforms.
+* Windows, macOS, or Linux.  A few optional components (the MoNaLISA
+  reconstruction DLLs, TIS cameras) are Windows-only — the generic
+  ImProcess shell and most plugins run on all three platforms.
 
 
 Option A: Install from PyPI
