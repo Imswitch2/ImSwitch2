@@ -16,6 +16,7 @@ from .monalisa import MonalisaReconstructor
 from .snouty import SnoutyReconstructor
 from .view_only import ViewOnlyReconstructor
 from .snouty_projections import SnoutyProjectionsReconstructor
+from .widefield_starss import WidefieldStarssReconstructor
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -23,6 +24,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'snouty': SnoutyReconstructor,
     'view-only': ViewOnlyReconstructor,
     'snouty-projections': SnoutyProjectionsReconstructor,
+    'widefield-starss': WidefieldStarssReconstructor,
 }
 
 

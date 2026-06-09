@@ -1,0 +1,12 @@
+{
+    "// description": "Minimal setup for running ImProcess as a stand-alone WidefieldSTARSS analysis processor. No hardware devices are declared - this setup is meant for opening existing H/V TIFF pairs, computing anisotropy maps and region metrics, showing graph payloads, and saving HDF5/TIFF outputs. To use, also set 'enabled' to ['improcess'] in modules.json.",
+
+    "processing": {
+        "graphPanel": true,
+        "profilePanel": true,
+        "frcPanel": true,
+        "roiStatsPanel": true,
+        "reconstructors": ["widefield-starss", "view-only"],
+        "processors": ["drift-correct", "frc"]
+    }
+}
