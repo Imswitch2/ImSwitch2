@@ -223,42 +223,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
 
         if dataPath:
             self._logger.debug(f'Loading data at: {dataPath}')
-
-            datasetsInFile = DataObj.getDatasetNames(dataPath)
-            datasetToLoad = None
-            if len(datasetsInFile) < 1:
-                # File does not contain any datasets
-                return
-            elif len(datasetsInFile) > 1:
-                # File contains multiple datasets
-                self.pickDatasetsController.setDatasets(dataPath, datasetsInFile)
-                if not self._widget.showPickDatasetsDialog(blocking=True):
-                    return
-
-                datasetsSelected = self.pickDatasetsController.getSelectedDatasets()
-                if len(datasetsSelected) < 1:
-                    # No datasets selected
-                    return
-                elif len(datasetsSelected) == 1:
-                    datasetToLoad = datasetsSelected[0]
-                else:
-                    # Load into multi-data list
-                    for datasetName in datasetsSelected:
-                        self._commChannel.sigAddToMultiData.emit(dataPath, datasetName)
-                    self._widget.raiseMultiDataDock()
-                    return
-
-            name = os.path.split(dataPath)[1]
-            if self._currentDataObj is not None:
-                self._currentDataObj.checkAndUnloadData()
-            self._currentDataObj = DataObj(name, datasetToLoad, path=dataPath)
-            self._currentDataObj.checkAndLoadData()
-            if self._currentDataObj.dataLoaded:
-                self._commChannel.sigCurrentDataChanged.emit(self._currentDataObj)
-                self._logger.debug('Data loaded')
-                self._widget.raiseCurrentDataDock()
-            else:
-                pass
+            self._loadFromPath(dataPath, prefer_as_current=True)
 
     def currentDataChanged(self, dataObj):
         self._currentDataObj = dataObj
@@ -529,77 +494,95 @@ class ImProcessMainViewController(ImProcessWidgetController):
                      metadata={'spacing': 1, 'unit': 'px', 'axes': 'TZCYX'})
 
     def handleDroppedFiles(self, paths):
-        """
-        Process files dropped onto the main view via drag-and-drop.
+        """Process files dropped onto the main view via drag-and-drop.
 
-        For each file:
-        - Check if it contains multiple datasets (HDF5/Zarr) and prompt user to select
-        - Add each dataset to the multi-data list
-
-        When the active reconstructor is pass-through (e.g. view-only) and the
-        drop resolves to exactly one dataset, also promote that dataset to the
-        current DataObj so currentDataChanged auto-routes it to the napari
-        viewer in a single user action.
+        Per dropped path, routes through ``_loadFromPath``. When exactly one
+        file is dropped and the active reconstructor is pass-through, that
+        single path is promoted to the current DataObj so the auto-route in
+        ``currentDataChanged`` puts it straight onto the napari viewer.
         """
-        single_pass_through_candidate = None
+        prefer_as_current = (
+            len(paths) == 1
+            and self._activeReconstructor is not None
+            and getattr(self._activeReconstructor, 'is_pass_through', False)
+        )
+        any_routed_to_current = False
+        any_routed_to_multidata = False
 
         for path in paths:
-            try:
-                # Get available datasets in the file
-                datasetsInFile = DataObj.getDatasetNames(str(path))
+            outcome = self._loadFromPath(str(path), prefer_as_current=prefer_as_current)
+            if outcome == 'current':
+                any_routed_to_current = True
+            elif outcome == 'multidata':
+                any_routed_to_multidata = True
 
-                # If multiple datasets, let user pick which ones to load
-                if len(datasetsInFile) > 1:
-                    self.pickDatasetsController.setDatasets(str(path), datasetsInFile)
-                    if not self._widget.showPickDatasetsDialog(blocking=True):
-                        continue  # User cancelled
-
-                    # Add only selected datasets
-                    selectedDatasets = self.pickDatasetsController.getSelectedDatasets()
-                    for datasetName in selectedDatasets:
-                        self.multiDataFrameController.makeAndAddDataObj(
-                            path.name, datasetName, path=str(path)
-                        )
-                else:
-                    # Single dataset - add directly
-                    for datasetName in datasetsInFile:
-                        self.multiDataFrameController.makeAndAddDataObj(
-                            path.name, datasetName, path=str(path)
-                        )
-                        if (
-                            len(paths) == 1
-                            and len(datasetsInFile) == 1
-                            and self._activeReconstructor is not None
-                            and getattr(self._activeReconstructor, 'is_pass_through', False)
-                        ):
-                            single_pass_through_candidate = (path, datasetName)
-
-                self._logger.info(f"Loaded file via drag-and-drop: {path.name}")
-
-            except Exception as e:
-                self._logger.error(f"Failed to load dropped file {path.name}: {e}")
-
-        # Pass-through auto-route: send the single dropped dataset straight
-        # through currentDataChanged so the napari viewer shows it without
-        # the user having to click Set-as-current / Reconstruct-current.
-        if single_pass_through_candidate is not None:
-            path, datasetName = single_pass_through_candidate
-            try:
-                self._loadAsCurrent(path.name, datasetName, str(path))
-                return
-            except Exception as e:
-                self._logger.error(
-                    f"Pass-through auto-route from drag-and-drop failed for {path.name}: {e}"
-                )
-
-        # Raise the multi-data dock to show the loaded files
-        if paths:
+        # Single pass-through drop already raised the Current data dock via
+        # _loadAsCurrent. Otherwise, surface the MultiData dock if anything
+        # landed there.
+        if not any_routed_to_current and any_routed_to_multidata:
             self._widget.raiseMultiDataDock()
+
+    def _loadFromPath(self, dataPath, *, prefer_as_current: bool = False) -> str:
+        """Unified loader for one file path.
+
+        Handles dataset enumeration, the multi-dataset picker dialog and the
+        routing decision in one place. Reused by ``quickLoadData`` and
+        ``handleDroppedFiles`` so all entry points share the same pick UX.
+
+        Args:
+            dataPath: Absolute path to the file or zarr group.
+            prefer_as_current: When True, a single (or single-picked) dataset
+                is promoted to the current DataObj. When False, every dataset
+                is added to the multi-data list.
+
+        Returns:
+            ``'current'``     — routed to the current DataObj (and raised),
+            ``'multidata'``   — routed only into the multi-data list,
+            ``'cancelled'``   — user dismissed the picker dialog,
+            ``'empty'``       — no datasets in the file or none selected.
+        """
+        try:
+            datasetsInFile = DataObj.getDatasetNames(dataPath)
+        except Exception as exc:
+            self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
+            return 'empty'
+
+        if not datasetsInFile:
+            return 'empty'
+
+        name = os.path.basename(dataPath) or dataPath
+        datasetsToRoute = list(datasetsInFile)
+
+        if len(datasetsInFile) > 1:
+            self.pickDatasetsController.setDatasets(dataPath, datasetsInFile)
+            if not self._widget.showPickDatasetsDialog(blocking=True):
+                return 'cancelled'
+            datasetsToRoute = list(self.pickDatasetsController.getSelectedDatasets())
+            if not datasetsToRoute:
+                return 'empty'
+
+        if prefer_as_current and len(datasetsToRoute) == 1:
+            try:
+                self._loadAsCurrent(name, datasetsToRoute[0], dataPath)
+                return 'current'
+            except Exception as exc:
+                self._logger.error(
+                    f"Could not promote {name}::{datasetsToRoute[0]} to current: {exc}"
+                )
+                # Fall through to multidata routing so the data isn't silently
+                # dropped on the floor.
+
+        for datasetName in datasetsToRoute:
+            self.multiDataFrameController.makeAndAddDataObj(
+                name, datasetName, path=dataPath
+            )
+        return 'multidata'
 
     def _loadAsCurrent(self, name, datasetName, dataPath):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
 
-        Extracted so drag-drop and quickLoadData share the same routing.
+        Extracted so ``_loadFromPath`` (used by drag-drop and quickLoadData)
+        shares the routing with any future single-dataset entry points.
         """
         if self._currentDataObj is not None:
             self._currentDataObj.checkAndUnloadData()
