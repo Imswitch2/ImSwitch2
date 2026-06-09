@@ -16,6 +16,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._axisStep = (0, 0, 0, 0, 0, 0)
 
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
+        self._commChannel.sigResultProduced.connect(self.resultProduced)
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
@@ -178,6 +179,19 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def getImage(self):
         return self._widget.getImage()
+
+    def resultProduced(self, result, displayName):
+        """Add a freshly-produced result to the reconstruction list.
+
+        Decouples the producer (any reconstructor or processor) from this
+        viewer-side widget so future runners — processor chains, batch
+        watchers, scripted entry points — can publish without reaching into
+        the main view.
+        """
+        if result is None:
+            return
+        name = displayName or getattr(result, 'name', '') or 'result'
+        self._widget.addNewData(result, name)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

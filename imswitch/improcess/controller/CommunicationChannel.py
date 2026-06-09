@@ -27,6 +27,16 @@ class CommunicationChannel(SignalInterface):
 
     sigCurrentResultChanged = Signal(object)  # (processingResult/reconObj or None)
 
+    sigResultProduced = Signal(object, str)
+    """Fires when a new processing result is ready for the viewer.
+
+    Producers — the legacy MoNaLISA path, the plugin reconstruction path, and
+    any future processor-chain runner — emit ``(result, displayName)`` and
+    forget. ``ReconstructionViewController`` is the canonical listener and
+    folds the result into the reconstruction list, so producers no longer
+    need to know which widget owns the napari layer list.
+    """
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

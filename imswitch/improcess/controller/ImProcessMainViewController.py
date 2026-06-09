@@ -360,11 +360,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
             reconObj.addCoeffsTP(coeffs)
             if not consolidate:
                 reconObj.updateImages()
-                self._widget.addNewData(reconObj, reconObj.name)
+                self._commChannel.sigResultProduced.emit(reconObj, reconObj.name)
 
         if consolidate and reconObj is not None:
             reconObj.updateImages()
-            self._widget.addNewData(reconObj, f'{reconObj.name}_multi')
+            self._commChannel.sigResultProduced.emit(reconObj, f'{reconObj.name}_multi')
             self._commChannel.sigExecutionFinished.emit(self.reconstructionController.getImage())
 
     def _reconstruct_with_plugin(self, dataObjs, consolidate):
@@ -381,7 +381,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
                 f"Running {self._activeReconstructor.id} reconstruction for {dataObj.name}"
             )
             result = self._activeReconstructor.process(dataObj, params)
-            self._widget.addNewData(result, result.name)
+            self._commChannel.sigResultProduced.emit(result, result.name)
             self._commChannel.sigCurrentResultChanged.emit(result)
 
     def bleachingCorrection(self, data):
