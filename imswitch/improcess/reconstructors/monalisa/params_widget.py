@@ -40,9 +40,25 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         self.p = Parameter.create(name='params', type='group', children=params)
         self.tree = ParameterTree(showHeader=False)
         self.tree.setParameters(self.p, showTop=False)
-        
+
+        # Read-only status row showing the reconstructed pixel size in nm.
+        # Populated after each reconstruction via setOutputPixelSize so the
+        # user can see at a glance what they'll get without having to inspect
+        # the napari scale bar. Display-only — does NOT control reconstruction.
+        self._outputPixelSizeLabel = QtWidgets.QLabel(
+            'Output pixel size: — (set after reconstruction)'
+        )
+        self._outputPixelSizeLabel.setStyleSheet(
+            'color: palette(mid); font-size: 9pt; padding: 2px 4px;'
+        )
+        self._outputPixelSizeLabel.setToolTip(
+            'Reconstructed pixel pitch in nm. Derived from the sample step '
+            'size and the pattern grid; not directly tunable.'
+        )
+
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.tree)
+        layout.addWidget(self._outputPixelSizeLabel)
         layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
     
@@ -87,6 +103,27 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         pattern_pars.param('Col-offset').setValue(col_offset)
         pattern_pars.param('Row-period').setValue(row_period)
         pattern_pars.param('Col-period').setValue(col_period)
+
+    def setOutputPixelSize(self, output_pixel_size_nm: tuple[float, float] | None) -> None:
+        """Update the read-only output-pixel-size label.
+
+        Called by the reconstructor (via the main view controller) after a
+        successful reconstruction with the ``(y_nm, x_nm)`` pair attached to
+        :class:`MonalisaProcessingResult.output_pixel_size_nm`.
+        """
+        label = getattr(self, '_outputPixelSizeLabel', None)
+        if label is None:
+            return
+        if not output_pixel_size_nm:
+            label.setText('Output pixel size: — (set after reconstruction)')
+            return
+        y_nm, x_nm = output_pixel_size_nm
+        if abs(y_nm - x_nm) < 0.01:
+            label.setText(f'Output pixel size: {y_nm:.3g} nm/px')
+        else:
+            label.setText(
+                f'Output pixel size: Y {y_nm:.3g}  /  X {x_nm:.3g} nm/px'
+            )
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

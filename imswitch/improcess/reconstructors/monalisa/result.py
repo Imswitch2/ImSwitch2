@@ -25,7 +25,10 @@ class MonalisaProcessingResult(ProcessingResult):
         data: np.ndarray,
         scan_params: dict,
         axis_labels: list[str] | None = None,
-        display_levels: tuple[float, float] | None = None
+        display_levels: tuple[float, float] | None = None,
+        axis_scales: list[float] | None = None,
+        scale_unit: str = "nm",
+        output_pixel_size_nm: tuple[float, float] | None = None,
     ):
         """
         Args:
@@ -34,26 +37,62 @@ class MonalisaProcessingResult(ProcessingResult):
             scan_params: Scan metadata dict with 'dimensions', 'directions', 'steps', 'step_sizes'
             axis_labels: Optional axis labels (defaults to 6D MoNaLISA standard)
             display_levels: Optional (min, max) display range
+            axis_scales: Optional per-axis scales (length 6). Overrides the
+                Y/X scales derived from ``output_pixel_size_nm``.
+            scale_unit: Display unit for the napari scale bar — defaults to
+                ``"nm"`` because MoNaLISA's reconstructed pixel grid is
+                sub-nanometer-step.
+            output_pixel_size_nm: Optional ``(y_nm, x_nm)`` describing the
+                reconstructed pixel pitch. Stored on the result for the
+                parameter widget to display, and used to populate the Y/X
+                entries of ``axis_scales`` when ``axis_scales`` is None.
         """
         if axis_labels is None:
             axis_labels = ["Dataset", "Base", "T", "Z", "Y", "X"]
-        
+
         # Define view modes for MoNaLISA 6D data
         view_modes = [
             ViewMode("Standard", (0, 1, 2, 3, 4, 5)),  # Dataset, Base, T, Z, Y, X
             ViewMode("Bottom", (1, 0, 2, 3, 5, 4)),    # Base, Dataset, T, Z, X, Y (XZ plane)
             ViewMode("Left", (1, 0, 2, 3, 4, 5)),      # Base, Dataset, T, Z, Y, X (YZ plane)
         ]
-        
+
+        # Derive axis_scales from output_pixel_size_nm so the napari scale bar
+        # and downstream profile / PSF analyses get the right physical units
+        # without the caller having to assemble a 6-element scale list.
+        if axis_scales is None:
+            axis_scales = [1.0] * data.ndim
+            if (
+                output_pixel_size_nm is not None
+                and data.ndim >= 2
+                and "Y" in axis_labels
+                and "X" in axis_labels
+            ):
+                y_nm, x_nm = output_pixel_size_nm
+                axis_scales[axis_labels.index("Y")] = float(y_nm)
+                axis_scales[axis_labels.index("X")] = float(x_nm)
+                # Z scale from scan_params if available — keeps 3D stacks
+                # visually proportional when the user flips through slices.
+                try:
+                    bf_index = scan_params['dimensions'].index('Back-Front')
+                    z_nm = float(scan_params['step_sizes'][bf_index])
+                    if "Z" in axis_labels:
+                        axis_scales[axis_labels.index("Z")] = z_nm
+                except (KeyError, ValueError, TypeError):
+                    pass
+
         super().__init__(
             name=name,
             data=data,
             axis_labels=axis_labels,
             view_modes=view_modes,
-            display_levels=display_levels
+            display_levels=display_levels,
+            axis_scales=axis_scales,
+            scale_unit=scale_unit,
         )
-        
+
         self.scan_params = scan_params
+        self.output_pixel_size_nm = output_pixel_size_nm
     
     def save(self, path: Path, fmt: str = "tiff") -> None:
         """

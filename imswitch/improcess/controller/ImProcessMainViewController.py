@@ -466,6 +466,19 @@ class ImProcessMainViewController(ImProcessWidgetController):
             result = self._activeReconstructor.process(dataObj, params)
             self._commChannel.sigResultProduced.emit(result, result.name)
             self._commChannel.sigCurrentResultChanged.emit(result)
+            # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
+            # output pixel size) back into the active parameter widget so
+            # the user sees up-to-date numbers without flipping to napari's
+            # scale bar.  Best-effort: silently no-ops on plugins / widgets
+            # that don't expose setOutputPixelSize.
+            output_pixel_size_nm = getattr(result, 'output_pixel_size_nm', None)
+            par_tree = getattr(self._widget, 'parTree', None)
+            setter = getattr(par_tree, 'setOutputPixelSize', None)
+            if callable(setter):
+                try:
+                    setter(output_pixel_size_nm)
+                except Exception:
+                    pass
 
     def bleachingCorrection(self, data):
         correctedData = data.copy()

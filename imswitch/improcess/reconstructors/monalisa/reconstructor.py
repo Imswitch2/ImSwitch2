@@ -196,17 +196,38 @@ class MonalisaReconstructor(Reconstructor):
         # Wrap in 6D format: (Dataset=1, Base, T, Z, Y, X) so the result's
         # declared axis_labels ["Dataset", "Base", "T", "Z", "Y", "X"] line up.
         images_6d = per_base[np.newaxis, ...]
-        
+
+        # Compute the reconstructed pixel pitch in nm so the napari scale bar
+        # and downstream profile / PSF widgets get real physical units.
+        #
+        # Output Y dim = sqRows * gridRows, covering a physical extent of
+        # sqRows * step_size_Y. The recon pixel pitch is therefore
+        # step_size_Y / gridRows. Same for X.
+        grid_rows = int(coeffs.shape[2])
+        grid_cols = int(coeffs.shape[3])
+        try:
+            ud_index = scan_params['dimensions'].index(self._axis_labels['u_d_text'])
+            rl_index = scan_params['dimensions'].index(self._axis_labels['r_l_text'])
+            step_y_nm = float(scan_params['step_sizes'][ud_index])
+            step_x_nm = float(scan_params['step_sizes'][rl_index])
+            output_pixel_size_nm = (
+                step_y_nm / grid_rows if grid_rows else step_y_nm,
+                step_x_nm / grid_cols if grid_cols else step_x_nm,
+            )
+        except (KeyError, ValueError, TypeError, IndexError):
+            output_pixel_size_nm = None
+
         # Compute display levels (auto contrast)
         data_min = float(np.percentile(images_6d, 1))
         data_max = float(np.percentile(images_6d, 99.9))
-        
+
         # Create result
         result = MonalisaProcessingResult(
             name=data_obj.name,
             data=images_6d,
             scan_params=scan_params,
-            display_levels=(data_min, data_max)
+            display_levels=(data_min, data_max),
+            output_pixel_size_nm=output_pixel_size_nm,
         )
         
         self._logger.info(f'Reconstruction complete: shape {images_6d.shape}')
