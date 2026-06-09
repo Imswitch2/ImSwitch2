@@ -1,6 +1,8 @@
 from imswitch.improcess.model.processing_config import (
+    is_frc_panel_enabled,
     is_graph_panel_enabled,
     is_profile_panel_enabled,
+    is_roi_stats_panel_enabled,
     plugin_ids_from_config,
 )
 
@@ -27,6 +29,22 @@ def test_profile_panel_can_be_disabled():
 
 def test_profile_panel_can_be_enabled_explicitly():
     assert is_profile_panel_enabled({"profilePanel": True})
+
+
+def test_frc_panel_hidden_by_default():
+    assert not is_frc_panel_enabled({})
+
+
+def test_frc_panel_can_be_enabled_explicitly():
+    assert is_frc_panel_enabled({"frcPanel": True})
+
+
+def test_roi_stats_panel_hidden_by_default():
+    assert not is_roi_stats_panel_enabled({})
+
+
+def test_roi_stats_panel_can_be_enabled_explicitly():
+    assert is_roi_stats_panel_enabled({"roiStatsPanel": True})
 
 
 def test_graph_panel_only_config_keeps_standalone_plugin_defaults():

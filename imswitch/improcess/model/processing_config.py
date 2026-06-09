@@ -33,6 +33,16 @@ def is_profile_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("profilePanel", False))
 
 
+def is_frc_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess FRC panel should be shown."""
+    return bool(processing_config.get("frcPanel", False))
+
+
+def is_roi_stats_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess ROI statistics panel should be shown."""
+    return bool(processing_config.get("roiStatsPanel", False))
+
+
 def plugin_ids_from_config(
     processing_config: dict[str, Any],
 ) -> tuple[list[str], list[str], bool]:

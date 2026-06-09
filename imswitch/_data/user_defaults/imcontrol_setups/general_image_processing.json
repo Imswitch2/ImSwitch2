@@ -1,0 +1,12 @@
+{
+    "// description": "Minimal setup for running ImProcess as a stand-alone general image-processing and analysis tool. No hardware devices are declared - this setup is meant for opening existing HDF5/Zarr/TIFF acquisitions, viewing them, applying generic processors, and using optional analysis panels. To use, also set 'enabled' to ['improcess'] in modules.json.",
+
+    "processing": {
+        "graphPanel": true,
+        "profilePanel": true,
+        "frcPanel": true,
+        "roiStatsPanel": true,
+        "reconstructors": ["view-only"],
+        "processors": ["drift-correct", "frc"]
+    }
+}

@@ -9,8 +9,10 @@ from .DataFrame import DataFrame
 from .MultiDataFrame import MultiDataFrame
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
+from .FRCWidget import FRCWidget
 from .GraphWidget import GraphWidget
 from .ProfileWidget import ProfileWidget
+from .ROIStatsWidget import ROIStatsWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .guitools import BetterPushButton
 
@@ -43,6 +45,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self,
         showGraphPanel: bool = True,
         showProfilePanel: bool = True,
+        showFRCPanel: bool = False,
+        showROIStatsPanel: bool = False,
         *args,
         **kwargs,
     ):
@@ -115,6 +119,16 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showProfilePanel
             else None
         )
+        self.frcWidget = (
+            FRCWidget(self.reconstructionWidget.napariViewer)
+            if showFRCPanel
+            else None
+        )
+        self.roiStatsWidget = (
+            ROIStatsWidget(self.reconstructionWidget.napariViewer)
+            if showROIStatsPanel
+            else None
+        )
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -176,14 +190,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             rightSplitter.addWidget(self.graphWidget)
         if self.profileWidget is not None:
             rightSplitter.addWidget(self.profileWidget)
+        if self.frcWidget is not None:
+            rightSplitter.addWidget(self.frcWidget)
+        if self.roiStatsWidget is not None:
+            rightSplitter.addWidget(self.roiStatsWidget)
         rightSplitter.setStretchFactor(0, 5)
-        if self.graphWidget is not None and self.profileWidget is not None:
-            rightSplitter.setStretchFactor(1, 1)
-            rightSplitter.setStretchFactor(2, 1)
-        elif self.graphWidget is not None or self.profileWidget is not None:
-            rightSplitter.setStretchFactor(1, 1)
-        else:
-            rightSplitter.setStretchFactor(0, 1)
+        for index in range(1, rightSplitter.count()):
+            rightSplitter.setStretchFactor(index, 1)
         rightContainer.addWidget(rightSplitter)
 
         layout.addLayout(leftContainer, 1)
