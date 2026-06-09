@@ -169,13 +169,33 @@ class MonalisaReconstructor(Reconstructor):
         self._logger.info(f'Extracting signal with {params["device"]} on {data.shape[0]} frames...')
         self._ensure_signal_extractor()
         coeffs = self._signal_extractor.extractSignal(data, sigmas, pattern, device)
-        
-        # Convert coefficients to images
-        self._logger.info('Converting coefficients to images...')
-        images = coeffs_to_image(coeffs, scan_params, self._axis_labels)
-        
-        # Wrap in 6D format: (dataset=1, bases, T, Z, Y, X)
-        images_6d = images[np.newaxis, ...]  # add dataset axis
+        # SignalExtractor returns shape (numBases, numFrames, gridRows, gridCols).
+        # coeffs_to_image() takes a 3D (frames, gridRows, gridCols) slice, so we
+        # iterate per base and stack along a new leading Base axis — matching
+        # the legacy ReconObj.updateImages contract. Without this loop the
+        # output collapsed to a confusing 2-frame stack because the bases axis
+        # was treated as if it were the scan-frame axis.
+        if coeffs.ndim != 4:
+            raise ValueError(
+                f'SignalExtractor returned shape {coeffs.shape}; '
+                f'expected (numBases, numFrames, gridRows, gridCols)'
+            )
+        num_bases = coeffs.shape[0]
+        self._logger.info(
+            f'Converting coefficients to images ({num_bases} bases x '
+            f'{coeffs.shape[1]} frames -> per-base reconstruction)...'
+        )
+        per_base = np.stack(
+            [
+                coeffs_to_image(coeffs[b], scan_params, self._axis_labels)
+                for b in range(num_bases)
+            ],
+            axis=0,
+        )  # shape (Base, T, Z, Y, X)
+
+        # Wrap in 6D format: (Dataset=1, Base, T, Z, Y, X) so the result's
+        # declared axis_labels ["Dataset", "Base", "T", "Z", "Y", "X"] line up.
+        images_6d = per_base[np.newaxis, ...]
         
         # Compute display levels (auto contrast)
         data_min = float(np.percentile(images_6d, 1))

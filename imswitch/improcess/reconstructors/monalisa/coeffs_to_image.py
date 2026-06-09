@@ -15,10 +15,16 @@ _logger = initLogger('MonalisaCoeffsToImage')
 
 def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str, str]) -> np.ndarray:
     """
-    Reshape MoNaLISA coefficients into images according to scan parameters.
-    
+    Reshape one base's worth of MoNaLISA coefficients into an image.
+
+    Caller responsibility: ``SignalExtractor.extractSignal`` returns a 4D array
+    ``(numBases, numFrames, gridRows, gridCols)``.  Callers must iterate the
+    leading Base axis and pass each 3D slice to this function separately —
+    the function intentionally handles one base at a time.
+
     Args:
-        coeffs: 4D coefficient array from signal extraction (frames, bases, row_patches, col_patches)
+        coeffs: 3D coefficient array for a single base
+                ``(numFrames, gridRows, gridCols)``.
         scan_params: Scan metadata dict with keys:
             - 'dimensions': list of 4 dimension names in scan order (e.g., ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'])
             - 'directions': list of 3 direction strings ('pos' or 'neg')
