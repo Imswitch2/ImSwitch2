@@ -37,7 +37,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigPatternParamsChanged = QtCore.Signal()
 
     sigFilesDropped = QtCore.Signal(list)  # List of pathlib.Path objects
-    
+
+    # Emitted when the user picks a different reconstructor in the Parameters
+    # dock header. Carries the plugin id (e.g. "view-only", "monalisa").
+    sigActiveReconstructorChanged = QtCore.Signal(str)
+
     sigClosing = QtCore.Signal()
 
     def __init__(
@@ -150,21 +154,29 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         # Parameter tree lives inside a host frame so setParameterWidget can
         # swap the active reconstructor's parameter widget without disturbing
-        # the surrounding dock. A small header label above the tree always
-        # shows which reconstructor's parameters are currently displayed.
+        # the surrounding dock. A small picker above the tree both shows
+        # which reconstructor's parameters are currently displayed and lets
+        # the user switch between registered reconstructors.
         parameterFrame = QtWidgets.QFrame()
         parameterGrid = QtWidgets.QGridLayout()
         parameterGrid.setContentsMargins(0, 0, 0, 0)
         parameterGrid.setVerticalSpacing(2)
         parameterFrame.setLayout(parameterGrid)
-        self._activeReconstructorLabel = QtWidgets.QLabel('Reconstructor: —')
-        self._activeReconstructorLabel.setStyleSheet(
-            'color: palette(mid); font-size: 9pt; padding: 2px 4px;'
+        self._activeReconstructorCombo = QtWidgets.QComboBox()
+        self._activeReconstructorCombo.setToolTip(
+            'Active reconstructor — pick another to swap the parameter tree'
         )
-        self._activeReconstructorLabel.setToolTip(
-            'Active reconstructor whose parameters are shown below'
+        self._activeReconstructorCombo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.AdjustToContents
         )
-        parameterGrid.addWidget(self._activeReconstructorLabel, 0, 0)
+        # When the user (not setActiveReconstructorName) changes the combo,
+        # emit the public signal so the controller can install the matching
+        # parameter widget. We use activated/currentIndexChanged with a
+        # blockSignals guard rather than the textActivated convenience.
+        self._activeReconstructorCombo.currentIndexChanged.connect(
+            self._on_active_reconstructor_combo_changed
+        )
+        parameterGrid.addWidget(self._activeReconstructorCombo, 0, 0)
         parameterGrid.addWidget(self.parTree, 1, 0)
         self.parameterGrid = parameterGrid
 
@@ -258,19 +270,79 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def requestFolderPathFromUser(self, caption=None, defaultFolder=None):
         return QtWidgets.QFileDialog.getExistingDirectory(caption=caption, directory=defaultFolder)
 
+    def setReconstructorChoices(
+        self,
+        choices: list[tuple[str, str]],
+        current_id: str | None = None,
+    ) -> None:
+        """Fill the Parameters-dock picker with the registered reconstructors.
+
+        ``choices`` is a list of ``(plugin_id, display_name)`` pairs. The
+        plugin id is stored as the item's userData so user picks resolve back
+        to the registry without name-collision risk. When ``current_id`` is
+        provided and matches an entry, that entry is preselected.
+        """
+        combo = self._activeReconstructorCombo
+        combo.blockSignals(True)
+        combo.clear()
+        for plugin_id, plugin_name in choices:
+            combo.addItem(str(plugin_name or plugin_id or '—'), userData=plugin_id)
+        if current_id is not None:
+            for i in range(combo.count()):
+                if combo.itemData(i) == current_id:
+                    combo.setCurrentIndex(i)
+                    break
+        combo.blockSignals(False)
+        self._updateParametersDockTitle()
+
     def setActiveReconstructorName(self, name: str) -> None:
-        """Update the Parameters header label and dock title to show the
-        active reconstructor's display name."""
+        """Sync the Parameters-dock picker to the named reconstructor.
+
+        If the name matches an existing combo entry, select it; otherwise
+        insert a transient ``userData=None`` placeholder so a controller-
+        driven name that isn't yet in the choice list still shows up. The
+        dock title is also updated in both cases.
+        """
         display = name.strip() if name else ''
-        self._activeReconstructorLabel.setText(
-            f'Reconstructor: {display}' if display else 'Reconstructor: —'
-        )
+        combo = self._activeReconstructorCombo
+        combo.blockSignals(True)
+        matched = False
+        for i in range(combo.count()):
+            if combo.itemText(i) == display:
+                combo.setCurrentIndex(i)
+                matched = True
+                break
+        if not matched and display:
+            combo.addItem(display, userData=None)
+            combo.setCurrentIndex(combo.count() - 1)
+        combo.blockSignals(False)
+        self._updateParametersDockTitle()
+
+    def _updateParametersDockTitle(self) -> None:
+        display = self._activeReconstructorCombo.currentText().strip()
         dock = self.docks.get('Parameters') if hasattr(self, 'docks') else None
-        if dock is not None:
-            try:
-                dock.setTitle(f'Parameters — {display}' if display else 'Parameters')
-            except Exception:
-                pass
+        if dock is None:
+            return
+        title = f'Parameters — {display}' if display else 'Parameters'
+        try:
+            dock.setTitle(title)
+        except Exception:
+            pass
+
+    def _on_active_reconstructor_combo_changed(self, index: int) -> None:
+        """User picked a different reconstructor — relay the plugin id to
+        the controller via ``sigActiveReconstructorChanged``."""
+        combo = self._activeReconstructorCombo
+        if index < 0 or index >= combo.count():
+            return
+        plugin_id = combo.itemData(index)
+        if plugin_id is None:
+            # Transient placeholder inserted by setActiveReconstructorName for
+            # an unknown name — nothing actionable for the controller.
+            self._updateParametersDockTitle()
+            return
+        self._updateParametersDockTitle()
+        self.sigActiveReconstructorChanged.emit(str(plugin_id))
 
     def raiseCurrentDataDock(self):
         self.currentDataDock.raiseDock()

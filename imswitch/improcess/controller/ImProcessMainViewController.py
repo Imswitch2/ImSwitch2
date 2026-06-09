@@ -61,6 +61,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._activeReconstructor = self._select_reconstructor()
         if self._activeReconstructor is not None:
             self._install_reconstructor_params(self._activeReconstructor)
+        self._publishReconstructorChoices()
 
         self._currentDataObj = None
         self._pattern = self._widget.getPatternParams()
@@ -105,6 +106,17 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigShowScanParamsClicked.connect(self.showScanParamsDialog)
         self._widget.sigPatternParamsChanged.connect(self.updatePattern)
         self._widget.sigFilesDropped.connect(self.handleDroppedFiles)
+
+        # The Parameters-dock picker lets the user flip between registered
+        # reconstructors on the fly. The controller is the authority on the
+        # registry, so the view just signals the chosen plugin id.
+        try:
+            self._widget.sigActiveReconstructorChanged.connect(
+                self._on_user_changed_reconstructor
+            )
+        except AttributeError:
+            # Older view builds without the picker degrade silently.
+            pass
         self.updatePattern()
         self.updateScanParams()
 
@@ -120,6 +132,53 @@ class ImProcessMainViewController(ImProcessWidgetController):
             f"Using active reconstructor: {reconstructor.id} ({reconstructor.name})"
         )
         return reconstructor
+
+    def _publishReconstructorChoices(self):
+        """Send the current registered-reconstructor list to the Parameters
+        dock picker. Best-effort: silently no-ops on view builds that don't
+        expose the picker yet."""
+        try:
+            from imswitch.improcess.reconstructors.registry import get_registry
+
+            choices = [(r.id, r.name) for r in get_registry().reconstructors()]
+            current = self._activeReconstructor.id if self._activeReconstructor else None
+            self._widget.setReconstructorChoices(choices, current)
+        except AttributeError:
+            pass
+        except Exception as exc:
+            self._logger.debug(
+                f"Could not publish reconstructor choices to view: {exc}"
+            )
+
+    def _on_user_changed_reconstructor(self, plugin_id: str):
+        """Slot for view-side picker: swap the active reconstructor and
+        re-install its parameter widget. If the new reconstructor is
+        pass-through and a current DataObj is already loaded, also kick the
+        auto-route so the viewer reflects the change immediately."""
+        if not plugin_id:
+            return
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        for candidate in get_registry().reconstructors():
+            if candidate.id == plugin_id:
+                if self._activeReconstructor is candidate:
+                    return
+                self._activeReconstructor = candidate
+                self._install_reconstructor_params(candidate)
+                if (
+                    getattr(candidate, 'is_pass_through', False)
+                    and self._currentDataObj is not None
+                ):
+                    try:
+                        self.reconstruct([self._currentDataObj], consolidate=False)
+                    except Exception as exc:
+                        self._logger.warning(
+                            f"Pass-through auto-route on reconstructor switch failed: {exc}"
+                        )
+                return
+        self._logger.warning(
+            f"Reconstructor {plugin_id!r} requested by view picker is not registered"
+        )
 
     def _install_reconstructor_params(self, reconstructor):
         # Always reflect the active reconstructor in the Parameters dock so
