@@ -238,9 +238,17 @@ Users opt in via the existing `processing:` config block:
 
 ---
 
-## 3. Out of scope for D.1
+## 3. D.1 Follow-up Status
 
-* Multi-color alignment (Mini_Recon's `core.multicolor` path).
+* Multi-color alignment from Mini_Recon's `core.multicolor` path has now been
+  ported into ImProcess as `multicolor-registration` and `multicolor-apply`.
+  The feature lives as post-deskew processors plus an optional Multicolor
+  panel, not inside the SNOUTY deskew reconstructor itself.  This keeps bead
+  calibration and sample application reusable across any `ZYX` / `TZYX`
+  deskewed result.
+
+## 4. Still out of scope for D.1
+
 * Saving via a non-TIFF/HDF5 format (zarr later).
 * GPU path (D.2).
 * Projection-only sibling (D.3).

@@ -96,6 +96,16 @@
       "opts": []
     },
     {
+      "key": "multicolorPanel",
+      "label": "Show multicolor panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional three-color strip registration and alignment panel in the ImProcess window.",
+      "opts": []
+    },
+    {
       "key": "reconstructors",
       "label": "Reconstructors",
       "type": "multiselect",

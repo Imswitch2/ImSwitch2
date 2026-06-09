@@ -12,6 +12,8 @@ def test_runtime_processor_choices_include_display_names():
 
     assert choices["projection"] == "Projection"
     assert choices["colocalization"] == "Colocalization"
+    assert choices["multicolor-registration"] == "Multicolor Registration"
+    assert choices["multicolor-apply"] == "Multicolor Apply"
 
 
 def test_register_processor_by_id_adds_builtin_processor():

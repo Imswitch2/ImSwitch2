@@ -5,6 +5,16 @@ from .anisotropy import (
     build_anisotropy_maps,
     build_anisotropy_maps_split_detection,
     gaussian_fit_anisotropy,
+    standard_anisotropy_intensity_maps,
+)
+from .batch import (
+    WidefieldStarssBatchCancelled,
+    WidefieldStarssBatchResult,
+    WidefieldStarssPair,
+    discover_widefield_starss_pairs,
+    discover_widefield_starss_pairs_in_folder,
+    run_widefield_starss_batch,
+    run_widefield_starss_batch_from_folder,
 )
 from .containers import AnisotropyMaps, PolarizationStats
 from .pipeline import (
@@ -26,6 +36,9 @@ __all__ = [
     "AnisotropyMaps",
     "PolarizationStats",
     "WidefieldStarssAnalysis",
+    "WidefieldStarssBatchCancelled",
+    "WidefieldStarssBatchResult",
+    "WidefieldStarssPair",
     "WidefieldStarssParams",
     "analyze_regions",
     "analyze_regions_split_detection",
@@ -37,10 +50,15 @@ __all__ = [
     "build_psf_mask",
     "compute_polarization_stats",
     "compute_simple_intensity_stats",
+    "discover_widefield_starss_pairs",
+    "discover_widefield_starss_pairs_in_folder",
     "gaussian_fit_anisotropy",
     "make_simple_mask",
     "prepare_signal_background",
+    "run_widefield_starss_batch",
+    "run_widefield_starss_batch_from_folder",
     "segment_line_psf",
+    "standard_anisotropy_intensity_maps",
     "split_frame_into4",
     "split_stack_into4",
 ]

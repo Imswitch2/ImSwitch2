@@ -12,6 +12,7 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         is_colocalization_panel_enabled,
         is_frc_panel_enabled,
         is_graph_panel_enabled,
+        is_multicolor_panel_enabled,
         is_profile_panel_enabled,
         is_psf_resolution_panel_enabled,
         is_projection_panel_enabled,
@@ -33,6 +34,7 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         showSegmentationPanel=is_segmentation_panel_enabled(processing_config),
         showPSFResolutionPanel=is_psf_resolution_panel_enabled(processing_config),
         showColocalizationPanel=is_colocalization_panel_enabled(processing_config),
+        showMulticolorPanel=is_multicolor_panel_enabled(processing_config),
     )
     try:
         controller = ImProcessMainController(

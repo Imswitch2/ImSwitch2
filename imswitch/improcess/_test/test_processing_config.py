@@ -1,7 +1,12 @@
+import json
+from pathlib import Path
+
+from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.model.processing_config import (
     is_colocalization_panel_enabled,
     is_frc_panel_enabled,
     is_graph_panel_enabled,
+    is_multicolor_panel_enabled,
     is_profile_panel_enabled,
     is_psf_resolution_panel_enabled,
     is_projection_panel_enabled,
@@ -92,6 +97,14 @@ def test_colocalization_panel_can_be_enabled_explicitly():
     assert is_colocalization_panel_enabled({"colocalizationPanel": True})
 
 
+def test_multicolor_panel_hidden_by_default():
+    assert not is_multicolor_panel_enabled({})
+
+
+def test_multicolor_panel_can_be_enabled_explicitly():
+    assert is_multicolor_panel_enabled({"multicolorPanel": True})
+
+
 def test_graph_panel_only_config_keeps_standalone_plugin_defaults():
     reconstructors, processors, has_plugin_config = plugin_ids_from_config(
         {"graphPanel": False}
@@ -110,3 +123,39 @@ def test_plugin_ids_from_config_reports_explicit_plugin_config():
     assert reconstructors == ["monalisa"]
     assert processors == []
     assert has_plugin_config
+
+
+def test_improcess_setup_presets_use_known_processor_ids():
+    setup_dir = (
+        Path(__file__).resolve().parents[2]
+        / "_data"
+        / "user_defaults"
+        / "imcontrol_setups"
+    )
+    setup_files = [
+        setup_dir / "snouty_processor.json",
+        setup_dir / "general_image_processing.json",
+        setup_dir / "monalisa_processor.json",
+        setup_dir / "widefieldstarss_processor.json",
+    ]
+    known_processors = set(available_processor_ids())
+
+    for setup_file in setup_files:
+        config = json.loads(setup_file.read_text(encoding="utf-8"))
+        processors = set(config["processing"].get("processors", []))
+        assert not (processors - known_processors), setup_file.name
+
+
+def test_snouty_setup_enables_multicolor_workflow():
+    setup_file = (
+        Path(__file__).resolve().parents[2]
+        / "_data"
+        / "user_defaults"
+        / "imcontrol_setups"
+        / "snouty_processor.json"
+    )
+    processing = json.loads(setup_file.read_text(encoding="utf-8"))["processing"]
+
+    assert processing["multicolorPanel"]
+    assert "multicolor-registration" in processing["processors"]
+    assert "multicolor-apply" in processing["processors"]

@@ -113,6 +113,7 @@ class WidefieldStarssResult(ProcessingResult):
             f.create_dataset("base_image", data=self.analysis.base_image.astype(np.float32), compression="gzip")
             for key in ("ihh", "ihv", "ivh", "ivv"):
                 f.create_dataset(key, data=getattr(self.analysis.anis_maps, key), compression="gzip")
+            f.attrs["anisotropy_mode"] = self.analysis.anis_maps.anisotropy_mode
 
             region_group = f.create_group("regions")
             for column in self.analysis.regions.columns:

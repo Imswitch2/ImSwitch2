@@ -226,8 +226,18 @@ def analyze_widefield_starss_pair(
 **Implementation status:** First slice done.  `widefield-starss` is registered
 as a built-in reconstructor.  It supports `_h.tif` / `_v.tif` auto-pairing,
 manual counterpart selection, standard mosaic mode, split-detection mode,
-presets, map-stack display, HDF5/TIFF save and graph payloads.  Dedicated table
-and multi-layer viewer display remain Phase 4 work.
+presets, map-stack display, HDF5/TIFF save and graph payloads.  Standard mosaic
+anisotropy now exposes an explicit mode switch: `stokes` remains the default
+and uses all four analyzer pixels through `S0/S1`, while `direct_0_90` uses
+only the raw 0°/90° analyzer pixels.  The WFS segmentation mode list also
+includes `generic_otsu`, which reuses the generic ImProcess segmentation kernel
+used by the `segmentation` processor.  A pure backend batch API now discovers
+`*_h.tif[f]` / `*_v.tif[f]` pairs, runs all pairs with one shared parameter set
+and writes consolidated per-region and per-sample tables.  The first
+parameter-widget batch controls now run that backend in a Qt worker thread,
+report pair-level progress, support cancellation between pairs and export
+CSV/HDF5 tables.  Dedicated table, unmatched-file preview and multi-layer
+viewer display remain Phase 4 work.
 
 `WidefieldStarssReconstructor` is now registered as a modality-specific
 ImProcess reconstructor.
@@ -321,10 +331,12 @@ After the single-pair reconstructor works:
   - run single-pair analysis repeatedly
   - concatenate region tables with `source_base`, `local_label`,
     `global_label`
+  - execute in a worker thread with pair-level progress and cancellation
   - graph widget displays batch histogram and per-source summaries
 
-Batch mode should be a follow-up because it needs progress reporting,
-cancellation, and careful memory handling.
+The first batch mode is implemented; remaining Phase 4 work is result browsing,
+unmatched-file inspection, graph summaries and careful memory handling for very
+large folders.
 
 ---
 

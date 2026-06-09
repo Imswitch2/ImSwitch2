@@ -153,6 +153,7 @@ def _build_anisotropy_maps_core(
     ihh, ihv, ivh, ivv,
     ihh_var, ihv_var, ivh_var, ivv_var,
     smooth_sigma=2.0, intensity_threshold=None, eps=1e-12,
+    anisotropy_mode="stokes",
 ):
     """
     Core computation shared by build_anisotropy_maps and
@@ -196,15 +197,50 @@ def _build_anisotropy_maps_core(
         x_smooth=x_smooth, r_smooth=r_smooth, r_smooth_se=r_smooth_se,
         valid_mask=valid_mask,
         smooth_sigma=smooth_sigma,
+        anisotropy_mode=anisotropy_mode,
     )
 
 
-def build_anisotropy_maps(stats_h, stats_v, smooth_sigma=2.0, intensity_threshold=None, eps=1e-12):
+def standard_anisotropy_intensity_maps(stats_h, stats_v, mode="stokes"):
+    """
+    Return HH/HV/VH/VV maps for standard mosaic anisotropy.
+
+    ``stokes`` is the current/default WidefieldSTARSS path. It uses all four
+    analyzer pixels to estimate S0, then constructs virtual H/V detection
+    intensities as IH=(S0+S1)/2 and IV=(S0-S1)/2.
+
+    ``direct_0_90`` uses only the raw 0° and 90° analyzer pixels for H/V
+    detection. This is simpler and discards the 45°/135° pair from the
+    anisotropy calculation, but is useful as an explicit comparison mode.
+    """
+    if mode == "stokes":
+        return (
+            stats_h.IH_mean, stats_h.IV_mean, stats_v.IH_mean, stats_v.IV_mean,
+            stats_h.IH_var_mean, stats_h.IV_var_mean, stats_v.IH_var_mean, stats_v.IV_var_mean,
+        )
+    if mode == "direct_0_90":
+        return (
+            stats_h.I0_mean, stats_h.I90_mean, stats_v.I0_mean, stats_v.I90_mean,
+            stats_h.I0_var_mean, stats_h.I90_var_mean, stats_v.I0_var_mean, stats_v.I90_var_mean,
+        )
+    raise ValueError(f"Unsupported anisotropy mode: {mode!r}")
+
+
+def build_anisotropy_maps(
+    stats_h,
+    stats_v,
+    smooth_sigma=2.0,
+    intensity_threshold=None,
+    eps=1e-12,
+    anisotropy_mode="stokes",
+):
     """
     Create raw and smoothed anisotropy maps — standard (single-camera) mode.
 
-    H and V detection channels are the virtual IH / IV derived from the
-    polarization mosaic Stokes parameters (IH ≈ I0°, IV ≈ I90°).
+    By default, H and V detection channels are the virtual IH / IV derived
+    from the polarization mosaic Stokes parameters. Set
+    ``anisotropy_mode="direct_0_90"`` to use the raw I0/I90 analyzer pixels
+    instead.
 
     Parameters
     ----------
@@ -219,10 +255,16 @@ def build_anisotropy_maps(stats_h, stats_v, smooth_sigma=2.0, intensity_threshol
     -------
     AnisotropyMaps
     """
+    ihh, ihv, ivh, ivv, ihh_var, ihv_var, ivh_var, ivv_var = standard_anisotropy_intensity_maps(
+        stats_h,
+        stats_v,
+        mode=anisotropy_mode,
+    )
     return _build_anisotropy_maps_core(
-        stats_h.IH_mean,     stats_h.IV_mean,     stats_v.IH_mean,     stats_v.IV_mean,
-        stats_h.IH_var_mean, stats_h.IV_var_mean, stats_v.IH_var_mean, stats_v.IV_var_mean,
+        ihh, ihv, ivh, ivv,
+        ihh_var, ihv_var, ivh_var, ivv_var,
         smooth_sigma=smooth_sigma, intensity_threshold=intensity_threshold, eps=eps,
+        anisotropy_mode=anisotropy_mode,
     )
 
 
@@ -262,4 +304,5 @@ def build_anisotropy_maps_split_detection(
         ihh, ihv, ivh, ivv,
         ihh_var, ihv_var, ivh_var, ivv_var,
         smooth_sigma=smooth_sigma, intensity_threshold=intensity_threshold, eps=eps,
+        anisotropy_mode="split_detection",
     )

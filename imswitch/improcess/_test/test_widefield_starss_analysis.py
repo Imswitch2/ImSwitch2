@@ -14,6 +14,7 @@ from imswitch.improcess.reconstructors.widefield_starss.analysis import (
     prepare_signal_background,
     split_frame_into4,
 )
+from imswitch.improcess.analysis.segmentation import segment_image
 
 
 def _mosaic_frame(i0, i45, i90, i135, shape=(8, 10)):
@@ -78,6 +79,55 @@ def test_analyze_standard_mosaic_pair_returns_region_and_expected_anisotropy():
         0.0,
         atol=1e-6,
     )
+    assert analysis.anis_maps.anisotropy_mode == "stokes"
+
+
+def test_standard_mosaic_anisotropy_mode_can_use_direct_0_90():
+    background = np.full((8, 10), 5, dtype=np.float32)
+    h_signal = background + _mosaic_frame(i0=100, i45=20, i90=50, i135=20)
+    v_signal = background + _mosaic_frame(i0=50, i45=15, i90=100, i135=15)
+    stack_h = _alternating_stack(h_signal, background)
+    stack_v = _alternating_stack(v_signal, background)
+
+    stokes = analyze_widefield_starss_pair(
+        stack_h,
+        stack_v,
+        WidefieldStarssParams(segmentation_mode="none", anisotropy_mode="stokes"),
+    )
+    direct = analyze_widefield_starss_pair(
+        stack_h,
+        stack_v,
+        WidefieldStarssParams(segmentation_mode="none", anisotropy_mode="direct_0_90"),
+    )
+
+    assert stokes.anis_maps.anisotropy_mode == "stokes"
+    assert direct.anis_maps.anisotropy_mode == "direct_0_90"
+    np.testing.assert_allclose(direct.anis_maps.r_raw, 0.25, atol=1e-6)
+    assert not np.allclose(stokes.anis_maps.r_raw, direct.anis_maps.r_raw)
+    assert direct.regions.loc[0, "anisotropy_mode"] == "direct_0_90"
+
+
+def test_generic_otsu_segmentation_mode_reuses_improcess_segmentation():
+    background = np.zeros((8, 10), dtype=np.float32)
+    signal = background + _mosaic_frame(i0=1, i45=1, i90=1, i135=1)
+    signal[2:6, 2:8] += 20
+    stack_h = _alternating_stack(signal, background, scales=(1.0,))
+    stack_v = _alternating_stack(signal, background, scales=(1.0,))
+
+    params = WidefieldStarssParams(
+        segmentation_mode="generic_otsu",
+        segmentation_sigma=0.0,
+        min_size=1,
+    )
+    analysis = analyze_widefield_starss_pair(stack_h, stack_v, params)
+    expected = segment_image(
+        analysis.base_image,
+        threshold_method="otsu",
+        min_area=1,
+        smooth_sigma=0.0,
+    )
+
+    np.testing.assert_array_equal(analysis.mask, expected.labels)
 
 
 def test_anisotropy_formula_matches_x_definition():
@@ -163,6 +213,7 @@ def test_widefield_starss_result_saves_hdf5(tmp_path):
         assert {"r_smooth", "r_raw", "mask", "base_image", "regions"}.issubset(h5.keys())
         assert h5["r_smooth"].shape == (4, 5)
         assert "anisotropy_direct" in h5["regions"]
+        assert h5.attrs["anisotropy_mode"] == "stokes"
         assert h5.attrs["mode"] == "test"
 
 

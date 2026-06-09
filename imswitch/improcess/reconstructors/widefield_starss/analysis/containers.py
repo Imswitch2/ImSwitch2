@@ -66,3 +66,4 @@ class AnisotropyMaps:
 
     valid_mask: np.ndarray
     smooth_sigma: float
+    anisotropy_mode: str = "stokes"

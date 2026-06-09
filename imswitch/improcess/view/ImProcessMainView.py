@@ -9,6 +9,7 @@ from imswitch.imcommon.view import PickDatasetsDialog
 from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
+from .MulticolorWidget import MulticolorWidget
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
 from .FRCWidget import FRCWidget
@@ -62,6 +63,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showSegmentationPanel: bool = False,
         showPSFResolutionPanel: bool = False,
         showColocalizationPanel: bool = False,
+        showMulticolorPanel: bool = False,
         *args,
         **kwargs,
     ):
@@ -196,6 +198,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showColocalizationPanel
             else None
         )
+        self.multicolorWidget = (
+            MulticolorWidget(self.reconstructionWidget.napariViewer)
+            if showMulticolorPanel
+            else None
+        )
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -293,6 +300,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             ('Segmentation', self.segmentationWidget),
             ('PSF resolution', self.psfResolutionWidget),
             ('Colocalization', self.colocalizationWidget),
+            ('Multicolor', self.multicolorWidget),
             ('FRC', self.frcWidget),
             ('ROI manager', self.roiManagerWidget),
             ('ROI stats', self.roiStatsWidget),
@@ -495,6 +503,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 ),
             ),
             'frc': ('FRC', lambda: FRCWidget(self.reconstructionWidget.napariViewer)),
+            'multicolor-registration': (
+                'Multicolor',
+                lambda: MulticolorWidget(self.reconstructionWidget.napariViewer),
+            ),
+            'multicolor-apply': (
+                'Multicolor',
+                lambda: MulticolorWidget(self.reconstructionWidget.napariViewer),
+            ),
             'roi-manager': (
                 'ROI manager',
                 lambda: ROIManagerWidget(self.reconstructionWidget.napariViewer),
@@ -508,6 +524,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'psf-resolution': 'psfResolutionWidget',
             'colocalization': 'colocalizationWidget',
             'frc': 'frcWidget',
+            'multicolor-registration': 'multicolorWidget',
+            'multicolor-apply': 'multicolorWidget',
             'roi-manager': 'roiManagerWidget',
         }
 
@@ -667,6 +685,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         ``dockArea.restoreState`` — otherwise napari-side docks added at
         runtime would be silently dropped by ``missing='ignore'``.
         """
+        # Snapshot just the tool ids whose docks currently exist.
         loaded_ids = self.runtimeAnalysisToolIdsLoaded()
         return {
             'dock_area': self.dockArea.saveState(),

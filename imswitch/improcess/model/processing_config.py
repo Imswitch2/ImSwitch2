@@ -68,6 +68,11 @@ def is_colocalization_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("colocalizationPanel", False))
 
 
+def is_multicolor_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess multicolor alignment panel should be shown."""
+    return bool(processing_config.get("multicolorPanel", False))
+
+
 def plugin_ids_from_config(
     processing_config: dict[str, Any],
 ) -> tuple[list[str], list[str], bool]:

@@ -5,7 +5,11 @@ import numpy as np
 import pandas as pd
 from skimage.measure import regionprops
 
-from .anisotropy import anisotropy_from_x, gaussian_fit_anisotropy
+from .anisotropy import (
+    anisotropy_from_x,
+    gaussian_fit_anisotropy,
+    standard_anisotropy_intensity_maps,
+)
 from .polarization import safe_inverse_variance
 
 
@@ -182,12 +186,13 @@ def split_region_channel_stats(region_mask, ihh_map, ihv_map, ivh_map, ivv_map,
 # Region analysis
 # =============================================================================
 
-def analyze_regions(stats_h, stats_v, anis_maps, mask):
+def analyze_regions(stats_h, stats_v, anis_maps, mask, anisotropy_mode="stokes"):
     """
     Region-wise analysis.
 
     For each labelled region in ``mask`` computes:
-    - pooled direct anisotropy (x-based formula on pooled intensities)
+    - pooled direct anisotropy (x-based formula on pooled intensities from
+      ``anisotropy_mode``)
     - pooled Gaussian-fit anisotropy
     - weighted spatial SD of raw and smoothed per-pixel anisotropy
     - Stokes DoLP / AoLP for H and V excitation
@@ -213,15 +218,13 @@ def analyze_regions(stats_h, stats_v, anis_maps, mask):
 
         pooled_h = pool_region_polarization(stats_h, region_mask)
         pooled_v = pool_region_polarization(stats_v, region_mask)
-
-        ihh      = pooled_h["IH"]
-        ihv      = pooled_h["IV"]
-        ivh      = pooled_v["IH"]
-        ivv      = pooled_v["IV"]
-        sigma_hh = pooled_h["IH_se"]
-        sigma_hv = pooled_h["IV_se"]
-        sigma_vh = pooled_v["IH_se"]
-        sigma_vv = pooled_v["IV_se"]
+        ihh_map, ihv_map, ivh_map, ivv_map, ihh_var, ihv_var, ivh_var, ivv_var = (
+            standard_anisotropy_intensity_maps(stats_h, stats_v, mode=anisotropy_mode)
+        )
+        ihh, sigma_hh, _ = weighted_pool(ihh_map, ihh_var, region_mask)
+        ihv, sigma_hv, _ = weighted_pool(ihv_map, ihv_var, region_mask)
+        ivh, sigma_vh, _ = weighted_pool(ivh_map, ivh_var, region_mask)
+        ivv, sigma_vv, _ = weighted_pool(ivv_map, ivv_var, region_mask)
 
         x_direct, r_direct, r_direct_se = anisotropy_from_x(
             ihh, ihv, ivh, ivv,
@@ -278,6 +281,7 @@ def analyze_regions(stats_h, stats_v, anis_maps, mask):
             "ihv": ihv, "ihv_frame_se": sigma_hv,
             "ivh": ivh, "ivh_frame_se": sigma_vh,
             "ivv": ivv, "ivv_frame_se": sigma_vv,
+            "anisotropy_mode": anisotropy_mode,
 
             "x_direct":                     x_direct,
             "anisotropy_direct":            r_direct,

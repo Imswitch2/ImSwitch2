@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile as tiff
+from qtpy import QtCore
 
 import imswitch.improcess.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
@@ -22,10 +23,79 @@ from .ScanParamsController import ScanParamsController
 from .basecontrollers import ImProcessWidgetController
 
 
+class _WidefieldStarssBatchWorker(QtCore.QObject):
+    _REGION_PREVIEW_LIMIT = 500
+
+    progress = QtCore.Signal(object)
+    finished = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+    cancelled = QtCore.Signal(str)
+
+    def __init__(self, input_folder, output_folder, params, parent=None):
+        super().__init__(parent)
+        self._input_folder = input_folder
+        self._output_folder = output_folder
+        self._params = params
+        self._cancel_requested = False
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            from imswitch.improcess.reconstructors.widefield_starss.analysis import (
+                WidefieldStarssBatchCancelled,
+                run_widefield_starss_batch_from_folder,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+
+        try:
+            result = run_widefield_starss_batch_from_folder(
+                self._input_folder,
+                params=self._params,
+                progress_callback=self.progress.emit,
+                cancel_callback=lambda: self._cancel_requested,
+            )
+            if self._cancel_requested:
+                self.cancelled.emit("WFS batch cancelled before export.")
+                return
+            regions_path, summary_path = result.save_csv(self._output_folder)
+            hdf5_path = result.save_hdf5(
+                Path(self._output_folder) / "batch_widefield_starss.h5"
+            )
+            self.finished.emit(
+                {
+                    "pair_count": len(result.pairs),
+                    "region_count": len(result.regions),
+                    "unmatched_count": len(result.unmatched),
+                    "regions_path": str(regions_path),
+                    "summary_path": str(summary_path),
+                    "hdf5_path": str(hdf5_path),
+                    "summary_columns": list(result.summary.columns),
+                    "summary_records": result.summary.to_dict(orient="records"),
+                    "region_columns": list(result.regions.columns),
+                    "region_records": result.regions.head(
+                        self._REGION_PREVIEW_LIMIT
+                    ).to_dict(orient="records"),
+                    "unmatched_paths": [str(path) for path in result.unmatched],
+                }
+            )
+        except WidefieldStarssBatchCancelled as exc:
+            self.cancelled.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    @QtCore.Slot()
+    def cancel(self):
+        self._cancel_requested = True
+
+
 class ImProcessMainViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._commChannel.extension = self._widget.extension
+        self._wfsBatchThread = None
+        self._wfsBatchWorker = None
         
         self.dataFrameController = self._factory.createController(
             DataFrameController, self._widget.dataFrame
@@ -221,6 +291,12 @@ class ImProcessMainViewController(ImProcessWidgetController):
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        if reconstructor.id == "widefield-starss" and hasattr(widget, "sigRunBatchRequested"):
+            try:
+                widget.sigRunBatchRequested.connect(self._run_widefield_starss_batch)
+                widget.sigCancelBatchRequested.connect(self._cancel_widefield_starss_batch)
+            except Exception:
+                pass
     
     def dataFolderChanged(self, dataFolder):
         self._dataFolder = dataFolder
@@ -479,6 +555,175 @@ class ImProcessMainViewController(ImProcessWidgetController):
                     setter(output_pixel_size_nm)
                 except Exception:
                     pass
+
+    def _run_widefield_starss_batch(self):
+        if self._activeReconstructor is None or self._activeReconstructor.id != "widefield-starss":
+            return
+        if self._wfsBatchThread is not None:
+            self._set_wfs_batch_status("A WFS batch is already running.")
+            return
+        widget = getattr(self._widget, "parTree", None)
+        if widget is None or not hasattr(widget, "get_values"):
+            return
+        params = widget.get_values()
+        input_folder = params.get("batch_input_folder")
+        output_folder = params.get("batch_output_folder")
+        if not input_folder:
+            self._set_wfs_batch_status("Choose a batch input folder.")
+            return
+        if not output_folder:
+            self._set_wfs_batch_status("Choose a batch output folder.")
+            return
+
+        try:
+            analysis_params = self._make_widefield_starss_batch_params(params)
+            thread = QtCore.QThread(self._widget)
+            worker = _WidefieldStarssBatchWorker(
+                input_folder=input_folder,
+                output_folder=output_folder,
+                params=analysis_params,
+            )
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.progress.connect(self._on_wfs_batch_progress)
+            worker.finished.connect(self._on_wfs_batch_finished)
+            worker.failed.connect(self._on_wfs_batch_failed)
+            worker.cancelled.connect(self._on_wfs_batch_cancelled)
+
+            for signal in (worker.finished, worker.failed, worker.cancelled):
+                signal.connect(worker.deleteLater)
+                signal.connect(thread.quit)
+            thread.finished.connect(thread.deleteLater)
+            thread.finished.connect(lambda: self._clear_wfs_batch_refs(thread))
+
+            self._wfsBatchThread = thread
+            self._wfsBatchWorker = worker
+            self._set_wfs_batch_running(True)
+            self._set_wfs_batch_progress(0, 1)
+            self._clear_wfs_batch_results()
+            self._set_wfs_batch_status("WFS batch starting...")
+            thread.start()
+        except Exception as exc:
+            self._logger.error(f"WidefieldSTARSS batch failed: {exc}")
+            self._set_wfs_batch_status(f"Batch failed: {exc}")
+            self._set_wfs_batch_running(False)
+
+    def _cancel_widefield_starss_batch(self):
+        worker = self._wfsBatchWorker
+        if worker is None:
+            self._set_wfs_batch_status("No WFS batch is running.")
+            return
+        worker.cancel()
+        self._set_wfs_batch_status("Cancelling WFS batch after the current pair...")
+
+    def _make_widefield_starss_batch_params(self, params: dict):
+        from imswitch.improcess.reconstructors.widefield_starss.analysis import (
+            WidefieldStarssParams,
+        )
+
+        return WidefieldStarssParams(
+            convention=params.get("convention", "alternating"),
+            start_frame=int(params.get("start_frame", 0)),
+            n_dark=int(params.get("n_dark", 0)),
+            n_off=int(params.get("n_off", 0)),
+            sum_stacks=bool(params.get("sum_stacks", False)),
+            split_detection=bool(params.get("split_detection", False)),
+            split_y=params.get("split_y"),
+            anisotropy_mode=params.get("anisotropy_mode", "stokes"),
+            segmentation_mode=params.get("segmentation_mode", "none"),
+            segmentation_sigma=float(params.get("segmentation_sigma", 2.0)),
+            min_size=int(params.get("min_size", 200)),
+            hole_size=int(params.get("hole_size", 200)),
+            threshold_scale=float(params.get("threshold_scale", 1.0)),
+            psf_sigma=float(params.get("psf_sigma", 2.0)),
+            psf_min_distance=int(params.get("psf_min_distance", 5)),
+            psf_threshold_rel=float(params.get("psf_threshold_rel", 0.1)),
+            psf_radius=int(params.get("psf_radius", 3)),
+            smooth_sigma=float(params.get("smooth_sigma", 2.0)),
+            intensity_threshold=params.get("intensity_threshold"),
+        )
+
+    def _on_wfs_batch_progress(self, progress: dict):
+        total = int(progress.get("pair_count", 1) or 1)
+        completed = int(progress.get("completed", 0) or 0)
+        sample_id = str(progress.get("sample_id", ""))
+        state = str(progress.get("state", ""))
+        if state == "processing":
+            self._set_wfs_batch_progress(completed, total)
+            self._set_wfs_batch_status(
+                f"Processing {sample_id}: {completed + 1}/{total} pair(s)."
+            )
+        else:
+            self._set_wfs_batch_progress(completed, total, sample_id, state)
+
+    def _on_wfs_batch_finished(self, payload: dict):
+        regions_path = Path(payload["regions_path"])
+        summary_path = Path(payload["summary_path"])
+        hdf5_path = Path(payload["hdf5_path"])
+        message = (
+            f"WFS batch complete: {payload['pair_count']} pair(s), "
+            f"{payload['region_count']} region row(s), "
+            f"{payload['unmatched_count']} unmatched file(s). "
+            f"Saved {regions_path.name}, {summary_path.name}, {hdf5_path.name}."
+        )
+        self._logger.info(message)
+        self._set_wfs_batch_progress(int(payload["pair_count"]), int(payload["pair_count"]) or 1)
+        self._set_wfs_batch_results(payload)
+        self._set_wfs_batch_status(message)
+        self._set_wfs_batch_running(False)
+
+    def _on_wfs_batch_failed(self, message: str):
+        self._logger.error(f"WidefieldSTARSS batch failed: {message}")
+        self._set_wfs_batch_status(f"Batch failed: {message}")
+        self._set_wfs_batch_running(False)
+
+    def _on_wfs_batch_cancelled(self, message: str):
+        self._logger.info(message or "WidefieldSTARSS batch cancelled")
+        self._set_wfs_batch_status("WFS batch cancelled.")
+        self._set_wfs_batch_running(False)
+
+    def _clear_wfs_batch_refs(self, thread):
+        if self._wfsBatchThread is thread:
+            self._wfsBatchThread = None
+            self._wfsBatchWorker = None
+
+    def _set_wfs_batch_status(self, text: str) -> None:
+        widget = getattr(self._widget, "parTree", None)
+        setter = getattr(widget, "set_batch_status", None)
+        if callable(setter):
+            setter(text)
+        else:
+            self._logger.info(text)
+
+    def _set_wfs_batch_running(self, running: bool) -> None:
+        widget = getattr(self._widget, "parTree", None)
+        setter = getattr(widget, "set_batch_running", None)
+        if callable(setter):
+            setter(running)
+
+    def _set_wfs_batch_progress(
+        self,
+        completed: int,
+        total: int,
+        sample_id: str | None = None,
+        state: str | None = None,
+    ) -> None:
+        widget = getattr(self._widget, "parTree", None)
+        setter = getattr(widget, "set_batch_progress", None)
+        if callable(setter):
+            setter(completed, total, sample_id, state)
+
+    def _set_wfs_batch_results(self, payload: dict) -> None:
+        widget = getattr(self._widget, "parTree", None)
+        setter = getattr(widget, "set_batch_results", None)
+        if callable(setter):
+            setter(payload)
+
+    def _clear_wfs_batch_results(self) -> None:
+        widget = getattr(self._widget, "parTree", None)
+        clearer = getattr(widget, "clear_batch_results", None)
+        if callable(clearer):
+            clearer()
 
     def bleachingCorrection(self, data):
         correctedData = data.copy()

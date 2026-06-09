@@ -86,22 +86,24 @@ standalone defaults.
 Built-in plugins
 ----------------
 
-================== ============== ====================================================
-ID                 Type           Purpose
-================== ============== ====================================================
-monalisa           Reconstructor  MoNaLISA point-scanning SIM (Windows + CUDA DLL)
-view-only          Reconstructor  Pass-through; raw frames wrapped as a result
-widefield-starss   Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
-snouty             Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
-snouty-projections Reconstructor  Fast SNOUTY projection-preview stack
-drift-correct      Processor      FFT cross-correlation drift correction with drift trace plots
-projection         Processor      Generic max/mean/sum/median/std axis projections
-segmentation       Processor      Threshold + connected-component labels and ROI export
-psf-resolution     Processor      2D Gaussian bead/PSF FWHM and sigma measurements
-colocalization     Processor      Pearson, Manders and overlap channel colocalization metrics
-frc                Processor      Fourier ring correlation and single-image FRC resolution estimates
-denoise            Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
-================== ============== ====================================================
+======================= ============== ====================================================
+ID                      Type           Purpose
+======================= ============== ====================================================
+monalisa                Reconstructor  MoNaLISA point-scanning SIM (Windows + CUDA DLL)
+view-only               Reconstructor  Pass-through; raw frames wrapped as a result
+widefield-starss        Reconstructor  H/V WidefieldSTARSS anisotropy maps and region metrics
+snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
+snouty-projections      Reconstructor  Fast SNOUTY projection-preview stack
+drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
+projection              Processor      Generic max/mean/sum/median/std axis projections
+segmentation            Processor      Threshold + connected-component labels and ROI export
+psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
+colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
+frc                     Processor      Fourier ring correlation and single-image FRC resolution estimates
+multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
+multicolor-apply        Processor      Apply saved three-color X-strip alignment to deskewed sample volumes
+denoise                 Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
+======================= ============== ====================================================
 
 Result graph panel
 ==================
@@ -185,6 +187,29 @@ axis, supports full-image or ROI Manager batched analysis, reports Pearson
 correlation, Manders M1/M2, overlap coefficient and mean intensities, and
 exports the table as CSV or JSON.  The registered ``colocalization`` processor
 exposes the same metric path for full-image processor-chain use.
+
+Multicolor panel
+================
+
+Set ``"multicolorPanel": true`` in the ``processing`` block to show a
+three-color strip registration panel.  It is intended for SNOUTY / OPM /
+MS-RESOLFT measurements where a deskewed bead volume contains three color
+channels as adjacent X-axis strips.  The panel can split the active ``ZYX`` or
+``TZYX`` image layer into three X ROIs, estimate transforms in ``maxproj``,
+``volume`` or ``descriptor_3d`` mode, save the calibration as an HDF5 alignment
+file and add an aligned bead preview layer to the viewer.
+
+The usual workflow is:
+
+1. Deskew a bead sample that contains signal in all three color strips.
+2. Run ``multicolor-registration`` from the panel and save the alignment HDF5.
+3. Deskew a sample acquisition with the same optical/channel layout.
+4. Load the alignment HDF5 and run ``multicolor-apply`` to produce a
+   ``CZYX`` or ``TCZYX`` aligned color result.
+
+The same functionality is available as registered processors:
+``multicolor-registration`` extracts and optionally saves the transform, while
+``multicolor-apply`` applies a saved HDF5 transform to later data.
 
 Active reconstructor
 ====================
@@ -274,6 +299,46 @@ counterpart next to it.  Otherwise, set the current file role and select the
 counterpart path in the parameter panel.  The parameter panel includes presets
 for standard widefield-cell analysis and line-PSF split-detection analysis.
 
+In standard four-pixel polarization-mosaic mode, anisotropy can be computed
+two ways.  The default ``stokes`` mode uses all four analyzer pixels:
+``S0`` is estimated from both ``I0 + I90`` and ``I45 + I135``, ``S1`` is
+``I0 - I90``, and virtual H/V detection intensities are constructed as
+``IH = (S0 + S1) / 2`` and ``IV = (S0 - S1) / 2``.  The alternative
+``direct_0_90`` mode uses only the raw ``I0`` and ``I90`` analyzer pixels for
+H/V detection.  ``stokes`` is the default because it keeps the current behavior
+and uses the full four-pixel measurement; ``direct_0_90`` is available as an
+explicit comparison path.
+
+For segmentation, the existing WFS ``otsu`` mode keeps its WFS-specific
+threshold scaling and hole filling.  The optional ``generic_otsu`` mode reuses
+the same generic ImProcess segmentation kernel as the ``segmentation``
+processor: Otsu thresholding, optional Gaussian smoothing and connected
+component area filtering.
+
+WidefieldSTARSS batch helpers
+=============================
+
+The WFS analysis package also includes backend helpers for folder-scale
+processing.  ``discover_widefield_starss_pairs_in_folder`` matches
+``*_h.tif[f]`` and ``*_v.tif[f]`` files, and
+``run_widefield_starss_batch_from_folder`` runs the same single-pair analysis
+on every matched pair with one shared parameter set.  The batch result exposes
+two consolidated tables:
+
+* ``regions`` — one row per segmented nucleus/region, including sample ID,
+  source H/V paths, anisotropy values, area, centroid, bounding box,
+  ellipticity, channel means and signal variances.
+* ``summary`` — one row per H/V pair, including region count, total area,
+  mean/median anisotropy and mean intensity summaries.
+
+The backend can export ``batch_regions.csv``, ``batch_summary.csv`` and a
+combined HDF5 file.  The WidefieldSTARSS parameter widget exposes a first
+batch UI pass with input/output folder fields, a *Run WFS batch* button,
+progress reporting and cancellation between file pairs.  Batch execution runs
+in a Qt worker thread so the ImProcess UI remains responsive while the
+consolidated CSV/HDF5 exports are written.  Completed runs populate in-panel
+summary and capped region-preview tables, plus an unmatched-file list.
+
 Config schema
 =============
 
@@ -288,11 +353,12 @@ to your Imcontrol setup file (the same JSON you select via
             "segmentationPanel": true,
             "psfResolutionPanel": true,
             "colocalizationPanel": true,
+            "multicolorPanel": true,
             "frcPanel": true,
             "roiManagerPanel": true,
             "roiStatsPanel": true,
             "reconstructors": ["monalisa", "view-only"],
-            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
+            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
         }
     }
 
@@ -322,11 +388,11 @@ Ready-to-use minimal configs ship under
    * - ``monalisa_processor.json``
      - MoNaLISA reconstruction plus view-only fallback
    * - ``snouty_processor.json``
-     - SNOUTY deskew and SNOUTY projection previews
+     - SNOUTY deskew, SNOUTY projection previews and multicolor strip alignment
    * - ``widefieldstarss_processor.json``
      - WidefieldSTARSS H/V-pair analysis
    * - ``general_image_processing.json``
-     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC, ROI
+     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC, ROI and multicolor tools
 
 The MoNaLISA preset has the same shape as the others::
 
@@ -402,6 +468,9 @@ Done:
   bead/PSF fits on full images or ROI Manager entries, FWHM/sigma table export
 * ``colocalization`` processor and optional colocalization panel: Pearson,
   Manders M1/M2, overlap coefficient, ROI Manager batching and CSV/JSON export
+* ``multicolor-registration`` and ``multicolor-apply`` processors plus the
+  optional multicolor panel: SNOUTY-style three-color X-strip calibration,
+  HDF5 transform persistence and aligned ``CZYX`` / ``TCZYX`` output
 * Optional ROI manager panel for multiple rectangular ROIs, per-ROI
   statistics, visibility toggles, duplication and CSV/JSON export
 * Optional ROI statistics panel for full-image or rectangle-ROI area, mean,

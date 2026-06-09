@@ -16,6 +16,8 @@ import skimage as ski
 import tifffile as tf
 from scipy.ndimage import gaussian_filter
 
+from imswitch.improcess.analysis.segmentation import segment_image
+
 from .containers import PolarizationStats
 
 
@@ -119,6 +121,23 @@ def make_simple_mask(image, sigma=2.0, min_size=200, hole_size=200, threshold_sc
     binary  = ski.morphology.remove_small_objects(binary, min_size=min_size)
     binary  = ski.morphology.remove_small_holes(binary, area_threshold=hole_size)
     return ski.measure.label(binary)
+
+
+def make_generic_segmentation_mask(image, sigma=2.0, min_size=200):
+    """
+    Segment with the generic ImProcess segmentation analysis kernel.
+
+    This mirrors the ``segmentation`` processor path: Otsu thresholding,
+    optional Gaussian smoothing and connected-component filtering. It does not
+    apply WFS-specific hole filling or threshold scaling.
+    """
+    analysis = segment_image(
+        image,
+        threshold_method="otsu",
+        min_area=max(1, int(min_size)),
+        smooth_sigma=float(sigma),
+    )
+    return analysis.labels.astype(np.int32, copy=False)
 
 
 def build_mask(

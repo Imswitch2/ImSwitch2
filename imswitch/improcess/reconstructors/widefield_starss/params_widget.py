@@ -1,11 +1,16 @@
 """WidefieldSTARSS parameter widget."""
 
 from pyqtgraph.parametertree import Parameter, ParameterTree
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 
 class WidefieldStarssParamsWidget(QtWidgets.QWidget):
     """Parameter tree for WidefieldSTARSS H/V analysis."""
+
+    _REGION_PREVIEW_LIMIT = 500
+
+    sigRunBatchRequested = QtCore.Signal()
+    sigCancelBatchRequested = QtCore.Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,7 +30,8 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             {"name": "Analysis", "type": "group", "children": [
                 {"name": "Split detection", "type": "bool", "value": False},
                 {"name": "Split Y", "type": "int", "value": 0, "limits": (0, 1000000)},
-                {"name": "Segmentation mode", "type": "list", "values": ["none", "otsu", "psf_peaks", "line_psf"], "value": "none"},
+                {"name": "Anisotropy mode", "type": "list", "values": ["stokes", "direct_0_90"], "value": "stokes"},
+                {"name": "Segmentation mode", "type": "list", "values": ["none", "otsu", "generic_otsu", "psf_peaks", "line_psf"], "value": "none"},
                 {"name": "Smooth sigma", "type": "float", "value": 2.0, "limits": (0.0, 1000.0)},
                 {"name": "Intensity threshold", "type": "float", "value": 0.0},
                 {"name": "Use intensity threshold", "type": "bool", "value": False},
@@ -49,11 +55,56 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
 
         self.browseButton = QtWidgets.QPushButton("Browse counterpart...")
         self.browseButton.clicked.connect(self._browse_counterpart)
+        self.batchInputEdit = QtWidgets.QLineEdit()
+        self.batchInputEdit.setPlaceholderText("Folder containing *_h.tif / *_v.tif files")
+        self.batchOutputEdit = QtWidgets.QLineEdit()
+        self.batchOutputEdit.setPlaceholderText("Output folder for batch CSV/HDF5")
+        self.batchInputBrowseButton = QtWidgets.QPushButton("Browse batch input...")
+        self.batchOutputBrowseButton = QtWidgets.QPushButton("Browse batch output...")
+        self.runBatchButton = QtWidgets.QPushButton("Run WFS batch")
+        self.cancelBatchButton = QtWidgets.QPushButton("Cancel")
+        self.cancelBatchButton.setEnabled(False)
+        self.batchProgress = QtWidgets.QProgressBar()
+        self.batchProgress.setRange(0, 1)
+        self.batchProgress.setValue(0)
+        self.batchStatusLabel = QtWidgets.QLabel("Batch: choose folders, then run.")
+        self.batchStatusLabel.setWordWrap(True)
+        self.batchStatusLabel.setStyleSheet("color:#888; font-size:8pt;")
+        self.batchResultsTabs = QtWidgets.QTabWidget()
+        self.batchResultsTabs.setMinimumHeight(180)
+        self.batchSummaryTable = self._make_result_table()
+        self.batchRegionsTable = self._make_result_table()
+        self.batchUnmatchedList = QtWidgets.QListWidget()
+        self.batchResultsTabs.addTab(self.batchSummaryTable, "Summary")
+        self.batchResultsTabs.addTab(self.batchRegionsTable, "Regions")
+        self.batchResultsTabs.addTab(self.batchUnmatchedList, "Unmatched")
+        self.clear_batch_results()
+
+        self.batchInputBrowseButton.clicked.connect(self._browse_batch_input)
+        self.batchOutputBrowseButton.clicked.connect(self._browse_batch_output)
+        self.runBatchButton.clicked.connect(self.sigRunBatchRequested)
+        self.cancelBatchButton.clicked.connect(self.sigCancelBatchRequested)
+
+        batchForm = QtWidgets.QFormLayout()
+        batchForm.addRow("Input folder", self.batchInputEdit)
+        batchForm.addRow("Output folder", self.batchOutputEdit)
+
+        batchButtons = QtWidgets.QHBoxLayout()
+        batchButtons.addWidget(self.batchInputBrowseButton)
+        batchButtons.addWidget(self.batchOutputBrowseButton)
+        batchButtons.addWidget(self.runBatchButton)
+        batchButtons.addWidget(self.cancelBatchButton)
+        batchButtons.addStretch()
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tree)
         layout.addWidget(self.browseButton)
+        layout.addLayout(batchForm)
+        layout.addLayout(batchButtons)
+        layout.addWidget(self.batchProgress)
+        layout.addWidget(self.batchStatusLabel)
+        layout.addWidget(self.batchResultsTabs)
         self.setLayout(layout)
 
     def get_values(self) -> dict:
@@ -75,6 +126,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             "sum_stacks": bool(loading.param("Sum stacks").value()),
             "split_detection": bool(analysis.param("Split detection").value()),
             "split_y": split_y if split_y > 0 else None,
+            "anisotropy_mode": analysis.param("Anisotropy mode").value(),
             "segmentation_mode": analysis.param("Segmentation mode").value(),
             "smooth_sigma": float(analysis.param("Smooth sigma").value()),
             "intensity_threshold": (
@@ -90,6 +142,8 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             "psf_min_distance": int(segmentation.param("PSF min distance").value()),
             "psf_threshold_rel": float(segmentation.param("PSF threshold rel").value()),
             "psf_radius": int(segmentation.param("PSF radius").value()),
+            "batch_input_folder": self.batchInputEdit.text().strip() or None,
+            "batch_output_folder": self.batchOutputEdit.text().strip() or None,
         }
 
     def _browse_counterpart(self) -> None:
@@ -102,6 +156,79 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         if path:
             self.p.param("Pairing").param("Counterpart path").setValue(path)
 
+    def set_batch_status(self, text: str) -> None:
+        self.batchStatusLabel.setText(str(text))
+
+    def set_batch_running(self, running: bool) -> None:
+        self.runBatchButton.setEnabled(not running)
+        self.cancelBatchButton.setEnabled(running)
+        self.batchInputBrowseButton.setEnabled(not running)
+        self.batchOutputBrowseButton.setEnabled(not running)
+
+    def set_batch_progress(
+        self,
+        completed: int,
+        total: int,
+        sample_id: str | None = None,
+        state: str | None = None,
+    ) -> None:
+        total = max(int(total), 1)
+        completed = max(0, min(int(completed), total))
+        self.batchProgress.setRange(0, total)
+        self.batchProgress.setValue(completed)
+        if sample_id:
+            action = "Completed" if state == "completed" else "Processing"
+            self.set_batch_status(
+                f"{action} {sample_id}: {completed}/{total} pair(s)."
+            )
+
+    def clear_batch_results(self) -> None:
+        self._set_table_records(self.batchSummaryTable, [], [])
+        self._set_table_records(self.batchRegionsTable, [], [])
+        self.batchUnmatchedList.clear()
+        self.batchResultsTabs.setTabText(0, "Summary")
+        self.batchResultsTabs.setTabText(1, "Regions")
+        self.batchResultsTabs.setTabText(2, "Unmatched")
+
+    def set_batch_results(self, payload: dict[str, object]) -> None:
+        summary_columns = list(payload.get("summary_columns", []))
+        summary_records = list(payload.get("summary_records", []))
+        region_columns = list(payload.get("region_columns", []))
+        region_records = list(payload.get("region_records", []))
+        unmatched_paths = list(payload.get("unmatched_paths", []))
+        region_count = int(payload.get("region_count", len(region_records)) or 0)
+
+        self._set_table_records(self.batchSummaryTable, summary_columns, summary_records)
+        self._set_table_records(self.batchRegionsTable, region_columns, region_records)
+        self.batchUnmatchedList.clear()
+        for path in unmatched_paths:
+            self.batchUnmatchedList.addItem(str(path))
+
+        self.batchResultsTabs.setTabText(0, f"Summary ({len(summary_records)})")
+        regions_label = f"Regions ({min(len(region_records), region_count)}/{region_count})"
+        if region_count > len(region_records):
+            regions_label = f"Regions ({len(region_records)}/{region_count})"
+        self.batchResultsTabs.setTabText(1, regions_label)
+        self.batchResultsTabs.setTabText(2, f"Unmatched ({len(unmatched_paths)})")
+
+    def _browse_batch_input(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select WidefieldSTARSS Batch Input Folder",
+            "",
+        )
+        if path:
+            self.batchInputEdit.setText(path)
+
+    def _browse_batch_output(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select WidefieldSTARSS Batch Output Folder",
+            "",
+        )
+        if path:
+            self.batchOutputEdit.setText(path)
+
     def _preset_changed(self, _param, value) -> None:
         if value == "Widefield cells":
             self._apply_values(
@@ -113,6 +240,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
                     },
                     "Analysis": {
                         "Split detection": False,
+                        "Anisotropy mode": "stokes",
                         "Segmentation mode": "otsu",
                         "Smooth sigma": 10.0,
                         "Use intensity threshold": False,
@@ -135,6 +263,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
                     },
                     "Analysis": {
                         "Split detection": True,
+                        "Anisotropy mode": "stokes",
                         "Segmentation mode": "line_psf",
                         "Smooth sigma": 1.0,
                         "Use intensity threshold": False,
@@ -154,3 +283,43 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             group = self.p.param(group_name)
             for name, value in group_values.items():
                 group.param(name).setValue(value)
+
+    def _make_result_table(self) -> QtWidgets.QTableWidget:
+        table = QtWidgets.QTableWidget(0, 0)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(True)
+        return table
+
+    def _set_table_records(
+        self,
+        table: QtWidgets.QTableWidget,
+        columns: list[str],
+        records: list[dict[str, object]],
+    ) -> None:
+        table.setSortingEnabled(False)
+        table.clear()
+        table.setColumnCount(len(columns))
+        table.setRowCount(len(records))
+        table.setHorizontalHeaderLabels([str(column) for column in columns])
+        for row_index, record in enumerate(records):
+            for column_index, column in enumerate(columns):
+                item = QtWidgets.QTableWidgetItem(
+                    self._format_table_value(record.get(column, ""))
+                )
+                table.setItem(row_index, column_index, item)
+        table.resizeColumnsToContents()
+        table.setSortingEnabled(True)
+
+    def _format_table_value(self, value: object) -> str:
+        if value is None:
+            return ""
+        try:
+            if value != value:
+                return ""
+        except Exception:
+            pass
+        if isinstance(value, float):
+            return f"{value:.6g}"
+        return str(value)

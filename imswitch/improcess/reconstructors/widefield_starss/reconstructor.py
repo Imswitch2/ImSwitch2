@@ -65,6 +65,7 @@ class WidefieldStarssReconstructor(Reconstructor):
             sum_stacks=bool(params.get("sum_stacks", False)),
             split_detection=bool(params.get("split_detection", False)),
             split_y=params.get("split_y"),
+            anisotropy_mode=params.get("anisotropy_mode", "stokes"),
             segmentation_mode=params.get("segmentation_mode", "none"),
             segmentation_sigma=float(params.get("segmentation_sigma", 2.0)),
             min_size=int(params.get("min_size", 200)),

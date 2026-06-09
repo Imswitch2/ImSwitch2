@@ -1,5 +1,5 @@
 {
-    "// description": "Minimal setup for running ImProcess as a stand-alone SNOUTY / OPM / MS-RESOLFT lightsheet processor. No hardware devices are declared - this setup is meant for opening existing HDF5/Zarr/TIFF acquisitions, running SNOUTY deskew or fast projection-preview reconstruction, and saving the result. To use, also set 'enabled' to ['improcess'] in modules.json.",
+    "// description": "Minimal setup for running ImProcess as a stand-alone SNOUTY / OPM / MS-RESOLFT lightsheet processor. No hardware devices are declared - this setup is meant for opening existing HDF5/Zarr/TIFF acquisitions, running SNOUTY deskew or fast projection-preview reconstruction, calibrating/applying three-color strip alignment, and saving the result. To use, also set 'enabled' to ['improcess'] in modules.json.",
 
     "processing": {
         "graphPanel": true,
@@ -8,10 +8,11 @@
         "segmentationPanel": true,
         "psfResolutionPanel": true,
         "colocalizationPanel": true,
+        "multicolorPanel": true,
         "frcPanel": true,
         "roiManagerPanel": true,
         "roiStatsPanel": true,
         "reconstructors": ["snouty", "snouty-projections", "view-only"],
-        "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
+        "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc", "multicolor-registration", "multicolor-apply"]
     }
 }

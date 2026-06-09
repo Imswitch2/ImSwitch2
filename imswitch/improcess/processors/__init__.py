@@ -10,6 +10,8 @@ from .colocalization import ColocalizationProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
 from .frc import FRCProcessor
+from .multicolor_apply import MulticolorApplyProcessor
+from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
 from .psf_resolution import PSFResolutionProcessor
 from .segmentation import SegmentationProcessor
@@ -19,6 +21,8 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'colocalization': ColocalizationProcessor,
     'drift-correct': DriftCorrectProcessor,
     'frc': FRCProcessor,
+    'multicolor-apply': MulticolorApplyProcessor,
+    'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
     'projection': ProjectionProcessor,
     'psf-resolution': PSFResolutionProcessor,
@@ -75,6 +79,8 @@ __all__ = [
     "ColocalizationProcessor",
     "DriftCorrectProcessor",
     "FRCProcessor",
+    "MulticolorApplyProcessor",
+    "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
     "ProjectionProcessor",
     "PSFResolutionProcessor",

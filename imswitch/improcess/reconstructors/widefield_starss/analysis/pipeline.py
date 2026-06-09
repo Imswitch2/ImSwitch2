@@ -20,11 +20,18 @@ from .regions import (
     analyze_regions_split_detection,
     analyze_split_detection_line_psf,
 )
-from .segmentation import build_mask, build_psf_mask, make_simple_mask, segment_line_psf
+from .segmentation import (
+    build_mask,
+    build_psf_mask,
+    make_generic_segmentation_mask,
+    make_simple_mask,
+    segment_line_psf,
+)
 
 
 FrameConvention = Literal["alternating", "block"]
-SegmentationMode = Literal["otsu", "none", "psf_peaks", "line_psf"]
+SegmentationMode = Literal["otsu", "none", "psf_peaks", "line_psf", "generic_otsu"]
+AnisotropyMode = Literal["stokes", "direct_0_90"]
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,7 @@ class WidefieldStarssParams:
     roi: tuple[int, int, int, int] | None = None
     split_detection: bool = False
     split_y: int | None = None
+    anisotropy_mode: AnisotropyMode = "stokes"
     segmentation_mode: SegmentationMode = "otsu"
     segmentation_sigma: float = 2.0
     min_size: int = 200
@@ -151,6 +159,17 @@ def _analyze_standard_mosaic(
             threshold_rel=params.psf_threshold_rel,
             psf_radius=params.psf_radius,
         )
+    elif params.segmentation_mode == "generic_otsu":
+        _unused_mask, base_image = build_mask(
+            stats_h,
+            stats_v=stats_v,
+            segment=False,
+        )
+        mask = make_generic_segmentation_mask(
+            base_image,
+            sigma=params.segmentation_sigma,
+            min_size=params.min_size,
+        )
     else:
         mask, base_image = build_mask(
             stats_h,
@@ -167,8 +186,15 @@ def _analyze_standard_mosaic(
         stats_v,
         smooth_sigma=params.smooth_sigma,
         intensity_threshold=params.intensity_threshold,
+        anisotropy_mode=params.anisotropy_mode,
     )
-    regions = analyze_regions(stats_h, stats_v, anis_maps, mask)
+    regions = analyze_regions(
+        stats_h,
+        stats_v,
+        anis_maps,
+        mask,
+        anisotropy_mode=params.anisotropy_mode,
+    )
 
     return WidefieldStarssAnalysis(
         regions=regions,
