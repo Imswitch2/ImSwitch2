@@ -26,9 +26,11 @@ class ImProcessMainController(MainController):
 
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
+        self.__mainView.sigLoadProcessorRequested.connect(self._load_runtime_processor)
 
         # Initialize plugin registry
         self._initialize_plugins()
+        self._refresh_runtime_processor_choices()
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel()
@@ -109,6 +111,53 @@ class ImProcessMainController(MainController):
             f"{len(registry.reconstructors())} reconstructors, "
             f"{len(registry.processors())} processors"
         )
+
+    def _refresh_runtime_processor_choices(self):
+        from imswitch.improcess.reconstructors.registry import get_registry
+        from imswitch.improcess.processors import (
+            available_processor_choices,
+            available_processor_ids,
+        )
+
+        registry = get_registry()
+        loaded_processors = registry.processors()
+        loaded = {processor.id for processor in loaded_processors}
+        processor_ids = set(available_processor_ids())
+        tool_choices = dict(available_processor_choices())
+        tool_choices["roi-manager"] = "ROI manager"
+        choices = []
+        for tool_id, tool_name in sorted(tool_choices.items()):
+            processor_loaded = tool_id not in processor_ids or tool_id in loaded
+            widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
+            if processor_loaded and widget_loaded:
+                continue
+            choices.append((tool_id, tool_name))
+        self.__mainView.setAvailableRuntimeProcessors(choices)
+        self.__mainView.setLoadedRuntimeProcessors(
+            [(processor.id, processor.name) for processor in loaded_processors]
+        )
+
+    def _load_runtime_processor(self, processor_id: str):
+        from imswitch.improcess.reconstructors.registry import get_registry
+        from imswitch.improcess.processors import (
+            available_processor_ids,
+            register_processor_by_id,
+        )
+
+        registry = get_registry()
+        is_processor = processor_id in set(available_processor_ids())
+        plugin = registry.get_processor(processor_id) if is_processor else None
+        if plugin is not None:
+            self.__logger.info(f"Processor already loaded: {processor_id}")
+        elif is_processor:
+            plugin = register_processor_by_id(registry, processor_id)
+            self.__logger.info(f"Runtime-loaded processor: {plugin.id} ({plugin.name})")
+        dock_title = self.__mainView.ensureRuntimeAnalysisWidget(processor_id)
+        if dock_title is not None:
+            self.__logger.info(f"Runtime-opened analysis tool: {dock_title}")
+        elif not is_processor:
+            self.__logger.warning(f"Unknown runtime analysis tool: {processor_id}")
+        self._refresh_runtime_processor_choices()
 
     def closeEvent(self):
         # Persist the current dock layout before tearing the controllers down,

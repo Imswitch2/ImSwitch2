@@ -71,20 +71,72 @@ class ReconstructionView(QtWidgets.QFrame):
             (self.leftView, 'Left side view', 'left'),
         ]
 
-        # Set layout
-        layout = QtWidgets.QGridLayout()
+        # --- Left pane: napari viewer + the view-mode chooser --------------
+        leftPane = QtWidgets.QWidget()
+        leftLayout = QtWidgets.QGridLayout(leftPane)
+        leftLayout.setContentsMargins(0, 0, 0, 0)
+        leftLayout.addWidget(self.napariViewer.get_widget(), 0, 0, 4, 1)
+        leftLayout.addWidget(self.chooseViewBox, 0, 1, 1, 2)
+        leftLayout.setRowStretch(1, 1)
+        leftLayout.setColumnStretch(0, 100)
+        leftLayout.setColumnStretch(2, 5)
 
-        self.setLayout(layout)
+        # --- Right pane: reconstruction list + its two buttons -------------
+        rightPane = QtWidgets.QWidget()
+        rightLayout = QtWidgets.QVBoxLayout(rightPane)
+        rightLayout.setContentsMargins(0, 0, 0, 0)
+        rightLayout.setSpacing(2)
+        rightLayout.addWidget(self.reconList, 1)
+        rightLayout.addWidget(removeReconBtn)
+        rightLayout.addWidget(removeAllReconBtn)
+        # Keep the pane from being squeezed below readable width while still
+        # allowing the user to drag it down to the handle (collapsed state).
+        rightPane.setMinimumWidth(0)
+        self.reconList.setMinimumWidth(80)
+        self._reconListPane = rightPane
 
-        layout.addWidget(self.napariViewer.get_widget(), 0, 0, 4, 1)
-        layout.addWidget(self.chooseViewBox, 0, 1, 1, 2)
-        layout.addWidget(self.reconList, 0, 3, 2, 1)
-        layout.addWidget(removeReconBtn, 2, 3)
-        layout.addWidget(removeAllReconBtn, 3, 3)
+        # --- QSplitter: drag the handle left/right to resize the list, ----
+        # drag fully right to snap it shut to a thin band that can be
+        # dragged back to expand.
+        self._reconSplitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._reconSplitter.addWidget(leftPane)
+        self._reconSplitter.addWidget(rightPane)
+        self._reconSplitter.setStretchFactor(0, 1)
+        self._reconSplitter.setStretchFactor(1, 0)
+        self._reconSplitter.setCollapsible(0, False)
+        self._reconSplitter.setCollapsible(1, True)
+        self._reconSplitter.setHandleWidth(8)
+        # Initial size hint: ~80% viewer / 20% list. setSizes uses pixels
+        # but Qt scales them to the widget's actual width on first show.
+        self._reconSplitter.setSizes([800, 200])
 
-        layout.setRowStretch(1, 1)
-        layout.setColumnStretch(0, 100)
-        layout.setColumnStretch(2, 5)
+        outerLayout = QtWidgets.QVBoxLayout(self)
+        outerLayout.setContentsMargins(0, 0, 0, 0)
+        outerLayout.addWidget(self._reconSplitter)
+
+    # --- Recon list pane controls -----------------------------------------
+
+    def toggleReconListPane(self) -> None:
+        """Collapse the recon-list pane to a thin band, or restore it.
+
+        Bound to the ``View > Reconstructions list`` menu action.  Remembers
+        the last expanded width so the user gets back the size they had.
+        """
+        sizes = self._reconSplitter.sizes()
+        if len(sizes) < 2:
+            return
+        if sizes[1] == 0:
+            restore_to = getattr(self, '_reconListLastSize', 0) or 200
+            total = sum(sizes) or (restore_to + 800)
+            self._reconSplitter.setSizes([total - restore_to, restore_to])
+        else:
+            self._reconListLastSize = sizes[1]
+            total = sum(sizes)
+            self._reconSplitter.setSizes([total, 0])
+
+    def isReconListPaneCollapsed(self) -> bool:
+        sizes = self._reconSplitter.sizes()
+        return len(sizes) >= 2 and sizes[1] == 0
 
     def dimsChanged(self, event):
         if event.type == 'current_step':

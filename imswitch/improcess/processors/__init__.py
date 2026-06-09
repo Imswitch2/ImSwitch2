@@ -31,6 +31,25 @@ def available_processor_ids() -> list[str]:
     return sorted(_AVAILABLE_PROCESSOR_CLASSES)
 
 
+def available_processor_choices() -> list[tuple[str, str]]:
+    """Return built-in processor ids and display names."""
+    return sorted(
+        (processor_id, plugin_cls.name)
+        for processor_id, plugin_cls in _AVAILABLE_PROCESSOR_CLASSES.items()
+    )
+
+
+def register_processor_by_id(registry, processor_id: str) -> Processor:
+    """Instantiate and register one built-in processor by id."""
+    try:
+        plugin_cls = _AVAILABLE_PROCESSOR_CLASSES[processor_id]
+    except KeyError as exc:
+        raise KeyError(f"Unknown built-in processor id: {processor_id!r}") from exc
+    plugin = plugin_cls()
+    registry.register_processor(plugin)
+    return plugin
+
+
 def register_default_processors(registry, filter_ids: list[str] | None = None) -> None:
     """
     Register built-in processors.
@@ -60,7 +79,9 @@ __all__ = [
     "ProjectionProcessor",
     "PSFResolutionProcessor",
     "SegmentationProcessor",
+    "available_processor_choices",
     "available_processor_ids",
+    "register_processor_by_id",
     "register_default_processors",
 ]
 

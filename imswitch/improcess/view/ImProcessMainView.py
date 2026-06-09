@@ -46,6 +46,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # Emitted when the user picks a different reconstructor in the Parameters
     # dock header. Carries the plugin id (e.g. "view-only", "monalisa").
     sigActiveReconstructorChanged = QtCore.Signal(str)
+    sigLoadProcessorRequested = QtCore.Signal(str)
 
     sigClosing = QtCore.Signal()
 
@@ -112,6 +113,23 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         setSaveFolder = QtWidgets.QAction('Set default save folder…', self)
         setSaveFolder.triggered.connect(self.sigSetSaveFolder)
         file.addAction(setSaveFolder)
+
+        self._processorToolbar = self.addToolBar('Analysis tools')
+        self._processorToolbar.setObjectName('ImProcessAnalysisToolsToolbar')
+        self._loadProcessorCombo = QtWidgets.QComboBox()
+        self._loadProcessorCombo.setMinimumContentsLength(18)
+        self._loadProcessorCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self._loadProcessorCombo.setToolTip('Load an available built-in analysis tool at runtime')
+        self._processorToolbar.addWidget(QtWidgets.QLabel('Load tool: '))
+        self._processorToolbar.addWidget(self._loadProcessorCombo)
+        self._loadProcessorCombo.activated.connect(self._on_load_processor_combo_activated)
+        self._loadedProcessorCombo = QtWidgets.QComboBox()
+        self._loadedProcessorCombo.setMinimumContentsLength(18)
+        self._loadedProcessorCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self._loadedProcessorCombo.setToolTip('Processors currently registered in ImProcess')
+        self._processorToolbar.addSeparator()
+        self._processorToolbar.addWidget(QtWidgets.QLabel('Loaded processors: '))
+        self._processorToolbar.addWidget(self._loadedProcessorCombo)
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
@@ -230,6 +248,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.dockArea = DockArea()
         self.setCentralWidget(self.dockArea)
         self.docks: dict[str, Dock] = {}
+        self._runtimeAnalysisDockAnchor = None
 
         # --- Left column: parameters + buttons + data tabs ---
         parametersDock = Dock('Parameters', size=(2, 5))
@@ -262,6 +281,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         reconstructionDock.addWidget(self.reconstructionWidget)
         self.dockArea.addDock(reconstructionDock, 'right')
         self.docks['Reconstruction'] = reconstructionDock
+        self._reconstructionDock = reconstructionDock
 
         # --- Right column: optional analysis panels ---
         analysisPanels = [
@@ -287,6 +307,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 self.dockArea.addDock(dock, 'bottom', prevAnalysisDock)
             self.docks[title] = dock
             prevAnalysisDock = dock
+            self._runtimeAnalysisDockAnchor = dock
 
         # Snapshot the default layout for the View > Reset layout action and
         # for callers that drop a corrupt persisted state.
@@ -294,15 +315,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         # --- View menu: toggle each dock + reset layout ---
         viewMenu = menuBar.addMenu('&View')
+        self._viewMenu = viewMenu
         self._dockVisibilityActions: dict[str, QtWidgets.QAction] = {}
         for title, dock in self.docks.items():
-            action = QtWidgets.QAction(title, self, checkable=True)
-            action.setChecked(True)
-            action.toggled.connect(
-                lambda checked, d=dock: (d.show() if checked else d.hide())
+            self._addDockVisibilityAction(title, dock)
+        viewMenu.addSeparator()
+        # Reconstruction-list pane lives inside the Reconstruction widget, not
+        # in its own Dock — wire a dedicated toggle so users have a menu
+        # affordance alongside the splitter drag handle.
+        if hasattr(self.reconstructionWidget, 'toggleReconListPane'):
+            reconListToggle = QtWidgets.QAction('Reconstructions list', self, checkable=True)
+            reconListToggle.setChecked(True)
+            reconListToggle.toggled.connect(
+                lambda checked: self._setReconListPaneVisible(checked)
             )
-            viewMenu.addAction(action)
-            self._dockVisibilityActions[title] = action
+            viewMenu.addAction(reconListToggle)
+            self._reconListToggleAction = reconListToggle
         viewMenu.addSeparator()
         resetLayoutAction = QtWidgets.QAction('Reset layout', self)
         resetLayoutAction.triggered.connect(self.resetLayout)
@@ -319,6 +347,150 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def requestFolderPathFromUser(self, caption=None, defaultFolder=None):
         return QtWidgets.QFileDialog.getExistingDirectory(caption=caption, directory=defaultFolder)
+
+    def setAvailableRuntimeProcessors(
+        self,
+        choices: list[tuple[str, str]],
+        placeholder: str = 'All tools loaded',
+    ) -> None:
+        combo = self._loadProcessorCombo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(placeholder, userData=None)
+        for processor_id, processor_name in choices:
+            combo.addItem(str(processor_name or processor_id), userData=processor_id)
+        combo.setEnabled(bool(choices))
+        combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def setLoadedRuntimeProcessors(self, choices: list[tuple[str, str]]) -> None:
+        combo = self._loadedProcessorCombo
+        combo.blockSignals(True)
+        combo.clear()
+        if not choices:
+            combo.addItem('No processors loaded', userData=None)
+        else:
+            for processor_id, processor_name in choices:
+                combo.addItem(str(processor_name or processor_id), userData=processor_id)
+        combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def _on_load_processor_combo_activated(self, index: int) -> None:
+        combo = self._loadProcessorCombo
+        processor_id = combo.itemData(index) if 0 <= index < combo.count() else None
+        combo.setCurrentIndex(0)
+        if processor_id:
+            self.sigLoadProcessorRequested.emit(str(processor_id))
+
+    def ensureRuntimeAnalysisWidget(self, processor_id: str) -> str | None:
+        """Create/show the matching analysis dock for a runtime-loaded processor."""
+        specs = self._runtimeAnalysisToolSpecs()
+        spec = specs.get(processor_id)
+        if spec is None:
+            return None
+        title, factory = spec
+        dock = self.docks.get(title)
+        if dock is not None:
+            dock.show()
+            dock.raiseDock()
+            if processor_id == 'roi-manager':
+                self._wireROIManagerToDependentWidgets()
+            self._syncDockVisibilityActions()
+            return title
+
+        widget = factory()
+        dock = Dock(title, size=(3, 3))
+        dock.addWidget(widget)
+        anchor = self._runtimeAnalysisDockAnchor
+        if anchor is None:
+            self.dockArea.addDock(dock, 'right', self._reconstructionDock)
+        else:
+            self.dockArea.addDock(dock, 'bottom', anchor)
+        self.docks[title] = dock
+        self._runtimeAnalysisDockAnchor = dock
+        attr_name = self._runtimeAnalysisToolAttributes()[processor_id]
+        setattr(self, attr_name, widget)
+        if processor_id == 'roi-manager':
+            self._wireROIManagerToDependentWidgets()
+        self._addDockVisibilityAction(title, dock)
+        dock.show()
+        dock.raiseDock()
+        self._syncDockVisibilityActions()
+        return title
+
+    def isRuntimeAnalysisToolLoaded(self, tool_id: str) -> bool:
+        spec = self._runtimeAnalysisToolSpecs().get(tool_id)
+        if spec is None:
+            return True
+        title, _factory = spec
+        return title in self.docks
+
+    def _runtimeAnalysisToolSpecs(self):
+        return {
+            'projection': ('Projection', lambda: ProjectionWidget(self.reconstructionWidget.napariViewer)),
+            'segmentation': (
+                'Segmentation',
+                lambda: SegmentationWidget(
+                    self.reconstructionWidget.napariViewer,
+                    roiManagerWidget=self.roiManagerWidget,
+                ),
+            ),
+            'psf-resolution': (
+                'PSF resolution',
+                lambda: PSFResolutionWidget(
+                    self.reconstructionWidget.napariViewer,
+                    roiManagerWidget=self.roiManagerWidget,
+                ),
+            ),
+            'colocalization': (
+                'Colocalization',
+                lambda: ColocalizationWidget(
+                    self.reconstructionWidget.napariViewer,
+                    roiManagerWidget=self.roiManagerWidget,
+                ),
+            ),
+            'frc': ('FRC', lambda: FRCWidget(self.reconstructionWidget.napariViewer)),
+            'roi-manager': (
+                'ROI manager',
+                lambda: ROIManagerWidget(self.reconstructionWidget.napariViewer),
+            ),
+        }
+
+    def _runtimeAnalysisToolAttributes(self):
+        return {
+            'projection': 'projectionWidget',
+            'segmentation': 'segmentationWidget',
+            'psf-resolution': 'psfResolutionWidget',
+            'colocalization': 'colocalizationWidget',
+            'frc': 'frcWidget',
+            'roi-manager': 'roiManagerWidget',
+        }
+
+    def _wireROIManagerToDependentWidgets(self) -> None:
+        roi_manager = getattr(self, 'roiManagerWidget', None)
+        if roi_manager is None:
+            return
+        for attr in ('segmentationWidget', 'psfResolutionWidget', 'colocalizationWidget'):
+            widget = getattr(self, attr, None)
+            if widget is not None and hasattr(widget, '_roiManagerWidget'):
+                widget._roiManagerWidget = roi_manager
+
+    def _setReconListPaneVisible(self, visible: bool) -> None:
+        """Drive the reconstruction-list pane state from the View menu.
+
+        The pane lives behind a QSplitter inside ``ReconstructionView``; we
+        only need to flip it when the user's request disagrees with the
+        current state so dragging the splitter doesn't get reverted by a
+        stale menu check.
+        """
+        recon = getattr(self, 'reconstructionWidget', None)
+        if recon is None or not hasattr(recon, 'toggleReconListPane'):
+            return
+        collapsed = recon.isReconListPaneCollapsed()
+        if visible and collapsed:
+            recon.toggleReconListPane()
+        elif not visible and not collapsed:
+            recon.toggleReconListPane()
 
     def setReconstructionActionsVisible(
         self,
@@ -476,6 +648,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             action.blockSignals(True)
             action.setChecked(dock.isVisible())
             action.blockSignals(False)
+
+    def _addDockVisibilityAction(self, title: str, dock: Dock) -> None:
+        actions = getattr(self, '_dockVisibilityActions', None)
+        if actions is None or title in actions:
+            return
+        action = QtWidgets.QAction(title, self, checkable=True)
+        action.setChecked(True)
+        action.toggled.connect(
+            lambda checked, d=dock: (d.show() if checked else d.hide())
+        )
+        view_menu = getattr(self, '_viewMenu', None)
+        if view_menu is not None:
+            view_menu.addAction(action)
+        actions[title] = action
 
     def addNewData(self, reconObj, name):
         self.reconstructionWidget.addNewData(reconObj, name)
