@@ -35,6 +35,17 @@ class Reconstructor(ABC):
     are ceremonial in their case.
     """
 
+    default_save_subdir: str = "rec"
+    """Subdirectory name the WatcherFrame uses for reconstructed outputs.
+
+    The file watcher writes one output per watched input under
+    ``{watched_dir}/{default_save_subdir}/``. Override per modality to pick a
+    plugin-appropriate folder name (e.g. ``"deskew"`` for SNOUTY) or to keep
+    multiple watchers coexisting without overwriting each other. ``"rec"`` is
+    the historical MoNaLISA default and is kept here so behavior is
+    unchanged for plugins that don't override.
+    """
+
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:

@@ -19,6 +19,13 @@ class WatcherFrameController(ImProcessWidgetController):
         super().__init__(*args, **kwargs)
         self.attrs = None
         self.recPath = None
+        # Output subdirectory and per-file prefix. Default matches the
+        # historical MoNaLISA behavior and is overridden by the main
+        # controller whenever the active reconstructor changes (via
+        # setSaveSubdir / setSavePrefix) so non-MoNaLISA plugins can pick
+        # plugin-appropriate names.
+        self._saveSubdir = 'rec'
+        self._savePrefix = 'rec_'
         self._widget.sigWatchChanged.connect(self.toggleWatch)
         self._widget.sigChangeFolder.connect(lambda: self._widget.updateFileList(self._commChannel.extension.value()))
         self._commChannel.sigExecutionFinished.connect(self.executionFinished)
@@ -30,13 +37,32 @@ class WatcherFrameController(ImProcessWidgetController):
         self.extension = None
         self.__logger = initLogger(self, tryInheritParent=False)
 
+    def setSaveSubdir(self, subdir: str) -> None:
+        """Set the watcher's output subdirectory.
+
+        Called by ``ImProcessMainViewController._install_reconstructor_params``
+        with the active reconstructor's ``default_save_subdir`` so the
+        watcher's output folder follows the modality instead of being
+        hardcoded to ``rec``.
+        """
+        cleaned = (subdir or '').strip().strip('/\\') or 'rec'
+        self._saveSubdir = cleaned
+
+    def setSavePrefix(self, prefix: str) -> None:
+        """Set the per-file output prefix (default ``rec_``).
+
+        Allows non-MoNaLISA plugins to use a more descriptive prefix
+        (e.g. ``deskew_``) without changing the underlying watcher logic.
+        """
+        self._savePrefix = prefix if prefix is not None else ''
+
     def toggleWatch(self, checked):
         if checked:
             self.execution = False
             self.extension = self._commChannel.extension.value()
-            rec_dir = self._widget.path + '/rec'
+            rec_dir = os.path.join(self._widget.path, self._saveSubdir)
             if not os.path.isdir(rec_dir):
-                os.mkdir(rec_dir)
+                os.makedirs(rec_dir, exist_ok=True)
             self.watcher = FileWatcher(self._widget.path, self.extension, 1)
             self._widget.updateFileList(self.extension)
             files = self.watcher.filesInDirectory()
@@ -69,9 +95,11 @@ class WatcherFrameController(ImProcessWidgetController):
     def runNextFile(self):
         if len(self.toExecute) and not self.execution:
             newFile = self.toExecute.pop()
-            self.current = self._widget.path + '/' + newFile
+            self.current = os.path.join(self._widget.path, newFile)
             # if os.path.getmtime(self.current) + 1 < time.time():
-            self.recPath = self._widget.path + '/' + 'rec' + '/' + 'rec_' + newFile
+            self.recPath = os.path.join(
+                self._widget.path, self._saveSubdir, f'{self._savePrefix}{newFile}'
+            )
             datasets = DataObj.getDatasetNames(self.current)
             dataObjs = []
             for d in datasets:

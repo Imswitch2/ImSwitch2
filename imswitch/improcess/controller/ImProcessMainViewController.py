@@ -203,6 +203,16 @@ class ImProcessMainViewController(ImProcessWidgetController):
         except Exception:
             pass
 
+        # Push the active reconstructor's preferred output folder name to
+        # the file watcher so 'Watch and run' writes outputs under the
+        # plugin's default_save_subdir instead of a hardcoded 'rec/'.
+        watcher = getattr(self, 'watcherFrameController', None)
+        if watcher is not None:
+            try:
+                watcher.setSaveSubdir(getattr(reconstructor, 'default_save_subdir', 'rec'))
+            except Exception:
+                pass
+
         if reconstructor.id == "monalisa":
             # Keep the legacy MoNaLISA parameter tree until the whole
             # scan-params/find-pattern path is migrated to plugin widgets.
