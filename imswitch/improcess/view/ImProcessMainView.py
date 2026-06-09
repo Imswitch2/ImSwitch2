@@ -324,6 +324,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self,
         reconstruct_current: bool = True,
         update_reconstruction: bool = True,
+        reconstruct_multidata: bool = True,
     ) -> None:
         """Show or hide the modality-specific Actions buttons.
 
@@ -332,6 +333,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         - update_reconstruction: hide for non-MoNaLISA plugins. The 'Update
           reconstruction' button re-applies MoNaLISA scan parameters and is
           meaningless elsewhere.
+        - reconstruct_multidata: hide for pass-through plugins too — there is
+          no real reconstruction to batch.  Hiding it also collapses the
+          row 1 grid so the remaining buttons don't render with an empty
+          left cell.
         """
         btnFrame = getattr(self, '_btnFrame', None)
         if btnFrame is None:
@@ -340,6 +345,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             btnFrame.reconCurrBtn.setVisible(bool(reconstruct_current))
         if hasattr(btnFrame, 'updateBtn'):
             btnFrame.updateBtn.setVisible(bool(update_reconstruction))
+        if hasattr(btnFrame, 'reconMultiBtn'):
+            btnFrame.reconMultiBtn.setVisible(bool(reconstruct_multidata))
 
     def setReconstructorChoices(
         self,

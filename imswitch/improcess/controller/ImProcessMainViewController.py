@@ -195,10 +195,12 @@ class ImProcessMainViewController(ImProcessWidgetController):
         #   auto-routes the data to the viewer in that case.
         # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
         #   only makes sense for the MoNaLISA plugin.
+        is_pass_through = bool(getattr(reconstructor, 'is_pass_through', False))
         try:
             self._widget.setReconstructionActionsVisible(
-                reconstruct_current=not getattr(reconstructor, 'is_pass_through', False),
+                reconstruct_current=not is_pass_through,
                 update_reconstruction=(reconstructor.id == 'monalisa'),
+                reconstruct_multidata=not is_pass_through,
             )
         except Exception:
             pass
