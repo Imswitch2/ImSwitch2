@@ -150,57 +150,93 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self.pickDatasetsDialog = PickDatasetsDialog(self, allowMultiSelect=True)
 
+        # Parameter tree lives inside a host frame so setParameterWidget can
+        # swap the active reconstructor's parameter widget without disturbing
+        # the surrounding dock.
         parameterFrame = QtWidgets.QFrame()
         parameterGrid = QtWidgets.QGridLayout()
+        parameterGrid.setContentsMargins(0, 0, 0, 0)
         parameterFrame.setLayout(parameterGrid)
         parameterGrid.addWidget(self.parTree, 0, 0)
         self.parameterGrid = parameterGrid
 
-        DataDock = DockArea()
+        # Single DockArea backs the central widget so every panel is a
+        # free-floating, dockable, tab-able Dock — mirrors ImControl's layout.
+        self.dockArea = DockArea()
+        self.setCentralWidget(self.dockArea)
+        self.docks: dict[str, Dock] = {}
 
-        self.watcherDock = Dock('File watcher')
+        # --- Left column: parameters + buttons + data tabs ---
+        parametersDock = Dock('Parameters', size=(2, 5))
+        parametersDock.addWidget(parameterFrame)
+        self.dockArea.addDock(parametersDock, 'left')
+        self.docks['Parameters'] = parametersDock
+
+        actionsDock = Dock('Actions', size=(2, 1))
+        actionsDock.addWidget(btnFrame)
+        self.dockArea.addDock(actionsDock, 'bottom', parametersDock)
+        self.docks['Actions'] = actionsDock
+
+        self.watcherDock = Dock('File watcher', size=(2, 3))
         self.watcherDock.addWidget(self.watcherFrame)
-        DataDock.addDock(self.watcherDock)
+        self.dockArea.addDock(self.watcherDock, 'bottom', actionsDock)
+        self.docks['File watcher'] = self.watcherDock
 
-        self.multiDataDock = Dock('Multidata management')
+        self.multiDataDock = Dock('Multidata management', size=(2, 3))
         self.multiDataDock.addWidget(self.multiDataFrame)
-        DataDock.addDock(self.multiDataDock, 'above', self.watcherDock)
+        self.dockArea.addDock(self.multiDataDock, 'above', self.watcherDock)
+        self.docks['Multidata management'] = self.multiDataDock
 
-        self.currentDataDock = Dock('Current data')
+        self.currentDataDock = Dock('Current data', size=(2, 3))
         self.currentDataDock.addWidget(self.dataFrame)
-        DataDock.addDock(self.currentDataDock, 'above', self.multiDataDock)
+        self.dockArea.addDock(self.currentDataDock, 'above', self.multiDataDock)
+        self.docks['Current data'] = self.currentDataDock
 
-        layout = QtWidgets.QHBoxLayout()
-        self.cwidget = QtWidgets.QWidget()
-        self.setCentralWidget(self.cwidget)
-        self.cwidget.setLayout(layout)
+        # --- Center: reconstruction view ---
+        reconstructionDock = Dock('Reconstruction', size=(6, 9))
+        reconstructionDock.addWidget(self.reconstructionWidget)
+        self.dockArea.addDock(reconstructionDock, 'right')
+        self.docks['Reconstruction'] = reconstructionDock
 
-        leftContainer = QtWidgets.QVBoxLayout()
-        leftContainer.setContentsMargins(0, 0, 0, 0)
+        # --- Right column: optional analysis panels ---
+        analysisPanels = [
+            ('Graph', self.graphWidget),
+            ('Profile', self.profileWidget),
+            ('FRC', self.frcWidget),
+            ('ROI stats', self.roiStatsWidget),
+        ]
+        prevAnalysisDock = None
+        for title, widget in analysisPanels:
+            if widget is None:
+                continue
+            dock = Dock(title, size=(3, 3))
+            dock.addWidget(widget)
+            if prevAnalysisDock is None:
+                self.dockArea.addDock(dock, 'right', reconstructionDock)
+            else:
+                self.dockArea.addDock(dock, 'bottom', prevAnalysisDock)
+            self.docks[title] = dock
+            prevAnalysisDock = dock
 
-        rightContainer = QtWidgets.QVBoxLayout()
-        rightContainer.setContentsMargins(0, 0, 0, 0)
+        # Snapshot the default layout for the View > Reset layout action and
+        # for callers that drop a corrupt persisted state.
+        self._defaultDockState = self.dockArea.saveState()
 
-        leftContainer.addWidget(parameterFrame, 1)
-        leftContainer.addWidget(btnFrame, 0)
-        leftContainer.addWidget(DataDock, 1)
-        rightSplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        rightSplitter.addWidget(self.reconstructionWidget)
-        if self.graphWidget is not None:
-            rightSplitter.addWidget(self.graphWidget)
-        if self.profileWidget is not None:
-            rightSplitter.addWidget(self.profileWidget)
-        if self.frcWidget is not None:
-            rightSplitter.addWidget(self.frcWidget)
-        if self.roiStatsWidget is not None:
-            rightSplitter.addWidget(self.roiStatsWidget)
-        rightSplitter.setStretchFactor(0, 5)
-        for index in range(1, rightSplitter.count()):
-            rightSplitter.setStretchFactor(index, 1)
-        rightContainer.addWidget(rightSplitter)
-
-        layout.addLayout(leftContainer, 1)
-        layout.addLayout(rightContainer, 3)
+        # --- View menu: toggle each dock + reset layout ---
+        viewMenu = menuBar.addMenu('&View')
+        self._dockVisibilityActions: dict[str, QtWidgets.QAction] = {}
+        for title, dock in self.docks.items():
+            action = QtWidgets.QAction(title, self, checkable=True)
+            action.setChecked(True)
+            action.toggled.connect(
+                lambda checked, d=dock: (d.show() if checked else d.hide())
+            )
+            viewMenu.addAction(action)
+            self._dockVisibilityActions[title] = action
+        viewMenu.addSeparator()
+        resetLayoutAction = QtWidgets.QAction('Reset layout', self)
+        resetLayoutAction.triggered.connect(self.resetLayout)
+        viewMenu.addAction(resetLayoutAction)
 
         pg.setConfigOption('imageAxisOrder', 'row-major')
 
@@ -219,6 +255,55 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def raiseMultiDataDock(self):
         self.multiDataDock.raiseDock()
+
+    def getLayoutState(self) -> dict:
+        """Return passive GUI layout state for persistence."""
+        return {'dock_area': self.dockArea.saveState()}
+
+    def setLayoutState(self, state: dict) -> None:
+        """Restore passive GUI layout state if it is compatible with this setup."""
+        if not isinstance(state, dict):
+            return
+        dockAreaState = state.get('dock_area')
+        if dockAreaState is None:
+            return
+        try:
+            self.dockArea.restoreState(
+                dockAreaState, missing='ignore', extra='bottom'
+            )
+        except Exception:
+            # A corrupt or incompatible saved state should never block startup;
+            # fall back to the default placement silently.
+            pass
+        self._syncDockVisibilityActions()
+
+    def resetLayout(self) -> None:
+        """Restore the default dock arrangement captured at construction."""
+        default_state = getattr(self, '_defaultDockState', None)
+        if default_state is None:
+            return
+        try:
+            self.dockArea.restoreState(
+                default_state, missing='ignore', extra='bottom'
+            )
+        except Exception:
+            return
+        for dock in self.docks.values():
+            dock.show()
+        self._syncDockVisibilityActions()
+
+    def _syncDockVisibilityActions(self) -> None:
+        """Keep the View-menu checkboxes in sync with the current dock visibility."""
+        actions = getattr(self, '_dockVisibilityActions', None)
+        if not actions:
+            return
+        for title, action in actions.items():
+            dock = self.docks.get(title)
+            if dock is None:
+                continue
+            action.blockSignals(True)
+            action.setChecked(dock.isVisible())
+            action.blockSignals(False)
 
     def addNewData(self, reconObj, name):
         self.reconstructionWidget.addNewData(reconObj, name)

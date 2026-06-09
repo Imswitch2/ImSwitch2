@@ -1,3 +1,5 @@
+from typing import Any, Dict
+
 from imswitch.imcommon.controller import MainController
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.processing_config import (
@@ -7,6 +9,12 @@ from imswitch.improcess.model.processing_config import (
 from .CommunicationChannel import CommunicationChannel
 from .ImProcessMainViewController import ImProcessMainViewController
 from .basecontrollers import ImProcessWidgetControllerFactory
+
+
+# Registry key for ImProcess's dock layout state. Distinct from imcontrol's
+# 'GuiLayout' so both modules can persist their layouts side by side when
+# enabled together.
+_GUI_LAYOUT_STATE_KEY = 'ImProcessGuiLayout'
 
 
 class ImProcessMainController(MainController):
@@ -33,6 +41,27 @@ class ImProcessMainController(MainController):
         self.mainViewController = self.__factory.createController(
             ImProcessMainViewController, self.__mainView
         )
+
+        # Register the view's dock layout with the shared widget-state
+        # persistence service so it is auto-restored at startup and auto-saved
+        # at shutdown. Failures here must never block ImProcess from coming up.
+        self.__guiLayoutStateAdapter = None
+        try:
+            from imswitch.imcontrol.model import getWidgetStatePersistence
+
+            self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
+            persistence = getWidgetStatePersistence()
+            persistence.register(_GUI_LAYOUT_STATE_KEY, self.__guiLayoutStateAdapter)
+            try:
+                persistence.loadWidgetState(_GUI_LAYOUT_STATE_KEY, 'default')
+            except Exception as e:
+                self.__logger.warning(
+                    f'Failed to restore ImProcess dock layout: {e}'
+                )
+        except Exception as e:
+            self.__logger.debug(
+                f'Widget-state persistence unavailable for ImProcess layout: {e}'
+            )
     
     def _initialize_plugins(self):
         """
@@ -82,7 +111,39 @@ class ImProcessMainController(MainController):
         )
 
     def closeEvent(self):
+        # Persist the current dock layout before tearing the controllers down,
+        # so the next launch can restore it.
+        if self.__guiLayoutStateAdapter is not None:
+            try:
+                from imswitch.imcontrol.model import getWidgetStatePersistence
+
+                getWidgetStatePersistence().saveWidgetState(
+                    _GUI_LAYOUT_STATE_KEY, 'default'
+                )
+            except Exception as e:
+                self.__logger.warning(
+                    f'Failed to save ImProcess dock layout: {e}'
+                )
         self.__factory.closeAllCreatedControllers()
+
+
+class _GuiLayoutStateAdapter:
+    """Persistence adapter for ImProcess's passive dock layout state."""
+
+    def __init__(self, view: Any) -> None:
+        self._view = view
+
+    def getWidgetState(self) -> Dict[str, Any]:
+        """Return the current GUI layout state."""
+        return self._view.getLayoutState()
+
+    def setWidgetState(self, state: Dict[str, Any]) -> None:
+        """Restore GUI layout state without triggering hardware actions."""
+        self._view.setLayoutState(state)
+
+    def getStateSchemaVersion(self) -> int:
+        """Return the GUI layout persistence schema version."""
+        return 1
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
