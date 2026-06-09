@@ -7,10 +7,12 @@ in the global registry alongside reconstructors.
 
 from .base import Processor
 from .drift_correct import DriftCorrectProcessor
+from .frc import FRCProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
     'drift-correct': DriftCorrectProcessor,
+    'frc': FRCProcessor,
 }
 
 
@@ -42,6 +44,7 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 __all__ = [
     "Processor",
     "DriftCorrectProcessor",
+    "FRCProcessor",
     "available_processor_ids",
     "register_default_processors",
 ]

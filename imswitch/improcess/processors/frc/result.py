@@ -1,0 +1,116 @@
+"""FRC processing result."""
+
+from pathlib import Path
+
+import h5py
+import numpy as np
+
+from imswitch.improcess.analysis.frc import FRCAnalysis
+from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
+from imswitch.improcess.model.result import ProcessingResult, ViewMode
+
+
+class FRCResult(ProcessingResult):
+    """Result wrapper for Fourier ring correlation curves."""
+
+    def __init__(self, name: str, analysis: FRCAnalysis, params: dict):
+        self.analysis = analysis
+        self.params = params
+
+        cutoff = np.full_like(analysis.frequency, np.nan, dtype=np.float64)
+        if np.isfinite(analysis.cutoff_frequency):
+            cutoff[:] = analysis.cutoff_frequency
+        data = np.stack([analysis.frc, analysis.threshold, cutoff], axis=0).astype(np.float32)
+
+        super().__init__(
+            name=name,
+            data=data,
+            axis_labels=["C", "Frequency"],
+            view_modes=[ViewMode("Curves", (0, 1))],
+            display_levels=None,
+        )
+
+    def save(self, path: Path, fmt: str = "hdf5") -> None:
+        path = Path(path)
+        if fmt in ("hdf5", "h5", "hdf"):
+            self._save_hdf5(path)
+        elif fmt in ("csv", "txt"):
+            self._save_text(path)
+        else:
+            raise ValueError(f"FRC result supports HDF5 or CSV/TXT, got {fmt!r}")
+
+    def plot_payloads(self) -> list[PlotPayload]:
+        series = [
+            PlotSeries(
+                name="FRC",
+                x=self.analysis.frequency,
+                y=self.analysis.frc,
+                kind="line",
+            ),
+            PlotSeries(
+                name="1/7 threshold",
+                x=self.analysis.frequency,
+                y=self.analysis.threshold,
+                kind="line",
+                style={"pen": "y"},
+            ),
+        ]
+        if np.isfinite(self.analysis.cutoff_frequency):
+            series.append(
+                PlotSeries(
+                    name="Cutoff",
+                    x=np.array([self.analysis.cutoff_frequency, self.analysis.cutoff_frequency]),
+                    y=np.array([0.0, 1.0]),
+                    kind="line",
+                    style={"pen": "r"},
+                )
+            )
+
+        title = "FRC"
+        if np.isfinite(self.analysis.resolution):
+            title = f"FRC resolution: {self.analysis.resolution:.4g} {self.analysis.resolution_unit}"
+
+        return [
+            PlotPayload(
+                title=title,
+                x_label=f"Spatial frequency ({self.analysis.frequency_unit})",
+                y_label="Correlation",
+                series=series,
+                metadata={
+                    "resolution": self.analysis.resolution,
+                    "resolution_unit": self.analysis.resolution_unit,
+                    "cutoff_frequency": self.analysis.cutoff_frequency,
+                    **self.analysis.metadata,
+                },
+            )
+        ]
+
+    def _save_hdf5(self, path: Path) -> None:
+        with h5py.File(str(path), "w") as h5:
+            h5.create_dataset("frequency", data=self.analysis.frequency)
+            h5.create_dataset("frc", data=self.analysis.frc)
+            h5.create_dataset("threshold", data=self.analysis.threshold)
+            h5.attrs["cutoff_frequency"] = self.analysis.cutoff_frequency
+            h5.attrs["resolution"] = self.analysis.resolution
+            h5.attrs["frequency_unit"] = self.analysis.frequency_unit
+            h5.attrs["resolution_unit"] = self.analysis.resolution_unit
+            for key, value in self.params.items():
+                if value is None:
+                    continue
+                h5.attrs[str(key)] = value
+            for key, value in self.analysis.metadata.items():
+                if value is None:
+                    continue
+                attr_key = str(key)
+                if attr_key in h5.attrs:
+                    attr_key = f"frc_{attr_key}"
+                h5.attrs[attr_key] = value
+
+    def _save_text(self, path: Path) -> None:
+        table = np.column_stack([self.analysis.frequency, self.analysis.frc, self.analysis.threshold])
+        np.savetxt(
+            str(path),
+            table,
+            delimiter=",",
+            header=f"frequency,frc,threshold; resolution={self.analysis.resolution} {self.analysis.resolution_unit}",
+        )
