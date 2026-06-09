@@ -25,51 +25,87 @@ class MultiDataFrame(QtWidgets.QFrame):
         self.dataList.currentItemChanged.connect(self.sigSelectedItemChanged)
         self.dataList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
-        dataLoadedLabel = QtWidgets.QLabel('Data loaded')
-        dataLoadedLabel.setAlignment(QtCore.Qt.AlignTop)
-        self.dataLoadedStatus = QtWidgets.QLabel()
-        self.dataLoadedStatus.setAlignment(QtCore.Qt.AlignTop)
+        self.dataLoadedStatus = QtWidgets.QLabel('Data loaded: —')
+        self.dataLoadedStatus.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+        self.dataLoadedStatus.setStyleSheet('color: palette(mid); font-size: 9pt;')
 
-        self.setDataBtn = BetterPushButton('Set as current data')
-        self.setDataBtn.clicked.connect(self.sigSetAsCurrentDataClicked)
+        # Standalone actions (no Selected/All twin)
         self.addDataBtn = BetterPushButton('Add data')
         self.addDataBtn.clicked.connect(self.sigAddDataClicked)
-        self.loadCurrDataBtn = BetterPushButton('Load selected data')
-        self.loadCurrDataBtn.clicked.connect(self.sigLoadCurrentDataClicked)
-        self.loadAllDataBtn = BetterPushButton('Load all data')
-        self.loadAllDataBtn.clicked.connect(self.sigLoadAllDataClicked)
+        self.setDataBtn = BetterPushButton('Set as current data')
+        self.setDataBtn.clicked.connect(self.sigSetAsCurrentDataClicked)
 
-        self.delDataBtn = BetterPushButton('Remove')
-        self.delDataBtn.clicked.connect(self.sigDeleteCurrentDataClicked)
-        self.unloadDataBtn = BetterPushButton('Unload')
-        self.unloadDataBtn.clicked.connect(self.sigUnloadCurrentDataClicked)
-        self.delAllDataBtn = BetterPushButton('Remove all')
-        self.delAllDataBtn.clicked.connect(self.sigDeleteAllDataClicked)
-        self.unloadAllDataBtn = BetterPushButton('Unload all')
-        self.unloadAllDataBtn.clicked.connect(self.sigUnloadAllDataClicked)
-        self.saveDataBtn = BetterPushButton('Save selected data')
-        self.saveDataBtn.clicked.connect(self.sigSaveCurrentDataClicked)
-        self.saveAllDataBtn = BetterPushButton('Save all')
-        self.saveAllDataBtn.clicked.connect(self.sigSaveAllDataClicked)
+        # Paired actions collapse into one QToolButton each, with a popup
+        # menu offering 'Selected' and 'All' variants. Keep the original
+        # button attributes as QActions so the existing set*Enabled helpers
+        # in this widget (and any external callers) keep working.
+        loadBtn, self.loadCurrDataBtn, self.loadAllDataBtn = self._makeMenuButton(
+            'Load',
+            'Selected', self.sigLoadCurrentDataClicked,
+            'All',      self.sigLoadAllDataClicked,
+        )
+        saveBtn, self.saveDataBtn, self.saveAllDataBtn = self._makeMenuButton(
+            'Save',
+            'Selected', self.sigSaveCurrentDataClicked,
+            'All',      self.sigSaveAllDataClicked,
+        )
+        unloadBtn, self.unloadDataBtn, self.unloadAllDataBtn = self._makeMenuButton(
+            'Unload',
+            'Selected', self.sigUnloadCurrentDataClicked,
+            'All',      self.sigUnloadAllDataClicked,
+        )
+        removeBtn, self.delDataBtn, self.delAllDataBtn = self._makeMenuButton(
+            'Remove',
+            'Selected', self.sigDeleteCurrentDataClicked,
+            'All',      self.sigDeleteAllDataClicked,
+        )
 
-        # Set layout
+        # Two-pane layout: list on the left, single column of compact controls
+        # on the right. The old 11-button grid was hard to scan and had a
+        # duplicate addWidget for Unload-all.
         layout = QtWidgets.QGridLayout()
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(4)
         self.setLayout(layout)
 
-        layout.addWidget(dataLoadedLabel, 0, 1)
-        layout.addWidget(self.dataLoadedStatus, 0, 2)
-        layout.addWidget(self.addDataBtn, 1, 1)
-        layout.addWidget(self.loadCurrDataBtn, 2, 1)
-        layout.addWidget(self.loadAllDataBtn, 3, 1)
-        layout.addWidget(self.setDataBtn, 4, 1)
-        layout.addWidget(self.delDataBtn, 1, 2)
-        layout.addWidget(self.unloadDataBtn, 2, 2)
-        layout.addWidget(self.delAllDataBtn, 3, 2)
-        layout.addWidget(self.unloadAllDataBtn, 4, 2)
-        layout.addWidget(self.saveDataBtn, 5, 1)
-        layout.addWidget(self.saveAllDataBtn, 5, 2)
-        layout.addWidget(self.unloadAllDataBtn, 4, 2)
         layout.addWidget(self.dataList, 0, 0, -1, 1)
+
+        layout.addWidget(self.dataLoadedStatus, 0, 1)
+        layout.addWidget(self.addDataBtn, 1, 1)
+        layout.addWidget(self.setDataBtn, 2, 1)
+        layout.addWidget(loadBtn, 3, 1)
+        layout.addWidget(saveBtn, 4, 1)
+        layout.addWidget(unloadBtn, 5, 1)
+        layout.addWidget(removeBtn, 6, 1)
+        layout.setRowStretch(7, 1)
+        layout.setColumnStretch(0, 1)
+
+    def _makeMenuButton(self, title, label_a, signal_a, label_b, signal_b):
+        """Build a single QToolButton that pops up two QActions.
+
+        Returns ``(button, action_a, action_b)``. Each QAction is fully
+        responsible for invoking the matching signal, so external code can
+        toggle the actions individually via ``setEnabled`` exactly like the
+        old buttons.
+        """
+        button = QtWidgets.QToolButton()
+        button.setText(f'{title} ▾')
+        button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        button.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+        )
+
+        action_a = QtWidgets.QAction(label_a, self)
+        action_a.triggered.connect(signal_a)
+        button.addAction(action_a)
+
+        action_b = QtWidgets.QAction(label_b, self)
+        action_b.triggered.connect(signal_b)
+        button.addAction(action_b)
+
+        return button, action_a, action_b
 
     def requestFilePathsFromUser(self, defaultFolder=None):
         return QtWidgets.QFileDialog().getOpenFileNames(directory=defaultFolder)[0]
@@ -163,7 +199,8 @@ class MultiDataFrame(QtWidgets.QFrame):
             )
 
     def setLoadedStatusText(self, text):
-        self.dataLoadedStatus.setText(text)
+        text = (text or '').strip() or '—'
+        self.dataLoadedStatus.setText(f'Data loaded: {text}')
 
     def setAddButtonEnabled(self, value):
         self.addDataBtn.setEnabled(value)
