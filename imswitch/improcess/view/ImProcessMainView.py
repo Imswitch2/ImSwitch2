@@ -6,14 +6,19 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view import PickDatasetsDialog
 from .DataFrame import DataFrame
+from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
 from .FRCWidget import FRCWidget
 from .GraphWidget import GraphWidget
 from .ProfileWidget import ProfileWidget
+from .PSFResolutionWidget import PSFResolutionWidget
+from .ProjectionWidget import ProjectionWidget
+from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
 from .ScanParamsDialog import ScanParamsDialog
+from .SegmentationWidget import SegmentationWidget
 from .guitools import BetterPushButton
 
 
@@ -50,6 +55,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showProfilePanel: bool = True,
         showFRCPanel: bool = False,
         showROIStatsPanel: bool = False,
+        showProjectionPanel: bool = False,
+        showROIManagerPanel: bool = False,
+        showSegmentationPanel: bool = False,
+        showPSFResolutionPanel: bool = False,
+        showColocalizationPanel: bool = False,
         *args,
         **kwargs,
     ):
@@ -108,6 +118,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.watcherFrame = WatcherFrame()
 
         btnFrame = BtnFrame()
+        self._btnFrame = btnFrame
         btnFrame.sigReconstuctCurrent.connect(self.sigReconstuctCurrent)
         btnFrame.sigReconstructMultiConsolidated.connect(self.sigReconstructMultiConsolidated)
         btnFrame.sigReconstructMultiIndividual.connect(self.sigReconstructMultiIndividual)
@@ -129,6 +140,40 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.roiStatsWidget = (
             ROIStatsWidget(self.reconstructionWidget.napariViewer)
             if showROIStatsPanel
+            else None
+        )
+        self.roiManagerWidget = (
+            ROIManagerWidget(self.reconstructionWidget.napariViewer)
+            if showROIManagerPanel
+            else None
+        )
+        self.projectionWidget = (
+            ProjectionWidget(self.reconstructionWidget.napariViewer)
+            if showProjectionPanel
+            else None
+        )
+        self.segmentationWidget = (
+            SegmentationWidget(
+                self.reconstructionWidget.napariViewer,
+                roiManagerWidget=self.roiManagerWidget,
+            )
+            if showSegmentationPanel
+            else None
+        )
+        self.psfResolutionWidget = (
+            PSFResolutionWidget(
+                self.reconstructionWidget.napariViewer,
+                roiManagerWidget=self.roiManagerWidget,
+            )
+            if showPSFResolutionPanel
+            else None
+        )
+        self.colocalizationWidget = (
+            ColocalizationWidget(
+                self.reconstructionWidget.napariViewer,
+                roiManagerWidget=self.roiManagerWidget,
+            )
+            if showColocalizationPanel
             else None
         )
 
@@ -222,7 +267,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         analysisPanels = [
             ('Graph', self.graphWidget),
             ('Profile', self.profileWidget),
+            ('Projection', self.projectionWidget),
+            ('Segmentation', self.segmentationWidget),
+            ('PSF resolution', self.psfResolutionWidget),
+            ('Colocalization', self.colocalizationWidget),
             ('FRC', self.frcWidget),
+            ('ROI manager', self.roiManagerWidget),
             ('ROI stats', self.roiStatsWidget),
         ]
         prevAnalysisDock = None
@@ -269,6 +319,27 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def requestFolderPathFromUser(self, caption=None, defaultFolder=None):
         return QtWidgets.QFileDialog.getExistingDirectory(caption=caption, directory=defaultFolder)
+
+    def setReconstructionActionsVisible(
+        self,
+        reconstruct_current: bool = True,
+        update_reconstruction: bool = True,
+    ) -> None:
+        """Show or hide the modality-specific Actions buttons.
+
+        - reconstruct_current: hide for pass-through plugins (process() is a
+          no-op wrap, so the data has already auto-routed to the viewer).
+        - update_reconstruction: hide for non-MoNaLISA plugins. The 'Update
+          reconstruction' button re-applies MoNaLISA scan parameters and is
+          meaningless elsewhere.
+        """
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is None:
+            return
+        if hasattr(btnFrame, 'reconCurrBtn'):
+            btnFrame.reconCurrBtn.setVisible(bool(reconstruct_current))
+        if hasattr(btnFrame, 'updateBtn'):
+            btnFrame.updateBtn.setVisible(bool(update_reconstruction))
 
     def setReconstructorChoices(
         self,

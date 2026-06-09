@@ -6,15 +6,23 @@ in the global registry alongside reconstructors.
 """
 
 from .base import Processor
+from .colocalization import ColocalizationProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
 from .frc import FRCProcessor
+from .projection import ProjectionProcessor
+from .psf_resolution import PSFResolutionProcessor
+from .segmentation import SegmentationProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
+    'colocalization': ColocalizationProcessor,
     'drift-correct': DriftCorrectProcessor,
     'frc': FRCProcessor,
     'denoise': DenoiseProcessor,
+    'projection': ProjectionProcessor,
+    'psf-resolution': PSFResolutionProcessor,
+    'segmentation': SegmentationProcessor,
 }
 
 
@@ -45,9 +53,13 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 
 __all__ = [
     "Processor",
+    "ColocalizationProcessor",
     "DriftCorrectProcessor",
     "FRCProcessor",
     "DenoiseProcessor",
+    "ProjectionProcessor",
+    "PSFResolutionProcessor",
+    "SegmentationProcessor",
     "available_processor_ids",
     "register_default_processors",
 ]

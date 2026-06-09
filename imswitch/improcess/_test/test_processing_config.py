@@ -1,8 +1,13 @@
 from imswitch.improcess.model.processing_config import (
+    is_colocalization_panel_enabled,
     is_frc_panel_enabled,
     is_graph_panel_enabled,
     is_profile_panel_enabled,
+    is_psf_resolution_panel_enabled,
+    is_projection_panel_enabled,
+    is_roi_manager_panel_enabled,
     is_roi_stats_panel_enabled,
+    is_segmentation_panel_enabled,
     plugin_ids_from_config,
 )
 
@@ -45,6 +50,46 @@ def test_roi_stats_panel_hidden_by_default():
 
 def test_roi_stats_panel_can_be_enabled_explicitly():
     assert is_roi_stats_panel_enabled({"roiStatsPanel": True})
+
+
+def test_roi_manager_panel_hidden_by_default():
+    assert not is_roi_manager_panel_enabled({})
+
+
+def test_roi_manager_panel_can_be_enabled_explicitly():
+    assert is_roi_manager_panel_enabled({"roiManagerPanel": True})
+
+
+def test_projection_panel_hidden_by_default():
+    assert not is_projection_panel_enabled({})
+
+
+def test_projection_panel_can_be_enabled_explicitly():
+    assert is_projection_panel_enabled({"projectionPanel": True})
+
+
+def test_segmentation_panel_hidden_by_default():
+    assert not is_segmentation_panel_enabled({})
+
+
+def test_segmentation_panel_can_be_enabled_explicitly():
+    assert is_segmentation_panel_enabled({"segmentationPanel": True})
+
+
+def test_psf_resolution_panel_hidden_by_default():
+    assert not is_psf_resolution_panel_enabled({})
+
+
+def test_psf_resolution_panel_can_be_enabled_explicitly():
+    assert is_psf_resolution_panel_enabled({"psfResolutionPanel": True})
+
+
+def test_colocalization_panel_hidden_by_default():
+    assert not is_colocalization_panel_enabled({})
+
+
+def test_colocalization_panel_can_be_enabled_explicitly():
+    assert is_colocalization_panel_enabled({"colocalizationPanel": True})
 
 
 def test_graph_panel_only_config_keeps_standalone_plugin_defaults():

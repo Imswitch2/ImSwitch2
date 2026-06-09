@@ -4,9 +4,14 @@
     "processing": {
         "graphPanel": true,
         "profilePanel": true,
+        "projectionPanel": true,
+        "segmentationPanel": true,
+        "psfResolutionPanel": true,
+        "colocalizationPanel": true,
         "frcPanel": true,
+        "roiManagerPanel": true,
         "roiStatsPanel": true,
         "reconstructors": ["snouty", "snouty-projections", "view-only"],
-        "processors": ["drift-correct", "frc"]
+        "processors": ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
     }
 }

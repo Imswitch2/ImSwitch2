@@ -83,9 +83,16 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
             "snouty",
             "snouty-projections",
             "view-only",
+            "widefield-starss",
         ],
         "__improcess_processors__": [
+            "denoise",
+            "colocalization",
             "drift-correct",
+            "frc",
+            "projection",
+            "psf-resolution",
+            "segmentation",
         ],
     }
     resolved = dict(fallback)
@@ -601,6 +608,7 @@ class DeviceCard(QFrame):
     sig_rename    = pyqtSignal(str, str)
     sig_delete    = pyqtSignal(str, str)
     sig_save_tmpl = pyqtSignal(str, str)
+    sig_copy      = pyqtSignal(str, str)
 
     def __init__(self, category: str, name: str, device_data: dict, parent=None):
         super().__init__(parent)
@@ -700,6 +708,8 @@ class DeviceCard(QFrame):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
+        a_copy = menu.addAction("Copy")
+        menu.addSeparator()
         a_dup  = menu.addAction("Duplicate")
         a_ren  = menu.addAction("Rename…")
         menu.addSeparator()
@@ -707,7 +717,9 @@ class DeviceCard(QFrame):
         menu.addSeparator()
         a_del  = menu.addAction("Delete")
         action = menu.exec_(self.mapToGlobal(event.pos()))
-        if action == a_dup:
+        if action == a_copy:
+            self.sig_copy.emit(self.category, self.device_name)
+        elif action == a_dup:
             self.sig_duplicate.emit(self.category, self.device_name)
         elif action == a_ren:
             self.sig_rename.emit(self.category, self.device_name)
@@ -726,6 +738,7 @@ class DeviceCanvas(QScrollArea):
     sig_device_duped    = pyqtSignal(str, str)
     sig_device_renamed  = pyqtSignal(str, str)
     sig_save_tmpl       = pyqtSignal(str, str)
+    sig_device_copied   = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -807,6 +820,7 @@ class DeviceCanvas(QScrollArea):
             card.sig_rename.connect(self.sig_device_renamed)
             card.sig_delete.connect(self.sig_device_deleted)
             card.sig_save_tmpl.connect(self.sig_save_tmpl)
+            card.sig_copy.connect(self.sig_device_copied)
             grid.addWidget(card, row, col)
             self._cards[(cat, name)] = card
             col += 1
@@ -1000,6 +1014,7 @@ class PropertyEditor(QWidget):
     sig_apply = pyqtSignal(str, str, dict)   # (category, name, new_device_dict)
     sig_rename = pyqtSignal(str, str, str)    # (category, old_name, new_name)
     sig_modified = pyqtSignal()               # any change to config settings (widgets, sections)
+    sig_show_config = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1036,6 +1051,12 @@ class PropertyEditor(QWidget):
         self._rename_btn.setStyleSheet("font-size:8pt;")
         self._rename_btn.clicked.connect(self._do_rename)
         row1.addWidget(self._rename_btn)
+        self._close_device_btn = QPushButton("Config Settings")
+        self._close_device_btn.setFixedHeight(22)
+        self._close_device_btn.setStyleSheet("font-size:8pt;")
+        self._close_device_btn.setToolTip("Close device details and return to general config settings")
+        self._close_device_btn.clicked.connect(self.sig_show_config.emit)
+        row1.addWidget(self._close_device_btn)
         hdr_lay.addLayout(row1)
 
         # Manager type: combo for known schemas + line-edit for custom/free-form
@@ -1213,6 +1234,7 @@ class PropertyEditor(QWidget):
         self._name_lbl.setText("Config Settings")
         self._hdr.setVisible(True)
         self._rename_btn.setVisible(False)
+        self._close_device_btn.setVisible(False)
         self._mgr_combo.setVisible(False)
         self._custom_mgr_edit.setVisible(False)
         self._tabs.setVisible(False)
@@ -1224,6 +1246,7 @@ class PropertyEditor(QWidget):
     def _show_device_view(self):
         """Switch to device editor view (hide config settings)."""
         self._rename_btn.setVisible(True)
+        self._close_device_btn.setVisible(True)
         self._mgr_combo.setVisible(True)
         self._tabs.setVisible(True)
         self._val_lbl.setVisible(True)
@@ -2524,10 +2547,11 @@ class LeftPanel(QWidget):
     sig_file_open = pyqtSignal(str)
     # (category, device_or_mgr_name): str mgr_name for builtin, dict for user
     sig_tmpl_add  = pyqtSignal(str, object)
+    sig_folder_reloaded = pyqtSignal(str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(220)
+        self.setFixedWidth(242)
         self._store = TemplateStore()
         self._config_dir: object = None
 
@@ -2538,20 +2562,48 @@ class LeftPanel(QWidget):
         # ── Config Files ──
         hdr = QLabel("<b>Config Files</b>")
         hdr.setTextFormat(Qt.RichText)
+        hdr.setFixedHeight(22)
+        hdr.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         lay.addWidget(hdr)
+
+        folder_btns = QHBoxLayout()
+        folder_btns.setSpacing(4)
 
         open_btn = QPushButton("Open Folder…")
         open_btn.clicked.connect(self._open_folder)
-        lay.addWidget(open_btn)
+        folder_btns.addWidget(open_btn, 1)
+
+        reload_btn = QPushButton("Reload")
+        reload_btn.setToolTip("Reload JSON configs from the currently selected folder")
+        reload_btn.clicked.connect(self.reload_folder)
+        folder_btns.addWidget(reload_btn)
+        lay.addLayout(folder_btns)
 
         self._file_list = QTreeWidget()
         self._file_list.setHeaderHidden(True)
         self._file_list.setIndentation(12)
-        self._file_list.setMaximumHeight(160)
+        self._file_list.setTextElideMode(Qt.ElideNone)
+        self._file_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._file_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._file_list.setMinimumHeight(180)
+        self._file_list.setMaximumHeight(230)
+        self._file_list.header().setStretchLastSection(False)
+        self._file_list.setColumnWidth(0, 360)
         self._file_list.itemDoubleClicked.connect(self._on_file_double_click)
         lay.addWidget(self._file_list)
 
-        # ── Templates ──
+        show_tmpl_btn = QPushButton("Add from Template…")
+        show_tmpl_btn.setToolTip("Show built-in and saved templates for adding devices")
+        show_tmpl_btn.clicked.connect(self._show_templates)
+        lay.addWidget(show_tmpl_btn)
+        self._show_tmpl_btn = show_tmpl_btn
+
+        # ── Templates (hidden until explicitly requested) ──
+        self._tmpl_container = QWidget()
+        tmpl_container_lay = QVBoxLayout(self._tmpl_container)
+        tmpl_container_lay.setContentsMargins(0, 0, 0, 0)
+        tmpl_container_lay.setSpacing(6)
+
         tmpl_hdr = QHBoxLayout()
         tmpl_lbl = QLabel("<b>Templates</b>")
         tmpl_lbl.setTextFormat(Qt.RichText)
@@ -2563,7 +2615,13 @@ class LeftPanel(QWidget):
         new_cat_btn.setToolTip("Create a new user template category")
         new_cat_btn.clicked.connect(self._new_user_category)
         tmpl_hdr.addWidget(new_cat_btn)
-        lay.addLayout(tmpl_hdr)
+
+        hide_tmpl_btn = QPushButton("Hide")
+        hide_tmpl_btn.setFixedHeight(20)
+        hide_tmpl_btn.setStyleSheet("font-size:8pt; padding:0 4px;")
+        hide_tmpl_btn.clicked.connect(self._hide_templates)
+        tmpl_hdr.addWidget(hide_tmpl_btn)
+        tmpl_container_lay.addLayout(tmpl_hdr)
 
         self._tmpl_tree = QTreeWidget()
         self._tmpl_tree.setHeaderHidden(True)
@@ -2571,11 +2629,13 @@ class LeftPanel(QWidget):
         self._tmpl_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self._tmpl_tree.customContextMenuRequested.connect(self._tmpl_context_menu)
         self._tmpl_tree.itemDoubleClicked.connect(self._on_tmpl_double_click)
-        lay.addWidget(self._tmpl_tree, 1)
+        tmpl_container_lay.addWidget(self._tmpl_tree, 1)
 
         hint = QLabel("<span style='color:#888;font-size:8pt;'>Double-click to instantiate</span>")
         hint.setTextFormat(Qt.RichText)
-        lay.addWidget(hint)
+        tmpl_container_lay.addWidget(hint)
+        self._tmpl_container.setVisible(False)
+        lay.addWidget(self._tmpl_container, 1)
 
         self._refresh_tmpl_tree()
 
@@ -2585,14 +2645,21 @@ class LeftPanel(QWidget):
                                              str(Path.home()))
         if d:
             self._config_dir = d
-            self._refresh_file_list(d)
+            count = self._refresh_file_list(d)
+            self.sig_folder_reloaded.emit(d, count)
 
-    def _refresh_file_list(self, folder: str):
+    def _refresh_file_list(self, folder: str) -> int:
         self._file_list.clear()
+        count = 0
         for p in sorted(Path(folder).glob("*.json")):
             item = QTreeWidgetItem([p.name])
             item.setData(0, Qt.UserRole, str(p))
+            item.setToolTip(0, str(p))
             self._file_list.addTopLevelItem(item)
+            count += 1
+        self._file_list.resizeColumnToContents(0)
+        self._file_list.setColumnWidth(0, max(self._file_list.columnWidth(0), 360))
+        return count
 
     def _on_file_double_click(self, item: QTreeWidgetItem, _col: int):
         path = item.data(0, Qt.UserRole)
@@ -2602,6 +2669,22 @@ class LeftPanel(QWidget):
     def set_folder(self, folder: str):
         self._config_dir = folder
         self._refresh_file_list(folder)
+
+    def reload_folder(self):
+        if not self._config_dir:
+            QMessageBox.information(self, "Reload Folder", "Open a config folder first.")
+            return
+        count = self._refresh_file_list(str(self._config_dir))
+        self.sig_folder_reloaded.emit(str(self._config_dir), count)
+
+    def _show_templates(self):
+        self._refresh_tmpl_tree()
+        self._tmpl_container.setVisible(True)
+        self._show_tmpl_btn.setVisible(False)
+
+    def _hide_templates(self):
+        self._tmpl_container.setVisible(False)
+        self._show_tmpl_btn.setVisible(True)
 
     # ── Template tree ─────────────────────────────────────────────────────
     def _refresh_tmpl_tree(self):
@@ -2824,6 +2907,7 @@ class MainWindow(QMainWindow):
         self._path: str = ""
         self._modified = False
         self._options_path: str = ""   # path to imcontrol_options.json if found
+        self._copied_device: object = None  # (category, name, device_dict)
 
         self._build_toolbar()
         self._build_ui()
@@ -2852,6 +2936,7 @@ class MainWindow(QMainWindow):
         _btn("Open File…", self._open_file,  "Open a JSON config file")
         _btn("Save",       self._save_file,  "Save current file (Ctrl+S)")
         _btn("Save As…",   self._save_as,    "Save to a new file")
+        _btn("Paste Device", self._paste_device, "Paste the copied device into this config")
         tb.addSeparator()
         _btn("Validate",   self._run_validation, "Check for DAQ conflicts")
 
@@ -2909,6 +2994,7 @@ class MainWindow(QMainWindow):
         self._left = LeftPanel()
         self._left.sig_file_open.connect(self._load_file)
         self._left.sig_tmpl_add.connect(self._add_from_template)
+        self._left.sig_folder_reloaded.connect(self._on_folder_reloaded)
         splitter.addWidget(self._left)
 
         # Centre + validation
@@ -2922,6 +3008,7 @@ class MainWindow(QMainWindow):
         self._canvas.sig_device_duped.connect(self._on_device_duped_or_add)
         self._canvas.sig_device_renamed.connect(self._on_device_rename_from_canvas)
         self._canvas.sig_save_tmpl.connect(self._on_save_template)
+        self._canvas.sig_device_copied.connect(self._copy_device)
         cl.addWidget(self._canvas, 1)
         self._val_panel = ValidationPanel()
         cl.addWidget(self._val_panel)
@@ -2932,9 +3019,10 @@ class MainWindow(QMainWindow):
         self._editor.sig_apply.connect(self._on_editor_apply)
         self._editor.sig_rename.connect(self._on_device_rename)
         self._editor.sig_modified.connect(self._on_extras_modified)
+        self._editor.sig_show_config.connect(self._show_config_settings)
         splitter.addWidget(self._editor)
 
-        splitter.setSizes([220, 780, 340])
+        splitter.setSizes([242, 758, 340])
 
     def _build_status_bar(self):
         sb = QStatusBar()
@@ -2969,6 +3057,7 @@ class MainWindow(QMainWindow):
             with open(path, encoding="utf-8") as fh:
                 self._data = json.load(fh)
             self._path = path
+            self._left.set_folder(str(Path(path).parent))
             self._modified = False
             self._refresh_canvas()
             self._editor.load_config_extras(self._data)
@@ -2982,6 +3071,9 @@ class MainWindow(QMainWindow):
                 self._update_active_banner()
         except Exception as e:
             QMessageBox.critical(self, "Load Error", str(e))
+
+    def _on_folder_reloaded(self, folder: str, count: int):
+        self._status.setText(f"Reloaded {count} JSON config(s) from {folder}")
 
     def _save_file(self):
         if not self._path:
@@ -3027,6 +3119,11 @@ class MainWindow(QMainWindow):
 
     def _run_validation(self):
         self._val_panel.validate(self._data)
+
+    def _show_config_settings(self):
+        self._canvas.deselect_all()
+        self._editor.load_config_extras(self._data)
+        self._status.setText("Showing config settings")
 
     def _on_device_selected(self, cat: str, name: str):
         device = (self._data.get(cat) or {}).get(name)
@@ -3105,6 +3202,39 @@ class MainWindow(QMainWindow):
         self._modified = True
         self._refresh_canvas()
         self._canvas._on_card_clicked(cat_signal, base)
+
+    def _copy_device(self, cat: str, name: str):
+        device = (self._data.get(cat) or {}).get(name)
+        if device is None:
+            return
+        self._copied_device = (cat, name, copy.deepcopy(device))
+        self._status.setText(f"Copied device: {name}")
+
+    def _paste_device(self):
+        if not self._copied_device:
+            QMessageBox.information(self, "Paste Device", "Copy a device first.")
+            return
+        cat, name, device = self._copied_device
+        if cat not in self._data or not isinstance(self._data.get(cat), dict):
+            self._data[cat] = {}
+        section = self._data[cat]
+        if name in section:
+            response = QMessageBox.question(
+                self,
+                "Replace Device?",
+                f"A device named '{name}' already exists in {CAT_LABEL.get(cat, cat)}.\n\n"
+                "Replace it with the copied device?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if response != QMessageBox.Yes:
+                return
+        section[name] = copy.deepcopy(device)
+        self._modified = True
+        self._refresh_canvas()
+        self._val_panel.validate(self._data)
+        self._canvas._on_card_clicked(cat, name)
+        self._status.setText(f"Pasted device: {name}")
 
     def _add_from_template(self, cat: str, device_or_mgr):
         """Slot for LeftPanel.sig_tmpl_add(cat, device_or_mgr).

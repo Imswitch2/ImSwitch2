@@ -1,9 +1,17 @@
 {
-    "// description": "Minimal setup for running ImProcess as a stand-alone post-acquisition processor with the MoNaLISA reconstruction pipeline. No hardware devices are declared - this setup is meant for opening existing acquisitions (HDF5/Zarr/TIFF), reconstructing them, and saving the result. Set processing.graphPanel to true to show the optional graph panel. Optional analysis panels can be enabled with processing.frcPanel and processing.roiStatsPanel. To use, also set 'enabled' to ['improcess'] in modules.json.",
+    "// description": "Minimal setup for running ImProcess as a stand-alone post-acquisition processor with the MoNaLISA reconstruction pipeline. No hardware devices are declared - this setup is meant for opening existing acquisitions (HDF5/Zarr/TIFF), reconstructing them, and saving the result. Set processing.graphPanel to true to show the optional graph panel. Optional analysis panels can be enabled with processing.projectionPanel, processing.segmentationPanel, processing.psfResolutionPanel, processing.colocalizationPanel, processing.frcPanel, processing.roiManagerPanel and processing.roiStatsPanel. To use, also set 'enabled' to ['improcess'] in modules.json.",
 
     "processing": {
         "graphPanel": true,
+        "profilePanel": true,
+        "projectionPanel": true,
+        "segmentationPanel": true,
+        "psfResolutionPanel": true,
+        "colocalizationPanel": true,
+        "frcPanel": true,
+        "roiManagerPanel": true,
+        "roiStatsPanel": true,
         "reconstructors": ["monalisa", "view-only"],
-        "processors":     ["drift-correct"]
+        "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
     }
 }

@@ -26,6 +26,76 @@
       "opts": []
     },
     {
+      "key": "frcPanel",
+      "label": "Show FRC panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional Fourier ring correlation panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "projectionPanel",
+      "label": "Show projection panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional axis projection panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "roiStatsPanel",
+      "label": "Show ROI statistics panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional ROI statistics panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "roiManagerPanel",
+      "label": "Show ROI manager panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional multi-ROI manager and per-ROI statistics panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "segmentationPanel",
+      "label": "Show segmentation panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional threshold and connected-component segmentation panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "psfResolutionPanel",
+      "label": "Show PSF resolution panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional bead/PSF Gaussian fitting panel in the ImProcess window.",
+      "opts": []
+    },
+    {
+      "key": "colocalizationPanel",
+      "label": "Show colocalization panel",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Basic",
+      "tip": "Show the optional channel colocalization panel in the ImProcess window.",
+      "opts": []
+    },
+    {
       "key": "reconstructors",
       "label": "Reconstructors",
       "type": "multiselect",

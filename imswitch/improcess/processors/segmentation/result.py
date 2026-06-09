@@ -1,0 +1,96 @@
+"""Segmentation processing result."""
+
+from pathlib import Path
+
+import h5py
+import numpy as np
+import tifffile
+
+from imswitch.improcess.analysis.segmentation import SegmentationAnalysis
+from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
+from imswitch.improcess.model.result import ProcessingResult
+
+
+class SegmentationResult(ProcessingResult):
+    """Result wrapper for segmentation label images."""
+
+    def __init__(self, name: str, analysis: SegmentationAnalysis, params: dict | None = None):
+        self.analysis = analysis
+        self.params = params or {}
+        super().__init__(
+            name=name,
+            data=analysis.labels.astype(np.int32),
+            axis_labels=["Y", "X"],
+            display_levels=(0.0, float(max(1, len(analysis.regions)))),
+        )
+
+    def save(self, path: Path, fmt: str = "hdf5") -> None:
+        path = Path(path)
+        if fmt in ("hdf5", "h5", "hdf"):
+            with h5py.File(str(path), "w") as h5:
+                h5.create_dataset("labels", data=self.analysis.labels)
+                h5.create_dataset("mask", data=self.analysis.mask.astype(np.uint8))
+                regions = h5.create_group("regions")
+                regions.create_dataset(
+                    "label",
+                    data=np.array([region.label for region in self.analysis.regions], dtype=np.int32),
+                )
+                regions.create_dataset(
+                    "area_pixels",
+                    data=np.array(
+                        [region.area_pixels for region in self.analysis.regions],
+                        dtype=np.int64,
+                    ),
+                )
+                regions.create_dataset(
+                    "bounds",
+                    data=np.array(
+                        [region.bounds for region in self.analysis.regions],
+                        dtype=np.int64,
+                    ).reshape((-1, 4)),
+                )
+                regions.create_dataset(
+                    "mean_intensity",
+                    data=np.array(
+                        [region.mean_intensity for region in self.analysis.regions],
+                        dtype=np.float64,
+                    ),
+                )
+                regions.create_dataset(
+                    "max_intensity",
+                    data=np.array(
+                        [region.max_intensity for region in self.analysis.regions],
+                        dtype=np.float64,
+                    ),
+                )
+                h5.attrs["threshold"] = self.analysis.threshold
+                h5.attrs["region_count"] = len(self.analysis.regions)
+                for key, value in self.analysis.metadata.items():
+                    if isinstance(value, (str, int, float, bool)):
+                        h5.attrs[key] = value
+        elif fmt in ("tiff", "tif"):
+            tifffile.imwrite(str(path), self.analysis.labels.astype(np.int32))
+        else:
+            raise ValueError(f"Segmentation result supports HDF5 or TIFF, got {fmt!r}")
+
+    def plot_payloads(self) -> list[PlotPayload]:
+        if not self.analysis.regions:
+            return []
+        labels = np.array([region.label for region in self.analysis.regions], dtype=np.float64)
+        areas = np.array([region.area_pixels for region in self.analysis.regions], dtype=np.float64)
+        return [
+            PlotPayload(
+                title=f"Segmentation regions: {len(self.analysis.regions)}",
+                x_label="Region label",
+                y_label="Area (px)",
+                series=[
+                    PlotSeries(
+                        name="Area",
+                        x=labels,
+                        y=areas,
+                        kind="bar",
+                    )
+                ],
+                metadata=dict(self.analysis.metadata),
+            )
+        ]

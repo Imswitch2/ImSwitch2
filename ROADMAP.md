@@ -181,13 +181,17 @@ confocal processing remain the main open modality targets.
   MonalisaProcessingResult, MonalisaReconstructor).
 - ✅ **View-only reconstructor** under `reconstructors/view_only/`.
 - ✅ **First processors:** FFT-based drift correction
-  (`processors/drift_correct/`) and FRC / single-image FRC
-  (`processors/frc/`).
+  (`processors/drift_correct/`), FRC / single-image FRC
+  (`processors/frc/`), generic projections (`processors/projection/`) and
+  threshold/connected-component segmentation (`processors/segmentation/`), plus
+  2D Gaussian PSF/bead resolution (`processors/psf_resolution/`) and
+  colocalization metrics (`processors/colocalization/`).
 - ✅ **Drag-and-drop ingest** on the main window for HDF5/Zarr/TIFF.
 - ✅ **Standalone launch** (`python -m imswitch.improcess`) without a
   SetupInfo.
-- ✅ **Generic analysis panels.** Optional graph, profile, FRC and ROI
-  statistics panels are available through the `processing:` config block.
+- ✅ **Generic analysis panels.** Optional graph, profile, projection, FRC,
+  segmentation, PSF resolution, colocalization, ROI manager and ROI statistics
+  panels are available through the `processing:` config block.
 - 🔄 **Flip controllers onto the registry (Phase B.2 — pending).**
   Plugin code is in place but `ImProcessMainViewController` and
   `ReconstructionViewController` still use the legacy direct-call path.

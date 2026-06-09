@@ -43,6 +43,31 @@ def is_roi_stats_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("roiStatsPanel", False))
 
 
+def is_roi_manager_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess ROI manager panel should be shown."""
+    return bool(processing_config.get("roiManagerPanel", False))
+
+
+def is_projection_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess projection panel should be shown."""
+    return bool(processing_config.get("projectionPanel", False))
+
+
+def is_segmentation_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess segmentation panel should be shown."""
+    return bool(processing_config.get("segmentationPanel", False))
+
+
+def is_psf_resolution_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess PSF resolution panel should be shown."""
+    return bool(processing_config.get("psfResolutionPanel", False))
+
+
+def is_colocalization_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess colocalization panel should be shown."""
+    return bool(processing_config.get("colocalizationPanel", False))
+
+
 def plugin_ids_from_config(
     processing_config: dict[str, Any],
 ) -> tuple[list[str], list[str], bool]:

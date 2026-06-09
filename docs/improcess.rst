@@ -74,7 +74,9 @@ ImProcess defines two plugin shapes:
   Operates on a ``ProcessingResult`` and returns a new one.  Stackable.
   Modality-agnostic by design — a single ``drift-correct`` works for
   any plugin output that has a time axis, and ``frc`` works on 2D image
-  planes.  Future processors include denoising, projections and lifetime
+  planes.  ``projection`` collapses any selected axis with max / mean /
+  sum / median / standard-deviation modes.  ``segmentation`` thresholds a
+  2D plane and extracts connected regions.  Future processors include lifetime
   overlays.
 
 Both shapes are registered with a :py:class:`PluginRegistry`.  The
@@ -93,6 +95,10 @@ widefield-starss   Reconstructor  H/V WidefieldSTARSS anisotropy maps and region
 snouty             Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
 snouty-projections Reconstructor  Fast SNOUTY projection-preview stack
 drift-correct      Processor      FFT cross-correlation drift correction with drift trace plots
+projection         Processor      Generic max/mean/sum/median/std axis projections
+segmentation       Processor      Threshold + connected-component labels and ROI export
+psf-resolution     Processor      2D Gaussian bead/PSF FWHM and sigma measurements
+colocalization     Processor      Pearson, Manders and overlap channel colocalization metrics
 frc                Processor      Fourier ring correlation and single-image FRC resolution estimates
 denoise            Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
 ================== ============== ====================================================
@@ -113,6 +119,16 @@ threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
 
+Projection panel
+================
+
+Set ``"projectionPanel": true`` in the ``processing`` block to show an
+interactive projection panel below the reconstruction viewer.  It runs on the
+active image layer and can project along ``T``, ``Z``, ``C`` or another selected
+axis using max, mean, sum, median or standard-deviation modes.  The registered
+``projection`` processor exposes the same operation for future processor-chain
+UI integration.
+
 FRC panel
 =========
 
@@ -130,6 +146,45 @@ Set ``"roiStatsPanel": true`` in the ``processing`` block to show a compact
 ROI statistics panel.  It reports area, finite-pixel count, mean, median,
 standard deviation, min, max and sum for either the full active image layer or
 a rectangle ROI drawn in the reconstruction viewer.
+
+ROI manager panel
+=================
+
+Set ``"roiManagerPanel": true`` in the ``processing`` block to show an
+ImageJ-like ROI manager.  It stores multiple rectangular ROIs, supports
+rename/duplicate/delete/show-hide operations, computes per-ROI statistics on
+the active image plane and exports ROI/statistics tables as CSV or JSON.  The
+simple ``roiStatsPanel`` remains available as a single-ROI quick view.
+
+Segmentation panel
+==================
+
+Set ``"segmentationPanel": true`` in the ``processing`` block to show a
+threshold and connected-component segmentation panel.  It runs on the active
+2D image plane, supports manual and Otsu thresholding, minimum-area filtering
+and optional Gaussian smoothing, adds a label layer to the viewer, exports
+region tables as CSV/JSON and can push exact segmented component masks into the
+ROI manager.
+
+PSF resolution panel
+====================
+
+Set ``"psfResolutionPanel": true`` in the ``processing`` block to show a
+bead/PSF resolution panel.  It fits a non-rotated 2D Gaussian to the active
+image plane or to each ROI Manager entry, reports center, sigma, FWHM,
+amplitude, background and RMS fit error, and exports the fit table as CSV or
+JSON.  The registered ``psf-resolution`` processor exposes the same Gaussian
+fit path for full-image processor-chain use.
+
+Colocalization panel
+====================
+
+Set ``"colocalizationPanel": true`` in the ``processing`` block to show a
+channel colocalization panel.  It compares two planes from a selected stack
+axis, supports full-image or ROI Manager batched analysis, reports Pearson
+correlation, Manders M1/M2, overlap coefficient and mean intensities, and
+exports the table as CSV or JSON.  The registered ``colocalization`` processor
+exposes the same metric path for full-image processor-chain use.
 
 Active reconstructor
 ====================
@@ -229,10 +284,15 @@ to your Imcontrol setup file (the same JSON you select via
     {
         "processing": {
             "graphPanel": true,
+            "projectionPanel": true,
+            "segmentationPanel": true,
+            "psfResolutionPanel": true,
+            "colocalizationPanel": true,
             "frcPanel": true,
+            "roiManagerPanel": true,
             "roiStatsPanel": true,
             "reconstructors": ["monalisa", "view-only"],
-            "processors":     ["drift-correct", "frc"]
+            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
         }
     }
 
@@ -266,15 +326,23 @@ Ready-to-use minimal configs ship under
    * - ``widefieldstarss_processor.json``
      - WidefieldSTARSS H/V-pair analysis
    * - ``general_image_processing.json``
-     - View-only display, drift correction, FRC, ROI
+     - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC, ROI
 
 The MoNaLISA preset has the same shape as the others::
 
     {
         "processing": {
             "graphPanel": true,
+            "profilePanel": true,
+            "projectionPanel": true,
+            "segmentationPanel": true,
+            "psfResolutionPanel": true,
+            "colocalizationPanel": true,
+            "frcPanel": true,
+            "roiManagerPanel": true,
+            "roiStatsPanel": true,
             "reconstructors": ["monalisa", "view-only"],
-            "processors":     ["drift-correct"]
+            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
         }
     }
 
@@ -325,6 +393,17 @@ Done:
   HDF5/TIFF save, and graph payloads
 * ``frc`` processor and optional FRC panel: two-image FRC, single-image FRC,
   checkerboard / odd-even splitting, 1/7 threshold and resolution estimates
+* ``projection`` processor and optional projection panel: max, mean, sum,
+  median and standard-deviation projections along selected axes
+* ``segmentation`` processor and optional segmentation panel: manual/Otsu
+  thresholding, connected components, label-layer display and ROI Manager
+  mask export, plus region-table export
+* ``psf-resolution`` processor and optional PSF resolution panel: 2D Gaussian
+  bead/PSF fits on full images or ROI Manager entries, FWHM/sigma table export
+* ``colocalization`` processor and optional colocalization panel: Pearson,
+  Manders M1/M2, overlap coefficient, ROI Manager batching and CSV/JSON export
+* Optional ROI manager panel for multiple rectangular ROIs, per-ROI
+  statistics, visibility toggles, duplication and CSV/JSON export
 * Optional ROI statistics panel for full-image or rectangle-ROI area, mean,
   median, standard deviation, min, max and sum
 * Cleanup: duplicate file removal, shared U-Net helpers extracted,

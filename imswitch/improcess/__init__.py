@@ -9,10 +9,15 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
 
     from .controller import ImProcessMainController
     from .model.processing_config import (
+        is_colocalization_panel_enabled,
         is_frc_panel_enabled,
         is_graph_panel_enabled,
         is_profile_panel_enabled,
+        is_psf_resolution_panel_enabled,
+        is_projection_panel_enabled,
+        is_roi_manager_panel_enabled,
         is_roi_stats_panel_enabled,
+        is_segmentation_panel_enabled,
         load_processing_config,
     )
     from .view import ImProcessMainView
@@ -23,6 +28,11 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
         showProfilePanel=is_profile_panel_enabled(processing_config),
         showFRCPanel=is_frc_panel_enabled(processing_config),
         showROIStatsPanel=is_roi_stats_panel_enabled(processing_config),
+        showROIManagerPanel=is_roi_manager_panel_enabled(processing_config),
+        showProjectionPanel=is_projection_panel_enabled(processing_config),
+        showSegmentationPanel=is_segmentation_panel_enabled(processing_config),
+        showPSFResolutionPanel=is_psf_resolution_panel_enabled(processing_config),
+        showColocalizationPanel=is_colocalization_panel_enabled(processing_config),
     )
     try:
         controller = ImProcessMainController(
