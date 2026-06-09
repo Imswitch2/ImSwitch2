@@ -94,6 +94,7 @@ snouty             Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet deskew
 snouty-projections Reconstructor  Fast SNOUTY projection-preview stack
 drift-correct      Processor      FFT cross-correlation drift correction with drift trace plots
 frc                Processor      Fourier ring correlation and single-image FRC resolution estimates
+denoise            Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
 ================== ============== ====================================================
 
 Result graph panel
@@ -129,6 +130,85 @@ Set ``"roiStatsPanel": true`` in the ``processing`` block to show a compact
 ROI statistics panel.  It reports area, finite-pixel count, mean, median,
 standard deviation, min, max and sum for either the full active image layer or
 a rectangle ROI drawn in the reconstruction viewer.
+
+Active reconstructor
+====================
+
+A combo box at the top of the Parameters dock lists every registered
+reconstructor and shows which one will run when *Reconstruct current* fires.
+Picking a different entry swaps the parameter widget below the picker (with
+the dock title following along: ``Parameters — WidefieldSTARSS analysis``),
+re-wires the watcher's output subfolder (see below), and — for pass-through
+plugins — re-renders the currently loaded ``DataObj`` in the viewer
+immediately.
+
+The picker's choices come from the ``processing:`` config block at startup;
+if you list ``["view-only", "widefield-starss"]`` under ``reconstructors``,
+those are the two entries the combo offers.  Plugins not in the list are
+not registered and therefore not pickable.
+
+Pass-through reconstructors
+===========================
+
+Some reconstructors don't actually run any signal processing — they wrap raw
+frames as a :py:class:`~imswitch.improcess.model.result.ProcessingResult` so
+the viewer and the analysis panels can work with the data uniformly.  These
+plugins set ``is_pass_through = True`` on the class (``view-only`` is the
+canonical example).
+
+When a pass-through plugin is active:
+
+* dropping a single file with one dataset goes **straight to the napari
+  viewer** — no need to click *Set as current data* and then *Reconstruct
+  current*;
+* loading via *Quick load* or *Set as current data* in the Multidata dock
+  routes through the auto-render path the moment ``sigCurrentDataChanged``
+  fires;
+* the *Reconstruct current* button is hidden, since the result is the data
+  itself.
+
+To opt a plugin into pass-through routing, just set the class attribute::
+
+    class MyPassThroughReconstructor(Reconstructor):
+        id = "my-pass-through"
+        name = "My pass-through"
+        is_pass_through = True
+
+A contract test (``test_pass_through_contract.py``) keeps every modality
+reconstructor in the built-in registry at ``is_pass_through = False`` so a
+real-compute plugin can't silently trigger the auto-route on every dataset
+load.
+
+File watcher save folder
+========================
+
+When the *Watch and run* checkbox is on, the watcher writes each
+reconstructed output under ``{watched_dir}/{default_save_subdir}/``.  The
+subdirectory name comes from the active reconstructor's class attribute::
+
+    class SnoutyReconstructor(Reconstructor):
+        id = "snouty"
+        default_save_subdir = "deskew"
+
+The default is ``"rec"``.  Switching reconstructors in the active-reconstructor
+picker also retargets the watcher, so two watchers running back-to-back on the
+same folder with different plugins won't overwrite each other's outputs.
+
+Result flow
+===========
+
+Producers of processing results — the legacy MoNaLISA reconstruct path, the
+plugin reconstruct path, and any future processor-chain runner — publish
+their output via the ``sigResultProduced(result, displayName)`` signal on
+:py:class:`~imswitch.improcess.controller.CommunicationChannel`.  The
+canonical listener
+(:py:meth:`~imswitch.improcess.controller.ReconstructionViewController.resultProduced`)
+folds the result into the reconstruction list and updates the napari layer.
+
+Producers therefore don't need to know which widget holds the napari list;
+emit the signal and forget.  Writing a CLI batch processor or a future
+processor-chain UI is as simple as instantiating the comm channel and
+emitting the signal whenever a new result is ready.
 
 WidefieldSTARSS pairing
 =======================
@@ -216,14 +296,12 @@ the plugins from one of these setup presets:
 
 .. note::
 
-   Until Phase B.2 lands, the *live* reconstruction button still goes
-   through the legacy MoNaLISA path inside
-   ``ImProcessMainViewController``.  The reconstructor / processor
-   picker UI is not yet wired into the main window — the
-   ``processing:`` block today controls which plugins are *registered
-   and configured*, not which one the *Reconstruct* button executes.
-   Phase B.2 replaces the direct-call path with registry dispatch and
-   adds the picker controls.
+   The reconstructor picker UI is now wired into the Parameters dock and
+   the live reconstruction button dispatches through the registry for every
+   plugin except MoNaLISA, which still uses its legacy direct-call path
+   pending the Phase B.2 Windows + ``GPU_acc_recon.dll`` verification.
+   The ``processing:`` block continues to control which plugins are
+   *registered and offered in the picker*.
 
 These are the recommended setups for users who treat Imswitch2 as a
 post-processing tool only — e.g. opening acquisitions taken on a different
@@ -251,6 +329,19 @@ Done:
   median, standard deviation, min, max and sum
 * Cleanup: duplicate file removal, shared U-Net helpers extracted,
   ``PatternFinder.findBestPeak`` arithmetic fix
+* ``denoise`` processor wrapping the existing UNet / UNet+RCAN model with
+  lazy torch import, auto model-type selection and DenoisedResult save
+* Pass-through reconstructor contract (``is_pass_through``): drag-drop or
+  *Set as current data* on ``view-only`` renders to the viewer in one
+  action instead of three
+* Active-reconstructor picker in the Parameters dock header — flip
+  between registered plugins on the fly, with the param widget and dock
+  title following the choice
+* File watcher's output subfolder driven by the active reconstructor's
+  ``default_save_subdir`` instead of a hardcoded ``rec/``
+* ``sigResultProduced`` decouples producers from the napari list widget,
+  so future processor-chain runners and CLI batch processors can publish
+  results without reaching into the main view
 
 Pending:
 
@@ -298,6 +389,16 @@ Register it by adding the class to ``_AVAILABLE_RECONSTRUCTOR_CLASSES`` in
 ``imswitch/improcess/reconstructors/__init__.py``.  Processors use the
 analogous ``_AVAILABLE_PROCESSOR_CLASSES`` map in
 ``imswitch/improcess/processors/__init__.py``.
+
+Two optional class attributes refine the UX without any extra method:
+
+* ``is_pass_through = True`` opts the plugin into the auto-render path
+  (see *Pass-through reconstructors* above).  Use only when
+  ``process()`` performs no real signal processing — otherwise every
+  dataset load would silently trigger your compute step.
+* ``default_save_subdir = "deskew"`` (or another short folder name)
+  changes the subdirectory under which the file watcher writes outputs
+  for this plugin.  Defaults to ``"rec"``.
 
 A ``Processor`` follows the same pattern but its ``apply(result, params)``
 takes a ``ProcessingResult`` and returns a new one — see
