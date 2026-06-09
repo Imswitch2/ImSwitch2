@@ -24,7 +24,18 @@ class Reconstructor(ABC):
     name: str = "Unnamed Reconstructor"  # Human-readable, shown in plugin picker
     id: str = "unnamed"  # Stable identifier for config + registry lookups
     file_extensions: list[str] = ["hdf5", "tiff", "zarr"]  # Watcher dispatch + filtering
-    
+    is_pass_through: bool = False
+    """Set ``True`` for reconstructors whose ``process()`` is a no-op wrap.
+
+    When the active reconstructor is pass-through, ImProcess auto-routes the
+    current ``DataObj`` to the napari viewer the moment it changes, so the
+    user does not have to click 'Reconstruct current' for a plugin whose only
+    job is to display the data. Pass-through plugins also hide the
+    'Reconstruct current' and 'Update reconstruction' actions, since those
+    are ceremonial in their case.
+    """
+
+
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         """

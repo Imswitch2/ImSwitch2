@@ -67,6 +67,7 @@ class ViewOnlyReconstructor(Reconstructor):
     id = "view-only"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
     description = "Display raw frames without any reconstruction"
+    is_pass_through = True
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return _NoParamsWidget(parent)

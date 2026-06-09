@@ -129,6 +129,21 @@ class ImProcessMainViewController(ImProcessWidgetController):
             self._widget.setActiveReconstructorName(reconstructor.name)
         except Exception:
             pass
+
+        # Gate the modality-specific Actions buttons:
+        # - 'Reconstruct current' is ceremonial for pass-through plugins
+        #   (process() is a no-op wrap), so hide it; currentDataChanged
+        #   auto-routes the data to the viewer in that case.
+        # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
+        #   only makes sense for the MoNaLISA plugin.
+        try:
+            self._widget.setReconstructionActionsVisible(
+                reconstruct_current=not getattr(reconstructor, 'is_pass_through', False),
+                update_reconstruction=(reconstructor.id == 'monalisa'),
+            )
+        except Exception:
+            pass
+
         if reconstructor.id == "monalisa":
             # Keep the legacy MoNaLISA parameter tree until the whole
             # scan-params/find-pattern path is migrated to plugin widgets.
@@ -289,6 +304,22 @@ class ImProcessMainViewController(ImProcessWidgetController):
                 self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
 
         self.updateScanParams()
+
+        # Pass-through reconstructors don't require an explicit click — the
+        # data is the result. Route to the viewer the moment a current
+        # DataObj is set, so 'view-only' and similar plugins display files
+        # in a single user action instead of three.
+        if (
+            self._activeReconstructor is not None
+            and getattr(self._activeReconstructor, 'is_pass_through', False)
+            and dataObj is not None
+        ):
+            try:
+                self.reconstruct([dataObj], consolidate=False)
+            except Exception as exc:
+                self._logger.warning(
+                    f"Pass-through auto-route failed for {self._activeReconstructor.id}: {exc}"
+                )
 
     def extractData(self, data):
         fwhmNm = self._widget.getFwhmNm()
@@ -500,25 +531,29 @@ class ImProcessMainViewController(ImProcessWidgetController):
     def handleDroppedFiles(self, paths):
         """
         Process files dropped onto the main view via drag-and-drop.
-        
+
         For each file:
         - Check if it contains multiple datasets (HDF5/Zarr) and prompt user to select
         - Add each dataset to the multi-data list
-        - Raise the multi-data dock to show the loaded files
+
+        When the active reconstructor is pass-through (e.g. view-only) and the
+        drop resolves to exactly one dataset, also promote that dataset to the
+        current DataObj so currentDataChanged auto-routes it to the napari
+        viewer in a single user action.
         """
-        from pathlib import Path
-        
+        single_pass_through_candidate = None
+
         for path in paths:
             try:
                 # Get available datasets in the file
                 datasetsInFile = DataObj.getDatasetNames(str(path))
-                
+
                 # If multiple datasets, let user pick which ones to load
                 if len(datasetsInFile) > 1:
                     self.pickDatasetsController.setDatasets(str(path), datasetsInFile)
                     if not self._widget.showPickDatasetsDialog(blocking=True):
                         continue  # User cancelled
-                    
+
                     # Add only selected datasets
                     selectedDatasets = self.pickDatasetsController.getSelectedDatasets()
                     for datasetName in selectedDatasets:
@@ -531,15 +566,48 @@ class ImProcessMainViewController(ImProcessWidgetController):
                         self.multiDataFrameController.makeAndAddDataObj(
                             path.name, datasetName, path=str(path)
                         )
-                
+                        if (
+                            len(paths) == 1
+                            and len(datasetsInFile) == 1
+                            and self._activeReconstructor is not None
+                            and getattr(self._activeReconstructor, 'is_pass_through', False)
+                        ):
+                            single_pass_through_candidate = (path, datasetName)
+
                 self._logger.info(f"Loaded file via drag-and-drop: {path.name}")
-                
+
             except Exception as e:
                 self._logger.error(f"Failed to load dropped file {path.name}: {e}")
-        
+
+        # Pass-through auto-route: send the single dropped dataset straight
+        # through currentDataChanged so the napari viewer shows it without
+        # the user having to click Set-as-current / Reconstruct-current.
+        if single_pass_through_candidate is not None:
+            path, datasetName = single_pass_through_candidate
+            try:
+                self._loadAsCurrent(path.name, datasetName, str(path))
+                return
+            except Exception as e:
+                self._logger.error(
+                    f"Pass-through auto-route from drag-and-drop failed for {path.name}: {e}"
+                )
+
         # Raise the multi-data dock to show the loaded files
         if paths:
             self._widget.raiseMultiDataDock()
+
+    def _loadAsCurrent(self, name, datasetName, dataPath):
+        """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
+
+        Extracted so drag-drop and quickLoadData share the same routing.
+        """
+        if self._currentDataObj is not None:
+            self._currentDataObj.checkAndUnloadData()
+        self._currentDataObj = DataObj(name, datasetName, path=dataPath)
+        self._currentDataObj.checkAndLoadData()
+        if self._currentDataObj.dataLoaded:
+            self._commChannel.sigCurrentDataChanged.emit(self._currentDataObj)
+            self._widget.raiseCurrentDataDock()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
