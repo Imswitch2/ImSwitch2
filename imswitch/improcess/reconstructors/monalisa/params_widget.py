@@ -34,7 +34,13 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 {'name': 'BG modelling', 'type': 'list',
                  'values': ['Constant', 'Gaussian', 'No background'], 'children': [
                     {'name': 'BG Gaussian size', 'type': 'float', 'value': 500, 'suffix': 'nm'}]}]},
-            {'name': 'Bleaching correction', 'type': 'bool', 'value': False}
+            {'name': 'Bleaching correction', 'type': 'bool', 'value': False},
+            {'name': 'Auto-detect scan orientation', 'type': 'bool', 'value': True,
+             'tip': (
+                 'Override the scan-params dialog by picking the fast/slow axis '
+                 'and pos/neg direction that minimize total variation of the '
+                 'reconstructed image — ported from Mini_Recon.'
+             )},
         ]
         
         self.p = Parameter.create(name='params', type='group', children=params)
@@ -93,7 +99,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             'psf_fwhm_nm': recon_opts.param('PSF FWHM').value(),
             'bg_modelling': bg_modelling.value(),
             'bg_gaussian_size_nm': bg_modelling.param('BG Gaussian size').value(),
-            'bleaching_correction': self.p.param('Bleaching correction').value()
+            'bleaching_correction': self.p.param('Bleaching correction').value(),
+            'auto_scan_orientation': self.p.param('Auto-detect scan orientation').value(),
         }
     
     def set_pattern_params(self, row_offset: float, col_offset: float, row_period: float, col_period: float):

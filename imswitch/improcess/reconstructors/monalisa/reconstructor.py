@@ -8,6 +8,7 @@ from qtpy import QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import Reconstructor
 from .coeffs_to_image import coeffs_to_image
+from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
 from .result import MonalisaProcessingResult
@@ -181,6 +182,27 @@ class MonalisaReconstructor(Reconstructor):
                 f'expected (numBases, numFrames, gridRows, gridCols)'
             )
         num_bases = coeffs.shape[0]
+
+        # Auto-detect the scan fast/slow axes and pos/neg directions by
+        # minimizing the total variation of the signal-base reconstruction.
+        # Mirrors Mini_Recon's get_orientation; user can disable via the
+        # 'Auto-detect scan orientation' checkbox to keep the dialog values.
+        if params.get('auto_scan_orientation', True):
+            try:
+                best_params, best_label, best_score = auto_detect_scan_orientation(
+                    coeffs[0], scan_params, self._axis_labels,
+                )
+                self._logger.info(
+                    f'Auto scan orientation: {best_label}  (TV score {best_score:.3g})'
+                )
+                scan_params = best_params
+            except Exception as exc:
+                # The detector is a quality-of-life add-on; falling back to
+                # the dialog values must never block a reconstruction.
+                self._logger.warning(
+                    f'Scan-orientation auto-detect failed, using dialog values: {exc}'
+                )
+
         self._logger.info(
             f'Converting coefficients to images ({num_bases} bases x '
             f'{coeffs.shape[1]} frames -> per-base reconstruction)...'
