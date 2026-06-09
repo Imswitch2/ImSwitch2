@@ -302,42 +302,54 @@ class ImProcessMainViewController(ImProcessWidgetController):
             except Exception as exc:
                 self._logger.warning(f"Could not load reconstructor params from metadata: {exc}")
 
-        # Update scan params based on new data
-        # TODO: What if the attribute names change in imcontrol?
-        dimensionMap = {
-            b'X': self._widget.r_l_text,
-            b'Y': self._widget.u_d_text,
-            b'Z': self._widget.b_f_text
-        }
-        try:
-            targetsAttr = dataObj.attrs['ScanStage:target_device']
-            for i in range(0, min(3, len(targetsAttr))):
-                self._scanParDict['dimensions'][i] = dimensionMap[targetsAttr[i]]
-        except KeyError:
-            pass
+        # MoNaLISA-specific scan-params housekeeping. Only runs when the
+        # DataObj actually carries Imswitch acquisition metadata (HDF5/Zarr
+        # written by Imcontrol).  TIFF stacks and most external acquisitions
+        # have ``attrs is None``; bailing here is the right thing, and is
+        # what unblocks the pass-through auto-route below — otherwise the
+        # KeyError-only try/except blocks would let a TypeError escape and
+        # the auto-render path never ran.
+        attrs = dataObj.attrs if dataObj is not None else None
+        if attrs:
+            dimensionMap = {
+                b'X': self._widget.r_l_text,
+                b'Y': self._widget.u_d_text,
+                b'Z': self._widget.b_f_text
+            }
+            try:
+                targetsAttr = attrs['ScanStage:target_device']
+                for i in range(0, min(3, len(targetsAttr))):
+                    self._scanParDict['dimensions'][i] = dimensionMap[targetsAttr[i]]
+            except (KeyError, TypeError):
+                pass
 
-        try:
-            positiveDirectionAttr = dataObj.attrs['ScanStage:positive_direction']
-            for i in range(0, min(3, len(positiveDirectionAttr))):
-                self._scanParDict['directions'][i] = (
-                    self._widget.p_text if positiveDirectionAttr[i]
-                    else self._widget.n_text
-                )
-        except KeyError:
-            pass
+            try:
+                positiveDirectionAttr = attrs['ScanStage:positive_direction']
+                for i in range(0, min(3, len(positiveDirectionAttr))):
+                    self._scanParDict['directions'][i] = (
+                        self._widget.p_text if positiveDirectionAttr[i]
+                        else self._widget.n_text
+                    )
+            except (KeyError, TypeError):
+                pass
 
-        for i in range(0, 2):
-            self._scanParDict['steps'][i] = str(int(np.sqrt(dataObj.numFrames)))
+            try:
+                numFrames = dataObj.numFrames
+            except Exception:
+                numFrames = None
+            if numFrames:
+                for i in range(0, 2):
+                    self._scanParDict['steps'][i] = str(int(np.sqrt(numFrames)))
 
-        try:
-            stepSizesAttr = dataObj.attrs['ScanStage:axis_step_size']
-        except KeyError:
-            pass
-        else:
-            for i in range(0, min(4, len(stepSizesAttr))):
-                self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
+            try:
+                stepSizesAttr = attrs['ScanStage:axis_step_size']
+            except (KeyError, TypeError):
+                pass
+            else:
+                for i in range(0, min(4, len(stepSizesAttr))):
+                    self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
 
-        self.updateScanParams()
+            self.updateScanParams()
 
         # Pass-through reconstructors don't require an explicit click — the
         # data is the result. Route to the viewer the moment a current
