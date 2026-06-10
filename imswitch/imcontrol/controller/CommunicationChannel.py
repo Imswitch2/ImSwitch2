@@ -249,7 +249,10 @@ class CommunicationChannel(SignalInterface):
         2. Returns True from isBeadRecCompatible()
         """
         from .controllers._beadrec_scan_source import BeadRecScanSource
-        for controller in self._controllers.values():
+        controllers = getattr(self.__main, 'controllers', None)
+        if controllers is None:
+            return None
+        for controller in controllers.values():
             if (isinstance(controller, BeadRecScanSource) or 
                 (hasattr(controller, 'getBeadRecScanDims') and
                  hasattr(controller, 'getBeadRecStepSizes') and
@@ -281,14 +284,32 @@ class CommunicationChannel(SignalInterface):
             raise
 
     def getNumLineSteps(self):
-        """Return the number of linesteps from the scan controller. Returns 1 if no scan controller is available."""
+        """Return the number of linesteps from the scan controller. Returns 1
+        if no scan controller is available or it does not expose the value
+        (e.g. MoNaLISA/PointScan controllers without linestep support)."""
         try:
-            return self._get_required_controller('Scan', 'scan').getNumLineSteps()
+            controller = self._get_required_controller('Scan', 'scan')
         except RuntimeError:
             source = self.getBeadRecScanSource()
             if source is not None:
                 return source.getNumLineSteps()
             return 1
+        getter = getattr(controller, 'getNumLineSteps', None)
+        return getter() if getter is not None else 1
+
+    def getFramesPerScanPixel(self):
+        """Return the number of detector frames produced per physical scan
+        pixel (e.g. the count of camera-enabled linesteps in advanced scans).
+        Returns 1 if the scan controller does not expose the value."""
+        try:
+            controller = self._get_required_controller('Scan', 'scan')
+        except RuntimeError:
+            source = self.getBeadRecScanSource()
+            if source is not None:
+                return source.getFramesPerScanPixel()
+            return 1
+        getter = getattr(controller, 'getFramesPerScanPixel', None)
+        return getter() if getter is not None else 1
 
     def getNumScanPositions(self):
         return self._get_required_controller('Scan', 'scan').getNumScanPositions()

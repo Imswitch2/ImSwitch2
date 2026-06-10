@@ -69,7 +69,7 @@ def test_bead_rec_controller_uses_acquisition_config_and_worker_updates():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
 
     assert 'def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:' in source
-    assert 'return BeadAcquisitionConfig.from_scan_dims(self.dims, linesteps=self.linesteps)' in source
+    assert 'return BeadAcquisitionConfig.from_scan_dims(self.dims, frames_per_pixel=self.framesPerPixel)' in source
     assert 'config = self._createAcquisitionConfig()' in source
     assert 'self.beadWorker.start(config)' in source
     assert 'self._widget.updateProgress(0, config.total_pixels)' in source

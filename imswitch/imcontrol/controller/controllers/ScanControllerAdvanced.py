@@ -808,3 +808,20 @@ class ScanControllerAdvanced(SuperScanController):
     def getNumLineSteps(self) -> int:
         """Return the number of linesteps in the scan. Returns n_linesteps from digitalParameterDict."""
         return int(self._digitalParameterDict.get("n_linesteps", 1))
+
+    def getFramesPerScanPixel(self) -> int:
+        """Return the number of detector frames produced per physical scan pixel.
+
+        The detector only acquires during linesteps where its TTL is enabled,
+        firing once per pixel in each enabled linestep. This counts the enabled
+        linesteps of the detector device(s) found in linestep_enable. Assumes
+        one camera trigger per pixel per enabled linestep; advanced multi-pulse
+        camera waveforms within a single linestep are not accounted for.
+        """
+        enable = self._digitalParameterDict.get("linestep_enable", {}) or {}
+        counts = [
+            sum(map(bool, vec))
+            for dev, vec in enable.items()
+            if dev in self._setupInfo.detectors
+        ]
+        return max(1, max(counts)) if counts else 1

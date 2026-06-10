@@ -37,7 +37,7 @@ class BeadRecController(ImConWidgetController):
         self.parametersChanged = False
         self.dims = None
         self.stepSizes = None
-        self.linesteps = 1
+        self.framesPerPixel = 1
         self.lastDir = None
         self.resultRecords = []
         self.listRecs = []
@@ -121,7 +121,7 @@ class BeadRecController(ImConWidgetController):
         self.listRecs.pop(index)
 
     def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:
-        return BeadAcquisitionConfig.from_scan_dims(self.dims, linesteps=self.linesteps)
+        return BeadAcquisitionConfig.from_scan_dims(self.dims, frames_per_pixel=self.framesPerPixel)
 
     def _updateProgress(self, current: int, total: int) -> None:
         self._widget.updateProgress(current, total)
@@ -394,14 +394,14 @@ class BeadRecController(ImConWidgetController):
 
         prior_dims = self.dims
         prior_stepSizes = self.stepSizes
-        prior_linesteps = self.linesteps
+        prior_framesPerPixel = self.framesPerPixel
 
         self.dims = (int(dims[0]), int(dims[1]))
         self.stepSizes = (float(stepSizes[0]), float(stepSizes[1]))
-        self.linesteps = self._commChannel.getNumLineSteps()
+        self.framesPerPixel = self._commChannel.getFramesPerScanPixel()
         
         if prior_dims is not None and prior_stepSizes is not None:
-            if prior_dims != self.dims or prior_stepSizes != self.stepSizes or prior_linesteps != self.linesteps:
+            if prior_dims != self.dims or prior_stepSizes != self.stepSizes or prior_framesPerPixel != self.framesPerPixel:
                 self.parametersChanged = True
     
     def updateOnMousePixelValue(self,x,y):
@@ -611,15 +611,21 @@ class BeadWorker(Worker):
                 newImages = self._getFrames()
                 n = len(newImages)
                 if n > 0:
-                    # Sub-sample frames: keep every S-th frame (linesteps)
-                    S = config.linesteps
-                    if S > 1:
+                    # With C = frames_per_pixel > 1 the camera fires in C
+                    # linesteps per line, so frames arrive in per-line blocks
+                    # of Nx per linestep: [line0 step0: Nx][line0 step1: Nx]...
+                    # Keep only the first block (linestep) of each physical
+                    # line: frames whose index modulo Nx*C falls in [0, Nx).
+                    C = config.frames_per_pixel
+                    if C > 1:
+                        Nx = config.scan_dims[0]
+                        period = Nx * C
                         keptFrames = [
                             newImages[i]
                             for i in range(n)
-                            if (self._lineStepPhase + i) % S == 0
+                            if (self._lineStepPhase + i) % period < Nx
                         ]
-                        self._lineStepPhase = (self._lineStepPhase + n) % S
+                        self._lineStepPhase = (self._lineStepPhase + n) % period
                     else:
                         keptFrames = newImages
                     
