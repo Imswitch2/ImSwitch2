@@ -1,5 +1,32 @@
 # ImProcess Display Layers Plan
 
+## Status
+
+Implemented:
+
+- `ProcessingResult.display_layers()` and `DisplayLayerSpec`.
+- Multi-layer Napari display for results that expose display layers.
+- Widefield STaRSS split display layers for `r_smooth`, `r_raw`, `mask`, and
+  `base_image`.
+- MoNaLISA split display layers for semantic `Base` components, including
+  `signal` and `background`.
+- Independent, uniform-safe display levels for split layers.
+- Explicit `ProcessingResult.processor_input_choices()` with `Whole result`
+  and named `component:<name>` options.
+- Generic result-processor widget/controller for registered processors that
+  should operate on the current result or a selected display component.
+- Runtime wiring for generic result-processor panels without relying on the
+  active Napari layer.
+
+Intentionally not changed:
+
+- Canonical result arrays and save formats stay backward-compatible.
+- Interactive analysis widgets that are designed around Napari layers, ROI
+  tools, exports, or tables remain active-layer tools.
+- The setup/config editor still controls which ImProcess reconstructor and
+  processor plugin IDs are registered; display-layer splitting is result
+  behavior, not a new setup option.
+
 ## Problem
 
 Some ImProcess reconstructors produce arrays whose leading stack axis contains
@@ -58,8 +85,9 @@ Recommended rule:
 
 ### Phase 1: Shared Display Contract
 
-- Add `DisplayLayerSpec` to `imswitch/improcess/model/result.py`.
-- Add `ProcessingResult.display_layers()` returning an empty list by default.
+- Done: add `DisplayLayerSpec` to `imswitch/improcess/model/result.py`.
+- Done: add `ProcessingResult.display_layers()` returning an empty list by
+  default.
 - Each display layer spec should carry:
   - layer name
   - array data
@@ -71,58 +99,59 @@ Recommended rule:
 
 ### Phase 2: Widefield STaRSS
 
-- Keep `WidefieldStarssResult.data` as the existing `CYX` stack for saving and
+- Done: keep `WidefieldStarssResult.data` as the existing `CYX` stack for saving and
   compatibility.
-- Add `display_layers()` returning separate 2D layers:
+- Done: add `display_layers()` returning separate 2D layers:
   - `r_smooth`
   - `r_raw`
   - `mask`
   - `base_image`
-- Give each layer independent display levels.
-- Store metadata such as:
+- Done: give each layer independent display levels.
+- Done: store metadata such as:
   - `source_result`
   - `component`
   - `axis_labels`
   - `scale_unit`
-- Add tests for display layer names, shapes, independent contrast levels, and
+- Done: add tests for display layer names, shapes, independent contrast levels, and
   unchanged save behavior.
 
 ### Phase 3: Viewer Integration
 
-- Update `ReconstructionViewController` to use `result.display_layers()` when
+- Done: update `ReconstructionViewController` to use `result.display_layers()` when
   non-empty.
-- Update `ReconstructionView` to manage multiple result-owned Napari image
+- Done: update `ReconstructionView` to manage multiple result-owned Napari image
   layers while keeping the existing single-layer behavior for all other
   results.
-- Make sure Napari layer metadata includes `axis_labels` and `scale_unit`, so
+- Done: make sure Napari layer metadata includes `axis_labels` and `scale_unit`, so
   active-layer widgets do not need to infer axes from shape alone.
-- Decide how to preserve display-level state for multi-layer results. Initial
-  implementation may recompute per-layer levels on selection; later work can
-  persist contrast limits per component.
+- Later: persist user-edited contrast limits per component if needed. The
+  current implementation supplies stable per-layer defaults.
 
 ### Phase 4: MoNaLISA
 
-- Audit exact base semantics in `MonalisaProcessingResult` and
+- Done: audit exact base semantics in `MonalisaProcessingResult` and
   `MonalisaReconstructor`.
-- Add display layers for semantic bases while preserving canonical data:
+- Done: add display layers for semantic bases while preserving canonical data:
   - `signal` for base 0
   - `background` for base 1 when background modeling creates a second base
   - generic `base_N` fallback names for additional bases
-- Keep true dimensions (`Dataset`, `T`, `Z`, `Y`, `X`) in each layer.
-- Preserve physical `Y`, `X`, and `Z` scales.
-- Add tests that verify:
+- Done: keep true dimensions (`Dataset`, `T`, `Z`, `Y`, `X`) in each layer.
+- Done: preserve physical `Y`, `X`, and `Z` scales.
+- Done: add tests that verify:
   - display layers preserve data values from the corresponding base
   - signal/background names are assigned for the two-base path
   - canonical save shape remains unchanged
 
 ### Phase 5: Processor Component Selection
 
-- Add a component selector to the processor UI for result-based processors.
-- Selector options should include:
+- Done: add a component selector to the generic result-processor UI for
+  result-based processors.
+- Done: selector options include:
   - whole current result where valid
-  - active Napari layer where explicitly supported
   - named display components exposed by the current result
-- Use explicit selection rather than implicit active-layer consumption for
+- Deliberately excluded: active Napari layer input for registered processors.
+  Active-layer behavior remains in the existing interactive analysis widgets.
+- Done: use explicit selection rather than implicit active-layer consumption for
   registered processors.
 
 ## Parallel-Agent Candidate

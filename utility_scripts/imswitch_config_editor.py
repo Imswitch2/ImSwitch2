@@ -90,6 +90,8 @@ def _resolve_section_dynamic_options(schema: dict) -> None:
             "colocalization",
             "drift-correct",
             "frc",
+            "multicolor-apply",
+            "multicolor-registration",
             "projection",
             "psf-resolution",
             "segmentation",
