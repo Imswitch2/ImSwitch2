@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import tifffile as tiff
 
+from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
+
 from .pipeline import WidefieldStarssAnalysis, WidefieldStarssParams, analyze_widefield_starss_pair
 
 BatchProgressCallback = Callable[[dict[str, object]], None]
@@ -69,6 +71,92 @@ class WidefieldStarssBatchResult:
             h5.attrs["anisotropy_mode"] = self.params.anisotropy_mode
             h5.attrs["segmentation_mode"] = self.params.segmentation_mode
         return path
+
+    def plot_payloads(self) -> list[PlotPayload]:
+        """Return aggregate plots for the generic ImProcess graph widget."""
+        payloads: list[PlotPayload] = []
+
+        anisotropy = _finite_column(self.regions, "anisotropy_direct")
+        if anisotropy.size:
+            payloads.append(
+                PlotPayload(
+                    title="Batch region anisotropy",
+                    x_label="Anisotropy",
+                    y_label="Region count",
+                    series=[
+                        PlotSeries(
+                            name="Regions",
+                            y=anisotropy,
+                            kind="histogram",
+                            style={"bins": 50},
+                        )
+                    ],
+                    metadata={"pair_count": len(self.pairs), "region_count": len(self.regions)},
+                )
+            )
+
+        area = _finite_column(self.regions, "area_pixels")
+        if area.size and anisotropy.size:
+            size = min(area.size, anisotropy.size)
+            payloads.append(
+                PlotPayload(
+                    title="Batch area vs anisotropy",
+                    x_label="Area (px)",
+                    y_label="Anisotropy",
+                    series=[
+                        PlotSeries(
+                            name="Regions",
+                            x=area[:size],
+                            y=anisotropy[:size],
+                            kind="scatter",
+                        )
+                    ],
+                    metadata={"pair_count": len(self.pairs), "region_count": len(self.regions)},
+                )
+            )
+
+        pair_index = _finite_column(self.summary, "pair_index")
+        mean_anisotropy = _finite_column(self.summary, "mean_anisotropy_direct")
+        if pair_index.size and mean_anisotropy.size:
+            size = min(pair_index.size, mean_anisotropy.size)
+            payloads.append(
+                PlotPayload(
+                    title="Batch mean anisotropy per sample",
+                    x_label="Pair index",
+                    y_label="Mean anisotropy",
+                    series=[
+                        PlotSeries(
+                            name="Mean anisotropy",
+                            x=pair_index[:size],
+                            y=mean_anisotropy[:size],
+                            kind="line",
+                        )
+                    ],
+                    metadata={"pair_count": len(self.pairs)},
+                )
+            )
+
+        region_count = _finite_column(self.summary, "region_count")
+        if pair_index.size and region_count.size:
+            size = min(pair_index.size, region_count.size)
+            payloads.append(
+                PlotPayload(
+                    title="Batch regions per sample",
+                    x_label="Pair index",
+                    y_label="Region count",
+                    series=[
+                        PlotSeries(
+                            name="Regions",
+                            x=pair_index[:size],
+                            y=region_count[:size],
+                            kind="line",
+                        )
+                    ],
+                    metadata={"pair_count": len(self.pairs)},
+                )
+            )
+
+        return payloads
 
 
 def discover_widefield_starss_pairs(paths: Iterable[str | Path]) -> tuple[list[WidefieldStarssPair], list[Path]]:
@@ -247,3 +335,10 @@ def _write_dataframe_group(group, dataframe: pd.DataFrame) -> None:
         if values.dtype.kind in ("O", "U", "S"):
             values = np.asarray([str(value) for value in values], dtype=dtype)
         group.create_dataset(str(column), data=values)
+
+
+def _finite_column(dataframe: pd.DataFrame, column: str) -> np.ndarray:
+    if column not in dataframe:
+        return np.asarray([], dtype=float)
+    values = dataframe[column].to_numpy(dtype=float)
+    return values[np.isfinite(values)]

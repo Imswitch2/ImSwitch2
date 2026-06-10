@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 import tifffile as tiff
 
+from imswitch.improcess.model import PlotPayload
 from imswitch.improcess.reconstructors.widefield_starss.analysis import (
     WidefieldStarssBatchCancelled,
     WidefieldStarssParams,
@@ -156,3 +157,23 @@ def test_widefield_starss_batch_exports_csv_and_hdf5(tmp_path):
         assert "pairs" in h5
         assert h5.attrs["pair_count"] == 1
         assert h5.attrs["region_count"] == 1
+
+
+def test_widefield_starss_batch_exposes_graph_payloads(tmp_path):
+    _write_pair(tmp_path, "cell_000")
+    _write_pair(tmp_path, "cell_001", scale=1.2)
+    result = run_widefield_starss_batch_from_folder(
+        tmp_path,
+        params=WidefieldStarssParams(segmentation_mode="none"),
+    )
+
+    payloads = result.plot_payloads()
+
+    assert payloads
+    assert all(isinstance(payload, PlotPayload) for payload in payloads)
+    assert {payload.title for payload in payloads} >= {
+        "Batch region anisotropy",
+        "Batch area vs anisotropy",
+        "Batch mean anisotropy per sample",
+        "Batch regions per sample",
+    }

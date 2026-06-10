@@ -337,7 +337,11 @@ batch UI pass with input/output folder fields, a *Run WFS batch* button,
 progress reporting and cancellation between file pairs.  Batch execution runs
 in a Qt worker thread so the ImProcess UI remains responsive while the
 consolidated CSV/HDF5 exports are written.  Completed runs populate in-panel
-summary and capped region-preview tables, plus an unmatched-file list.
+summary and capped region-preview tables, plus an unmatched-file list.  A
+shared filter field searches the visible batch tables and unmatched paths, and
+the widget can open the selected output folder directly.  When the graph panel
+is enabled, completed batches also publish aggregate plots for region
+anisotropy, area-vs-anisotropy and per-sample summaries.
 
 Config schema
 =============

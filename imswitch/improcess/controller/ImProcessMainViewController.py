@@ -78,6 +78,7 @@ class _WidefieldStarssBatchWorker(QtCore.QObject):
                         self._REGION_PREVIEW_LIMIT
                     ).to_dict(orient="records"),
                     "unmatched_paths": [str(path) for path in result.unmatched],
+                    "plot_payloads": result.plot_payloads(),
                 }
             )
         except WidefieldStarssBatchCancelled as exc:
@@ -669,6 +670,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._logger.info(message)
         self._set_wfs_batch_progress(int(payload["pair_count"]), int(payload["pair_count"]) or 1)
         self._set_wfs_batch_results(payload)
+        self._set_wfs_batch_graphs(payload.get("plot_payloads", []))
         self._set_wfs_batch_status(message)
         self._set_wfs_batch_running(False)
 
@@ -724,6 +726,12 @@ class ImProcessMainViewController(ImProcessWidgetController):
         clearer = getattr(widget, "clear_batch_results", None)
         if callable(clearer):
             clearer()
+
+    def _set_wfs_batch_graphs(self, plot_payloads) -> None:
+        graph_widget = getattr(self._widget, "graphWidget", None)
+        setter = getattr(graph_widget, "setPlotPayloads", None)
+        if callable(setter):
+            setter(list(plot_payloads))
 
     def bleachingCorrection(self, data):
         correctedData = data.copy()

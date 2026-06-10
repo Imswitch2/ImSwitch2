@@ -236,8 +236,11 @@ used by the `segmentation` processor.  A pure backend batch API now discovers
 and writes consolidated per-region and per-sample tables.  The first
 parameter-widget batch controls now run that backend in a Qt worker thread,
 report pair-level progress, support cancellation between pairs and export
-CSV/HDF5 tables.  Dedicated table, unmatched-file preview and multi-layer
-viewer display remain Phase 4 work.
+CSV/HDF5 tables.  The parameter widget also shows completed-run summary rows,
+a capped per-region preview and unmatched files with shared filtering and an
+output-folder shortcut.  Completed batches publish aggregate graph payloads for
+region anisotropy, area-vs-anisotropy and per-sample summaries.  Richer table
+analysis and multi-layer viewer display remain Phase 4 work.
 
 `WidefieldStarssReconstructor` is now registered as a modality-specific
 ImProcess reconstructor.
@@ -334,9 +337,8 @@ After the single-pair reconstructor works:
   - execute in a worker thread with pair-level progress and cancellation
   - graph widget displays batch histogram and per-source summaries
 
-The first batch mode is implemented; remaining Phase 4 work is result browsing,
-unmatched-file inspection, graph summaries and careful memory handling for very
-large folders.
+The first batch mode is implemented; remaining Phase 4 work is deeper result
+analysis and careful memory handling for very large folders.
 
 ---
 

@@ -70,6 +70,10 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         self.batchStatusLabel = QtWidgets.QLabel("Batch: choose folders, then run.")
         self.batchStatusLabel.setWordWrap(True)
         self.batchStatusLabel.setStyleSheet("color:#888; font-size:8pt;")
+        self.batchFilterEdit = QtWidgets.QLineEdit()
+        self.batchFilterEdit.setPlaceholderText("Filter batch results...")
+        self.clearBatchFilterButton = QtWidgets.QPushButton("Clear filter")
+        self.openBatchOutputButton = QtWidgets.QPushButton("Open output folder")
         self.batchResultsTabs = QtWidgets.QTabWidget()
         self.batchResultsTabs.setMinimumHeight(180)
         self.batchSummaryTable = self._make_result_table()
@@ -84,6 +88,9 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         self.batchOutputBrowseButton.clicked.connect(self._browse_batch_output)
         self.runBatchButton.clicked.connect(self.sigRunBatchRequested)
         self.cancelBatchButton.clicked.connect(self.sigCancelBatchRequested)
+        self.batchFilterEdit.textChanged.connect(self._apply_batch_filter)
+        self.clearBatchFilterButton.clicked.connect(self.batchFilterEdit.clear)
+        self.openBatchOutputButton.clicked.connect(self._open_batch_output_folder)
 
         batchForm = QtWidgets.QFormLayout()
         batchForm.addRow("Input folder", self.batchInputEdit)
@@ -96,6 +103,11 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         batchButtons.addWidget(self.cancelBatchButton)
         batchButtons.addStretch()
 
+        batchFilterRow = QtWidgets.QHBoxLayout()
+        batchFilterRow.addWidget(self.batchFilterEdit)
+        batchFilterRow.addWidget(self.clearBatchFilterButton)
+        batchFilterRow.addWidget(self.openBatchOutputButton)
+
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tree)
@@ -104,6 +116,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         layout.addLayout(batchButtons)
         layout.addWidget(self.batchProgress)
         layout.addWidget(self.batchStatusLabel)
+        layout.addLayout(batchFilterRow)
         layout.addWidget(self.batchResultsTabs)
         self.setLayout(layout)
 
@@ -183,6 +196,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             )
 
     def clear_batch_results(self) -> None:
+        self.batchFilterEdit.clear()
         self._set_table_records(self.batchSummaryTable, [], [])
         self._set_table_records(self.batchRegionsTable, [], [])
         self.batchUnmatchedList.clear()
@@ -210,6 +224,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             regions_label = f"Regions ({len(region_records)}/{region_count})"
         self.batchResultsTabs.setTabText(1, regions_label)
         self.batchResultsTabs.setTabText(2, f"Unmatched ({len(unmatched_paths)})")
+        self._apply_batch_filter(self.batchFilterEdit.text())
 
     def _browse_batch_input(self) -> None:
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -228,6 +243,18 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         )
         if path:
             self.batchOutputEdit.setText(path)
+
+    def _open_batch_output_folder(self) -> None:
+        output_folder = self.batchOutputEdit.text().strip()
+        if not output_folder:
+            self.set_batch_status("Choose a batch output folder first.")
+            return
+        try:
+            from imswitch.imcommon.model.ostools import openFolderInOS
+
+            openFolderInOS(output_folder)
+        except Exception as exc:
+            self.set_batch_status(f"Could not open output folder: {exc}")
 
     def _preset_changed(self, _param, value) -> None:
         if value == "Widefield cells":
@@ -311,6 +338,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
                 table.setItem(row_index, column_index, item)
         table.resizeColumnsToContents()
         table.setSortingEnabled(True)
+        self._apply_batch_filter(self.batchFilterEdit.text())
 
     def _format_table_value(self, value: object) -> str:
         if value is None:
@@ -323,3 +351,24 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         if isinstance(value, float):
             return f"{value:.6g}"
         return str(value)
+
+    def _apply_batch_filter(self, text: str) -> None:
+        query = str(text).strip().lower()
+        self._filter_table(self.batchSummaryTable, query)
+        self._filter_table(self.batchRegionsTable, query)
+        for row in range(self.batchUnmatchedList.count()):
+            item = self.batchUnmatchedList.item(row)
+            item.setHidden(bool(query) and query not in item.text().lower())
+
+    def _filter_table(self, table: QtWidgets.QTableWidget, query: str) -> None:
+        for row in range(table.rowCount()):
+            if not query:
+                table.setRowHidden(row, False)
+                continue
+            match = False
+            for column in range(table.columnCount()):
+                item = table.item(row, column)
+                if item is not None and query in item.text().lower():
+                    match = True
+                    break
+            table.setRowHidden(row, not match)
