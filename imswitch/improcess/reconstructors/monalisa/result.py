@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import tifffile as tiff
 
-from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
 
 
 class MonalisaProcessingResult(ProcessingResult):
@@ -93,6 +93,65 @@ class MonalisaProcessingResult(ProcessingResult):
 
         self.scan_params = scan_params
         self.output_pixel_size_nm = output_pixel_size_nm
+    
+    def _base_component_name(self, base_index: int) -> str:
+        """Return the semantic name for a base component."""
+        if base_index == 0:
+            return "signal"
+        elif base_index == 1:
+            return "background"
+        else:
+            return f"base_{base_index}"
+    
+    def display_layers(self) -> list[DisplayLayerSpec]:
+        """Split the Base axis into named viewer layers.
+        
+        Returns one layer per base component (signal, background, base_2, ...),
+        each with the Base axis sliced out and independent contrast limits.
+        """
+        if "Base" not in self.axis_labels:
+            return []
+        
+        base_axis = self.axis_labels.index("Base")
+        num_bases = self.data.shape[base_axis]
+        
+        # Build axis labels and scales for display layers (all axes except Base)
+        layer_axis_labels = [lbl for lbl in self.axis_labels if lbl != "Base"]
+        layer_axis_scales = [
+            scale for i, scale in enumerate(self.axis_scales) if i != base_axis
+        ]
+        
+        layers = []
+        for base_idx in range(num_bases):
+            # Slice out this base component
+            layer_data = np.take(self.data, base_idx, axis=base_axis)
+            
+            # Compute per-layer contrast limits from finite values
+            finite_data = layer_data[np.isfinite(layer_data)]
+            if finite_data.size > 0:
+                vmin, vmax = np.percentile(finite_data, [1, 99])
+                if vmin == vmax:
+                    vmin, vmax = float(finite_data.min()), float(finite_data.max())
+            else:
+                vmin, vmax = 0.0, 1.0
+            
+            component_name = self._base_component_name(base_idx)
+            layer = DisplayLayerSpec(
+                name=f"{self.name}_{component_name}",
+                data=layer_data,
+                axis_labels=layer_axis_labels,
+                display_levels=(float(vmin), float(vmax)),
+                axis_scales=layer_axis_scales,
+                scale_unit=self.scale_unit,
+                metadata={
+                    "source_result": self.name,
+                    "component": component_name,
+                    "base_index": base_idx,
+                },
+            )
+            layers.append(layer)
+        
+        return layers
     
     def save(self, path: Path, fmt: str = "tiff") -> None:
         """
