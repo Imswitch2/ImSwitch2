@@ -137,7 +137,8 @@ class WidefieldStarssResult(ProcessingResult):
             return None
         if np.nanmin(finite) == np.nanmax(finite):
             value = float(np.nanmin(finite))
-            return value, value
+            pad = max(abs(value) * 1e-6, 1e-6)
+            return value - pad, value + pad
         return (
             float(np.nanpercentile(finite, 1)),
             float(np.nanpercentile(finite, 99)),

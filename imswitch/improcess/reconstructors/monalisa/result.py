@@ -131,7 +131,9 @@ class MonalisaProcessingResult(ProcessingResult):
             if finite_data.size > 0:
                 vmin, vmax = np.percentile(finite_data, [1, 99])
                 if vmin == vmax:
-                    vmin, vmax = float(finite_data.min()), float(finite_data.max())
+                    value = float(finite_data.min())
+                    pad = max(abs(value) * 1e-6, 1e-6)
+                    vmin, vmax = value - pad, value + pad
             else:
                 vmin, vmax = 0.0, 1.0
             

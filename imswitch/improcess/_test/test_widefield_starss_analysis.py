@@ -194,6 +194,11 @@ def test_widefield_starss_result_exposes_independent_display_layers():
     np.testing.assert_array_equal(layers[0].data, analysis.anis_maps.r_smooth)
     np.testing.assert_array_equal(layers[3].data, analysis.base_image)
     assert layers[0].display_levels != layers[3].display_levels
+    assert all(
+        layer.display_levels[0] < layer.display_levels[1]
+        for layer in layers
+        if layer.display_levels is not None
+    )
 
 
 def test_widefield_starss_reconstructor_auto_pairs_hv_tiffs(tmp_path):

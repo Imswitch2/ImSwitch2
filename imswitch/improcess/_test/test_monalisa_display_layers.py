@@ -111,13 +111,13 @@ def test_display_layers_computes_per_layer_contrast():
     
     layers = result.display_layers()
     
-    # Signal layer should have limits around 100
-    assert layers[0].display_levels[0] == pytest.approx(100.0, abs=1.0)
-    assert layers[0].display_levels[1] == pytest.approx(100.0, abs=1.0)
+    # Uniform layers should still get strictly increasing limits that bracket
+    # the true value, because napari contrast limits are safer that way.
+    assert layers[0].display_levels[0] < 100.0 < layers[0].display_levels[1]
+    assert layers[0].display_levels[0] < layers[0].display_levels[1]
     
-    # Background layer should have limits around 500
-    assert layers[1].display_levels[0] == pytest.approx(500.0, abs=1.0)
-    assert layers[1].display_levels[1] == pytest.approx(500.0, abs=1.0)
+    assert layers[1].display_levels[0] < 500.0 < layers[1].display_levels[1]
+    assert layers[1].display_levels[0] < layers[1].display_levels[1]
 
 
 def test_display_layers_includes_metadata():
