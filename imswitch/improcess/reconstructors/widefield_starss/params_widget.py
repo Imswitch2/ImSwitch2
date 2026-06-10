@@ -19,6 +19,10 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             {"name": "Pairing", "type": "group", "children": [
                 {"name": "Current file role", "type": "list", "values": ["Auto", "H", "V"], "value": "Auto"},
                 {"name": "Counterpart path", "type": "str", "value": ""},
+                {"name": "H suffix", "type": "str", "value": "_h",
+                 "tip": "Filename ending that marks the H stack (case-insensitive)"},
+                {"name": "V suffix", "type": "str", "value": "_v",
+                 "tip": "Filename ending that marks the V stack (case-insensitive)"},
             ]},
             {"name": "Loading", "type": "group", "children": [
                 {"name": "Convention", "type": "list", "values": ["alternating", "block"], "value": "alternating"},
@@ -56,7 +60,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         self.browseButton = QtWidgets.QPushButton("Browse counterpart...")
         self.browseButton.clicked.connect(self._browse_counterpart)
         self.batchInputEdit = QtWidgets.QLineEdit()
-        self.batchInputEdit.setPlaceholderText("Folder containing *_h.tif / *_v.tif files")
+        self.batchInputEdit.setPlaceholderText("Folder with H/V tiff pairs (suffixes set under Pairing)")
         self.batchOutputEdit = QtWidgets.QLineEdit()
         self.batchOutputEdit.setPlaceholderText("Output folder for batch CSV/HDF5")
         self.batchInputBrowseButton = QtWidgets.QPushButton("Browse batch input...")
@@ -132,6 +136,8 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         return {
             "current_role": pairing.param("Current file role").value(),
             "counterpart_path": counterpart_path or None,
+            "h_suffix": str(pairing.param("H suffix").value()).strip() or "_h",
+            "v_suffix": str(pairing.param("V suffix").value()).strip() or "_v",
             "convention": loading.param("Convention").value(),
             "start_frame": int(loading.param("Start frame").value()),
             "n_dark": int(loading.param("Dark frames").value()),

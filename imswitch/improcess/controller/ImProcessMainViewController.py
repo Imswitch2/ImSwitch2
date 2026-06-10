@@ -31,11 +31,14 @@ class _WidefieldStarssBatchWorker(QtCore.QObject):
     failed = QtCore.Signal(str)
     cancelled = QtCore.Signal(str)
 
-    def __init__(self, input_folder, output_folder, params, parent=None):
+    def __init__(self, input_folder, output_folder, params, parent=None,
+                 h_suffix="_h", v_suffix="_v"):
         super().__init__(parent)
         self._input_folder = input_folder
         self._output_folder = output_folder
         self._params = params
+        self._h_suffix = h_suffix
+        self._v_suffix = v_suffix
         self._cancel_requested = False
 
     @QtCore.Slot()
@@ -55,6 +58,8 @@ class _WidefieldStarssBatchWorker(QtCore.QObject):
                 params=self._params,
                 progress_callback=self.progress.emit,
                 cancel_callback=lambda: self._cancel_requested,
+                h_suffix=self._h_suffix,
+                v_suffix=self._v_suffix,
             )
             if self._cancel_requested:
                 self.cancelled.emit("WFS batch cancelled before export.")
@@ -583,6 +588,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
                 input_folder=input_folder,
                 output_folder=output_folder,
                 params=analysis_params,
+                h_suffix=str(params.get("h_suffix") or "_h"),
+                v_suffix=str(params.get("v_suffix") or "_v"),
             )
             worker.moveToThread(thread)
             thread.started.connect(worker.run)

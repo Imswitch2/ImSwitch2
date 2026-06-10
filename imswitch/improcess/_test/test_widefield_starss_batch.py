@@ -66,6 +66,42 @@ def test_discover_widefield_starss_pairs_matches_hv_files(tmp_path):
     assert unmatched_paths == [unmatched]
 
 
+def test_discover_widefield_starss_pairs_custom_suffixes(tmp_path):
+    """Pair discovery honors configurable H/V filename suffixes."""
+    h_path = tmp_path / "cell_000H.tif"
+    v_path = tmp_path / "cell_000V.tif"
+    other = tmp_path / "cell_001_h.tif"
+    for path in (h_path, v_path, other):
+        tiff.imwrite(path, np.zeros((2, 8, 10), dtype=np.float32))
+
+    pairs, unmatched = discover_widefield_starss_pairs(
+        [h_path, v_path, other], h_suffix="H", v_suffix="V"
+    )
+
+    assert len(pairs) == 1
+    assert pairs[0].sample_id == "cell_000"
+    assert pairs[0].h_path == h_path
+    assert pairs[0].v_path == v_path
+    # "_h" still ends with "h" so it matches the custom suffix and stays
+    # unpaired (no V counterpart), rather than being silently dropped.
+    assert other in unmatched
+
+
+def test_discover_widefield_starss_pairs_longer_suffix_wins(tmp_path):
+    """When one suffix is a tail of the other, the longer suffix decides."""
+    h_path = tmp_path / "sample_h.tif"
+    v_path = tmp_path / "sample_v.tif"
+    for path in (h_path, v_path):
+        tiff.imwrite(path, np.zeros((2, 8, 10), dtype=np.float32))
+
+    # v_suffix "h" would match "sample_h" too; "_h" is longer and must win.
+    pairs, unmatched = discover_widefield_starss_pairs(
+        [h_path, v_path], h_suffix="_h", v_suffix="_v"
+    )
+    assert len(pairs) == 1
+    assert pairs[0].h_path == h_path
+
+
 def test_discover_widefield_starss_pairs_in_folder(tmp_path):
     _write_pair(tmp_path, "sample")
 

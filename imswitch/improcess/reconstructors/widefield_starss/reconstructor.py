@@ -99,6 +99,8 @@ class WidefieldStarssReconstructor(Reconstructor):
     ) -> tuple[str, Path]:
         explicit = params.get("counterpart_path")
         role = params.get("current_role", "Auto")
+        h_suffix = str(params.get("h_suffix") or "_h")
+        v_suffix = str(params.get("v_suffix") or "_v")
 
         if current_path is None:
             if not explicit:
@@ -107,7 +109,9 @@ class WidefieldStarssReconstructor(Reconstructor):
                 raise ValueError("Set current file role to H or V when current path is unavailable")
             return role, Path(explicit)
 
-        inferred_role, inferred_counterpart = self._infer_counterpart(current_path)
+        inferred_role, inferred_counterpart = self._infer_counterpart(
+            current_path, h_suffix, v_suffix
+        )
         if role == "Auto":
             role = inferred_role
         if role not in ("H", "V"):
@@ -116,20 +120,31 @@ class WidefieldStarssReconstructor(Reconstructor):
         counterpart = Path(explicit) if explicit else inferred_counterpart
         if counterpart is None:
             raise ValueError(
-                "Could not infer H/V counterpart. Use a filename ending in _h/_v "
-                "or set Counterpart path."
+                f"Could not infer H/V counterpart. Use a filename ending in "
+                f"{h_suffix}/{v_suffix} (configurable under Pairing) or set "
+                f"Counterpart path."
             )
         if not counterpart.exists():
             raise FileNotFoundError(f"WidefieldSTARSS counterpart file not found: {counterpart}")
         return role, counterpart
 
     @staticmethod
-    def _infer_counterpart(path: Path) -> tuple[str, Path | None]:
+    def _infer_counterpart(
+        path: Path,
+        h_suffix: str = "_h",
+        v_suffix: str = "_v",
+    ) -> tuple[str, Path | None]:
         stem = path.stem
         suffix = path.suffix
         lower = stem.lower()
-        if lower.endswith("_h"):
-            return "H", path.with_name(f"{stem[:-2]}_v{suffix}")
-        if lower.endswith("_v"):
-            return "V", path.with_name(f"{stem[:-2]}_h{suffix}")
-        return "H", None
+        # If both suffixes match (e.g. 'h' and '_h'), the longer one wins so
+        # the more specific suffix cannot be shadowed by the shorter.
+        matches = [
+            (role, own, other)
+            for role, own, other in (("H", h_suffix, v_suffix), ("V", v_suffix, h_suffix))
+            if own and lower.endswith(own.lower())
+        ]
+        if not matches:
+            return "H", None
+        role, own, other = max(matches, key=lambda item: len(item[1]))
+        return role, path.with_name(f"{stem[:-len(own)]}{other}{suffix}")

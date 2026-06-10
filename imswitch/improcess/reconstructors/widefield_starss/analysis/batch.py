@@ -159,9 +159,13 @@ class WidefieldStarssBatchResult:
         return payloads
 
 
-def discover_widefield_starss_pairs(paths: Iterable[str | Path]) -> tuple[list[WidefieldStarssPair], list[Path]]:
+def discover_widefield_starss_pairs(
+    paths: Iterable[str | Path],
+    h_suffix: str = "_h",
+    v_suffix: str = "_v",
+) -> tuple[list[WidefieldStarssPair], list[Path]]:
     """
-    Match files named ``*_h.tif[f]`` and ``*_v.tif[f]`` into WFS pairs.
+    Match files whose stems end in ``h_suffix`` / ``v_suffix`` into WFS pairs.
 
     Returns sorted pairs and unmatched input paths.
     """
@@ -173,11 +177,12 @@ def discover_widefield_starss_pairs(paths: Iterable[str | Path]) -> tuple[list[W
         if path.suffix.lower() not in (".tif", ".tiff"):
             unmatched_candidates.append(path)
             continue
-        role = _role_from_path(path)
-        if role is None:
+        match = _role_from_path(path, h_suffix, v_suffix)
+        if match is None:
             unmatched_candidates.append(path)
             continue
-        sample_id = path.stem[:-2]
+        role, matched_suffix = match
+        sample_id = path.stem[:-len(matched_suffix)]
         by_sample.setdefault(sample_id, {})[role] = path
 
     pairs: list[WidefieldStarssPair] = []
@@ -191,11 +196,15 @@ def discover_widefield_starss_pairs(paths: Iterable[str | Path]) -> tuple[list[W
     return pairs, sorted(unmatched, key=lambda p: str(p))
 
 
-def discover_widefield_starss_pairs_in_folder(folder: str | Path) -> tuple[list[WidefieldStarssPair], list[Path]]:
+def discover_widefield_starss_pairs_in_folder(
+    folder: str | Path,
+    h_suffix: str = "_h",
+    v_suffix: str = "_v",
+) -> tuple[list[WidefieldStarssPair], list[Path]]:
     """Discover WFS pairs from TIFF files directly inside ``folder``."""
     folder = Path(folder)
     paths = [*folder.glob("*.tif"), *folder.glob("*.tiff")]
-    return discover_widefield_starss_pairs(paths)
+    return discover_widefield_starss_pairs(paths, h_suffix, v_suffix)
 
 
 def run_widefield_starss_batch(
@@ -256,9 +265,11 @@ def run_widefield_starss_batch_from_folder(
     params: WidefieldStarssParams | None = None,
     progress_callback: BatchProgressCallback | None = None,
     cancel_callback: BatchCancelCallback | None = None,
+    h_suffix: str = "_h",
+    v_suffix: str = "_v",
 ) -> WidefieldStarssBatchResult:
     """Discover and analyze all WFS pairs in ``folder``."""
-    pairs, unmatched = discover_widefield_starss_pairs_in_folder(folder)
+    pairs, unmatched = discover_widefield_starss_pairs_in_folder(folder, h_suffix, v_suffix)
     return run_widefield_starss_batch(
         pairs,
         params=params,
@@ -286,13 +297,26 @@ def _progress_payload(
     }
 
 
-def _role_from_path(path: Path) -> str | None:
+def _role_from_path(
+    path: Path,
+    h_suffix: str = "_h",
+    v_suffix: str = "_v",
+) -> tuple[str, str] | None:
+    """Return (role, matched suffix) for a path, or None if neither matches.
+
+    Matching is case-insensitive on the file stem. If both suffixes match
+    (e.g. 'h' and '_h'), the longer one wins so the more specific suffix
+    cannot be shadowed by the shorter.
+    """
     lower = path.stem.lower()
-    if lower.endswith("_h"):
-        return "H"
-    if lower.endswith("_v"):
-        return "V"
-    return None
+    matches = [
+        (role, suffix)
+        for role, suffix in (("H", h_suffix), ("V", v_suffix))
+        if suffix and lower.endswith(suffix.lower())
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: len(item[1]))
 
 
 def _summary_row(pair_index: int, pair: WidefieldStarssPair, analysis: WidefieldStarssAnalysis) -> dict[str, object]:
