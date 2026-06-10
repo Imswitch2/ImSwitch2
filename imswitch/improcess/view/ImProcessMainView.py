@@ -258,6 +258,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.setCentralWidget(self.dockArea)
         self.docks: dict[str, Dock] = {}
         self._runtimeAnalysisDockAnchor = None
+        # IDs of analysis tools whose docks were created via the runtime
+        # 'Load processor' path (not the startup config block).  Persistence
+        # only snapshots this set so config-driven panels can't drag stale
+        # state into a session whose setup JSON no longer asks for them.
+        self._runtimeAnalysisToolIds: set[str] = set()
 
         # --- Left column: parameters + buttons + data tabs ---
         parametersDock = Dock('Parameters', size=(2, 5))
@@ -412,7 +417,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         dock = self.docks.get(title)
         if dock is not None:
             dock.show()
-            dock.raiseDock()
+            self._safeRaiseDock(dock)
             if processor_id == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
@@ -439,13 +444,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 self.dockArea.addDock(dock, 'bottom', anchor)
             self.docks[title] = dock
             self._runtimeAnalysisDockAnchor = dock
+            # Mark this tool as runtime-loaded so getLayoutState only persists
+            # *user-added* panels.  Config-driven panels added in __init__
+            # never go through this path and therefore stay out of the
+            # persisted set.
+            self._runtimeAnalysisToolIds.add(processor_id)
             attr_name = self._runtimeAnalysisToolAttributes()[processor_id]
             setattr(self, attr_name, widget)
             if processor_id == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
             self._addDockVisibilityAction(title, dock)
             dock.show()
-            dock.raiseDock()
+            self._safeRaiseDock(dock)
             self._syncDockVisibilityActions()
         except Exception:
             # Roll back partial dock state so subsequent attempts can retry
@@ -454,6 +464,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 f'Failed to install runtime analysis dock for {processor_id!r}'
             )
             self.docks.pop(title, None)
+            # Also drop the runtime-set entry if we got that far before the
+            # exception, so the next save doesn't persist a tool we couldn't
+            # actually install.
+            self._runtimeAnalysisToolIds.discard(processor_id)
             try:
                 widget.setParent(None)
             except Exception:
@@ -470,6 +484,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.statusBar().showMessage(message, timeout_ms)
         except Exception:
             pass
+
+    def _safeRaiseDock(self, dock) -> None:
+        """Bring a dock to the front without crashing on non-tab containers.
+
+        pyqtgraph's Dock.raiseDock() delegates to container().raiseDock(self),
+        which is only implemented on TContainer (tab groups). When a dock
+        lives in a VContainer or HContainer (vertical / horizontal stack —
+        which is exactly what addDock('bottom', anchor) produces for runtime
+        analysis panels) the call raises AttributeError. There is nothing to
+        raise in that case, so swallowing the error is the right behavior.
+        """
+        try:
+            dock.raiseDock()
+        except AttributeError:
+            pass
+        except Exception:
+            self._logger.debug(
+                f'Unexpected error raising dock {getattr(dock, "name", None)!r}',
+                exc_info=True,
+            )
 
     def isRuntimeAnalysisToolLoaded(self, tool_id: str) -> bool:
         spec = self._runtimeAnalysisToolSpecs().get(tool_id)
@@ -723,15 +757,23 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._syncDockVisibilityActions()
 
     def runtimeAnalysisToolIdsLoaded(self) -> list[str]:
-        """Return ids of runtime analysis tools whose docks currently exist.
+        """Return ids of analysis tools loaded via the *runtime* path.
 
-        Used by ``getLayoutState`` and the controller's choice refresher.
+        Excludes config-driven panels (e.g. ``segmentationPanel: true`` in
+        the setup JSON) so the persisted state stays in sync with each
+        session's setup config — otherwise a panel that the user removed
+        from their setup file would come back via persistence as if it
+        were runtime-loaded.
+
+        Defensive: a dock the user closed since loading at runtime drops
+        out automatically (its title is no longer in ``self.docks``).
         """
-        return [
+        specs = self._runtimeAnalysisToolSpecs()
+        return sorted(
             tool_id
-            for tool_id, (title, _factory) in self._runtimeAnalysisToolSpecs().items()
-            if title in self.docks
-        ]
+            for tool_id in self._runtimeAnalysisToolIds
+            if tool_id in specs and specs[tool_id][0] in self.docks
+        )
 
     def resetLayout(self) -> None:
         """Restore the default dock arrangement captured at construction."""
