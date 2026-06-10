@@ -7,9 +7,10 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools
 from imswitch.imcontrol.view import guitools
 from imswitch.imcommon.view.guitools import colorutils
+from ._beadrec_scan_source import BeadRecScanSourceMixin
 
 
-class TriggerScopeRasterController(ImConWidgetController):
+class TriggerScopeRasterController(BeadRecScanSourceMixin, ImConWidgetController):
     """Linked to TriggerScopeRasterWidget."""
 
     def __init__(self, *args, **kwargs):
@@ -323,6 +324,24 @@ class TriggerScopeRasterController(ImConWidgetController):
         self.getParameters()
         return [d for d in self._digitalParameterDict['target_device']
                 if d in self._setupInfo.lasers]
+
+    def getBeadRecScanDims(self) -> tuple[int, int]:
+        """Return scan dimensions as (X_pixels, Y_pixels) for BeadRec."""
+        self.getParameters()
+        axis_length = self._analogParameterDict.get('axis_length', [0, 0])
+        axis_step_size = self._analogParameterDict.get('axis_step_size', [1, 1])
+        
+        x_dim = 0 if axis_step_size[0] == 0 else round(axis_length[0] / axis_step_size[0])
+        y_dim = 0 if (len(axis_step_size) < 2 or axis_step_size[1] == 0) else round(axis_length[1] / axis_step_size[1])
+        return (x_dim, y_dim)
+
+    def getBeadRecStepSizes(self) -> tuple[float, float]:
+        """Return scan step sizes as (X_step, Y_step) for BeadRec."""
+        self.getParameters()
+        axis_step_size = self._analogParameterDict.get('axis_step_size', [0.0, 0.0])
+        x_step = axis_step_size[0] if len(axis_step_size) > 0 else 0.0
+        y_step = axis_step_size[1] if len(axis_step_size) > 1 else 0.0
+        return (x_step, y_step)
 
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters."""
