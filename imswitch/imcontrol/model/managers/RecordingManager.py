@@ -424,23 +424,25 @@ class HDF5Storer(Storer):
           @timestamp
           @rec_mode = 'snap'
           <detectorName>/
-            data              # (T, Y, X) or (Y, X), dtype from frame, lzf compressed
+            data              # (T, Y, X) or (Y, X), dtype from frame, gzip compressed
               @detector_name
               @element_size_um
             metadata/
               <category>/     # e.g., 'detector', 'lasers', 'scan'
                 @key = value  # attrs within category
-    
-    Compression: lzf (fast, lossless) + shuffle filter by default.
+
+    Compression: gzip (lossless, universally supported by Fiji/h5view) by default.
     """
-    
-    def __init__(self, filepath, detectorManager, compression='lzf'):
+
+    def __init__(self, filepath, detectorManager, compression='gzip'):
         """Initialize HDF5 storer.
-        
+
         Args:
             filepath: Base path for output file (without extension)
             detectorManager: DetectorsManager instance
-            compression: Compression filter ('lzf', 'gzip', None, or h5py compression spec)
+            compression: Compression filter ('gzip', 'lzf', None, or h5py compression spec).
+                         Use 'gzip' (default) for Fiji/h5view compatibility; 'lzf' is faster
+                         but requires the LZF plugin in external readers.
         """
         super().__init__(filepath, detectorManager)
         self.compression = compression

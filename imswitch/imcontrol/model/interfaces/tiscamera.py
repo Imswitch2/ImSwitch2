@@ -47,11 +47,13 @@ class CameraTIS:
     def grabFrame(self):
         # self.cam.wait_til_frame_ready(20)  # wait for frame ready
         frame, width, height, depth = self.cam.get_image_data()
-        frame = np.array(frame, dtype='float64')
-        # Check if below is giving the right dimensions out
-        # TODO: do this smarter, as I can just take every 3rd value instead of creating a reshaped
-        #       3D array and taking the first plane of that
-        frame = np.reshape(frame, (height, width, depth))[:, :, 0]
+        frame = np.array(frame, dtype=np.uint8)
+        frame = np.reshape(frame, (height, width, depth))
+        if depth == 2:
+            # 16-bit mono: reinterpret byte pairs as uint16 instead of slicing
+            frame = frame.view(np.uint16).reshape(height, width)
+        else:
+            frame = frame[:, :, 0]
         frame = np.transpose(frame)
         return frame
 
