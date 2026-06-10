@@ -219,7 +219,9 @@ class ImProcessMainController(MainController):
         )
 
     def _wire_runtime_result_processors(self) -> None:
-        for processor_id in ("drift-correct", "denoise"):
+        from .runtime_result_processors import runtime_result_processor_ids
+
+        for processor_id in runtime_result_processor_ids():
             self._wire_runtime_result_processor(processor_id)
 
     def closeEvent(self):
