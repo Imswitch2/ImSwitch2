@@ -206,9 +206,10 @@ def test_snap_hdf5_structured_layout(tmp_path):
         # Check data content
         np.testing.assert_array_equal(dataset[:], test_image)
         
-        # Check compression
+        # Check compression (gzip is the default since lzf caused problems
+        # on some setups; see RecordingManager)
         assert dataset.compression is not None, "Dataset should be compressed"
-        assert dataset.compression == 'lzf', f"Expected lzf compression, got {dataset.compression}"
+        assert dataset.compression == 'gzip', f"Expected gzip compression, got {dataset.compression}"
         assert dataset.shuffle, "Shuffle filter should be enabled"
         
         # Check metadata group structure
