@@ -37,6 +37,7 @@ class BeadRecController(ImConWidgetController):
         self.parametersChanged = False
         self.dims = None
         self.stepSizes = None
+        self.linesteps = 1
         self.lastDir = None
         self.resultRecords = []
         self.listRecs = []
@@ -120,7 +121,7 @@ class BeadRecController(ImConWidgetController):
         self.listRecs.pop(index)
 
     def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:
-        return BeadAcquisitionConfig.from_scan_dims(self.dims)
+        return BeadAcquisitionConfig.from_scan_dims(self.dims, linesteps=self.linesteps)
 
     def _updateProgress(self, current: int, total: int) -> None:
         self._widget.updateProgress(current, total)
@@ -382,19 +383,25 @@ class BeadRecController(ImConWidgetController):
                 self._warnedNoScanWidget = True
             return
 
+        # Use explicit axes 0 and 1 (X, Y) from getDimsScan
+        if dims[0] <= 0 or dims[1] <= 0:
+            self._logger.warning(
+                f'BeadRec: invalid scan dimensions ({dims[0]}, {dims[1]}). '
+                f'Keeping previous dims.'
+            )
+            self.parametersChanged = False
+            return
+
         prior_dims = self.dims
         prior_stepSizes = self.stepSizes
-        self.dims = dims
-        self.stepSizes = stepSizes[dims != 0]
-        self.dims = self.dims[self.dims != 0]
-        if len(self.dims)>2:
-            self.dims = self.dims[:2]
-            self._logger.warning("Using only first 2 dimensions of 3d scan")
+        prior_linesteps = self.linesteps
+
+        self.dims = (int(dims[0]), int(dims[1]))
+        self.stepSizes = (float(stepSizes[0]), float(stepSizes[1]))
+        self.linesteps = self._commChannel.getNumLineSteps()
         
         if prior_dims is not None and prior_stepSizes is not None:
-            if len(prior_dims) != len(self.dims) or (prior_dims != self.dims).any() or \
-                len(prior_stepSizes) != len(self.stepSizes) or (prior_stepSizes != self.stepSizes).any():
-                
+            if prior_dims != self.dims or prior_stepSizes != self.stepSizes or prior_linesteps != self.linesteps:
                 self.parametersChanged = True
     
     def updateOnMousePixelValue(self,x,y):
@@ -537,6 +544,7 @@ class BeadWorker(Worker):
         self._nextIndex = 0
         self._filledPixels = 0
         self._resetRequested = False
+        self._lineStepPhase = 0
 
     def start(self, config: BeadAcquisitionConfig) -> None:
         self.configure(config)
@@ -551,6 +559,7 @@ class BeadWorker(Worker):
         with self._lock:
             self._config = config
             self._resetRequested = True
+            self._lineStepPhase = 0
 
     def _isRunning(self) -> bool:
         with self._lock:
@@ -602,23 +611,36 @@ class BeadWorker(Worker):
                 newImages = self._getFrames()
                 n = len(newImages)
                 if n > 0:
-                    try:
-                        roi = normalize_roi_bounds(self._getRoiBounds(), newImages[0].shape)
-                        update = append_roi_means(
-                            recIm,
-                            nextIndex,
-                            newImages,
-                            roi,
-                            wrap=config.wrap,
-                        )
-                    except ValueError as exc:
-                        self.sigWarning.emit(f"Skipping BeadRec chunk: {exc}")
-                        continue
+                    # Sub-sample frames: keep every S-th frame (linesteps)
+                    S = config.linesteps
+                    if S > 1:
+                        keptFrames = [
+                            newImages[i]
+                            for i in range(n)
+                            if (self._lineStepPhase + i) % S == 0
+                        ]
+                        self._lineStepPhase = (self._lineStepPhase + n) % S
+                    else:
+                        keptFrames = newImages
+                    
+                    if len(keptFrames) > 0:
+                        try:
+                            roi = normalize_roi_bounds(self._getRoiBounds(), keptFrames[0].shape)
+                            update = append_roi_means(
+                                recIm,
+                                nextIndex,
+                                keptFrames,
+                                roi,
+                                wrap=config.wrap,
+                            )
+                        except ValueError as exc:
+                            self.sigWarning.emit(f"Skipping BeadRec chunk: {exc}")
+                            continue
 
-                    workerUpdate = self._storeUpdate(recIm, update)
-                    if workerUpdate is not None:
-                        self.sigNewChunk.emit(workerUpdate)
-                        self.sigProgress.emit(workerUpdate.filled_pixels, workerUpdate.total_pixels)
+                        workerUpdate = self._storeUpdate(recIm, update)
+                        if workerUpdate is not None:
+                            self.sigNewChunk.emit(workerUpdate)
+                            self.sigProgress.emit(workerUpdate.filled_pixels, workerUpdate.total_pixels)
 
             time.sleep(config.poll_interval_s)  # Prevents freezing
 

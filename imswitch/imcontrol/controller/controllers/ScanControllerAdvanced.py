@@ -804,3 +804,7 @@ class ScanControllerAdvanced(SuperScanController):
 
     def getStateSchemaVersion(self) -> int:
         return 1
+
+    def getNumLineSteps(self) -> int:
+        """Return the number of linesteps in the scan. Returns n_linesteps from digitalParameterDict."""
+        return int(self._digitalParameterDict.get("n_linesteps", 1))

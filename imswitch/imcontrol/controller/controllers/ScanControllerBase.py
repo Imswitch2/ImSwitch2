@@ -6,9 +6,10 @@ from typing import Dict, Any
 
 from ..basecontrollers import SuperScanController
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from ._beadrec_scan_source import BeadRecScanSourceMixin
 
 
-class ScanControllerBase(SuperScanController):
+class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -171,6 +172,32 @@ class ScanControllerBase(SuperScanController):
         if not self._widget.isContLaserMode():  # Cont. laser pulses mode is not a real scan
             signal.emit(*args)
 
+    def getBeadRecScanDims(self) -> tuple[int, int]:
+        """Return (x_pixels, y_pixels) for the first two scan axes.
+        
+        Computes dimensions from axis_length / axis_step_size for axes 0 and 1.
+        """
+        self.getParameters()
+        lengths = self._analogParameterDict.get('axis_length', [])
+        stepSizes = self._analogParameterDict.get('axis_step_size', [])
+        dims = []
+        for i in range(2):
+            if i < len(lengths) and i < len(stepSizes):
+                step = stepSizes[i]
+                dim = round(lengths[i] / step) if step != 0 else 0
+            else:
+                dim = 0
+            dims.append(dim)
+        return (dims[0], dims[1])
+
+    def getBeadRecStepSizes(self) -> tuple[float, float]:
+        """Return (x_step_um, y_step_um) for the first two scan axes."""
+        self.getParameters()
+        stepSizes = self._analogParameterDict.get('axis_step_size', [])
+        x_step = stepSizes[0] if len(stepSizes) > 0 else 0.0
+        y_step = stepSizes[1] if len(stepSizes) > 1 else 0.0
+        return (x_step, y_step)
+
     def saveScanParamsToFile(self, filePath: str) -> None:
         """ Saves the set scanning parameters to the specified file. """
         self.getParameters()
@@ -260,6 +287,10 @@ class ScanControllerBase(SuperScanController):
 
     def getStateSchemaVersion(self) -> int:
         return 2
+
+    def getNumLineSteps(self) -> int:
+        """Return the number of linesteps in the scan. Base implementation returns 1."""
+        return 1
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

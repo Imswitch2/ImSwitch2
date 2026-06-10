@@ -85,6 +85,7 @@ class BeadAcquisitionConfig:
     scan_dims: tuple[int, int]
     wrap: bool = True
     poll_interval_s: float = 0.0001
+    linesteps: int = 1
 
     @classmethod
     def from_scan_dims(
@@ -93,12 +94,18 @@ class BeadAcquisitionConfig:
         *,
         wrap: bool = True,
         poll_interval_s: float = 0.0001,
+        linesteps: int = 1,
     ) -> "BeadAcquisitionConfig":
         """Create a validated acquisition config from scan dimensions."""
         dims = _normalize_scan_dims(scan_dims)
         if poll_interval_s <= 0:
             raise ValueError("Poll interval must be positive")
-        return cls(scan_dims=dims, wrap=wrap, poll_interval_s=float(poll_interval_s))
+        return cls(
+            scan_dims=dims,
+            wrap=wrap,
+            poll_interval_s=float(poll_interval_s),
+            linesteps=linesteps,
+        )
 
     @property
     def total_pixels(self) -> int:

@@ -19,8 +19,8 @@ def test_bead_rec_controller_uses_pure_reconstruction_helpers():
     assert 'find_bead_center,' in source
     assert 'reconstruction_image(self.recIm, self.dims)' in source
     assert 'rescale_reconstruction_to_pixel_size(im, self.stepSizes)' in source
-    assert 'normalize_roi_bounds(self._getRoiBounds(), newImages[0].shape)' in source
-    assert 'append_roi_means(\n                            recIm,' in source
+    assert 'normalize_roi_bounds(self._getRoiBounds(), keptFrames[0].shape)' in source
+    assert 'append_roi_means(\n                                recIm,' in source
 
 
 def test_bead_rec_controller_no_longer_uses_raw_resize_or_direct_roi_mean():
@@ -69,7 +69,7 @@ def test_bead_rec_controller_uses_acquisition_config_and_worker_updates():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
 
     assert 'def _createAcquisitionConfig(self) -> BeadAcquisitionConfig:' in source
-    assert 'return BeadAcquisitionConfig.from_scan_dims(self.dims)' in source
+    assert 'return BeadAcquisitionConfig.from_scan_dims(self.dims, linesteps=self.linesteps)' in source
     assert 'config = self._createAcquisitionConfig()' in source
     assert 'self.beadWorker.start(config)' in source
     assert 'self._widget.updateProgress(0, config.total_pixels)' in source
