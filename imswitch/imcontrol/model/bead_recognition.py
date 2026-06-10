@@ -5,9 +5,12 @@ from math import ceil, floor
 from typing import Literal, Mapping, Sequence
 
 import numpy as np
+from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from skimage import measure, morphology
 from skimage.transform import rescale
+
+from .bead_fits import FIT_MODELS, FitResult
 
 
 @dataclass(frozen=True)
@@ -588,3 +591,125 @@ def _fill_metric(
     df_dmax = (min_value - background) / denom_squared
     fill_std = (df_dbg**2 * background_std**2 + df_dmax**2 * std_max**2) ** 0.5
     return float(fill), float(fill_std)
+
+
+def fit_bead(
+    image: np.ndarray,
+    model_name: str,
+    params: Mapping[str, object] | BeadAnalysisParameters | None = None,
+    roi: tuple[int, int, int, int] | None = None,
+) -> FitResult:
+    """Fit a parametric model to a bead image.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        2D bead image to fit.
+    model_name : str
+        Model identifier from FIT_MODELS registry.
+    params : Mapping or BeadAnalysisParameters, optional
+        Analysis parameters for ROI detection (only used if roi is None).
+    roi : tuple of int, optional
+        ROI bounds as (x0, y0, x1, y1). If None, uses largest-CC bounding box
+        from the existing _prepare_component_mask, expanded by a small margin.
+
+    Returns
+    -------
+    FitResult
+        Fit result with parameters, uncertainties, R², and center_px in
+        full-image coordinates.
+
+    Raises
+    ------
+    ValueError
+        If model_name is not in FIT_MODELS, image is flat/constant, or fit fails.
+    """
+    if model_name not in FIT_MODELS:
+        raise ValueError(f"Unknown model '{model_name}', available: {list(FIT_MODELS.keys())}")
+
+    model = FIT_MODELS[model_name]
+    im = _validate_2d_image(image)
+
+    if np.ptp(im) == 0:
+        raise ValueError("Cannot fit a flat/constant image (no intensity variation)")
+
+    roi_offset_y = 0
+    roi_offset_x = 0
+
+    if roi is None:
+        prm = _coerce_analysis_params(params)
+        prepared = _prepare_component_mask(im, prm)
+
+        if prepared.is_rejected:
+            roi_y0, roi_y1 = 0, im.shape[0]
+            roi_x0, roi_x1 = 0, im.shape[1]
+        else:
+            assert prepared.bbox is not None
+            roi_y0, roi_x0, roi_y1, roi_x1 = prepared.bbox
+            margin = 3
+            roi_y0 = max(0, roi_y0 - margin)
+            roi_x0 = max(0, roi_x0 - margin)
+            roi_y1 = min(im.shape[0], roi_y1 + margin)
+            roi_x1 = min(im.shape[1], roi_x1 + margin)
+
+        roi_im = im[roi_y0:roi_y1, roi_x0:roi_x1]
+        roi_mask = None if prepared.is_rejected else prepared.mask[roi_y0:roi_y1, roi_x0:roi_x1]
+        roi_offset_y = roi_y0
+        roi_offset_x = roi_x0
+    else:
+        x0, y0, x1, y1 = roi
+        roi_y0, roi_y1 = y0, y1
+        roi_x0, roi_x1 = x0, x1
+        roi_im = im[roi_y0:roi_y1, roi_x0:roi_x1]
+        roi_mask = None
+        roi_offset_y = roi_y0
+        roi_offset_x = roi_x0
+
+    height, width = roi_im.shape
+    y_grid, x_grid = np.indices(roi_im.shape, dtype=float)
+    xy_data = (x_grid.ravel(), y_grid.ravel())
+    z_data = roi_im.ravel()
+
+    p0 = model.initial_guess(roi_im, roi_mask)
+    bounds = model.bounds(roi_im, roi_mask)
+
+    try:
+        popt, pcov = curve_fit(
+            model.model,
+            xy_data,
+            z_data,
+            p0=p0,
+            bounds=bounds,
+            maxfev=10000,
+        )
+    except RuntimeError as e:
+        raise ValueError(f"Fit failed to converge: {e}") from e
+
+    fitted_values = model.model(xy_data, *popt).reshape(roi_im.shape)
+    residuals = roi_im - fitted_values
+    ss_res = float(np.sum(residuals**2))
+    ss_tot = float(np.sum((roi_im - np.mean(roi_im)) ** 2))
+    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    perr = np.sqrt(np.diag(pcov))
+    params_dict = {name: float(val) for name, val in zip(model.param_names, popt)}
+    param_std_dict = {name: float(std) for name, std in zip(model.param_names, perr)}
+
+    center_idx_x = model.param_names.index("x0")
+    center_idx_y = model.param_names.index("y0")
+    center_px_local = (popt[center_idx_y], popt[center_idx_x])
+    center_px_full = (
+        center_px_local[0] + roi_offset_y,
+        center_px_local[1] + roi_offset_x,
+    )
+
+    summary = model.summary(params_dict)
+
+    return FitResult(
+        model=model_name,
+        params=params_dict,
+        param_std=param_std_dict,
+        r_squared=float(r_squared),
+        center_px=center_px_full,
+        summary=summary,
+    )
