@@ -10,6 +10,9 @@ SCAN_ADVANCED_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'ScanControllerAdvanced.py'
 )
 LASER_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'LaserWidget.py'
+LASER_CONTROLLER_PATH = (
+    ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'LaserController.py'
+)
 RECORDING_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'RecordingWidget.py'
 POSITIONER_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'PositionerWidget.py'
 BEAD_REC_WIDGET_PATH = ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'BeadRecWidget.py'
@@ -42,6 +45,21 @@ def test_laser_widget_does_not_force_minimum_width_or_hide_horizontal_scrollbar(
     assert 'self.scrollArea.setMinimumWidth(width)' not in source
     assert 'self.setMinimumWidth(width)' not in source
     assert 'QtCore.Qt.ScrollBarAlwaysOff' not in source
+
+
+def test_laser_scan_uses_current_setpoints_not_scan_default_presets():
+    widget_source = LASER_WIDGET_PATH.read_text()
+    controller_source = LASER_CONTROLLER_PATH.read_text()
+
+    assert 'sigPresetScanDefaultToggled' not in widget_source
+    assert 'setScanDefaultPreset' not in widget_source
+    assert 'default for scanning' not in widget_source
+    assert 'presetBeforeScan' not in controller_source
+    assert 'defaultLaserPresetForScan' not in controller_source
+    assert (
+        'def changeScanPower(self, laserName, laserValue):\n'
+        '        self.setLaserValue(laserName, laserValue)'
+    ) in controller_source
 
 
 def test_recording_widget_uses_internal_scroll_area():

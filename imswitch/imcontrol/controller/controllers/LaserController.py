@@ -13,7 +13,6 @@ class LaserController(ImConWidgetController):
         super().__init__(*args, **kwargs)
 
         self.settingAttr = False
-        self.presetBeforeScan = None
         self.is_scanning = False
         # scanBuilt fires every repeated scan frame; the force-off only needs
         # to run once per scan sequence. This guards against re-issuing
@@ -55,7 +54,6 @@ class LaserController(ImConWidgetController):
             self._widget.addPreset(laserPresetName)
 
         self._widget.setCurrentPreset(None)  # Unselect
-        self._widget.setScanDefaultPreset(self._setupInfo.defaultLaserPresetForScan)
 
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
@@ -76,7 +74,6 @@ class LaserController(ImConWidgetController):
         self._widget.sigSavePresetClicked.connect(self.savePreset)
         self._widget.sigSavePresetAsClicked.connect(self.savePresetAs)
         self._widget.sigDeletePresetClicked.connect(self.deletePreset)
-        self._widget.sigPresetScanDefaultToggled.connect(self.presetScanDefaultToggled)
         
         # Register for widget state persistence
         getWidgetStatePersistence().register('LaserController', self)
@@ -120,10 +117,6 @@ class LaserController(ImConWidgetController):
         """
         if presetName:
             self._widget.setCurrentPreset(presetName)
-
-        self._widget.setScanDefaultPresetActive(
-            self._setupInfo.defaultLaserPresetForScan == presetName
-        )
 
     def loadPreset(self):
         """ Handles what happens when the user requests the selected preset to
@@ -201,24 +194,6 @@ class LaserController(ImConWidgetController):
             self._setupInfo.removeLaserPreset(presetToDelete)
             configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
 
-    def presetScanDefaultToggled(self):
-        """ Handles what happens when the user requests the "default for
-        scanning" state of the selected preset to be toggled. """
-
-        currentPresetName = self._widget.getCurrentPreset()
-        if not currentPresetName:
-            return
-
-        enabling = self._setupInfo.defaultLaserPresetForScan != currentPresetName
-
-        # Set in setup info
-        self._setupInfo.setDefaultLaserPresetForScan(currentPresetName if enabling else None)
-        configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
-
-        # Update in GUI
-        self._widget.setScanDefaultPreset(currentPresetName if enabling else None)
-        self._widget.setScanDefaultPresetActive(enabling)
-
     def makePreset(self):
         """ Returns a preset object corresponding to the current laser values.
         """
@@ -235,11 +210,11 @@ class LaserController(ImConWidgetController):
 
         Arming individual lasers is the job of :meth:`scanBuilt`, which
         receives the authoritative list of lasers participating in the scan.
-        scanChanged only handles UI editability, the optional scan-default
-        power preset, and the safe teardown (disarming every laser) when the
-        scan ends. This makes the scan module's device list the single source
-        of truth for which lasers emit — there is no "all lasers" pre-arm
-        window and no zero-power preset workaround is needed.
+        scanChanged only handles UI editability and the safe teardown
+        (disarming every laser) when the scan ends. This makes the scan
+        module's device list the single source of truth for which lasers emit;
+        scan powers are the current widget setpoints unless a scanner-specific
+        workflow changes them explicitly.
         """
 
         self.is_scanning = isScanning
@@ -255,17 +230,6 @@ class LaserController(ImConWidgetController):
                 # Arming is deferred to scanBuilt; scanChanged only ever
                 # disarms, never arms.
                 self._master.lasersManager[lName].setScanModeActive(False)
-
-        defaultScanPresetName = self._setupInfo.defaultLaserPresetForScan
-        if defaultScanPresetName in self._setupInfo.laserPresets:
-            if isScanning and self.presetBeforeScan is None:
-                # Scan started, save current values and apply default scan preset
-                self.presetBeforeScan = self.makePreset()
-                self.applyPreset(self._setupInfo.laserPresets[defaultScanPresetName])
-            elif self.presetBeforeScan is not None:
-                # Scan finished, restore the values that were set before the scan started
-                self.applyPreset(self.presetBeforeScan)
-                self.presetBeforeScan = None
 
     def scanBuilt(self, deviceList):
         """ Arm exactly the lasers participating in the scan.
@@ -350,8 +314,7 @@ class LaserController(ImConWidgetController):
 
     @APIExport()
     def changeScanPower(self, laserName, laserValue):
-        defaultPreset = self._setupInfo.laserPresets[self._setupInfo.defaultLaserPresetForScan]
-        defaultPreset[laserName] = guitools.LaserPresetInfo(value=laserValue)
+        self.setLaserValue(laserName, laserValue)
 
     @APIExport(runOnUIThread=True)
     def sendTrigger(self, triggerId: int):

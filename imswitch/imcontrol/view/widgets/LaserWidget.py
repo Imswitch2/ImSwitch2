@@ -20,7 +20,6 @@ class LaserWidget(Widget):
     sigSavePresetClicked = QtCore.Signal()
     sigSavePresetAsClicked = QtCore.Signal()
     sigDeletePresetClicked = QtCore.Signal()
-    sigPresetScanDefaultToggled = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -68,12 +67,8 @@ class LaserWidget(Widget):
         self.deletePresetAction = QtWidgets.QAction('Delete selected')
         self.deletePresetAction.triggered.connect(self.sigDeletePresetClicked)
         self.moreButton.addAction(self.deletePresetAction)
-        self.presetScanDefaultAction = QtWidgets.QAction('Make selected default for scanning')
-        self.presetScanDefaultAction.triggered.connect(self.sigPresetScanDefaultToggled)
-        self.moreButton.addAction(self.presetScanDefaultAction)
 
         self.setCurrentPreset(None)
-        self.setScanDefaultPresetActive(False)
 
         self.presetsBox.addWidget(self.presetsLabel)
         self.presetsBox.addWidget(self.presetsList, 1)
@@ -189,25 +184,6 @@ class LaserWidget(Widget):
         self.loadPresetButton.setEnabled(anyPresetSelected)
         self.savePresetButton.setEnabled(anyPresetSelected)
         self.deletePresetAction.setEnabled(anyPresetSelected)
-        self.presetScanDefaultAction.setEnabled(anyPresetSelected)
-        if not anyPresetSelected:
-            self.presetScanDefaultAction.setChecked(False)
-
-    def setScanDefaultPreset(self, name):
-        """ Sets which preset that is default for scanning. Pass None if there
-        is no default. """
-        for i in range(self.presetsList.count()):
-            self.presetsList.setItemText(i, self.presetsList.itemData(i))
-
-        nameIndex = self.presetsList.findData(name)
-        if nameIndex > -1:
-            self.presetsList.setItemText(nameIndex, f'{name} [scan default]')
-
-    def setScanDefaultPresetActive(self, active):
-        """ Sets whether the preset that is default for scanning is active. """
-        self.presetScanDefaultAction.setText(
-            'Make selected default for scanning' if not active else 'Unset default for scanning'
-        )
 
     def addPreset(self, name):
         """ Adds a preset to the preset list. """
