@@ -30,6 +30,7 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer = self.napariViewer.add_image(
             np.zeros((1, 1)), rgb=False, name='Reconstruction', colormap='grayclip', protected=True
         )
+        self._displayLayers = []
 
         # Button group for choosing view
         self.chooseViewGroup = QtWidgets.QButtonGroup()
@@ -196,6 +197,8 @@ class ReconstructionView(QtWidgets.QFrame):
         return self.imgLayer.data
 
     def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px"):
+        self._clearDisplayLayers()
+        self.imgLayer.name = 'Reconstruction'
         im = np.asarray(im)
         old_ndim = self.imgLayer.data.ndim
         new_ndim = im.ndim
@@ -254,12 +257,81 @@ class ReconstructionView(QtWidgets.QFrame):
             self._logger.warning("setImage: could not set axis_labels %s: %s", axisLabels, exc)
 
         try:
+            self.imgLayer.metadata["axis_labels"] = list(axisLabels)
             self.imgLayer.metadata["scale_unit"] = scaleUnit
             self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
         except Exception as exc:
             self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
 
+    def setDisplayLayers(self, layerSpecs):
+        self._clearDisplayLayers()
+        specs = list(layerSpecs or [])
+        if not specs:
+            self.clearImage()
+            return
+
+        for index, spec in enumerate(specs):
+            data = np.asarray(spec.data)
+            axisScales = spec.axis_scales
+            if axisScales is None:
+                axisScales = [1.0] * data.ndim
+            metadata = dict(spec.metadata or {})
+            metadata.setdefault("axis_labels", list(spec.axis_labels))
+            metadata.setdefault("scale_unit", spec.scale_unit)
+
+            if index == 0:
+                layer = self.imgLayer
+                layer.name = spec.name
+                layer.colormap = spec.colormap
+                layer.data = data
+                layer.scale = tuple(axisScales)
+                layer.metadata.update(metadata)
+                layer.visible = True
+            else:
+                layer = self.napariViewer.add_image(
+                    data,
+                    rgb=False,
+                    name=spec.name,
+                    colormap=spec.colormap,
+                    scale=tuple(axisScales),
+                    metadata=metadata,
+                )
+                self._displayLayers.append(layer)
+
+            if spec.display_levels is not None:
+                layer.contrast_limits_range = spec.display_levels
+                layer.contrast_limits = spec.display_levels
+
+        first = specs[0]
+        try:
+            self.napariViewer.dims.axis_labels = tuple(first.axis_labels)
+        except Exception as exc:
+            self._logger.warning("setDisplayLayers: could not set axis_labels %s: %s",
+                                 first.axis_labels, exc)
+
+        try:
+            self.napariViewer.scale_bar.unit = (
+                "µm" if first.scale_unit == "um" else first.scale_unit
+            )
+        except Exception as exc:
+            self._logger.debug("setDisplayLayers: could not set scale_bar unit: %s", exc)
+
+        try:
+            self.napariViewer.layers.selection.active = self.imgLayer
+        except Exception as exc:
+            self._logger.debug("setDisplayLayers: could not select first display layer: %s", exc)
+
+    def _clearDisplayLayers(self):
+        for layer in list(getattr(self, "_displayLayers", [])):
+            try:
+                self.napariViewer.layers.remove(layer)
+            except Exception:
+                pass
+        self._displayLayers = []
+
     def clearImage(self):
+        self._clearDisplayLayers()
+        self.imgLayer.name = 'Reconstruction'
         self.imgLayer.data = np.zeros((1, 1))
 
     def getImageDisplayLevels(self):

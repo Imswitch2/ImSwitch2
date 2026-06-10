@@ -183,8 +183,11 @@ class BeadRecController(ImConWidgetController):
             model = FIT_MODELS[modelKey]
             height, width = self.imDisplay.shape
             y_coords, x_coords = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+            # Fitted positional params are ROI-local; shift the evaluation
+            # grid by the ROI origin to render on the full image.
+            off_x, off_y = (result.roi[0], result.roi[1]) if result.roi else (0, 0)
             param_values = [result.params[name] for name in model.param_names]
-            fit_image = model.model((x_coords, y_coords), *param_values)
+            fit_image = model.model((x_coords - off_x, y_coords - off_y), *param_values)
             residual = self.imDisplay - fit_image
             
             metrics = {**result.params, "r_squared": result.r_squared, **result.summary}

@@ -648,7 +648,14 @@ def fit_bead(
     roi_offset_y = 0
     roi_offset_x = 0
 
-    if roi is None:
+    if roi is None and model.wants_full_image:
+        # Periodic models need the whole field of view; cropping to one blob
+        # would destroy the wavelength information.
+        roi_y0, roi_y1 = 0, im.shape[0]
+        roi_x0, roi_x1 = 0, im.shape[1]
+        roi_im = im
+        roi_mask = None
+    elif roi is None:
         prm = _coerce_analysis_params(params)
         prepared = _prepare_component_mask(im, prm)
 
@@ -719,9 +726,7 @@ def fit_bead(
     params_dict = {name: float(val) for name, val in zip(model.param_names, popt)}
     param_std_dict = {name: float(std) for name, std in zip(model.param_names, perr)}
 
-    center_idx_x = model.param_names.index("x0")
-    center_idx_y = model.param_names.index("y0")
-    center_px_local = (popt[center_idx_y], popt[center_idx_x])
+    center_px_local = model.center_px(params_dict, roi_im.shape)
     center_px_full = (
         center_px_local[0] + roi_offset_y,
         center_px_local[1] + roi_offset_x,
@@ -736,4 +741,5 @@ def fit_bead(
         r_squared=float(r_squared),
         center_px=center_px_full,
         summary=summary,
+        roi=(int(roi_x0), int(roi_y0), int(roi_x1), int(roi_y1)),
     )
