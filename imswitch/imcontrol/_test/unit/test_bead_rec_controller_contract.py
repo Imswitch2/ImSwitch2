@@ -36,10 +36,16 @@ def test_bead_rec_controller_no_longer_uses_raw_resize_or_direct_roi_mean():
 def test_bead_rec_center_query_and_donut_plotting_use_model_analysis():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
 
+    # Center query tries model fits first and falls back to the legacy search
+    assert 'result = fit_bead(self.imDisplay, model_key, params=self._widget.analysisPrm)' in source
     assert 'result = find_bead_center(self.imDisplay, mode, self._widget.analysisPrm)' in source
-    assert 'result = analyze_donut(im, params)' in source
+    # Donut analysis goes through the pure model function, no inline analysis
+    assert 'result = analyze_donut(self.imDisplay, self._widget.analysisPrm)' in source
     assert 'measure.label' not in source
     assert 'find_peaks' not in source
+    # Plotting must not block the GUI event loop from the controller
+    assert 'plt.show()' not in source
+    assert 'import matplotlib.pyplot' not in source
 
 
 def test_bead_worker_uses_narrow_callables_instead_of_controller_access():

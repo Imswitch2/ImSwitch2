@@ -19,12 +19,11 @@ from imswitch.imcontrol.model.bead_recognition import (
     append_roi_means,
     create_reconstruction_buffer,
     find_bead_center,
+    fit_bead,
     normalize_roi_bounds,
     reconstruction_image,
     rescale_reconstruction_to_pixel_size,
 )
-import  matplotlib.pyplot as plt 
-import matplotlib.patches as patches
 
 class BeadRecController(ImConWidgetController):
     def __init__(self, *args, **kwargs):
@@ -71,7 +70,7 @@ class BeadRecController(ImConWidgetController):
         self._widget.sigScaleClicked.connect(self.updateScaling)
         self._widget.saveRecBtn.clicked.connect(self.saveRec)
         self._widget.loadImgBtn.clicked.connect(self.loadImg)
-        self._widget.donutsAnalysisBtn.clicked.connect(self.donutsAnalysis)
+        self._widget.sigFitRequested.connect(self.runFit)
         self._widget.sigAddCurrentRun.connect(self.addCurrentRun)
         self._widget.sigSelectionChanged.connect(self.selectionChanged)
         self._widget.sigRemoveRecFromList.connect(self.removeRecFromList)
@@ -165,11 +164,76 @@ class BeadRecController(ImConWidgetController):
         self._widget.imageListWidget.setCurrentRow(0)
 
 
-    def donutsAnalysis(self):
-        if self.imDisplay is not None:
-            run_donut_analysis(self.imDisplay,self._widget.analysisPrm)
+    def runFit(self, modelKey: str):
+        if self.imDisplay is None:
+            self._widget.setStatusText("No image to analyze")
+            return
+        
+        if modelKey == "legacy_donut":
+            result = analyze_donut(self.imDisplay, self._widget.analysisPrm)
+            self._display_legacy_donut_result(result)
         else:
-            print("Donuts Analysis not feasible: no image to analyze")
+            from imswitch.imcontrol.model.bead_fits import FIT_MODELS
+            try:
+                result = fit_bead(self.imDisplay, modelKey, params=self._widget.analysisPrm)
+            except ValueError as e:
+                self._widget.setStatusText(f"Fit failed: {e}")
+                return
+            
+            model = FIT_MODELS[modelKey]
+            height, width = self.imDisplay.shape
+            y_coords, x_coords = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+            # Fitted positional params are ROI-local; shift the evaluation
+            # grid by the ROI origin to render on the full image.
+            off_x, off_y = (result.roi[0], result.roi[1]) if result.roi else (0, 0)
+            param_values = [result.params[name] for name in model.param_names]
+            fit_image = model.model((x_coords - off_x, y_coords - off_y), *param_values)
+            residual = self.imDisplay - fit_image
+            
+            metrics = {**result.params, "r_squared": result.r_squared, **result.summary}
+            self._widget.displayFitResult(
+                title=f"{modelKey} fit",
+                metrics=metrics,
+                image=self.imDisplay,
+                overlay_center=result.center_px,
+                fit_image=fit_image,
+                residual=residual
+            )
+            self._widget.setStatusText(f"Fit complete: R²={result.r_squared:.4f}")
+    
+    def _display_legacy_donut_result(self, result):
+        if not result.accepted:
+            metrics = {"status": "rejected", "reason": result.reason or "Unknown"}
+            if result.coord is not None:
+                metrics["center_y"] = result.coord[0]
+                metrics["center_x"] = result.coord[1]
+            self._widget.displayFitResult(
+                title="Legacy donut analysis (rejected)",
+                metrics=metrics,
+                image=self.imDisplay,
+                overlay_center=result.coord
+            )
+            self._widget.setStatusText(f"Donut rejected: {result.reason}")
+            return
+        
+        metrics = {
+            "min_value": result.min_value,
+            "background": result.background,
+            "background_std": result.background_std,
+            "fill_x": result.fill_x,
+            "fill_x_std": result.fill_x_std,
+            "fill_y": result.fill_y,
+            "fill_y_std": result.fill_y_std,
+            "center_y": result.coord[0],
+            "center_x": result.coord[1],
+        }
+        self._widget.displayFitResult(
+            title="Legacy donut analysis",
+            metrics=metrics,
+            image=self.imDisplay,
+            overlay_center=result.coord
+        )
+        self._widget.setStatusText("Donut analysis complete")
 
 
     def loadImg(self):
@@ -448,16 +512,20 @@ class BeadRecController(ImConWidgetController):
         self._widget.updateImage(self.imDisplay)
 
 
-    def centerCoordQuery(self,mode):
+    def centerCoordQuery(self, mode):
+        coord = None
         if self.imDisplay is not None:
-            result = find_bead_center(self.imDisplay, mode, self._widget.analysisPrm)
-            coord = result.coord
-        else:
-            coord = None
+            model_key = "gaussian2d" if mode == "Maxima" else "donut_r2_gaussian"
+            try:
+                result = fit_bead(self.imDisplay, model_key, params=self._widget.analysisPrm)
+                coord = (round(result.center_px[0]), round(result.center_px[1]))
+            except ValueError:
+                result = find_bead_center(self.imDisplay, mode, self._widget.analysisPrm)
+                coord = result.coord
         
         self._commChannel.beadRecWorkflow.finish_center_coord_pipeline(coord)
         if coord is not None and self.showCenterState:
-            self._widget.displayCenterCoord(coord[0],coord[1])
+            self._widget.displayCenterCoord(coord[0], coord[1])
         else:
             print(f"Center search with '{mode}' method failed. Try manual coordinate")
 
@@ -655,102 +723,6 @@ class BeadWorker(Worker):
 
 
 
-def findCenterFoci(im: np.ndarray,params:dict=None):
-    """ Find center of foci and return center coordinates"""
-    result = find_bead_center(im, "Maxima", params)
-    if result.coord is None:
-        print("findCenterFoci pipeline failed...")
-        fig, axes = plt.subplots(1, 1, figsize=(4, 4))
-        fig.suptitle('findCenterFoci failed', fontsize=16)
-        axes.imshow(im, cmap='gray')
-        axes.set_title(result.reason or "Foci")
-        plt.show()
-    return result.coord
-
-
-
-def findCenterDonut(im: np.ndarray, params:dict = None):
-    """ Find center of donuts and return center coordinates"""
-    return find_bead_center(im, "Minima", params).coord
-
-def run_donut_analysis(im: np.ndarray, params: dict = None):
-    """Plot donut-analysis diagnostics from the pure analysis result."""
-    result = analyze_donut(im, params)
-    if not result.accepted:
-        fig, axes = plt.subplots(1, 4 if result.line_x is not None else 2, figsize=(16, 4))
-        fig.suptitle(f"Donut analysis rejected: {result.reason}", fontsize=16)
-        axes[0].imshow(im, cmap='gray')
-        axes[0].set_title("Donut")
-        if result.coord is not None:
-            axes[0].axvline(x=result.coord[1], color='red')
-            axes[0].axhline(y=result.coord[0], color='green')
-        axes[1].imshow(result.binarized, cmap='gray')
-        axes[1].set_title("Binarized")
-        if result.line_x is not None:
-            axes[2].plot(result.line_x, 'g')
-            axes[2].set_title("X profile")
-            axes[3].plot(result.line_y, 'r')
-            axes[3].set_title("Y profile")
-        plt.show()
-        return result
-
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-    fig.suptitle('Donuts analysis results', fontsize=16)
-
-    axes[0][0].imshow(im, cmap='gray')
-    axes[0][0].set_title("Donut")
-    axes[0][1].imshow(result.binarized, cmap='gray')
-    axes[0][1].set_title("Binarized")
-    axes[0][2].imshow(result.selected_mask, cmap='gray')
-    axes[0][2].set_title("After closing and CC selection")
-    axes[0][3].imshow(result.eroded_mask, cmap='gray')
-    axes[0][3].set_title("After erosion (zero search area)")
-
-    for ax in axes[0]:
-        ax.axis('off')
-
-    miny, minx = result.coord
-    axes[1][0].imshow(im, cmap='gray')
-    axes[1][0].axis('image')
-    axes[1][0].axvline(x=minx, color='red')
-    axes[1][0].axhline(y=miny, color='green')
-    axes[1][0].set_title(f"Minima = {result.min_value:.0f}")
-    axes[1][0].axis('off')
-
-    axes[1][1].imshow(
-        result.background_mask,
-        cmap='gray',
-        extent=[0, result.background_mask.shape[1], 0, result.background_mask.shape[0]],
-    )
-    axes[1][1].axis('image')
-    axes[1][1].set_title(f"Avg Bkg = {result.background:.2f} ± {result.background_std:.2f}")
-    rect = patches.Rectangle(
-        (0, 0), result.background_mask.shape[1], result.background_mask.shape[0],
-        linewidth=1.5, edgecolor='black', facecolor='none'
-    )
-    axes[1][1].add_patch(rect)
-    axes[1][1].axis('off')
-
-    peak_values = [*result.peak_x_values, *result.peak_y_values]
-    ymax = round(np.max(peak_values) * 1.1)
-    ymin = np.min(im) * 0.95
-
-    x1, x2 = result.peak_x_positions
-    maxX1, maxX2 = result.peak_x_values
-    axes[1][2].plot(result.line_x, 'g')
-    axes[1][2].plot([x1, x2], [maxX1, maxX2], 'xk')
-    axes[1][2].set_title(f"fillX={result.fill_x:.2f} ± {result.fill_x_std:0.2f}")
-    axes[1][2].set_ylim([ymin, ymax])
-
-    y1, y2 = result.peak_y_positions
-    maxY1, maxY2 = result.peak_y_values
-    axes[1][3].plot(result.line_y, 'r')
-    axes[1][3].plot([y1, y2], [maxY1, maxY2], 'xk')
-    axes[1][3].set_title(f"fillY={result.fill_y:.2f} ± {result.fill_y_std:0.2f}")
-    axes[1][3].set_ylim([ymin, ymax])
-
-    plt.show()
-    return result
 
 
 

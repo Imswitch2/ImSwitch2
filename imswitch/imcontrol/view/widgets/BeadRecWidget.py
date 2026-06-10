@@ -19,6 +19,7 @@ class BeadRecWidget(Widget):
     sigClearList = QtCore.Signal()
     sigSaveAll = QtCore.Signal()
     sigQueryMousePixelValue = QtCore.Signal(float,float)
+    sigFitRequested = QtCore.Signal(str)  # (model_key)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -60,7 +61,12 @@ class BeadRecWidget(Widget):
         self.scaleButton = QtWidgets.QCheckBox('Scale')
         self.saveRecBtn = guitools.BetterPushButton('Save Rec')
         self.loadImgBtn = guitools.BetterPushButton('Load')
-        self.donutsAnalysisBtn = guitools.BetterPushButton('Donuts Analysis')
+        self.fitModelCombo = QtWidgets.QComboBox()
+        self.fitModelCombo.addItem("Gaussian 2D", "gaussian2d")
+        self.fitModelCombo.addItem("Donut r²·Gaussian", "donut_r2_gaussian")
+        self.fitModelCombo.addItem("Sine 2D", "sine2d")
+        self.fitModelCombo.addItem("Legacy donut", "legacy_donut")
+        self.runFitBtn = guitools.BetterPushButton('Run fit')
         self.prmBtn = guitools.BetterPushButton("Analysis Parameters")
         self.statusLabel = QtWidgets.QLabel("Idle")
         self.statusLabel.setWordWrap(True)
@@ -98,7 +104,8 @@ class BeadRecWidget(Widget):
 
         # spacer = QtWidgets.QSpacerItem(10, 10, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
         # mainLayout.addItem(spacer, 2, 0, 1, 6)  
-        mainLayout.addWidget(self.donutsAnalysisBtn, 5, 0, 1, 3)
+        mainLayout.addWidget(self.fitModelCombo, 5, 0, 1, 2)
+        mainLayout.addWidget(self.runFitBtn, 5, 2, 1, 1)
         mainLayout.addWidget(self.prmBtn, 5, 3, 1, 3)
         mainLayout.addWidget(self.statusLabel, 6, 0, 1, 6)
         mainLayout.addWidget(self.progressBar, 7, 0, 1, 6)
@@ -143,6 +150,7 @@ class BeadRecWidget(Widget):
         self.roiButton.toggled.connect(self.sigROIToggled)
         self.runButton.clicked.connect(self.sigRunClicked)
         self.scaleButton.clicked.connect(self.sigScaleClicked)
+        self.runFitBtn.clicked.connect(self._on_run_fit_clicked)
         self.prmBtn.clicked.connect(self.open_settings_dialog)
 
         self.imageListWidget.itemSelectionChanged.connect(self.selectionChanged)
@@ -182,6 +190,59 @@ class BeadRecWidget(Widget):
         updated = JsonEditorDialog.edit_params(self, self.analysisPrm)
         if updated is not None:
             self.analysisPrm = updated
+    
+    def _on_run_fit_clicked(self):
+        model_key = self.fitModelCombo.currentData()
+        self.sigFitRequested.emit(model_key)
+    
+    def displayFitResult(self, title, metrics, image, overlay_center, fit_image=None, residual=None):
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+        
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(1000, 600)
+        
+        fig = Figure(figsize=(12, 4))
+        canvas = FigureCanvasQTAgg(fig)
+        
+        num_panels = 1 + (1 if fit_image is not None else 0) + (1 if residual is not None else 0)
+        axes = fig.subplots(1, num_panels)
+        if num_panels == 1:
+            axes = [axes]
+        
+        ax_idx = 0
+        axes[ax_idx].imshow(image, cmap='gray')
+        axes[ax_idx].set_title("Original")
+        if overlay_center is not None:
+            axes[ax_idx].axvline(x=overlay_center[1], color='red', linewidth=1)
+            axes[ax_idx].axhline(y=overlay_center[0], color='red', linewidth=1)
+        axes[ax_idx].axis('off')
+        ax_idx += 1
+        
+        if fit_image is not None:
+            axes[ax_idx].imshow(fit_image, cmap='gray')
+            axes[ax_idx].set_title("Fitted Model")
+            axes[ax_idx].axis('off')
+            ax_idx += 1
+        
+        if residual is not None:
+            axes[ax_idx].imshow(residual, cmap='RdBu_r')
+            axes[ax_idx].set_title("Residual")
+            axes[ax_idx].axis('off')
+            ax_idx += 1
+        
+        metrics_text = "\n".join([f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()])
+        fig.text(0.02, 0.98, metrics_text, fontsize=9, verticalalignment='top', family='monospace')
+        
+        fig.tight_layout()
+        
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(canvas)
+        dialog.setLayout(layout)
+        
+        self._fit_result_dialog = dialog
+        dialog.show()
     
     def addToList(self,name=None,axialName=None):
         """ Adds a new item to the list, after any current run items. """

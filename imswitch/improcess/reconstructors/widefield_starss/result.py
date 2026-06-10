@@ -9,13 +9,20 @@ import numpy as np
 import tifffile as tiff
 
 from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
-from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
 
 from .analysis import WidefieldStarssAnalysis
 
 
 class WidefieldStarssResult(ProcessingResult):
     """Display and save output from one WidefieldSTARSS H/V analysis."""
+
+    _DISPLAY_COMPONENTS = (
+        ("r_smooth", "r_smooth"),
+        ("r_raw", "r_raw"),
+        ("mask", "mask"),
+        ("base_image", "base_image"),
+    )
 
     def __init__(self, name: str, analysis: WidefieldStarssAnalysis, params: dict):
         self.analysis = analysis
@@ -42,6 +49,30 @@ class WidefieldStarssResult(ProcessingResult):
             view_modes=[ViewMode("Maps", (0, 1, 2))],
             display_levels=display_levels,
         )
+
+    def display_layers(self) -> list[DisplayLayerSpec]:
+        layers = []
+        for display_name, attr_name in self._DISPLAY_COMPONENTS:
+            data = self._component_data(attr_name).astype(np.float32, copy=False)
+            metadata = {
+                "source_result": self.name,
+                "component": display_name,
+                "axis_labels": ["Y", "X"],
+                "scale_unit": self.scale_unit,
+            }
+            layers.append(
+                DisplayLayerSpec(
+                    name=f"{self.name} {display_name}",
+                    data=data,
+                    axis_labels=["Y", "X"],
+                    display_levels=self._component_display_levels(data),
+                    axis_scales=[1.0, 1.0],
+                    scale_unit=self.scale_unit,
+                    colormap="grayclip",
+                    metadata=metadata,
+                )
+            )
+        return layers
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
         path = Path(path)
@@ -91,6 +122,26 @@ class WidefieldStarssResult(ProcessingResult):
                 )
             )
         return payloads
+
+    def _component_data(self, attr_name: str) -> np.ndarray:
+        if attr_name == "mask":
+            return self.analysis.mask
+        if attr_name == "base_image":
+            return self.analysis.base_image
+        return getattr(self.analysis.anis_maps, attr_name)
+
+    @staticmethod
+    def _component_display_levels(data: np.ndarray) -> tuple[float, float] | None:
+        finite = np.asarray(data)[np.isfinite(data)]
+        if finite.size == 0:
+            return None
+        if np.nanmin(finite) == np.nanmax(finite):
+            value = float(np.nanmin(finite))
+            return value, value
+        return (
+            float(np.nanpercentile(finite, 1)),
+            float(np.nanpercentile(finite, 99)),
+        )
 
     def _save_tiff(self, path: Path) -> None:
         tiff.imwrite(

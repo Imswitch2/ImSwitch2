@@ -202,6 +202,63 @@ def test_fit_bead_auto_roi_falls_back_to_full_image():
     assert abs(result.center_px[1] - 50.0) < 2.0
 
 
+def test_sine2d_recovers_known_parameters():
+    """Sine2D recovers wavelengths and reproduces the pattern on noisy data."""
+    true_amplitude = 40.0
+    true_lambda_x = 17.0
+    true_phi_x = 0.7
+    true_lambda_y = 23.0
+    true_phi_y = -1.1
+    true_offset = 100.0
+
+    size = 128
+    y, x = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    clean_image = (
+        true_amplitude
+        * np.sin(2 * np.pi * x / true_lambda_x + true_phi_x)
+        * np.sin(2 * np.pi * y / true_lambda_y + true_phi_y)
+        + true_offset
+    )
+
+    np.random.seed(3)
+    noisy_image = clean_image + np.random.normal(0, 2, clean_image.shape)
+
+    result = fit_bead(noisy_image, "sine2d")
+
+    assert result.model == "sine2d"
+    assert result.r_squared > 0.95
+    assert abs(result.params["lambda_x"] - true_lambda_x) < 0.5
+    assert abs(result.params["lambda_y"] - true_lambda_y) < 0.5
+
+    # Phases are only determined up to a joint (pi, pi) shift, so compare
+    # the reconstructed pattern instead of raw phase values.
+    fitted = (
+        result.params["amplitude"]
+        * np.sin(2 * np.pi * x / result.params["lambda_x"] + result.params["phi_x"])
+        * np.sin(2 * np.pi * y / result.params["lambda_y"] + result.params["phi_y"])
+        + result.params["offset"]
+    )
+    rmse = float(np.sqrt(np.mean((fitted - clean_image) ** 2)))
+    assert rmse < 2.0
+
+    # center_px must point at a pattern maximum near the image center
+    cy, cx = result.center_px
+    assert 0 <= cy < size and 0 <= cx < size
+    val_x = np.sin(2 * np.pi * cx / result.params["lambda_x"] + result.params["phi_x"])
+    val_y = np.sin(2 * np.pi * cy / result.params["lambda_y"] + result.params["phi_y"])
+    assert val_x * val_y > 0.99
+
+
+def test_sine2d_in_registry():
+    """Sine2D is registered and exposes the expected parameters."""
+    assert "sine2d" in FIT_MODELS
+    sine = FIT_MODELS["sine2d"]
+    assert sine.param_names == (
+        "amplitude", "lambda_x", "phi_x", "lambda_y", "phi_y", "offset",
+    )
+    assert sine.wants_full_image
+
+
 def test_fit_bead_unknown_model():
     """Test that fit_bead raises ValueError for unknown model name."""
     test_image = np.random.rand(50, 50) * 100

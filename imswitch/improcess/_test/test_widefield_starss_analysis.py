@@ -3,6 +3,7 @@ import tifffile as tiff
 import h5py
 
 from imswitch.improcess.model import DataObj, PlotPayload
+from imswitch.improcess.model.result import DisplayLayerSpec
 from imswitch.improcess.reconstructors.widefield_starss import (
     WidefieldStarssReconstructor,
     WidefieldStarssResult,
@@ -166,6 +167,33 @@ def test_widefield_starss_result_exposes_graph_payloads():
         "Anisotropy histogram",
         "Region anisotropy",
     ]
+
+
+def test_widefield_starss_result_exposes_independent_display_layers():
+    background = np.full((8, 10), 5, dtype=np.float32)
+    h_signal = background + _mosaic_frame(i0=100, i45=75, i90=50, i135=75)
+    v_signal = background + _mosaic_frame(i0=80, i45=60, i90=40, i135=60)
+    analysis = analyze_widefield_starss_pair(
+        _alternating_stack(h_signal, background),
+        _alternating_stack(v_signal, background),
+        WidefieldStarssParams(segmentation_mode="none"),
+    )
+
+    result = WidefieldStarssResult("wfs", analysis, params={})
+    layers = result.display_layers()
+
+    assert all(isinstance(layer, DisplayLayerSpec) for layer in layers)
+    assert [layer.metadata["component"] for layer in layers] == [
+        "r_smooth",
+        "r_raw",
+        "mask",
+        "base_image",
+    ]
+    assert [layer.axis_labels for layer in layers] == [["Y", "X"]] * 4
+    assert [layer.data.shape for layer in layers] == [analysis.base_image.shape] * 4
+    np.testing.assert_array_equal(layers[0].data, analysis.anis_maps.r_smooth)
+    np.testing.assert_array_equal(layers[3].data, analysis.base_image)
+    assert layers[0].display_levels != layers[3].display_levels
 
 
 def test_widefield_starss_reconstructor_auto_pairs_hv_tiffs(tmp_path):

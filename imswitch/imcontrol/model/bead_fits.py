@@ -17,6 +17,10 @@ class FitResult:
     r_squared: float
     center_px: tuple[float, float]
     summary: dict[str, object]
+    # ROI the fit was evaluated in, as (x0, y0, x1, y1) in full-image
+    # coordinates. Positional params (x0/y0, phases) are ROI-local; shift
+    # evaluation coordinates by (x0, y0) to render on the full image.
+    roi: tuple[int, int, int, int] | None = None
 
 
 class FitModel(ABC):
@@ -55,6 +59,20 @@ class FitModel(ABC):
     def summary(self, params: dict[str, float]) -> dict[str, object]:
         """Return human-readable summary metrics derived from fit parameters."""
         pass
+
+    def center_px(
+        self, params: dict[str, float], shape: tuple[int, int]
+    ) -> tuple[float, float]:
+        """Return the (y, x) feature center in local fit coordinates.
+
+        Default expects 'x0'/'y0' parameters; periodic models without an
+        explicit center override this.
+        """
+        return (params["y0"], params["x0"])
+
+    # Periodic models set this so auto-ROI does not crop the image down to a
+    # single blob, which would destroy the wavelength information.
+    wants_full_image: bool = False
 
 
 class Gaussian2D(FitModel):
@@ -229,7 +247,126 @@ class DonutR2Gaussian(FitModel):
         }
 
 
+class Sine2D(FitModel):
+    """Crossed standing-wave pattern: I(x,y) = A * sin(2πx/λx + φx) * sin(2πy/λy + φy) + B.
+
+    Parameters: amplitude, lambda_x, phi_x, lambda_y, phi_y, offset.
+    Suited to periodic illumination patterns (e.g. RESOLFT/MoNaLISA lattices).
+    Phases are defined in the local fit coordinate frame; the pair
+    (φx + π, φy + π) yields the same pattern, so individual phases are only
+    determined up to that joint shift.
+    """
+
+    wants_full_image = True
+
+    @property
+    def name(self) -> str:
+        return "sine2d"
+
+    @property
+    def param_names(self) -> tuple[str, ...]:
+        return ("amplitude", "lambda_x", "phi_x", "lambda_y", "phi_y", "offset")
+
+    def initial_guess(self, image: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
+        """Estimate wavelengths and phases from the dominant 2D FFT component.
+
+        For A·sin(αx+φx)·sin(αy+φy), the FFT has peaks at (±fx, ±fy) with
+        coefficient angles θ(+fx,+fy) = φx + φy + π and θ(+fx,-fy) = φx - φy,
+        from which both phases follow.
+        """
+        height, width = image.shape
+        data = image - float(np.mean(image))
+
+        spectrum = np.fft.fft2(data)
+        magnitude = np.abs(spectrum)
+        freq_y = np.fft.fftfreq(height)
+        freq_x = np.fft.fftfreq(width)
+
+        # Search the half-plane fx >= 0, excluding DC row/column, so the
+        # dominant lattice component (fx, fy) is found once.
+        search = magnitude.copy()
+        search[:, freq_x < 0] = 0
+        search[0, :] = 0
+        search[:, 0] = 0
+        ky, kx = np.unravel_index(int(np.argmax(search)), search.shape)
+
+        fx = abs(freq_x[kx])
+        fy = abs(freq_y[ky])
+        lambda_x = 1.0 / fx if fx > 0 else float(width)
+        lambda_y = 1.0 / fy if fy > 0 else float(height)
+
+        # Indices of the (+fx, +fy) and (+fx, -fy) coefficients
+        ky_pos = ky if freq_y[ky] >= 0 else (-ky) % height
+        ky_neg = (-ky_pos) % height
+        theta_pp = float(np.angle(spectrum[ky_pos, kx]))
+        theta_pm = float(np.angle(spectrum[ky_neg, kx]))
+
+        phi_x = 0.5 * (theta_pp - np.pi + theta_pm)
+        phi_y = 0.5 * (theta_pp - np.pi - theta_pm)
+
+        amplitude = 2.0 * float(np.std(data))
+        offset = float(np.mean(image))
+
+        return np.array([amplitude, lambda_x, phi_x, lambda_y, phi_y, offset])
+
+    def model(
+        self, xy: tuple[np.ndarray, np.ndarray], *params
+    ) -> np.ndarray:
+        """Evaluate the crossed sine pattern at mesh coordinates."""
+        amplitude, lambda_x, phi_x, lambda_y, phi_y, offset = params
+        x, y = xy
+        return (
+            amplitude
+            * np.sin(2 * np.pi * x / lambda_x + phi_x)
+            * np.sin(2 * np.pi * y / lambda_y + phi_y)
+            + offset
+        )
+
+    def bounds(
+        self, image: np.ndarray, mask: np.ndarray | None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return reasonable bounds for sine-pattern parameters."""
+        height, width = image.shape
+        value_range = float(np.max(image) - np.min(image))
+        max_lambda = 4.0 * max(width, height)
+
+        lower = np.array([0, 2.0, -2 * np.pi, 2.0, -2 * np.pi, -np.inf])
+        upper = np.array(
+            [2 * value_range, max_lambda, 2 * np.pi, max_lambda, 2 * np.pi, np.inf]
+        )
+        return lower, upper
+
+    def summary(self, params: dict[str, float]) -> dict[str, object]:
+        """Return summary including periods and phases in degrees."""
+        return {
+            "lambda_x": params["lambda_x"],
+            "lambda_y": params["lambda_y"],
+            "phi_x_degrees": np.degrees(params["phi_x"]),
+            "phi_y_degrees": np.degrees(params["phi_y"]),
+        }
+
+    def center_px(
+        self, params: dict[str, float], shape: tuple[int, int]
+    ) -> tuple[float, float]:
+        """Return the pattern maximum nearest to the image center.
+
+        Maxima sit where both sines equal 1 (amplitude is bounded >= 0):
+        x* = λx·(π/2 - φx)/2π + k·λx, analogously for y.
+        """
+        height, width = shape
+
+        def nearest(lam: float, phi: float, target: float) -> float:
+            base = lam * (np.pi / 2 - phi) / (2 * np.pi)
+            k = round((target - base) / lam)
+            return base + k * lam
+
+        cx = nearest(params["lambda_x"], params["phi_x"], (width - 1) / 2.0)
+        cy = nearest(params["lambda_y"], params["phi_y"], (height - 1) / 2.0)
+        return (cy, cx)
+
+
 FIT_MODELS: dict[str, FitModel] = {
     "gaussian2d": Gaussian2D(),
     "donut_r2_gaussian": DonutR2Gaussian(),
+    "sine2d": Sine2D(),
 }

@@ -17,6 +17,24 @@ class ViewMode:
     transpose: tuple[int, ...]
 
 
+@dataclass
+class DisplayLayerSpec:
+    """One Napari image layer derived from a processing result.
+
+    Results can expose these when their canonical data array groups
+    semantically different images that should not share contrast limits.
+    """
+
+    name: str
+    data: np.ndarray | Any
+    axis_labels: list[str]
+    display_levels: tuple[float, float] | None = None
+    axis_scales: list[float] | None = None
+    scale_unit: str = "px"
+    colormap: str = "grayclip"
+    metadata: dict[str, Any] | None = None
+
+
 class ProcessingResult(ABC):
     """
     Abstract base for all reconstructor/processor outputs.
@@ -88,6 +106,15 @@ class ProcessingResult(ABC):
 
     def plot_payloads(self) -> list[PlotPayload]:
         """Return optional graph payloads for the ImProcess graph widget."""
+        return []
+
+    def display_layers(self) -> list[DisplayLayerSpec]:
+        """Return optional independently-scaled viewer layers.
+
+        The default empty list keeps the existing single-layer display path.
+        Subclasses should use this only when their canonical ``data`` array
+        contains heterogeneous components that should be inspected separately.
+        """
         return []
 
 
