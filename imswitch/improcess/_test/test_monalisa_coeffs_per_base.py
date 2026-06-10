@@ -59,6 +59,28 @@ def test_coeffs_to_image_takes_3d_per_base_slice():
     np.testing.assert_allclose(im.sum(), coeffs_one_base.sum(), rtol=0, atol=1e-3)
 
 
+def test_coeffs_to_image_bidirectional_reverses_fast_axis_with_fast_length():
+    rows, cols = 3, 5
+    coeffs = np.arange(rows * cols, dtype=np.float32).reshape(rows * cols, 1, 1)
+    scan_params = _scan_params(rows, cols)
+    scan_params['unidirectional'] = False
+
+    im = coeffs_to_image(coeffs, scan_params, _AXIS_LABELS)
+
+    assert im.shape == (1, 1, rows, cols)
+    np.testing.assert_array_equal(
+        im[0, 0],
+        np.array(
+            [
+                [0, 1, 2, 3, 4],
+                [9, 8, 7, 6, 5],
+                [10, 11, 12, 13, 14],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
 def test_coeffs_to_image_rejects_mismatched_frame_count():
     coeffs = np.zeros((7, 3, 3), dtype=np.float32)  # 7 frames doesn't fit 4x5
     with pytest.raises(ValueError, match='Coefficient frame count'):

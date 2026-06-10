@@ -74,7 +74,7 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
         # Bidirectional scan handling (snake pattern)
         if not scan_params['unidirectional']:
             oddMidStep = np.mod(mid, 2)
-            fast = (1 - oddMidStep) * fast + oddMidStep * (dim1Side - 1 - fast)
+            fast = (1 - oddMidStep) * fast + oddMidStep * (dim0Side - 1 - fast)
         
         # Direction handling (positive vs negative)
         neg = (int(scan_params['directions'][0] == axis_labels['n_text']),
