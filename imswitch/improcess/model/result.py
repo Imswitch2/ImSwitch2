@@ -35,6 +35,15 @@ class DisplayLayerSpec:
     metadata: dict[str, Any] | None = None
 
 
+@dataclass
+class ProcessorInputChoice:
+    """One explicit input option for result-based processors."""
+
+    id: str
+    label: str
+    result: "ProcessingResult"
+
+
 class ProcessingResult(ABC):
     """
     Abstract base for all reconstructor/processor outputs.
@@ -116,6 +125,88 @@ class ProcessingResult(ABC):
         contains heterogeneous components that should be inspected separately.
         """
         return []
+
+    def processor_input_choices(self) -> list[ProcessorInputChoice]:
+        """Return explicit input choices for result-based processors.
+
+        The whole result is always offered first. If the result exposes
+        display layers, each layer is also wrapped as a lightweight
+        ProcessingResult so processors can operate on a named component
+        without implicitly depending on Napari's active layer.
+        """
+        choices = [ProcessorInputChoice("result", "Whole result", self)]
+        for layer in self.display_layers():
+            component = _display_layer_component_id(layer)
+            choices.append(
+                ProcessorInputChoice(
+                    id=f"component:{component}",
+                    label=str(component),
+                    result=DisplayLayerProcessingResult.from_spec(self, layer),
+                )
+            )
+        return choices
+
+
+class DisplayLayerProcessingResult(ProcessingResult):
+    """ProcessingResult wrapper for one DisplayLayerSpec component."""
+
+    def __init__(
+        self,
+        name: str,
+        data: np.ndarray | Any,
+        axis_labels: list[str],
+        *,
+        source_result: ProcessingResult,
+        component: str,
+        display_levels: tuple[float, float] | None = None,
+        axis_scales: list[float] | None = None,
+        scale_unit: str = "px",
+        metadata: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            name=name,
+            data=data,
+            axis_labels=axis_labels,
+            display_levels=display_levels,
+            axis_scales=axis_scales,
+            scale_unit=scale_unit,
+        )
+        self.source_result = source_result
+        self.component = component
+        self.metadata = dict(metadata or {})
+
+    @classmethod
+    def from_spec(
+        cls,
+        source_result: ProcessingResult,
+        layer: DisplayLayerSpec,
+    ) -> "DisplayLayerProcessingResult":
+        component = _display_layer_component_id(layer)
+        return cls(
+            name=f"{source_result.name}_{component}",
+            data=layer.data,
+            axis_labels=list(layer.axis_labels),
+            source_result=source_result,
+            component=component,
+            display_levels=layer.display_levels,
+            axis_scales=layer.axis_scales,
+            scale_unit=layer.scale_unit,
+            metadata=layer.metadata,
+        )
+
+    def save(self, path: Path, fmt: str) -> None:
+        raise ValueError(
+            "Display-layer processor inputs are derived components; save the "
+            "processor output or the original source result instead."
+        )
+
+
+def _display_layer_component_id(layer: DisplayLayerSpec) -> str:
+    metadata = layer.metadata or {}
+    component = metadata.get("component")
+    if component:
+        return str(component)
+    return str(layer.name)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

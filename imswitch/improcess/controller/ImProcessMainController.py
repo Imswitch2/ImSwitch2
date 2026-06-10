@@ -8,6 +8,7 @@ from imswitch.improcess.model.processing_config import (
 )
 from .CommunicationChannel import CommunicationChannel
 from .ImProcessMainViewController import ImProcessMainViewController
+from .ResultProcessorController import ResultProcessorController
 from .basecontrollers import ImProcessWidgetControllerFactory
 
 
@@ -43,6 +44,7 @@ class ImProcessMainController(MainController):
         self.mainViewController = self.__factory.createController(
             ImProcessMainViewController, self.__mainView
         )
+        self._resultProcessorControllers = {}
 
         # Register the view's dock layout with the shared widget-state
         # persistence service so it is auto-restored at startup and auto-saved
@@ -200,9 +202,25 @@ class ImProcessMainController(MainController):
         dock_title = self.__mainView.ensureRuntimeAnalysisWidget(processor_id)
         if dock_title is not None:
             self.__logger.info(f"Runtime-opened analysis tool: {dock_title}")
+            self._wire_runtime_result_processor(processor_id)
         elif not is_processor:
             self.__logger.warning(f"Unknown runtime analysis tool: {processor_id}")
         self._refresh_runtime_processor_choices()
+
+    def _wire_runtime_result_processor(self, processor_id: str) -> None:
+        if processor_id in self._resultProcessorControllers:
+            return
+        widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
+        if widget is None or not hasattr(widget, "sigRunRequested"):
+            return
+        self._resultProcessorControllers[processor_id] = self.__factory.createController(
+            ResultProcessorController,
+            widget,
+        )
+
+    def _wire_runtime_result_processors(self) -> None:
+        for processor_id in ("drift-correct", "denoise"):
+            self._wire_runtime_result_processor(processor_id)
 
     def closeEvent(self):
         # Persist the current dock layout before tearing the controllers down,
@@ -253,6 +271,11 @@ class _GuiLayoutStateAdapter:
                     pass
             controller._refresh_runtime_processor_choices()
         self._view.setLayoutState(state)
+        if controller is not None:
+            try:
+                controller._wire_runtime_result_processors()
+            except Exception:
+                pass
 
     def getStateSchemaVersion(self) -> int:
         """Return the GUI layout persistence schema version."""

@@ -19,6 +19,7 @@ from .PSFResolutionWidget import PSFResolutionWidget
 from .ProjectionWidget import ProjectionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
+from .ResultProcessorWidget import ResultProcessorWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .SegmentationWidget import SegmentationWidget
 from .guitools import BetterPushButton
@@ -514,6 +515,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def _runtimeAnalysisToolSpecs(self):
         return {
+            'drift-correct': (
+                'Drift correction',
+                lambda: self._makeResultProcessorWidget('drift-correct'),
+            ),
+            'denoise': (
+                'Denoise',
+                lambda: self._makeResultProcessorWidget('denoise'),
+            ),
             'projection': ('Projection', lambda: ProjectionWidget(self.reconstructionWidget.napariViewer)),
             'segmentation': (
                 'Segmentation',
@@ -553,6 +562,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def _runtimeAnalysisToolAttributes(self):
         return {
+            'drift-correct': 'driftCorrectProcessorWidget',
+            'denoise': 'denoiseProcessorWidget',
             'projection': 'projectionWidget',
             'segmentation': 'segmentationWidget',
             'psf-resolution': 'psfResolutionWidget',
@@ -562,6 +573,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'multicolor-apply': 'multicolorWidget',
             'roi-manager': 'roiManagerWidget',
         }
+
+    def _makeResultProcessorWidget(self, processor_id: str):
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        processor = get_registry().get_processor(processor_id)
+        if processor is None:
+            raise RuntimeError(f"Processor {processor_id!r} is not registered")
+        return ResultProcessorWidget(processor)
+
+    def getRuntimeAnalysisWidget(self, tool_id: str):
+        attr_name = self._runtimeAnalysisToolAttributes().get(tool_id)
+        return getattr(self, attr_name, None) if attr_name else None
 
     def _wireROIManagerToDependentWidgets(self) -> None:
         """Late-binding: hand the ROI Manager to widgets that already exist
