@@ -640,20 +640,32 @@ def fit_bead(
         prm = _coerce_analysis_params(params)
         prepared = _prepare_component_mask(im, prm)
 
-        if prepared.is_rejected:
+        # selected_mask is in padded coordinates (pad=3); crop back to image coords
+        component_mask = (
+            prepared.selected_mask[3:-3, 3:-3] if prepared.accepted else None
+        )
+        if component_mask is None or not np.any(component_mask):
+            component_mask = None
             roi_y0, roi_y1 = 0, im.shape[0]
             roi_x0, roi_x1 = 0, im.shape[1]
         else:
-            assert prepared.bbox is not None
-            roi_y0, roi_x0, roi_y1, roi_x1 = prepared.bbox
+            rows = np.any(component_mask, axis=1)
+            cols = np.any(component_mask, axis=0)
+            roi_y0, roi_y1 = np.where(rows)[0][[0, -1]]
+            roi_x0, roi_x1 = np.where(cols)[0][[0, -1]]
+            roi_y1 += 1
+            roi_x1 += 1
             margin = 3
-            roi_y0 = max(0, roi_y0 - margin)
-            roi_x0 = max(0, roi_x0 - margin)
-            roi_y1 = min(im.shape[0], roi_y1 + margin)
-            roi_x1 = min(im.shape[1], roi_x1 + margin)
+            roi_y0 = max(0, int(roi_y0) - margin)
+            roi_x0 = max(0, int(roi_x0) - margin)
+            roi_y1 = min(im.shape[0], int(roi_y1) + margin)
+            roi_x1 = min(im.shape[1], int(roi_x1) + margin)
 
         roi_im = im[roi_y0:roi_y1, roi_x0:roi_x1]
-        roi_mask = None if prepared.is_rejected else prepared.mask[roi_y0:roi_y1, roi_x0:roi_x1]
+        roi_mask = (
+            None if component_mask is None
+            else component_mask[roi_y0:roi_y1, roi_x0:roi_x1]
+        )
         roi_offset_y = roi_y0
         roi_offset_x = roi_x0
     else:

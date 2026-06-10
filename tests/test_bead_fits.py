@@ -164,6 +164,44 @@ def test_fit_models_registry():
     assert len(donut.param_names) == 5
 
 
+def test_fit_bead_auto_roi_off_center():
+    """Auto-ROI (roi=None) must locate an off-center bead via the component
+    mask and report center_px in full-image coordinates."""
+    true_x0 = 70.0
+    true_y0 = 35.0
+    true_sigma = 4.0
+
+    size = 100
+    y, x = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    clean_image = 80.0 * np.exp(
+        -(((x - true_x0) ** 2) + (y - true_y0) ** 2) / (2 * true_sigma**2)
+    ) + 5.0
+
+    np.random.seed(7)
+    noisy_image = clean_image + np.random.normal(0, 1, clean_image.shape)
+
+    result = fit_bead(noisy_image, "gaussian2d")
+
+    assert abs(result.center_px[0] - true_y0) < 1.0
+    assert abs(result.center_px[1] - true_x0) < 1.0
+    assert result.r_squared > 0.95
+
+
+def test_fit_bead_auto_roi_falls_back_to_full_image():
+    """When the component mask is rejected (blob too large), auto-ROI must
+    fall back to fitting the whole image instead of raising."""
+    size = 100
+    y, x = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    image = 50.0 * np.exp(
+        -(((x - 50.0) ** 2) + (y - 50.0) ** 2) / (2 * 30.0**2)
+    ) + 5.0
+
+    result = fit_bead(image, "gaussian2d")
+
+    assert abs(result.center_px[0] - 50.0) < 2.0
+    assert abs(result.center_px[1] - 50.0) < 2.0
+
+
 def test_fit_bead_unknown_model():
     """Test that fit_bead raises ValueError for unknown model name."""
     test_image = np.random.rand(50, 50) * 100
