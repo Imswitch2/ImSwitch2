@@ -1,10 +1,13 @@
-from typing import Mapping
+from typing import Mapping, TYPE_CHECKING
 
 import numpy as np
 from imswitch.imcommon.framework import Signal, SignalInterface
 from imswitch.imcommon.model import pythontools, APIExport, SharedAttributes
 from imswitch.imcommon.model import initLogger
 from .WorkflowServices import BeadRecWorkflowService, ScanWorkflowService
+
+if TYPE_CHECKING:
+    from .controllers._beadrec_scan_source import BeadRecScanSource
 
 
 class CommunicationChannel(SignalInterface):
@@ -238,11 +241,75 @@ class CommunicationChannel(SignalInterface):
     def getNumCamTTL(self):
         return self._get_required_controller('Scan', 'scan').getNumCamTTL()
 
+    def getBeadRecScanSource(self) -> 'BeadRecScanSource | None':
+        """Return the first BeadRec-compatible scan source, or None.
+        
+        Iterates all registered controllers and returns the first one that:
+        1. Implements the BeadRecScanSource protocol methods
+        2. Returns True from isBeadRecCompatible()
+        """
+        from .controllers._beadrec_scan_source import BeadRecScanSource
+        controllers = getattr(self.__main, 'controllers', None)
+        if controllers is None:
+            return None
+        for controller in controllers.values():
+            if (isinstance(controller, BeadRecScanSource) or 
+                (hasattr(controller, 'getBeadRecScanDims') and
+                 hasattr(controller, 'getBeadRecStepSizes') and
+                 hasattr(controller, 'getNumLineSteps') and
+                 hasattr(controller, 'getFramesPerScanPixel') and
+                 hasattr(controller, 'isBeadRecCompatible'))):
+                if controller.isBeadRecCompatible():
+                    return controller
+        return None
+
     def getDimsScan(self):
-        return self._get_required_controller('Scan', 'scan').getDimsScan()
+        try:
+            return self._get_required_controller('Scan', 'scan').getDimsScan()
+        except RuntimeError:
+            source = self.getBeadRecScanSource()
+            if source is not None:
+                dims = source.getBeadRecScanDims()
+                return [dims[0], dims[1]]
+            raise
 
     def getScanStepSizes(self):
-        return self._get_required_controller('Scan', 'scan').getScanStepSizes()
+        try:
+            return self._get_required_controller('Scan', 'scan').getScanStepSizes()
+        except RuntimeError:
+            source = self.getBeadRecScanSource()
+            if source is not None:
+                steps = source.getBeadRecStepSizes()
+                return [steps[0], steps[1]]
+            raise
+
+    def getNumLineSteps(self):
+        """Return the number of linesteps from the scan controller. Returns 1
+        if no scan controller is available or it does not expose the value
+        (e.g. MoNaLISA/PointScan controllers without linestep support)."""
+        try:
+            controller = self._get_required_controller('Scan', 'scan')
+        except RuntimeError:
+            source = self.getBeadRecScanSource()
+            if source is not None:
+                return source.getNumLineSteps()
+            return 1
+        getter = getattr(controller, 'getNumLineSteps', None)
+        return getter() if getter is not None else 1
+
+    def getFramesPerScanPixel(self):
+        """Return the number of detector frames produced per physical scan
+        pixel (e.g. the count of camera-enabled linesteps in advanced scans).
+        Returns 1 if the scan controller does not expose the value."""
+        try:
+            controller = self._get_required_controller('Scan', 'scan')
+        except RuntimeError:
+            source = self.getBeadRecScanSource()
+            if source is not None:
+                return source.getFramesPerScanPixel()
+            return 1
+        getter = getattr(controller, 'getFramesPerScanPixel', None)
+        return getter() if getter is not None else 1
 
     def getNumScanPositions(self):
         return self._get_required_controller('Scan', 'scan').getNumScanPositions()
