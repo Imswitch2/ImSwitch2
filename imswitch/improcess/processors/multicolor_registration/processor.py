@@ -11,8 +11,9 @@ from imswitch.improcess.analysis.multicolor import (
     extract_alignment,
     extract_calibration_volume,
     output_axis_scales,
-    parse_x_bounds,
+    parse_bounds,
     save_alignment,
+    split_axis_index,
 )
 from imswitch.improcess.model.result import ProcessingResult
 from imswitch.improcess.processors.base import Processor
@@ -37,9 +38,18 @@ class MulticolorRegistrationProcessor(Processor):
         widget = QtWidgets.QWidget(parent)
         layout = QtWidgets.QFormLayout(widget)
 
-        x_bounds_edit = QtWidgets.QLineEdit()
-        x_bounds_edit.setPlaceholderText("blank = equal thirds, or x0,x1,x2,x3")
-        layout.addRow("X bounds:", x_bounds_edit)
+        slices_spin = QtWidgets.QSpinBox()
+        slices_spin.setRange(2, 16)
+        slices_spin.setValue(3)
+        layout.addRow("Slices:", slices_spin)
+
+        axis_combo = QtWidgets.QComboBox()
+        axis_combo.addItems(["X", "Y", "Z"])
+        layout.addRow("Split axis:", axis_combo)
+
+        bounds_edit = QtWidgets.QLineEdit()
+        bounds_edit.setPlaceholderText("blank = equal slices, or b0,b1,...,bN")
+        layout.addRow("Bounds:", bounds_edit)
 
         mode_combo = QtWidgets.QComboBox()
         mode_combo.addItems(["maxproj", "volume", "descriptor_3d"])
@@ -49,6 +59,9 @@ class MulticolorRegistrationProcessor(Processor):
         reference_spin.setRange(0, 2)
         reference_spin.setValue(0)
         layout.addRow("Reference channel:", reference_spin)
+        slices_spin.valueChanged.connect(
+            lambda n_slices: reference_spin.setRange(0, max(0, n_slices - 1))
+        )
 
         time_spin = QtWidgets.QSpinBox()
         time_spin.setRange(0, 999999)
@@ -96,7 +109,9 @@ class MulticolorRegistrationProcessor(Processor):
 
         def get_values():
             return {
-                "x_bounds": x_bounds_edit.text(),
+                "n_slices": slices_spin.value(),
+                "split_axis": axis_combo.currentText(),
+                "bounds": bounds_edit.text(),
                 "mode": mode_combo.currentText(),
                 "reference_channel": reference_spin.value(),
                 "time_index": time_spin.value(),
@@ -118,12 +133,19 @@ class MulticolorRegistrationProcessor(Processor):
             result.axis_labels,
             time_index=int(params.get("time_index", 0)),
         )
-        x_bounds = parse_x_bounds(params.get("x_bounds"), volume.shape[-1])
+        split_axis = str(params.get("split_axis", "X"))
+        n_slices = int(params.get("n_slices", 3))
+        bounds = parse_bounds(
+            params.get("bounds", params.get("x_bounds")),
+            volume.shape[split_axis_index(split_axis)],
+            n_slices,
+        )
         alignment = extract_alignment(
             volume,
-            x_bounds=x_bounds,
+            bounds,
             mode=str(params.get("mode", "maxproj")),
             reference_channel=int(params.get("reference_channel", 0)),
+            split_axis=split_axis,
             bead_sigma=float(params.get("bead_sigma", 1.5)),
             bead_min_dist=int(params.get("bead_min_dist", 6)),
             bead_thr_rel=float(params.get("bead_thr_rel", 0.5)),

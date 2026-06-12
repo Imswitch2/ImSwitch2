@@ -18,10 +18,11 @@ class SnoutyResult(ProcessingResult):
     
     Axis labels: ["Z", "Y", "X"] for 3D, ["T", "Z", "Y", "X"] for 4D.
     
-    View modes:
-        - XY: identity (projects along Z)
-        - XZ: swap Z/Y axes (projects along Y)
-        - YZ: swap X/Z axes (projects along X)
+    View modes (the viewer displays the last two transposed axes and puts
+    sliders on the rest):
+        - XY: identity — slider over Z, displays (Y, X)
+        - XZ: slider over Y, displays (Z, X)
+        - YZ: slider over X, displays (Z, Y)
     """
     
     def __init__(
@@ -44,17 +45,17 @@ class SnoutyResult(ProcessingResult):
             axis_labels = ["Z", "Y", "X"]
             axis_scales = [sample_vx_um, sample_vx_um, sample_vx_um]
             view_modes = [
-                ViewMode("XY", (0, 1, 2)),  # Z, Y, X (identity)
-                ViewMode("XZ", (0, 2, 1)),  # Z, X, Y (swap Y/X → projects along Y)
-                ViewMode("YZ", (2, 1, 0)),  # X, Y, Z (projects along X)
+                ViewMode("XY", (0, 1, 2)),  # Z, Y, X — slider Z, displays (Y, X)
+                ViewMode("XZ", (1, 0, 2)),  # Y, Z, X — slider Y, displays (Z, X)
+                ViewMode("YZ", (2, 0, 1)),  # X, Z, Y — slider X, displays (Z, Y)
             ]
         elif ndim == 4:
             axis_labels = ["T", "Z", "Y", "X"]
             axis_scales = [1.0, sample_vx_um, sample_vx_um, sample_vx_um]
             view_modes = [
-                ViewMode("XY", (0, 1, 2, 3)),  # T, Z, Y, X (identity)
-                ViewMode("XZ", (0, 1, 3, 2)),  # T, Z, X, Y (swap Y/X → projects along Y)
-                ViewMode("YZ", (0, 3, 2, 1)),  # T, X, Y, Z (projects along X)
+                ViewMode("XY", (0, 1, 2, 3)),  # T, Z, Y, X — sliders T/Z, displays (Y, X)
+                ViewMode("XZ", (0, 2, 1, 3)),  # T, Y, Z, X — sliders T/Y, displays (Z, X)
+                ViewMode("YZ", (0, 3, 1, 2)),  # T, X, Z, Y — sliders T/X, displays (Z, Y)
             ]
         else:
             raise ValueError(f"SNOUTY result must be 3D or 4D, got shape {data.shape}")

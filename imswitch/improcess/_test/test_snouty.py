@@ -145,7 +145,34 @@ class TestSnoutyReconstructor:
 
         assert result.axis_scales == [0.25, 0.25, 0.25]
         assert result.scale_unit == "um"
-    
+
+    @pytest.mark.parametrize(
+        "shape, expected_planes",
+        [
+            ((2, 3, 4), {"XY": ["Y", "X"], "XZ": ["Z", "X"], "YZ": ["Z", "Y"]}),
+            ((2, 2, 3, 4), {"XY": ["Y", "X"], "XZ": ["Z", "X"], "YZ": ["Z", "Y"]}),
+        ],
+    )
+    def test_result_view_modes_display_orthogonal_planes(self, shape, expected_planes):
+        """Each view mode must move the named axes into the displayed (last
+        two) positions — the viewer slices along the leading axes, so a mode
+        that only swaps the displayed axes would show a transposed XY slice
+        instead of a true orthogonal section (regression for the XZ view)."""
+        from imswitch.improcess.reconstructors.snouty.result import SnoutyResult
+
+        result = SnoutyResult(
+            name="planes",
+            data=np.zeros(shape, dtype=np.float32),
+            params=DEFAULT_PARAMS.copy(),
+        )
+
+        modes = {mode.name: mode for mode in result.view_modes}
+        assert set(modes) == set(expected_planes)
+        for name, mode in modes.items():
+            assert sorted(mode.transpose) == list(range(len(shape)))
+            transposed_labels = [result.axis_labels[i] for i in mode.transpose]
+            assert transposed_labels[-2:] == expected_planes[name]
+
     def test_process_single_timepoint(self, data_obj_3d):
         """Test single-timepoint deskew."""
         reconstructor = SnoutyReconstructor()

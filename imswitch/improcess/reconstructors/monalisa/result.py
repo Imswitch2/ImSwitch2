@@ -50,11 +50,13 @@ class MonalisaProcessingResult(ProcessingResult):
         if axis_labels is None:
             axis_labels = ["Dataset", "Base", "T", "Z", "Y", "X"]
 
-        # Define view modes for MoNaLISA 6D data
+        # Define view modes for MoNaLISA 6D data. The viewer displays the last
+        # two transposed axes and puts sliders on the rest, so the orthogonal
+        # views must move Z into a displayed position.
         view_modes = [
-            ViewMode("Standard", (0, 1, 2, 3, 4, 5)),  # Dataset, Base, T, Z, Y, X
-            ViewMode("Bottom", (1, 0, 2, 3, 5, 4)),    # Base, Dataset, T, Z, X, Y (XZ plane)
-            ViewMode("Left", (1, 0, 2, 3, 4, 5)),      # Base, Dataset, T, Z, Y, X (YZ plane)
+            ViewMode("Standard", (0, 1, 2, 3, 4, 5)),  # Dataset, Base, T, Z, Y, X — displays (Y, X)
+            ViewMode("Bottom", (0, 1, 2, 4, 3, 5)),    # Dataset, Base, T, Y, Z, X — displays (Z, X)
+            ViewMode("Left", (0, 1, 2, 5, 3, 4)),      # Dataset, Base, T, X, Z, Y — displays (Z, Y)
         ]
 
         # Derive axis_scales from output_pixel_size_nm so the napari scale bar

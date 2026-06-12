@@ -16,6 +16,32 @@ def _make_scan_params():
     }
 
 
+def test_view_modes_display_orthogonal_planes():
+    """The Bottom/Left view modes must move Z into the displayed (last two)
+    positions — the viewer slices along the leading axes, so a permutation
+    that only reorders slider axes or swaps the displayed pair shows a
+    (transposed) XY slice instead of a true orthogonal section."""
+    data = np.random.rand(1, 2, 1, 2, 4, 4).astype(np.float32)
+
+    result = MonalisaProcessingResult(
+        name="planes",
+        data=data,
+        scan_params=_make_scan_params(),
+    )
+
+    expected_planes = {
+        "Standard": ["Y", "X"],
+        "Bottom": ["Z", "X"],
+        "Left": ["Z", "Y"],
+    }
+    modes = {mode.name: mode for mode in result.view_modes}
+    assert set(modes) == set(expected_planes)
+    for name, mode in modes.items():
+        assert sorted(mode.transpose) == list(range(data.ndim))
+        transposed_labels = [result.axis_labels[i] for i in mode.transpose]
+        assert transposed_labels[-2:] == expected_planes[name]
+
+
 def test_display_layers_splits_base_axis():
     """display_layers() should return one layer per base component."""
     # 6D data: (Dataset=1, Base=2, T=1, Z=1, Y=4, X=4)
