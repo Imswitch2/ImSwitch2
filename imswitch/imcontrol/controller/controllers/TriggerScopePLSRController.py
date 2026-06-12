@@ -1,13 +1,13 @@
 import os
 import configparser
 from ast import literal_eval
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
 import traceback
 from imswitch.imcommon.model import APIExport, dirtools
 from imswitch.imcontrol.view import guitools
 
 
-class TriggerScopePLSRController(ImConWidgetController):
+class TriggerScopePLSRController(ScanLifecycleMixin, ImConWidgetController):
     """Linked to TriggerScopePLSRWidget."""
 
     def __init__(self, *args, **kwargs):

@@ -148,7 +148,7 @@ class TriggerScopeManager(SignalInterface):
     def _unknownMsg(self, msg):
         # repr() so any stray/invisible control characters (e.g. a trailing
         # '\r') are visible in the log and don't masquerade as a clean string.
-        self.__logger.info(f'[TriggerScope serial] {msg!r}')
+        self.__logger.debug(f'[TriggerScope serial] {msg!r}')
 
 
 class SerialMonitor(Worker):

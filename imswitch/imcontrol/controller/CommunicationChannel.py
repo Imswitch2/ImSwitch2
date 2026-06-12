@@ -138,6 +138,7 @@ class CommunicationChannel(SignalInterface):
         self.__sharedAttrs = SharedAttributes()
         self.__logger = initLogger(self)
         self._scriptExecution = False
+        self._activeScanSource = None
         self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
         self.beadRecWorkflow = BeadRecWorkflowService(self)
@@ -228,32 +229,111 @@ class CommunicationChannel(SignalInterface):
             name = displayName or widgetKey.lower()
             raise RuntimeError(f'Required {name} widget not available') from None
 
+    def setActiveScanSource(self, controller) -> None:
+        """ Announce the controller that is starting a scan as the active scan
+        source. Called from ScanLifecycleMixin when a scan controller sets its
+        isRunning flag to True; the last announcement wins. """
+        self._activeScanSource = controller
+
+    def clearActiveScanSource(self, controller) -> None:
+        """ Withdraw a controller as the active scan source. Identity-guarded:
+        only clears if the given controller is the active source, so a
+        controller initializing its isRunning flag to False cannot clear
+        another controller's ongoing scan. """
+        if self._activeScanSource is controller:
+            self._activeScanSource = None
+
+    def getActiveScanSource(self):
+        """ Return the controller currently running a scan, or None. """
+        return self._activeScanSource
+
     def isScanRunning(self) -> bool:
         """
-        Returns whether a scan is ongoing or not.
+        Returns whether a scan is ongoing or not, based on the active scan
+        source announced by the scan controller that started the scan (see
+        ScanLifecycleMixin).
         """
-        return self._get_required_controller('Scan', 'scan').isRunning
+        return self._activeScanSource is not None
 
     def getCenterViewbox(self):
         """ Returns the center point of the viewbox, as an (x, y) tuple. """
         return self._get_required_controller('Image', 'image').getCenterViewbox()
 
+    def hasScanWidget(self) -> bool:
+        """Return whether a generic 'Scan' widget is registered in this setup."""
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        return 'Scan' in controllers
+
+    def _resolveScanAccessor(self, methodName):
+        """Return a bound scan accessor, resolved in priority order:
+
+        1. The active scan source (the controller currently running a scan).
+        2. The legacy 'Scan' widget controller.
+        3. While idle on setups without a 'Scan' widget: the unique
+           registered controller exposing the accessor. If several expose
+           it the resolution is ambiguous — warn and give up rather than
+           guess by registration order.
+
+        Returns None when nothing resolves.
+        """
+        source = self._activeScanSource
+        if source is not None:
+            getter = getattr(source, methodName, None)
+            if getter is not None:
+                return getter
+        try:
+            controller = self._get_required_controller('Scan', 'scan')
+        except RuntimeError:
+            controllers = getattr(self.__main, 'controllers', None) or {}
+            matches = [
+                (key, getattr(c, methodName))
+                for key, c in controllers.items() if hasattr(c, methodName)
+            ]
+            if len(matches) == 1:
+                return matches[0][1]
+            if len(matches) > 1:
+                self.__logger.warning(
+                    f'Cannot resolve {methodName} while no scan is running: '
+                    f'multiple controllers expose it '
+                    f'({[key for key, _ in matches]}).'
+                )
+            return None
+        return getattr(controller, methodName, None)
+
     def getNumCamTTL(self):
-        return self._get_required_controller('Scan', 'scan').getNumCamTTL()
+        getter = self._resolveScanAccessor('getNumCamTTL')
+        if getter is None:
+            raise RuntimeError('No scan controller available to provide getNumCamTTL')
+        return getter()
+
+    def _activeBeadRecScanSource(self) -> 'BeadRecScanSource | None':
+        """Return the active scan source if it satisfies the BeadRecScanSource
+        protocol and reports itself BeadRec-compatible, else None."""
+        from .controllers._beadrec_scan_source import BeadRecScanSource
+        source = self._activeScanSource
+        if (source is not None and isinstance(source, BeadRecScanSource)
+                and source.isBeadRecCompatible()):
+            return source
+        return None
 
     def getBeadRecScanSource(self) -> 'BeadRecScanSource | None':
-        """Return the first BeadRec-compatible scan source, or None.
-        
-        Iterates all registered controllers and returns the first one that:
+        """Return the BeadRec-compatible scan source, or None.
+
+        The active scan source (the controller currently running a scan) takes
+        precedence. When no scan is running, falls back to iterating all
+        registered controllers and returning the first one that:
         1. Implements the BeadRecScanSource protocol methods
         2. Returns True from isBeadRecCompatible()
         """
         from .controllers._beadrec_scan_source import BeadRecScanSource
+        active = self._activeBeadRecScanSource()
+        if active is not None:
+            return active
         controllers = getattr(self.__main, 'controllers', None)
         if controllers is None:
             return None
         for controller in controllers.values():
-            if (isinstance(controller, BeadRecScanSource) or 
+            if (isinstance(controller, BeadRecScanSource) or
                 (hasattr(controller, 'getBeadRecScanDims') and
                  hasattr(controller, 'getBeadRecStepSizes') and
                  hasattr(controller, 'getNumLineSteps') and
@@ -264,6 +344,10 @@ class CommunicationChannel(SignalInterface):
         return None
 
     def getDimsScan(self):
+        source = self._activeBeadRecScanSource()
+        if source is not None:
+            dims = source.getBeadRecScanDims()
+            return [dims[0], dims[1]]
         try:
             return self._get_required_controller('Scan', 'scan').getDimsScan()
         except RuntimeError:
@@ -274,6 +358,10 @@ class CommunicationChannel(SignalInterface):
             raise
 
     def getScanStepSizes(self):
+        source = self._activeBeadRecScanSource()
+        if source is not None:
+            steps = source.getBeadRecStepSizes()
+            return [steps[0], steps[1]]
         try:
             return self._get_required_controller('Scan', 'scan').getScanStepSizes()
         except RuntimeError:
@@ -287,6 +375,9 @@ class CommunicationChannel(SignalInterface):
         """Return the number of linesteps from the scan controller. Returns 1
         if no scan controller is available or it does not expose the value
         (e.g. MoNaLISA/PointScan controllers without linestep support)."""
+        source = self._activeBeadRecScanSource()
+        if source is not None:
+            return source.getNumLineSteps()
         try:
             controller = self._get_required_controller('Scan', 'scan')
         except RuntimeError:
@@ -301,6 +392,9 @@ class CommunicationChannel(SignalInterface):
         """Return the number of detector frames produced per physical scan
         pixel (e.g. the count of camera-enabled linesteps in advanced scans).
         Returns 1 if the scan controller does not expose the value."""
+        source = self._activeBeadRecScanSource()
+        if source is not None:
+            return source.getFramesPerScanPixel()
         try:
             controller = self._get_required_controller('Scan', 'scan')
         except RuntimeError:
@@ -312,7 +406,10 @@ class CommunicationChannel(SignalInterface):
         return getter() if getter is not None else 1
 
     def getNumScanPositions(self):
-        return self._get_required_controller('Scan', 'scan').getNumScanPositions()
+        getter = self._resolveScanAccessor('getNumScanPositions')
+        if getter is None:
+            raise RuntimeError('No scan controller available to provide getNumScanPositions')
+        return getter()
 
     def getNextAxial(self):
         return self._get_required_controller('Scan', 'scan').getNextAxial()

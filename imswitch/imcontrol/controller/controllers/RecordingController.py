@@ -195,7 +195,18 @@ class RecordingController(ImConWidgetController):
                 self.recordingArgs['numCamTTL'] = self._commChannel.getNumCamTTL()
                 self._master.recordingManager.startRecording(**self.recordingArgs)
                 time.sleep(0.3)
-                self._commChannel.scanWorkflow.run_scan(True, False)
+                if self._commChannel.hasScanWidget():
+                    self._commChannel.scanWorkflow.run_scan(True, False)
+                else:
+                    # Setups with standalone scan widgets (e.g. TriggerScope)
+                    # register SEVERAL controllers on sigRunScan; broadcasting
+                    # run_scan would start all of their scans at once. Arm the
+                    # recording only and let the user start the intended scan
+                    # from its own widget.
+                    self.__logger.info(
+                        'Recording armed (scan-once): start the scan from its '
+                        'scan widget to begin acquiring frames.'
+                    )
             elif self.recMode == RecMode.ScanLapse:
                 self.recordingArgs['singleLapseFile'] = self._widget.getTimelapseSingleFile()
                 self.lapseTotal = self._widget.getTimelapseTime()

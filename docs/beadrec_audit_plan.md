@@ -46,6 +46,15 @@ dead once dims are a fixed `(X, Y)` tuple. Tighten when rewriting.
 
 ### Rework 1 — TriggerScope / Snouty compatibility
 
+> **Status (June 2026): implemented and superseded.** The capability lookup
+> described below was implemented, then extended: discovery-by-iteration is
+> now only an idle fallback. The controller that starts a scan announces
+> itself to the CommunicationChannel as the *active scan source*
+> (`ScanLifecycleMixin`), and `isScanRunning()` / `getDimsScan()` /
+> `getScanStepSizes()` / `getFramesPerScanPixel()` resolve against it.
+> See [scan_lifecycle.md](scan_lifecycle.md) for the current architecture,
+> the contract for new scan controllers, and the enforcing audit test.
+
 `CommunicationChannel.getDimsScan / getScanStepSizes` resolve against the
 controller registered under widget key `"Scan"`. TriggerScope setups
 register their own controllers

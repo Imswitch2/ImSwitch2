@@ -47,7 +47,44 @@ class LiveUpdatedController(ImConWidgetController):
         raise NotImplementedError
 
 
-class SuperScanController(ImConWidgetController):
+class ScanLifecycleMixin:
+    """ Announces this controller as the CommunicationChannel's active scan
+    source whenever its isRunning flag flips.
+
+    Every scan controller signals its scan lifecycle by setting
+    ``self.isRunning`` (True in runScanAdvanced, False in scanDone /
+    scanFailed / error handlers). This mixin turns that flag into a property
+    so each assignment also announces or withdraws the controller as the
+    channel's active scan source — the single authority consumers such as
+    BeadRec use to resolve "which controller is running this scan". Using the
+    existing flag as the chokepoint means no call site, present or future,
+    can be forgotten.
+
+    Requirements on the inheriting controller: it must be an
+    ImConWidgetController (so ``self._commChannel`` is set before the first
+    isRunning assignment) and must keep maintaining ``isRunning`` around its
+    scan lifecycle. The adoption-audit unit test in
+    imswitch/imcontrol/_test/unit/test_scan_lifecycle.py enforces that every
+    scan controller inherits this mixin. See docs/scan_lifecycle.md.
+    """
+
+    # Class-level default so the getter works before __init__ assigns it
+    _isRunningFlag = False
+
+    @property
+    def isRunning(self) -> bool:
+        return self._isRunningFlag
+
+    @isRunning.setter
+    def isRunning(self, value: bool) -> None:
+        self._isRunningFlag = bool(value)
+        if self._isRunningFlag:
+            self._commChannel.setActiveScanSource(self)
+        else:
+            self._commChannel.clearActiveScanSource(self)
+
+
+class SuperScanController(ScanLifecycleMixin, ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Make non-overwritable functions

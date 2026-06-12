@@ -5,10 +5,10 @@ from ast import literal_eval
 
 from imswitch.imcommon.model import dirtools
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
 
 
-class LightSheetMulticolorController(ImConWidgetController):
+class LightSheetMulticolorController(ScanLifecycleMixin, ImConWidgetController):
     """ Controller for the multicolor light-sheet / pLS-RESOLFT scan widget.
 
     Builds a ``'MulticolorScan'`` parameter dict from the widget fields and

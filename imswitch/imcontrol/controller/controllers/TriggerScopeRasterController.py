@@ -1,7 +1,7 @@
 import os
 import configparser
 from ast import literal_eval
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
 import numpy as np
 import traceback
 from imswitch.imcommon.model import APIExport, dirtools
@@ -10,7 +10,7 @@ from imswitch.imcommon.view.guitools import colorutils
 from ._beadrec_scan_source import BeadRecScanSourceMixin
 
 
-class TriggerScopeRasterController(BeadRecScanSourceMixin, ImConWidgetController):
+class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, ImConWidgetController):
     """Linked to TriggerScopeRasterWidget."""
 
     def __init__(self, *args, **kwargs):
@@ -177,6 +177,7 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ImConWidgetController
             # be emitted here rather than from the DAQ manager.
             self.emitScanSignal(self._commChannel.sigScanBuilt,
                                 self._getScanLaserDevices())
+            self._logRasterTTLDiagnostics()
             triggerscopeParameters = self.getTriggerscopeParameters()
             self._master.scanManager.runScan(triggerscopeParameters, scan_type='rasterScan')
         except Exception:
@@ -314,6 +315,58 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ImConWidgetController
         for key, value in self._digitalParameterDict.items():
             self.setSharedAttr(_attrCategoryTTL, key, value)
 
+    def _logRasterTTLDiagnostics(self):
+        """Log what the firmware actually does with the TTL settings, and
+        warn when a triggered camera cannot keep up with the dwell time.
+
+        The deployed TriggerSwitch 0.1 firmware contains a "temporary fix"
+        in runPixelCycle(): every pixel it pulses TTL lines 0-3 TOGETHER in
+        a single window defined by the earliest TTL row's start/end times
+        (sent as p1StartUs/p1EndUs). The per-device line selection (p1Line)
+        and all other TTL rows are ignored, so which device sits on which of
+        TTL0-3 does not affect the pulse pattern — emission control of the
+        lasers comes from arming (sigScanBuilt) alone.
+
+        A camera in external frame-trigger mode silently drops triggers that
+        arrive while it is still exposing/reading out — the typical symptom
+        is roughly (but never exactly) half the expected frames.
+        """
+        included = self._digitalParameterDict.get('target_device', [])
+        starts = self._digitalParameterDict.get('TTL_start', [])
+        ends = self._digitalParameterDict.get('TTL_end', [])
+        seqTime = self._digitalParameterDict.get('sequence_time')
+        if not included or len(starts) != len(included) or not seqTime:
+            return
+        p1Index = starts.index(min(starts))
+        p1End = ends[p1Index] if p1Index < len(ends) else float('nan')
+        xDim, yDim = self.getBeadRecScanDims()
+        self._logger.info(
+            f'Raster scan TTL: firmware pulses TTL lines 0-3 together, '
+            f'window from earliest row "{included[p1Index]}" '
+            f'(start {starts[p1Index] * 1e3:.3f} ms, end {p1End * 1e3:.3f} ms, '
+            f'dwell {seqTime * 1e3:.3f} ms). Individual TTL rows / line '
+            f'selection are NOT honored by this firmware revision. '
+            f'Expected camera frames: {xDim} x {yDim} = {xDim * yDim}.'
+        )
+        for detectorName in (d for d in included if d in self._setupInfo.detectors):
+            try:
+                detector = self._master.detectorsManager[detectorName]
+                exposure = float(detector.parameters['Real exposure time'].value)
+                readout = float(detector.parameters['Readout time'].value)
+            except Exception:
+                continue
+            frameTime = exposure + readout
+            if frameTime > seqTime:
+                self._logger.warning(
+                    f'Camera "{detectorName}" cannot keep up with the scan: '
+                    f'exposure + readout = {frameTime * 1e3:.2f} ms exceeds '
+                    f'the dwell time {seqTime * 1e3:.2f} ms. Triggers '
+                    f'arriving during exposure/readout are dropped '
+                    f'(typically ~half the frames). Increase the sequence '
+                    f'time above {frameTime * 1e3:.2f} ms or reduce the '
+                    f'exposure/ROI.'
+                )
+
     def _getScanLaserDevices(self):
         """Return the names of the lasers included in this scan.
 
@@ -342,6 +395,23 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ImConWidgetController
         x_step = axis_step_size[0] if len(axis_step_size) > 0 else 0.0
         y_step = axis_step_size[1] if len(axis_step_size) > 1 else 0.0
         return (x_step, y_step)
+
+    def getNumScanPositions(self) -> int:
+        """Return the total number of scan positions (pixels) of the raster
+        scan. Consumed by the RecordingController in scan-once mode as the
+        number of camera frames to record."""
+        x_dim, y_dim = self.getBeadRecScanDims()
+        return max(int(x_dim), 1) * max(int(y_dim), 1)
+
+    def getNumCamTTL(self) -> dict:
+        """Return camera TTL pulses per scan position, per detector.
+
+        The raster firmware fires one p1 pulse per pixel, so every
+        TTL-included detector receives at most one trigger per position.
+        """
+        self.getParameters()
+        included = self._digitalParameterDict.get('target_device', [])
+        return {d: 1 for d in included if d in self._setupInfo.detectors}
 
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters."""

@@ -5,7 +5,7 @@ from ast import literal_eval
 
 from imswitch.imcommon.model import dirtools
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
@@ -317,7 +317,7 @@ class _PLSRMulticolorAdapter(_ScanModeAdapter):
         return devices
 
 
-class TriggerScopeScanController(ImConWidgetController):
+class TriggerScopeScanController(ScanLifecycleMixin, ImConWidgetController):
     """Unified controller for the two RESOLFT-family TriggerScope scans.
 
     Hosts a multicolor light-sheet panel and a pLS-RESOLFT multicolor panel
