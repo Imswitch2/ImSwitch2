@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Recording loop constants
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
+_RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
 
 
 class AsTemporaryFile(object):
@@ -1090,7 +1091,13 @@ class RecordingWorker(Worker):
         else:
             raise ValueError('Unsupported recording mode specified')
         
-        # Unified acquisition loop
+        # Unified acquisition loop. Start each detector's chunk-consumer
+        # queue fresh so no stale frames from a previous recording leak in
+        # (buffers were flushed in startRecording).
+        for detectorName in self.detectorNames:
+            self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
+                _RECORDING_CHUNK_CONSUMER
+            )
         self.__recordingManager.sigRecordingStarted.emit()
         shouldStopNext = False
         try:
@@ -1163,6 +1170,12 @@ class RecordingWorker(Worker):
                 self.__recordingManager.sigRecordingTimeUpdated.emit(0)
         
         finally:
+            # Stop retaining frames for this consumer now that the recording
+            # is over (other readChunk consumers may keep draining).
+            for detectorName in self.detectorNames:
+                self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
+                    _RECORDING_CHUNK_CONSUMER
+                )
             # Finalize streaming (close files, emit signals)
             storer.finalizeStream(currentFrame, filePaths, self.__recordingManager, self.saveMode)
             
@@ -1173,7 +1186,12 @@ class RecordingWorker(Worker):
             self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
 
     def _getNewFrames(self, detectorName):
-        newFrames = self.__recordingManager.detectorsManager[detectorName].getChunk()
+        # readChunk (not getChunk): the destructive getChunk would steal
+        # frames from concurrent consumers such as BeadRec — see
+        # DetectorManager.readChunk.
+        newFrames = self.__recordingManager.detectorsManager[detectorName].readChunk(
+            _RECORDING_CHUNK_CONSUMER
+        )
         newFrames = np.array(newFrames)
         return newFrames
 

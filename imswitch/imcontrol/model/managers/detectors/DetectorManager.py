@@ -1,6 +1,7 @@
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -63,6 +64,11 @@ class DetectorListParameter(DetectorParameter):
 #: size of camera detectors. Used by ``DetectorManager.pixelSizeUm`` and by
 #: downstream modules such as tiling, scale bars and stitching.
 CAMERA_PIXEL_SIZE_PARAM = 'Camera pixel size'
+
+#: Maximum frames retained per readChunk consumer queue. Only relevant for a
+#: consumer that registered but stopped polling while another consumer keeps
+#: draining; bounds the memory leak in that case.
+MAX_QUEUED_CONSUMER_FRAMES = 1000
 
 
 class DetectorManager(SignalInterface):
@@ -134,6 +140,11 @@ class DetectorManager(SignalInterface):
         self.__fullShape = fullShape
         self.__supportedBinnings = supportedBinnings
         self.__image = np.array([])
+
+        # Multi-consumer chunk distribution state (see readChunk)
+        self._chunkConsumers = {}
+        self._chunkConsumersWarned = set()
+        self._chunkConsumersLock = Lock()
 
         self.__forAcquisition = detectorInfo.forAcquisition
         self.__forFocusLock = detectorInfo.forFocusLock
@@ -288,6 +299,55 @@ class DetectorManager(SignalInterface):
         """ Flushes the detector buffers so that getChunk starts at the last
         frame captured at the time that this function was called. """
         pass
+
+    def readChunk(self, consumerKey: str) -> List[np.ndarray]:
+        """ Multi-consumer variant of getChunk().
+
+        getChunk() is a destructive read: when several components poll it on
+        the same detector (e.g. the RecordingManager and BeadRec during a
+        scan-once recording), each frame goes to whichever caller drained
+        first and every consumer sees an incomplete stream. readChunk drains
+        the hardware chunk once and distributes the frames to EVERY
+        registered consumer, returning (and clearing) the queue of the
+        calling consumer.
+
+        The consumer is auto-registered on its first call. Call
+        releaseChunkConsumer() when done, so frames stop being retained for
+        a consumer that no longer polls. A consumer that is registered but
+        not polling has its queue capped at MAX_QUEUED_CONSUMER_FRAMES
+        (oldest frames dropped, warned once).
+
+        Returns a list of frames; an empty list when no new frames are
+        queued for this consumer.
+        """
+        with self._chunkConsumersLock:
+            queue = self._chunkConsumers.setdefault(consumerKey, [])
+            newFrames = self.getChunk()
+            if newFrames is not None and len(newFrames) > 0:
+                for key, consumerQueue in self._chunkConsumers.items():
+                    consumerQueue.extend(newFrames)
+                    excess = len(consumerQueue) - MAX_QUEUED_CONSUMER_FRAMES
+                    if excess > 0:
+                        del consumerQueue[:excess]
+                        if key not in self._chunkConsumersWarned:
+                            self._chunkConsumersWarned.add(key)
+                            self.__logger.warning(
+                                f'readChunk consumer "{key}" is registered '
+                                f'but not polling; dropping its oldest '
+                                f'frames (cap {MAX_QUEUED_CONSUMER_FRAMES}). '
+                                f'Call releaseChunkConsumer when done.'
+                            )
+            frames = list(queue)
+            queue.clear()
+            return frames
+
+    def releaseChunkConsumer(self, consumerKey: str) -> None:
+        """ Unregisters a readChunk() consumer and drops any frames still
+        queued for it. Safe to call for a consumer that was never
+        registered. """
+        with self._chunkConsumersLock:
+            self._chunkConsumers.pop(consumerKey, None)
+            self._chunkConsumersWarned.discard(consumerKey)
 
     @abstractmethod
     def startAcquisition(self) -> None:

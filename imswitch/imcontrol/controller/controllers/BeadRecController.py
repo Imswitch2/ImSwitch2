@@ -42,8 +42,13 @@ class BeadRecController(ImConWidgetController):
         self.listRecs = []
         self.ongoingScan = False
         self.currentRunImgs = {}
-        # Set once we've warned that no generic 'Scan' widget is present
-        # (e.g. TriggerScope setups), so we don't spam the log every scan.
+        # Frames delivered by the worker during the current scan; lets
+        # onEndedScan distinguish "no data at all" (camera never triggered)
+        # from a stale reconstruction left over from a previous scan.
+        self.framesReceivedThisScan = 0
+        # Set once we've warned that neither a generic 'Scan' widget nor a
+        # BeadRec-compatible scan source (e.g. TriggerScope raster) is
+        # present, so we don't spam the log every scan.
         self._warnedNoScanWidget = False
 
         self.beadWorker = BeadWorker(
@@ -99,9 +104,20 @@ class BeadRecController(ImConWidgetController):
         if hasattr(super(), '__del__'):
             super().__del__()
 
+    # readChunk consumer key — getChunk() is a destructive read, and the
+    # RecordingManager polls the same detector during scan-once recordings;
+    # readChunk distributes every frame to both consumers.
+    _CHUNK_CONSUMER = 'BeadRec'
+
     def _getCurrentDetectorChunk(self) -> Sequence[np.ndarray]:
         return self._master.detectorsManager.execOnCurrent(
-            lambda c: c.getChunk()
+            lambda c: c.readChunk(self._CHUNK_CONSUMER)
+        )
+
+    def _releaseDetectorChunkConsumer(self) -> None:
+        """Stop retaining frames for BeadRec on every detector."""
+        self._master.detectorsManager.execOnAll(
+            lambda c: c.releaseChunkConsumer(self._CHUNK_CONSUMER)
         )
 
     def _getBeadRoiBounds(self) -> Sequence[int]:
@@ -381,6 +397,7 @@ class BeadRecController(ImConWidgetController):
             config = self._createAcquisitionConfig()
             self.running = True
             self._master.detectorsManager.execOnAll(lambda c: c.flushBuffers())
+            self._releaseDetectorChunkConsumer()  # start with a fresh queue
             self.beadWorker.start(config)
             self._widget.setStatusText("Bead reconstruction running")
             self._widget.updateProgress(0, config.total_pixels)
@@ -393,9 +410,11 @@ class BeadRecController(ImConWidgetController):
             self._widget.setStatusText("Bead reconstruction stopped")
             self.thread.quit()
             self.thread.wait()
+            self._releaseDetectorChunkConsumer()
 
     def onNewScan(self):
         self.newScan = True
+        self.framesReceivedThisScan = 0
         if self.autoAxial:
             self.axialName = self._commChannel.getNextAxial()
         else:
@@ -404,6 +423,20 @@ class BeadRecController(ImConWidgetController):
         if self._widget.runButton.isChecked():
             self.beadWorker.configure(self._createAcquisitionConfig())
             self.addCurrentToWidgetList() # in case "clear all" made it disappear
+            # BeadRec reconstructs from the CURRENT detector (execOnCurrent);
+            # surface which one that is, since picking the wrong camera in
+            # the view silently yields an empty/garbage reconstruction.
+            try:
+                detectorName = self._master.detectorsManager.getCurrentDetectorName()
+                self._logger.info(
+                    f'BeadRec scan started: reconstructing from current '
+                    f'detector "{detectorName}"'
+                )
+                self._widget.setStatusText(
+                    f'Reconstructing from "{detectorName}"'
+                )
+            except Exception:
+                pass
 
     
     def OngoingScanStatus(self):
@@ -411,6 +444,13 @@ class BeadRecController(ImConWidgetController):
 
     def onEndedScan(self):
         self.ongoingScan=False
+        if self.running and self.framesReceivedThisScan == 0:
+            msg = ('BeadRec: 0 detector frames received during the scan — '
+                   'check camera triggering (e.g. external-trigger TTL '
+                   'never pulsed).')
+            self._logger.warning(msg)
+            self._widget.setStatusText(msg)
+            return
         if self.recIm is None:
             self._widget.setStatusText("Scan ended without bead reconstruction data")
             return
@@ -434,15 +474,16 @@ class BeadRecController(ImConWidgetController):
             dims = np.array(self._commChannel.getDimsScan()).astype(int)
             stepSizes = np.array(self._commChannel.getScanStepSizes(), dtype=float)
         except RuntimeError:
-            # No generic 'Scan' controller in this setup (e.g. a TriggerScope
-            # scanner registers its own scan widget, not 'Scan'). Bead
-            # reconstruction needs scan dimensions it cannot obtain here, so
-            # skip instead of raising on every scan start. Warn only once.
+            # Neither a generic 'Scan' controller nor a BeadRec-compatible
+            # scan source (e.g. TriggerScope raster) is registered in this
+            # setup. Bead reconstruction needs scan dimensions it cannot
+            # obtain here, so skip instead of raising on every scan start.
+            # Warn only once.
             if not self._warnedNoScanWidget:
                 self._logger.warning(
-                    'Bead reconstruction inactive: no scan widget available to '
-                    'provide scan dimensions (getDimsScan). Skipping parameter '
-                    'update on scan start.'
+                    'Bead reconstruction inactive: no scan widget or BeadRec '
+                    'scan source available to provide scan dimensions '
+                    '(getDimsScan). Skipping parameter update on scan start.'
                 )
                 self._warnedNoScanWidget = True
             return
@@ -501,6 +542,7 @@ class BeadRecController(ImConWidgetController):
         """"Updates image display with current recorded image self.recIm"""
         if isinstance(recIm, BeadWorkerUpdate):
             self._updateProgress(recIm.filled_pixels, recIm.total_pixels)
+            self.framesReceivedThisScan += recIm.frames_written
             recIm = recIm.buffer
         if recIm is not None:
             self.recIm = recIm

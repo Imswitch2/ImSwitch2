@@ -28,6 +28,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
+import numpy as np
+
+#: readChunk consumer key for workflow camera reads (see
+#: DetectorManager.readChunk — plain getChunk would steal frames from
+#: concurrent consumers such as the RecordingManager or BeadRec).
+_WORKFLOW_CHUNK_CONSUMER = 'WorkflowFacade'
+
 
 # ---------------------------------------------------------------------------
 # Laser sub-facade
@@ -118,6 +125,8 @@ class CamFacade:
 
     def prepare_acquisition(self, n_frames: int) -> None:
         self._n_planned = int(n_frames)
+        # Fresh consumer queue so no stale frames from a previous run leak in
+        self._detector.releaseChunkConsumer(_WORKFLOW_CHUNK_CONSUMER)
 
     def start_acquisition(self) -> None:
         self._detector.startAcquisition()
@@ -128,6 +137,7 @@ class CamFacade:
 
     def prepare_live(self) -> None:
         self._n_planned = None
+        self._detector.releaseChunkConsumer(_WORKFLOW_CHUNK_CONSUMER)
 
     def start_live(self) -> None:
         self._detector.startAcquisition()
@@ -138,8 +148,15 @@ class CamFacade:
     # Data ----------------------------------------------------------------
 
     def get_data(self):
-        """Return all frames acquired so far as an ndarray, or ``None``."""
-        return self._detector.getChunk()
+        """Return all frames acquired so far as an ndarray, or ``None``.
+
+        Reads through DetectorManager.readChunk so concurrent consumers
+        (RecordingManager, BeadRec) each still receive every frame.
+        """
+        frames = self._detector.readChunk(_WORKFLOW_CHUNK_CONSUMER)
+        if frames is None or len(frames) == 0:
+            return None
+        return np.asarray(frames)
 
     def wait_for_frame(self, timeout_s: float = 2.0) -> bool:
         """Block until at least one frame is available, or ``timeout_s`` elapses."""
