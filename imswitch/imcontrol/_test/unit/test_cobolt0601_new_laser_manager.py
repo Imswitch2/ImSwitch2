@@ -285,6 +285,56 @@ def test_scan_mode_active_enters_modulation_at_setpoint_power():
     assert 'l1' in laser.cmds
 
 
+def test_scan_mode_active_at_zero_setpoint_arms_dark():
+    """A GUI setpoint of 0 must arm the laser at modulation power 0 (dark),
+    NOT fall back to the configured modulationPowerMw default. Regression
+    test for the Snouty raster-scan bug where lasers set to 0 in the widget
+    still emitted at the 5 mW default during scans."""
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser, modulation_power_mw=5.0)
+    m._scpi = False
+    m._setpoint_mw = 0
+    m.setScanModeActive(True)
+
+    assert 'slmp 0.0' in laser.cmds
+    assert 'slmp 5.0' not in laser.cmds
+
+
+def test_set_enabled_true_at_zero_setpoint_flushes_zero_power():
+    """Enabling at setpoint 0 must write power 0 to the hardware instead of
+    skipping the write and emitting at the last power the laser had."""
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 0
+    m.setEnabled(True)
+
+    assert laser.cmds == ['p 0.000000', 'cp', 'l1']
+    assert m._enabled is True
+
+
+def test_pause_mode_enable_at_zero_setpoint_flushes_zero_power():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._setpoint_mw = 0
+    m.setEnabled(True)
+
+    assert laser.cmds == ['las:paus 0', 'LAS:RUNM ConstantPower', 'p 0.000000']
+    assert m._enabled is True
+
+
+def test_pause_mode_scan_arm_at_zero_setpoint_arms_dark():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=True, modulation_power_mw=5.0)
+    m._scpi = True
+    m._setpoint_mw = 0
+    m.setScanModeActive(True)
+
+    assert 'LASer:PowerModulation:POWer:SETPoint 0.0' in laser.cmds
+    assert 'LASer:PowerModulation:POWer:SETPoint 0.005' not in laser.cmds
+
+
 def test_scan_mode_inactive_returns_to_enable_state():
     """Leaving scan mode delegates to setEnabled(self._enabled)."""
     laser = FakeLaser(firmware='legacy')

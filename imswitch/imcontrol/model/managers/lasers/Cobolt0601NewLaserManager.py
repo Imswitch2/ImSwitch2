@@ -323,9 +323,10 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._set_enabled_pause(enabled)
             return
         if enabled:
-            ok_power = True
-            if self._setpoint_mw > 0:
-                ok_power = self._set_cw_power_mw(self._setpoint_mw)
+            # Always flush the setpoint, including 0 — skipping the write
+            # would turn the laser on at whatever power the hardware last
+            # had, not what the GUI shows.
+            ok_power = self._set_cw_power_mw(self._setpoint_mw)
             ok_mode = self._enter_constant_power()
             ok_master, _ = self._cmd('l1')
 
@@ -374,9 +375,8 @@ class Cobolt0601NewLaserManager(LaserManager):
         if enabled:
             ok_resume, _ = self._cmd('las:paus 0')
             ok_mode = self._enter_constant_power()
-            ok_power = True
-            if self._setpoint_mw > 0:
-                ok_power = self._set_cw_power_mw(self._setpoint_mw)
+            # Always flush the setpoint, including 0 (see setEnabled).
+            ok_power = self._set_cw_power_mw(self._setpoint_mw)
             if not (ok_resume and ok_mode and ok_power):
                 self.__logger.error(
                     f'Cobolt {self._port} failed to enable in pause mode '
@@ -425,9 +425,11 @@ class Cobolt0601NewLaserManager(LaserManager):
         mode the laser returns to whatever ``_enabled`` says.
         """
         if active:
-            mod_power = self._setpoint_mw if self._setpoint_mw > 0 \
-                else self._modulation_power_mw
-            self._enter_modulation_mode(mod_power)
+            # The GUI setpoint is the sole authority for the scan power —
+            # including 0, which must arm the laser DARK. Falling back to
+            # _modulation_power_mw here would emit light the user explicitly
+            # set to zero; that default is only for the idle safe state.
+            self._enter_modulation_mode(self._setpoint_mw)
             if self._pause_mode:
                 # Laser is already started; just un-pause. The digital gate
                 # (las:pm:dig:ena 1, set by _enter_modulation_mode) keeps the
