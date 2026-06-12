@@ -9,8 +9,11 @@ from imswitch.improcess.reconstructors.widefield_starss.analysis import (
     WidefieldStarssParams,
     discover_widefield_starss_pairs,
     discover_widefield_starss_pairs_in_folder,
+    analyze_widefield_starss_pair,
     run_widefield_starss_batch,
     run_widefield_starss_batch_from_folder,
+    single_analysis_results_payload,
+    summarize_widefield_starss_analysis,
 )
 
 
@@ -213,3 +216,27 @@ def test_widefield_starss_batch_exposes_graph_payloads(tmp_path):
         "Batch mean anisotropy per sample",
         "Batch regions per sample",
     }
+
+
+def test_single_analysis_results_payload_matches_batch_summary_shape(tmp_path):
+    h_path, v_path = _write_pair(tmp_path, "cell_000")
+    params = WidefieldStarssParams(segmentation_mode="none")
+    analysis = analyze_widefield_starss_pair(
+        tiff.imread(h_path), tiff.imread(v_path), params
+    )
+    batch_result = run_widefield_starss_batch_from_folder(tmp_path, params=params)
+
+    summary = summarize_widefield_starss_analysis(analysis)
+    payload = single_analysis_results_payload(
+        analysis, sample_id="cell_000_wfs", h_path=str(h_path), v_path=str(v_path)
+    )
+
+    assert summary["region_count"] == 1
+    assert payload["summary_columns"] == list(batch_result.summary.columns)
+    assert payload["summary_records"][0]["sample_id"] == "cell_000_wfs"
+    assert payload["region_columns"] == list(batch_result.regions.columns)
+    assert len(payload["region_records"]) == len(analysis.regions)
+    np.testing.assert_allclose(
+        payload["summary_records"][0]["mean_anisotropy_direct"],
+        batch_result.summary.loc[0, "mean_anisotropy_direct"],
+    )

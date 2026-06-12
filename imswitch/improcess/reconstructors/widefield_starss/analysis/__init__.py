@@ -15,6 +15,8 @@ from .batch import (
     discover_widefield_starss_pairs_in_folder,
     run_widefield_starss_batch,
     run_widefield_starss_batch_from_folder,
+    single_analysis_results_payload,
+    summarize_widefield_starss_analysis,
 )
 from .containers import AnisotropyMaps, PolarizationStats
 from .pipeline import (
@@ -58,7 +60,9 @@ __all__ = [
     "run_widefield_starss_batch",
     "run_widefield_starss_batch_from_folder",
     "segment_line_psf",
+    "single_analysis_results_payload",
     "standard_anisotropy_intensity_maps",
+    "summarize_widefield_starss_analysis",
     "split_frame_into4",
     "split_stack_into4",
 ]

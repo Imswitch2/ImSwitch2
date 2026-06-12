@@ -124,5 +124,27 @@ class GraphWidget(QtWidgets.QWidget):
                 symbolBrush=series.style.get("symbolBrush", pg.intColor(index)),
                 name=series.name,
             )
+            self._renderErrorBars(series, x, y, index)
         else:
             self.plot.plot(x, y, pen=pen, name=series.name)
+            self._renderErrorBars(series, x, y, index)
+
+    def _renderErrorBars(self, series: PlotSeries, x: np.ndarray, y: np.ndarray, index: int) -> None:
+        y_err = series.style.get("y_err")
+        if y_err is None:
+            return
+        err = np.asarray(y_err, dtype=float)
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(err) & (err > 0)
+        if not np.any(valid):
+            return
+        self.plot.addItem(
+            pg.ErrorBarItem(
+                x=x[valid],
+                y=y[valid],
+                height=2.0 * err[valid],
+                pen=series.style.get("pen", pg.intColor(index)),
+                beam=series.style.get("beam", 0.2),
+            )
+        )

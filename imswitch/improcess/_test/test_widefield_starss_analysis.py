@@ -131,6 +131,42 @@ def test_generic_otsu_segmentation_mode_reuses_improcess_segmentation():
     np.testing.assert_array_equal(analysis.mask, expected.labels)
 
 
+def test_segmentation_restricts_anisotropy_maps_to_segmented_regions():
+    background = np.zeros((8, 10), dtype=np.float32)
+    signal = background + _mosaic_frame(i0=1, i45=1, i90=1, i135=1)
+    signal[2:6, 2:8] += 20
+    stack_h = _alternating_stack(signal, background, scales=(1.0,))
+    stack_v = _alternating_stack(signal, background, scales=(1.0,))
+
+    params = WidefieldStarssParams(
+        segmentation_mode="generic_otsu",
+        segmentation_sigma=0.0,
+        min_size=1,
+    )
+    analysis = analyze_widefield_starss_pair(stack_h, stack_v, params)
+
+    outside = analysis.mask == 0
+    inside = analysis.mask > 0
+    assert np.any(outside) and np.any(inside)
+    for maps in (analysis.anis_maps.r_raw, analysis.anis_maps.r_smooth):
+        assert np.all(np.isnan(maps[outside]))
+        assert np.any(np.isfinite(maps[inside]))
+    assert not np.any(analysis.anis_maps.valid_mask & outside)
+
+
+def test_no_segmentation_keeps_anisotropy_maps_unmasked():
+    background = np.full((8, 10), 5, dtype=np.float32)
+    signal = background + _mosaic_frame(i0=100, i45=75, i90=50, i135=75)
+    stack_h = _alternating_stack(signal, background)
+    stack_v = _alternating_stack(signal, background)
+
+    params = WidefieldStarssParams(segmentation_mode="none", smooth_sigma=1.0)
+    analysis = analyze_widefield_starss_pair(stack_h, stack_v, params)
+
+    assert np.all(np.isfinite(analysis.anis_maps.r_raw))
+    assert np.all(np.isfinite(analysis.anis_maps.r_smooth))
+
+
 def test_anisotropy_formula_matches_x_definition():
     x, r, sigma_r = anisotropy_from_x(
         ihh=np.array([100.0]),
