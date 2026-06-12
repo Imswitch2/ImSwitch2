@@ -125,6 +125,20 @@ def prepare_signal_background(
     return signal.astype(np.float32, copy=False), background.astype(np.float32, copy=False)
 
 
+def _apply_segmentation_mask(anis_maps: AnisotropyMaps, mask: np.ndarray) -> None:
+    """Restrict anisotropy maps to segmented regions (mask label > 0)."""
+    segmented = np.asarray(mask) > 0
+    if segmented.shape != anis_maps.r_raw.shape:
+        raise ValueError(
+            f"Segmentation mask shape {segmented.shape} does not match "
+            f"anisotropy map shape {anis_maps.r_raw.shape}"
+        )
+    for attr in ("x_raw", "r_raw", "r_raw_se", "x_smooth", "r_smooth", "r_smooth_se"):
+        values = getattr(anis_maps, attr)
+        setattr(anis_maps, attr, np.where(segmented, values, np.nan))
+    anis_maps.valid_mask = anis_maps.valid_mask & segmented
+
+
 def analyze_widefield_starss_pair(
     stack_h: np.ndarray,
     stack_v: np.ndarray,
@@ -195,6 +209,8 @@ def _analyze_standard_mosaic(
         mask,
         anisotropy_mode=params.anisotropy_mode,
     )
+    if params.segmentation_mode != "none":
+        _apply_segmentation_mask(anis_maps, mask)
 
     return WidefieldStarssAnalysis(
         regions=regions,
@@ -288,6 +304,9 @@ def _analyze_split_detection(
             anis_maps,
             mask,
         )
+
+    if params.segmentation_mode != "none":
+        _apply_segmentation_mask(anis_maps, mask)
 
     return WidefieldStarssAnalysis(
         regions=regions,

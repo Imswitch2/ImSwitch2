@@ -24,8 +24,6 @@ from .basecontrollers import ImProcessWidgetController
 
 
 class _WidefieldStarssBatchWorker(QtCore.QObject):
-    _REGION_PREVIEW_LIMIT = 500
-
     progress = QtCore.Signal(object)
     finished = QtCore.Signal(object)
     failed = QtCore.Signal(str)
@@ -79,9 +77,7 @@ class _WidefieldStarssBatchWorker(QtCore.QObject):
                     "summary_columns": list(result.summary.columns),
                     "summary_records": result.summary.to_dict(orient="records"),
                     "region_columns": list(result.regions.columns),
-                    "region_records": result.regions.head(
-                        self._REGION_PREVIEW_LIMIT
-                    ).to_dict(orient="records"),
+                    "region_records": result.regions.to_dict(orient="records"),
                     "unmatched_paths": [str(path) for path in result.unmatched],
                     "plot_payloads": result.plot_payloads(),
                 }
@@ -301,6 +297,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
             try:
                 widget.sigRunBatchRequested.connect(self._run_widefield_starss_batch)
                 widget.sigCancelBatchRequested.connect(self._cancel_widefield_starss_batch)
+                if hasattr(widget, "sigPlotMetricRequested"):
+                    widget.sigPlotMetricRequested.connect(self._plot_widefield_starss_metric)
             except Exception:
                 pass
     
@@ -548,6 +546,8 @@ class ImProcessMainViewController(ImProcessWidgetController):
             result = self._activeReconstructor.process(dataObj, params)
             self._commChannel.sigResultProduced.emit(result, result.name)
             self._commChannel.sigCurrentResultChanged.emit(result)
+            if self._activeReconstructor.id == "widefield-starss":
+                self._append_wfs_single_result(result)
             # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
             # output pixel size) back into the active parameter widget so
             # the user sees up-to-date numbers without flipping to napari's
@@ -608,7 +608,6 @@ class ImProcessMainViewController(ImProcessWidgetController):
             self._wfsBatchWorker = worker
             self._set_wfs_batch_running(True)
             self._set_wfs_batch_progress(0, 1)
-            self._clear_wfs_batch_results()
             self._set_wfs_batch_status("WFS batch starting...")
             thread.start()
         except Exception as exc:
@@ -728,11 +727,40 @@ class ImProcessMainViewController(ImProcessWidgetController):
         if callable(setter):
             setter(payload)
 
-    def _clear_wfs_batch_results(self) -> None:
+    def _append_wfs_single_result(self, result) -> None:
+        """Append one single-file WFS result to the accumulated results tables
+        in the parameter widget, alongside any batch rows."""
+        analysis = getattr(result, "analysis", None)
         widget = getattr(self._widget, "parTree", None)
-        clearer = getattr(widget, "clear_batch_results", None)
-        if callable(clearer):
-            clearer()
+        appender = getattr(widget, "append_results", None)
+        if analysis is None or not callable(appender):
+            return
+        try:
+            from imswitch.improcess.reconstructors.widefield_starss.analysis import (
+                single_analysis_results_payload,
+            )
+
+            params = getattr(result, "params", {}) or {}
+            payload = single_analysis_results_payload(
+                analysis,
+                sample_id=result.name,
+                h_path=params.get("source_h_path", ""),
+                v_path=params.get("source_v_path", ""),
+            )
+            appender(payload)
+        except Exception as exc:
+            self._logger.warning(f"Could not append WFS single result to tables: {exc}")
+
+    def _plot_widefield_starss_metric(self) -> None:
+        widget = getattr(self._widget, "parTree", None)
+        builder = getattr(widget, "build_metric_plot_payloads", None)
+        if not callable(builder):
+            return
+        payloads = builder()
+        if payloads:
+            self._set_wfs_batch_graphs(payloads)
+        else:
+            self._set_wfs_batch_status("No accumulated WFS results to plot.")
 
     def _set_wfs_batch_graphs(self, plot_payloads) -> None:
         graph_widget = getattr(self._widget, "graphWidget", None)

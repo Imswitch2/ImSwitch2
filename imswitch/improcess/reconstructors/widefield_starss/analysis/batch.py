@@ -319,7 +319,8 @@ def _role_from_path(
     return max(matches, key=lambda item: len(item[1]))
 
 
-def _summary_row(pair_index: int, pair: WidefieldStarssPair, analysis: WidefieldStarssAnalysis) -> dict[str, object]:
+def summarize_widefield_starss_analysis(analysis: WidefieldStarssAnalysis) -> dict[str, object]:
+    """Per-sample summary statistics for one analysis (no pair bookkeeping)."""
     regions = analysis.regions
 
     def stat(column: str, fn, default=np.nan):
@@ -332,10 +333,6 @@ def _summary_row(pair_index: int, pair: WidefieldStarssPair, analysis: Widefield
         return float(fn(values))
 
     return {
-        "pair_index": pair_index,
-        "sample_id": pair.sample_id,
-        "source_h_path": str(pair.h_path),
-        "source_v_path": str(pair.v_path),
         "region_count": int(len(regions)),
         "total_area_pixels": stat("area_pixels", np.sum, default=0.0),
         "mean_area_pixels": stat("area_pixels", np.mean),
@@ -348,6 +345,48 @@ def _summary_row(pair_index: int, pair: WidefieldStarssPair, analysis: Widefield
         "mean_ellipticity": stat("ellipticity", np.mean),
         "anisotropy_mode": analysis.anis_maps.anisotropy_mode,
         "segmentation_mode": analysis.params.segmentation_mode if analysis.params is not None else None,
+    }
+
+
+def _summary_row(pair_index: int, pair: WidefieldStarssPair, analysis: WidefieldStarssAnalysis) -> dict[str, object]:
+    return {
+        "pair_index": pair_index,
+        "sample_id": pair.sample_id,
+        "source_h_path": str(pair.h_path),
+        "source_v_path": str(pair.v_path),
+        **summarize_widefield_starss_analysis(analysis),
+    }
+
+
+def single_analysis_results_payload(
+    analysis: WidefieldStarssAnalysis,
+    sample_id: str,
+    h_path: str = "",
+    v_path: str = "",
+) -> dict[str, object]:
+    """Build a results-table payload (same shape as a batch payload) for one
+    single-file analysis, so it can be appended to the batch results tables."""
+    summary = {
+        "pair_index": 0,
+        "sample_id": sample_id,
+        "source_h_path": str(h_path),
+        "source_v_path": str(v_path),
+        **summarize_widefield_starss_analysis(analysis),
+    }
+    region_table = analysis.regions.copy()
+    region_table.insert(0, "pair_index", 0)
+    region_table.insert(1, "sample_id", sample_id)
+    region_table.insert(2, "source_h_path", str(h_path))
+    region_table.insert(3, "source_v_path", str(v_path))
+    return {
+        "pair_count": 1,
+        "region_count": len(region_table),
+        "unmatched_count": 0,
+        "summary_columns": list(summary.keys()),
+        "summary_records": [summary],
+        "region_columns": list(region_table.columns),
+        "region_records": region_table.to_dict(orient="records"),
+        "unmatched_paths": [],
     }
 
 
