@@ -1,4 +1,6 @@
+import dataclasses
 import glob
+import json
 import os
 from pathlib import Path
 
@@ -15,9 +17,36 @@ def loadSetupInfo(options, setupInfoType):
         return setupInfoType.from_json(setupFile.read(), infer_missing=True)
 
 
+def pruneDefaultSetupInfoFields(setupInfo) -> dict:
+    """Serialize a SetupInfo to a dict, omitting top-level fields whose value
+    equals the field default (e.g. ``rotators: null``, an all-default
+    ``nidaq`` section).
+
+    loadSetupInfo() parses with ``infer_missing=True``, so a missing key and
+    an explicit default/null value load identically — the round-trip is
+    lossless. Without this, every full-file rewrite (laser preset save,
+    camera ROI save) pollutes hand-maintained setup files with machine-added
+    default sections for hardware the setup does not have.
+    """
+    data = setupInfo.to_dict()
+    for fieldInfo in dataclasses.fields(type(setupInfo)):
+        name = fieldInfo.name
+        if name not in data:
+            continue
+        if fieldInfo.default is not dataclasses.MISSING:
+            default = fieldInfo.default
+        elif fieldInfo.default_factory is not dataclasses.MISSING:
+            default = fieldInfo.default_factory()
+        else:
+            continue
+        if getattr(setupInfo, name) == default:
+            del data[name]
+    return data
+
+
 def saveSetupInfo(options, setupInfo):
     with open(os.path.join(_setupFilesDir, options.setupFileName), 'w') as setupFile:
-        setupFile.write(setupInfo.to_json(indent=4))
+        json.dump(pruneDefaultSetupInfoFields(setupInfo), setupFile, indent=4)
 
 
 def loadOptions():
