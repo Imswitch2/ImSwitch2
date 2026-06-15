@@ -67,6 +67,8 @@ Candidate controls:
 
 ## Phase 3: Ilastik-Like Lightweight Classifier
 
+Status: future work.
+
 Prototype a pixel-classifier path without making ilastik a dependency.
 
 Options:
@@ -80,6 +82,8 @@ This should remain optional until there is a clear user workflow for training
 and persisting classifiers.
 
 ## Phase 4: Optional Model Backends
+
+Status: future work.
 
 Add optional backends only when dependencies are installed:
 
