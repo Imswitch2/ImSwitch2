@@ -183,9 +183,18 @@ confocal processing remain the main open modality targets.
 - ✅ **First processors:** FFT-based drift correction
   (`processors/drift_correct/`), FRC / single-image FRC
   (`processors/frc/`), generic projections (`processors/projection/`) and
-  threshold/connected-component segmentation (`processors/segmentation/`), plus
-  2D Gaussian PSF/bead resolution (`processors/psf_resolution/`) and
-  colocalization metrics (`processors/colocalization/`).
+  shared threshold/connected-component/watershed segmentation
+  (`processors/segmentation/`), plus 2D Gaussian PSF/bead resolution
+  (`processors/psf_resolution/`) and colocalization metrics
+  (`processors/colocalization/`).
+- ✅ **Segmentation source of truth.** The ImProcess segmentation analysis
+  helper is now the shared implementation for the ImProcess segmentation
+  processor, the tiling cell-targeting segmenter and WFS Otsu segmentation.
+  Tiling keeps its workflow-facing `Segmenter` wrapper and WFS keeps
+  domain-specific PSF/line-PSF modes, but Otsu thresholding, morphology,
+  measurement metadata, watershed labeling and target filtering now flow
+  through shared helpers. The legacy WFS `generic_otsu` spelling is accepted
+  only as a saved-parameter alias for `otsu`; the UI exposes one Otsu mode.
 - ✅ **Drag-and-drop ingest** on the main window for HDF5/Zarr/TIFF.
 - ✅ **Standalone launch** (`python -m imswitch.improcess`) without a
   SetupInfo.
@@ -203,7 +212,8 @@ confocal processing remain the main open modality targets.
     when FLIM data is present.
   - ✅ WidefieldSTARSS first slice: H/V TIFF pairing, polarization-channel
     demux, anisotropy maps, per-region metrics, graph payloads and HDF5/TIFF
-    save. Batch folder mode, table UI and richer layer display remain pending.
+    save. Batch folder mode, table UI and shared Otsu segmentation are in
+    place; richer layer display remains pending.
   - ✅ Lightsheet (SNOUTY): deskew and projection-preview reconstructors are
     implemented; deconvolution and real setup validation remain pending.
   - SIM / MoNaLISA: existing pipeline as one registered reconstructor.
@@ -305,7 +315,7 @@ XYZ stage scanning.
   `DefocusScan`, `SerialCWSTARSS`, `MultiWellTiling`.
 - ⬜ Polarization channel separation + per-cell metric extraction.
 - ⬜ Auto cell-detection inside the tiling workflow drives navigation
-  correctly.
+  correctly, using the same shared segmentation kernel as ImProcess and WFS.
 - ⬜ Scripted unattended runs from
   `imswitch/_data/user_defaults/scripts/wfs/`.
 
