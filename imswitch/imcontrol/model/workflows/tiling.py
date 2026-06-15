@@ -342,7 +342,7 @@ class TilingWorkflow:
                 success = True
             except Exception as exc:
                 logger.warning("Cell %d/%d failed: %s — skipping",
-                               i + 1, len(idx_valid), exc)
+                               i + 1, targets.n_valid, exc)
             if cell_done_cb is not None:
                 cell_done_cb(i, success)
 
