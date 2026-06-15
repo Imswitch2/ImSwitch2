@@ -187,9 +187,10 @@ multi-consumer migration:
   conversions are out of scope).
 
 ### 3. Max throughput
-- Move compression **off** the acquisition/write thread, or default the
-  streaming write path to uncompressed and offer compression as a
-  post-process / opt-in (`RecordingManager.py:492`).
+- **Decision (maintainer):** keep compression as the **default** (preserve
+  on-disk file sizes) but move it **off the acquisition thread** — compress in a
+  separate writer thread / queue so it never blocks frame intake
+  (`RecordingManager.py:492`). Do NOT switch the default to uncompressed.
 - Batch HDF5/Zarr writes: accumulate N frames (or T-sized chunks) and write/
   resize once per batch instead of per frame; set chunk shape to
   `(C, Y, X)` with C>1.
