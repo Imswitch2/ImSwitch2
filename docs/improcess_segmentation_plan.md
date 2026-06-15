@@ -23,6 +23,8 @@ beads or high-contrast objects, but it is weak for common microscopy cases:
 
 ## Phase 1: Classical Microscopy Segmentation
 
+Status: done.
+
 Implement a stronger no-new-dependency baseline using `scipy` and
 `scikit-image`.
 
@@ -51,6 +53,8 @@ analysis helper.
 
 ## Phase 2: Better 2D/Stack Selection
 
+Status: done for registered `SegmentationProcessor` plane selection.
+
 Improve the processor-side input controls so users can choose which plane or
 component to segment instead of always taking the first non-spatial index.
 
@@ -58,6 +62,7 @@ Candidate controls:
 
 - explicit T/Z/C index fields
 - segment current display component from the result-component selector
+- optional named-axis mapping, such as `Dataset=0, Base=1`
 - optional batch-over-axis mode later
 
 ## Phase 3: Ilastik-Like Lightweight Classifier
@@ -97,4 +102,3 @@ Once algorithms are stable:
 - expose algorithm metadata clearly in saved HDF5
 - add preview/apply separation in the widget if needed
 - add ROI-manager roundtrip tests for labels and masks
-

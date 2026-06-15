@@ -159,6 +159,88 @@ def test_segmentation_processor_registered_and_generates_payload():
     assert payloads[0].metadata["region_count"] == 1
 
 
+def test_segmentation_processor_uses_requested_tzc_plane():
+    data = np.zeros((2, 3, 2, 10, 10), dtype=np.float32)
+    data[1, 2, 1, 2:7, 3:8] = 4.0
+    result = MinimalResult(name="stack", data=data, axis_labels=["T", "Z", "C", "Y", "X"])
+    processor = SegmentationProcessor()
+
+    segmented = processor.apply(
+        result,
+        {
+            "threshold_method": "manual",
+            "threshold_value": 1.0,
+            "min_area": 5,
+            "t_index": 1,
+            "z_index": 2,
+            "c_index": 1,
+        },
+    )
+
+    assert segmented.analysis.regions[0].area_pixels == 25
+    assert segmented.analysis.metadata["source_plane_indices"] == {"T": 1, "Z": 2, "C": 1}
+
+
+def test_segmentation_processor_uses_named_axis_index_mapping():
+    data = np.zeros((1, 2, 10, 10), dtype=np.float32)
+    data[0, 1, 1:6, 2:7] = 5.0
+    result = MinimalResult(name="components", data=data, axis_labels=["Dataset", "Base", "Y", "X"])
+    processor = SegmentationProcessor()
+
+    segmented = processor.apply(
+        result,
+        {
+            "threshold_method": "manual",
+            "threshold_value": 1.0,
+            "min_area": 5,
+            "axis_indices": "Dataset=0, Base=1",
+        },
+    )
+
+    assert segmented.analysis.regions[0].area_pixels == 25
+    assert segmented.analysis.metadata["source_plane_indices"] == {"Dataset": 0, "Base": 1}
+
+
+def test_segmentation_processor_rejects_out_of_range_plane_index():
+    data = np.zeros((1, 10, 10), dtype=np.float32)
+    result = MinimalResult(name="stack", data=data, axis_labels=["T", "Y", "X"])
+    processor = SegmentationProcessor()
+
+    try:
+        processor.apply(
+            result,
+            {
+                "threshold_method": "manual",
+                "threshold_value": 1.0,
+                "t_index": 1,
+            },
+        )
+    except ValueError as exc:
+        assert "out of range" in str(exc)
+    else:
+        raise AssertionError("Expected out-of-range plane index to fail")
+
+
+def test_segmentation_processor_rejects_unknown_named_axis_index():
+    data = np.zeros((1, 2, 10, 10), dtype=np.float32)
+    result = MinimalResult(name="components", data=data, axis_labels=["Dataset", "Base", "Y", "X"])
+    processor = SegmentationProcessor()
+
+    try:
+        processor.apply(
+            result,
+            {
+                "threshold_method": "manual",
+                "threshold_value": 1.0,
+                "axis_indices": "Bas=1",
+            },
+        )
+    except ValueError as exc:
+        assert "unknown axis label" in str(exc)
+    else:
+        raise AssertionError("Expected unknown axis label to fail")
+
+
 def test_segmentation_result_saves_hdf5(tmp_path):
     image = np.zeros((8, 8), dtype=np.float32)
     image[1:5, 2:6] = 5.0

@@ -81,6 +81,25 @@ class SegmentationProcessor(Processor):
         watershed_distance_spin.setValue(5)
         layout.addRow("Watershed distance:", watershed_distance_spin)
 
+        t_index_spin = QtWidgets.QSpinBox()
+        t_index_spin.setRange(0, 999999)
+        t_index_spin.setValue(0)
+        layout.addRow("T index:", t_index_spin)
+
+        z_index_spin = QtWidgets.QSpinBox()
+        z_index_spin.setRange(0, 999999)
+        z_index_spin.setValue(0)
+        layout.addRow("Z index:", z_index_spin)
+
+        c_index_spin = QtWidgets.QSpinBox()
+        c_index_spin.setRange(0, 999999)
+        c_index_spin.setValue(0)
+        layout.addRow("C index:", c_index_spin)
+
+        axis_indices_edit = QtWidgets.QLineEdit()
+        axis_indices_edit.setPlaceholderText("e.g. Dataset=0, Base=1")
+        layout.addRow("Other axes:", axis_indices_edit)
+
         def get_values():
             return {
                 "threshold_method": method_combo.currentText(),
@@ -94,13 +113,17 @@ class SegmentationProcessor(Processor):
                 "local_block_size": local_block_spin.value(),
                 "local_offset": local_offset_spin.value(),
                 "watershed_min_distance": watershed_distance_spin.value(),
+                "t_index": t_index_spin.value(),
+                "z_index": z_index_spin.value(),
+                "c_index": c_index_spin.value(),
+                "axis_indices": axis_indices_edit.text().strip(),
             }
 
         widget.get_values = get_values
         return widget
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
-        image = self._extract_2d(result)
+        image, plane_indices = self._extract_2d(result, params)
         threshold_method = params.get("threshold_method", "otsu")
         analysis = segment_image(
             image,
@@ -120,6 +143,7 @@ class SegmentationProcessor(Processor):
             local_offset=float(params.get("local_offset", 0.0)),
             watershed_min_distance=int(params.get("watershed_min_distance", 5)),
         )
+        analysis.metadata["source_plane_indices"] = dict(plane_indices)
         return SegmentationResult(
             name=f"{result.name} (segmentation)",
             analysis=analysis,
@@ -127,19 +151,87 @@ class SegmentationProcessor(Processor):
         )
 
     @staticmethod
-    def _extract_2d(result: ProcessingResult) -> np.ndarray:
+    def _extract_2d(result: ProcessingResult, params: dict | None = None) -> tuple[np.ndarray, dict]:
         data = np.asarray(result.data)
         if data.ndim == 2:
-            return data
+            return data, {}
         if data.ndim < 2:
             raise ValueError(f"Segmentation needs at least 2D data, got shape {data.shape}")
+        params = params or {}
+        labels = _axis_labels_for_data(result, data)
+        explicit_indices = _parse_axis_indices(params.get("axis_indices", ""))
+        non_spatial_labels = set(labels[: data.ndim - 2])
+        unknown_labels = sorted(set(explicit_indices) - non_spatial_labels)
+        if unknown_labels:
+            raise ValueError(
+                "Segmentation axis_indices contains unknown axis label(s): "
+                f"{unknown_labels}. Available non-spatial axes: {sorted(non_spatial_labels)}"
+            )
+        requested_indices = _requested_plane_indices(params, explicit_indices)
         indexer = []
+        plane_indices = {}
         for axis in range(data.ndim):
             if axis >= data.ndim - 2:
                 indexer.append(slice(None))
             else:
-                indexer.append(0)
+                label = labels[axis]
+                index = int(requested_indices.get(label, 0))
+                size = data.shape[axis]
+                if index < 0 or index >= size:
+                    raise ValueError(
+                        f"Segmentation index {index} out of range for axis "
+                        f"{label!r} with size {size}"
+                    )
+                indexer.append(index)
+                plane_indices[label] = index
         image = np.asarray(data[tuple(indexer)])
         if image.ndim != 2:
             raise ValueError(f"Could not extract a 2D segmentation image from shape {data.shape}")
-        return image
+        return image, plane_indices
+
+
+def _axis_labels_for_data(result: ProcessingResult, data: np.ndarray) -> list[str]:
+    labels = list(getattr(result, "axis_labels", []) or [])
+    if len(labels) == data.ndim:
+        return [str(label) for label in labels]
+    defaults = ["T", "Z", "C", "Y", "X"]
+    if data.ndim <= len(defaults):
+        return defaults[-data.ndim:]
+    extra = [f"D{i}" for i in range(data.ndim - len(defaults))]
+    return [*extra, *defaults]
+
+
+def _requested_plane_indices(params: dict, explicit_indices: dict[str, int]) -> dict[str, int]:
+    indices = {
+        "T": int(params.get("t_index", 0)),
+        "Z": int(params.get("z_index", 0)),
+        "C": int(params.get("c_index", 0)),
+    }
+    indices.update(explicit_indices)
+    return indices
+
+
+def _parse_axis_indices(text: object) -> dict[str, int]:
+    if text is None:
+        return {}
+    raw = str(text).strip()
+    if not raw:
+        return {}
+    parsed = {}
+    for item in raw.split(","):
+        part = item.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(
+                "Segmentation axis_indices must use comma-separated Label=index entries"
+            )
+        label, value = part.split("=", 1)
+        label = label.strip()
+        if not label:
+            raise ValueError("Segmentation axis_indices contains an empty axis label")
+        try:
+            parsed[label] = int(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"Invalid segmentation index for axis {label!r}: {value!r}") from exc
+    return parsed
