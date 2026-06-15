@@ -3,6 +3,9 @@ import numpy as np
 import zarr
 
 from imswitch.improcess.model import DataObj
+# Reuse the production zarr helpers so these tests work on both zarr v2
+# (DirectoryStore / create_dataset) and zarr v3 (LocalStore / create_array).
+from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
 
 
 def test_data_obj_reads_legacy_hdf5_dataset(tmp_path) -> None:
@@ -74,8 +77,8 @@ def test_data_obj_reads_structured_hdf5_detector_group(tmp_path) -> None:
 def test_data_obj_reads_legacy_zarr_array(tmp_path) -> None:
     path = tmp_path / "legacy.zarr"
     data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
-    root = zarr.group(store=zarr.storage.LocalStore(str(path)), overwrite=True)
-    array = root.create_array("CAM", data=data, chunks=(1, 3, 4))
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+    array = ZarrStorer._create_array(root, "CAM", data=data, chunks=(1, 3, 4))
     array.attrs["detector_name"] = "CAM"
     array.attrs["writing"] = False
 
@@ -94,10 +97,10 @@ def test_data_obj_reads_legacy_zarr_array(tmp_path) -> None:
 def test_data_obj_reads_structured_zarr_detector_group(tmp_path) -> None:
     path = tmp_path / "structured.zarr"
     data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
-    root = zarr.group(store=zarr.storage.LocalStore(str(path)), overwrite=True)
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
     root.attrs["rec_mode"] = "recording"
     det_group = root.create_group("CAM")
-    array = det_group.create_array("data", data=data, chunks=(1, 3, 4))
+    array = ZarrStorer._create_array(det_group, "data", data=data, chunks=(1, 3, 4))
     array.attrs["detector_name"] = "CAM"
     array.attrs["writing"] = False
     metadata = det_group.create_group("metadata")
