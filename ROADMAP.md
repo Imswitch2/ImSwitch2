@@ -123,12 +123,33 @@ should be an optional extra.
   snap layout, streaming layout, multi-detector single-file vs
   per-detector, scan-lapse grouping, and the explicit RAM
   `NotImplementedError`.
+- ✅ **Clean data-flow, Phase 1** (2026-06-15). Recording data path
+  hardened end-to-end — see
+  [docs/recording_dataflow_plan.md](docs/recording_dataflow_plan.md) for the
+  full design and deferred phases.
+  - **Dtype contract:** `DetectorManager.dtype` / `bitDepth` are the single
+    source of truth (cameras learn from the latest frame; APD/PMT/Swabian
+    declare explicitly). Storers create datasets from the *declared* dtype and
+    **warn loudly on mismatch instead of silently casting** — no more
+    "first frame defines the dtype forever".
+  - **No silent casts:** APD float→buffer writes are now explicit/rounded; the
+    recording worker stacks frames dtype-preserving (no float64 surprise).
+  - **Off-thread writer:** disk I/O + compression moved off the acquisition
+    thread (`WriterThread` + bounded backpressure queue + batched multi-frame
+    chunks). Compression stays the default but no longer throttles intake.
+    Robust to writer death (raises instead of deadlocking the producer) and
+    surfaces `openStream` failures synchronously to the caller.
+  - **Sink-abort:** `RecordingManager.abortRecording()` stops the recording and
+    discards the partial output (`Storer.abortStream` deletes the file/store);
+    free-running detectors are cleanly abortable. Scan *source* abort
+    (mid-scan nidaq/galvo stop) is designed but hardware-gated — see the plan.
 - ⬜ Port the `improcess` live-reconstruction pipeline as a separate
   phase; rename the `karl_*` packages to descriptive names; gate GPU
   behind an extra. Coordinates with Milestone 12.
-- ⬜ Build further recording-manager improvements from that foundation
-  (live monitoring hooks, MemoryStore for in-RAM Zarr, dtype-aware
-  compression presets).
+- 🔄 Build further recording-manager improvements from that foundation:
+  Phase 1.5 `ChunkBroker` subscription API, producer-driven detector sources,
+  a hard RAM cap for `SaveMode.RAM`, live monitoring hooks, MemoryStore for
+  in-RAM Zarr, and dtype-aware compression presets (see plan doc).
 
 ---
 

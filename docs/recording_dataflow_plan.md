@@ -1,7 +1,10 @@
 # Recording data-flow redesign — design doc
 
-Status: **design only, no code yet.** Decision requested from maintainer before
-implementation. Scope is the acquisition → recording → disk/RAM path.
+Status: **Phase 1 implemented and merged to main (2026-06-15).** Dtype contract,
+silent-cast removal, off-thread writer, and recording sink-abort are done; see
+the per-section status below and the ROADMAP (Milestone 10). Phases 1.5 / 2 / 3
+and scan source-abort remain designed-but-deferred. Scope is the
+acquisition → recording → disk/RAM path.
 
 ## Goals (from maintainer)
 
@@ -161,7 +164,7 @@ multi-consumer migration:
 
 ---
 
-## Phase 1 work items (priorities: dtype, casts, throughput)
+## Phase 1 work items (priorities: dtype, casts, throughput) — ✅ DONE (merged 2026-06-15)
 
 ### 1. Dtype contract
 - Add `DetectorManager.dtype` property (abstract or default), e.g. returning a
@@ -287,11 +290,16 @@ Run via the `openhands-clean` venv in **headless** mode
 (`openhands -f <taskfile> --headless --always-approve`). Sequenced (per repo
 memory: single shared checkout, **sequential runs only**, never parallel):
 
-**Phase 1 (now):**
-1. Dtype contract (DetectorManager `dtype`/`bitDepth` + storers validate, not
-   infer + per-manager dtype).
-2. Kill silent casts (APD float→uint16 buffer + recording worker stacking).
-3. Throughput (compression off-thread/opt-in + batched chunked writes).
+**Phase 1 — ✅ done (OpenHands, merged 2026-06-15):**
+1. ✅ Dtype contract (DetectorManager `dtype`/`bitDepth` + storers create from
+   declared dtype + warn-on-mismatch + per-manager dtype).
+2. ✅ Kill silent casts (APD float→uint16 buffer + recording worker stacking).
+3. ✅ Throughput (compression off-thread on a `WriterThread` + batched chunked
+   writes). Sink-abort added on top, implemented directly (not via agent).
+
+Lessons for future agent runs: steer agents away from timing-sensitive
+concurrency *integration* tests (they thrash and risk weakening the impl); add
+`pytest-timeout` to CI so a hang fails loudly instead of running for minutes.
 
 **Phase 1.5+:** ChunkBroker characterization tests, then broker refactor —
-handed to agents only after Phase 1 lands and is reviewed.
+the first real parallelization candidate (separate git worktrees per agent).
