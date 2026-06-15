@@ -53,6 +53,77 @@ def test_segment_image_otsu_detects_bright_region():
     assert analysis.metadata["threshold_method"] == "otsu"
 
 
+def test_segment_image_triangle_and_yen_detect_bright_region():
+    image = np.zeros((32, 32), dtype=np.float32)
+    image[8:24, 10:22] = 12.0
+
+    for method in ("triangle", "yen"):
+        analysis = segment_image(image, threshold_method=method, min_area=20)
+
+        assert len(analysis.regions) == 1
+        assert analysis.regions[0].area_pixels == 16 * 12
+        assert analysis.metadata["threshold_method"] == method
+
+
+def test_segment_image_local_threshold_handles_uneven_background():
+    rows, cols = 64, 64
+    background = np.linspace(0, 8, cols, dtype=np.float32)[None, :]
+    image = np.repeat(background, rows, axis=0)
+    image[22:42, 24:44] += 15.0
+
+    analysis = segment_image(
+        image,
+        threshold_method="local",
+        min_area=100,
+        local_block_size=21,
+        local_offset=-2.0,
+    )
+
+    assert len(analysis.regions) == 1
+    assert analysis.regions[0].area_pixels >= 250
+    assert analysis.metadata["local_block_size"] == 21
+
+
+def test_segment_image_watershed_splits_touching_objects():
+    yy, xx = np.ogrid[:64, :64]
+    disk_a = (yy - 32) ** 2 + (xx - 25) ** 2 <= 12 ** 2
+    disk_b = (yy - 32) ** 2 + (xx - 39) ** 2 <= 12 ** 2
+    image = np.zeros((64, 64), dtype=np.float32)
+    image[disk_a | disk_b] = 10.0
+
+    analysis = segment_image(
+        image,
+        threshold_method="watershed",
+        min_area=50,
+        watershed_min_distance=8,
+        fill_holes=True,
+    )
+
+    assert len(analysis.regions) == 2
+    assert analysis.labels.max() == 2
+    assert analysis.metadata["threshold_method"] == "watershed"
+
+
+def test_segment_image_cleanup_can_fill_holes_and_clear_border():
+    image = np.zeros((32, 32), dtype=np.float32)
+    image[0:8, 0:8] = 10.0
+    image[10:24, 10:24] = 10.0
+    image[14:18, 14:18] = 0.0
+
+    analysis = segment_image(
+        image,
+        threshold_method="manual",
+        threshold_value=1.0,
+        min_area=10,
+        fill_holes=True,
+        clear_border=True,
+    )
+
+    assert len(analysis.regions) == 1
+    assert analysis.regions[0].area_pixels == 14 * 14
+    assert analysis.regions[0].bounds == (10, 24, 10, 24)
+
+
 def test_segmentation_processor_registered_and_generates_payload():
     data = np.zeros((2, 10, 10), dtype=np.float32)
     data[0, 2:7, 3:8] = 4.0
@@ -67,6 +138,13 @@ def test_segmentation_processor_registered_and_generates_payload():
             "threshold_value": 1.0,
             "min_area": 5,
             "smooth_sigma": 0.0,
+            "background_radius": 0.0,
+            "morphology_radius": 0,
+            "fill_holes": False,
+            "clear_border": False,
+            "local_block_size": 51,
+            "local_offset": 0.0,
+            "watershed_min_distance": 5,
         },
     )
 

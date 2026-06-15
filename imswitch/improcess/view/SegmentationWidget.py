@@ -22,7 +22,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         self._last_analysis: SegmentationAnalysis | None = None
 
         self.methodCombo = QtWidgets.QComboBox()
-        self.methodCombo.addItems(["otsu", "manual"])
+        self.methodCombo.addItems(["otsu", "manual", "triangle", "yen", "local", "watershed"])
 
         self.thresholdSpin = QtWidgets.QDoubleSpinBox()
         self.thresholdSpin.setDecimals(6)
@@ -38,6 +38,32 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.smoothSpin.setRange(0.0, 1000.0)
         self.smoothSpin.setValue(0.0)
 
+        self.backgroundSpin = QtWidgets.QDoubleSpinBox()
+        self.backgroundSpin.setDecimals(1)
+        self.backgroundSpin.setRange(0.0, 10000.0)
+        self.backgroundSpin.setValue(0.0)
+
+        self.morphologySpin = QtWidgets.QSpinBox()
+        self.morphologySpin.setRange(0, 9999)
+        self.morphologySpin.setValue(0)
+
+        self.fillHolesCheck = QtWidgets.QCheckBox("Fill holes")
+        self.clearBorderCheck = QtWidgets.QCheckBox("Clear border")
+
+        self.localBlockSpin = QtWidgets.QSpinBox()
+        self.localBlockSpin.setRange(3, 9999)
+        self.localBlockSpin.setSingleStep(2)
+        self.localBlockSpin.setValue(51)
+
+        self.localOffsetSpin = QtWidgets.QDoubleSpinBox()
+        self.localOffsetSpin.setDecimals(6)
+        self.localOffsetSpin.setRange(-1e12, 1e12)
+        self.localOffsetSpin.setValue(0.0)
+
+        self.watershedDistanceSpin = QtWidgets.QSpinBox()
+        self.watershedDistanceSpin.setRange(1, 9999)
+        self.watershedDistanceSpin.setValue(5)
+
         self.prefixEdit = QtWidgets.QLineEdit("Seg")
 
         self.runButton = QtWidgets.QPushButton("Segment")
@@ -52,10 +78,17 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.summaryLabel.setStyleSheet("color:#888; font-size:8pt;")
 
         form = QtWidgets.QFormLayout()
-        form.addRow("Threshold", self.methodCombo)
+        form.addRow("Method", self.methodCombo)
         form.addRow("Manual value", self.thresholdSpin)
         form.addRow("Min area", self.minAreaSpin)
         form.addRow("Smooth sigma", self.smoothSpin)
+        form.addRow("Top-hat radius", self.backgroundSpin)
+        form.addRow("Morph radius", self.morphologySpin)
+        form.addRow("", self.fillHolesCheck)
+        form.addRow("", self.clearBorderCheck)
+        form.addRow("Local block", self.localBlockSpin)
+        form.addRow("Local offset", self.localOffsetSpin)
+        form.addRow("Watershed distance", self.watershedDistanceSpin)
         form.addRow("ROI prefix", self.prefixEdit)
 
         controls = QtWidgets.QHBoxLayout()
@@ -92,6 +125,13 @@ class SegmentationWidget(QtWidgets.QWidget):
                 threshold_value=self.thresholdSpin.value() if method == "manual" else None,
                 min_area=self.minAreaSpin.value(),
                 smooth_sigma=self.smoothSpin.value(),
+                background_radius=self.backgroundSpin.value(),
+                morphology_radius=self.morphologySpin.value(),
+                fill_holes=self.fillHolesCheck.isChecked(),
+                clear_border=self.clearBorderCheck.isChecked(),
+                local_block_size=self.localBlockSpin.value(),
+                local_offset=self.localOffsetSpin.value(),
+                watershed_min_distance=self.watershedDistanceSpin.value(),
             )
             self._last_analysis = analysis
             self._viewer.add_labels(
@@ -174,7 +214,12 @@ class SegmentationWidget(QtWidgets.QWidget):
             json.dump(payload, fh, indent=2)
 
     def _update_manual_enabled(self) -> None:
-        self.thresholdSpin.setEnabled(self.methodCombo.currentText() == "manual")
+        method = self.methodCombo.currentText()
+        self.thresholdSpin.setEnabled(method == "manual")
+        is_local = method == "local"
+        self.localBlockSpin.setEnabled(is_local)
+        self.localOffsetSpin.setEnabled(is_local)
+        self.watershedDistanceSpin.setEnabled(method == "watershed")
 
     def _current_image_2d(self):
         layer = self._active_image_layer()
