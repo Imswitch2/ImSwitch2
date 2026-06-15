@@ -1,7 +1,10 @@
 import enum
 import json
 import os
+import shutil
 import time
+import threading
+import queue
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, Union
 
@@ -23,6 +26,10 @@ logger = logging.getLogger(__name__)
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
+
+# Off-thread writer constants
+WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
+WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
 
 
 class AsTemporaryFile(object):
@@ -111,7 +118,23 @@ class Storer(abc.ABC):
             saveMode: SaveMode enum value
         """
         raise NotImplementedError
-    
+
+    def abortStream(self, filePaths: Dict[str, str],
+                    fileDests: Dict[str, Union[str, 'BytesIO']], saveMode) -> None:
+        """Abort a streaming session, discarding partial output.
+
+        Called instead of finalizeStream when a recording is aborted. Closes any
+        open handles and removes the partial output file(s)/store(s) so no
+        truncated dataset is left behind. Best-effort: failures are logged, not
+        raised, so an abort always completes.
+
+        Args:
+            filePaths: Dict mapping detector name to on-disk file path
+            fileDests: Dict mapping detector name to file path or BytesIO
+            saveMode: SaveMode enum value
+        """
+        raise NotImplementedError
+
     @staticmethod
     def _group_metadata_by_category(attrs: Dict[str, str]) -> Dict[str, Dict[str, str]]:
         """Group flat metadata by category prefix.
@@ -264,7 +287,7 @@ class ZarrStorer(Storer):
         return dataset
 
     def _createStreamingDetectorGroup(self, root: Any, detectorName: str,
-                                      frames: np.ndarray, attrs: Dict[str, Any],
+                                      dtype: np.dtype, spatialShape: tuple, attrs: Dict[str, Any],
                                       groupPath: str | None = None) -> Any:
         parent = root
         if groupPath:
@@ -274,13 +297,14 @@ class ZarrStorer(Storer):
         if 'data' in det_group:
             raise ValueError(f'Zarr data array already exists for detector {detectorName}')
 
-        spatialShape = frames.shape[-2:]
+        # Use multi-frame chunks for better compression ratio and fewer I/O ops
+        chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
         dataset = self._create_array(
             det_group,
             'data',
             shape=(0, *spatialShape),
-            dtype=frames.dtype,
-            chunks=(1, *spatialShape),
+            dtype=dtype,
+            chunks=(chunk_frames, *spatialShape),
         )
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._zarr_attr_value(
@@ -343,6 +367,7 @@ class ZarrStorer(Storer):
         self._fileDests = fileDests
         self._currentFrames = {}
         self._groupPaths = {}
+        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
         
         for detectorName in detectorNames:
             dest = fileDests[detectorName]
@@ -368,7 +393,7 @@ class ZarrStorer(Storer):
             self._currentFrames[detectorName] = 0
     
     def writeFrames(self, detectorName: str, frames: np.ndarray) -> None:
-        """Write frames to Zarr dataset, lazily creating it from frame dtype."""
+        """Write frames to Zarr dataset, lazily creating it from declared dtype."""
         if len(frames) == 0:
             return
 
@@ -377,18 +402,35 @@ class ZarrStorer(Storer):
             frames = frames[np.newaxis, ...]
 
         if detectorName not in self._datasets:
+            # Read the authoritative dtype from the detector (the contract's single source of truth)
+            declared = self.detectorManager[detectorName].dtype
+            spatialShape = frames.shape[-2:]
+            
             root = self._roots.get(self._fileDests[detectorName])
             if root is None:
                 raise RuntimeError(f'No Zarr root available for detector {detectorName}')
+            # Create dataset with the DECLARED dtype (the contract), not frames.dtype
             self._datasets[detectorName] = self._createStreamingDetectorGroup(
                 root,
                 detectorName,
-                frames,
+                declared,
+                spatialShape,
                 self._attrs[detectorName],
                 groupPath=self._groupPaths[detectorName],
             )
 
+        # Warn-once on dtype mismatch (loud alert, not silent)
         dataset = self._datasets[detectorName]
+        if frames.dtype != dataset.dtype and detectorName not in self._dtypeWarned:
+            logger.warning(
+                f"ZarrStorer dtype mismatch for '{detectorName}': "
+                f"declared={dataset.dtype}, actual frame={frames.dtype}. "
+                f"Recording with declared dtype (frames will be cast). "
+                f"This warning is shown once per detector per recording."
+            )
+            self._dtypeWarned.add(detectorName)
+
+        # Append frames to dataset (cast happens on assignment if needed)
         it = self._currentFrames[detectorName]
         newSize = it + len(frames)
         dataset.resize((newSize, *dataset.shape[-2:]))
@@ -414,6 +456,20 @@ class ZarrStorer(Storer):
 
         for store in self._stores.values():
             self._close_store(store)
+
+    def abortStream(self, filePaths, fileDests, saveMode):
+        """Close Zarr stores and remove the partial .zarr directories."""
+        for store in getattr(self, '_stores', {}).values():
+            try:
+                self._close_store(store)
+            except Exception as e:
+                logger.warning(f'Zarr abort: failed to close store: {e}')
+        for dest in set(getattr(self, '_fileDests', {}).values()):
+            try:
+                if isinstance(dest, str) and os.path.isdir(dest):
+                    shutil.rmtree(dest, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f'Zarr abort: failed to remove store {dest}: {e}')
 
 
 class HDF5Storer(Storer):
@@ -484,6 +540,8 @@ class HDF5Storer(Storer):
         if maxshape is not None:
             # Extendable dataset for streaming (start with 0 frames)
             shape = maxshape[-2:]  # (Y, X)
+            # Use multi-frame chunks for better compression ratio and fewer I/O ops
+            chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
             dataset = det_group.create_dataset(
                 'data',
                 shape=(0, *shape),
@@ -491,7 +549,7 @@ class HDF5Storer(Storer):
                 dtype=dtype,
                 compression=self.compression,
                 shuffle=True if self.compression else False,
-                chunks=(1, *shape)  # Per-frame chunks
+                chunks=(chunk_frames, *shape)  # Multi-frame chunks for batched writes
             )
         else:
             # Fixed dataset from data (snapshot)
@@ -571,6 +629,7 @@ class HDF5Storer(Storer):
         self._singleLapseFile = singleLapseFile
         self._groupPaths = {}  # Track group paths for lapse files
         self._saveMode = saveMode
+        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
 
         # Temporarily disable compression for RAM mode (BytesIO) due to h5py instability
         self._streamCompression = None if saveMode == SaveMode.RAM else self.compression
@@ -607,6 +666,9 @@ class HDF5Storer(Storer):
 
         # Lazy dataset creation using structured layout
         if detectorName not in self._datasets:
+            # Read the authoritative dtype from the detector (the contract's single source of truth)
+            declared = self.detectorManager[detectorName].dtype
+            
             # Derive spatial dims from the frame arrays themselves. The detector
             # .shape attribute is (X, Y) while frame arrays follow numpy's
             # (n, Y, X) convention, so using _shapes here would mis-broadcast
@@ -620,8 +682,9 @@ class HDF5Storer(Storer):
             original_compression = self.compression
             self.compression = self._streamCompression
             try:
+                # Create dataset with the DECLARED dtype (the contract), not frames.dtype
                 dataset = self._createDetectorGroup(
-                    file, detectorName, frames.dtype, self._attrs[detectorName],
+                    file, detectorName, declared, self._attrs[detectorName],
                     maxshape=(None, *spatialShape),  # (None, Y, X)
                     groupPath=groupPath
                 )
@@ -631,8 +694,18 @@ class HDF5Storer(Storer):
             dataset.attrs['writing'] = True
             self._datasets[detectorName] = dataset
 
-        # Append frames to structured dataset
+        # Warn-once on dtype mismatch (loud alert, not silent)
         dataset = self._datasets[detectorName]
+        if frames.dtype != dataset.dtype and detectorName not in self._dtypeWarned:
+            logger.warning(
+                f"HDF5Storer dtype mismatch for '{detectorName}': "
+                f"declared={dataset.dtype}, actual frame={frames.dtype}. "
+                f"Recording with declared dtype (frames will be cast). "
+                f"This warning is shown once per detector per recording."
+            )
+            self._dtypeWarned.add(detectorName)
+
+        # Append frames to structured dataset (cast happens on assignment if needed)
         currentSize = dataset.shape[0]
         newSize = currentSize + len(frames)
         dataset.resize(newSize, axis=0)
@@ -678,6 +751,25 @@ class HDF5Storer(Storer):
                 file.flush()
             elif saveMode == SaveMode.Disk:
                 file.close()
+
+    def abortStream(self, filePaths, fileDests, saveMode):
+        """Close HDF5 files and remove the partial on-disk file(s)."""
+        processed = set()
+        for file in getattr(self, '_files', {}).values():
+            if id(file) in processed:
+                continue
+            processed.add(id(file))
+            try:
+                file.close()
+            except Exception as e:
+                logger.warning(f'HDF5 abort: failed to close file: {e}')
+        if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            for path in set(filePaths.values()):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    logger.warning(f'HDF5 abort: failed to remove {path}: {e}')
 
 
 class TiffStorer(Storer):
@@ -727,6 +819,7 @@ class TiffStorer(Storer):
         self._filenames = {}
         self._basePaths = {}
         self._partNumbers = {}
+        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
 
         # Determine output file paths
         for detectorName in detectorNames:
@@ -740,6 +833,23 @@ class TiffStorer(Storer):
         """Write frames to TIFF file (append mode) with automatic >4GB rollover."""
         if len(frames) == 0:
             return
+
+        # Read the authoritative dtype from the detector (the contract's single source of truth)
+        declared = self.detectorManager[detectorName].dtype
+        
+        # Warn-once on dtype mismatch (loud alert, not silent)
+        if frames.dtype != declared and detectorName not in self._dtypeWarned:
+            logger.warning(
+                f"TiffStorer dtype mismatch for '{detectorName}': "
+                f"declared={declared}, actual frame={frames.dtype}. "
+                f"Recording with declared dtype (frames will be cast). "
+                f"This warning is shown once per detector per recording."
+            )
+            self._dtypeWarned.add(detectorName)
+        
+        # Cast to declared dtype if needed (now logged, not silent)
+        if frames.dtype != declared:
+            frames = frames.astype(declared)
 
         filePath = self._filenames[detectorName]
         try:
@@ -774,6 +884,30 @@ class TiffStorer(Storer):
         """TIFF files are automatically closed by tifffile. Nothing to finalize."""
         # TIFF writes are direct to disk - no RAM mode or special cleanup needed
         pass
+
+    def abortStream(self, filePaths, fileDests, saveMode):
+        """Remove the partial TIFF file(s), including any >4GB rollover parts."""
+        candidates = set(filePaths.values())
+        candidates.update(getattr(self, '_filenames', {}).values())
+        # Reconstruct rollover part names (basePath -> basePath_part{N}) so no
+        # part is left behind when a recording rolled over before the abort.
+        basePaths = getattr(self, '_basePaths', {})
+        partNumbers = getattr(self, '_partNumbers', {})
+        for detectorName, basePath in basePaths.items():
+            candidates.add(basePath)
+            for part in range(2, partNumbers.get(detectorName, 1) + 1):
+                if basePath.endswith('.tiff'):
+                    candidates.add(basePath[:-5] + f'_part{part}.tiff')
+                elif basePath.endswith('.tif'):
+                    candidates.add(basePath[:-4] + f'_part{part}.tif')
+                else:
+                    candidates.add(basePath + f'_part{part}.tiff')
+        for path in candidates:
+            try:
+                if isinstance(path, str) and os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f'TIFF abort: failed to remove {path}: {e}')
 
 
 class SaveMode(enum.Enum):
@@ -818,6 +952,7 @@ class RecordingManager(SignalInterface):
         self._memRecordings = {}  # { filePath: bytesIO }
         self.__detectorsManager = detectorsManager
         self.__record = False
+        self.__abort = False
         self.__recordingWorker = RecordingWorker(self)
         self.__thread = Thread()
         self.__recordingWorker.moveToThread(self.__thread)
@@ -832,6 +967,12 @@ class RecordingManager(SignalInterface):
     def record(self):
         """ Whether a recording is currently being recorded. """
         return self.__record
+
+    @property
+    def aborting(self):
+        """ Whether the current recording is being aborted (partial output
+        discarded rather than finalized). """
+        return self.__abort
 
     @property
     def detectorsManager(self):
@@ -854,6 +995,7 @@ class RecordingManager(SignalInterface):
 
         self.__logger.info('Starting recording')
         self.__record = True
+        self.__abort = False
         self.__recordingWorker.detectorNames = detectorNames
         self.__recordingWorker.recMode = recMode
         self.__recordingWorker.savename = savename
@@ -880,6 +1022,30 @@ class RecordingManager(SignalInterface):
 
         if self.__record:
             self.__logger.info('Stopping recording')
+        self.__record = False
+        self.__thread.quit()
+        if emitSignal:
+            self.sigRecordingEnded.emit()
+        if wait:
+            self.__thread.wait()
+
+    def abortRecording(self, emitSignal=True, wait=True):
+        """ Aborts the current recording, DISCARDING partial output on disk.
+
+        Like endRecording, but the streaming writer deletes the partial
+        file(s)/store(s) instead of finalizing them. The acquisition loop stops
+        at its next iteration and the writer discards any queued frames.
+
+        Note: this stops the recording sink only. For scan-driven detectors the
+        scan hardware source is not stopped here - see the source-abort design
+        in docs/recording_dataflow_plan.md. """
+
+        self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
+                                          condition=lambda c: c.forAcquisition)
+
+        if self.__record:
+            self.__logger.info('Aborting recording')
+        self.__abort = True
         self.__record = False
         self.__thread.quit()
         if emitSignal:
@@ -956,6 +1122,219 @@ class RecordingManager(SignalInterface):
             pathWithoutExt, pathExt = os.path.splitext(path)
             newPath = f'{pathWithoutExt}_{numExisting}{pathExt}'
         return newPath
+
+
+class WriterThread(threading.Thread):
+    """Dedicated writer thread that owns all storer I/O operations.
+    
+    Runs compression and disk writes off the acquisition thread, fed by a bounded
+    queue from the acquisition loop. Batches frames per detector for efficiency.
+    """
+    def __init__(self, storer, fileDests, detectorNames, shapes, attrs,
+                 singleMultiDetectorFile, singleLapseFile, saveMode, filePaths, recordingManager):
+        super().__init__(daemon=False, name='RecordingWriterThread')
+        self._storer = storer
+        self._fileDests = fileDests
+        self._detectorNames = detectorNames
+        self._shapes = shapes
+        self._attrs = attrs
+        self._singleMultiDetectorFile = singleMultiDetectorFile
+        self._singleLapseFile = singleLapseFile
+        self._saveMode = saveMode
+        self._filePaths = filePaths
+        self._recordingManager = recordingManager
+        
+        # Bounded queue for backpressure (put() blocks when full)
+        self._queue = queue.Queue(maxsize=WRITER_QUEUE_MAXSIZE)
+        
+        # Per-detector batching buffers
+        self._batches = {detectorName: [] for detectorName in detectorNames}
+        self._batch_frame_counts = {detectorName: 0 for detectorName in detectorNames}
+        
+        # Track total frames written per detector
+        self._currentFrames = {detectorName: 0 for detectorName in detectorNames}
+        
+        # Handshake for openStream completion (success or exception)
+        self._opened_event = threading.Event()
+        self._open_exception = None
+        # Exception raised in the write loop (surfaced to the producer so it
+        # never blocks forever on a dead writer; see enqueue_frames).
+        self._write_exception = None
+        # Set by abort(): queued frames are discarded and the partial output is
+        # deleted (abortStream) instead of being flushed and finalized.
+        self._abort_event = threading.Event()
+
+    def run(self):
+        """Writer thread main loop."""
+        try:
+            # Open streaming session (h5py/zarr file handles must be touched by one thread only)
+            self._storer.openStream(
+                fileDests=self._fileDests,
+                detectorNames=self._detectorNames,
+                shapes=self._shapes,
+                attrs=self._attrs,
+                singleMultiDetectorFile=self._singleMultiDetectorFile,
+                singleLapseFile=self._singleLapseFile,
+                saveMode=self._saveMode
+            )
+        except Exception as e:
+            # Store exception to re-raise on acquisition thread
+            self._open_exception = e
+            self._opened_event.set()
+            return
+        
+        # Signal that openStream succeeded
+        self._opened_event.set()
+        
+        # Main write loop: process frames until sentinel
+        try:
+            while True:
+                item = self._queue.get()
+                
+                if item is None:
+                    # Sentinel. On abort, discard partial output; otherwise flush
+                    # remaining batches and finalize normally.
+                    if self._abort_event.is_set():
+                        self._storer.abortStream(
+                            self._filePaths, self._fileDests, self._saveMode
+                        )
+                    else:
+                        self._flush_all_batches()
+                        self._storer.finalizeStream(
+                            self._currentFrames, self._filePaths, self._recordingManager, self._saveMode
+                        )
+                    break
+
+                # Discard frames once an abort has been requested.
+                if self._abort_event.is_set():
+                    continue
+
+                # Real frame item: (detectorName, frames)
+                detectorName, frames = item
+                
+                # Append to batch
+                self._batches[detectorName].append(frames)
+                self._batch_frame_counts[detectorName] += len(frames)
+                
+                # Flush batch if threshold reached
+                if self._batch_frame_counts[detectorName] >= WRITE_BATCH_FRAMES:
+                    self._flush_batch(detectorName)
+        
+        except Exception as e:
+            # Record the failure and exit. Do NOT re-raise into the thread void:
+            # the producer (enqueue_frames) and finish() detect the dead writer
+            # via is_alive() and surface this exception, so the acquisition
+            # thread never blocks forever on a full queue.
+            logger.exception(f"WriterThread failed during write loop: {e}")
+            self._write_exception = e
+    
+    def _flush_batch(self, detectorName):
+        """Flush accumulated frames for a detector to disk."""
+        if not self._batches[detectorName]:
+            return
+        
+        # Concatenate all accumulated frames
+        batch = np.concatenate(self._batches[detectorName], axis=0)
+        
+        # Write batch (compression + I/O happens here, off acquisition thread)
+        self._storer.writeFrames(detectorName, batch)
+        
+        # Update counters
+        self._currentFrames[detectorName] += len(batch)
+        
+        # Clear batch
+        self._batches[detectorName] = []
+        self._batch_frame_counts[detectorName] = 0
+    
+    def _flush_all_batches(self):
+        """Flush all remaining per-detector batches."""
+        for detectorName in self._detectorNames:
+            self._flush_batch(detectorName)
+    
+    def wait_for_open(self):
+        """Wait for openStream handshake and re-raise any exception.
+        
+        Returns:
+            None if openStream succeeded
+            
+        Raises:
+            Any exception that occurred during openStream
+        """
+        self._opened_event.wait()
+        if self._open_exception is not None:
+            raise self._open_exception
+    
+    def enqueue_frames(self, detectorName, frames):
+        """Enqueue frames for the writer thread.
+
+        Blocks while the queue is full (intended backpressure), but NEVER
+        forever: if the writer thread has died, raises so the failure surfaces
+        on the acquisition thread instead of deadlocking the producer.
+        """
+        while True:
+            try:
+                self._queue.put((detectorName, frames), timeout=0.1)
+                return
+            except queue.Full:
+                if not self.is_alive():
+                    raise RuntimeError(
+                        'RecordingWriterThread died before frames could be '
+                        'enqueued; recording aborted'
+                    ) from self._write_exception
+                # Writer still alive and draining - keep applying backpressure.
+                continue
+    
+    def finish(self):
+        """Signal end of recording and wait for writer thread to complete.
+        
+        Uses a timeout to avoid deadlock if queue is full. The writer thread
+        will drain the queue, making space for the sentinel.
+        """
+        # Enqueue sentinel (None means "no more frames")
+        # Use timeout to avoid deadlock - writer thread drains queue
+        while True:
+            try:
+                self._queue.put(None, timeout=0.1)
+                break
+            except queue.Full:
+                # Queue still full, writer is draining - retry
+                if not self.is_alive():
+                    # Writer thread died unexpectedly, don't wait forever
+                    logger.error("WriterThread died before sentinel could be enqueued")
+                    return
+                continue
+        
+        # Wait for writer thread to finish (finalizeStream must complete)
+        self.join(timeout=30.0)
+        if self.is_alive():
+            logger.error("WriterThread did not finish within timeout")
+
+    def abort(self):
+        """Abort: discard queued frames and partial output, then stop the writer.
+
+        Unlike finish(), does NOT flush or finalize - the storer deletes the
+        partial file(s)/store(s) via abortStream. Drains the queue aggressively
+        so the sentinel is deliverable even under full-queue backpressure (the
+        discarded frames are not needed).
+        """
+        self._abort_event.set()
+        while True:
+            try:
+                self._queue.put(None, timeout=0.1)
+                break
+            except queue.Full:
+                if not self.is_alive():
+                    logger.error("WriterThread died before abort sentinel could be enqueued")
+                    return
+                # Discard a queued item to make room for the sentinel.
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+
+        self.join(timeout=30.0)
+        if self.is_alive():
+            logger.error("WriterThread did not finish (abort) within timeout")
 
 
 class RecordingWorker(Worker):
@@ -1046,16 +1425,23 @@ class RecordingWorker(Worker):
             if len(shape) > 2:
                 shapes[detectorName] = shape[-2:]
         
-        # Open streaming session
-        storer.openStream(
+        # Start writer thread and wait for openStream handshake
+        writerThread = WriterThread(
+            storer=storer,
             fileDests=fileDests,
             detectorNames=self.detectorNames,
             shapes=shapes,
             attrs=self.attrs,
             singleMultiDetectorFile=self.singleMultiDetectorFile,
             singleLapseFile=self.recMode == RecMode.ScanLapse and self.singleLapseFile,
-            saveMode=self.saveMode
+            saveMode=self.saveMode,
+            filePaths=filePaths,
+            recordingManager=self.__recordingManager
         )
+        writerThread.start()
+        
+        # Wait for openStream to complete (blocks until success or raises on error)
+        writerThread.wait_for_open()
         
         # Determine stop condition based on recMode
         if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
@@ -1119,8 +1505,8 @@ class RecordingWorker(Worker):
                                 newFrames = newFrames[:remaining]
                                 n = remaining
                         
-                        # Delegate write to storer
-                        storer.writeFrames(detectorName, newFrames)
+                        # Enqueue frames for writer thread (blocks if queue full, providing backpressure)
+                        writerThread.enqueue_frames(detectorName, newFrames)
                         currentFrame[detectorName] += n
                         lastFrameTime[detectorName] = time.time()  # Update watchdog timestamp
                 
@@ -1176,14 +1562,25 @@ class RecordingWorker(Worker):
                 self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
                     _RECORDING_CHUNK_CONSUMER
                 )
-            # Finalize streaming (close files, emit signals)
-            storer.finalizeStream(currentFrame, filePaths, self.__recordingManager, self.saveMode)
             
-            # End recording
-            emitSignal = True
-            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
-                emitSignal = False
-            self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
+            # Tear down the writer thread. On abort, discard partial output;
+            # otherwise drain the queue and finalize. Both enqueue a sentinel and
+            # join, so finalize/abortStream completes before _record returns.
+            aborting = self.__recordingManager.aborting
+            if aborting:
+                writerThread.abort()
+            else:
+                writerThread.finish()
+
+            # End recording. When aborting, abortRecording() already emitted
+            # sigRecordingEnded, so suppress it here to avoid a double emit.
+            if aborting:
+                self.__recordingManager.endRecording(emitSignal=False, wait=False)
+            else:
+                emitSignal = True
+                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                    emitSignal = False
+                self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
 
     def _getNewFrames(self, detectorName):
         # readChunk (not getChunk): the destructive getChunk would steal
@@ -1192,8 +1589,14 @@ class RecordingWorker(Worker):
         newFrames = self.__recordingManager.detectorsManager[detectorName].readChunk(
             _RECORDING_CHUNK_CONSUMER
         )
-        newFrames = np.array(newFrames)
-        return newFrames
+        # Preserve native dtype: no silent promotion to float64.
+        # readChunk returns List[ndarray] already in detector's native dtype.
+        if len(newFrames) == 0:
+            # Empty chunk: return a correctly typed empty array (not float64).
+            detector_dtype = self.__recordingManager.detectorsManager[detectorName].dtype
+            return np.empty((0,), dtype=detector_dtype)
+        # Non-empty: stack preserves native dtype, no copy needed.
+        return np.stack(newFrames)
 
 
 class RecMode(enum.Enum):

@@ -1,4 +1,5 @@
 import os
+import time
 import pytest
 
 import h5py
@@ -585,6 +586,458 @@ def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
     # Verify recording ended cleanly (thread not hung)
     qtbot.wait(200)  # Small delay to let thread finish
     assert not recordingManager.record, "Recording should have stopped after stall"
+
+
+def test_detector_dtype_contract(tmp_path):
+    """Test that storers create datasets from detector's declared dtype (the contract).
+    
+    Phase 1, Task 1: The detector's dtype property is the single authoritative 
+    source of truth for recording. HDF5 and Zarr storers must create datasets 
+    from this declared dtype, not from frames.dtype.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer
+    
+    # Create detector with uint16 dtype (default)
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    # Verify the detector declares uint16
+    declared_dtype = detectorsManager[detectorName].dtype
+    assert declared_dtype == np.dtype(np.uint16), \
+        f"Expected uint16 declared dtype, got {declared_dtype}"
+    
+    # Test HDF5Storer
+    hdf5_path = str(tmp_path / 'test_dtype_contract.h5')
+    hdf5_storer = HDF5Storer(hdf5_path, detectorsManager)
+    frames = np.random.randint(0, 1000, (5, 128, 128), dtype=np.uint16)
+    
+    hdf5_storer.openStream(
+        fileDests={detectorName: hdf5_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: frames.shape[-2:]},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    hdf5_storer.writeFrames(detectorName, frames)
+    hdf5_storer.finalizeStream(
+        currentFrames={detectorName: frames.shape[0]},
+        filePaths={detectorName: hdf5_path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+    
+    # Assert on-disk HDF5 dataset dtype matches declared dtype
+    with h5py.File(hdf5_path, 'r') as f:
+        dataset = f[detectorName]['data']
+        assert dataset.dtype == declared_dtype, \
+            f"HDF5 dataset dtype {dataset.dtype} != declared dtype {declared_dtype}"
+    
+    # Test ZarrStorer
+    zarr_path = str(tmp_path / 'test_dtype_contract.zarr')
+    zarr_storer = ZarrStorer(zarr_path, detectorsManager)
+    
+    zarr_storer.openStream(
+        fileDests={detectorName: zarr_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: frames.shape[-2:]},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    zarr_storer.writeFrames(detectorName, frames)
+    zarr_storer.finalizeStream(
+        currentFrames={detectorName: frames.shape[0]},
+        filePaths={detectorName: zarr_path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+    
+    # Assert on-disk Zarr dataset dtype matches declared dtype
+    root = zarr.open(zarr_path, mode='r')
+    dataset = root[detectorName]['data']
+    assert dataset.dtype == declared_dtype, \
+        f"Zarr dataset dtype {dataset.dtype} != declared dtype {declared_dtype}"
+
+
+def test_dtype_mismatch_warning(tmp_path, caplog):
+    """Test that storers warn loudly once per detector on dtype mismatch.
+    
+    Phase 1, Task 1: When frames.dtype != declared dtype, storers must emit a
+    prominent warning ONCE per detector, then proceed with a logged cast (not silent).
+    The on-disk dtype must remain the declared dtype.
+    """
+    import logging
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer, TiffStorer
+    
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    # Detector declares uint16
+    declared_dtype = detectorsManager[detectorName].dtype
+    assert declared_dtype == np.dtype(np.uint16)
+    
+    # Create frames with a DIFFERENT dtype (float32) to trigger mismatch
+    frames_wrong_dtype = np.random.rand(3, 128, 128).astype(np.float32)
+    
+    # Test HDF5Storer with dtype mismatch
+    with caplog.at_level(logging.WARNING):
+        hdf5_path = str(tmp_path / 'test_mismatch.h5')
+        hdf5_storer = HDF5Storer(hdf5_path, detectorsManager)
+        
+        hdf5_storer.openStream(
+            fileDests={detectorName: hdf5_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames_wrong_dtype.shape[-2:]},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.Disk,
+        )
+        
+        # Write multiple chunks - warning should appear only ONCE
+        hdf5_storer.writeFrames(detectorName, frames_wrong_dtype[:1])
+        hdf5_storer.writeFrames(detectorName, frames_wrong_dtype[1:2])
+        hdf5_storer.writeFrames(detectorName, frames_wrong_dtype[2:])
+        
+        hdf5_storer.finalizeStream(
+            currentFrames={detectorName: frames_wrong_dtype.shape[0]},
+            filePaths={detectorName: hdf5_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+    
+    # Assert exactly ONE warning for HDF5Storer
+    hdf5_warnings = [r for r in caplog.records 
+                     if r.levelno == logging.WARNING 
+                     and 'HDF5Storer dtype mismatch' in r.message
+                     and detectorName in r.message]
+    assert len(hdf5_warnings) == 1, \
+        f"Expected exactly 1 HDF5 dtype mismatch warning, got {len(hdf5_warnings)}"
+    assert 'declared=uint16' in hdf5_warnings[0].message
+    assert 'actual frame=float32' in hdf5_warnings[0].message
+    
+    # Assert on-disk dtype is the DECLARED dtype (uint16), not the frame dtype (float32)
+    with h5py.File(hdf5_path, 'r') as f:
+        dataset = f[detectorName]['data']
+        assert dataset.dtype == declared_dtype, \
+            f"HDF5 dataset should use declared dtype {declared_dtype}, got {dataset.dtype}"
+        assert dataset.shape[0] == 3, "All frames should be recorded despite mismatch"
+    
+    # Clear caplog for Zarr test
+    caplog.clear()
+    
+    # Test ZarrStorer with dtype mismatch
+    with caplog.at_level(logging.WARNING):
+        zarr_path = str(tmp_path / 'test_mismatch.zarr')
+        zarr_storer = ZarrStorer(zarr_path, detectorsManager)
+        
+        zarr_storer.openStream(
+            fileDests={detectorName: zarr_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames_wrong_dtype.shape[-2:]},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.Disk,
+        )
+        
+        # Write multiple chunks - warning should appear only ONCE
+        zarr_storer.writeFrames(detectorName, frames_wrong_dtype[:1])
+        zarr_storer.writeFrames(detectorName, frames_wrong_dtype[1:2])
+        zarr_storer.writeFrames(detectorName, frames_wrong_dtype[2:])
+        
+        zarr_storer.finalizeStream(
+            currentFrames={detectorName: frames_wrong_dtype.shape[0]},
+            filePaths={detectorName: zarr_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+    
+    # Assert exactly ONE warning for ZarrStorer
+    zarr_warnings = [r for r in caplog.records 
+                     if r.levelno == logging.WARNING 
+                     and 'ZarrStorer dtype mismatch' in r.message
+                     and detectorName in r.message]
+    assert len(zarr_warnings) == 1, \
+        f"Expected exactly 1 Zarr dtype mismatch warning, got {len(zarr_warnings)}"
+    
+    # Assert on-disk dtype is the DECLARED dtype
+    root = zarr.open(zarr_path, mode='r')
+    dataset = root[detectorName]['data']
+    assert dataset.dtype == declared_dtype, \
+        f"Zarr dataset should use declared dtype {declared_dtype}, got {dataset.dtype}"
+    assert dataset.shape[0] == 3, "All frames should be recorded despite mismatch"
+    
+    # Clear caplog for Tiff test
+    caplog.clear()
+    
+    # Test TiffStorer with dtype mismatch
+    with caplog.at_level(logging.WARNING):
+        tiff_path = str(tmp_path / 'test_mismatch.tiff')
+        tiff_storer = TiffStorer(tiff_path, detectorsManager)
+        
+        tiff_storer.openStream(
+            fileDests={detectorName: tiff_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames_wrong_dtype.shape[-2:]},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.Disk,
+        )
+        
+        # Write multiple chunks - warning should appear only ONCE
+        tiff_storer.writeFrames(detectorName, frames_wrong_dtype[:1])
+        tiff_storer.writeFrames(detectorName, frames_wrong_dtype[1:2])
+        tiff_storer.writeFrames(detectorName, frames_wrong_dtype[2:])
+        
+        tiff_storer.finalizeStream(
+            currentFrames={detectorName: frames_wrong_dtype.shape[0]},
+            filePaths={detectorName: tiff_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+    
+    # Assert exactly ONE warning for TiffStorer
+    tiff_warnings = [r for r in caplog.records 
+                     if r.levelno == logging.WARNING 
+                     and 'TiffStorer dtype mismatch' in r.message
+                     and detectorName in r.message]
+    assert len(tiff_warnings) == 1, \
+        f"Expected exactly 1 Tiff dtype mismatch warning, got {len(tiff_warnings)}"
+
+
+def test_detector_bitDepth_property():
+    """Test that detector bitDepth property returns correct values.
+    
+    Phase 1, Task 1: bitDepth should return int(dtype.itemsize * 8).
+    """
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    # uint16 detector should report 16 bits
+    assert detectorsManager[detectorName].bitDepth == 16, \
+        "uint16 detector should report bitDepth=16"
+    
+    # Create a mock float32 detector by patching dtype
+    detector = detectorsManager[detectorName]
+    original_dtype = detector.dtype
+    
+    # Temporarily override dtype to test bitDepth calculation
+    class MockFloat32Detector:
+        @property
+        def dtype(self):
+            return np.dtype(np.float32)
+        
+        @property
+        def bitDepth(self):
+            return int(np.dtype(self.dtype).itemsize * 8)
+    
+    mock_detector = MockFloat32Detector()
+    assert mock_detector.bitDepth == 32, \
+        "float32 detector should report bitDepth=32"
+
+
+# ---------------------------------------------------------------------------
+# Off-thread writer (Phase 1 Task 3) tests.
+#
+# Design note: the off-thread writer is now in the DEFAULT recording path, so
+# the existing recording integration tests (test_recording_spec_frames,
+# test_recording_spec_time, lapse, multi-detector, ...) already exercise it
+# end-to-end. We therefore avoid adding new slow qtbot/mock-driven integration
+# tests here (they run on every CI push). Instead:
+#   - one fast direct-storer test that compression survives the batched-chunk
+#     change, and
+#   - deterministic WriterThread unit tests for the concurrency guarantees
+#     (FIFO order, no-drop, backpressure, openStream-failure propagation) using
+#     a controllable fake storer. The mock detector emits RANDOM frames at a
+#     time-driven rate and the real writer outpaces it, so order/backpressure
+#     are not observable through the integration path anyway.
+# ---------------------------------------------------------------------------
+
+from imswitch.imcontrol.model.managers.RecordingManager import (
+    HDF5Storer, WriterThread, WRITER_QUEUE_MAXSIZE, WRITE_BATCH_FRAMES,
+)
+
+
+def test_offthread_writer_compression_enabled(tmp_path):
+    """Compression is still applied after the batched multi-frame chunk change.
+
+    Direct-storer test (no qtbot / no time-driven mock) so it stays CI-fast.
+    """
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    path = str(tmp_path / 'test_compression.h5')
+
+    storer = HDF5Storer(path, detectorsManager)
+    frames = np.random.randint(0, 1000, (5, 64, 64), dtype=np.uint16)
+    storer.openStream(
+        fileDests={detectorName: path}, detectorNames=[detectorName],
+        shapes={detectorName: (64, 64)}, attrs={detectorName: {}},
+        singleMultiDetectorFile=False, singleLapseFile=False, saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames(detectorName, frames)
+    storer.finalizeStream({detectorName: 5}, {detectorName: path}, None, SaveMode.Disk)
+
+    with h5py.File(path, 'r') as f:
+        dataset = f[detectorName]['data']
+        assert dataset.compression is not None, "Compression must remain enabled for disk mode"
+        assert dataset.shape[0] == 5
+
+
+class _FakeStorer:
+    """Controllable storer for deterministic WriterThread unit tests.
+
+    Records, in arrival order, every batch handed to writeFrames so tests can
+    assert FIFO ordering and that no frame is dropped. Optionally raises on
+    openStream (failure-propagation test) or sleeps per write (backpressure).
+    """
+    def __init__(self, openStreamError=None, writeDelay=0.0):
+        self._openStreamError = openStreamError
+        self._writeDelay = writeDelay
+        self.opened = False
+        self.finalized = False
+        self.aborted = False
+        self.writes = {}  # detectorName -> list of received batch arrays
+
+    def openStream(self, **kwargs):
+        if self._openStreamError is not None:
+            raise self._openStreamError
+        self.opened = True
+
+    def writeFrames(self, detectorName, frames):
+        if self._writeDelay:
+            time.sleep(self._writeDelay)
+        self.writes.setdefault(detectorName, []).append(np.asarray(frames))
+
+    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+        self.finalized = True
+
+    def abortStream(self, filePaths, fileDests, saveMode):
+        self.aborted = True
+
+
+def _make_writer(storer, detectorNames=('CAM',)):
+    detectorNames = list(detectorNames)
+    return WriterThread(
+        storer=storer,
+        fileDests={d: f'{d}.h5' for d in detectorNames},
+        detectorNames=detectorNames,
+        shapes={d: (2, 2) for d in detectorNames},
+        attrs={d: {} for d in detectorNames},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+        filePaths={d: f'{d}.h5' for d in detectorNames},
+        recordingManager=None,
+    )
+
+
+def test_writerthread_openstream_failure_propagates():
+    """openStream failure is re-raised on the caller via wait_for_open, no hang."""
+    storer = _FakeStorer(openStreamError=OSError("boom"))
+    writer = _make_writer(storer)
+    writer.start()
+    with pytest.raises(OSError, match="boom"):
+        writer.wait_for_open()
+    writer.join(timeout=5.0)
+    assert not writer.is_alive(), "Writer thread must terminate after openStream failure"
+    assert not storer.finalized, "finalizeStream must not run if openStream failed"
+
+
+def test_writerthread_preserves_order_and_count():
+    """All enqueued frames reach the storer exactly once, in FIFO order."""
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    n = WRITE_BATCH_FRAMES * 3 + 5  # multiple full batches + partial final
+    for i in range(n):
+        # Tag each frame with its index so order is verifiable.
+        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+    writer.finish()
+
+    assert storer.finalized, "finalizeStream must run after the sentinel"
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == n, f"Expected {n} frames, got {len(received)} (drops/dupes)"
+    for i in range(n):
+        assert (received[i] == i).all(), f"Frame {i} out of order"
+
+
+def test_writerthread_backpressure_no_drop():
+    """A slow storer fills the bounded queue; blocking put must not drop frames."""
+    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer -> queue fills
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    n = WRITER_QUEUE_MAXSIZE * 2 + 10  # forces the queue full -> enqueue blocks
+    for i in range(n):
+        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+    writer.finish()
+
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == n, f"Backpressure dropped frames: expected {n}, got {len(received)}"
+    for i in range(n):
+        assert (received[i] == i).all(), f"Frame {i} out of order under backpressure"
+
+
+def test_writerthread_abort_calls_abortstream_not_finalize():
+    """abort() discards via abortStream and never finalizes the stream."""
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    for i in range(WRITE_BATCH_FRAMES * 2):
+        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+    writer.abort()
+
+    writer.join(timeout=5.0)
+    assert not writer.is_alive(), "Writer must terminate after abort"
+    assert storer.aborted is True, "abortStream must be called on abort"
+    assert storer.finalized is False, "finalizeStream must NOT be called on abort"
+
+
+def test_hdf5storer_abort_removes_partial_file(tmp_path):
+    """HDF5Storer.abortStream closes handles and deletes the partial file."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    path = str(tmp_path / 'aborted.h5')
+
+    storer = HDF5Storer(path, detectorsManager)
+    storer.openStream(
+        fileDests={detectorName: path}, detectorNames=[detectorName],
+        shapes={detectorName: (8, 8)}, attrs={detectorName: {}},
+        singleMultiDetectorFile=False, singleLapseFile=False, saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames(detectorName, np.random.randint(0, 100, (3, 8, 8), dtype=np.uint16))
+    assert os.path.exists(path), "file should exist before abort"
+
+    storer.abortStream({detectorName: path}, {detectorName: path}, SaveMode.Disk)
+    assert not os.path.exists(path), "abortStream must delete the partial file"
+
+
+def test_recording_abort_discards_file(qtbot, tmp_path):
+    """End-to-end: aborting an UntilStop recording leaves no file on disk."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    savename = str(tmp_path / 'aborted')
+    detectorName = list(detectorInfosBasic.keys())[0]
+
+    recordingManager.startRecording(
+        detectorNames=[detectorName], recMode=RecMode.UntilStop, savename=savename,
+        saveMode=SaveMode.Disk, saveFormat=SaveFormat.HDF5, attrs={detectorName: {}},
+    )
+    qtbot.wait(300)  # let some frames stream through the writer
+    recordingManager.abortRecording(wait=True)
+
+    assert not os.path.exists(f'{savename}_{detectorName}.hdf5'), \
+        "aborted recording must not leave a file on disk"
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

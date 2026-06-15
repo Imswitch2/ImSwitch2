@@ -274,6 +274,26 @@ class DetectorManager(SignalInterface):
         v = float(param.value)
         return [1.0, v, v]
 
+    @property
+    def dtype(self) -> np.dtype:
+        """ The authoritative data type for this detector's recorded frames.
+        
+        This is the single source of truth for the storer's dataset dtype.
+        For camera detectors, returns the dtype of the latest frame when
+        available, otherwise defaults to uint16 (a sensible camera default).
+        Scan-driven detectors (APD, PMT, Swabian) override this to return
+        their known buffer dtype.
+        """
+        if self.__image is not None and getattr(self.__image, "size", 0) > 0:
+            return np.dtype(self.__image.dtype)
+        return np.dtype(np.uint16)
+
+    @property
+    def bitDepth(self) -> int:
+        """ The bit depth of this detector's data type, derived from the
+        authoritative dtype. """
+        return int(np.dtype(self.dtype).itemsize * 8)
+
     @abstractmethod
     def crop(self, hpos: int, vpos: int, hsize: int, vsize: int) -> None:
         """ Crop the frame read out by the detector. """

@@ -90,6 +90,11 @@ class PMTManager(DetectorManager):
     def setPixelSize(self, pixel_sizes: list):
         self.__pixel_sizes = list(pixel_sizes)
 
+    @property
+    def dtype(self):
+        """ Override: PMT analog voltage buffer is always float32. """
+        return np.dtype(np.float32)
+
     def initiateScan(self, scanInfoDict, signalDict):
         if not self.acquisition:
             return
