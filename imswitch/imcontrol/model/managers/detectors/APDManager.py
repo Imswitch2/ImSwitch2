@@ -167,7 +167,16 @@ class APDManager(DetectorManager):
             Ny = self._image.shape[-2]
             if y >= Ny:
                 return
-            self._image[ y, :n] = pixels[:n]
+            # Explicit dtype cast to match buffer (uint16 non-TTL, float32 TTL).
+            # uint16: 0..65535 photon-count range is a deliberate contract choice.
+            # Integer dest: round (not truncate) float counts before narrowing.
+            # Float dest: preserve NaN no-data markers from TTL masking.
+            if np.issubdtype(self._image.dtype, np.integer):
+                converted = np.rint(pixels[:n]).astype(self._image.dtype, copy=False)
+            else:
+                converted = pixels[:n].astype(self._image.dtype, copy=False)
+            self._image[y, :n] = converted
+            # TODO(phase): uint16 photon-count overflow guard
             self.__currSlice = (y_expanded,)
             if np.random.rand()<np.min((500/np.sum(self._image.shape), UpdateRateInPixels)): # update oa every Xth pixel, less for big datasets
                 self.sigImageUpdated.emit(self._image, True, self.scale)
@@ -184,7 +193,13 @@ class APDManager(DetectorManager):
                 idx = (s,) + outer + (y, slice(0, n))
             else:
                 idx = outer + (y, slice(0, n))
-            self._image[idx] = pixels[:n]
+            # Explicit dtype cast (same logic as 2D case above).
+            if np.issubdtype(self._image.dtype, np.integer):
+                converted = np.rint(pixels[:n]).astype(self._image.dtype, copy=False)
+            else:
+                converted = pixels[:n].astype(self._image.dtype, copy=False)
+            self._image[idx] = converted
+            # TODO(phase): uint16 photon-count overflow guard
             self.__currSlice = outer + (y,)
             return
 
@@ -442,7 +457,7 @@ class ScanWorker(Worker):
         frac = int(self._frac_det_dwell)
         n = (len(line_samples) // frac) * frac
         if n == 0:
-            return np.zeros((0,), dtype=float)
+            return np.zeros((0,), dtype=self._manager.dtype)
         if n != len(line_samples):
             # optional: logger warning
             line_samples = line_samples[:n]

@@ -1242,8 +1242,14 @@ class RecordingWorker(Worker):
         newFrames = self.__recordingManager.detectorsManager[detectorName].readChunk(
             _RECORDING_CHUNK_CONSUMER
         )
-        newFrames = np.array(newFrames)
-        return newFrames
+        # Preserve native dtype: no silent promotion to float64.
+        # readChunk returns List[ndarray] already in detector's native dtype.
+        if len(newFrames) == 0:
+            # Empty chunk: return a correctly typed empty array (not float64).
+            detector_dtype = self.__recordingManager.detectorsManager[detectorName].dtype
+            return np.empty((0,), dtype=detector_dtype)
+        # Non-empty: stack preserves native dtype, no copy needed.
+        return np.stack(newFrames)
 
 
 class RecMode(enum.Enum):
