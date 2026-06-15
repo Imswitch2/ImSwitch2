@@ -900,6 +900,7 @@ class _FakeStorer:
         self._writeDelay = writeDelay
         self.opened = False
         self.finalized = False
+        self.aborted = False
         self.writes = {}  # detectorName -> list of received batch arrays
 
     def openStream(self, **kwargs):
@@ -914,6 +915,9 @@ class _FakeStorer:
 
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         self.finalized = True
+
+    def abortStream(self, filePaths, fileDests, saveMode):
+        self.aborted = True
 
 
 def _make_writer(storer, detectorNames=('CAM',)):
@@ -980,6 +984,60 @@ def test_writerthread_backpressure_no_drop():
     assert len(received) == n, f"Backpressure dropped frames: expected {n}, got {len(received)}"
     for i in range(n):
         assert (received[i] == i).all(), f"Frame {i} out of order under backpressure"
+
+
+def test_writerthread_abort_calls_abortstream_not_finalize():
+    """abort() discards via abortStream and never finalizes the stream."""
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    for i in range(WRITE_BATCH_FRAMES * 2):
+        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+    writer.abort()
+
+    writer.join(timeout=5.0)
+    assert not writer.is_alive(), "Writer must terminate after abort"
+    assert storer.aborted is True, "abortStream must be called on abort"
+    assert storer.finalized is False, "finalizeStream must NOT be called on abort"
+
+
+def test_hdf5storer_abort_removes_partial_file(tmp_path):
+    """HDF5Storer.abortStream closes handles and deletes the partial file."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    path = str(tmp_path / 'aborted.h5')
+
+    storer = HDF5Storer(path, detectorsManager)
+    storer.openStream(
+        fileDests={detectorName: path}, detectorNames=[detectorName],
+        shapes={detectorName: (8, 8)}, attrs={detectorName: {}},
+        singleMultiDetectorFile=False, singleLapseFile=False, saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames(detectorName, np.random.randint(0, 100, (3, 8, 8), dtype=np.uint16))
+    assert os.path.exists(path), "file should exist before abort"
+
+    storer.abortStream({detectorName: path}, {detectorName: path}, SaveMode.Disk)
+    assert not os.path.exists(path), "abortStream must delete the partial file"
+
+
+def test_recording_abort_discards_file(qtbot, tmp_path):
+    """End-to-end: aborting an UntilStop recording leaves no file on disk."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    savename = str(tmp_path / 'aborted')
+    detectorName = list(detectorInfosBasic.keys())[0]
+
+    recordingManager.startRecording(
+        detectorNames=[detectorName], recMode=RecMode.UntilStop, savename=savename,
+        saveMode=SaveMode.Disk, saveFormat=SaveFormat.HDF5, attrs={detectorName: {}},
+    )
+    qtbot.wait(300)  # let some frames stream through the writer
+    recordingManager.abortRecording(wait=True)
+
+    assert not os.path.exists(f'{savename}_{detectorName}.hdf5'), \
+        "aborted recording must not leave a file on disk"
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

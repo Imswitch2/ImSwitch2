@@ -231,6 +231,57 @@ multi-consumer migration:
 
 ---
 
+## Recording abort
+
+Abort decomposes into two independent halves:
+
+### Sink abort — DONE (Phase 1)
+Stopping the recording and discarding the partial output. Implemented on top of
+the off-thread writer:
+- `RecordingManager.abortRecording()` sets an abort flag + clears `record`; the
+  acquisition loop stops at its next iteration.
+- `WriterThread.abort()` sets an abort event, drains the queue (discarding queued
+  frames), and calls `Storer.abortStream()` instead of `finalizeStream()`.
+- `Storer.abortStream()` (HDF5/Zarr/TIFF) closes handles and **deletes the
+  partial file(s)/store(s)**, including TIFF >4GB rollover parts.
+- Fully testable, in the default path: free-running cameras
+  (SpecFrames/SpecTime/UntilStop) are now cleanly abortable with no truncated
+  file left behind.
+
+### Source abort — DESIGNED, NOT IMPLEMENTED (hardware-gated follow-up)
+Stopping the acquisition *source*. Trivial for free-running cameras (just stop
+acquisition); the hard case is **scan-driven** detectors.
+
+Findings from the scan-stack investigation:
+- The existing `abortScan` (base/TriggerScope controllers) is a **no-op while a
+  scan is running** — it only cleans up a scan that never started.
+- `NidaqManager` has **no method to stop a running scan**: `runScan` starts the
+  AO/DO/timer tasks and the only teardown is `WaitThread`s blocking on
+  `wait_until_done(WAIT_INFINITELY)` until the precomputed waveform completes.
+- The scaffolding that DOES exist: `sigAbortScan` (wired to every scan
+  controller), the detector-side cooperative stop (APD/PMT `ScanWorker` checks a
+  `scanning` flag at each line boundary — already used by `stopAcquisition`), and
+  `NidaqManager.stopTask`.
+
+Design for a cooperative, line-boundary scan abort:
+1. New `NidaqManager.abortScan()`: stop AO/DO/timer tasks and unblock/clean up
+   their `WaitThread`s; coordinate ordering so the `ScanWorker`'s pending
+   `readInputTask` returns.
+2. Set the detector `ScanWorker.scanning = False` so it ends at the next line.
+3. Wire the already-present `sigAbortScan` to call the above when `isRunning`.
+4. Combine with sink-abort for a full "abort everything".
+
+Risks / why it is hardware-gated:
+- **Galvo safety:** cutting AO mid-trajectory leaves mirrors at an arbitrary
+  voltage; a safe abort needs a return-to-center ramp, not a hard stop.
+- **stop-vs-wait race:** stopping/closing tasks while a `WaitThread` is in
+  `wait_until_done` is racy in nidaqmx (may raise/hang).
+- **No CI validation** possible (per `docs/no-hardware-validation.md`) — must be
+  tested on the rig before it can be trusted.
+- **TriggerScope is a separate effort** (firmware stop command).
+
+---
+
 ## Candidate agent (OpenHands) tasks
 Run via the `openhands-clean` venv in **headless** mode
 (`openhands -f <taskfile> --headless --always-approve`). Sequenced (per repo

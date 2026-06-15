@@ -1,6 +1,7 @@
 import enum
 import json
 import os
+import shutil
 import time
 import threading
 import queue
@@ -117,7 +118,23 @@ class Storer(abc.ABC):
             saveMode: SaveMode enum value
         """
         raise NotImplementedError
-    
+
+    def abortStream(self, filePaths: Dict[str, str],
+                    fileDests: Dict[str, Union[str, 'BytesIO']], saveMode) -> None:
+        """Abort a streaming session, discarding partial output.
+
+        Called instead of finalizeStream when a recording is aborted. Closes any
+        open handles and removes the partial output file(s)/store(s) so no
+        truncated dataset is left behind. Best-effort: failures are logged, not
+        raised, so an abort always completes.
+
+        Args:
+            filePaths: Dict mapping detector name to on-disk file path
+            fileDests: Dict mapping detector name to file path or BytesIO
+            saveMode: SaveMode enum value
+        """
+        raise NotImplementedError
+
     @staticmethod
     def _group_metadata_by_category(attrs: Dict[str, str]) -> Dict[str, Dict[str, str]]:
         """Group flat metadata by category prefix.
@@ -440,6 +457,20 @@ class ZarrStorer(Storer):
         for store in self._stores.values():
             self._close_store(store)
 
+    def abortStream(self, filePaths, fileDests, saveMode):
+        """Close Zarr stores and remove the partial .zarr directories."""
+        for store in getattr(self, '_stores', {}).values():
+            try:
+                self._close_store(store)
+            except Exception as e:
+                logger.warning(f'Zarr abort: failed to close store: {e}')
+        for dest in set(getattr(self, '_fileDests', {}).values()):
+            try:
+                if isinstance(dest, str) and os.path.isdir(dest):
+                    shutil.rmtree(dest, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f'Zarr abort: failed to remove store {dest}: {e}')
+
 
 class HDF5Storer(Storer):
     """Storer for HDF5 format with structured layout.
@@ -721,6 +752,25 @@ class HDF5Storer(Storer):
             elif saveMode == SaveMode.Disk:
                 file.close()
 
+    def abortStream(self, filePaths, fileDests, saveMode):
+        """Close HDF5 files and remove the partial on-disk file(s)."""
+        processed = set()
+        for file in getattr(self, '_files', {}).values():
+            if id(file) in processed:
+                continue
+            processed.add(id(file))
+            try:
+                file.close()
+            except Exception as e:
+                logger.warning(f'HDF5 abort: failed to close file: {e}')
+        if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            for path in set(filePaths.values()):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    logger.warning(f'HDF5 abort: failed to remove {path}: {e}')
+
 
 class TiffStorer(Storer):
     """Storer for TIFF format with ImageJ-compatible metadata."""
@@ -835,6 +885,30 @@ class TiffStorer(Storer):
         # TIFF writes are direct to disk - no RAM mode or special cleanup needed
         pass
 
+    def abortStream(self, filePaths, fileDests, saveMode):
+        """Remove the partial TIFF file(s), including any >4GB rollover parts."""
+        candidates = set(filePaths.values())
+        candidates.update(getattr(self, '_filenames', {}).values())
+        # Reconstruct rollover part names (basePath -> basePath_part{N}) so no
+        # part is left behind when a recording rolled over before the abort.
+        basePaths = getattr(self, '_basePaths', {})
+        partNumbers = getattr(self, '_partNumbers', {})
+        for detectorName, basePath in basePaths.items():
+            candidates.add(basePath)
+            for part in range(2, partNumbers.get(detectorName, 1) + 1):
+                if basePath.endswith('.tiff'):
+                    candidates.add(basePath[:-5] + f'_part{part}.tiff')
+                elif basePath.endswith('.tif'):
+                    candidates.add(basePath[:-4] + f'_part{part}.tif')
+                else:
+                    candidates.add(basePath + f'_part{part}.tiff')
+        for path in candidates:
+            try:
+                if isinstance(path, str) and os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f'TIFF abort: failed to remove {path}: {e}')
+
 
 class SaveMode(enum.Enum):
     Disk = 1
@@ -878,6 +952,7 @@ class RecordingManager(SignalInterface):
         self._memRecordings = {}  # { filePath: bytesIO }
         self.__detectorsManager = detectorsManager
         self.__record = False
+        self.__abort = False
         self.__recordingWorker = RecordingWorker(self)
         self.__thread = Thread()
         self.__recordingWorker.moveToThread(self.__thread)
@@ -892,6 +967,12 @@ class RecordingManager(SignalInterface):
     def record(self):
         """ Whether a recording is currently being recorded. """
         return self.__record
+
+    @property
+    def aborting(self):
+        """ Whether the current recording is being aborted (partial output
+        discarded rather than finalized). """
+        return self.__abort
 
     @property
     def detectorsManager(self):
@@ -914,6 +995,7 @@ class RecordingManager(SignalInterface):
 
         self.__logger.info('Starting recording')
         self.__record = True
+        self.__abort = False
         self.__recordingWorker.detectorNames = detectorNames
         self.__recordingWorker.recMode = recMode
         self.__recordingWorker.savename = savename
@@ -940,6 +1022,30 @@ class RecordingManager(SignalInterface):
 
         if self.__record:
             self.__logger.info('Stopping recording')
+        self.__record = False
+        self.__thread.quit()
+        if emitSignal:
+            self.sigRecordingEnded.emit()
+        if wait:
+            self.__thread.wait()
+
+    def abortRecording(self, emitSignal=True, wait=True):
+        """ Aborts the current recording, DISCARDING partial output on disk.
+
+        Like endRecording, but the streaming writer deletes the partial
+        file(s)/store(s) instead of finalizing them. The acquisition loop stops
+        at its next iteration and the writer discards any queued frames.
+
+        Note: this stops the recording sink only. For scan-driven detectors the
+        scan hardware source is not stopped here - see the source-abort design
+        in docs/recording_dataflow_plan.md. """
+
+        self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
+                                          condition=lambda c: c.forAcquisition)
+
+        if self.__record:
+            self.__logger.info('Aborting recording')
+        self.__abort = True
         self.__record = False
         self.__thread.quit()
         if emitSignal:
@@ -1054,6 +1160,9 @@ class WriterThread(threading.Thread):
         # Exception raised in the write loop (surfaced to the producer so it
         # never blocks forever on a dead writer; see enqueue_frames).
         self._write_exception = None
+        # Set by abort(): queued frames are discarded and the partial output is
+        # deleted (abortStream) instead of being flushed and finalized.
+        self._abort_event = threading.Event()
 
     def run(self):
         """Writer thread main loop."""
@@ -1083,13 +1192,23 @@ class WriterThread(threading.Thread):
                 item = self._queue.get()
                 
                 if item is None:
-                    # Sentinel: flush remaining batches and finalize
-                    self._flush_all_batches()
-                    self._storer.finalizeStream(
-                        self._currentFrames, self._filePaths, self._recordingManager, self._saveMode
-                    )
+                    # Sentinel. On abort, discard partial output; otherwise flush
+                    # remaining batches and finalize normally.
+                    if self._abort_event.is_set():
+                        self._storer.abortStream(
+                            self._filePaths, self._fileDests, self._saveMode
+                        )
+                    else:
+                        self._flush_all_batches()
+                        self._storer.finalizeStream(
+                            self._currentFrames, self._filePaths, self._recordingManager, self._saveMode
+                        )
                     break
-                
+
+                # Discard frames once an abort has been requested.
+                if self._abort_event.is_set():
+                    continue
+
                 # Real frame item: (detectorName, frames)
                 detectorName, frames = item
                 
@@ -1189,6 +1308,33 @@ class WriterThread(threading.Thread):
         self.join(timeout=30.0)
         if self.is_alive():
             logger.error("WriterThread did not finish within timeout")
+
+    def abort(self):
+        """Abort: discard queued frames and partial output, then stop the writer.
+
+        Unlike finish(), does NOT flush or finalize - the storer deletes the
+        partial file(s)/store(s) via abortStream. Drains the queue aggressively
+        so the sentinel is deliverable even under full-queue backpressure (the
+        discarded frames are not needed).
+        """
+        self._abort_event.set()
+        while True:
+            try:
+                self._queue.put(None, timeout=0.1)
+                break
+            except queue.Full:
+                if not self.is_alive():
+                    logger.error("WriterThread died before abort sentinel could be enqueued")
+                    return
+                # Discard a queued item to make room for the sentinel.
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+
+        self.join(timeout=30.0)
+        if self.is_alive():
+            logger.error("WriterThread did not finish (abort) within timeout")
 
 
 class RecordingWorker(Worker):
@@ -1417,17 +1563,24 @@ class RecordingWorker(Worker):
                     _RECORDING_CHUNK_CONSUMER
                 )
             
-            # Signal writer thread to finish and wait for it (ensures finalizeStream completes)
-            # Note: writerThread.finish() enqueues None sentinel and joins, so the queue
-            # must not be full. Since we've stopped reading frames, backpressure is no longer
-            # an issue - the sentinel will be deliverable once the writer drains the queue.
-            writerThread.finish()
-            
-            # End recording
-            emitSignal = True
-            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
-                emitSignal = False
-            self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
+            # Tear down the writer thread. On abort, discard partial output;
+            # otherwise drain the queue and finalize. Both enqueue a sentinel and
+            # join, so finalize/abortStream completes before _record returns.
+            aborting = self.__recordingManager.aborting
+            if aborting:
+                writerThread.abort()
+            else:
+                writerThread.finish()
+
+            # End recording. When aborting, abortRecording() already emitted
+            # sigRecordingEnded, so suppress it here to avoid a double emit.
+            if aborting:
+                self.__recordingManager.endRecording(emitSignal=False, wait=False)
+            else:
+                emitSignal = True
+                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                    emitSignal = False
+                self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
 
     def _getNewFrames(self, detectorName):
         # readChunk (not getChunk): the destructive getChunk would steal
