@@ -10,7 +10,15 @@ from vispy.scene.visuals import Compound, Line, Markers
 from vispy.visuals.transforms import STTransform
 
 import matplotlib
-matplotlib.use('Qt5Agg')
+try:
+    # Selects the interactive Qt backend for standalone pyplot windows when a
+    # display is available. In headless environments (CI / QT_QPA_PLATFORM=
+    # offscreen) this raises, so it is best-effort: embedding FigureCanvasQTAgg
+    # below works regardless of the global backend, so importing this module
+    # must not crash where no display exists.
+    matplotlib.use('Qt5Agg')
+except Exception:
+    pass
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 

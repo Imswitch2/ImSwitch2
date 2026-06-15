@@ -37,6 +37,9 @@ jobs:
       - name: Run no-hardware test suite
         env:
           QT_QPA_PLATFORM: offscreen
+          # Force the non-interactive matplotlib backend so nothing tries to
+          # load an interactive Qt backend on the headless runner.
+          MPLBACKEND: Agg
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         # Covers the full non-GUI suite: no-hardware profile, imcontrol unit +
         # controller tests, and the improcess processing/analysis tests.
