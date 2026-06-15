@@ -19,8 +19,8 @@ jobs:
       - name: Check for critical errors only
         run: ruff check imswitch/
 
-  test-unit:
-    name: Unit Tests
+  test:
+    name: No-Hardware Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,43 +28,31 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install PyQt5 qtpy pyqtgraph QDarkStyle \
-                      numpy h5py zarr tifffile ome-zarr \
-                      dataclasses-json colour-science \
-                      pyserial requests Pyro5 luddite \
-                      coloredlogs fastapi uvicorn \
-                      scikit-image Send2Trash matplotlib \
-                      nidaqmx Pillow scipy \
-                      pytest pytest-qt
-          pip install -e . --no-deps
-      - name: Run unit tests
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          pytest imswitch/imcontrol/_test/unit/test_stores.py -v
-
-  test-no-hardware:
-    name: No-Hardware Validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install no-hardware dependencies
+        # Single source of truth: the `test` extra pulls install_requires +
+        # pytest / pytest-qt / pytest-cov / pytest-timeout. No hand-maintained
+        # dependency list to drift out of sync.
         run: |
           pip install --upgrade pip
           pip install -e ".[test]"
-      - name: Run no-hardware tests
+      - name: Run no-hardware test suite
         env:
           QT_QPA_PLATFORM: offscreen
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        # Covers the full non-GUI suite: no-hardware profile, imcontrol unit +
+        # controller tests, and the improcess processing/analysis tests.
+        # --timeout aborts any hung test instead of stalling the runner.
+        # Excluded here (run in the manual `imswitch-test` workflow, which has a
+        # real display via xvfb): imswitch/imcontrol/_test/ui (napari GUI tests).
+        # TODO: re-include improcess/_test/test_snouty.py once the SNOUTY CPU
+        # deskew all-zero-output failure is fixed (pre-existing failure on main).
         run: |
-          pytest -p pytestqt.plugin \
+          pytest -p pytestqt.plugin -p pytest_timeout \
             imswitch/test_no_hardware_profile.py \
             imswitch/imcontrol/_test/unit \
+            imswitch/imcontrol/controller/_test \
+            imswitch/improcess/_test \
+            --ignore=imswitch/improcess/_test/test_snouty.py \
+            --timeout=180 \
             -v
 
   build:
