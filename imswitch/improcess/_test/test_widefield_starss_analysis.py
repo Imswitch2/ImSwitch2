@@ -108,7 +108,7 @@ def test_standard_mosaic_anisotropy_mode_can_use_direct_0_90():
     assert direct.regions.loc[0, "anisotropy_mode"] == "direct_0_90"
 
 
-def test_generic_otsu_segmentation_mode_reuses_improcess_segmentation():
+def test_generic_otsu_legacy_alias_reuses_improcess_segmentation():
     background = np.zeros((8, 10), dtype=np.float32)
     signal = background + _mosaic_frame(i0=1, i45=1, i90=1, i135=1)
     signal[2:6, 2:8] += 20
@@ -119,13 +119,44 @@ def test_generic_otsu_segmentation_mode_reuses_improcess_segmentation():
         segmentation_mode="generic_otsu",
         segmentation_sigma=0.0,
         min_size=1,
+        hole_size=3,
+        threshold_scale=0.95,
     )
     analysis = analyze_widefield_starss_pair(stack_h, stack_v, params)
     expected = segment_image(
         analysis.base_image,
         threshold_method="otsu",
+        threshold_scale=0.95,
         min_area=1,
         smooth_sigma=0.0,
+        max_hole_area=3,
+    )
+
+    np.testing.assert_array_equal(analysis.mask, expected.labels)
+
+
+def test_otsu_segmentation_mode_reuses_improcess_segmentation_with_wfs_options():
+    background = np.zeros((12, 12), dtype=np.float32)
+    signal = background + _mosaic_frame(i0=1, i45=1, i90=1, i135=1, shape=(12, 12))
+    signal[4:10, 4:10] += 30
+    stack_h = _alternating_stack(signal, background, scales=(1.0,))
+    stack_v = _alternating_stack(signal, background, scales=(1.0,))
+
+    params = WidefieldStarssParams(
+        segmentation_mode="otsu",
+        segmentation_sigma=0.0,
+        min_size=1,
+        hole_size=4,
+        threshold_scale=0.95,
+    )
+    analysis = analyze_widefield_starss_pair(stack_h, stack_v, params)
+    expected = segment_image(
+        analysis.base_image,
+        threshold_method="otsu",
+        threshold_scale=0.95,
+        min_area=1,
+        smooth_sigma=0.0,
+        max_hole_area=4,
     )
 
     np.testing.assert_array_equal(analysis.mask, expected.labels)
@@ -139,9 +170,10 @@ def test_segmentation_restricts_anisotropy_maps_to_segmented_regions():
     stack_v = _alternating_stack(signal, background, scales=(1.0,))
 
     params = WidefieldStarssParams(
-        segmentation_mode="generic_otsu",
+        segmentation_mode="otsu",
         segmentation_sigma=0.0,
         min_size=1,
+        hole_size=0,
     )
     analysis = analyze_widefield_starss_pair(stack_h, stack_v, params)
 
@@ -316,3 +348,38 @@ def test_analyze_split_detection_pair_returns_maps_and_region():
     assert np.all(analysis.mask == 1)
     assert len(analysis.regions) == 1
     np.testing.assert_allclose(analysis.regions.loc[0, "anisotropy_direct"], 0.0, atol=1e-6)
+
+
+def test_split_detection_otsu_mode_reuses_improcess_segmentation():
+    background = np.zeros((8, 8), dtype=np.float32)
+    h_signal = np.ones((8, 8), dtype=np.float32)
+    v_signal = np.ones((8, 8), dtype=np.float32)
+    h_signal[1:3, 2:6] += 30
+    h_signal[5:7, 2:6] += 30
+    v_signal[1:3, 2:6] += 20
+    v_signal[5:7, 2:6] += 20
+
+    params = WidefieldStarssParams(
+        split_detection=True,
+        split_y=4,
+        segmentation_mode="otsu",
+        segmentation_sigma=0.0,
+        min_size=1,
+        hole_size=3,
+        threshold_scale=0.9,
+    )
+    analysis = analyze_widefield_starss_pair(
+        _alternating_stack(h_signal, background, scales=(1.0, 1.05)),
+        _alternating_stack(v_signal, background, scales=(1.0, 1.05)),
+        params,
+    )
+    expected = segment_image(
+        analysis.base_image,
+        threshold_method="otsu",
+        threshold_scale=0.9,
+        min_area=1,
+        smooth_sigma=0.0,
+        max_hole_area=3,
+    )
+
+    np.testing.assert_array_equal(analysis.mask, expected.labels)

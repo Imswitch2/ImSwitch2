@@ -23,14 +23,16 @@ from .regions import (
 from .segmentation import (
     build_mask,
     build_psf_mask,
-    make_generic_segmentation_mask,
     make_simple_mask,
     segment_line_psf,
 )
 
 
 FrameConvention = Literal["alternating", "block"]
+# ``generic_otsu`` is accepted for backward compatibility with older presets.
+# It is normalized to ``otsu`` at execution time.
 SegmentationMode = Literal["otsu", "none", "psf_peaks", "line_psf", "generic_otsu"]
+VISIBLE_SEGMENTATION_MODES = ("none", "otsu", "psf_peaks", "line_psf")
 AnisotropyMode = Literal["stokes", "direct_0_90"]
 
 
@@ -71,6 +73,14 @@ class WidefieldStarssAnalysis:
     stats_h: PolarizationStats | None = None
     stats_v: PolarizationStats | None = None
     params: WidefieldStarssParams | None = None
+
+
+def _canonical_segmentation_mode(
+    mode: SegmentationMode,
+) -> Literal["otsu", "none", "psf_peaks", "line_psf"]:
+    if mode == "generic_otsu":
+        return "otsu"
+    return mode
 
 
 def prepare_signal_background(
@@ -163,8 +173,9 @@ def _analyze_standard_mosaic(
 ) -> WidefieldStarssAnalysis:
     stats_h = compute_polarization_stats(signal_h, background_h)
     stats_v = compute_polarization_stats(signal_v, background_v)
+    segmentation_mode = _canonical_segmentation_mode(params.segmentation_mode)
 
-    if params.segmentation_mode == "psf_peaks":
+    if segmentation_mode == "psf_peaks":
         mask, base_image = build_psf_mask(
             stats_h,
             stats_v=stats_v,
@@ -173,22 +184,11 @@ def _analyze_standard_mosaic(
             threshold_rel=params.psf_threshold_rel,
             psf_radius=params.psf_radius,
         )
-    elif params.segmentation_mode == "generic_otsu":
-        _unused_mask, base_image = build_mask(
-            stats_h,
-            stats_v=stats_v,
-            segment=False,
-        )
-        mask = make_generic_segmentation_mask(
-            base_image,
-            sigma=params.segmentation_sigma,
-            min_size=params.min_size,
-        )
     else:
         mask, base_image = build_mask(
             stats_h,
             stats_v=stats_v,
-            segment=params.segmentation_mode != "none",
+            segment=segmentation_mode != "none",
             sigma=params.segmentation_sigma,
             min_size=params.min_size,
             hole_size=params.hole_size,
@@ -209,7 +209,7 @@ def _analyze_standard_mosaic(
         mask,
         anisotropy_mode=params.anisotropy_mode,
     )
-    if params.segmentation_mode != "none":
+    if segmentation_mode != "none":
         _apply_segmentation_mask(anis_maps, mask)
 
     return WidefieldStarssAnalysis(
@@ -252,8 +252,9 @@ def _analyze_split_detection(
         intensity_threshold=params.intensity_threshold,
     )
     base_image = 0.25 * (ihh + ihv + ivh + ivv)
+    segmentation_mode = _canonical_segmentation_mode(params.segmentation_mode)
 
-    if params.segmentation_mode == "line_psf":
+    if segmentation_mode == "line_psf":
         upper_base = 0.5 * (ihh + ivh)
         lower_base = 0.5 * (ihv + ivv)
         upper_mask = segment_line_psf(
@@ -282,7 +283,7 @@ def _analyze_split_detection(
             lower_mask,
         )
     else:
-        if params.segmentation_mode == "none":
+        if segmentation_mode == "none":
             mask = np.ones_like(base_image, dtype=np.int32)
         else:
             mask = make_simple_mask(
@@ -305,7 +306,7 @@ def _analyze_split_detection(
             mask,
         )
 
-    if params.segmentation_mode != "none":
+    if segmentation_mode != "none":
         _apply_segmentation_mask(anis_maps, mask)
 
     return WidefieldStarssAnalysis(

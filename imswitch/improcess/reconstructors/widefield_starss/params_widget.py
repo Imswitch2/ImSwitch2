@@ -5,6 +5,9 @@ from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
+from imswitch.improcess.reconstructors.widefield_starss.analysis.pipeline import (
+    VISIBLE_SEGMENTATION_MODES,
+)
 
 
 class WidefieldStarssParamsWidget(QtWidgets.QWidget):
@@ -64,7 +67,7 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
                 {"name": "Split detection", "type": "bool", "value": False},
                 {"name": "Split Y", "type": "int", "value": 0, "limits": (0, 1000000)},
                 {"name": "Anisotropy mode", "type": "list", "values": ["stokes", "direct_0_90"], "value": "stokes"},
-                {"name": "Segmentation mode", "type": "list", "values": ["none", "otsu", "generic_otsu", "psf_peaks", "line_psf"], "value": "none"},
+                {"name": "Segmentation mode", "type": "list", "values": list(VISIBLE_SEGMENTATION_MODES), "value": "none"},
                 {"name": "Smooth sigma", "type": "float", "value": 2.0, "limits": (0.0, 1000.0)},
                 {"name": "Intensity threshold", "type": "float", "value": 0.0},
                 {"name": "Use intensity threshold", "type": "bool", "value": False},

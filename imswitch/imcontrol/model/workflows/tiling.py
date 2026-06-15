@@ -297,7 +297,7 @@ class TilingWorkflow:
             cell_started_cb: ``f(cell_index)`` called before each cell.
             cell_done_cb: ``f(cell_index, success)`` called after each cell.
         """
-        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
+        from imswitch.imcontrol.model.workflows.segmentation import detect_cell_targets
 
         overview = np.asarray(stitched.get_overview(), dtype=np.float32)
         if overview.size == 0:
@@ -305,48 +305,38 @@ class TilingWorkflow:
             return
 
         params = self.seg_filter or {}
-        seg = Segmenter(
-            blur_sigma_px=params.get("blur_sigma_px", 3.0),
-            threshold=params.get("threshold"),
-        )
-        props = seg.segment(overview, pixel_size_um)
-        if not props:
+        targets = detect_cell_targets(overview, pixel_size_um, params)
+        if not targets.props:
             logger.info("No cells found in overview")
             if cells_found_cb is not None:
                 cells_found_cb(np.empty((0, 2)), 0)
             return
 
-        keep = Segmenter.apply_filters(props, params)
-        idx_valid = np.where(keep)[0]
         logger.info("Found %d valid target cells (filtered from %d)",
-                    len(idx_valid), len(props["label"]))
+                    targets.n_valid, targets.n_total)
 
-        if len(idx_valid) == 0:
+        if targets.n_valid == 0:
             if cells_found_cb is not None:
                 cells_found_cb(np.empty((0, 2)), 0)
             return
 
-        positions = np.column_stack([
-            props["centroid_row"][idx_valid],
-            props["centroid_col"][idx_valid],
-        ])
         if cells_found_cb is not None:
-            cells_found_cb(positions, len(idx_valid))
+            cells_found_cb(targets.positions, targets.n_valid)
 
-        for i, cell_idx in enumerate(idx_valid):
+        for i, cell_idx in enumerate(targets.indices):
             if cell_started_cb is not None:
                 cell_started_cb(i)
             success = False
             try:
-                row = int(props["centroid_row"][cell_idx])
-                col = int(props["centroid_col"][cell_idx])
+                row = int(targets.props["centroid_row"][cell_idx])
+                col = int(targets.props["centroid_col"][cell_idx])
                 stage_x, stage_y = stitched.pixel_to_stage(row, col, canvas_origin_stage)
                 self.facade.stage_con.move_to(stage_x, stage_y)
                 logger.info("Cell %d/%d at stage (%.2f, %.2f)",
-                            i + 1, len(idx_valid), stage_x, stage_y)
+                            i + 1, targets.n_valid, stage_x, stage_y)
 
                 if for_each_feature is not None:
-                    cell_props = {k: v[cell_idx] for k, v in props.items()}
+                    cell_props = {k: v[cell_idx] for k, v in targets.props.items()}
                     for_each_feature(i, cell_props, (stage_x, stage_y))
 
                 success = True

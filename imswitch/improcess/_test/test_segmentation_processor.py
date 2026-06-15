@@ -3,7 +3,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from imswitch.improcess.analysis.segmentation import segment_image
+from imswitch.improcess.analysis.segmentation import otsu_threshold, segment_image
 from imswitch.improcess.model import PlotPayload, ProcessingResult
 from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.segmentation import (
@@ -53,6 +53,14 @@ def test_segment_image_otsu_detects_bright_region():
     assert analysis.metadata["threshold_method"] == "otsu"
 
 
+def test_otsu_threshold_does_not_double_count_threshold_bin():
+    image = np.array([0.0] * 5 + [1.0] + [2.0] * 5, dtype=np.float32)
+
+    threshold = otsu_threshold(image, bins=3)
+
+    assert np.isclose(threshold, 1.0 / 3.0)
+
+
 def test_segment_image_triangle_and_yen_detect_bright_region():
     image = np.zeros((32, 32), dtype=np.float32)
     image[8:24, 10:22] = 12.0
@@ -82,6 +90,7 @@ def test_segment_image_local_threshold_handles_uneven_background():
     assert len(analysis.regions) == 1
     assert analysis.regions[0].area_pixels >= 250
     assert analysis.metadata["local_block_size"] == 21
+    assert set(analysis.metadata["threshold_summary"]) == {"median", "min", "max"}
 
 
 def test_segment_image_watershed_splits_touching_objects():
@@ -102,6 +111,55 @@ def test_segment_image_watershed_splits_touching_objects():
     assert len(analysis.regions) == 2
     assert analysis.labels.max() == 2
     assert analysis.metadata["threshold_method"] == "watershed"
+
+
+def test_segment_image_manual_threshold_can_use_watershed_label_method():
+    yy, xx = np.ogrid[:64, :64]
+    disk_a = (yy - 32) ** 2 + (xx - 25) ** 2 <= 12 ** 2
+    disk_b = (yy - 32) ** 2 + (xx - 39) ** 2 <= 12 ** 2
+    image = np.zeros((64, 64), dtype=np.float32)
+    image[disk_a | disk_b] = 10.0
+
+    analysis = segment_image(
+        image,
+        threshold_method="manual",
+        threshold_value=1.0,
+        label_method="watershed",
+        min_area=50,
+        watershed_min_distance=8,
+        fill_holes=True,
+    )
+
+    assert len(analysis.regions) == 2
+    assert analysis.metadata["threshold_method"] == "manual"
+    assert analysis.metadata["label_method"] == "watershed"
+
+
+def test_segment_image_bounded_hole_fill_and_physical_measurements():
+    image = np.zeros((20, 20), dtype=np.float32)
+    image[4:14, 4:14] = 10.0
+    image[5, 5] = 0.0
+    image[8:11, 8:11] = 0.0
+
+    analysis = segment_image(
+        image,
+        threshold_method="manual",
+        threshold_value=1.0,
+        min_area=10,
+        max_hole_area=4,
+        pixel_size_um=(0.5, 2.0),
+    )
+
+    assert len(analysis.regions) == 1
+    region = analysis.regions[0]
+    assert region.area_pixels == 91
+    assert region.bounds == (4, 14, 4, 14)
+    assert region.bbox == (4, 4, 14, 14)
+    assert region.area_um2 == 91.0
+    assert region.height_um == 5.0
+    assert region.width_um == 20.0
+    assert "area_um2" not in analysis.region_rows()[0]
+    assert analysis.region_rows(include_optional=True)[0]["area_um2"] == 91.0
 
 
 def test_segment_image_cleanup_can_fill_holes_and_clear_border():

@@ -322,34 +322,24 @@ class TilingController(ImConWidgetController):
             self._logger.warning('Cell targeting requested but no stitcher exists')
             return np.empty((0, 2)), {}
 
-        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
+        from imswitch.imcontrol.model.workflows.segmentation import detect_cell_targets
         overview = np.asarray(self._stitcher.get_overview(), dtype=np.float32)
         pixel_size_um = 1.0 / self._stitcher.px_per_um_y
 
         params = self._segParams
-        seg = Segmenter(
-            blur_sigma_px=params.get('blur_sigma_px', 3.0),
-            threshold=params.get('threshold'),
-        )
-        props = seg.segment(overview, pixel_size_um)
-        if not props:
+        targets = detect_cell_targets(overview, pixel_size_um, params)
+        if not targets.props:
             self._logger.info('No cells found in overview')
             return np.empty((0, 2)), {}
 
-        keep = Segmenter.apply_filters(props, params)
-        idx_valid = np.where(keep)[0]
-        n_all = len(props['label'])
-        self._logger.info(f'Cell targeting: {len(idx_valid)} / {n_all} cells pass filters')
+        self._logger.info(
+            f'Cell targeting: {targets.n_valid} / {targets.n_total} cells pass filters'
+        )
 
-        if len(idx_valid) == 0:
-            return np.empty((0, 2)), props
+        if targets.n_valid == 0:
+            return np.empty((0, 2)), targets.props
 
-        positions = np.column_stack([
-            props['centroid_row'][idx_valid],
-            props['centroid_col'][idx_valid],
-        ])
-        filtered_props = {key: value[idx_valid] for key, value in props.items()}
-        return positions, filtered_props
+        return targets.positions, targets.filtered_props
 
     def _iterateCells(
         self,

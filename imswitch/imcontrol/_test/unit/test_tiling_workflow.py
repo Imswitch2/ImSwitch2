@@ -552,3 +552,76 @@ class TestTilingWorkflow:
                 "area_um2", "mean_intensity", "max_intensity", "eccentricity",
             ):
                 assert key in result
+
+    def test_segmenter_reuses_shared_improcess_kernel(self):
+        """Tiling Segmenter remains a wrapper around the shared kernel."""
+        from imswitch.imcontrol.model.workflows.segmentation import Segmenter
+        from imswitch.improcess.analysis.segmentation import segment_image
+
+        overview = np.zeros((64, 64), dtype=np.float32)
+        overview[20:44, 20:44] = 0.8
+        pixel_size_um = 0.5
+
+        segmenter = Segmenter(
+            blur_sigma_px=0.0,
+            threshold=0.3,
+            min_area_px=10,
+            peak_min_dist_px=8,
+        )
+        props = segmenter.segment(overview, pixel_size_um=pixel_size_um)
+        expected = segment_image(
+            overview,
+            threshold_method="manual",
+            threshold_value=0.3,
+            min_area=10,
+            smooth_sigma=0.0,
+            normalize=True,
+            label_method="watershed",
+            watershed_min_distance=8,
+            pixel_size_um=pixel_size_um,
+        )
+
+        np.testing.assert_array_equal(segmenter.labels, expected.labels)
+        np.testing.assert_array_equal(props["label"], [region.label for region in expected.regions])
+        np.testing.assert_allclose(
+            props["area_um2"],
+            [region.area_um2 for region in expected.regions],
+        )
+
+    def test_detect_cell_targets_helper_centralizes_filtering(self):
+        """Helper returns full props, valid indices and filtered positions."""
+        from imswitch.imcontrol.model.workflows.segmentation import detect_cell_targets
+
+        overview = np.zeros((64, 64), dtype=np.float32)
+        overview[20:44, 20:44] = 0.8
+
+        accepted = detect_cell_targets(
+            overview,
+            pixel_size_um=0.5,
+            params={
+                "blur_sigma_px": 0.0,
+                "threshold": 0.3,
+                "min_area_px": 10,
+            },
+        )
+        assert accepted.n_total >= 1
+        assert accepted.n_valid == accepted.n_total
+        assert accepted.positions.shape == (accepted.n_valid, 2)
+        assert len(accepted.filtered_props["label"]) == accepted.n_valid
+
+        rejected = detect_cell_targets(
+            overview,
+            pixel_size_um=0.5,
+            params={
+                "blur_sigma_px": 0.0,
+                "threshold": 0.3,
+                "min_area_px": 10,
+                "area_enabled": True,
+                "area_um2_min": 1e9,
+                "area_um2_max": 1e10,
+            },
+        )
+        assert rejected.n_total >= 1
+        assert rejected.n_valid == 0
+        assert rejected.positions.shape == (0, 2)
+        assert len(rejected.filtered_props["label"]) == 0

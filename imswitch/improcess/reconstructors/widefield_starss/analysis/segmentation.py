@@ -2,7 +2,8 @@
 Segmentation and masking utilities.
 
 Supports three modes:
-  - Standard Otsu-based segmentation on the superpixel intensity image.
+  - Standard Otsu-based segmentation on the superpixel intensity image via the
+    shared ImProcess segmentation kernel.
   - Line-PSF segmentation via Otsu thresholding (``segment_line_psf``):
     appropriate for line-scanning PSF data where the signal is a bright
     continuous stripe, not isolated spots.
@@ -16,7 +17,7 @@ import skimage as ski
 import tifffile as tf
 from scipy.ndimage import gaussian_filter
 
-from imswitch.improcess.analysis.segmentation import segment_image
+from imswitch.improcess.analysis.segmentation import otsu_threshold, segment_image
 
 from .containers import PolarizationStats
 
@@ -86,9 +87,21 @@ def _apply_layer_mask_to_superpixel_grid(layer_mask_full, superpixel_shape):
 # Segmentation
 # =============================================================================
 
+def _hole_size_to_max_area(hole_size):
+    if hole_size is None:
+        return None
+    hole_size = int(hole_size)
+    return hole_size if hole_size > 0 else None
+
+
 def make_simple_mask(image, sigma=2.0, min_size=200, hole_size=200, threshold_scale=1.0):
     """
     Otsu-based segmentation on the superpixel intensity image.
+
+    This is a WidefieldSTARSS compatibility wrapper around
+    :func:`imswitch.improcess.analysis.segmentation.segment_image`.  Keep WFS
+    defaults here, but keep thresholding, cleanup and labeling in the shared
+    ImProcess segmentation kernel.
 
     Parameters
     ----------
@@ -108,36 +121,33 @@ def make_simple_mask(image, sigma=2.0, min_size=200, hole_size=200, threshold_sc
     -------
     mask : 2D int32 label image (0 = background, 1,2,... = regions).
     """
-    blurred = gaussian_filter(image, sigma=sigma)
-
-    try:
-        thresh = ski.filters.threshold_otsu(blurred)
-    except ValueError:
-        # Image is uniform (no foreground/background separation possible).
-        # Return an empty mask rather than crashing.
-        return np.zeros_like(image, dtype=np.int32)
-
-    binary  = blurred > (threshold_scale * thresh)
-    binary  = ski.morphology.remove_small_objects(binary, min_size=min_size)
-    binary  = ski.morphology.remove_small_holes(binary, area_threshold=hole_size)
-    return ski.measure.label(binary)
+    analysis = segment_image(
+        image,
+        threshold_method="otsu",
+        threshold_scale=float(threshold_scale),
+        min_area=max(1, int(min_size)),
+        smooth_sigma=float(sigma),
+        max_hole_area=_hole_size_to_max_area(hole_size),
+    )
+    return analysis.labels.astype(np.int32, copy=False)
 
 
 def make_generic_segmentation_mask(image, sigma=2.0, min_size=200):
     """
-    Segment with the generic ImProcess segmentation analysis kernel.
+    Legacy helper for the old ``generic_otsu`` WFS mode.
 
-    This mirrors the ``segmentation`` processor path: Otsu thresholding,
-    optional Gaussian smoothing and connected-component filtering. It does not
-    apply WFS-specific hole filling or threshold scaling.
+    New code should use ``make_simple_mask`` or ``segment_image`` directly.
+    This helper remains as a compatibility spelling for plain Otsu smoothing
+    and connected-component filtering without WFS hole filling or threshold
+    scaling.
     """
-    analysis = segment_image(
+    return make_simple_mask(
         image,
-        threshold_method="otsu",
-        min_area=max(1, int(min_size)),
-        smooth_sigma=float(sigma),
+        sigma=sigma,
+        min_size=min_size,
+        hole_size=0,
+        threshold_scale=1.0,
     )
-    return analysis.labels.astype(np.int32, copy=False)
 
 
 def build_mask(
@@ -274,7 +284,7 @@ def segment_line_psf(
         detect_crop = blurred_crop
 
     try:
-        thresh = ski.filters.threshold_otsu(detect_crop)
+        thresh = otsu_threshold(detect_crop)
     except ValueError:
         return np.zeros((H, W), dtype=np.int32)
 

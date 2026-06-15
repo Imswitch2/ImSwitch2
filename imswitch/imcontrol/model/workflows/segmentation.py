@@ -1,8 +1,9 @@
 """Reusable watershed-based cell segmentation.
 
-Provides the Segmenter class for 2-D float image segmentation via:
-- Gaussian blur → threshold → remove_small_objects → distance-transform watershed
-- Region property extraction via skimage.measure.regionprops_table
+Provides the Segmenter class for 2-D float image segmentation via the shared
+ImProcess segmentation kernel:
+- Gaussian blur -> normalization -> threshold -> distance-transform watershed
+- Region property extraction from ``SegmentationRegion`` records
 
 Returns dict schema:
     {
@@ -26,20 +27,19 @@ All arrays are numpy arrays of length N (number of detected objects).
 
 from __future__ import annotations
 
-import inspect
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
-from scipy import ndimage as ndi
-from scipy.ndimage import gaussian_filter
-from skimage.feature import peak_local_max
-from skimage.filters import threshold_otsu
-from skimage.measure import regionprops_table
-from skimage.morphology import remove_small_objects
-from skimage.segmentation import watershed
+
+from imswitch.improcess.analysis.segmentation import (
+    otsu_threshold,
+    prepare_segmentation_image,
+    segment_image,
+)
 
 
 def _get_config_dir() -> Path:
@@ -57,6 +57,33 @@ def _get_config_dir() -> Path:
     else:
         base = os.path.expanduser('~')
     return Path(base) / 'ImSwitchConfig'
+
+
+@dataclass(frozen=True)
+class CellTargetResult:
+    """Filtered cell-target detection result for tiling workflows."""
+
+    props: Dict[str, np.ndarray]
+    keep: np.ndarray
+    indices: np.ndarray
+    positions: np.ndarray
+    segmenter: object
+
+    @property
+    def n_total(self) -> int:
+        if not self.props:
+            return 0
+        return int(len(self.props["label"]))
+
+    @property
+    def n_valid(self) -> int:
+        return int(len(self.indices))
+
+    @property
+    def filtered_props(self) -> Dict[str, np.ndarray]:
+        if not self.props:
+            return {}
+        return {key: value[self.indices] for key, value in self.props.items()}
 
 
 class Segmenter:
@@ -110,6 +137,10 @@ class Segmenter:
                 height_um, width_um.
             Empty dict if no objects found.
         """
+        pixel_size_um = float(pixel_size_um)
+        if pixel_size_um <= 0:
+            raise ValueError("pixel_size_um must be positive")
+
         # Auto-compute pixel-based thresholds from physical units
         if self._min_area_px_override is not None:
             min_area_px = self._min_area_px_override
@@ -121,110 +152,47 @@ class Segmenter:
         else:
             peak_min_dist_px = max(3, int(self.peak_min_dist_um / pixel_size_um))
         
-        # 1) Blur and normalize
-        img_blur = gaussian_filter(img, sigma=float(self.blur_sigma_px))
-        img_blur = img_blur - np.min(img_blur)
-        mx = np.max(img_blur)
-        if mx > 0:
-            img_blur = img_blur / mx
-        
-        # 2) Threshold (auto-Otsu if None)
+        # Tiling historically thresholds in normalized post-blur intensity units.
         if self.threshold is None:
-            thresh_val = threshold_otsu(img_blur)
+            threshold_method = "otsu"
+            threshold_value = None
         else:
-            thresh_val = float(self.threshold)
-        
-        mask = img_blur > thresh_val
+            threshold_method = "manual"
+            threshold_value = float(self.threshold)
 
-        # Handle scikit-image API drift (0.26+ renamed min_size → max_size)
-        remove_small_objects_params = inspect.signature(remove_small_objects).parameters
-        if "max_size" in remove_small_objects_params:
-            mask = remove_small_objects(mask, max_size=min_area_px - 1)
-        else:
-            mask = remove_small_objects(mask, min_size=min_area_px)
-
-        # Cache intermediates for visualization regardless of outcome
-        self.img_blur = img_blur
-        self.mask = mask
-        self.labels = np.zeros(img.shape, dtype=np.int32)
-
-        if not np.any(mask):
-            return {}
-        
-        # 3) Watershed splitting via distance transform
-        distance = ndi.distance_transform_edt(mask)
-        
-        coords = peak_local_max(
-            distance,
-            min_distance=int(peak_min_dist_px),
-            labels=mask.astype(int)
+        analysis = segment_image(
+            img,
+            threshold_method=threshold_method,
+            threshold_value=threshold_value,
+            min_area=int(min_area_px),
+            smooth_sigma=float(self.blur_sigma_px),
+            normalize=True,
+            label_method="watershed",
+            watershed_min_distance=int(peak_min_dist_px),
+            pixel_size_um=pixel_size_um,
         )
-        
-        markers = np.zeros_like(distance, dtype=np.int32)
-        if len(coords) > 0:
-            # Randomize marker IDs to avoid bias
-            tmp_counter = np.arange(len(coords)) + 1
-            tmp_counter = tmp_counter[np.random.permutation(len(tmp_counter))]
-            for i, (r, c) in enumerate(coords):
-                markers[r, c] = tmp_counter[i]
-        
-        if markers.max() == 0:
-            # Fallback: one marker for entire mask
-            markers[mask] = 1
-        
-        labels = watershed(-distance, markers, mask=mask)
-        self.labels = labels
 
-        if labels.max() == 0:
+        self.img_blur = analysis.processed_image
+        self.mask = analysis.mask
+        self.labels = analysis.labels
+
+        if not analysis.regions:
             return {}
-        
-        # 4) Extract region properties
-        props = regionprops_table(
-            labels,
-            intensity_image=img,
-            properties=(
-                "label",
-                "area",
-                "centroid",
-                "bbox",
-                "eccentricity",
-                "mean_intensity",
-                "max_intensity",
-            ),
-        )
-        
-        # 5) Derive additional properties
-        minr = props["bbox-0"]
-        minc = props["bbox-1"]
-        maxr = props["bbox-2"]
-        maxc = props["bbox-3"]
-        
-        height_px = maxr - minr
-        width_px = maxc - minc
-        
-        # Physical-unit conversions
-        centroid_row = props["centroid-0"]
-        centroid_col = props["centroid-1"]
-        area_um2 = props["area"] * (pixel_size_um ** 2)
-        centroid_x_um = centroid_col * pixel_size_um
-        centroid_y_um = centroid_row * pixel_size_um
-        height_um = height_px * pixel_size_um
-        width_um = width_px * pixel_size_um
-        
+
         return {
-            "label": props["label"],
-            "area": props["area"],
-            "centroid_row": centroid_row,
-            "centroid_col": centroid_col,
-            "centroid_x_um": centroid_x_um,
-            "centroid_y_um": centroid_y_um,
-            "area_um2": area_um2,
-            "mean_intensity": props["mean_intensity"],
-            "max_intensity": props["max_intensity"],
-            "eccentricity": props["eccentricity"],
-            "bbox": np.column_stack([minr, minc, maxr, maxc]),
-            "height_um": height_um,
-            "width_um": width_um,
+            "label": np.asarray([region.label for region in analysis.regions], dtype=np.int32),
+            "area": np.asarray([region.area_pixels for region in analysis.regions], dtype=float),
+            "centroid_row": np.asarray([region.centroid_row for region in analysis.regions], dtype=float),
+            "centroid_col": np.asarray([region.centroid_col for region in analysis.regions], dtype=float),
+            "centroid_x_um": np.asarray([region.centroid_x_um for region in analysis.regions], dtype=float),
+            "centroid_y_um": np.asarray([region.centroid_y_um for region in analysis.regions], dtype=float),
+            "area_um2": np.asarray([region.area_um2 for region in analysis.regions], dtype=float),
+            "mean_intensity": np.asarray([region.mean_intensity for region in analysis.regions], dtype=float),
+            "max_intensity": np.asarray([region.max_intensity for region in analysis.regions], dtype=float),
+            "eccentricity": np.asarray([region.eccentricity for region in analysis.regions], dtype=float),
+            "bbox": np.asarray([region.bbox for region in analysis.regions], dtype=np.int32),
+            "height_um": np.asarray([region.height_um for region in analysis.regions], dtype=float),
+            "width_um": np.asarray([region.width_um for region in analysis.regions], dtype=float),
         }
     
     @staticmethod
@@ -294,6 +262,51 @@ def segment(img: np.ndarray, pixel_size_um: float, **params) -> Dict[str, np.nda
     return segmenter.segment(img, pixel_size_um)
 
 
+def detect_cell_targets(
+    img: np.ndarray,
+    pixel_size_um: float,
+    params: Optional[Dict[str, Any]] = None,
+) -> CellTargetResult:
+    """Segment and filter cell targets for tiling.
+
+    This keeps the tiling workflow and controller on one code path while
+    preserving the legacy `Segmenter` output schema.
+    """
+    params = params or {}
+    segmenter = Segmenter(
+        blur_sigma_px=params.get("blur_sigma_px", 3.0),
+        threshold=params.get("threshold"),
+        min_area_um2=params.get("min_area_um2", 30.0),
+        peak_min_dist_um=params.get("peak_min_dist_um", 8.0),
+        min_area_px=params.get("min_area_px"),
+        peak_min_dist_px=params.get("peak_min_dist_px"),
+    )
+    props = segmenter.segment(img, pixel_size_um)
+    if not props:
+        empty = np.array([], dtype=bool)
+        return CellTargetResult(
+            props={},
+            keep=empty,
+            indices=np.array([], dtype=int),
+            positions=np.empty((0, 2), dtype=float),
+            segmenter=segmenter,
+        )
+
+    keep = Segmenter.apply_filters(props, params)
+    indices = np.where(keep)[0]
+    positions = np.column_stack([
+        props["centroid_row"][indices],
+        props["centroid_col"][indices],
+    ])
+    return CellTargetResult(
+        props=props,
+        keep=keep,
+        indices=indices,
+        positions=positions,
+        segmenter=segmenter,
+    )
+
+
 def estimate_otsu_threshold(img: np.ndarray, blur_sigma_px: float = 5.0) -> float:
     """Estimate Otsu threshold for an image.
     
@@ -304,12 +317,12 @@ def estimate_otsu_threshold(img: np.ndarray, blur_sigma_px: float = 5.0) -> floa
     Returns:
         Otsu threshold value (in same range as input image).
     """
-    img_blur = gaussian_filter(img, sigma=float(blur_sigma_px))
-    img_blur = img_blur - np.min(img_blur)
-    mx = np.max(img_blur)
-    if mx > 0:
-        img_blur = img_blur / mx
-    return threshold_otsu(img_blur)
+    img_blur = prepare_segmentation_image(
+        img,
+        smooth_sigma=float(blur_sigma_px),
+        normalize=True,
+    )
+    return otsu_threshold(img_blur)
 
 
 def load_params(path: Optional[str | Path] = None) -> Dict[str, Any]:

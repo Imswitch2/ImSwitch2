@@ -229,9 +229,10 @@ manual counterpart selection, standard mosaic mode, split-detection mode,
 presets, map-stack display, HDF5/TIFF save and graph payloads.  Standard mosaic
 anisotropy now exposes an explicit mode switch: `stokes` remains the default
 and uses all four analyzer pixels through `S0/S1`, while `direct_0_90` uses
-only the raw 0°/90° analyzer pixels.  The WFS segmentation mode list also
-includes `generic_otsu`, which reuses the generic ImProcess segmentation kernel
-used by the `segmentation` processor.  A pure backend batch API now discovers
+only the raw 0°/90° analyzer pixels.  WFS Otsu segmentation now reuses the
+generic ImProcess segmentation kernel used by the `segmentation` processor;
+the older `generic_otsu` spelling is retained only as a saved-parameter alias.
+A pure backend batch API now discovers
 `*_h.tif[f]` / `*_v.tif[f]` pairs, runs all pairs with one shared parameter set
 and writes consolidated per-region and per-sample tables.  The first
 parameter-widget batch controls now run that backend in a Qt worker thread,

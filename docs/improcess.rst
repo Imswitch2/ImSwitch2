@@ -309,11 +309,12 @@ H/V detection.  ``stokes`` is the default because it keeps the current behavior
 and uses the full four-pixel measurement; ``direct_0_90`` is available as an
 explicit comparison path.
 
-For segmentation, the existing WFS ``otsu`` mode keeps its WFS-specific
-threshold scaling and hole filling.  The optional ``generic_otsu`` mode reuses
-the same generic ImProcess segmentation kernel as the ``segmentation``
-processor: Otsu thresholding, optional Gaussian smoothing and connected
-component area filtering.
+For segmentation, WFS ``otsu`` uses the same shared ImProcess segmentation
+kernel as the ``segmentation`` processor.  WFS-specific controls such as
+threshold scaling and bounded hole filling are passed into that shared helper
+instead of being implemented separately.  Older saved parameters that contain
+``generic_otsu`` are still accepted as a compatibility alias for ``otsu``, but
+new UI presets expose only the single ``otsu`` mode.
 
 WidefieldSTARSS batch helpers
 =============================
