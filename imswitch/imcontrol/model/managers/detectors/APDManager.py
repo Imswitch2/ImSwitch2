@@ -285,6 +285,11 @@ class APDManager(DetectorManager):
         # pixel_sizes: list of low dim to high dim
         self.__pixel_sizes = pixel_sizes
 
+    @property
+    def dtype(self):
+        """ Override: APD's recorded dtype mirrors initiateImage buffer choice. """
+        return np.dtype(np.float32) if self._ttlmultiplying else np.dtype(np.uint16)
+
     def crop(self, hpos, vpos, hsize, vsize):
         pass
 

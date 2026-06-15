@@ -467,6 +467,11 @@ class SwabianTimeTaggerManager(DetectorManager):
         """pixel_sizes: list from low dim to high dim (matches APDManager)."""
         self.__pixel_sizes = list(pixel_sizes)
 
+    @property
+    def dtype(self):
+        """ Override: FLIM intensity/lifetime buffers are always float32. """
+        return np.dtype(np.float32)
+
     def crop(self, hpos, vpos, hsize, vsize):
         pass
 

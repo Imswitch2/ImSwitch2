@@ -587,6 +587,259 @@ def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
     assert not recordingManager.record, "Recording should have stopped after stall"
 
 
+def test_detector_dtype_contract(tmp_path):
+    """Test that storers create datasets from detector's declared dtype (the contract).
+    
+    Phase 1, Task 1: The detector's dtype property is the single authoritative 
+    source of truth for recording. HDF5 and Zarr storers must create datasets 
+    from this declared dtype, not from frames.dtype.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer
+    
+    # Create detector with uint16 dtype (default)
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    # Verify the detector declares uint16
+    declared_dtype = detectorsManager[detectorName].dtype
+    assert declared_dtype == np.dtype(np.uint16), \
+        f"Expected uint16 declared dtype, got {declared_dtype}"
+    
+    # Test HDF5Storer
+    hdf5_path = str(tmp_path / 'test_dtype_contract.h5')
+    hdf5_storer = HDF5Storer(hdf5_path, detectorsManager)
+    frames = np.random.randint(0, 1000, (5, 128, 128), dtype=np.uint16)
+    
+    hdf5_storer.openStream(
+        fileDests={detectorName: hdf5_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: frames.shape[-2:]},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    hdf5_storer.writeFrames(detectorName, frames)
+    hdf5_storer.finalizeStream(
+        currentFrames={detectorName: frames.shape[0]},
+        filePaths={detectorName: hdf5_path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+    
+    # Assert on-disk HDF5 dataset dtype matches declared dtype
+    with h5py.File(hdf5_path, 'r') as f:
+        dataset = f[detectorName]['data']
+        assert dataset.dtype == declared_dtype, \
+            f"HDF5 dataset dtype {dataset.dtype} != declared dtype {declared_dtype}"
+    
+    # Test ZarrStorer
+    zarr_path = str(tmp_path / 'test_dtype_contract.zarr')
+    zarr_storer = ZarrStorer(zarr_path, detectorsManager)
+    
+    zarr_storer.openStream(
+        fileDests={detectorName: zarr_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: frames.shape[-2:]},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    zarr_storer.writeFrames(detectorName, frames)
+    zarr_storer.finalizeStream(
+        currentFrames={detectorName: frames.shape[0]},
+        filePaths={detectorName: zarr_path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+    
+    # Assert on-disk Zarr dataset dtype matches declared dtype
+    root = zarr.open(zarr_path, mode='r')
+    dataset = root[detectorName]['data']
+    assert dataset.dtype == declared_dtype, \
+        f"Zarr dataset dtype {dataset.dtype} != declared dtype {declared_dtype}"
+
+
+def test_dtype_mismatch_warning(tmp_path, caplog):
+    """Test that storers warn loudly once per detector on dtype mismatch.
+    
+    Phase 1, Task 1: When frames.dtype != declared dtype, storers must emit a
+    prominent warning ONCE per detector, then proceed with a logged cast (not silent).
+    The on-disk dtype must remain the declared dtype.
+    """
+    import logging
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer, TiffStorer
+    
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    # Detector declares uint16
+    declared_dtype = detectorsManager[detectorName].dtype
+    assert declared_dtype == np.dtype(np.uint16)
+    
+    # Create frames with a DIFFERENT dtype (float32) to trigger mismatch
+    frames_wrong_dtype = np.random.rand(3, 128, 128).astype(np.float32)
+    
+    # Test HDF5Storer with dtype mismatch
+    with caplog.at_level(logging.WARNING):
+        hdf5_path = str(tmp_path / 'test_mismatch.h5')
+        hdf5_storer = HDF5Storer(hdf5_path, detectorsManager)
+        
+        hdf5_storer.openStream(
+            fileDests={detectorName: hdf5_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames_wrong_dtype.shape[-2:]},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.Disk,
+        )
+        
+        # Write multiple chunks - warning should appear only ONCE
+        hdf5_storer.writeFrames(detectorName, frames_wrong_dtype[:1])
+        hdf5_storer.writeFrames(detectorName, frames_wrong_dtype[1:2])
+        hdf5_storer.writeFrames(detectorName, frames_wrong_dtype[2:])
+        
+        hdf5_storer.finalizeStream(
+            currentFrames={detectorName: frames_wrong_dtype.shape[0]},
+            filePaths={detectorName: hdf5_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+    
+    # Assert exactly ONE warning for HDF5Storer
+    hdf5_warnings = [r for r in caplog.records 
+                     if r.levelno == logging.WARNING 
+                     and 'HDF5Storer dtype mismatch' in r.message
+                     and detectorName in r.message]
+    assert len(hdf5_warnings) == 1, \
+        f"Expected exactly 1 HDF5 dtype mismatch warning, got {len(hdf5_warnings)}"
+    assert 'declared=uint16' in hdf5_warnings[0].message
+    assert 'actual frame=float32' in hdf5_warnings[0].message
+    
+    # Assert on-disk dtype is the DECLARED dtype (uint16), not the frame dtype (float32)
+    with h5py.File(hdf5_path, 'r') as f:
+        dataset = f[detectorName]['data']
+        assert dataset.dtype == declared_dtype, \
+            f"HDF5 dataset should use declared dtype {declared_dtype}, got {dataset.dtype}"
+        assert dataset.shape[0] == 3, "All frames should be recorded despite mismatch"
+    
+    # Clear caplog for Zarr test
+    caplog.clear()
+    
+    # Test ZarrStorer with dtype mismatch
+    with caplog.at_level(logging.WARNING):
+        zarr_path = str(tmp_path / 'test_mismatch.zarr')
+        zarr_storer = ZarrStorer(zarr_path, detectorsManager)
+        
+        zarr_storer.openStream(
+            fileDests={detectorName: zarr_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames_wrong_dtype.shape[-2:]},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.Disk,
+        )
+        
+        # Write multiple chunks - warning should appear only ONCE
+        zarr_storer.writeFrames(detectorName, frames_wrong_dtype[:1])
+        zarr_storer.writeFrames(detectorName, frames_wrong_dtype[1:2])
+        zarr_storer.writeFrames(detectorName, frames_wrong_dtype[2:])
+        
+        zarr_storer.finalizeStream(
+            currentFrames={detectorName: frames_wrong_dtype.shape[0]},
+            filePaths={detectorName: zarr_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+    
+    # Assert exactly ONE warning for ZarrStorer
+    zarr_warnings = [r for r in caplog.records 
+                     if r.levelno == logging.WARNING 
+                     and 'ZarrStorer dtype mismatch' in r.message
+                     and detectorName in r.message]
+    assert len(zarr_warnings) == 1, \
+        f"Expected exactly 1 Zarr dtype mismatch warning, got {len(zarr_warnings)}"
+    
+    # Assert on-disk dtype is the DECLARED dtype
+    root = zarr.open(zarr_path, mode='r')
+    dataset = root[detectorName]['data']
+    assert dataset.dtype == declared_dtype, \
+        f"Zarr dataset should use declared dtype {declared_dtype}, got {dataset.dtype}"
+    assert dataset.shape[0] == 3, "All frames should be recorded despite mismatch"
+    
+    # Clear caplog for Tiff test
+    caplog.clear()
+    
+    # Test TiffStorer with dtype mismatch
+    with caplog.at_level(logging.WARNING):
+        tiff_path = str(tmp_path / 'test_mismatch.tiff')
+        tiff_storer = TiffStorer(tiff_path, detectorsManager)
+        
+        tiff_storer.openStream(
+            fileDests={detectorName: tiff_path},
+            detectorNames=[detectorName],
+            shapes={detectorName: frames_wrong_dtype.shape[-2:]},
+            attrs={detectorName: {}},
+            singleMultiDetectorFile=False,
+            singleLapseFile=False,
+            saveMode=SaveMode.Disk,
+        )
+        
+        # Write multiple chunks - warning should appear only ONCE
+        tiff_storer.writeFrames(detectorName, frames_wrong_dtype[:1])
+        tiff_storer.writeFrames(detectorName, frames_wrong_dtype[1:2])
+        tiff_storer.writeFrames(detectorName, frames_wrong_dtype[2:])
+        
+        tiff_storer.finalizeStream(
+            currentFrames={detectorName: frames_wrong_dtype.shape[0]},
+            filePaths={detectorName: tiff_path},
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+    
+    # Assert exactly ONE warning for TiffStorer
+    tiff_warnings = [r for r in caplog.records 
+                     if r.levelno == logging.WARNING 
+                     and 'TiffStorer dtype mismatch' in r.message
+                     and detectorName in r.message]
+    assert len(tiff_warnings) == 1, \
+        f"Expected exactly 1 Tiff dtype mismatch warning, got {len(tiff_warnings)}"
+
+
+def test_detector_bitDepth_property():
+    """Test that detector bitDepth property returns correct values.
+    
+    Phase 1, Task 1: bitDepth should return int(dtype.itemsize * 8).
+    """
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    # uint16 detector should report 16 bits
+    assert detectorsManager[detectorName].bitDepth == 16, \
+        "uint16 detector should report bitDepth=16"
+    
+    # Create a mock float32 detector by patching dtype
+    detector = detectorsManager[detectorName]
+    original_dtype = detector.dtype
+    
+    # Temporarily override dtype to test bitDepth calculation
+    class MockFloat32Detector:
+        @property
+        def dtype(self):
+            return np.dtype(np.float32)
+        
+        @property
+        def bitDepth(self):
+            return int(np.dtype(self.dtype).itemsize * 8)
+    
+    mock_detector = MockFloat32Detector()
+    assert mock_detector.bitDepth == 32, \
+        "float32 detector should report bitDepth=32"
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

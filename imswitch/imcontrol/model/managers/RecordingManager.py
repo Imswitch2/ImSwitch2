@@ -264,7 +264,7 @@ class ZarrStorer(Storer):
         return dataset
 
     def _createStreamingDetectorGroup(self, root: Any, detectorName: str,
-                                      frames: np.ndarray, attrs: Dict[str, Any],
+                                      dtype: np.dtype, spatialShape: tuple, attrs: Dict[str, Any],
                                       groupPath: str | None = None) -> Any:
         parent = root
         if groupPath:
@@ -274,12 +274,11 @@ class ZarrStorer(Storer):
         if 'data' in det_group:
             raise ValueError(f'Zarr data array already exists for detector {detectorName}')
 
-        spatialShape = frames.shape[-2:]
         dataset = self._create_array(
             det_group,
             'data',
             shape=(0, *spatialShape),
-            dtype=frames.dtype,
+            dtype=dtype,
             chunks=(1, *spatialShape),
         )
         dataset.attrs['detector_name'] = detectorName
@@ -343,6 +342,7 @@ class ZarrStorer(Storer):
         self._fileDests = fileDests
         self._currentFrames = {}
         self._groupPaths = {}
+        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
         
         for detectorName in detectorNames:
             dest = fileDests[detectorName]
@@ -368,7 +368,7 @@ class ZarrStorer(Storer):
             self._currentFrames[detectorName] = 0
     
     def writeFrames(self, detectorName: str, frames: np.ndarray) -> None:
-        """Write frames to Zarr dataset, lazily creating it from frame dtype."""
+        """Write frames to Zarr dataset, lazily creating it from declared dtype."""
         if len(frames) == 0:
             return
 
@@ -377,18 +377,35 @@ class ZarrStorer(Storer):
             frames = frames[np.newaxis, ...]
 
         if detectorName not in self._datasets:
+            # Read the authoritative dtype from the detector (the contract's single source of truth)
+            declared = self.detectorManager[detectorName].dtype
+            spatialShape = frames.shape[-2:]
+            
             root = self._roots.get(self._fileDests[detectorName])
             if root is None:
                 raise RuntimeError(f'No Zarr root available for detector {detectorName}')
+            # Create dataset with the DECLARED dtype (the contract), not frames.dtype
             self._datasets[detectorName] = self._createStreamingDetectorGroup(
                 root,
                 detectorName,
-                frames,
+                declared,
+                spatialShape,
                 self._attrs[detectorName],
                 groupPath=self._groupPaths[detectorName],
             )
 
+        # Warn-once on dtype mismatch (loud alert, not silent)
         dataset = self._datasets[detectorName]
+        if frames.dtype != dataset.dtype and detectorName not in self._dtypeWarned:
+            logger.warning(
+                f"ZarrStorer dtype mismatch for '{detectorName}': "
+                f"declared={dataset.dtype}, actual frame={frames.dtype}. "
+                f"Recording with declared dtype (frames will be cast). "
+                f"This warning is shown once per detector per recording."
+            )
+            self._dtypeWarned.add(detectorName)
+
+        # Append frames to dataset (cast happens on assignment if needed)
         it = self._currentFrames[detectorName]
         newSize = it + len(frames)
         dataset.resize((newSize, *dataset.shape[-2:]))
@@ -571,6 +588,7 @@ class HDF5Storer(Storer):
         self._singleLapseFile = singleLapseFile
         self._groupPaths = {}  # Track group paths for lapse files
         self._saveMode = saveMode
+        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
 
         # Temporarily disable compression for RAM mode (BytesIO) due to h5py instability
         self._streamCompression = None if saveMode == SaveMode.RAM else self.compression
@@ -607,6 +625,9 @@ class HDF5Storer(Storer):
 
         # Lazy dataset creation using structured layout
         if detectorName not in self._datasets:
+            # Read the authoritative dtype from the detector (the contract's single source of truth)
+            declared = self.detectorManager[detectorName].dtype
+            
             # Derive spatial dims from the frame arrays themselves. The detector
             # .shape attribute is (X, Y) while frame arrays follow numpy's
             # (n, Y, X) convention, so using _shapes here would mis-broadcast
@@ -620,8 +641,9 @@ class HDF5Storer(Storer):
             original_compression = self.compression
             self.compression = self._streamCompression
             try:
+                # Create dataset with the DECLARED dtype (the contract), not frames.dtype
                 dataset = self._createDetectorGroup(
-                    file, detectorName, frames.dtype, self._attrs[detectorName],
+                    file, detectorName, declared, self._attrs[detectorName],
                     maxshape=(None, *spatialShape),  # (None, Y, X)
                     groupPath=groupPath
                 )
@@ -631,8 +653,18 @@ class HDF5Storer(Storer):
             dataset.attrs['writing'] = True
             self._datasets[detectorName] = dataset
 
-        # Append frames to structured dataset
+        # Warn-once on dtype mismatch (loud alert, not silent)
         dataset = self._datasets[detectorName]
+        if frames.dtype != dataset.dtype and detectorName not in self._dtypeWarned:
+            logger.warning(
+                f"HDF5Storer dtype mismatch for '{detectorName}': "
+                f"declared={dataset.dtype}, actual frame={frames.dtype}. "
+                f"Recording with declared dtype (frames will be cast). "
+                f"This warning is shown once per detector per recording."
+            )
+            self._dtypeWarned.add(detectorName)
+
+        # Append frames to structured dataset (cast happens on assignment if needed)
         currentSize = dataset.shape[0]
         newSize = currentSize + len(frames)
         dataset.resize(newSize, axis=0)
@@ -727,6 +759,7 @@ class TiffStorer(Storer):
         self._filenames = {}
         self._basePaths = {}
         self._partNumbers = {}
+        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
 
         # Determine output file paths
         for detectorName in detectorNames:
@@ -740,6 +773,23 @@ class TiffStorer(Storer):
         """Write frames to TIFF file (append mode) with automatic >4GB rollover."""
         if len(frames) == 0:
             return
+
+        # Read the authoritative dtype from the detector (the contract's single source of truth)
+        declared = self.detectorManager[detectorName].dtype
+        
+        # Warn-once on dtype mismatch (loud alert, not silent)
+        if frames.dtype != declared and detectorName not in self._dtypeWarned:
+            logger.warning(
+                f"TiffStorer dtype mismatch for '{detectorName}': "
+                f"declared={declared}, actual frame={frames.dtype}. "
+                f"Recording with declared dtype (frames will be cast). "
+                f"This warning is shown once per detector per recording."
+            )
+            self._dtypeWarned.add(detectorName)
+        
+        # Cast to declared dtype if needed (now logged, not silent)
+        if frames.dtype != declared:
+            frames = frames.astype(declared)
 
         filePath = self._filenames[detectorName]
         try:
