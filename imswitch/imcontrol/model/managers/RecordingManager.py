@@ -2,6 +2,8 @@ import enum
 import json
 import os
 import time
+import threading
+import queue
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, Union
 
@@ -23,6 +25,10 @@ logger = logging.getLogger(__name__)
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
+
+# Off-thread writer constants
+WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
+WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
 
 
 class AsTemporaryFile(object):
@@ -274,12 +280,14 @@ class ZarrStorer(Storer):
         if 'data' in det_group:
             raise ValueError(f'Zarr data array already exists for detector {detectorName}')
 
+        # Use multi-frame chunks for better compression ratio and fewer I/O ops
+        chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
         dataset = self._create_array(
             det_group,
             'data',
             shape=(0, *spatialShape),
             dtype=dtype,
-            chunks=(1, *spatialShape),
+            chunks=(chunk_frames, *spatialShape),
         )
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._zarr_attr_value(
@@ -501,6 +509,8 @@ class HDF5Storer(Storer):
         if maxshape is not None:
             # Extendable dataset for streaming (start with 0 frames)
             shape = maxshape[-2:]  # (Y, X)
+            # Use multi-frame chunks for better compression ratio and fewer I/O ops
+            chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
             dataset = det_group.create_dataset(
                 'data',
                 shape=(0, *shape),
@@ -508,7 +518,7 @@ class HDF5Storer(Storer):
                 dtype=dtype,
                 compression=self.compression,
                 shuffle=True if self.compression else False,
-                chunks=(1, *shape)  # Per-frame chunks
+                chunks=(chunk_frames, *shape)  # Multi-frame chunks for batched writes
             )
         else:
             # Fixed dataset from data (snapshot)
@@ -1008,6 +1018,179 @@ class RecordingManager(SignalInterface):
         return newPath
 
 
+class WriterThread(threading.Thread):
+    """Dedicated writer thread that owns all storer I/O operations.
+    
+    Runs compression and disk writes off the acquisition thread, fed by a bounded
+    queue from the acquisition loop. Batches frames per detector for efficiency.
+    """
+    def __init__(self, storer, fileDests, detectorNames, shapes, attrs,
+                 singleMultiDetectorFile, singleLapseFile, saveMode, filePaths, recordingManager):
+        super().__init__(daemon=False, name='RecordingWriterThread')
+        self._storer = storer
+        self._fileDests = fileDests
+        self._detectorNames = detectorNames
+        self._shapes = shapes
+        self._attrs = attrs
+        self._singleMultiDetectorFile = singleMultiDetectorFile
+        self._singleLapseFile = singleLapseFile
+        self._saveMode = saveMode
+        self._filePaths = filePaths
+        self._recordingManager = recordingManager
+        
+        # Bounded queue for backpressure (put() blocks when full)
+        self._queue = queue.Queue(maxsize=WRITER_QUEUE_MAXSIZE)
+        
+        # Per-detector batching buffers
+        self._batches = {detectorName: [] for detectorName in detectorNames}
+        self._batch_frame_counts = {detectorName: 0 for detectorName in detectorNames}
+        
+        # Track total frames written per detector
+        self._currentFrames = {detectorName: 0 for detectorName in detectorNames}
+        
+        # Handshake for openStream completion (success or exception)
+        self._opened_event = threading.Event()
+        self._open_exception = None
+        # Exception raised in the write loop (surfaced to the producer so it
+        # never blocks forever on a dead writer; see enqueue_frames).
+        self._write_exception = None
+
+    def run(self):
+        """Writer thread main loop."""
+        try:
+            # Open streaming session (h5py/zarr file handles must be touched by one thread only)
+            self._storer.openStream(
+                fileDests=self._fileDests,
+                detectorNames=self._detectorNames,
+                shapes=self._shapes,
+                attrs=self._attrs,
+                singleMultiDetectorFile=self._singleMultiDetectorFile,
+                singleLapseFile=self._singleLapseFile,
+                saveMode=self._saveMode
+            )
+        except Exception as e:
+            # Store exception to re-raise on acquisition thread
+            self._open_exception = e
+            self._opened_event.set()
+            return
+        
+        # Signal that openStream succeeded
+        self._opened_event.set()
+        
+        # Main write loop: process frames until sentinel
+        try:
+            while True:
+                item = self._queue.get()
+                
+                if item is None:
+                    # Sentinel: flush remaining batches and finalize
+                    self._flush_all_batches()
+                    self._storer.finalizeStream(
+                        self._currentFrames, self._filePaths, self._recordingManager, self._saveMode
+                    )
+                    break
+                
+                # Real frame item: (detectorName, frames)
+                detectorName, frames = item
+                
+                # Append to batch
+                self._batches[detectorName].append(frames)
+                self._batch_frame_counts[detectorName] += len(frames)
+                
+                # Flush batch if threshold reached
+                if self._batch_frame_counts[detectorName] >= WRITE_BATCH_FRAMES:
+                    self._flush_batch(detectorName)
+        
+        except Exception as e:
+            # Record the failure and exit. Do NOT re-raise into the thread void:
+            # the producer (enqueue_frames) and finish() detect the dead writer
+            # via is_alive() and surface this exception, so the acquisition
+            # thread never blocks forever on a full queue.
+            logger.exception(f"WriterThread failed during write loop: {e}")
+            self._write_exception = e
+    
+    def _flush_batch(self, detectorName):
+        """Flush accumulated frames for a detector to disk."""
+        if not self._batches[detectorName]:
+            return
+        
+        # Concatenate all accumulated frames
+        batch = np.concatenate(self._batches[detectorName], axis=0)
+        
+        # Write batch (compression + I/O happens here, off acquisition thread)
+        self._storer.writeFrames(detectorName, batch)
+        
+        # Update counters
+        self._currentFrames[detectorName] += len(batch)
+        
+        # Clear batch
+        self._batches[detectorName] = []
+        self._batch_frame_counts[detectorName] = 0
+    
+    def _flush_all_batches(self):
+        """Flush all remaining per-detector batches."""
+        for detectorName in self._detectorNames:
+            self._flush_batch(detectorName)
+    
+    def wait_for_open(self):
+        """Wait for openStream handshake and re-raise any exception.
+        
+        Returns:
+            None if openStream succeeded
+            
+        Raises:
+            Any exception that occurred during openStream
+        """
+        self._opened_event.wait()
+        if self._open_exception is not None:
+            raise self._open_exception
+    
+    def enqueue_frames(self, detectorName, frames):
+        """Enqueue frames for the writer thread.
+
+        Blocks while the queue is full (intended backpressure), but NEVER
+        forever: if the writer thread has died, raises so the failure surfaces
+        on the acquisition thread instead of deadlocking the producer.
+        """
+        while True:
+            try:
+                self._queue.put((detectorName, frames), timeout=0.1)
+                return
+            except queue.Full:
+                if not self.is_alive():
+                    raise RuntimeError(
+                        'RecordingWriterThread died before frames could be '
+                        'enqueued; recording aborted'
+                    ) from self._write_exception
+                # Writer still alive and draining - keep applying backpressure.
+                continue
+    
+    def finish(self):
+        """Signal end of recording and wait for writer thread to complete.
+        
+        Uses a timeout to avoid deadlock if queue is full. The writer thread
+        will drain the queue, making space for the sentinel.
+        """
+        # Enqueue sentinel (None means "no more frames")
+        # Use timeout to avoid deadlock - writer thread drains queue
+        while True:
+            try:
+                self._queue.put(None, timeout=0.1)
+                break
+            except queue.Full:
+                # Queue still full, writer is draining - retry
+                if not self.is_alive():
+                    # Writer thread died unexpectedly, don't wait forever
+                    logger.error("WriterThread died before sentinel could be enqueued")
+                    return
+                continue
+        
+        # Wait for writer thread to finish (finalizeStream must complete)
+        self.join(timeout=30.0)
+        if self.is_alive():
+            logger.error("WriterThread did not finish within timeout")
+
+
 class RecordingWorker(Worker):
     def __init__(self, recordingManager):
         super().__init__()
@@ -1096,16 +1279,23 @@ class RecordingWorker(Worker):
             if len(shape) > 2:
                 shapes[detectorName] = shape[-2:]
         
-        # Open streaming session
-        storer.openStream(
+        # Start writer thread and wait for openStream handshake
+        writerThread = WriterThread(
+            storer=storer,
             fileDests=fileDests,
             detectorNames=self.detectorNames,
             shapes=shapes,
             attrs=self.attrs,
             singleMultiDetectorFile=self.singleMultiDetectorFile,
             singleLapseFile=self.recMode == RecMode.ScanLapse and self.singleLapseFile,
-            saveMode=self.saveMode
+            saveMode=self.saveMode,
+            filePaths=filePaths,
+            recordingManager=self.__recordingManager
         )
+        writerThread.start()
+        
+        # Wait for openStream to complete (blocks until success or raises on error)
+        writerThread.wait_for_open()
         
         # Determine stop condition based on recMode
         if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
@@ -1169,8 +1359,8 @@ class RecordingWorker(Worker):
                                 newFrames = newFrames[:remaining]
                                 n = remaining
                         
-                        # Delegate write to storer
-                        storer.writeFrames(detectorName, newFrames)
+                        # Enqueue frames for writer thread (blocks if queue full, providing backpressure)
+                        writerThread.enqueue_frames(detectorName, newFrames)
                         currentFrame[detectorName] += n
                         lastFrameTime[detectorName] = time.time()  # Update watchdog timestamp
                 
@@ -1226,8 +1416,12 @@ class RecordingWorker(Worker):
                 self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
                     _RECORDING_CHUNK_CONSUMER
                 )
-            # Finalize streaming (close files, emit signals)
-            storer.finalizeStream(currentFrame, filePaths, self.__recordingManager, self.saveMode)
+            
+            # Signal writer thread to finish and wait for it (ensures finalizeStream completes)
+            # Note: writerThread.finish() enqueues None sentinel and joins, so the queue
+            # must not be full. Since we've stopped reading frames, backpressure is no longer
+            # an issue - the sentinel will be deliverable once the writer drains the queue.
+            writerThread.finish()
             
             # End recording
             emitSignal = True

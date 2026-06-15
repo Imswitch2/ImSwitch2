@@ -1,4 +1,5 @@
 import os
+import time
 import pytest
 
 import h5py
@@ -838,6 +839,147 @@ def test_detector_bitDepth_property():
     mock_detector = MockFloat32Detector()
     assert mock_detector.bitDepth == 32, \
         "float32 detector should report bitDepth=32"
+
+
+# ---------------------------------------------------------------------------
+# Off-thread writer (Phase 1 Task 3) tests.
+#
+# Design note: the off-thread writer is now in the DEFAULT recording path, so
+# the existing recording integration tests (test_recording_spec_frames,
+# test_recording_spec_time, lapse, multi-detector, ...) already exercise it
+# end-to-end. We therefore avoid adding new slow qtbot/mock-driven integration
+# tests here (they run on every CI push). Instead:
+#   - one fast direct-storer test that compression survives the batched-chunk
+#     change, and
+#   - deterministic WriterThread unit tests for the concurrency guarantees
+#     (FIFO order, no-drop, backpressure, openStream-failure propagation) using
+#     a controllable fake storer. The mock detector emits RANDOM frames at a
+#     time-driven rate and the real writer outpaces it, so order/backpressure
+#     are not observable through the integration path anyway.
+# ---------------------------------------------------------------------------
+
+from imswitch.imcontrol.model.managers.RecordingManager import (
+    HDF5Storer, WriterThread, WRITER_QUEUE_MAXSIZE, WRITE_BATCH_FRAMES,
+)
+
+
+def test_offthread_writer_compression_enabled(tmp_path):
+    """Compression is still applied after the batched multi-frame chunk change.
+
+    Direct-storer test (no qtbot / no time-driven mock) so it stays CI-fast.
+    """
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    path = str(tmp_path / 'test_compression.h5')
+
+    storer = HDF5Storer(path, detectorsManager)
+    frames = np.random.randint(0, 1000, (5, 64, 64), dtype=np.uint16)
+    storer.openStream(
+        fileDests={detectorName: path}, detectorNames=[detectorName],
+        shapes={detectorName: (64, 64)}, attrs={detectorName: {}},
+        singleMultiDetectorFile=False, singleLapseFile=False, saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames(detectorName, frames)
+    storer.finalizeStream({detectorName: 5}, {detectorName: path}, None, SaveMode.Disk)
+
+    with h5py.File(path, 'r') as f:
+        dataset = f[detectorName]['data']
+        assert dataset.compression is not None, "Compression must remain enabled for disk mode"
+        assert dataset.shape[0] == 5
+
+
+class _FakeStorer:
+    """Controllable storer for deterministic WriterThread unit tests.
+
+    Records, in arrival order, every batch handed to writeFrames so tests can
+    assert FIFO ordering and that no frame is dropped. Optionally raises on
+    openStream (failure-propagation test) or sleeps per write (backpressure).
+    """
+    def __init__(self, openStreamError=None, writeDelay=0.0):
+        self._openStreamError = openStreamError
+        self._writeDelay = writeDelay
+        self.opened = False
+        self.finalized = False
+        self.writes = {}  # detectorName -> list of received batch arrays
+
+    def openStream(self, **kwargs):
+        if self._openStreamError is not None:
+            raise self._openStreamError
+        self.opened = True
+
+    def writeFrames(self, detectorName, frames):
+        if self._writeDelay:
+            time.sleep(self._writeDelay)
+        self.writes.setdefault(detectorName, []).append(np.asarray(frames))
+
+    def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+        self.finalized = True
+
+
+def _make_writer(storer, detectorNames=('CAM',)):
+    detectorNames = list(detectorNames)
+    return WriterThread(
+        storer=storer,
+        fileDests={d: f'{d}.h5' for d in detectorNames},
+        detectorNames=detectorNames,
+        shapes={d: (2, 2) for d in detectorNames},
+        attrs={d: {} for d in detectorNames},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+        filePaths={d: f'{d}.h5' for d in detectorNames},
+        recordingManager=None,
+    )
+
+
+def test_writerthread_openstream_failure_propagates():
+    """openStream failure is re-raised on the caller via wait_for_open, no hang."""
+    storer = _FakeStorer(openStreamError=OSError("boom"))
+    writer = _make_writer(storer)
+    writer.start()
+    with pytest.raises(OSError, match="boom"):
+        writer.wait_for_open()
+    writer.join(timeout=5.0)
+    assert not writer.is_alive(), "Writer thread must terminate after openStream failure"
+    assert not storer.finalized, "finalizeStream must not run if openStream failed"
+
+
+def test_writerthread_preserves_order_and_count():
+    """All enqueued frames reach the storer exactly once, in FIFO order."""
+    storer = _FakeStorer()
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    n = WRITE_BATCH_FRAMES * 3 + 5  # multiple full batches + partial final
+    for i in range(n):
+        # Tag each frame with its index so order is verifiable.
+        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+    writer.finish()
+
+    assert storer.finalized, "finalizeStream must run after the sentinel"
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == n, f"Expected {n} frames, got {len(received)} (drops/dupes)"
+    for i in range(n):
+        assert (received[i] == i).all(), f"Frame {i} out of order"
+
+
+def test_writerthread_backpressure_no_drop():
+    """A slow storer fills the bounded queue; blocking put must not drop frames."""
+    storer = _FakeStorer(writeDelay=0.003)  # writer slower than producer -> queue fills
+    writer = _make_writer(storer)
+    writer.start()
+    writer.wait_for_open()
+
+    n = WRITER_QUEUE_MAXSIZE * 2 + 10  # forces the queue full -> enqueue blocks
+    for i in range(n):
+        writer.enqueue_frames('CAM', np.full((1, 2, 2), i, dtype=np.uint16))
+    writer.finish()
+
+    received = np.concatenate(storer.writes['CAM'], axis=0)
+    assert len(received) == n, f"Backpressure dropped frames: expected {n}, got {len(received)}"
+    for i in range(n):
+        assert (received[i] == i).all(), f"Frame {i} out of order under backpressure"
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
