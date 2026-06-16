@@ -10,6 +10,31 @@ from imswitch.imcommon.view.guitools import colorutils
 from ._beadrec_scan_source import BeadRecScanSourceMixin
 
 
+def trimRasterLengthForFirmwareBoundary(length, stepSize):
+    """Trim a raster axis length by half a step before sending it to firmware.
+
+    The TriggerScope firmware's RASTER_SCAN loop is INCLUSIVE
+    (``while (abs(pos) <= abs(lenV))``), so when ``length`` is an exact
+    multiple of ``stepSize`` it visits ``length/stepSize + 1`` positions (both
+    endpoints) -- one MORE pixel than the ``round(length/stepSize)`` pixel
+    count the rest of the system (BeadRec reconstruction dims, the GUI step
+    count) expects. This is what made e.g. a 4 um scan at exactly 200 nm/pixel
+    (20.0 pixels) come back with 21 frames, while nudging to 201 nm/pixel
+    (not an exact divisor) "fixed" it by accident -- the loop then overshoots
+    the threshold one increment earlier and stops at the intended count.
+
+    Shrinking the length sent to firmware by half a step keeps the boundary
+    check comfortably between the intended last position
+    ``(N-1)*stepSize`` and the next one ``N*stepSize``, so the firmware visits
+    exactly ``N = round(length/stepSize)`` positions regardless of which side
+    of an exact ratio floating-point rounding happens to fall on. No firmware
+    change needed -- this only adjusts what gets sent.
+    """
+    if stepSize == 0:
+        return length
+    return length - 0.5 * stepSize
+
+
 class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, ImConWidgetController):
     """Linked to TriggerScopeRasterWidget."""
 
@@ -144,8 +169,13 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, I
             convFactor = self.positioners[target].managerProperties['conversionFactor']
             index = self._analogParameterDict['target_device'].index(target)
             AOtargets.append(target)
-            lengthsVolt.append(self._analogParameterDict['axis_length'][index] / convFactor)
-            stepSizesVolt.append(self._analogParameterDict['axis_step_size'][index] / convFactor)
+            length = self._analogParameterDict['axis_length'][index]
+            stepSize = self._analogParameterDict['axis_step_size'][index]
+            # See trimRasterLengthForFirmwareBoundary: avoids an extra pixel
+            # from the firmware's inclusive end-of-axis check.
+            trimmedLength = trimRasterLengthForFirmwareBoundary(length, stepSize)
+            lengthsVolt.append(trimmedLength / convFactor)
+            stepSizesVolt.append(stepSize / convFactor)
             startPosVolt.append(self._analogParameterDict['axis_startpos'][index] / convFactor)
 
         rasterScanParameters['Analog'] = {'targets': AOtargets,
