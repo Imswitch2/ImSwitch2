@@ -213,11 +213,15 @@ class SettingsController(ImConWidgetController):
     def ROIchanged(self):
         """ Update parameters according to ROI. """
         frameStart = self._master.detectorsManager.execOnCurrent(lambda c: c.frameStart)
-        detector_name = self._master.detectorsManager.getCurrentDetectorName()
-        pixel_size = self._commChannel.sharedAttrs[('Detector', detector_name, 'Pixel size')][1]
         ROI = self._widget.getROIGraphicsItem()
-        pos = [round(value/pixel_size) for value in ROI.position]
-        size = [round(value/pixel_size) for value in ROI.size]
+        # ROI.position/.size are in DATA-PIXEL units: the ROI visual renders
+        # aligned to the (pixel-size-scaled) image via setPixelScale, but its
+        # own position/size/bounds stay in pixels -- the same contract every
+        # other ROI consumer uses directly (BeadRec, AlignXY, AlignAverage).
+        # No pixel-size division here anymore; dividing again would scale by
+        # 1/pixelSize a second time.
+        pos = [round(value) for value in ROI.position]
+        size = [round(value) for value in ROI.size]
 
         currentParams = self.getCurrentParams()
         currentParams.x0.setValue(frameStart[0] + int(pos[0]))

@@ -67,6 +67,13 @@ class ImageController(LiveUpdatedController):
 
             self._widget.setImage(detectorName, display_im, display_scale)
 
+            # Keep overlay ROIs aligned to the current detector's pixel scale
+            # (and orientation, already baked into display_scale by the swap in
+            # apply_display_transform). Without this an ROI drawn in pixel units
+            # is mis-sized/shifted on cameras whose pixel size isn't 1 µm.
+            if isCurrentDetector:
+                self._widget.setOverlayPixelScale(display_scale)
+
             if not init or self._shouldResetView:
                 self.adjustFrame(shape=display_im.shape, instantResetView=True)
 

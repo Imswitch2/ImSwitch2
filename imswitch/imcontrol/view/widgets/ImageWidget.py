@@ -225,9 +225,32 @@ class ImageWidget(QtWidgets.QWidget):
         self.imgLayers[name].contrast_limits = (minimum, maximum)
 
     def getCenterViewbox(self):
-        """ Returns the center point of the viewbox, as an (x, y) tuple. """
+        """ Returns the center point of the viewbox in DATA-PIXEL coordinates,
+        as an (x, y) tuple.
+
+        ``camera.center`` is in world units (the image layer is drawn scaled by
+        the detector pixel size), so divide by the current overlay pixel scale.
+        Overlay ROIs keep their geometry in data pixels, so a center in the same
+        units lands them correctly regardless of pixel size. """
         center = self.napariViewer.camera.center
-        return (center[2], center[1])
+        sx, sy = getattr(self, '_lastOverlayScale', (1.0, 1.0))
+        return (center[2] / sx, center[1] / sy)
+
+    def setOverlayPixelScale(self, scale):
+        """ Push the current image layer's pixel scale to overlay ROIs so they
+        render in data-pixel units aligned to the (scaled) image.
+
+        ``scale`` is the layer scale in (..., row/Y, col/X) order; ROI axes are
+        (x=col, y=row). Stored so a ROI added later (overlays attach on demand)
+        picks up the right scale immediately. """
+        if scale is None or len(scale) < 2:
+            return
+        sx, sy = float(scale[-1]), float(scale[-2])
+        self._lastOverlayScale = (sx, sy)
+        for item in getattr(self, '_overlayItems', []):
+            setter = getattr(item, 'setPixelScale', None)
+            if setter is not None:
+                setter((sx, sy))
 
     def resetView(self):
         self.napariViewer.reset_view()
@@ -247,9 +270,24 @@ class ImageWidget(QtWidgets.QWidget):
                     view=_view,
                     parent=_parent,
                     order=1e6 + 8000)
+        # Track overlays and apply the last known pixel scale right away, so a
+        # ROI added after the image is already showing renders aligned without
+        # waiting for the next frame.
+        overlays = getattr(self, '_overlayItems', None)
+        if overlays is None:
+            overlays = self._overlayItems = []
+        if item not in overlays:
+            overlays.append(item)
+        scale = getattr(self, '_lastOverlayScale', None)
+        setter = getattr(item, 'setPixelScale', None)
+        if scale is not None and setter is not None:
+            setter(scale)
 
     def removeItem(self, item):
         item.detach()
+        overlays = getattr(self, '_overlayItems', None)
+        if overlays is not None and item in overlays:
+            overlays.remove(item)
 
     @shortcut('Ctrl+U', "Update levels")
     def updateLevelsButton(self):

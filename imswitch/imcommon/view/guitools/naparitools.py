@@ -473,6 +473,21 @@ class NapariROIOverlay(QtCore.QObject):
         self._layer.visible = False
         self._layer.events.data.connect(self._on_data_changed)
 
+    def setPixelScale(self, scale):
+        """Render in data-pixel units by scaling the shapes layer to the image
+        layer's pixel size, so position/size/bounds stay in detector pixels
+        (what the subarray crop expects). `scale` is (x, y) world-units/pixel;
+        a napari layer's scale is (row, col) = (y, x)."""
+        if self._layer is None or scale is None or len(scale) < 2:
+            return
+        sx, sy = float(scale[0]), float(scale[1])
+        if not (sx > 0 and sy > 0):
+            return
+        try:
+            self._layer.scale = (sy, sx)
+        except Exception:
+            pass
+
     def detach(self):
         if self._layer is not None and self._viewer is not None:
             try:
@@ -640,6 +655,13 @@ class VispyROIVisual(VispyBaseVisual):
         self._drag_mode = None
         self._world_scale = 1
 
+        # World units (µm) per data pixel for (x, y). The napari image layer is
+        # drawn scaled by the detector pixel size, so to render the ROI aligned
+        # to the image while keeping position/size/bounds in DATA-PIXEL units
+        # (what consumers crop with), every node transform multiplies by this.
+        # Updated live via setPixelScale() as the current detector changes.
+        self._pixel_scale = np.array([1.0, 1.0])
+
         self._position = [0, 0]
         self._size = [64, 64]
 
@@ -691,12 +713,29 @@ class VispyROIVisual(VispyBaseVisual):
         super().setVisible(value)
         self._on_data_change(None)
 
+    def setPixelScale(self, scale):
+        """Set the world-units-per-data-pixel for (x, y) and re-render.
+
+        Lets the ROI stay in data-pixel units while aligning to an image layer
+        that napari draws scaled by the detector pixel size. Ignores invalid
+        scales so a bad value can never collapse the ROI to zero size.
+        """
+        scale = np.asarray(scale, dtype=float)
+        if scale.shape != (2,) or not np.all(np.isfinite(scale)) or np.any(scale <= 0):
+            return
+        if np.array_equal(scale, self._pixel_scale):
+            return
+        self._pixel_scale = scale
+        self._update_position()
+        self._update_size()
+
     def _update_position(self):
         if not self._attached:
             return
 
-        self.rect_node.transform.translate = [self._position[0] - 0.5,
-                                              self._position[1] - 0.5,
+        sx, sy = self._pixel_scale
+        self.rect_node.transform.translate = [(self._position[0] - 0.5) * sx,
+                                              (self._position[1] - 0.5) * sy,
                                               0, 0]
         self._update_handle()
 
@@ -704,15 +743,17 @@ class VispyROIVisual(VispyBaseVisual):
         if not self._attached:
             return
 
-        self.rect_node.transform.scale = [self._size[0], self._size[1], 1, 1]
+        sx, sy = self._pixel_scale
+        self.rect_node.transform.scale = [self._size[0] * sx, self._size[1] * sy, 1, 1]
         self._update_handle()
 
     def _update_handle(self):
         if not self._attached:
             return
 
-        self.handle_node.transform.translate = [self._position[0] - 0.5 + self._size[0],
-                                                self._position[1] - 0.5 + self._size[1],
+        sx, sy = self._pixel_scale
+        self.handle_node.transform.translate = [(self._position[0] - 0.5 + self._size[0]) * sx,
+                                                (self._position[1] - 0.5 + self._size[1]) * sy,
                                                 0, 0]
 
     def _on_data_change(self, event):
@@ -740,16 +781,22 @@ class VispyROIVisual(VispyBaseVisual):
         if not self._visible or event.button != 1:
             return
 
-        # Determine whether the line was clicked
-        mouse_pos = self._view.scene.node_transform(self._view).imap(event.pos)[0:2]
+        # Determine whether the line was clicked. imap() returns scene/world
+        # coords; convert to data pixels (the ROI's own units) so the hit-test
+        # stays correct under a non-unity pixel scale.
+        mouse_pos = self._mouse_pos_in_pixels(event)
 
         pos_start = self.position
         pos_end = self.position + self._size
 
-        if (pos_end[0] <= mouse_pos[0] <
-                pos_end[0] + self._world_scale * self._handle_side_length and
-            pos_end[1] <= mouse_pos[1] <
-                pos_end[1] + self._world_scale * self._handle_side_length):
+        # The grab handle is drawn at a fixed on-screen size (world units); its
+        # extent in data pixels is that size divided by the pixel scale.
+        sx, sy = self._pixel_scale
+        handle_x = self._world_scale * self._handle_side_length / sx
+        handle_y = self._world_scale * self._handle_side_length / sy
+
+        if (pos_end[0] <= mouse_pos[0] < pos_end[0] + handle_x and
+            pos_end[1] <= mouse_pos[1] < pos_end[1] + handle_y):
             self._drag_mode = 'scale'
         elif (pos_start[0] <= mouse_pos[0] < pos_end[0] and
               pos_start[1] <= mouse_pos[1] < pos_end[1]):
@@ -763,11 +810,17 @@ class VispyROIVisual(VispyBaseVisual):
         self._start_move_visual_size = self.size
         self._start_move_mouse_pos = mouse_pos
 
+    def _mouse_pos_in_pixels(self, event):
+        """Mouse position mapped from canvas to ROI data-pixel coordinates."""
+        world = self._view.scene.node_transform(self._view).imap(event.pos)[0:2]
+        sx, sy = self._pixel_scale
+        return np.array([world[0] / sx, world[1] / sy])
+
     def on_mouse_move(self, event):
         if not self._visible or self._drag_mode is None:
             return
 
-        mouse_pos = self._view.scene.node_transform(self._view).imap(event.pos)[0:2]
+        mouse_pos = self._mouse_pos_in_pixels(event)
         if self._drag_mode == 'move':
             self.position = np.rint(
                 self._start_move_visual_pos + mouse_pos - self._start_move_mouse_pos
