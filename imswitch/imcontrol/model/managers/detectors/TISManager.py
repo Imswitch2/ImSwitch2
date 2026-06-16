@@ -59,25 +59,40 @@ class TISManager(DetectorManager):
         super().__init__(detectorInfo, name, fullShape=fullShape, supportedBinnings=[1],
                          model=self._camera.model, parameters=parameters, actions=actions, croppable=True)
 
-    @property
-    def scale(self):
-        return [1,1]
+    # NOTE: do NOT override `scale` here. As a camera detector, TIS must inherit
+    # DetectorManager.scale, which derives the napari layer scale from the
+    # 'Camera pixel size' parameter (set above). The old `return [1, 1]` ignored
+    # the configured pixel size, so the TIS layer rendered at 1 µm/px while other
+    # cameras (e.g. Hamamatsu) used their real pixel size — making the TIS image
+    # appear much larger in the viewer for the same physical field of view.
 
     def getLatestFrame(self, is_save=True):
         if not self._adjustingParameters:
             self.__image = self._camera.grabFrame()
         return self.__image
 
+    # Real TIS hardware properties CameraTIS.setPropertyValue understands (see
+    # tiscamera.py). 'Camera pixel size' and any other DetectorManager-level
+    # bookkeeping parameter are NOT camera properties: forwarding them hits
+    # CameraTIS's "does not exist" fallback, which logs a warning and returns
+    # False. That matters beyond the log noise — SettingsController.
+    # setDetectorParameter does `c.setParameter(...) and updateParamsFromDetector(...)`,
+    # so a falsy return (also true for gain/brightness set to 0) silently
+    # skipped the GUI refresh. Allow-list forwarding, mirroring HamamatsuManager.
+    _CAMERA_PROPERTIES = frozenset({'gain', 'brightness', 'exposure'})
+
     def setParameter(self, name, value):
-        """Sets a parameter value and returns the value.
+        """Sets a parameter value and returns the updated parameters dict.
         If the parameter doesn't exist, i.e. the parameters field doesn't
         contain a key with the specified parameter name, an error will be
-        raised."""        
+        raised."""
 
         super().setParameter(name, value)
 
-        value = self._camera.setPropertyValue(name, value)
-        return value
+        if name in self._CAMERA_PROPERTIES:
+            self._camera.setPropertyValue(name, value)
+
+        return self.parameters
 
     def getParameter(self, name):
         """Gets a parameter value and returns the value.
