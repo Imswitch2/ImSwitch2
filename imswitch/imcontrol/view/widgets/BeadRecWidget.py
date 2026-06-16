@@ -20,6 +20,7 @@ class BeadRecWidget(Widget):
     sigSaveAll = QtCore.Signal()
     sigQueryMousePixelValue = QtCore.Signal(float,float)
     sigFitRequested = QtCore.Signal(str)  # (model_key)
+    sigOrientationChanged = QtCore.Signal()  # rotate/flip controls changed
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -59,6 +60,15 @@ class BeadRecWidget(Widget):
         self.roiButton.setCheckable(True)
         self.runButton = QtWidgets.QCheckBox('Run')
         self.scaleButton = QtWidgets.QCheckBox('Scale')
+
+        # Orientation controls: correct the reconstruction for the physical scan
+        # direction (which corner is the origin / which axis is fast). For a
+        # unidirectional raster, rotate (90 deg steps) + flip H/V covers every
+        # possible orientation. self._rotation is kept in {0, 90, 180, 270}.
+        self._rotation = 0
+        self.rotateButton = guitools.BetterPushButton('Rotate 0°')
+        self.flipHButton = QtWidgets.QCheckBox('Flip H')
+        self.flipVButton = QtWidgets.QCheckBox('Flip V')
         self.saveRecBtn = guitools.BetterPushButton('Save Rec')
         self.loadImgBtn = guitools.BetterPushButton('Load')
         self.fitModelCombo = QtWidgets.QComboBox()
@@ -102,8 +112,9 @@ class BeadRecWidget(Widget):
         """)
         mainLayout.addWidget(lineSeparator, 3, 0, 1, 6)
 
-        # spacer = QtWidgets.QSpacerItem(10, 10, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
-        # mainLayout.addItem(spacer, 2, 0, 1, 6)  
+        mainLayout.addWidget(self.rotateButton, 2, 0, 1, 2)
+        mainLayout.addWidget(self.flipHButton, 2, 2, 1, 1)
+        mainLayout.addWidget(self.flipVButton, 2, 3, 1, 1)
         mainLayout.addWidget(self.fitModelCombo, 5, 0, 1, 2)
         mainLayout.addWidget(self.runFitBtn, 5, 2, 1, 1)
         mainLayout.addWidget(self.prmBtn, 5, 3, 1, 3)
@@ -150,6 +161,9 @@ class BeadRecWidget(Widget):
         self.roiButton.toggled.connect(self.sigROIToggled)
         self.runButton.clicked.connect(self.sigRunClicked)
         self.scaleButton.clicked.connect(self.sigScaleClicked)
+        self.rotateButton.clicked.connect(self._onRotateClicked)
+        self.flipHButton.toggled.connect(self.sigOrientationChanged)
+        self.flipVButton.toggled.connect(self.sigOrientationChanged)
         self.runFitBtn.clicked.connect(self._on_run_fit_clicked)
         self.prmBtn.clicked.connect(self.open_settings_dialog)
 
@@ -173,9 +187,31 @@ class BeadRecWidget(Widget):
     def hideROI(self):
         self.ROI.hide()
 
-    def updateImage(self, image):
-        self.img.setImage(image, autoLevels=False)
+    def updateImage(self, image, autoLevels=False):
+        self.img.setImage(image, autoLevels=autoLevels)
         # self.removeCenterCoord()
+
+    def _onRotateClicked(self):
+        self._rotation = (self._rotation + 90) % 360
+        self.rotateButton.setText(f'Rotate {self._rotation}°')
+        self.sigOrientationChanged.emit()
+
+    def getOrientation(self):
+        """Return the reconstruction orientation as (rotation, flipH, flipV)."""
+        return (self._rotation,
+                self.flipHButton.isChecked(),
+                self.flipVButton.isChecked())
+
+    def setOrientation(self, rotation, flipH, flipV):
+        """Restore the orientation controls without emitting change signals."""
+        self._rotation = int(rotation) % 360
+        if self._rotation not in (0, 90, 180, 270):
+            self._rotation = 0
+        self.rotateButton.setText(f'Rotate {self._rotation}°')
+        for button, value in ((self.flipHButton, flipH), (self.flipVButton, flipV)):
+            blocked = button.blockSignals(True)
+            button.setChecked(bool(value))
+            button.blockSignals(blocked)
 
     def setStatusText(self, text):
         self.statusLabel.setText(text)
@@ -357,7 +393,10 @@ class BeadRecWidget(Widget):
         self.sigQueryMousePixelValue.emit(x,y)
     
     def updatePixelValue(self,x,y,val):
-        self.pixelLabel.setPlainText(f"x:{round(x)}, y:{round(y)}, val:{val:.0f}")
+        # The reconstruction is a float ROI mean, so show the fractional part
+        # ('.0f' rounded it to a whole number and made the readout look integer
+        # even though the underlying pixel value is float).
+        self.pixelLabel.setPlainText(f"x:{round(x)}, y:{round(y)}, val:{val:.2f}")
 
     def erasePixelValue(self):
         self.pixelLabel.setPlainText("")

@@ -236,7 +236,12 @@ def mean_intensity_in_roi(frame: np.ndarray, roi: RoiBounds) -> float:
         raise ValueError("Bead reconstruction expects 2D detector frames")
     clipped_roi = normalize_roi_bounds((roi.x0, roi.y0, roi.x1, roi.y1), frame.shape)
     rows, cols = clipped_roi.as_slices()
-    return float(np.mean(frame[rows, cols]))
+    # Force a float64 accumulator. np.mean already promotes integer inputs to
+    # float64, but the detector dtype contract now hands BeadRec native integer
+    # frames (e.g. uint16) rather than the float64 it used to receive, so make
+    # the float intent explicit: a fractional ROI mean is never truncated, and
+    # float32 frames don't lose precision when averaging over a large ROI.
+    return float(np.mean(frame[rows, cols], dtype=np.float64))
 
 
 def create_reconstruction_buffer(scan_dims: Sequence[int]) -> np.ndarray:

@@ -52,7 +52,9 @@ def test_bead_worker_uses_narrow_callables_instead_of_controller_access():
     source = BEAD_REC_CONTROLLER_PATH.read_text()
     worker_source = source[source.index('class BeadWorker'):]
 
-    assert 'BeadWorker(\n            isScanRunning=self._commChannel.isScanRunning,' in source
+    # The gate is a narrow controller callable that arms only after the
+    # pre-scan camera backlog is flushed (not raw isScanRunning).
+    assert 'BeadWorker(\n            isScanRunning=self._scanFramesReady,' in source
     assert 'getFrames=self._getCurrentDetectorChunk' in source
     assert 'getRoiBounds=self._getBeadRoiBounds' in source
     assert 'sigNewChunk = Signal(object)' in worker_source

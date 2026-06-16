@@ -113,6 +113,33 @@ def test_mean_intensity_in_roi_uses_row_column_slicing():
     assert mean_intensity_in_roi(frame, roi) == pytest.approx(np.mean(frame[2:5, 1:4]))
 
 
+def test_mean_intensity_in_roi_keeps_fractional_mean_for_integer_frames():
+    """Integer detector frames must not truncate the ROI mean to an int.
+
+    The recording dtype contract now hands BeadRec native integer frames
+    (e.g. uint16) instead of float64. A 2x2 ROI of [1, 2, 1, 2] averages to
+    1.5 — regression-guard that this stays 1.5, not 1, and that the result is
+    a Python float.
+    """
+    frame = np.array([[1, 2], [1, 2]], dtype=np.uint16)
+    roi = RoiBounds(x0=0, y0=0, x1=2, y1=2)
+
+    result = mean_intensity_in_roi(frame, roi)
+    assert result == pytest.approx(1.5)
+    assert isinstance(result, float)
+
+
+def test_append_roi_means_is_float_for_integer_frames():
+    """Reconstruction buffer stays float (no integer truncation) for int frames."""
+    buffer = create_reconstruction_buffer((2, 1))
+    frame = np.array([[1, 2], [1, 2]], dtype=np.uint16)  # ROI mean 1.5
+
+    update = append_roi_means(buffer, 0, [frame], RoiBounds(0, 0, 2, 2))
+
+    assert np.issubdtype(update.buffer.dtype, np.floating)
+    assert update.buffer[0] == pytest.approx(1.5)
+
+
 def test_reconstruction_buffer_and_display_shape_use_existing_orientation():
     buffer = create_reconstruction_buffer((3, 2))
     buffer[:] = np.arange(6)

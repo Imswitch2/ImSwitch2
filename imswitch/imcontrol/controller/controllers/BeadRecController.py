@@ -6,6 +6,11 @@ from threading import Lock
 
 from imswitch.imcommon.framework import Thread, Worker, Signal
 from ..basecontrollers import ImConWidgetController
+from ..display_transform import (
+    DisplayTransform,
+    apply_display_transform,
+    display_transform_from_properties,
+)
 from tifffile import imwrite, imread
 from imswitch.imcontrol.view import guitools
 from imswitch.imcontrol.model import getWidgetStatePersistence
@@ -51,8 +56,14 @@ class BeadRecController(ImConWidgetController):
         # present, so we don't spam the log every scan.
         self._warnedNoScanWidget = False
 
+        # Gate frame consumption on "armed", set only AFTER the detector buffer
+        # is flushed at the real scan start (onNewScan / sigScanStarted) — NOT on
+        # raw isScanRunning, which flips True in runScanAdvanced before any scan
+        # frame exists. Consuming on the early flag pulled the pre-scan camera
+        # backlog into the reconstruction, shifting and inflating it.
+        self._scanArmed = False
         self.beadWorker = BeadWorker(
-            isScanRunning=self._commChannel.isScanRunning,
+            isScanRunning=self._scanFramesReady,
             getFrames=self._getCurrentDetectorChunk,
             getRoiBounds=self._getBeadRoiBounds,
         )
@@ -83,6 +94,20 @@ class BeadRecController(ImConWidgetController):
         self._widget.sigSaveAll.connect(self.saveAll)
         self._widget.sigQueryMousePixelValue.connect(self.updateOnMousePixelValue)
 
+        # Live ROI crop preview: while the ROI is shown and BeadRec is not
+        # reconstructing, mirror exactly what the ROI crops from the current
+        # detector into the BeadRec viewer, so the user can see what each
+        # reconstruction pixel is averaged from before starting a scan.
+        self._lastLiveFrame = None
+        self._widget.getROIGraphicsItem().sigROIChanged.connect(self._onRoiChanged)
+        self._commChannel.sigUpdateImage.connect(self._onLiveImage)
+
+        # Reconstruction orientation correction for the physical scan direction.
+        # Applied as the last display step; _orientBase keeps the pre-orientation
+        # image so toggling the controls re-renders without recomputing the scan.
+        self._orientation = DisplayTransform()
+        self._orientBase = None
+        self._widget.sigOrientationChanged.connect(self._onOrientationChanged)
 
         # Connect comm channel signals
         self._commChannel.sigScanStarted.connect(self.updateParameters)
@@ -110,15 +135,56 @@ class BeadRecController(ImConWidgetController):
     _CHUNK_CONSUMER = 'BeadRec'
 
     def _getCurrentDetectorChunk(self) -> Sequence[np.ndarray]:
-        return self._master.detectorsManager.execOnCurrent(
+        chunk = self._master.detectorsManager.execOnCurrent(
             lambda c: c.readChunk(self._CHUNK_CONSUMER)
         )
+        # The ROI is drawn on the DISPLAYED image (rotated/flipped per the
+        # detector's display transform), but readChunk returns raw frames.
+        # Apply the same transform so the ROI bounds index the region the user
+        # actually selected — otherwise the reconstruction averages a shifted
+        # region on cameras with a non-trivial display orientation.
+        return self._toDisplayedFrames(chunk)
+
+    def _currentDisplayTransform(self) -> DisplayTransform:
+        try:
+            name = self._master.detectorsManager.getCurrentDetectorName()
+            info = self._setupInfo.detectors.get(name)
+        except Exception:
+            return DisplayTransform()
+        return display_transform_from_properties(
+            info.managerProperties if info is not None else None
+        )
+
+    def _toDisplayedFrames(self, frames: Sequence[np.ndarray]) -> Sequence[np.ndarray]:
+        transform = self._currentDisplayTransform()
+        if transform.is_identity:
+            return frames
+        return [
+            apply_display_transform(np.asarray(f), None, transform)[0]
+            for f in frames
+        ]
 
     def _releaseDetectorChunkConsumer(self) -> None:
         """Stop retaining frames for BeadRec on every detector."""
         self._master.detectorsManager.execOnAll(
             lambda c: c.releaseChunkConsumer(self._CHUNK_CONSUMER)
         )
+
+    def _scanFramesReady(self) -> bool:
+        """Whether the worker may consume detector frames as scan pixels.
+
+        True only once the scan has actually started AND we have flushed the
+        pre-scan camera backlog (see onNewScan). ``isScanRunning`` alone is
+        insufficient: it turns True while the scan signals are still being
+        armed, before any scan frame exists.
+        """
+        return self._scanArmed and self._commChannel.isScanRunning()
+
+    def _discardBufferedFrames(self) -> None:
+        """Drop any frames buffered before the scan started, so reconstruction
+        begins exactly at the first real scan frame (no pre-scan shift)."""
+        self._master.detectorsManager.execOnAll(lambda c: c.flushBuffers())
+        self._releaseDetectorChunkConsumer()
 
     def _getBeadRoiBounds(self) -> Sequence[int]:
         return self._widget.getROIGraphicsItem().bounds
@@ -381,8 +447,53 @@ class BeadRecController(ImConWidgetController):
                       ROIcenter[1] - 0.5 * ROIsize[1])
 
             self._widget.showROI(ROIpos, ROIsize)
+            self._updateRoiCropPreview()
         else:
             self._widget.hideROI()
+            # The preview replaced the viewer contents; restore the last
+            # reconstruction (if any) when the ROI is hidden again.
+            if self.recIm is not None and self.dims is not None:
+                self.update()
+
+    def _onLiveImage(self, detectorName, image, init, scale, isCurrentDetector):
+        """Cache the current detector's latest frame for the ROI crop preview."""
+        if not isCurrentDetector:
+            return
+        self._lastLiveFrame = np.asarray(image)
+        self._updateRoiCropPreview()
+
+    def _onRoiChanged(self, position=None, size=None):
+        self._updateRoiCropPreview()
+
+    def _updateRoiCropPreview(self):
+        """Show exactly what the ROI crops from the live current-detector frame.
+
+        Active only while the ROI is shown and BeadRec is NOT reconstructing
+        (during a run the reconstruction owns the viewer). The crop is taken
+        from the same raw frame and ROI bounds the reconstruction uses, so it
+        is a faithful preview of what each pixel will be averaged from.
+        """
+        if self.running or not self._widget.roiButton.isChecked():
+            return
+        frame = self._lastLiveFrame
+        if frame is None or frame.ndim != 2 or frame.size == 0:
+            return
+        # Crop the displayed (transformed) frame so the preview matches what the
+        # ROI overlays on screen and what the reconstruction will average.
+        frame = self._toDisplayedFrames([frame])[0]
+        try:
+            roi = normalize_roi_bounds(self._getBeadRoiBounds(), frame.shape)
+        except ValueError:
+            return
+        rows, cols = roi.as_slices()
+        crop = frame[rows, cols]
+        if crop.size == 0:
+            return
+        # A live crop, not an orientable reconstruction: drop the orient base so
+        # rotate/flip toggles don't redraw a stale reconstruction over it.
+        self._orientBase = None
+        self.imDisplay = crop
+        self._widget.updateImage(crop, autoLevels=True)
 
     def addROI(self):
         """ Adds the ROI to ImageWidget viewbox through the CommunicationChannel. """
@@ -402,10 +513,14 @@ class BeadRecController(ImConWidgetController):
             self._widget.setStatusText("Bead reconstruction running")
             self._widget.updateProgress(0, config.total_pixels)
             self.thread.start()
+            # Only consume immediately if a scan is already mid-flight when Run
+            # is enabled; the normal "Run, then scan" flow arms in onNewScan.
+            self._scanArmed = self._commChannel.isScanRunning()
             if self.ongoingScan:
                 self.addCurrentToWidgetList()
         else:
             self.running = False
+            self._scanArmed = False
             self.beadWorker.stop()
             self._widget.setStatusText("Bead reconstruction stopped")
             self.thread.quit()
@@ -421,7 +536,13 @@ class BeadRecController(ImConWidgetController):
             self.axialName = "XY"
 
         if self._widget.runButton.isChecked():
+            # Flush the pre-scan camera backlog and reset the reconstruction
+            # buffer, THEN arm consumption. Order matters: arming after the flush
+            # guarantees the worker's first readChunk returns only frames
+            # produced after the scan actually started (no shift, correct count).
+            self._discardBufferedFrames()
             self.beadWorker.configure(self._createAcquisitionConfig())
+            self._scanArmed = True
             self.addCurrentToWidgetList() # in case "clear all" made it disappear
             # BeadRec reconstructs from the CURRENT detector (execOnCurrent);
             # surface which one that is, since picking the wrong camera in
@@ -444,6 +565,9 @@ class BeadRecController(ImConWidgetController):
 
     def onEndedScan(self):
         self.ongoingScan=False
+        # Stop consuming: frames the free-running camera keeps producing after
+        # the scan ends must not bleed into the finished reconstruction.
+        self._scanArmed = False
         if self.running and self.framesReceivedThisScan == 0:
             msg = ('BeadRec: 0 detector frames received during the scan — '
                    'check camera triggering (e.g. external-trigger TTL '
@@ -454,6 +578,24 @@ class BeadRecController(ImConWidgetController):
         if self.recIm is None:
             self._widget.setStatusText("Scan ended without bead reconstruction data")
             return
+        # Diagnostic: kept frames vs expected pixels. A surplus means frames
+        # leaked in (e.g. pre-scan buffer not flushed) or the camera produced
+        # more triggers than the grid expects; a deficit means dropped triggers.
+        if self.dims is not None:
+            expected = self.dims[0] * self.dims[1]
+            received = self.framesReceivedThisScan
+            if received != expected:
+                self._logger.warning(
+                    'BeadRec frame-count mismatch: received %d kept frames, '
+                    'expected %d (%dx%d). Surplus -> pre-scan/extra frames; '
+                    'deficit -> dropped triggers.',
+                    received, expected, self.dims[0], self.dims[1]
+                )
+            else:
+                self._logger.info(
+                    'BeadRec received %d frames, matching the expected %dx%d grid.',
+                    received, self.dims[0], self.dims[1]
+                )
         self.currentRunImgs[self.axialName] = reconstruction_image(self.recIm, self.dims) # we always store unscaled img
         self._widget.setStatusText("Bead reconstruction scan complete")
         self._widget.updateProgress(self.recIm.size, self.recIm.size)
@@ -518,14 +660,50 @@ class BeadRecController(ImConWidgetController):
             else:
                 self._widget.erasePixelValue()
 
+    def _applyOrientation(self, im):
+        """Apply the reconstruction orientation (rotate/flip) for display."""
+        if im is None:
+            return None
+        oriented, _ = apply_display_transform(im, None, self._orientation)
+        return oriented
+
+    def _showReconstruction(self, base):
+        """Orient `base` and show it, remembering it for re-orientation.
+
+        `base` is the reconstruction after optional physical-pixel rescaling but
+        before orientation. self.imDisplay holds the oriented image actually
+        shown (so fits, saves and the pixel readout all use what the user sees).
+        """
+        self._orientBase = base
+        self.imDisplay = self._applyOrientation(base)
+        self._widget.updateImage(self.imDisplay)
+
+    def _onOrientationChanged(self):
+        """Re-render the current reconstruction with the new orientation."""
+        self._orientation = DisplayTransform(*self._toTransformArgs())
+        if self._orientBase is not None:
+            self.imDisplay = self._applyOrientation(self._orientBase)
+            self._widget.updateImage(self.imDisplay)
+
+    def _toTransformArgs(self):
+        rotation, flipH, flipV = self._widget.getOrientation()
+        return rotation, bool(flipH), bool(flipV)
+
     def updateScaling(self):
         """ Updates scaling factor of displayed image, only if current run
         Note that this will overwrite imDisplay with scaled version, but unscaled still accessble with currentRunImgs[self.axialName]"""
         if not self._commChannel.isScanRunning() and self._widget.isSelectedCurrent():
-            if self._widget.scaleButton.isChecked():
-                self.imDisplay = self.rescale(self.imDisplay)
-            else:
-                self.imDisplay = self.currentRunImgs.get(self.axialName)
+            # Rescale from the raw stored reconstruction (not the already-shown
+            # image) so scale + orientation never compound across toggles.
+            base = self.currentRunImgs.get(self.axialName)
+            if base is not None and self._widget.scaleButton.isChecked():
+                base = self.rescale(base)
+            if base is not None:
+                self._showReconstruction(base)
+                return
+        # Showing a saved list item (not the live reconstruction): orientation
+        # toggles must not resurrect a stale reconstruction.
+        self._orientBase = None
         self._widget.updateImage(self.imDisplay)
 
     def rescale(self,im):
@@ -548,10 +726,10 @@ class BeadRecController(ImConWidgetController):
             self.recIm = recIm
         if self.recIm is None:
             return
-        self.imDisplay = reconstruction_image(self.recIm, self.dims)
+        base = reconstruction_image(self.recIm, self.dims)
         if self._widget.scaleButton.isChecked():
-            self.imDisplay = self.rescale(self.imDisplay)
-        self._widget.updateImage(self.imDisplay)
+            base = self.rescale(base)
+        self._showReconstruction(base)
 
 
     def centerCoordQuery(self, mode):
@@ -594,6 +772,8 @@ class BeadRecController(ImConWidgetController):
             ).as_dict(),
             "scale_enabled": self._widget.scaleButton.isChecked(),
             "roi_visible": self._widget.roiButton.isChecked(),
+            "orientation": dict(zip(("rotation", "flipH", "flipV"),
+                                    self._widget.getOrientation())),
             "last_dir": self.lastDir,
             "result_metadata": [
                 record.metadata() for record in self.resultRecords
@@ -610,6 +790,15 @@ class BeadRecController(ImConWidgetController):
                 ).as_dict()
 
             self._widget.scaleButton.setChecked(bool(state.get("scale_enabled", False)))
+
+            orientation = state.get("orientation")
+            if isinstance(orientation, dict):
+                self._widget.setOrientation(
+                    orientation.get("rotation", 0),
+                    orientation.get("flipH", False),
+                    orientation.get("flipV", False),
+                )
+                self._orientation = DisplayTransform(*self._toTransformArgs())
 
             lastDir = state.get("last_dir")
             if isinstance(lastDir, str) and os.path.isdir(lastDir):
