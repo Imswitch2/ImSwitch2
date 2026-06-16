@@ -95,6 +95,21 @@ class HamamatsuManager(DetectorManager):
     def crop(self, hpos, vpos, hsize, vsize):
         """Method to crop the frame read out by the camera. """
 
+        # DCAM's dcam_setgetpropertyvalue (called by CameraTIS/HamamatsuCamera's
+        # setPropertyValue) sets AND reads back the value in one call, returning
+        # whatever the driver actually applied. The subarray_* properties have a
+        # hardware-defined step granularity (DCAM_PARAM_PROPERTYATTR.valuestep,
+        # e.g. multiples of 4) -- a requested hpos/vpos/hsize/vsize that isn't
+        # aligned to that step gets silently snapped by the driver to the nearest
+        # valid value. Previously this method ignored the returned value and
+        # trusted the *requested* numbers for self._frameStart/self._shape,
+        # which then disagreed with the actual hardware ROI whenever the
+        # requested value needed snapping -- causing position/size drift between
+        # what was asked for and what frames actually look like (intermittent:
+        # only shows up for off-step ROIs, not every crop). Now the
+        # driver-applied values are used instead.
+        applied = {'hpos': hpos, 'vpos': vpos, 'hsize': hsize, 'vsize': vsize}
+
         def cropAction():
             self._camera.setPropertyValue('subarray_vpos', 0)
             self._camera.setPropertyValue('subarray_hpos', 0)
@@ -102,17 +117,40 @@ class HamamatsuManager(DetectorManager):
             self._camera.setPropertyValue('subarray_hsize', self.fullShape[0])
 
             if (hsize, vsize) != self.fullShape:
-                self._camera.setPropertyValue('subarray_vsize', vsize)
-                self._camera.setPropertyValue('subarray_hsize', hsize)
-                self._camera.setPropertyValue('subarray_vpos', vpos)
-                self._camera.setPropertyValue('subarray_hpos', hpos)
+                applied['vsize'] = self._camera.setPropertyValue('subarray_vsize', vsize)
+                applied['hsize'] = self._camera.setPropertyValue('subarray_hsize', hsize)
+                applied['vpos'] = self._camera.setPropertyValue('subarray_vpos', vpos)
+                applied['hpos'] = self._camera.setPropertyValue('subarray_hpos', hpos)
 
         self._performSafeCameraAction(cropAction)
 
+        # setPropertyValue returns False (not a number) if the driver rejected the
+        # property outright; fall back to the requested value rather than
+        # corrupting frameStart/shape with int(False) == 0.
+        def _resolved(key, requested):
+            value = applied[key]
+            if isinstance(value, bool) or value is None:
+                return requested
+            return int(value)
+
+        appliedHpos = _resolved('hpos', hpos)
+        appliedVpos = _resolved('vpos', vpos)
+        appliedHsize = _resolved('hsize', hsize)
+        appliedVsize = _resolved('vsize', vsize)
+
+        if (appliedHpos, appliedVpos, appliedHsize, appliedVsize) != (hpos, vpos, hsize, vsize):
+            self.__logger.warning(
+                f'Hamamatsu camera snapped the requested ROI '
+                f'(hpos={hpos}, vpos={vpos}, hsize={hsize}, vsize={vsize}) to '
+                f'(hpos={appliedHpos}, vpos={appliedVpos}, hsize={appliedHsize}, '
+                f'vsize={appliedVsize}) due to hardware step/range constraints; '
+                f'using the actually-applied values.'
+            )
+
         # This should be the only place where self.frameStart is changed
-        self._frameStart = (hpos, vpos)
+        self._frameStart = (appliedHpos, appliedVpos)
         # Only place self.shapes is changed
-        self._shape = (hsize, vsize)
+        self._shape = (appliedHsize, appliedVsize)
 
     def setBinning(self, binning):
         super().setBinning(binning)
