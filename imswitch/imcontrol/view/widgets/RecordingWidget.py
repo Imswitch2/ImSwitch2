@@ -424,7 +424,7 @@ class RecordingWidget(Widget):
         self.numExpositionsEdit.setText(str(numExpositions))
 
     def setTimeToRec(self, secondsToRec):
-        self.numExpositionsEdit.setText(str(secondsToRec))
+        self.timeToRec.setText(str(secondsToRec))
 
     def setTimelapseTime(self, secondsToRec):
         self.timeLapseEdit.setText(str(secondsToRec))

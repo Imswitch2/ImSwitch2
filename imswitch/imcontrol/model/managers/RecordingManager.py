@@ -1518,8 +1518,11 @@ class RecordingWorker(Worker):
                     )
                 elif self.recMode == RecMode.SpecTime:
                     currentRecTime = time.time() - startTime
+                    # sigRecordingTimeUpdated is declared Signal(int); PyQt5 does
+                    # NOT coerce a numpy.float64 here, it reinterprets the bits
+                    # into a garbage int. Emit a plain Python int.
                     self.__recordingManager.sigRecordingTimeUpdated.emit(
-                        np.around(currentRecTime, decimals=2)
+                        int(currentRecTime)
                     )
                 
                 # Check for stalled detectors (only for modes with frame targets)
@@ -1577,8 +1580,13 @@ class RecordingWorker(Worker):
             if aborting:
                 self.__recordingManager.endRecording(emitSignal=False, wait=False)
             else:
+                # Scan-driven modes finish their widget cycle via sigScanDone
+                # (see RecordingController.scanDone), so suppress the duplicate
+                # sigRecordingEnded for them. SpecFrames/SpecTime have no scan,
+                # so they MUST emit it - otherwise the controller never runs
+                # recordingCycleEnded() and the REC button stays stuck checked.
                 emitSignal = True
-                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                if self.recMode in [RecMode.ScanOnce, RecMode.ScanLapse]:
                     emitSignal = False
                 self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
 

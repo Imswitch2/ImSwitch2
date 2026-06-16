@@ -103,6 +103,36 @@ def test_recording_spec_time(qtbot, detectorInfos):
         assert savedToDisk is False
 
 
+@pytest.mark.parametrize('recMode,kwargs',
+                         [(RecMode.SpecFrames, {'recFrames': 10}),
+                          (RecMode.SpecTime, {'recTime': 2})])
+def test_recording_emits_recording_ended(qtbot, recMode, kwargs):
+    """Non-scan recordings must emit sigRecordingEnded when they self-terminate.
+
+    Regression: SpecFrames suppressed sigRecordingEnded (it was lumped in with
+    the scan-driven modes, which finish via sigScanDone instead). With no scan
+    to drive RecordingController.recordingCycleEnded(), the REC button stayed
+    stuck checked after a frame-count recording. SpecTime always emitted it;
+    both non-scan modes must now behave the same.
+    """
+    detectorInfos = detectorInfosBasic
+    detectorsManager = DetectorsManager(detectorInfos, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+
+    with qtbot.waitSignal(recordingManager.sigRecordingEnded, timeout=30000):
+        recordingManager.startRecording(
+            detectorNames=list(detectorInfos.keys()),
+            recMode=recMode,
+            savename='test_recording_ended',
+            saveMode=SaveMode.RAM,
+            attrs={detectorName: {} for detectorName in detectorInfos.keys()},
+            **kwargs,
+        )
+
+    qtbot.wait(200)  # let the worker thread fully wind down
+    assert not recordingManager.record, "Recording should have stopped on its own"
+
+
 def test_recording_dtype_preservation(qtbot):
     """HDF5 datasets must derive their dtype from the detector frames.
 
