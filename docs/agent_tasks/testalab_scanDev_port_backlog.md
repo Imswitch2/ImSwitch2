@@ -365,7 +365,7 @@ Checks run:
 
 ### P08 - Optional Branch Leftovers Audit
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P01, P02, P03, P04, P05, P06, P07
 Source commits: remaining commits in `upstream/master..upstream/testalab_scanDev`
 Primary source areas:
@@ -383,3 +383,43 @@ or mark them out of scope for this scanDev port.
 Notes:
 This package should not make broad code changes. It should update this backlog
 with any newly discovered package definitions and source refs.
+
+Done notes:
+Audited the remaining `testalab_scanDev` source-branch diff after P01-P07 and
+the P06 verification audit. The full source branch still contains broad
+historical churn (738 changed files, 230 non-merge commits, 44,688 insertions
+and 60,374 deletions relative to `upstream/master`), but no additional
+scanDev-port package should be opened from it now.
+
+Remaining source areas were classified as follows:
+
+- EtMonalisa/EtSTED controllers and widgets are already present in current
+  ImSwitch2 and have since been revised with workflow, transform, and test
+  infrastructure. Do not re-port the older branch versions.
+- `imreconstruct` denoising/model additions are already represented in the
+  current `improcess` module (`Denoiser`, `UNet`, `UNetRCAN`, reconstructors,
+  processors, and tests) and are being handled by the separate ImProcess work,
+  not by this scanDev port.
+- Vendored SDK/runtime assets (`pipython`, Hamamatsu SLM DLL bundle, deleted
+  camera SDK DLL trees) are already present where current ImSwitch2 expects
+  them or are packaging/vendor-hygiene concerns. Do not add or remove binary
+  SDK assets as part of this port.
+- One-off scripts (`ai_nidaq_tests.py`, `test-galvoscandesigner.py`,
+  `test_standa_motrot.py`) are already represented under
+  `scripts/diagnostics/` on current `main`; do not re-add top-level scripts.
+- CI/workflow, Docker, generated static web assets, requirement, paper, and
+  broad default-data deletions are outside the functional scanDev port and
+  should be handled only through separate repository-maintenance work.
+- Cobolt0601NewLaserManager / PyCobolt source commits remain intentionally
+  excluded from P05 per user direction. Current ImSwitch2 already has newer
+  Cobolt/PyCobolt-related files; no source-branch laser-manager port is queued.
+
+Outcome:
+No new backlog packages were added. The scanDev port queue is complete for the
+agreed scope.
+
+Checks run:
+
+- `git diff --name-status upstream/master..refs/remotes/upstream/testalab_scanDev`
+- `git diff --name-status upstream/master..refs/remotes/upstream/testalab_scanDev -- <P08 source-area pathspecs>`
+- `git log --oneline main -- <current target equivalents for P08 source areas>`
