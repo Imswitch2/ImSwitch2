@@ -403,6 +403,27 @@ class TriggerScopeInfo:
     TriggerScope board over serial. """
 
 
+@dataclass(frozen=True)
+class FlipMirrorInfo:
+    managerName: str
+    """ Flip mirror manager class name. """
+
+    serial_number: Optional[str] = None
+    """ Serial number used by hardware managers to find the device. """
+
+    invert: bool = False
+    """ Whether logical states 0 and 1 are swapped from hardware states. """
+
+    initial_state: Optional[int] = None
+    """ Optional state to move to at startup. ``None`` keeps the current state. """
+
+    state_names: Dict[str, str] = field(default_factory=dict)
+    """ Optional display names for logical states 0 and 1. """
+
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Optional manager-specific properties. """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -449,6 +470,9 @@ class SetupInfo:
 
     rotators: Optional[Dict[str, DeviceInfo]] = field(default_factory=lambda: None)
     """ Standa motorized rotator mounts settings. Required to be defined to use rotator functionality. """
+
+    flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
+    """ Motorized flip mirror settings. """
 
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """

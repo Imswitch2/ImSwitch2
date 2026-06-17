@@ -22,6 +22,7 @@ _WIDGET_MODULES = {
     # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
     "FFTWidget": "FFTWidget",
     "FLIMHistWidget": "FLIMHistWidget",
+    "FlipMirrorWidget": "FlipMirrorWidget",
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",
     "LaserWidget": "LaserWidget",

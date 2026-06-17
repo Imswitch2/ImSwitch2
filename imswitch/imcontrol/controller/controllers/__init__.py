@@ -23,6 +23,7 @@ _CONTROLLER_MODULES = {
     # "EtController": "EtController",  # Prototype on old Monalisa machine.
     "FFTController": "FFTController",
     "FLIMHistController": "FLIMHistController",
+    "FlipMirrorController": "FlipMirrorController",
     "FocusLockController": "FocusLockController",
     "ImageController": "ImageController",
     "LaserController": "LaserController",

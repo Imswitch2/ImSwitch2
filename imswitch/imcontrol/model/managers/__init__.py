@@ -1,4 +1,5 @@
 from .DetectorsManager import DetectorsManager, NoDetectorsError
+from .FlipMirrorsManager import FlipMirrorsManager
 from .LasersManager import LasersManager
 from .MultiManager import MultiManager
 from .NidaqManager import NidaqManager

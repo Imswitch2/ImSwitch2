@@ -129,7 +129,7 @@ Checks run:
 
 ### P02 - Flip Mirror Support
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P01 only if setup modes are touched during integration
 Source commit: `de6a3ec7`
 Primary source files:
@@ -148,6 +148,22 @@ support.
 Notes:
 Keep physical-device calls behind existing manager patterns and cover registration
 or mock behavior without real hardware.
+
+Done notes:
+Ported the flip-mirror controller, widget, manager aggregation, Thorlabs MFF
+hardware manager, and mock manager. Added `flipMirrors` setup schema support,
+master-controller construction, lazy controller/widget exports, dock metadata,
+and no-hardware tests for mock loading, state changes, reset, finalization, and
+lazy exports. The `ThorlabsMFF_mock` manager name remains loadable through a
+class alias for `MultiManager`.
+
+Checks run:
+
+- `git diff --check`
+- `python -m compileall -q docs/agent_tasks/testalab_scanDev_port_backlog.md imswitch/imcontrol/controller/controllers/FlipMirrorController.py imswitch/imcontrol/view/widgets/FlipMirrorWidget.py imswitch/imcontrol/model/managers/FlipMirrorsManager.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF_mock.py imswitch/imcontrol/model/SetupInfo.py imswitch/imcontrol/model/__init__.py imswitch/imcontrol/model/managers/__init__.py imswitch/imcontrol/controller/MasterController.py imswitch/imcontrol/controller/controllers/__init__.py imswitch/imcontrol/view/widgets/__init__.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py imswitch/imcontrol/_test/unit/test_flip_mirrors.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_flip_mirrors.py -q`
+- `ruff check imswitch/imcontrol/controller/controllers/FlipMirrorController.py imswitch/imcontrol/view/widgets/FlipMirrorWidget.py imswitch/imcontrol/model/managers/FlipMirrorsManager.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF_mock.py imswitch/imcontrol/model/SetupInfo.py imswitch/imcontrol/model/__init__.py imswitch/imcontrol/model/managers/__init__.py imswitch/imcontrol/controller/MasterController.py imswitch/imcontrol/controller/controllers/__init__.py imswitch/imcontrol/view/widgets/__init__.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py imswitch/imcontrol/_test/unit/test_flip_mirrors.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_setup_modes.py imswitch/imcontrol/_test/unit/test_flip_mirrors.py -q`
 
 ### P03 - Advanced Scan Sequence Builder Delta
 

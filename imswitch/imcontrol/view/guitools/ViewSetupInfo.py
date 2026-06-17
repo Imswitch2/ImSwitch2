@@ -108,6 +108,7 @@ class ViewSetupInfo(SetupInfo):
     - ``EtSTED`` (etSTED widget)
     - ``Rotator`` (Rotator widget; requires "Rotator" field to be defined)
     - ``RotationScan`` (Rotation scan widget; requires "Rotator" field to be defined)
+    - ``FlipMirror`` (motorized flip mirror widget; requires ``flipMirrors`` field to be defined)
     - ``MotCorr`` (Leica motorized correction collar widget; requires rs232 stand device to be defined)
     - ``BFTimelapse`` (BFTimelapse widget)
     - ``Tiling`` (spiral tiling scan widget; requires ``tiling`` field to be defined)
