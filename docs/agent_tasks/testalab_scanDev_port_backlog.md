@@ -247,7 +247,7 @@ Checks run:
 
 ### P05 - Hardware Manager Bugfix Deltas
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: none
 Source commits: `34c2ee68`, `04ae8d1a`, `7619ade3`, `c18c4a67`
 Primary source files:
@@ -272,6 +272,25 @@ Out of scope:
 
 - `Cobolt0601NewLaserManager.py`, Cobolt mock/driver deltas, and source commit
   `80457490` are intentionally not part of this package.
+
+Done notes:
+Ported 3 commits (04ae8d1a skipped as Cobolt laser-related). Created new
+SerialDacZManager.py (227 lines) with virtual Z positioner via Serial DAC,
+MicroPython REPL interface, voltage clamping, and safe shutdown. Fixed TIS
+camera resource leaks by implementing proper close() in TISManager.py and
+tiscamera.py including critical ic_ic.close_library() call, idempotent closing,
+and destructor cleanup. Generalized positioner get_abs(axis) signature in
+PiezoconceptZManager.py and PiezoconceptZManager2.py. Enhanced
+FocusLockController.py with axis resolution logic (prefers Z, falls back to 0),
+abstraction methods getPositionerAbs() and movePositioner(). Added optional
+positionerAxis field to FocusLockInfo in SetupInfo.py. All acceptance points
+satisfied.
+
+Checks run:
+
+- `python -m compileall -q <all 7 modified files>`
+- `git diff --check`
+- `ruff check <all 7 modified files>`
 
 ### P06 - Scan Compatibility For BeadRec And Recording Edges
 
