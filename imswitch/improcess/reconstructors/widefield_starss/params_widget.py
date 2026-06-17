@@ -129,8 +129,9 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         self.plotMetricButton.setEnabled(False)
         self.batchResultsTabs = QtWidgets.QTabWidget()
         self.batchResultsTabs.setMinimumHeight(180)
-        self.batchSummaryTable = self._make_result_table()
-        self.batchRegionsTable = self._make_result_table()
+        from imswitch.improcess.view.ResultsTableWidget import ResultsTableWidget
+        self.batchSummaryTable = ResultsTableWidget(show_filter=False, show_csv=True)
+        self.batchRegionsTable = ResultsTableWidget(show_filter=False, show_csv=True)
         self.batchUnmatchedList = QtWidgets.QListWidget()
         self.batchResultsTabs.addTab(self.batchSummaryTable, "Summary")
         self.batchResultsTabs.addTab(self.batchRegionsTable, "Regions")
@@ -300,19 +301,18 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             except (TypeError, ValueError):
                 record["pair_index"] = offset
 
-        self._merge_columns(self._summary_columns, payload.get("summary_columns", []))
-        self._merge_columns(self._region_columns, payload.get("region_columns", []))
+        from imswitch.improcess.view.ResultsTableWidget import merge_columns
+        self._summary_columns = merge_columns(self._summary_columns, payload.get("summary_columns", []))
+        self._region_columns = merge_columns(self._region_columns, payload.get("region_columns", []))
         self._summary_records.extend(summary_records)
         self._region_records.extend(region_records)
         self._unmatched_paths.extend(str(path) for path in payload.get("unmatched_paths", []))
         self._refresh_results_views()
 
     def _refresh_results_views(self) -> None:
-        self._set_table_records(
-            self.batchSummaryTable, self._summary_columns, self._summary_records
-        )
+        self.batchSummaryTable.set_records(self._summary_columns, self._summary_records)
         shown_regions = self._region_records[: self._REGION_PREVIEW_LIMIT]
-        self._set_table_records(self.batchRegionsTable, self._region_columns, shown_regions)
+        self.batchRegionsTable.set_records(self._region_columns, shown_regions)
         self.batchUnmatchedList.clear()
         for path in self._unmatched_paths:
             self.batchUnmatchedList.addItem(path)
@@ -323,13 +323,6 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         self.batchResultsTabs.setTabText(2, f"Unmatched ({len(self._unmatched_paths)})")
         self._refresh_metric_choices()
         self._apply_batch_filter(self.batchFilterEdit.text())
-
-    @staticmethod
-    def _merge_columns(target: list[str], incoming) -> None:
-        for column in incoming:
-            column = str(column)
-            if column not in target:
-                target.append(column)
 
     def _metric_category(self, column: str) -> str:
         if column in self._SEGMENTATION_METRICS:
@@ -584,64 +577,10 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
             for name, value in group_values.items():
                 group.param(name).setValue(value)
 
-    def _make_result_table(self) -> QtWidgets.QTableWidget:
-        table = QtWidgets.QTableWidget(0, 0)
-        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        table.setAlternatingRowColors(True)
-        table.setSortingEnabled(True)
-        return table
-
-    def _set_table_records(
-        self,
-        table: QtWidgets.QTableWidget,
-        columns: list[str],
-        records: list[dict[str, object]],
-    ) -> None:
-        table.setSortingEnabled(False)
-        table.clear()
-        table.setColumnCount(len(columns))
-        table.setRowCount(len(records))
-        table.setHorizontalHeaderLabels([str(column) for column in columns])
-        for row_index, record in enumerate(records):
-            for column_index, column in enumerate(columns):
-                item = QtWidgets.QTableWidgetItem(
-                    self._format_table_value(record.get(column, ""))
-                )
-                table.setItem(row_index, column_index, item)
-        table.resizeColumnsToContents()
-        table.setSortingEnabled(True)
-        self._apply_batch_filter(self.batchFilterEdit.text())
-
-    def _format_table_value(self, value: object) -> str:
-        if value is None:
-            return ""
-        try:
-            if value != value:
-                return ""
-        except Exception:
-            pass
-        if isinstance(value, float):
-            return f"{value:.6g}"
-        return str(value)
-
     def _apply_batch_filter(self, text: str) -> None:
         query = str(text).strip().lower()
-        self._filter_table(self.batchSummaryTable, query)
-        self._filter_table(self.batchRegionsTable, query)
+        self.batchSummaryTable.apply_filter(query)
+        self.batchRegionsTable.apply_filter(query)
         for row in range(self.batchUnmatchedList.count()):
             item = self.batchUnmatchedList.item(row)
             item.setHidden(bool(query) and query not in item.text().lower())
-
-    def _filter_table(self, table: QtWidgets.QTableWidget, query: str) -> None:
-        for row in range(table.rowCount()):
-            if not query:
-                table.setRowHidden(row, False)
-                continue
-            match = False
-            for column in range(table.columnCount()):
-                item = table.item(row, column)
-                if item is not None and query in item.text().lower():
-                    match = True
-                    break
-            table.setRowHidden(row, not match)
