@@ -320,7 +320,7 @@ old commits.
 
 ### P07 - Config Editor Templates And Docs
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P02, P03, P05
 Source commits: `d1cf26e3`, `df586807`
 Primary source files:
@@ -338,6 +338,21 @@ successfully ported in earlier packages.
 
 Notes:
 Do not reintroduce stale templates for features that were skipped or blocked.
+
+Done notes:
+Config editor and all 16 builtin templates from d1cf26e3 were already present in
+the repository from prior porting work and have been enhanced beyond the source
+commit. Added missing TISCamera.rst documentation (43 lines) from df586807 with
+installation instructions for TIS camera drivers and TISGrabber C DLL on Windows.
+All templates validated as proper JSON. The docs/api/api.imcontrol.rst and
+docs/use-cases.rst files were not modified in the source commits and require no
+updates.
+
+Checks run:
+
+- `python -m compileall -q utility_scripts/imswitch_config_editor.py`
+- `find utility_scripts/builtin_templates -name "*.json" | xargs -n1 python -m json.tool > /dev/null`
+- `git diff --check`
 
 ### P08 - Optional Branch Leftovers Audit
 
