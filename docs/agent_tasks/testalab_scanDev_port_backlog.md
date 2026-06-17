@@ -167,7 +167,7 @@ Checks run:
 
 ### P03 - Advanced Scan Sequence Builder Delta
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: none
 Source commits: `1dcbbe2a`, `740a72f0`, `e73aafdd`, `e43f63b5`,
 `814736db`, `47b09e2f`, `db9ae85a`, `7158509e`, `eb7a241e`, `3f14744e`
@@ -191,6 +191,23 @@ Acceptance points:
 - dead-time label and device tooltips are present where compatible
 - persistent sequence-builder device selection works
 - start-delay semantics, including negative values, are preserved where safe
+
+Done notes:
+Ported the advanced scan sequence-builder UI delta into the existing ImSwitch2
+advanced scan widget while keeping the deferred BeadRec controls out. Added
+line-program visibility-only toggling, timing/sequence modes, lock-with device
+state, persistent checkable sequence device menus, negative start-delay
+sequence rows, dead-time labeling/tooltips, graph time-unit replay, scan curve
+plotting, saved sequence-builder state restore, and TTL filtering for scanning
+positioners. Preserved ImSwitch2 JSON/INI scan parameter loading and widget
+state persistence.
+
+Checks run:
+
+- `git diff --check -- docs/agent_tasks/testalab_scanDev_port_backlog.md imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py imswitch/imcontrol/model/managers/ScanManagerAdvanced.py imswitch/imcontrol/model/signaldesigners/AdvancedScanTTLCycleDesigner.py imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py`
+- `python -m compileall -q docs/agent_tasks/testalab_scanDev_port_backlog.md imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py imswitch/imcontrol/model/managers/ScanManagerAdvanced.py imswitch/imcontrol/model/signaldesigners/AdvancedScanTTLCycleDesigner.py imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py imswitch/imcontrol/_test/unit/test_widget_responsiveness_contract.py imswitch/imcontrol/_test/unit/test_scan_lifecycle.py -q`
+- `ruff check imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py imswitch/imcontrol/model/managers/ScanManagerAdvanced.py imswitch/imcontrol/model/signaldesigners/AdvancedScanTTLCycleDesigner.py imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py`
 
 ### P04 - SLMs Setup-Mode Sync And Pattern Deltas
 
