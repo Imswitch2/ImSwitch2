@@ -294,12 +294,10 @@ Checks run:
 
 ### P06 - Scan Compatibility For BeadRec And Recording Edges
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P03
-Automation: automation-deferred; do not select this package in automated runs
-until the user explicitly re-enables it.
-Source commits: none for now. Do not apply the originally identified
-recording/BeadRec commits (`33eaa07c`, `77195838`, `4ca7a58d`) in this package.
+Source commits audited: `33eaa07c`, `77195838`, `4ca7a58d`, `d8bf778a`,
+`1590188d`
 Primary source files:
 
 - `imswitch/imcontrol/controller/controllers/BeadRecController.py`
@@ -308,15 +306,26 @@ Primary source files:
 - scan parameter consumers touched by advanced scan length semantics
 
 Task summary:
-Placeholder for future scan/recording compatibility work caused by advanced
-scan length/sequence changes. Keep it as todo, but do not implement it from the
-`testalab_scanDev` commits for now.
+Audit current ImSwitch2 BeadRec/recording behavior against the scan-length,
+soft timelapse stop, joystick, per-detector camera TTL, and advanced-scan
+BeadRec hookup ideas from `testalab_scanDev`.
 
-Notes:
-Deferred because the ImSwitch2 recording manager changed too much for a direct
-port from `testalab_scanDev`. When this is revisited, audit the current
-recording/BeadRec design first and make a fresh plan instead of applying the
-old commits.
+Done notes:
+Audited P06 as a verification package rather than a direct port. The old
+BeadRec scan-length patch (`33eaa07c`) only removed stale `+1` dimensions; the
+current ImSwitch2 implementation already enforces exact reconstruction sizes
+through `BeadAcquisitionConfig`, `create_reconstruction_buffer()`, and
+`reconstruction_image()`. The soft scan-timelapse stop (`77195838`) and
+joystick disable/restore fix (`4ca7a58d`) are already present in the current
+RecordingController and PositionerController. The per-detector `numCamTTL`
+recording logic from `d8bf778a` is present in newer RecordingManager form.
+The WIP direct AdvancedScan/BeadRec signal bridge from `1590188d` is superseded
+by the current scan-source/CommunicationChannel contract and
+`getFramesPerScanPixel()` behavior. No code was ported from these old commits.
+
+Checks run:
+
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p pytestqt.plugin imswitch/imcontrol/_test/unit/test_recording.py imswitch/imcontrol/_test/unit/test_scan_once_recording_sources.py imswitch/imcontrol/_test/unit/test_bead_rec_controller_contract.py -q`
 
 ### P07 - Config Editor Templates And Docs
 
