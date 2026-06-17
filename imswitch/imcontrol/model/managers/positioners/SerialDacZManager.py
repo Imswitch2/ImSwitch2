@@ -21,7 +21,7 @@ class SerialDacZManager(PositionerManager):
                 f"{len(positionerInfo.axes)} provided."
             )
 
-        
+
         self.__logger = initLogger(self, instanceName=name)
 
         axis = positionerInfo.axes[0]
@@ -185,7 +185,7 @@ class SerialDacZManager(PositionerManager):
         self.__logger.debug(f"DAC command reply:\n{reply}")
 
         return reply
-    
+
     def _read_until_prompt(self):
         deadline = time.time() + self._command_timeout
         buffer = b""
