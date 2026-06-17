@@ -360,6 +360,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         pg.setConfigOption('imageAxisOrder', 'row-major')
 
         self._connectResultPusher(self.profileWidget)
+        self._connectResultPusher(self.roiStatsWidget)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
