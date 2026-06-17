@@ -16,6 +16,7 @@ from . import controllers
 from .CommunicationChannel import CommunicationChannel
 from .MasterController import MasterController
 from .PickSetupController import PickSetupController
+from .SetupModeController import SetupModeController
 from .basecontrollers import ImConWidgetControllerFactory
 
 
@@ -71,6 +72,10 @@ class ImConMainController(MainController):
                 **_extraKwargs.get(widgetKey, {})
             )
 
+        self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
+        if 'SetupModes' in self.controllers:
+            self.controllers['SetupModes'].setSetupModeController(self.setupModeController)
+
         # Create API-only controllers (no widget needed)
         # WorkflowFacadeController provides build_facade_from_master via API
         self.workflowFacadeController = self.__factory.createController(
@@ -80,7 +85,10 @@ class ImConMainController(MainController):
         
         # Generate API
         self.__api = None
-        apiObjs = list(self.controllers.values()) + [self.__commChannel, self.workflowFacadeController]
+        apiObjs = (
+            list(self.controllers.values())
+            + [self.setupModeController, self.__commChannel, self.workflowFacadeController]
+        )
         self.__api = generateAPI(
             apiObjs,
             missingAttributeErrorMsg=lambda attr: f'The imcontrol API does either not have any'

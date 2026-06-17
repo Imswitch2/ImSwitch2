@@ -40,6 +40,7 @@ _CONTROLLER_MODULES = {
     "ScanControllerPointScan": "ScanControllerPointScan",
     "SettingsController": "SettingsController",
     "SetupStatusController": "SetupStatusController",
+    "SetupModesController": "SetupModesController",
     "SLMController": "SLMController",
     "SLMsController": "SLMsController",
     "TilingController": "TilingController",

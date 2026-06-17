@@ -39,6 +39,7 @@ _WIDGET_MODULES = {
     "ScanWidgetPointScan": "ScanWidgetPointScan",
     "SettingsWidget": "SettingsWidget",
     "SetupStatusWidget": "SetupStatusWidget",
+    "SetupModesWidget": "SetupModesWidget",
     "SLMWidget": "SLMWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",

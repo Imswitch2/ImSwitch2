@@ -92,7 +92,7 @@ Safety rules:
 
 ### P01 - Setup Modes Core
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: none
 Source commits: `f5c19149`, `f212b706`, `143165b1`
 Primary source files:
@@ -113,6 +113,19 @@ deleted.
 Notes:
 Keep this package focused on the setup-mode backbone. Do not also port all
 device-specific setup-mode adapters unless they are needed for tests to pass.
+
+Done notes:
+Ported the setup-mode backend, compact setup-mode widget/controller, lazy
+controller/widget exports, `SetupModes` dock metadata, API wiring, and the scan
+setup-mode adapter while preserving ImSwitch2 `ScanLifecycleMixin`,
+`WorkflowFacadeController`, and widget-state persistence.
+
+Checks run:
+
+- `git diff --check`
+- `python -m compileall -q imswitch/imcontrol/controller/SetupModeController.py imswitch/imcontrol/controller/controllers/SetupModesController.py imswitch/imcontrol/view/widgets/SetupModesWidget.py imswitch/imcontrol/controller/basecontrollers.py imswitch/imcontrol/controller/ImConMainController.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_setup_modes.py -q`
+- `ruff check imswitch/imcontrol/controller/SetupModeController.py imswitch/imcontrol/controller/controllers/SetupModesController.py imswitch/imcontrol/view/widgets/SetupModesWidget.py imswitch/imcontrol/controller/basecontrollers.py imswitch/imcontrol/controller/ImConMainController.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py imswitch/imcontrol/_test/unit/test_setup_modes.py`
 
 ### P02 - Flip Mirror Support
 
