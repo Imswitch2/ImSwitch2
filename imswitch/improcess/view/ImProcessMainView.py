@@ -20,6 +20,7 @@ from .ProjectionWidget import ProjectionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
 from .ResultProcessorWidget import ResultProcessorWidget
+from .ResultsTableWidget import ResultsTableWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .SegmentationWidget import SegmentationWidget
 from .guitools import BetterPushButton
@@ -204,6 +205,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showMulticolorPanel
             else None
         )
+        self.resultsTableWidget = ResultsTableWidget(show_filter=True, show_csv=True)
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -302,6 +304,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         analysisPanels = [
             ('Graph', self.graphWidget),
             ('Profile', self.profileWidget),
+            ('Results', self.resultsTableWidget),
             ('Projection', self.projectionWidget),
             ('Segmentation', self.segmentationWidget),
             ('PSF resolution', self.psfResolutionWidget),
@@ -322,6 +325,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             else:
                 self.dockArea.addDock(dock, 'bottom', prevAnalysisDock)
             self.docks[title] = dock
+            if title == 'Results':
+                self.resultsDock = dock
             prevAnalysisDock = dock
             self._runtimeAnalysisDockAnchor = dock
 
@@ -353,6 +358,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         viewMenu.addAction(resetLayoutAction)
 
         pg.setConfigOption('imageAxisOrder', 'row-major')
+
+        self._connectResultPusher(self.profileWidget)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -485,6 +492,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.statusBar().showMessage(message, timeout_ms)
         except Exception:
             pass
+
+    def _connectResultPusher(self, widget):
+        if widget is None:
+            return
+        sig = getattr(widget, "sigResultPushed", None)
+        if sig is None:
+            return
+        sig.connect(self._onResultPushed)
+
+    def _onResultPushed(self, columns, records):
+        self.resultsTableWidget.append_records(list(columns), list(records))
+        dock = getattr(self, "resultsDock", None)
+        if dock is not None:
+            self._safeRaiseDock(dock)
 
     def _safeRaiseDock(self, dock) -> None:
         """Bring a dock to the front without crashing on non-tab containers.
