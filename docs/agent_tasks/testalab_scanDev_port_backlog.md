@@ -211,7 +211,7 @@ Checks run:
 
 ### P04 - SLMs Setup-Mode Sync And Pattern Deltas
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P01
 Source commits: `b785064f`, `f212b706`, `143165b1`
 Primary source files:
@@ -228,6 +228,22 @@ combobox synchronization.
 Notes:
 The target tree already has SLMs files. Diff source and target carefully and
 avoid regressing ImSwitch2-specific responsiveness fixes.
+
+Done notes:
+Ported SLMs setup-mode synchronization including config combobox sync between
+widget and SetupModeController, startup config persistence to setup file,
+config inspector dialog with metadata and full dump, config comparison before
+overwrite, duplicate/reload/open-folder operations, separated user actions
+(activated) from programmatic changes (currentIndexChanged) to prevent loops,
+enhanced UI with tooltips and dynamic button states, and aberration pattern
+fixes (coma/spherical linear/quadratic term removal). All changes preserve
+ImSwitch2 architectural patterns.
+
+Checks run:
+
+- `git diff --check`
+- `python -m compileall -q imswitch/imcontrol/controller/controllers/SLMsController.py imswitch/imcontrol/view/widgets/SLMsWidget.py`
+- `ruff check imswitch/imcontrol/controller/controllers/SLMsController.py imswitch/imcontrol/view/widgets/SLMsWidget.py`
 
 ### P05 - Hardware Manager Bugfix Deltas
 
