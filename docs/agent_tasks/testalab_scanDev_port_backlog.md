@@ -58,8 +58,8 @@ Components apparently missing in the target tree at audit time include:
 Each automation run must do exactly one package from the queue.
 
 1. Read this file.
-2. Pick the first package whose status is `[todo]` and whose dependencies are
-   `[done]` or not listed.
+2. Pick the first package whose status is `[todo]`, whose dependencies are
+   `[done]` or not listed, and that is not marked automation-deferred.
 3. Change its status to `[in_progress]` before editing.
 4. Compare the source branch against target code with source-aware commands,
    for example:
@@ -200,7 +200,7 @@ avoid regressing ImSwitch2-specific responsiveness fixes.
 
 Status: `[todo]`
 Depends on: none
-Source commits: `34c2ee68`, `04ae8d1a`, `80457490`, `7619ade3`, `c18c4a67`
+Source commits: `34c2ee68`, `04ae8d1a`, `7619ade3`, `c18c4a67`
 Primary source files:
 
 - `imswitch/imcontrol/model/managers/positioners/PositionerManager.py`
@@ -208,8 +208,6 @@ Primary source files:
 - `imswitch/imcontrol/model/managers/detectors/TISManager.py`
 - `imswitch/imcontrol/model/interfaces/tiscamera.py`
 - `imswitch/imcontrol/model/interfaces/tiscamera_mock.py`
-- `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py`
-- Cobolt mock/driver files already present in ImSwitch2
 
 Task summary:
 Port no-hardware-safe manager bugfixes and add focused tests where possible.
@@ -218,15 +216,22 @@ Acceptance points:
 
 - generalized `get_abs(axis)` behavior is preserved for focus-lock callers
 - TIS close/set-parameter fixes are present without forwarding synthetic params
-- Cobolt key-warning and mock behavior remain fail-safe
 - Serial DAC Z manager is ported or explicitly marked blocked with dependency
   details
+
+Out of scope:
+
+- `Cobolt0601NewLaserManager.py`, Cobolt mock/driver deltas, and source commit
+  `80457490` are intentionally not part of this package.
 
 ### P06 - Scan Compatibility For BeadRec And Recording Edges
 
 Status: `[todo]`
 Depends on: P03
-Source commits: `33eaa07c`, `77195838`, `4ca7a58d`, plus related scan commits
+Automation: automation-deferred; do not select this package in automated runs
+until the user explicitly re-enables it.
+Source commits: none for now. Do not apply the originally identified
+recording/BeadRec commits (`33eaa07c`, `77195838`, `4ca7a58d`) in this package.
 Primary source files:
 
 - `imswitch/imcontrol/controller/controllers/BeadRecController.py`
@@ -235,13 +240,15 @@ Primary source files:
 - scan parameter consumers touched by advanced scan length semantics
 
 Task summary:
-Port compatibility fixes caused by the advanced scan length/sequence changes,
-without changing hardware timing.
+Placeholder for future scan/recording compatibility work caused by advanced
+scan length/sequence changes. Keep it as todo, but do not implement it from the
+`testalab_scanDev` commits for now.
 
 Notes:
-This is red-zone-adjacent because it can affect acquisition timing and recorded
-shape expectations. Prefer source-level or pure tests unless hardware validation
-is explicitly requested.
+Deferred because the ImSwitch2 recording manager changed too much for a direct
+port from `testalab_scanDev`. When this is revisited, audit the current
+recording/BeadRec design first and make a fresh plan instead of applying the
+old commits.
 
 ### P07 - Config Editor Templates And Docs
 
