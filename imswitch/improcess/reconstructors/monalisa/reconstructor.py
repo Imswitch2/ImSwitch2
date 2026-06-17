@@ -7,7 +7,6 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import Reconstructor
-from .coeffs_to_image import coeffs_to_image
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
@@ -207,52 +206,21 @@ class MonalisaReconstructor(Reconstructor):
             f'Converting coefficients to images ({num_bases} bases x '
             f'{coeffs.shape[1]} frames -> per-base reconstruction)...'
         )
-        per_base = np.stack(
-            [
-                coeffs_to_image(coeffs[b], scan_params, self._axis_labels)
-                for b in range(num_bases)
-            ],
-            axis=0,
-        )  # shape (Base, T, Z, Y, X)
-
-        # Wrap in 6D format: (Dataset=1, Base, T, Z, Y, X) so the result's
-        # declared axis_labels ["Dataset", "Base", "T", "Z", "Y", "X"] line up.
-        images_6d = per_base[np.newaxis, ...]
-
-        # Compute the reconstructed pixel pitch in nm so the napari scale bar
-        # and downstream profile / PSF widgets get real physical units.
-        #
-        # Output Y dim = sqRows * gridRows, covering a physical extent of
-        # sqRows * step_size_Y. The recon pixel pitch is therefore
-        # step_size_Y / gridRows. Same for X.
-        grid_rows = int(coeffs.shape[2])
-        grid_cols = int(coeffs.shape[3])
-        try:
-            ud_index = scan_params['dimensions'].index(self._axis_labels['u_d_text'])
-            rl_index = scan_params['dimensions'].index(self._axis_labels['r_l_text'])
-            step_y_nm = float(scan_params['step_sizes'][ud_index])
-            step_x_nm = float(scan_params['step_sizes'][rl_index])
-            output_pixel_size_nm = (
-                step_y_nm / grid_rows if grid_rows else step_y_nm,
-                step_x_nm / grid_cols if grid_cols else step_x_nm,
-            )
-        except (KeyError, ValueError, TypeError, IndexError):
-            output_pixel_size_nm = None
-
-        # Compute display levels (auto contrast)
-        data_min = float(np.percentile(images_6d, 1))
-        data_max = float(np.percentile(images_6d, 99.9))
-
-        # Create result
-        result = MonalisaProcessingResult(
+        # Add the leading Dataset axis (single dataset per process() call) so
+        # the retained coefficients match the (Dataset, Base, frames, gridRows,
+        # gridCols) contract shared with the legacy controller path.  Retaining
+        # them lets the viewer re-reconstruct on scan-param edits and export
+        # coefficients.  from_coeffs() reassembles the 6D image, derives the
+        # output pixel pitch and auto display levels.
+        coeffs_5d = coeffs[np.newaxis, ...]
+        result = MonalisaProcessingResult.from_coeffs(
             name=data_obj.name,
-            data=images_6d,
+            coeffs=coeffs_5d,
             scan_params=scan_params,
-            display_levels=(data_min, data_max),
-            output_pixel_size_nm=output_pixel_size_nm,
+            axis_label_map=self._axis_labels,
         )
-        
-        self._logger.info(f'Reconstruction complete: shape {images_6d.shape}')
+
+        self._logger.info(f'Reconstruction complete: shape {result.data.shape}')
         return result
     
     def _apply_bleaching_correction(self, data: np.ndarray) -> np.ndarray:

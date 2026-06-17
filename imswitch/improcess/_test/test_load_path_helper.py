@@ -1,4 +1,4 @@
-"""Contract tests for ImProcessMainViewController._loadFromPath.
+"""Contract tests for FileIOController._loadFromPath.
 
 The full controller can't easily be constructed under offscreen Qt (it spins
 up napari), so these tests bind the method to a hand-built stand-in object
@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from imswitch.improcess.controller.ImProcessMainViewController import (
-    ImProcessMainViewController,
+from imswitch.improcess.controller.FileIOController import (
+    FileIOController,
 )
 
 
@@ -92,7 +92,7 @@ class _FakeDataObj:
                 return construct(name, datasetName, path=path, file=file)
 
         monkeypatch.setattr(
-            'imswitch.improcess.controller.ImProcessMainViewController.DataObj',
+            'imswitch.improcess.controller.FileIOController.DataObj',
             _CallableFake,
         )
 
@@ -121,15 +121,15 @@ def _make_controller_stub():
         warning=lambda *_: None,
         error=lambda *_: None,
     )
-    ctl._currentDataObj = None
+    ctl._main = SimpleNamespace(_currentDataObj=None)
     ctl._commChannel = _CommChannel()
     ctl.multiDataFrameController = _RecordingMultiData()
     ctl.pickDatasetsController = _RecordingPickController()
     ctl._widget = _FakeWidget()
     # Bind the real helpers from the class so the production code path is
     # exercised verbatim.
-    ctl._loadFromPath = ImProcessMainViewController._loadFromPath.__get__(ctl)
-    ctl._loadAsCurrent = ImProcessMainViewController._loadAsCurrent.__get__(ctl)
+    ctl._loadFromPath = FileIOController._loadFromPath.__get__(ctl)
+    ctl._loadAsCurrent = FileIOController._loadAsCurrent.__get__(ctl)
     return ctl
 
 
@@ -144,7 +144,7 @@ def test_single_dataset_default_goes_to_multidata(monkeypatch):
 
     assert outcome == 'multidata'
     assert ctl.multiDataFrameController.added == [('file.h5', 'frame', '/x/file.h5')]
-    assert ctl._currentDataObj is None
+    assert ctl._main._currentDataObj is None
     assert not ctl._widget.dialog_shown
 
 
@@ -155,9 +155,9 @@ def test_single_dataset_prefer_current_routes_to_current(monkeypatch):
     outcome = ctl._loadFromPath('/x/file.h5', prefer_as_current=True)
 
     assert outcome == 'current'
-    assert ctl._currentDataObj is not None
-    assert ctl._currentDataObj.datasetName == 'frame'
-    assert ctl._commChannel.emitted == [ctl._currentDataObj]
+    assert ctl._main._currentDataObj is not None
+    assert ctl._main._currentDataObj.datasetName == 'frame'
+    assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
     assert ctl._widget.raised_current
     assert ctl.multiDataFrameController.added == []
 
@@ -175,7 +175,7 @@ def test_multi_dataset_picker_cancel_returns_cancelled(monkeypatch):
     assert outcome == 'cancelled'
     assert ctl._widget.dialog_shown
     assert ctl.multiDataFrameController.added == []
-    assert ctl._currentDataObj is None
+    assert ctl._main._currentDataObj is None
 
 
 def test_multi_dataset_picker_zero_selected_returns_empty(monkeypatch):
@@ -197,7 +197,7 @@ def test_multi_dataset_picker_one_selected_with_prefer_current_routes_to_current
     outcome = ctl._loadFromPath('/x/file.h5', prefer_as_current=True)
 
     assert outcome == 'current'
-    assert ctl._currentDataObj.datasetName == 'b'
+    assert ctl._main._currentDataObj.datasetName == 'b'
     assert ctl.multiDataFrameController.added == []
 
 
@@ -213,7 +213,7 @@ def test_multi_dataset_picker_many_selected_goes_to_multidata_even_with_prefer_c
         ('file.h5', 'a', '/x/file.h5'),
         ('file.h5', 'c', '/x/file.h5'),
     ]
-    assert ctl._currentDataObj is None
+    assert ctl._main._currentDataObj is None
 
 
 # --- empty / error handling ------------------------------------------------
@@ -239,7 +239,7 @@ def test_dataset_enumeration_failure_returns_empty(monkeypatch):
             raise AssertionError("constructor must not run when enumeration fails")
 
     monkeypatch.setattr(
-        'imswitch.improcess.controller.ImProcessMainViewController.DataObj',
+        'imswitch.improcess.controller.FileIOController.DataObj',
         _Boom,
     )
     ctl = _make_controller_stub()

@@ -14,6 +14,10 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._transposeOrder = [0, 1, 2, 3, 4, 5]
         self._axisStep = (0, 0, 0, 0, 0, 0)
+        # Axis labels of the image currently shown in the viewer, in displayed
+        # (transposed) order. Used to locate a "Base" axis for per-base contrast
+        # rescaling without hard-coding its position.
+        self._displayedAxisLabels = []
 
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
         self._commChannel.sigResultProduced.connect(self.resultProduced)
@@ -22,10 +26,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
         self._widget.sigViewChanged.connect(lambda: self.fullUpdate(levels=None))
 
-    def getActiveReconObj(self):
+    def getActiveResult(self):
         return self._widget.getCurrentItemData()
 
-    def getAllReconObjs(self):
+    def getAllResults(self):
         return self._widget.getAllItemDatas()
 
     def listItemChanged(self):
@@ -63,33 +67,15 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def setImgSlice(self, autoLevels=False, levels=None):
         current = self._widget.getCurrentItemData()
-        if hasattr(current, "data") and hasattr(current, "view_modes"):
-            self._setProcessingResultSlice(current, autoLevels=autoLevels, levels=levels)
-            return
-
-        data = current.reconstructed
-
-        if self.getViewId() == 3:
-            transposeOrder = [0, 1, 2, 3, 4, 5]
-        elif self.getViewId() == 4:
-            transposeOrder = [0, 1, 2, 4, 3, 5]
-        else:
-            transposeOrder = [0, 1, 2, 5, 4, 3]
-
-        im = data.transpose(*transposeOrder)
-        axisLabels = np.array(['Dataset', 'Base', 'Time point', 'Slice', 'X', 'Y'])[transposeOrder]
-        self._transposeOrder = transposeOrder
-
-        self._widget.setImage(im, axisLabels)
-        if autoLevels:
-            self.updateLevelsRange()
-        elif levels is not None:
-            self._widget.setImageDisplayLevels(*levels)
+        self._setProcessingResultSlice(current, autoLevels=autoLevels, levels=levels)
 
     def _setProcessingResultSlice(self, result, autoLevels=False, levels=None):
         display_layers = result.display_layers() if hasattr(result, "display_layers") else []
         if display_layers:
             self._transposeOrder = list(range(np.asarray(display_layers[0].data).ndim))
+            # Display layers carry their own per-layer contrast and have no
+            # shared sliced axis, so there is no "Base" axis to rescale against.
+            self._displayedAxisLabels = list(display_layers[0].axis_labels)
             self._widget.setDisplayLayers(display_layers)
             return
 
@@ -98,6 +84,7 @@ class ReconstructionViewController(ImProcessWidgetController):
         axisLabels = np.array(result.axis_labels)[list(mode.transpose)]
         axisScales = np.array(result.axis_scales, dtype=float)[list(mode.transpose)]
         self._transposeOrder = list(mode.transpose)
+        self._displayedAxisLabels = list(axisLabels)
 
         self._logger.debug(
             "_setProcessingResultSlice: result=%s  view_mode=%s  "
@@ -143,34 +130,49 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._logger.debug("getViewId: custom view mode %r → using name as ID", viewName)
             return viewName
 
+    def _baseAxisIndex(self):
+        """Index of the displayed "Base" axis, or None if the current result
+        has no Base axis (e.g. it renders as per-base display layers, or is a
+        non-MoNaLISA result)."""
+        labels = self._displayedAxisLabels
+        if labels and "Base" in labels:
+            return labels.index("Base")
+        return None
+
     def axisStepChanged(self, newAxisStep):
-        baseAxisIndex = self._transposeOrder.index(1)
-        newBase = newAxisStep[baseAxisIndex]
-        if newBase != self._axisStep[baseAxisIndex]:
-            # Base changed, update levels range
-            self.updateLevelsRange(newBase)
+        baseAxisIndex = self._baseAxisIndex()
+        if baseAxisIndex is not None and baseAxisIndex < len(newAxisStep):
+            newBase = newAxisStep[baseAxisIndex]
+            prevBase = (self._axisStep[baseAxisIndex]
+                        if baseAxisIndex < len(self._axisStep) else None)
+            if newBase != prevBase:
+                # Base changed; rescale contrast to that component's range.
+                self.updateLevelsRange(newBase)
 
         self._axisStep = newAxisStep
 
     def updateLevelsRange(self, base=None):
-        baseAxisIndex = self._transposeOrder.index(1)
-        if base is None:
-            base = self._axisStep[baseAxisIndex]
-
-        # Find image at current base
         im = self._widget.getImage()
-        indexForImage = [slice(None) for _ in range(len(im.shape))]
-        indexForImage[baseAxisIndex] = base
-        imAtBase = im[tuple(indexForImage)]
+        baseAxisIndex = self._baseAxisIndex()
 
-        # Update levels
-        levels = imAtBase.min(), imAtBase.max()
+        if baseAxisIndex is None:
+            # No Base axis — rescale to the whole displayed image's range.
+            levels = im.min(), im.max()
+        else:
+            if base is None:
+                base = (self._axisStep[baseAxisIndex]
+                        if baseAxisIndex < len(self._axisStep) else 0)
+            indexForImage = [slice(None) for _ in range(im.ndim)]
+            indexForImage[baseAxisIndex] = base
+            imAtBase = im[tuple(indexForImage)]
+            levels = imAtBase.min(), imAtBase.max()
+
         self._widget.setImageDisplayLevelsRange(*levels)
         self._widget.setImageDisplayLevels(*levels)
 
     def updateRecon(self):
         reconObj = self._widget.getCurrentItemData()
-        if reconObj is not None:
+        if reconObj is not None and hasattr(reconObj, "updateImages"):
             reconObj.updateImages()
             self.fullUpdate(levels=None)
 
@@ -179,7 +181,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
 
         reconObj = self._widget.getCurrentItemData()
-        if reconObj is not None:
+        if reconObj is not None and hasattr(reconObj, "updateScanParams"):
             reconObj.updateScanParams(scanParDict)
             self.updateRecon()
 

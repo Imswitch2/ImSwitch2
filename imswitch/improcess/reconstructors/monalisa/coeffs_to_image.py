@@ -128,8 +128,64 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
         
         # Add grid of coefficients at the computed position
         im[t, s, r::pr, c::pc] = coeffs[i]
-    
+
     return im
+
+
+def reconstruct_images_from_coeffs(
+    coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str, str]
+) -> np.ndarray:
+    """Reassemble a full 6D MoNaLISA image stack from per-base coefficients.
+
+    Args:
+        coeffs: 5D array ``(Dataset, Base, numFrames, gridRows, gridCols)``.
+            ``SignalExtractor.extractSignal`` returns the per-dataset 4D
+            ``(Base, numFrames, gridRows, gridCols)``; stack those along a new
+            leading Dataset axis before calling this.
+        scan_params: Scan metadata dict (see :func:`coeffs_to_image`).
+        axis_labels: Semantic-name → dimension-name map (see
+            :func:`coeffs_to_image`).
+
+    Returns:
+        6D array ``(Dataset, Base, T, Z, Y, X)``.
+    """
+    datasets = coeffs.shape[0]
+    bases = coeffs.shape[1]
+    return np.array(
+        [
+            [
+                coeffs_to_image(coeffs[ds, b], scan_params, axis_labels)
+                for b in range(bases)
+            ]
+            for ds in range(datasets)
+        ]
+    )
+
+
+def output_pixel_size_nm(
+    scan_params: dict,
+    axis_labels: dict[str, str],
+    grid_rows: int,
+    grid_cols: int,
+) -> tuple[float, float] | None:
+    """Compute the reconstructed ``(y_nm, x_nm)`` pixel pitch.
+
+    The output Y dimension covers ``sqRows * gridRows`` pixels over a physical
+    extent of ``sqRows * step_size_Y``, so the recon pixel pitch is
+    ``step_size_Y / gridRows`` (and likewise for X). Returns ``None`` if the
+    scan params don't carry the needed step sizes.
+    """
+    try:
+        ud_index = scan_params['dimensions'].index(axis_labels['u_d_text'])
+        rl_index = scan_params['dimensions'].index(axis_labels['r_l_text'])
+        step_y_nm = float(scan_params['step_sizes'][ud_index])
+        step_x_nm = float(scan_params['step_sizes'][rl_index])
+    except (KeyError, ValueError, TypeError, IndexError):
+        return None
+    return (
+        step_y_nm / grid_rows if grid_rows else step_y_nm,
+        step_x_nm / grid_cols if grid_cols else step_x_nm,
+    )
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

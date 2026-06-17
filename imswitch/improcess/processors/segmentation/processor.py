@@ -7,6 +7,7 @@ from qtpy import QtWidgets
 
 from imswitch.improcess.analysis.segmentation import segment_image
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.processors._extraction import axis_labels_for_data
 from imswitch.improcess.processors.base import Processor
 
 from .result import SegmentationResult
@@ -20,6 +21,9 @@ class SegmentationProcessor(Processor):
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
+        """Require at least a 2-D image; one (Y, X) plane is segmented, with any
+        extra non-spatial axes collapsed to caller-selected indices (default
+        0)."""
         return lambda result: result.data.ndim >= 2
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -158,7 +162,7 @@ class SegmentationProcessor(Processor):
         if data.ndim < 2:
             raise ValueError(f"Segmentation needs at least 2D data, got shape {data.shape}")
         params = params or {}
-        labels = _axis_labels_for_data(result, data)
+        labels = axis_labels_for_data(result, data)
         explicit_indices = _parse_axis_indices(params.get("axis_indices", ""))
         non_spatial_labels = set(labels[: data.ndim - 2])
         unknown_labels = sorted(set(explicit_indices) - non_spatial_labels)
@@ -188,17 +192,6 @@ class SegmentationProcessor(Processor):
         if image.ndim != 2:
             raise ValueError(f"Could not extract a 2D segmentation image from shape {data.shape}")
         return image, plane_indices
-
-
-def _axis_labels_for_data(result: ProcessingResult, data: np.ndarray) -> list[str]:
-    labels = list(getattr(result, "axis_labels", []) or [])
-    if len(labels) == data.ndim:
-        return [str(label) for label in labels]
-    defaults = ["T", "Z", "C", "Y", "X"]
-    if data.ndim <= len(defaults):
-        return defaults[-data.ndim:]
-    extra = [f"D{i}" for i in range(data.ndim - len(defaults))]
-    return [*extra, *defaults]
 
 
 def _requested_plane_indices(params: dict, explicit_indices: dict[str, int]) -> dict[str, int]:

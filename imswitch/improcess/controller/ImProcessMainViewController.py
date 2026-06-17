@@ -1,115 +1,34 @@
-import copy
-import os
-from pathlib import Path
-
-import numpy as np
-import tifffile as tiff
-from qtpy import QtCore
-
-import imswitch.improcess.view.guitools as guitools
-from imswitch.imcommon.controller import PickDatasetsController
-from imswitch.improcess.model import DataObj, ReconObj
-# NOTE: PatternFinder and SignalExtractor live in the MoNaLISA plugin.
-# The controller still uses them directly during the Phase B.1 transition;
-# Phase B.2 will replace the direct calls with registry dispatch.
-from imswitch.improcess.reconstructors.monalisa.pattern_finder import PatternFinder
-from imswitch.improcess.reconstructors.monalisa.signal_extractor import SignalExtractor
 from .DataFrameController import DataFrameController
-from .MultiDataFrameController import MultiDataFrameController
 from .WatcherFrameController import WatcherFrameController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
 from .ScanParamsController import ScanParamsController
+from .WidefieldStarssBatchController import WidefieldStarssBatchController
+from .FileIOController import FileIOController
+from .ReconstructorManagerController import ReconstructorManagerController
+from .MoNaLISAController import MoNaLISAController
 from .basecontrollers import ImProcessWidgetController
-
-
-class _WidefieldStarssBatchWorker(QtCore.QObject):
-    progress = QtCore.Signal(object)
-    finished = QtCore.Signal(object)
-    failed = QtCore.Signal(str)
-    cancelled = QtCore.Signal(str)
-
-    def __init__(self, input_folder, output_folder, params, parent=None,
-                 h_suffix="_h", v_suffix="_v"):
-        super().__init__(parent)
-        self._input_folder = input_folder
-        self._output_folder = output_folder
-        self._params = params
-        self._h_suffix = h_suffix
-        self._v_suffix = v_suffix
-        self._cancel_requested = False
-
-    @QtCore.Slot()
-    def run(self):
-        try:
-            from imswitch.improcess.reconstructors.widefield_starss.analysis import (
-                WidefieldStarssBatchCancelled,
-                run_widefield_starss_batch_from_folder,
-            )
-        except Exception as exc:
-            self.failed.emit(str(exc))
-            return
-
-        try:
-            result = run_widefield_starss_batch_from_folder(
-                self._input_folder,
-                params=self._params,
-                progress_callback=self.progress.emit,
-                cancel_callback=lambda: self._cancel_requested,
-                h_suffix=self._h_suffix,
-                v_suffix=self._v_suffix,
-            )
-            if self._cancel_requested:
-                self.cancelled.emit("WFS batch cancelled before export.")
-                return
-            regions_path, summary_path = result.save_csv(self._output_folder)
-            hdf5_path = result.save_hdf5(
-                Path(self._output_folder) / "batch_widefield_starss.h5"
-            )
-            self.finished.emit(
-                {
-                    "pair_count": len(result.pairs),
-                    "region_count": len(result.regions),
-                    "unmatched_count": len(result.unmatched),
-                    "regions_path": str(regions_path),
-                    "summary_path": str(summary_path),
-                    "hdf5_path": str(hdf5_path),
-                    "summary_columns": list(result.summary.columns),
-                    "summary_records": result.summary.to_dict(orient="records"),
-                    "region_columns": list(result.regions.columns),
-                    "region_records": result.regions.to_dict(orient="records"),
-                    "unmatched_paths": [str(path) for path in result.unmatched],
-                    "plot_payloads": result.plot_payloads(),
-                }
-            )
-        except WidefieldStarssBatchCancelled as exc:
-            self.cancelled.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-    @QtCore.Slot()
-    def cancel(self):
-        self._cancel_requested = True
 
 
 class ImProcessMainViewController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._commChannel.extension = self._widget.extension
-        self._wfsBatchThread = None
-        self._wfsBatchWorker = None
-        
+
         self.dataFrameController = self._factory.createController(
             DataFrameController, self._widget.dataFrame
         )
-        self.multiDataFrameController = self._factory.createController(
-            MultiDataFrameController, self._widget.multiDataFrame
+        self.reconstructionController = self._factory.createController(
+            ReconstructionViewController, self._widget.reconstructionWidget
         )
         self.watcherFrameController = self._factory.createController(
             WatcherFrameController, self._widget.watcherFrame
         )
-        self.reconstructionController = self._factory.createController(
-            ReconstructionViewController, self._widget.reconstructionWidget
+        self.wfsBatchController = self._factory.createController(
+            WidefieldStarssBatchController, self._widget, mainController=self
+        )
+        self.fileIOController = self._factory.createController(
+            FileIOController, self._widget, mainController=self
         )
         self.graphController = None
         if self._widget.graphWidget is not None:
@@ -119,319 +38,76 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog
         )
-        self.pickDatasetsController = self._factory.createController(
-            PickDatasetsController, self._widget.pickDatasetsDialog
+        self.reconstructorManager = self._factory.createController(
+            ReconstructorManagerController, self._widget, mainController=self
+        )
+        self.monalisaController = self._factory.createController(
+            MoNaLISAController, self._widget, mainController=self
         )
 
-        # SignalExtractor is MoNaLISA-only and Windows-only (CUDA DLL). Defer
-        # construction until the user actually triggers a MoNaLISA reconstruction;
-        # otherwise the module fails to launch on macOS/Linux even when the user
-        # only wants view-only / drag-and-drop.
-        self._signalExtractor = None
-        self._patternFinder = PatternFinder()
-
-        self._activeReconstructor = self._select_reconstructor()
-        if self._activeReconstructor is not None:
-            self._install_reconstructor_params(self._activeReconstructor)
-        self._publishReconstructorChoices()
+        # Initialize the active reconstructor after all subsidiary controllers exist
+        self._activeReconstructor = None
+        self.reconstructorManager.initActiveReconstructor()
 
         self._currentDataObj = None
-        self._pattern = self._widget.getPatternParams()
-        self._settingPatternParams = False
-        self._scanParDict = {
-            'dimensions': [self._widget.u_d_text, self._widget.r_l_text, self._widget.b_f_text,
-                           self._widget.timepoints_text],
-            'directions': [self._widget.p_text, self._widget.p_text, self._widget.p_text],
-            'steps': ['35', '35', '1', '1'],
-            'step_sizes': ['35', '35', '35', '1'],
-            'unidirectional': True
-        }
-        self._dataFolder = None
-        self._saveFolder = None
 
-        self._commChannel.sigDataFolderChanged.connect(self.dataFolderChanged)
-        self._commChannel.sigSaveFolderChanged.connect(self.saveFolderChanged)
+        self._commChannel.sigDataFolderChanged.connect(self.fileIOController.dataFolderChanged)
+        self._commChannel.sigSaveFolderChanged.connect(self.fileIOController.saveFolderChanged)
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
-        self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
-        self._commChannel.sigReconstruct.connect(self.reconstruct)
+        self._commChannel.sigScanParamsUpdated.connect(self.monalisaController.scanParamsUpdated)
+        self._commChannel.sigReconstruct.connect(self.reconstructorManager.reconstruct)
 
+        self._widget.sigSaveReconstruction.connect(lambda: self.fileIOController.saveCurrent('reconstruction'))
+        self._widget.sigSaveReconstructionAll.connect(lambda: self.fileIOController.saveAll('reconstruction'))
+        self._widget.sigSaveCoeffs.connect(lambda: self.fileIOController.saveCurrent('coefficients'))
+        self._widget.sigSaveCoeffsAll.connect(lambda: self.fileIOController.saveAll('coefficients'))
+        self._widget.sigSetDataFolder.connect(self.fileIOController.setDataFolder)
+        self._widget.sigSetSaveFolder.connect(self.fileIOController.setSaveFolder)
 
-        self._widget.sigSaveReconstruction.connect(lambda: self.saveCurrent('reconstruction'))
-        self._widget.sigSaveReconstructionAll.connect(lambda: self.saveAll('reconstruction'))
-        self._widget.sigSaveCoeffs.connect(lambda: self.saveCurrent('coefficients'))
-        self._widget.sigSaveCoeffsAll.connect(lambda: self.saveAll('coefficients'))
-        self._widget.sigSetDataFolder.connect(self.setDataFolder)
-        self._widget.sigSetSaveFolder.connect(self.setSaveFolder)
-
-        self._widget.sigReconstuctCurrent.connect(self.reconstructCurrent)
+        self._widget.sigReconstuctCurrent.connect(self.reconstructorManager.reconstructCurrent)
         self._widget.sigReconstructMultiConsolidated.connect(
-            lambda: self.reconstructMulti(consolidate=True)
+            lambda: self.reconstructorManager.reconstructMulti(consolidate=True)
         )
         self._widget.sigReconstructMultiIndividual.connect(
-            lambda: self.reconstructMulti(consolidate=False)
+            lambda: self.reconstructorManager.reconstructMulti(consolidate=False)
         )
-        self._widget.sigQuickLoadData.connect(self.quickLoadData)
-        self._widget.sigUpdate.connect(lambda: self.updateScanParams(applyOnCurrentRecon=True))
+        self._widget.sigQuickLoadData.connect(self.fileIOController.quickLoadData)
+        self._widget.sigUpdate.connect(lambda: self.monalisaController.updateScanParams(applyOnCurrentRecon=True))
 
-        self._widget.sigShowPatternChanged.connect(self.togglePattern)
-        self._widget.sigFindPattern.connect(self.findPattern)
-        self._widget.sigShowScanParamsClicked.connect(self.showScanParamsDialog)
-        self._widget.sigPatternParamsChanged.connect(self.updatePattern)
-        self._widget.sigFilesDropped.connect(self.handleDroppedFiles)
+        self._widget.sigShowPatternChanged.connect(self.monalisaController.togglePattern)
+        self._widget.sigFindPattern.connect(self.monalisaController.findPattern)
+        self._widget.sigShowScanParamsClicked.connect(self.monalisaController.showScanParamsDialog)
+        self._widget.sigPatternParamsChanged.connect(self.monalisaController.updatePattern)
+        self._widget.sigFilesDropped.connect(self.fileIOController.handleDroppedFiles)
 
         # The Parameters-dock picker lets the user flip between registered
         # reconstructors on the fly. The controller is the authority on the
         # registry, so the view just signals the chosen plugin id.
         try:
             self._widget.sigActiveReconstructorChanged.connect(
-                self._on_user_changed_reconstructor
+                self.reconstructorManager._on_user_changed_reconstructor
             )
         except AttributeError:
             # Older view builds without the picker degrade silently.
             pass
-        self.updatePattern()
-        self.updateScanParams()
-
-    def _select_reconstructor(self):
-        from imswitch.improcess.reconstructors.registry import get_registry
-
-        reconstructors = get_registry().reconstructors()
-        if not reconstructors:
-            self._logger.warning("No ImProcess reconstructors registered")
-            return None
-        reconstructor = reconstructors[0]
-        self._logger.info(
-            f"Using active reconstructor: {reconstructor.id} ({reconstructor.name})"
-        )
-        return reconstructor
-
-    def _publishReconstructorChoices(self):
-        """Send the current registered-reconstructor list to the Parameters
-        dock picker. Best-effort: silently no-ops on view builds that don't
-        expose the picker yet."""
-        try:
-            from imswitch.improcess.reconstructors.registry import get_registry
-
-            choices = [(r.id, r.name) for r in get_registry().reconstructors()]
-            current = self._activeReconstructor.id if self._activeReconstructor else None
-            self._widget.setReconstructorChoices(choices, current)
-        except AttributeError:
-            pass
-        except Exception as exc:
-            self._logger.debug(
-                f"Could not publish reconstructor choices to view: {exc}"
-            )
-
-    def _on_user_changed_reconstructor(self, plugin_id: str):
-        """Slot for view-side picker: swap the active reconstructor and
-        re-install its parameter widget. If the new reconstructor is
-        pass-through and a current DataObj is already loaded, also kick the
-        auto-route so the viewer reflects the change immediately."""
-        if not plugin_id:
-            return
-        from imswitch.improcess.reconstructors.registry import get_registry
-
-        for candidate in get_registry().reconstructors():
-            if candidate.id == plugin_id:
-                if self._activeReconstructor is candidate:
-                    return
-                self._activeReconstructor = candidate
-                self._install_reconstructor_params(candidate)
-                if (
-                    getattr(candidate, 'is_pass_through', False)
-                    and self._currentDataObj is not None
-                ):
-                    try:
-                        self.reconstruct([self._currentDataObj], consolidate=False)
-                    except Exception as exc:
-                        self._logger.warning(
-                            f"Pass-through auto-route on reconstructor switch failed: {exc}"
-                        )
-                return
-        self._logger.warning(
-            f"Reconstructor {plugin_id!r} requested by view picker is not registered"
-        )
-
-    def _install_reconstructor_params(self, reconstructor):
-        # Always reflect the active reconstructor in the Parameters dock so
-        # the user can tell at a glance which plugin's parameters they are
-        # editing — even for plugins that keep the legacy parameter tree.
-        try:
-            self._widget.setActiveReconstructorName(reconstructor.name)
-        except Exception:
-            pass
-
-        # Gate the modality-specific Actions buttons:
-        # - 'Reconstruct current' is ceremonial for pass-through plugins
-        #   (process() is a no-op wrap), so hide it; currentDataChanged
-        #   auto-routes the data to the viewer in that case.
-        # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
-        #   only makes sense for the MoNaLISA plugin.
-        is_pass_through = bool(getattr(reconstructor, 'is_pass_through', False))
-        try:
-            self._widget.setReconstructionActionsVisible(
-                reconstruct_current=not is_pass_through,
-                update_reconstruction=(reconstructor.id == 'monalisa'),
-                reconstruct_multidata=not is_pass_through,
-            )
-        except Exception:
-            pass
-
-        # Push the active reconstructor's preferred output folder name to
-        # the file watcher so 'Watch and run' writes outputs under the
-        # plugin's default_save_subdir instead of a hardcoded 'rec/'.
-        watcher = getattr(self, 'watcherFrameController', None)
-        if watcher is not None:
-            try:
-                watcher.setSaveSubdir(getattr(reconstructor, 'default_save_subdir', 'rec'))
-            except Exception:
-                pass
-
-        if reconstructor.id == "monalisa":
-            # Keep the legacy MoNaLISA parameter tree until the whole
-            # scan-params/find-pattern path is migrated to plugin widgets.
-            return
-        widget = reconstructor.make_param_widget(self._widget)
-        self._widget.setParameterWidget(widget)
-        if reconstructor.id == "widefield-starss" and hasattr(widget, "sigRunBatchRequested"):
-            try:
-                widget.sigRunBatchRequested.connect(self._run_widefield_starss_batch)
-                widget.sigCancelBatchRequested.connect(self._cancel_widefield_starss_batch)
-                if hasattr(widget, "sigPlotMetricRequested"):
-                    widget.sigPlotMetricRequested.connect(self._plot_widefield_starss_metric)
-            except Exception:
-                pass
-    
-    def dataFolderChanged(self, dataFolder):
-        self._dataFolder = dataFolder
-
-    def saveFolderChanged(self, saveFolder):
-        self._saveFolder = saveFolder
-
-    def setDataFolder(self):
-        dataFolder = guitools.askForFolderPath(self._widget)
-        if dataFolder:
-            self._commChannel.sigDataFolderChanged.emit(dataFolder)
-
-    def setSaveFolder(self):
-        saveFolder = guitools.askForFolderPath(self._widget)
-        if saveFolder:
-            self._commChannel.sigSaveFolderChanged.emit(saveFolder)
-
-    def findPattern(self):
-        self._logger.debug('Find pattern clicked')
-        if self._currentDataObj is None:
-            return
-
-        meanData = self._currentDataObj.getMeanData()
-        if len(meanData) < 1:
-            return
-
-        self._logger.debug('Finding pattern')
-        pattern = self._patternFinder.findPattern(meanData)
-        self._logger.debug(f'Pattern found as: {self._pattern}')
-        self.setPatternParams(pattern)
-        self.updatePattern()
-
-    def togglePattern(self, enabled):
-        self._logger.debug('Toggling pattern')
-        self._commChannel.sigPatternVisibilityChanged.emit(enabled)
-
-    def updatePattern(self):
-        if self._settingPatternParams:
-            return
-
-        self._logger.debug('Updating pattern')
-        self._pattern = self._widget.getPatternParams()
-        self._commChannel.sigPatternUpdated.emit(self._pattern)
-
-    def setPatternParams(self, pattern):
-        try:
-            self._settingPatternParams = True
-            self._widget.setPatternParams(*pattern)
-        finally:
-            self._settingPatternParams = False
-
-    def updateScanParams(self, applyOnCurrentRecon=False):
-        self._commChannel.sigScanParamsUpdated.emit(copy.deepcopy(self._scanParDict),
-                                                    applyOnCurrentRecon)
-
-    def scanParamsUpdated(self, scanParDict):
-        self._scanParDict = scanParDict
-
-    def showScanParamsDialog(self):
-        self.updateScanParams()
-        self._widget.showScanParamsDialog()
-
-    def quickLoadData(self):
-        extension = self._widget.extension.value() if self._widget.extension is not None else 'hdf5'
-        if extension == 'zarr':
-            dataPath = guitools.askForFolderPath(self._widget, defaultFolder=self._dataFolder)
-        elif extension == 'hdf5':
-            dataPath = guitools.askForFilePath(self._widget, defaultFolder=self._dataFolder)
-        else:
-            dataPath = guitools.askForFilePath(self._widget, defaultFolder=self._dataFolder)
-
-        if dataPath:
-            self._logger.debug(f'Loading data at: {dataPath}')
-            self._loadFromPath(dataPath, prefer_as_current=True)
+        self.monalisaController.updatePattern()
+        self.monalisaController.updateScanParams()
 
     def currentDataChanged(self, dataObj):
+        """Thin dispatcher: set shared state and delegate to specialized
+        controllers for parameter loading (reconstructor manager) and
+        MoNaLISA scan-param parsing."""
         self._currentDataObj = dataObj
+
+        # Load reconstructor parameters from dataset metadata (best-effort).
         if hasattr(self._widget.parTree, "load_from_attrs"):
             try:
                 self._widget.parTree.load_from_attrs(dataObj.attrs or {})
             except Exception as exc:
                 self._logger.warning(f"Could not load reconstructor params from metadata: {exc}")
 
-        # MoNaLISA-specific scan-params housekeeping. Only runs when the
-        # DataObj actually carries Imswitch acquisition metadata (HDF5/Zarr
-        # written by Imcontrol).  TIFF stacks and most external acquisitions
-        # have ``attrs is None``; bailing here is the right thing, and is
-        # what unblocks the pass-through auto-route below — otherwise the
-        # KeyError-only try/except blocks would let a TypeError escape and
-        # the auto-render path never ran.
-        attrs = dataObj.attrs if dataObj is not None else None
-        if attrs:
-            dimensionMap = {
-                b'X': self._widget.r_l_text,
-                b'Y': self._widget.u_d_text,
-                b'Z': self._widget.b_f_text
-            }
-            try:
-                targetsAttr = attrs['ScanStage:target_device']
-                for i in range(0, min(3, len(targetsAttr))):
-                    self._scanParDict['dimensions'][i] = dimensionMap[targetsAttr[i]]
-            except (KeyError, TypeError):
-                pass
-
-            try:
-                positiveDirectionAttr = attrs['ScanStage:positive_direction']
-                for i in range(0, min(3, len(positiveDirectionAttr))):
-                    self._scanParDict['directions'][i] = (
-                        self._widget.p_text if positiveDirectionAttr[i]
-                        else self._widget.n_text
-                    )
-            except (KeyError, TypeError):
-                pass
-
-            try:
-                numFrames = dataObj.numFrames
-            except Exception:
-                numFrames = None
-            if numFrames:
-                for i in range(0, 2):
-                    self._scanParDict['steps'][i] = str(int(np.sqrt(numFrames)))
-
-            try:
-                stepSizesAttr = attrs['ScanStage:axis_step_size']
-            except (KeyError, TypeError):
-                pass
-            else:
-                for i in range(0, min(4, len(stepSizesAttr))):
-                    self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
-
-            self.updateScanParams()
+        # MoNaLISA-specific scan-params housekeeping (also best-effort).
+        self.monalisaController.parseScanParamsFromAttrs(dataObj)
 
         # Pass-through reconstructors don't require an explicit click — the
         # data is the result. Route to the viewer the moment a current
@@ -443,538 +119,12 @@ class ImProcessMainViewController(ImProcessWidgetController):
             and dataObj is not None
         ):
             try:
-                self.reconstruct([dataObj], consolidate=False)
+                self.reconstructorManager.reconstruct([dataObj], consolidate=False)
             except Exception as exc:
                 self._logger.warning(
                     f"Pass-through auto-route failed for {self._activeReconstructor.id}: {exc}"
                 )
 
-    def extractData(self, data):
-        fwhmNm = self._widget.getFwhmNm()
-        bgModelling = self._widget.getBgModelling()
-        if bgModelling == 'Constant':
-            fwhmNm = np.append(fwhmNm, 9999)  # Code for constant bg
-        elif bgModelling == 'No background':
-            fwhmNm = np.append(fwhmNm, 0)  # Code for zero bg
-        elif bgModelling == 'Gaussian':
-            self._logger.debug('In Gaussian version')
-            fwhmNm = np.append(fwhmNm, self._widget.getBgGaussianSize())
-            self._logger.debug('Appended to sigmas')
-        else:
-            raise ValueError(f'Invalid BG modelling "{bgModelling}" specified; must be either'
-                             f' "Constant", "Gaussian" or "No background".')
-
-        sigmas = np.divide(fwhmNm, 2.355 * self._widget.getPixelSizeNm())
-
-        device = self._widget.getComputeDevice()
-        pattern = self._pattern
-        if device == 'CPU' or device == 'GPU':
-            if self._signalExtractor is None:
-                self._signalExtractor = SignalExtractor()
-            coeffs = self._signalExtractor.extractSignal(data, sigmas, pattern, device.lower())
-        else:
-            raise ValueError(f'Invalid device "{device}" specified; must be either "CPU" or "GPU"')
-
-        return coeffs
-
-    def reconstructCurrent(self):
-        if self._currentDataObj is None:
-            return
-
-        self.reconstruct([self._currentDataObj], consolidate=False)
-
-    def reconstructMulti(self, consolidate):
-        self.reconstruct(self._widget.getMultiDatas(), consolidate)
-
-    def reconstruct(self, dataObjs, consolidate):
-        if self._activeReconstructor is not None and self._activeReconstructor.id != "monalisa":
-            self._reconstruct_with_plugin(dataObjs, consolidate)
-            return
-
-        reconObj = None
-        for index, dataObj in enumerate(dataObjs):
-            preloaded = dataObj.dataLoaded
-            try:
-                dataObj.checkAndLoadData()
-
-                if np.prod(np.array(self._scanParDict['steps'], dtype=int)) < dataObj.numFrames:
-                    self._logger.error('Too many frames in data')
-                    return
-
-                if not consolidate or index == 0:
-                    reconObj = ReconObj(dataObj.name,
-                                        self._scanParDict,
-                                        self._widget.r_l_text,
-                                        self._widget.u_d_text,
-                                        self._widget.b_f_text,
-                                        self._widget.timepoints_text,
-                                        self._widget.p_text,
-                                        self._widget.n_text)
-
-                data = dataObj.data
-                if self._widget.bleachBool.value():
-                    data = self.bleachingCorrection(data)
-
-                coeffs = self.extractData(data)
-            finally:
-                if not preloaded:
-                    dataObj.checkAndUnloadData()
-
-            reconObj.addCoeffsTP(coeffs)
-            if not consolidate:
-                reconObj.updateImages()
-                self._commChannel.sigResultProduced.emit(reconObj, reconObj.name)
-
-        if consolidate and reconObj is not None:
-            reconObj.updateImages()
-            self._commChannel.sigResultProduced.emit(reconObj, f'{reconObj.name}_multi')
-            self._commChannel.sigExecutionFinished.emit(self.reconstructionController.getImage())
-
-    def _reconstruct_with_plugin(self, dataObjs, consolidate):
-        if self._activeReconstructor is None:
-            return
-        if consolidate:
-            self._logger.warning(
-                f"{self._activeReconstructor.name} does not support consolidated "
-                "multi-data reconstruction yet; processing items individually."
-            )
-        for dataObj in dataObjs:
-            params = self._widget.getReconstructionParams()
-            self._logger.info(
-                f"Running {self._activeReconstructor.id} reconstruction for {dataObj.name}"
-            )
-            result = self._activeReconstructor.process(dataObj, params)
-            self._commChannel.sigResultProduced.emit(result, result.name)
-            self._commChannel.sigCurrentResultChanged.emit(result)
-            if self._activeReconstructor.id == "widefield-starss":
-                self._append_wfs_single_result(result)
-            # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
-            # output pixel size) back into the active parameter widget so
-            # the user sees up-to-date numbers without flipping to napari's
-            # scale bar.  Best-effort: silently no-ops on plugins / widgets
-            # that don't expose setOutputPixelSize.
-            output_pixel_size_nm = getattr(result, 'output_pixel_size_nm', None)
-            par_tree = getattr(self._widget, 'parTree', None)
-            setter = getattr(par_tree, 'setOutputPixelSize', None)
-            if callable(setter):
-                try:
-                    setter(output_pixel_size_nm)
-                except Exception:
-                    pass
-
-    def _run_widefield_starss_batch(self):
-        if self._activeReconstructor is None or self._activeReconstructor.id != "widefield-starss":
-            return
-        if self._wfsBatchThread is not None:
-            self._set_wfs_batch_status("A WFS batch is already running.")
-            return
-        widget = getattr(self._widget, "parTree", None)
-        if widget is None or not hasattr(widget, "get_values"):
-            return
-        params = widget.get_values()
-        input_folder = params.get("batch_input_folder")
-        output_folder = params.get("batch_output_folder")
-        if not input_folder:
-            self._set_wfs_batch_status("Choose a batch input folder.")
-            return
-        if not output_folder:
-            self._set_wfs_batch_status("Choose a batch output folder.")
-            return
-
-        try:
-            analysis_params = self._make_widefield_starss_batch_params(params)
-            thread = QtCore.QThread(self._widget)
-            worker = _WidefieldStarssBatchWorker(
-                input_folder=input_folder,
-                output_folder=output_folder,
-                params=analysis_params,
-                h_suffix=str(params.get("h_suffix") or "_h"),
-                v_suffix=str(params.get("v_suffix") or "_v"),
-            )
-            worker.moveToThread(thread)
-            thread.started.connect(worker.run)
-            worker.progress.connect(self._on_wfs_batch_progress)
-            worker.finished.connect(self._on_wfs_batch_finished)
-            worker.failed.connect(self._on_wfs_batch_failed)
-            worker.cancelled.connect(self._on_wfs_batch_cancelled)
-
-            for signal in (worker.finished, worker.failed, worker.cancelled):
-                signal.connect(worker.deleteLater)
-                signal.connect(thread.quit)
-            thread.finished.connect(thread.deleteLater)
-            thread.finished.connect(lambda: self._clear_wfs_batch_refs(thread))
-
-            self._wfsBatchThread = thread
-            self._wfsBatchWorker = worker
-            self._set_wfs_batch_running(True)
-            self._set_wfs_batch_progress(0, 1)
-            self._set_wfs_batch_status("WFS batch starting...")
-            thread.start()
-        except Exception as exc:
-            self._logger.error(f"WidefieldSTARSS batch failed: {exc}")
-            self._set_wfs_batch_status(f"Batch failed: {exc}")
-            self._set_wfs_batch_running(False)
-
-    def _cancel_widefield_starss_batch(self):
-        worker = self._wfsBatchWorker
-        if worker is None:
-            self._set_wfs_batch_status("No WFS batch is running.")
-            return
-        worker.cancel()
-        self._set_wfs_batch_status("Cancelling WFS batch after the current pair...")
-
-    def _make_widefield_starss_batch_params(self, params: dict):
-        from imswitch.improcess.reconstructors.widefield_starss.analysis import (
-            WidefieldStarssParams,
-        )
-
-        return WidefieldStarssParams(
-            convention=params.get("convention", "alternating"),
-            start_frame=int(params.get("start_frame", 0)),
-            n_dark=int(params.get("n_dark", 0)),
-            n_off=int(params.get("n_off", 0)),
-            sum_stacks=bool(params.get("sum_stacks", False)),
-            split_detection=bool(params.get("split_detection", False)),
-            split_y=params.get("split_y"),
-            anisotropy_mode=params.get("anisotropy_mode", "stokes"),
-            segmentation_mode=params.get("segmentation_mode", "none"),
-            segmentation_sigma=float(params.get("segmentation_sigma", 2.0)),
-            min_size=int(params.get("min_size", 200)),
-            hole_size=int(params.get("hole_size", 200)),
-            threshold_scale=float(params.get("threshold_scale", 1.0)),
-            psf_sigma=float(params.get("psf_sigma", 2.0)),
-            psf_min_distance=int(params.get("psf_min_distance", 5)),
-            psf_threshold_rel=float(params.get("psf_threshold_rel", 0.1)),
-            psf_radius=int(params.get("psf_radius", 3)),
-            smooth_sigma=float(params.get("smooth_sigma", 2.0)),
-            intensity_threshold=params.get("intensity_threshold"),
-        )
-
-    def _on_wfs_batch_progress(self, progress: dict):
-        total = int(progress.get("pair_count", 1) or 1)
-        completed = int(progress.get("completed", 0) or 0)
-        sample_id = str(progress.get("sample_id", ""))
-        state = str(progress.get("state", ""))
-        if state == "processing":
-            self._set_wfs_batch_progress(completed, total)
-            self._set_wfs_batch_status(
-                f"Processing {sample_id}: {completed + 1}/{total} pair(s)."
-            )
-        else:
-            self._set_wfs_batch_progress(completed, total, sample_id, state)
-
-    def _on_wfs_batch_finished(self, payload: dict):
-        regions_path = Path(payload["regions_path"])
-        summary_path = Path(payload["summary_path"])
-        hdf5_path = Path(payload["hdf5_path"])
-        message = (
-            f"WFS batch complete: {payload['pair_count']} pair(s), "
-            f"{payload['region_count']} region row(s), "
-            f"{payload['unmatched_count']} unmatched file(s). "
-            f"Saved {regions_path.name}, {summary_path.name}, {hdf5_path.name}."
-        )
-        self._logger.info(message)
-        self._set_wfs_batch_progress(int(payload["pair_count"]), int(payload["pair_count"]) or 1)
-        self._set_wfs_batch_results(payload)
-        self._set_wfs_batch_graphs(payload.get("plot_payloads", []))
-        self._set_wfs_batch_status(message)
-        self._set_wfs_batch_running(False)
-
-    def _on_wfs_batch_failed(self, message: str):
-        self._logger.error(f"WidefieldSTARSS batch failed: {message}")
-        self._set_wfs_batch_status(f"Batch failed: {message}")
-        self._set_wfs_batch_running(False)
-
-    def _on_wfs_batch_cancelled(self, message: str):
-        self._logger.info(message or "WidefieldSTARSS batch cancelled")
-        self._set_wfs_batch_status("WFS batch cancelled.")
-        self._set_wfs_batch_running(False)
-
-    def _clear_wfs_batch_refs(self, thread):
-        if self._wfsBatchThread is thread:
-            self._wfsBatchThread = None
-            self._wfsBatchWorker = None
-
-    def _set_wfs_batch_status(self, text: str) -> None:
-        widget = getattr(self._widget, "parTree", None)
-        setter = getattr(widget, "set_batch_status", None)
-        if callable(setter):
-            setter(text)
-        else:
-            self._logger.info(text)
-
-    def _set_wfs_batch_running(self, running: bool) -> None:
-        widget = getattr(self._widget, "parTree", None)
-        setter = getattr(widget, "set_batch_running", None)
-        if callable(setter):
-            setter(running)
-
-    def _set_wfs_batch_progress(
-        self,
-        completed: int,
-        total: int,
-        sample_id: str | None = None,
-        state: str | None = None,
-    ) -> None:
-        widget = getattr(self._widget, "parTree", None)
-        setter = getattr(widget, "set_batch_progress", None)
-        if callable(setter):
-            setter(completed, total, sample_id, state)
-
-    def _set_wfs_batch_results(self, payload: dict) -> None:
-        widget = getattr(self._widget, "parTree", None)
-        setter = getattr(widget, "set_batch_results", None)
-        if callable(setter):
-            setter(payload)
-
-    def _append_wfs_single_result(self, result) -> None:
-        """Append one single-file WFS result to the accumulated results tables
-        in the parameter widget, alongside any batch rows."""
-        analysis = getattr(result, "analysis", None)
-        widget = getattr(self._widget, "parTree", None)
-        appender = getattr(widget, "append_results", None)
-        if analysis is None or not callable(appender):
-            return
-        try:
-            from imswitch.improcess.reconstructors.widefield_starss.analysis import (
-                single_analysis_results_payload,
-            )
-
-            params = getattr(result, "params", {}) or {}
-            payload = single_analysis_results_payload(
-                analysis,
-                sample_id=result.name,
-                h_path=params.get("source_h_path", ""),
-                v_path=params.get("source_v_path", ""),
-            )
-            appender(payload)
-        except Exception as exc:
-            self._logger.warning(f"Could not append WFS single result to tables: {exc}")
-
-    def _plot_widefield_starss_metric(self) -> None:
-        widget = getattr(self._widget, "parTree", None)
-        builder = getattr(widget, "build_metric_plot_payloads", None)
-        if not callable(builder):
-            return
-        payloads = builder()
-        if payloads:
-            self._set_wfs_batch_graphs(payloads)
-        else:
-            self._set_wfs_batch_status("No accumulated WFS results to plot.")
-
-    def _set_wfs_batch_graphs(self, plot_payloads) -> None:
-        graph_widget = getattr(self._widget, "graphWidget", None)
-        setter = getattr(graph_widget, "setPlotPayloads", None)
-        if callable(setter):
-            setter(list(plot_payloads))
-
-    def bleachingCorrection(self, data):
-        correctedData = data.copy()
-        energy = np.sum(data, axis=(1, 2))
-        for i in range(data.shape[0]):
-            c = (energy[0] / energy[i]) ** 4
-            correctedData[i, :, :] = data[i, :, :] * c
-        return correctedData
-
-    def saveCurrent(self, dataType):
-        """ Saves the reconstructed image or coefficeints from the current
-        ReconObj to a user-specified destination. """
-
-        filePath = guitools.askForFilePath(self._widget,
-                                           caption=f'Save {dataType}',
-                                           defaultFolder=self._saveFolder or self._dataFolder,
-                                           nameFilter='*.tiff', isSaving=True)
-
-        if filePath:
-            reconObj = self.reconstructionController.getActiveReconObj()
-            if dataType == 'reconstruction':
-                self.saveReconstruction(reconObj, filePath)
-            elif dataType == 'coefficients':
-                if hasattr(reconObj, "data") and hasattr(reconObj, "save"):
-                    self._logger.error("Coefficient export is only available for legacy MoNaLISA results")
-                    return
-                self.saveCoefficients(reconObj, filePath)
-            else:
-                raise ValueError(f'Invalid save data type "{dataType}"')
-
-    def saveAll(self, dataType):
-        """ Saves the reconstructed image or coefficeints from all available
-        ReconObj objects to a user-specified directory. """
-
-        dirPath = guitools.askForFolderPath(self._widget,
-                                            caption=f'Save all {dataType}',
-                                            defaultFolder=self._saveFolder or self._dataFolder)
-
-        if dirPath:
-            for name, reconObj in self.reconstructionController.getAllReconObjs():
-                # Avoid overwriting
-                filePath = os.path.join(dirPath, f'{name}.{dataType}.tiff')
-                filePathNew = filePath
-                numExisting = 0
-                while os.path.exists(filePathNew):
-                    numExisting += 1
-                    pathWithoutExt, pathExt = os.path.splitext(filePath)
-                    filePathNew = f'{pathWithoutExt}_{numExisting}{pathExt}'
-                filePath = filePathNew
-
-                # Save
-                if dataType == 'reconstruction':
-                    self.saveReconstruction(reconObj, filePath)
-                elif dataType == 'coefficients':
-                    if hasattr(reconObj, "data") and hasattr(reconObj, "save"):
-                        self._logger.error(
-                            f"Skipping coefficient export for {name}; not a legacy MoNaLISA result"
-                        )
-                        continue
-                    self.saveCoefficients(reconObj, filePath)
-                else:
-                    raise ValueError(f'Invalid save data type "{dataType}"')
-
-    def saveReconstruction(self, reconObj, filePath):
-        if hasattr(reconObj, "data") and hasattr(reconObj, "save"):
-            suffix = Path(filePath).suffix.lower().lstrip(".") or "tiff"
-            fmt = "tiff" if suffix in ("tif", "tiff") else suffix
-            reconObj.save(Path(filePath), fmt)
-            return
-
-        scanParDict = reconObj.getScanParams()
-        vxsizec = int(float(
-            scanParDict['step_sizes'][scanParDict['dimensions'].index(
-                self._widget.r_l_text
-            )]
-        ))
-        vxsizer = int(float(
-            scanParDict['step_sizes'][scanParDict['dimensions'].index(
-                self._widget.u_d_text
-            )]
-        ))
-        vxsizez = int(float(
-            reconObj.scanParDict['step_sizes'][scanParDict['dimensions'].index(
-                self._widget.b_f_text
-            )]
-        ))
-        dt = int(float(
-            scanParDict['step_sizes'][scanParDict['dimensions'].index(
-                self._widget.timepoints_text
-            )]
-        ))
-
-        self._logger.debug(f'Trying to save to: {filePath}, Vx size: {vxsizec, vxsizer, vxsizez},'
-                           f' dt: {dt}')
-        # Reconstructed image
-        reconstrData = copy.deepcopy(reconObj.getReconstruction())
-        reconstrData = reconstrData[:, 0, :, :, :, :]
-        reconstrData = np.swapaxes(reconstrData, 1, 2)
-        tiff.imwrite(filePath, reconstrData,
-                     imagej=True, resolution=(1 / vxsizec, 1 / vxsizer),
-                     metadata={'spacing': vxsizez, 'unit': 'nm', 'axes': 'TZCYX'})
-
-    def saveCoefficients(self, reconObj, filePath):
-        coeffs = copy.deepcopy(reconObj.getCoeffs())
-        self._logger.debug(f'Shape of coeffs: {coeffs.shape}')
-        coeffs = np.swapaxes(coeffs, 1, 2)
-        tiff.imwrite(filePath, coeffs,
-                     imagej=True, resolution=(1, 1),
-                     metadata={'spacing': 1, 'unit': 'px', 'axes': 'TZCYX'})
-
-    def handleDroppedFiles(self, paths):
-        """Process files dropped onto the main view via drag-and-drop.
-
-        Per dropped path, routes through ``_loadFromPath``. When exactly one
-        file is dropped and the active reconstructor is pass-through, that
-        single path is promoted to the current DataObj so the auto-route in
-        ``currentDataChanged`` puts it straight onto the napari viewer.
-        """
-        prefer_as_current = (
-            len(paths) == 1
-            and self._activeReconstructor is not None
-            and getattr(self._activeReconstructor, 'is_pass_through', False)
-        )
-        any_routed_to_current = False
-        any_routed_to_multidata = False
-
-        for path in paths:
-            outcome = self._loadFromPath(str(path), prefer_as_current=prefer_as_current)
-            if outcome == 'current':
-                any_routed_to_current = True
-            elif outcome == 'multidata':
-                any_routed_to_multidata = True
-
-        # Single pass-through drop already raised the Current data dock via
-        # _loadAsCurrent. Otherwise, surface the MultiData dock if anything
-        # landed there.
-        if not any_routed_to_current and any_routed_to_multidata:
-            self._widget.raiseMultiDataDock()
-
-    def _loadFromPath(self, dataPath, *, prefer_as_current: bool = False) -> str:
-        """Unified loader for one file path.
-
-        Handles dataset enumeration, the multi-dataset picker dialog and the
-        routing decision in one place. Reused by ``quickLoadData`` and
-        ``handleDroppedFiles`` so all entry points share the same pick UX.
-
-        Args:
-            dataPath: Absolute path to the file or zarr group.
-            prefer_as_current: When True, a single (or single-picked) dataset
-                is promoted to the current DataObj. When False, every dataset
-                is added to the multi-data list.
-
-        Returns:
-            ``'current'``     — routed to the current DataObj (and raised),
-            ``'multidata'``   — routed only into the multi-data list,
-            ``'cancelled'``   — user dismissed the picker dialog,
-            ``'empty'``       — no datasets in the file or none selected.
-        """
-        try:
-            datasetsInFile = DataObj.getDatasetNames(dataPath)
-        except Exception as exc:
-            self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
-            return 'empty'
-
-        if not datasetsInFile:
-            return 'empty'
-
-        name = os.path.basename(dataPath) or dataPath
-        datasetsToRoute = list(datasetsInFile)
-
-        if len(datasetsInFile) > 1:
-            self.pickDatasetsController.setDatasets(dataPath, datasetsInFile)
-            if not self._widget.showPickDatasetsDialog(blocking=True):
-                return 'cancelled'
-            datasetsToRoute = list(self.pickDatasetsController.getSelectedDatasets())
-            if not datasetsToRoute:
-                return 'empty'
-
-        if prefer_as_current and len(datasetsToRoute) == 1:
-            try:
-                self._loadAsCurrent(name, datasetsToRoute[0], dataPath)
-                return 'current'
-            except Exception as exc:
-                self._logger.error(
-                    f"Could not promote {name}::{datasetsToRoute[0]} to current: {exc}"
-                )
-                # Fall through to multidata routing so the data isn't silently
-                # dropped on the floor.
-
-        for datasetName in datasetsToRoute:
-            self.multiDataFrameController.makeAndAddDataObj(
-                name, datasetName, path=dataPath
-            )
-        return 'multidata'
-
-    def _loadAsCurrent(self, name, datasetName, dataPath):
-        """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
-
-        Extracted so ``_loadFromPath`` (used by drag-drop and quickLoadData)
-        shares the routing with any future single-dataset entry points.
-        """
-        if self._currentDataObj is not None:
-            self._currentDataObj.checkAndUnloadData()
-        self._currentDataObj = DataObj(name, datasetName, path=dataPath)
-        self._currentDataObj.checkAndLoadData()
-        if self._currentDataObj.dataLoaded:
-            self._commChannel.sigCurrentDataChanged.emit(self._currentDataObj)
-            self._widget.raiseCurrentDataDock()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

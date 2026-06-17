@@ -245,8 +245,6 @@ class DataObj:
         """
 
         lastModif = os.path.getmtime(self.dataPath)
-        print(lastModif)
-        print(time.time())
         if lastModif + minDiffTime > time.time():
             raise OSError(f'Modif time less than {minDiffTime}sec ago')
 

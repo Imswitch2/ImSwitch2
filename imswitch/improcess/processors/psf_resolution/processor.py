@@ -2,11 +2,11 @@
 
 from typing import Callable
 
-import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.improcess.analysis.psf_resolution import fit_psf_batch
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.processors._extraction import extract_2d_plane
 from imswitch.improcess.processors.base import Processor
 
 from .result import PSFResolutionResult
@@ -20,6 +20,8 @@ class PSFResolutionProcessor(Processor):
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
+        """Require at least a 2-D image; a single (Y, X) plane is fitted, with
+        any extra non-spatial axes collapsed to index 0."""
         return lambda result: result.data.ndim >= 2
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -47,7 +49,7 @@ class PSFResolutionProcessor(Processor):
         return widget
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
-        image = self._extract_2d(result)
+        image = extract_2d_plane(result)
         analysis = fit_psf_batch(
             image,
             pixel_size=float(params.get("pixel_size", 1.0)),
@@ -58,18 +60,3 @@ class PSFResolutionProcessor(Processor):
             analysis=analysis,
             params=dict(params),
         )
-
-    @staticmethod
-    def _extract_2d(result: ProcessingResult) -> np.ndarray:
-        data = np.asarray(result.data)
-        if data.ndim == 2:
-            return data
-        if data.ndim < 2:
-            raise ValueError(f"PSF fitting needs at least 2D data, got shape {data.shape}")
-        indexer = []
-        for axis in range(data.ndim):
-            indexer.append(slice(None) if axis >= data.ndim - 2 else 0)
-        image = np.asarray(data[tuple(indexer)])
-        if image.ndim != 2:
-            raise ValueError(f"Could not extract a 2D PSF image from shape {data.shape}")
-        return image
