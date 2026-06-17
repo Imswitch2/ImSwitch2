@@ -1,5 +1,13 @@
 from .Options import Options
-from .SetupInfo import DeviceInfo, DetectorInfo, LaserInfo, PositionerInfo, ScanInfo, SetupInfo
+from .SetupInfo import (
+    DeviceInfo,
+    DetectorInfo,
+    FlipMirrorInfo,
+    LaserInfo,
+    PositionerInfo,
+    ScanInfo,
+    SetupInfo,
+)
 from .WidgetStatePersistence import WidgetStatePersistence, getWidgetStatePersistence
 from .errors import *
 from .managers import *

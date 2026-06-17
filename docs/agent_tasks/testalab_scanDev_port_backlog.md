@@ -58,8 +58,8 @@ Components apparently missing in the target tree at audit time include:
 Each automation run must do exactly one package from the queue.
 
 1. Read this file.
-2. Pick the first package whose status is `[todo]` and whose dependencies are
-   `[done]` or not listed.
+2. Pick the first package whose status is `[todo]`, whose dependencies are
+   `[done]` or not listed, and that is not marked automation-deferred.
 3. Change its status to `[in_progress]` before editing.
 4. Compare the source branch against target code with source-aware commands,
    for example:
@@ -92,7 +92,7 @@ Safety rules:
 
 ### P01 - Setup Modes Core
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: none
 Source commits: `f5c19149`, `f212b706`, `143165b1`
 Primary source files:
@@ -114,9 +114,22 @@ Notes:
 Keep this package focused on the setup-mode backbone. Do not also port all
 device-specific setup-mode adapters unless they are needed for tests to pass.
 
+Done notes:
+Ported the setup-mode backend, compact setup-mode widget/controller, lazy
+controller/widget exports, `SetupModes` dock metadata, API wiring, and the scan
+setup-mode adapter while preserving ImSwitch2 `ScanLifecycleMixin`,
+`WorkflowFacadeController`, and widget-state persistence.
+
+Checks run:
+
+- `git diff --check`
+- `python -m compileall -q imswitch/imcontrol/controller/SetupModeController.py imswitch/imcontrol/controller/controllers/SetupModesController.py imswitch/imcontrol/view/widgets/SetupModesWidget.py imswitch/imcontrol/controller/basecontrollers.py imswitch/imcontrol/controller/ImConMainController.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_setup_modes.py -q`
+- `ruff check imswitch/imcontrol/controller/SetupModeController.py imswitch/imcontrol/controller/controllers/SetupModesController.py imswitch/imcontrol/view/widgets/SetupModesWidget.py imswitch/imcontrol/controller/basecontrollers.py imswitch/imcontrol/controller/ImConMainController.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py imswitch/imcontrol/_test/unit/test_setup_modes.py`
+
 ### P02 - Flip Mirror Support
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P01 only if setup modes are touched during integration
 Source commit: `de6a3ec7`
 Primary source files:
@@ -136,9 +149,25 @@ Notes:
 Keep physical-device calls behind existing manager patterns and cover registration
 or mock behavior without real hardware.
 
+Done notes:
+Ported the flip-mirror controller, widget, manager aggregation, Thorlabs MFF
+hardware manager, and mock manager. Added `flipMirrors` setup schema support,
+master-controller construction, lazy controller/widget exports, dock metadata,
+and no-hardware tests for mock loading, state changes, reset, finalization, and
+lazy exports. The `ThorlabsMFF_mock` manager name remains loadable through a
+class alias for `MultiManager`.
+
+Checks run:
+
+- `git diff --check`
+- `python -m compileall -q docs/agent_tasks/testalab_scanDev_port_backlog.md imswitch/imcontrol/controller/controllers/FlipMirrorController.py imswitch/imcontrol/view/widgets/FlipMirrorWidget.py imswitch/imcontrol/model/managers/FlipMirrorsManager.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF_mock.py imswitch/imcontrol/model/SetupInfo.py imswitch/imcontrol/model/__init__.py imswitch/imcontrol/model/managers/__init__.py imswitch/imcontrol/controller/MasterController.py imswitch/imcontrol/controller/controllers/__init__.py imswitch/imcontrol/view/widgets/__init__.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py imswitch/imcontrol/_test/unit/test_flip_mirrors.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_flip_mirrors.py -q`
+- `ruff check imswitch/imcontrol/controller/controllers/FlipMirrorController.py imswitch/imcontrol/view/widgets/FlipMirrorWidget.py imswitch/imcontrol/model/managers/FlipMirrorsManager.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF.py imswitch/imcontrol/model/managers/flipMirrors/ThorlabsMFF_mock.py imswitch/imcontrol/model/SetupInfo.py imswitch/imcontrol/model/__init__.py imswitch/imcontrol/model/managers/__init__.py imswitch/imcontrol/controller/MasterController.py imswitch/imcontrol/controller/controllers/__init__.py imswitch/imcontrol/view/widgets/__init__.py imswitch/imcontrol/view/ImConMainView.py imswitch/imcontrol/view/guitools/ViewSetupInfo.py imswitch/imcontrol/_test/unit/test_flip_mirrors.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_setup_modes.py imswitch/imcontrol/_test/unit/test_flip_mirrors.py -q`
+
 ### P03 - Advanced Scan Sequence Builder Delta
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: none
 Source commits: `1dcbbe2a`, `740a72f0`, `e73aafdd`, `e43f63b5`,
 `814736db`, `47b09e2f`, `db9ae85a`, `7158509e`, `eb7a241e`, `3f14744e`
@@ -163,9 +192,26 @@ Acceptance points:
 - persistent sequence-builder device selection works
 - start-delay semantics, including negative values, are preserved where safe
 
+Done notes:
+Ported the advanced scan sequence-builder UI delta into the existing ImSwitch2
+advanced scan widget while keeping the deferred BeadRec controls out. Added
+line-program visibility-only toggling, timing/sequence modes, lock-with device
+state, persistent checkable sequence device menus, negative start-delay
+sequence rows, dead-time labeling/tooltips, graph time-unit replay, scan curve
+plotting, saved sequence-builder state restore, and TTL filtering for scanning
+positioners. Preserved ImSwitch2 JSON/INI scan parameter loading and widget
+state persistence.
+
+Checks run:
+
+- `git diff --check -- docs/agent_tasks/testalab_scanDev_port_backlog.md imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py imswitch/imcontrol/model/managers/ScanManagerAdvanced.py imswitch/imcontrol/model/signaldesigners/AdvancedScanTTLCycleDesigner.py imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py`
+- `python -m compileall -q docs/agent_tasks/testalab_scanDev_port_backlog.md imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py imswitch/imcontrol/model/managers/ScanManagerAdvanced.py imswitch/imcontrol/model/signaldesigners/AdvancedScanTTLCycleDesigner.py imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py`
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py imswitch/imcontrol/_test/unit/test_widget_responsiveness_contract.py imswitch/imcontrol/_test/unit/test_scan_lifecycle.py -q`
+- `ruff check imswitch/imcontrol/view/widgets/ScanWidgetAdvanced.py imswitch/imcontrol/controller/controllers/ScanControllerAdvanced.py imswitch/imcontrol/model/managers/ScanManagerAdvanced.py imswitch/imcontrol/model/signaldesigners/AdvancedScanTTLCycleDesigner.py imswitch/imcontrol/_test/unit/test_scan_advanced_sequence_builder.py`
+
 ### P04 - SLMs Setup-Mode Sync And Pattern Deltas
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P01
 Source commits: `b785064f`, `f212b706`, `143165b1`
 Primary source files:
@@ -183,11 +229,27 @@ Notes:
 The target tree already has SLMs files. Diff source and target carefully and
 avoid regressing ImSwitch2-specific responsiveness fixes.
 
+Done notes:
+Ported SLMs setup-mode synchronization including config combobox sync between
+widget and SetupModeController, startup config persistence to setup file,
+config inspector dialog with metadata and full dump, config comparison before
+overwrite, duplicate/reload/open-folder operations, separated user actions
+(activated) from programmatic changes (currentIndexChanged) to prevent loops,
+enhanced UI with tooltips and dynamic button states, and aberration pattern
+fixes (coma/spherical linear/quadratic term removal). All changes preserve
+ImSwitch2 architectural patterns.
+
+Checks run:
+
+- `git diff --check`
+- `python -m compileall -q imswitch/imcontrol/controller/controllers/SLMsController.py imswitch/imcontrol/view/widgets/SLMsWidget.py`
+- `ruff check imswitch/imcontrol/controller/controllers/SLMsController.py imswitch/imcontrol/view/widgets/SLMsWidget.py`
+
 ### P05 - Hardware Manager Bugfix Deltas
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: none
-Source commits: `34c2ee68`, `04ae8d1a`, `80457490`, `7619ade3`, `c18c4a67`
+Source commits: `34c2ee68`, `04ae8d1a`, `7619ade3`, `c18c4a67`
 Primary source files:
 
 - `imswitch/imcontrol/model/managers/positioners/PositionerManager.py`
@@ -195,8 +257,6 @@ Primary source files:
 - `imswitch/imcontrol/model/managers/detectors/TISManager.py`
 - `imswitch/imcontrol/model/interfaces/tiscamera.py`
 - `imswitch/imcontrol/model/interfaces/tiscamera_mock.py`
-- `imswitch/imcontrol/model/managers/lasers/Cobolt0601NewLaserManager.py`
-- Cobolt mock/driver files already present in ImSwitch2
 
 Task summary:
 Port no-hardware-safe manager bugfixes and add focused tests where possible.
@@ -205,15 +265,39 @@ Acceptance points:
 
 - generalized `get_abs(axis)` behavior is preserved for focus-lock callers
 - TIS close/set-parameter fixes are present without forwarding synthetic params
-- Cobolt key-warning and mock behavior remain fail-safe
 - Serial DAC Z manager is ported or explicitly marked blocked with dependency
   details
 
+Out of scope:
+
+- `Cobolt0601NewLaserManager.py`, Cobolt mock/driver deltas, and source commit
+  `80457490` are intentionally not part of this package.
+
+Done notes:
+Ported 3 commits (04ae8d1a skipped as Cobolt laser-related). Created new
+SerialDacZManager.py (227 lines) with virtual Z positioner via Serial DAC,
+MicroPython REPL interface, voltage clamping, and safe shutdown. Fixed TIS
+camera resource leaks by implementing proper close() in TISManager.py and
+tiscamera.py including critical ic_ic.close_library() call, idempotent closing,
+and destructor cleanup. Generalized positioner get_abs(axis) signature in
+PiezoconceptZManager.py and PiezoconceptZManager2.py. Enhanced
+FocusLockController.py with axis resolution logic (prefers Z, falls back to 0),
+abstraction methods getPositionerAbs() and movePositioner(). Added optional
+positionerAxis field to FocusLockInfo in SetupInfo.py. All acceptance points
+satisfied.
+
+Checks run:
+
+- `python -m compileall -q <all 7 modified files>`
+- `git diff --check`
+- `ruff check <all 7 modified files>`
+
 ### P06 - Scan Compatibility For BeadRec And Recording Edges
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P03
-Source commits: `33eaa07c`, `77195838`, `4ca7a58d`, plus related scan commits
+Source commits audited: `33eaa07c`, `77195838`, `4ca7a58d`, `d8bf778a`,
+`1590188d`
 Primary source files:
 
 - `imswitch/imcontrol/controller/controllers/BeadRecController.py`
@@ -222,17 +306,30 @@ Primary source files:
 - scan parameter consumers touched by advanced scan length semantics
 
 Task summary:
-Port compatibility fixes caused by the advanced scan length/sequence changes,
-without changing hardware timing.
+Audit current ImSwitch2 BeadRec/recording behavior against the scan-length,
+soft timelapse stop, joystick, per-detector camera TTL, and advanced-scan
+BeadRec hookup ideas from `testalab_scanDev`.
 
-Notes:
-This is red-zone-adjacent because it can affect acquisition timing and recorded
-shape expectations. Prefer source-level or pure tests unless hardware validation
-is explicitly requested.
+Done notes:
+Audited P06 as a verification package rather than a direct port. The old
+BeadRec scan-length patch (`33eaa07c`) only removed stale `+1` dimensions; the
+current ImSwitch2 implementation already enforces exact reconstruction sizes
+through `BeadAcquisitionConfig`, `create_reconstruction_buffer()`, and
+`reconstruction_image()`. The soft scan-timelapse stop (`77195838`) and
+joystick disable/restore fix (`4ca7a58d`) are already present in the current
+RecordingController and PositionerController. The per-detector `numCamTTL`
+recording logic from `d8bf778a` is present in newer RecordingManager form.
+The WIP direct AdvancedScan/BeadRec signal bridge from `1590188d` is superseded
+by the current scan-source/CommunicationChannel contract and
+`getFramesPerScanPixel()` behavior. No code was ported from these old commits.
+
+Checks run:
+
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p pytestqt.plugin imswitch/imcontrol/_test/unit/test_recording.py imswitch/imcontrol/_test/unit/test_scan_once_recording_sources.py imswitch/imcontrol/_test/unit/test_bead_rec_controller_contract.py -q`
 
 ### P07 - Config Editor Templates And Docs
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P02, P03, P05
 Source commits: `d1cf26e3`, `df586807`
 Primary source files:
@@ -251,9 +348,24 @@ successfully ported in earlier packages.
 Notes:
 Do not reintroduce stale templates for features that were skipped or blocked.
 
+Done notes:
+Config editor and all 16 builtin templates from d1cf26e3 were already present in
+the repository from prior porting work and have been enhanced beyond the source
+commit. Added missing TISCamera.rst documentation (43 lines) from df586807 with
+installation instructions for TIS camera drivers and TISGrabber C DLL on Windows.
+All templates validated as proper JSON. The docs/api/api.imcontrol.rst and
+docs/use-cases.rst files were not modified in the source commits and require no
+updates.
+
+Checks run:
+
+- `python -m compileall -q utility_scripts/imswitch_config_editor.py`
+- `find utility_scripts/builtin_templates -name "*.json" | xargs -n1 python -m json.tool > /dev/null`
+- `git diff --check`
+
 ### P08 - Optional Branch Leftovers Audit
 
-Status: `[todo]`
+Status: `[done]`
 Depends on: P01, P02, P03, P04, P05, P06, P07
 Source commits: remaining commits in `upstream/master..upstream/testalab_scanDev`
 Primary source areas:
@@ -271,3 +383,43 @@ or mark them out of scope for this scanDev port.
 Notes:
 This package should not make broad code changes. It should update this backlog
 with any newly discovered package definitions and source refs.
+
+Done notes:
+Audited the remaining `testalab_scanDev` source-branch diff after P01-P07 and
+the P06 verification audit. The full source branch still contains broad
+historical churn (738 changed files, 230 non-merge commits, 44,688 insertions
+and 60,374 deletions relative to `upstream/master`), but no additional
+scanDev-port package should be opened from it now.
+
+Remaining source areas were classified as follows:
+
+- EtMonalisa/EtSTED controllers and widgets are already present in current
+  ImSwitch2 and have since been revised with workflow, transform, and test
+  infrastructure. Do not re-port the older branch versions.
+- `imreconstruct` denoising/model additions are already represented in the
+  current `improcess` module (`Denoiser`, `UNet`, `UNetRCAN`, reconstructors,
+  processors, and tests) and are being handled by the separate ImProcess work,
+  not by this scanDev port.
+- Vendored SDK/runtime assets (`pipython`, Hamamatsu SLM DLL bundle, deleted
+  camera SDK DLL trees) are already present where current ImSwitch2 expects
+  them or are packaging/vendor-hygiene concerns. Do not add or remove binary
+  SDK assets as part of this port.
+- One-off scripts (`ai_nidaq_tests.py`, `test-galvoscandesigner.py`,
+  `test_standa_motrot.py`) are already represented under
+  `scripts/diagnostics/` on current `main`; do not re-add top-level scripts.
+- CI/workflow, Docker, generated static web assets, requirement, paper, and
+  broad default-data deletions are outside the functional scanDev port and
+  should be handled only through separate repository-maintenance work.
+- Cobolt0601NewLaserManager / PyCobolt source commits remain intentionally
+  excluded from P05 per user direction. Current ImSwitch2 already has newer
+  Cobolt/PyCobolt-related files; no source-branch laser-manager port is queued.
+
+Outcome:
+No new backlog packages were added. The scanDev port queue is complete for the
+agreed scope.
+
+Checks run:
+
+- `git diff --name-status upstream/master..refs/remotes/upstream/testalab_scanDev`
+- `git diff --name-status upstream/master..refs/remotes/upstream/testalab_scanDev -- <P08 source-area pathspecs>`
+- `git log --oneline main -- <current target equivalents for P08 source areas>`

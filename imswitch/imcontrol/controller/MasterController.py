@@ -1,6 +1,6 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
-    DetectorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
+    DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
     RotatorsManager, SLMsManager, ScanManagerAdvanced, TriggerScopeManager
 )
@@ -57,6 +57,10 @@ class MasterController:
                                                      **lowLevelManagers)
         self.rotatorsManager = RotatorsManager(self.__setupInfo.rotators,
                                                **lowLevelManagers)
+        self.flipMirrorsManager = FlipMirrorsManager(
+            self.__setupInfo.flipMirrors,
+            **lowLevelManagers
+        )
 
         self.recordingManager = RecordingManager(self.detectorsManager)
 
