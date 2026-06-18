@@ -8,9 +8,9 @@ import traceback
 import h5py
 import datetime
 
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view.guitools import askForFilePath, JsonEditorDialog
 from imswitch.imcommon.view.guitools.dialogtools import askYesNoQuestion
 from imswitch.imcommon.framework import Signal, Thread, Worker, Mutex
@@ -26,8 +26,13 @@ full_registry = {
     "cgh_targets": TARGETS_REGISTRY
 }
 
-class SLMsController(ImConWidgetController):
+class SLMsController(StatefulComponentMixin, ImConWidgetController):
     """Linked to SLMsWidget."""
+
+    # StatefulComponentMixin attributes
+    componentName = 'SLMs'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -138,6 +143,10 @@ class SLMsController(ImConWidgetController):
         self._cghWorker.sigWorkerCGHComputed.connect(self.on_cgh_computed)
         self._cghWorker.sigWorkerCGHComputationFailed.connect(self.on_cgh_computation_failed)
         self._cghThread.start()
+
+        # Register for unified state persistence only if at least one SLM is configured
+        if self._slmNames:
+            getWidgetStatePersistence().register('SLMs', self)
 
     def __del__(self):
         if hasattr(self,"_cghThread"):
@@ -1135,4 +1144,182 @@ class SLMsController(ImConWidgetController):
                 self._mutex.lock()
                 self._numQueuedComputations -= 1
                 self._mutex.unlock()
+
+    # ─── StatefulComponentMixin methods ──────────────────────────────────────
+
+    def getComponentState(self) -> dict:
+        """Snapshot current multi-SLM state for both startup and setup modes.
+
+        Returns config REFERENCES only (slmName, configPath, configName, date, info)
+        for each SLM. Does NOT embed large HDF5/CGH pattern payloads (spec §6.1).
+
+        Returns:
+            {
+                'slms': {
+                    slmKey: {
+                        'slmName': str,
+                        'configPath': str | None,
+                        'configName': str | None,
+                        'date': str | None,
+                        'info': str | None
+                    },
+                    ...
+                }
+            }
+        """
+        slms_state = {}
+        for slmKey, slmName in self._slmNames.items():
+            config_dict = self._widget._currentConfigs.get(slmKey, {})
+            config_path = config_dict.get('path')
+            slms_state[slmKey] = {
+                'slmName': slmName,
+                'configPath': config_path,
+                'configName': os.path.basename(config_path) if config_path else None,
+                'date': config_dict.get('date'),
+                'info': config_dict.get('info')
+            }
+        return {'slms': slms_state}
+
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode
+    ) -> list[str]:
+        """Restore multi-SLM state from a snapshot.
+
+        CRITICAL SAFETY INVARIANT (spec Section 2):
+        - STARTUP_RESTORE: Only update widget's _currentConfigs bookkeeping
+          (select-only). DO NOT call on_load_config, which would push the
+          pattern to the SLM hardware. Append a warning if a config would
+          have been pushed.
+        - SETUP_MODE_APPLY: Load and apply the referenced config via
+          on_load_config (which pushes the pattern to the hardware).
+
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY
+
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
+        warnings = []
+        slms_state = state.get('slms', {})
+
+        if not slms_state:
+            warnings.append('No SLMs state to restore.')
+            return warnings
+
+        for slmKey, slm_config in slms_state.items():
+            # Skip SLMs not present in current setup
+            if slmKey not in self._slmNames:
+                slmName = slm_config.get('slmName', slmKey)
+                warnings.append(f'SLM "{slmName}" not present in current setup; skipped.')
+                continue
+
+            config_path = slm_config.get('configPath')
+            config_name = slm_config.get('configName', 'unknown')
+            slmName = self._slmNames[slmKey]
+
+            # If no config was saved, clear the selection
+            if not config_path:
+                if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
+                    # Clear _currentConfigs for this SLM
+                    self._widget._currentConfigs[slmKey] = {}
+                    self._widget._sync_current_config_combo(slmKey)
+                    self._widget.update_config_info(slmKey)
+                continue
+
+            # Check if config file exists
+            if not os.path.exists(config_path):
+                warnings.append(
+                    f'Config file "{config_name}" for SLM "{slmName}" not found at '
+                    f'{config_path}; skipped.'
+                )
+                continue
+
+            if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
+                # STARTUP_RESTORE: Select-only mode.
+                # Update the widget's _currentConfigs WITHOUT calling on_load_config
+                # (which would push the pattern to hardware).
+                config_dict = {
+                    'path': config_path,
+                    'date': slm_config.get('date', ''),
+                    'info': slm_config.get('info', '')
+                }
+                self._widget.current_config_changed(slmKey, config_dict)
+                warnings.append(
+                    f'SLM "{slmName}" config "{config_name}" selected but NOT loaded '
+                    f'(patterns not pushed to hardware at startup).'
+                )
+
+            elif applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
+                # SETUP_MODE_APPLY: Load and apply the config (pushes to hardware).
+                try:
+                    self.on_load_config(slmKey, path=config_path)
+                except Exception as e:
+                    warnings.append(
+                        f'Failed to load config "{config_name}" for SLM "{slmName}": {e}'
+                    )
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved multi-SLM state.
+
+        Lifted from SetupModesController._summarizeSavedSLMState (line ~560).
+        Summarizes the config name/path for each SLM.
+
+        Args:
+            state: Dict returned by getComponentState()
+
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        slms = (state or {}).get('slms') or {}
+        if not slms:
+            return ['  no SLM state']
+
+        summaries = []
+        for slmKey, slmState in sorted(slms.items(), key=lambda item: str(item[0])):
+            slmName = slmState.get('slmName') or slmKey
+            config = slmState.get('configName') or slmState.get('configPath') or 'None'
+            summaries.append(f'  {slmName}: {self._fmt(config)}')
+
+        return summaries
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify hazards in saved multi-SLM state.
+
+        SLM configs contain phase patterns and CGH metadata with no
+        laser-power-like hazard. The startup no-push invariant already
+        covers safety, so this always returns an empty list for both modes.
+
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: The mode in which the state would be applied
+            context: Optional consumer-provided context (unused for SLMs)
+
+        Returns:
+            Empty list (no hazards)
+        """
+        return []
+
+    def _fmt(self, value):
+        """Format helper (adapted from SetupModesController)."""
+        if value is None:
+            return 'None'
+        if isinstance(value, bool):
+            return 'ON' if bool(value) else 'OFF'
+        if isinstance(value, float):
+            return f'{value:.4g}'
+        if isinstance(value, (list, tuple)):
+            return '[' + ', '.join(self._fmt(item) for item in value) + ']'
+        return str(value)
 
