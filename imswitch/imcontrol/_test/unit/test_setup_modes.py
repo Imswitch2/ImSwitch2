@@ -40,6 +40,8 @@ def make_controller(tmp_path, monkeypatch, controllers):
 
 
 def load_setup_mode_module(monkeypatch):
+    from enum import Enum
+    
     controller_dir = Path(__file__).resolve().parents[2] / "controller"
     package_name = "imswitch.imcontrol.controller"
 
@@ -47,11 +49,17 @@ def load_setup_mode_module(monkeypatch):
     package_module.__path__ = [str(controller_dir)]
     monkeypatch.setitem(sys.modules, package_name, package_module)
 
+    class ComponentStateApplyMode(Enum):
+        """Distinguishes passive UI restore from active hardware application."""
+        STARTUP_RESTORE = "startup_restore"
+        SETUP_MODE_APPLY = "setup_mode_apply"
+
     class SetupModeMixin:
         pass
 
     basecontrollers_module = types.ModuleType(f"{package_name}.basecontrollers")
     basecontrollers_module.SetupModeMixin = SetupModeMixin
+    basecontrollers_module.ComponentStateApplyMode = ComponentStateApplyMode
     monkeypatch.setitem(sys.modules, f"{package_name}.basecontrollers", basecontrollers_module)
 
     spec = importlib.util.spec_from_file_location(

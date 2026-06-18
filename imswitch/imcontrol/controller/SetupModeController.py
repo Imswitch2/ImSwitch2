@@ -5,8 +5,9 @@ import traceback
 from urllib.parse import quote
 
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 
-from .basecontrollers import SetupModeMixin
+from .basecontrollers import SetupModeMixin, ComponentStateApplyMode
 
 
 class SetupModeController:
@@ -213,6 +214,9 @@ class SetupModeController:
 
         componentNames = self._orderedComponentNames(componentNames)
         warnings = []
+        
+        # Use unified registry for apply (Phase 1: bridges legacy SetupModeMixin)
+        registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
             if componentName not in modeState:
@@ -225,7 +229,22 @@ class SetupModeController:
                 continue
 
             try:
-                componentWarnings = controller.applySetupModeState(modeState[componentName])
+                # Try to apply via registry first (if registered)
+                componentWarnings = registry.applyComponentState(
+                    componentName,
+                    modeState[componentName],
+                    apply_mode=ComponentStateApplyMode.SETUP_MODE_APPLY
+                )
+                
+                # Fall back to direct call if not registered (e.g., in tests)
+                # Check if the only warning is "not registered"
+                if (componentWarnings and 
+                    len(componentWarnings) == 1 and 
+                    'not registered' in componentWarnings[0] and
+                    hasattr(controller, 'applySetupModeState')):
+                    componentWarnings = controller.applySetupModeState(modeState[componentName])
+                    if componentWarnings is None:
+                        componentWarnings = []
             except Exception as e:
                 self._logger.error(f'Failed to apply setup mode component: {componentName}')
                 self._logger.error(traceback.format_exc())
@@ -260,6 +279,9 @@ class SetupModeController:
         warnings = []
         includedComponents = []
         state = {}
+        
+        # Use unified registry for snapshot (Phase 1: bridges legacy SetupModeMixin)
+        registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
             controller = modeAwareControllers.get(componentName)
@@ -268,7 +290,18 @@ class SetupModeController:
                 continue
 
             try:
-                componentState = controller.getSetupModeState()
+                # Try to snapshot via registry first (if registered)
+                componentState = registry.snapshotComponent(componentName)
+                
+                # Fall back to direct call if not registered (e.g., in tests)
+                if componentState is None and hasattr(controller, 'getSetupModeState'):
+                    componentState = controller.getSetupModeState()
+                
+                if componentState is None:
+                    warnings.append(f'Failed to snapshot "{componentName}"')
+                    continue
+                
+                # Registry already asserts JSON-serializable, but double-check for safety
                 self._assertJSONSerializable(componentState, componentName)
             except Exception as e:
                 self._logger.error(f'Failed to snapshot setup mode component: {componentName}')
