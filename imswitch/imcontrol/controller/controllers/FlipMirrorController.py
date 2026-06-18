@@ -1,10 +1,16 @@
 from imswitch.imcommon.model import APIExport, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 
-from ..basecontrollers import ImConWidgetController, SetupModeMixin
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 
 
-class FlipMirrorController(SetupModeMixin, ImConWidgetController):
+class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
     """Controller for FlipMirrorWidget."""
+
+    # StatefulComponentMixin attributes
+    componentName = 'FlipMirror'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -42,11 +48,15 @@ class FlipMirrorController(SetupModeMixin, ImConWidgetController):
 
         self._refresh_all_states()
         self._refresh_link_ui()
+        
+        # Register with unified state persistence
+        getWidgetStatePersistence().register('FlipMirror', self)
 
     def closeEvent(self):
         pass
 
-    def getSetupModeState(self):
+    def getComponentState(self) -> dict:
+        """Snapshot the current flip mirror states and link configuration."""
         mirrors = {}
 
         for name in self._names:
@@ -68,7 +78,25 @@ class FlipMirrorController(SetupModeMixin, ImConWidgetController):
             "links": dict(self._master_by_follower),
         }
 
-    def applySetupModeState(self, state):
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore flip mirror state from a snapshot.
+        
+        STARTUP_RESTORE:
+        - Do NOT physically move mirrors
+        - Do NOT set links (which would trigger physical moves)
+        - Only update widget display/bookkeeping
+        - Warn if saved state differs from current physical state
+        
+        SETUP_MODE_APPLY:
+        - Restore links and move mirrors to saved states (full restoration)
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
+        
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
         warnings = []
 
         if self._manager is None or not self._manager.hasDevices():
@@ -87,44 +115,136 @@ class FlipMirrorController(SetupModeMixin, ImConWidgetController):
             warnings.append("Saved flip mirror link section is not a dictionary.")
             links = {}
 
-        # Remove existing links first so physical states can be restored without
-        # follower propagation from the old link graph.
-        for follower in list(self._master_by_follower.keys()):
-            self.set_link(follower, None)
+        if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
+            # STARTUP_RESTORE: Do NOT move mirrors, do NOT set links
+            # Only check if saved state differs and warn
+            for name, mirrorState in mirrors.items():
+                if name not in self._names:
+                    continue
+                
+                if not self._is_connected(name):
+                    continue
+                
+                if isinstance(mirrorState, dict):
+                    savedState = mirrorState.get("state")
+                else:
+                    savedState = mirrorState
+                
+                if savedState is None:
+                    continue
+                
+                # Check if current state differs from saved state
+                try:
+                    currentState = int(self._manager[name].get_state())
+                    if currentState != int(savedState):
+                        warnings.append(
+                            f'Flip mirror "{name}" not moved at startup: '
+                            f'current state={currentState}, saved state={savedState}.'
+                        )
+                except Exception as e:
+                    self.__logger.debug(f"Could not check flip mirror {name} state: {e}")
+            
+            if links:
+                warnings.append("Flip mirror links not restored in startup mode.")
+            
+        elif applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
+            # SETUP_MODE_APPLY: Full restoration (current behavior)
+            # Remove existing links first so physical states can be restored without
+            # follower propagation from the old link graph.
+            for follower in list(self._master_by_follower.keys()):
+                self.set_link(follower, None)
 
-        for name, mirrorState in mirrors.items():
-            if name not in self._names:
-                warnings.append(f'Flip mirror "{name}" is not available.')
-                continue
+            for name, mirrorState in mirrors.items():
+                if name not in self._names:
+                    warnings.append(f'Flip mirror "{name}" is not available.')
+                    continue
 
-            if not self._is_connected(name):
-                warnings.append(f'Flip mirror "{name}" is not connected.')
-                continue
+                if not self._is_connected(name):
+                    warnings.append(f'Flip mirror "{name}" is not connected.')
+                    continue
 
-            if isinstance(mirrorState, dict):
-                savedState = mirrorState.get("state")
-            else:
-                savedState = mirrorState
+                if isinstance(mirrorState, dict):
+                    savedState = mirrorState.get("state")
+                else:
+                    savedState = mirrorState
 
-            if savedState is None:
-                warnings.append(f'Flip mirror "{name}" has no saved state.')
-                continue
+                if savedState is None:
+                    warnings.append(f'Flip mirror "{name}" has no saved state.')
+                    continue
 
-            if not self._safe_move_one(name, int(savedState)):
-                warnings.append(f'Failed to move flip mirror "{name}" to state {savedState}.')
+                if not self._safe_move_one(name, int(savedState)):
+                    warnings.append(f'Failed to move flip mirror "{name}" to state {savedState}.')
 
-        for follower, master in links.items():
-            if follower not in self._names:
-                warnings.append(f'Flip mirror follower "{follower}" is not available.')
-                continue
-            if master not in self._names:
-                warnings.append(f'Flip mirror master "{master}" is not available.')
-                continue
-            if not self.set_link(follower, master):
-                warnings.append(f'Failed to restore flip mirror link {follower} -> {master}.')
+            for follower, master in links.items():
+                if follower not in self._names:
+                    warnings.append(f'Flip mirror follower "{follower}" is not available.')
+                    continue
+                if master not in self._names:
+                    warnings.append(f'Flip mirror master "{master}" is not available.')
+                    continue
+                if not self.set_link(follower, master):
+                    warnings.append(f'Failed to restore flip mirror link {follower} -> {master}.')
 
         self._refresh_link_ui()
         return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of a saved flip mirror state.
+        
+        Args:
+            state: Dict returned by getComponentState()
+        
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        state = state or {}
+        summaries = []
+        
+        mirrors = state.get("mirrors", {})
+        links = state.get("links", {})
+        
+        if mirrors:
+            summaries.append("  mirrors:")
+            for name, mirrorState in sorted(mirrors.items()):
+                if isinstance(mirrorState, dict):
+                    savedState = mirrorState.get("state")
+                    connected = mirrorState.get("connected", False)
+                else:
+                    savedState = mirrorState
+                    connected = True
+                
+                conn_str = "connected" if connected else "disconnected"
+                state_str = str(savedState) if savedState is not None else "N/A"
+                summaries.append(f"    {name}: state={state_str}, {conn_str}")
+        
+        if links:
+            summaries.append("  links:")
+            for follower, master in sorted(links.items()):
+                summaries.append(f"    {follower} → {master}")
+        
+        return summaries or ["  no flip mirror state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify potential hazards in a saved flip mirror state.
+        
+        Flip mirrors are beam-path activation; they do not have configurable
+        hazard thresholds. Returns empty list for both modes.
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: The mode in which the state would be applied
+            context: Optional consumer-provided context (unused for flip mirrors)
+        
+        Returns:
+            Empty list (no hazards reported for flip mirrors)
+        """
+        return []
 
     def _is_connected(self, name):
         try:
