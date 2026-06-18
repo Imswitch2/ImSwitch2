@@ -6,16 +6,15 @@ from urllib.parse import quote
 
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
-from imswitch.imcontrol.model.WidgetStatePersistence import _StateInterface
 
-from .basecontrollers import SetupModeMixin, ComponentStateApplyMode, StatefulComponentMixin
+from .basecontrollers import ComponentStateApplyMode, StatefulComponentMixin
 
 
 class SetupModeController:
     """Backend for saving and applying named imcontrol setup modes.
 
     A setup mode is a JSON file containing state snapshots from controllers
-    that implement SetupModeMixin. This controller intentionally does not know
+    that implement StatefulComponentMixin. This controller intentionally does not know
     details of lasers, scans, detectors, etc.; each component controller owns
     its own serialization and restore behavior.
     """
@@ -216,7 +215,7 @@ class SetupModeController:
         componentNames = self._orderedComponentNames(componentNames)
         warnings = []
         
-        # Use unified registry for apply (Phase 1: bridges legacy SetupModeMixin)
+        # Use unified registry for apply
         registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
@@ -230,20 +229,13 @@ class SetupModeController:
                 continue
 
             try:
-                # Try to apply via registry first (if registered)
-                # Use SETUP_MODE preference for setup-mode consumer (Phase 1 fix)
+                # Apply via unified registry
                 if registry is not None and registry.isRegistered(componentName):
                     componentWarnings = registry.applyComponentState(
                         componentName,
                         modeState[componentName],
-                        apply_mode=ComponentStateApplyMode.SETUP_MODE_APPLY,
-                        prefer=_StateInterface.SETUP_MODE
+                        apply_mode=ComponentStateApplyMode.SETUP_MODE_APPLY
                     )
-                # Fall back to direct call if not registered (e.g., in tests)
-                elif hasattr(controller, 'applySetupModeState'):
-                    componentWarnings = controller.applySetupModeState(modeState[componentName])
-                    if componentWarnings is None:
-                        componentWarnings = []
                 else:
                     componentWarnings = [f'{componentName} has no apply method']
             except Exception as e:
@@ -403,7 +395,7 @@ class SetupModeController:
         includedComponents = []
         state = {}
         
-        # Use unified registry for snapshot (Phase 1: bridges legacy SetupModeMixin)
+        # Use unified registry for snapshot
         registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
@@ -413,16 +405,9 @@ class SetupModeController:
                 continue
 
             try:
-                # Try to snapshot via registry first (if registered)
-                # Use SETUP_MODE preference for setup-mode consumer (Phase 1 fix)
+                # Snapshot via unified registry
                 if registry is not None and registry.isRegistered(componentName):
-                    componentState = registry.snapshotComponent(
-                        componentName,
-                        prefer=_StateInterface.SETUP_MODE
-                    )
-                # Fall back to direct call if not registered (e.g., in tests)
-                elif hasattr(controller, 'getSetupModeState'):
-                    componentState = controller.getSetupModeState()
+                    componentState = registry.snapshotComponent(componentName)
                 else:
                     componentState = None
                 

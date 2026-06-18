@@ -1,72 +1,42 @@
 """
-Unified Component State Persistence Registry (Phase 1)
+Unified Component State Persistence Registry (Phase 4a)
 
-Evolved from the legacy WidgetStatePersistence framework to provide a single
-registry for both global state persistence (startup/shutdown, file import/export)
-and setup modes (named hardware configurations). Supports:
+Provides a single registry for both global state persistence (startup/shutdown,
+file import/export) and setup modes (named hardware configurations). Supports:
 
 - Unified component state contract (StatefulComponentMixin with ComponentStateApplyMode)
-- Legacy compatibility bridges (getWidgetState/setWidgetState, SetupModeMixin)
 - Canonical component names with legacy alias resolution
 - Apply-mode safety enforcement (STARTUP_RESTORE vs SETUP_MODE_APPLY)
-- Summary/diff/hazard delegation hooks for Phase 3 UI integration
+- Summary/diff/hazard delegation hooks for UI integration
 
-This is the Phase 1 implementation: all existing APIs are preserved; no controllers
-have migrated to the new interface yet. FlipMirror and Scan still use SetupModeMixin;
-Laser/Settings/etc still use getWidgetState/setWidgetState. The registry bridges both.
+Phase 4a: All controllers have migrated to the unified interface. Legacy compatibility
+layers (getWidgetState/setWidgetState, SetupModeMixin) have been removed.
 """
 
 import json
 import os
 import traceback
-from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 from imswitch.imcommon.model import dirtools, initLogger
 
 
-class _StateInterface(Enum):
-    """Internal interface preference for dual-interface controller routing.
-    
-    Phase 1 regression fix: controllers that implement BOTH legacy widget interface
-    (getWidgetState/setWidgetState) AND setup-mode interface (via SetupModeMixin bridge)
-    need consumer-aware routing so widget persistence uses the widget interface and
-    setup-mode persistence uses the setup-mode interface.
-    
-    - WIDGET: Prefer widget interface (getWidgetState/setWidgetState) first
-    - SETUP_MODE: Prefer setup-mode interface (getSetupModeState/applySetupModeState) first
-    - UNIFIED: Prefer unified interface (getComponentState/applyComponentState), but only
-      for genuinely migrated controllers (not the SetupModeMixin bridge)
-    """
-    WIDGET = "widget"
-    SETUP_MODE = "setup_mode"
-    UNIFIED = "unified"
-
-
 class WidgetStatePersistence:
     """
-    Unified component state persistence registry (Phase 1).
+    Unified component state persistence registry (Phase 4a).
     
-    Bridges legacy interfaces (getWidgetState/setWidgetState, SetupModeMixin) and
-    the new unified interface (StatefulComponentMixin + ComponentStateApplyMode).
-    Resolves canonical component names from legacy aliases for backward compatibility.
+    All controllers implement StatefulComponentMixin with the unified interface:
+    getComponentState, applyComponentState, describeComponentState, getComponentStateHazards.
     
-    Legacy usage (preserved for existing controllers):
-        1. Implement getWidgetState() -> dict / setWidgetState(state: dict)
-           OR getSetupModeState() -> dict / applySetupModeState(state: dict) -> warnings
-        2. Call register(name, controller) to enable persistence
-        3. Legacy APIs: saveWidgetState, loadWidgetState, save_to_file, load_from_file
-    
-    New unified interface (Phase 2+ controllers):
+    Usage:
         1. Inherit StatefulComponentMixin, set componentName and legacyStateNames
-        2. Implement getComponentState, applyComponentState, describeComponentState, getComponentStateHazards
+        2. Implement the four required methods
         3. Call register(canonicalName, controller)
-        4. Unified registry handles apply-mode routing and alias resolution
+        4. Registry handles apply-mode enforcement and alias resolution
     
     Safety features:
         - Apply-mode enforcement (STARTUP_RESTORE vs SETUP_MODE_APPLY)
-        - Graceful legacy fallback (no controller breaks during Phase 1)
         - Alias resolution (old file keys -> canonical component names)
         - JSON-serializability assertions before save
     """
@@ -139,25 +109,21 @@ class WidgetStatePersistence:
         """
         Register a controller for state persistence (unified interface).
         
-        Phase 1 behavior: Accepts both canonical names and legacy aliases, resolves
-        to canonical name, and bridges legacy interfaces (getWidgetState/setWidgetState,
-        getSetupModeState/applySetupModeState) to the unified contract.
-        
-        The controller must implement ONE of:
-        - StatefulComponentMixin (new unified interface)
-        - getWidgetState() -> dict / setWidgetState(state: dict)
-        - getSetupModeState() -> dict / applySetupModeState(state: dict) -> warnings
+        The controller must implement StatefulComponentMixin with all four required methods:
+        getComponentState, applyComponentState, describeComponentState, getComponentStateHazards.
         
         Args:
             controller_name: Component name (canonical or legacy alias)
-            controller: The controller instance
+            controller: The controller instance implementing StatefulComponentMixin
+            
+        Raises:
+            ValueError: If controller does not implement the unified interface
         """
-        if not self._hasAnyStateMethods(controller):
-            self._logger.warning(
-                f'Controller {controller_name} does not implement any state persistence interface '
-                f'(getWidgetState, getSetupModeState, or StatefulComponentMixin), skipping registration'
+        if not self._hasStateMethods(controller):
+            raise ValueError(
+                f'Controller {controller_name} must implement StatefulComponentMixin '
+                f'(getComponentState and applyComponentState methods)'
             )
-            return
         
         # Resolve to canonical name via alias table
         canonical_name = self._resolveCanonicalName(controller_name)
@@ -182,24 +148,11 @@ class WidgetStatePersistence:
             del self._registrationKeys[canonical_name]
             self._logger.debug(f'Unregistered component: {canonical_name}')
     
-    def snapshotComponent(
-        self, 
-        component_name: str,
-        *,
-        prefer: _StateInterface = _StateInterface.UNIFIED
-    ) -> Optional[dict]:
-        """Snapshot a single component's state (unified interface with consumer-aware routing).
-        
-        Phase 1 fix: Dual-interface controllers (implementing BOTH widget and setup-mode
-        interfaces) need consumer-aware routing so widget persistence captures widget state
-        and setup-mode persistence captures setup-mode state.
+    def snapshotComponent(self, component_name: str) -> Optional[dict]:
+        """Snapshot a single component's state (unified interface).
         
         Args:
             component_name: Canonical or legacy component name
-            prefer: Interface preference for routing dual-interface controllers
-                - WIDGET: Prefer getWidgetState first (for widget persistence consumer)
-                - SETUP_MODE: Prefer getSetupModeState first (for setup-mode consumer)
-                - UNIFIED: Prefer getComponentState, but skip SetupModeMixin bridge
         
         Returns:
             Component state dict, or None if component not registered or snapshot fails
@@ -211,45 +164,7 @@ class WidgetStatePersistence:
             return None
         
         try:
-            state = None
-            
-            # Consumer-aware routing based on preference
-            if prefer == _StateInterface.WIDGET:
-                # Widget consumer: try widget interface first, then unified (if genuine), then setup-mode
-                if hasattr(controller, 'getWidgetState') and callable(controller.getWidgetState):
-                    state = controller.getWidgetState()
-                elif (hasattr(controller, 'getComponentState') and 
-                      callable(controller.getComponentState) and
-                      not self._isSetupModeMixinBridge(controller)):
-                    state = controller.getComponentState()
-                elif hasattr(controller, 'getSetupModeState') and callable(controller.getSetupModeState):
-                    state = controller.getSetupModeState()
-            
-            elif prefer == _StateInterface.SETUP_MODE:
-                # Setup-mode consumer: try setup-mode interface first, then unified (if genuine), then widget
-                if hasattr(controller, 'getSetupModeState') and callable(controller.getSetupModeState):
-                    state = controller.getSetupModeState()
-                elif (hasattr(controller, 'getComponentState') and 
-                      callable(controller.getComponentState) and
-                      not self._isSetupModeMixinBridge(controller)):
-                    state = controller.getComponentState()
-                elif hasattr(controller, 'getWidgetState') and callable(controller.getWidgetState):
-                    state = controller.getWidgetState()
-            
-            else:  # UNIFIED (default)
-                # Unified consumer: prefer genuine unified interface, fall back to legacy
-                if (hasattr(controller, 'getComponentState') and 
-                    callable(controller.getComponentState) and
-                    not self._isSetupModeMixinBridge(controller)):
-                    state = controller.getComponentState()
-                elif hasattr(controller, 'getWidgetState') and callable(controller.getWidgetState):
-                    state = controller.getWidgetState()
-                elif hasattr(controller, 'getSetupModeState') and callable(controller.getSetupModeState):
-                    state = controller.getSetupModeState()
-            
-            if state is None:
-                self._logger.error(f'Component {canonical_name} has no snapshot method')
-                return None
+            state = controller.getComponentState()
             
             # Assert JSON-serializable
             try:
@@ -272,25 +187,15 @@ class WidgetStatePersistence:
         self,
         component_name: str,
         state: dict,
-        apply_mode: Optional[Any] = None,
-        *,
-        prefer: _StateInterface = _StateInterface.UNIFIED
+        apply_mode: Optional[Any] = None
     ) -> List[str]:
-        """Apply state to a component (unified interface with consumer-aware routing).
-        
-        Phase 1 fix: Dual-interface controllers (implementing BOTH widget and setup-mode
-        interfaces) need consumer-aware routing so widget persistence invokes setWidgetState
-        and setup-mode persistence invokes applySetupModeState.
+        """Apply state to a component (unified interface).
         
         Args:
             component_name: Canonical or legacy component name
             state: Component state dict
             apply_mode: ComponentStateApplyMode enum value (STARTUP_RESTORE or SETUP_MODE_APPLY)
                 If None, defaults to STARTUP_RESTORE
-            prefer: Interface preference for routing dual-interface controllers
-                - WIDGET: Prefer setWidgetState first (for widget persistence consumer)
-                - SETUP_MODE: Prefer applySetupModeState first (for setup-mode consumer)
-                - UNIFIED: Prefer applyComponentState, but skip SetupModeMixin bridge
         
         Returns:
             List of warning strings (empty list = success)
@@ -306,48 +211,7 @@ class WidgetStatePersistence:
             apply_mode = ComponentStateApplyMode.STARTUP_RESTORE
         
         try:
-            warnings = None
-            
-            # Consumer-aware routing based on preference
-            if prefer == _StateInterface.WIDGET:
-                # Widget consumer: try widget interface first, then unified (if genuine), then setup-mode
-                if hasattr(controller, 'setWidgetState') and callable(controller.setWidgetState):
-                    controller.setWidgetState(state)
-                    warnings = []
-                elif (hasattr(controller, 'applyComponentState') and 
-                      callable(controller.applyComponentState) and
-                      not self._isSetupModeMixinBridge(controller)):
-                    warnings = controller.applyComponentState(state, applyMode=apply_mode)
-                elif hasattr(controller, 'applySetupModeState') and callable(controller.applySetupModeState):
-                    warnings = controller.applySetupModeState(state)
-            
-            elif prefer == _StateInterface.SETUP_MODE:
-                # Setup-mode consumer: try setup-mode interface first, then unified (if genuine), then widget
-                if hasattr(controller, 'applySetupModeState') and callable(controller.applySetupModeState):
-                    warnings = controller.applySetupModeState(state)
-                elif (hasattr(controller, 'applyComponentState') and 
-                      callable(controller.applyComponentState) and
-                      not self._isSetupModeMixinBridge(controller)):
-                    warnings = controller.applyComponentState(state, applyMode=apply_mode)
-                elif hasattr(controller, 'setWidgetState') and callable(controller.setWidgetState):
-                    controller.setWidgetState(state)
-                    warnings = []
-            
-            else:  # UNIFIED (default)
-                # Unified consumer: prefer genuine unified interface, fall back to legacy
-                if (hasattr(controller, 'applyComponentState') and 
-                    callable(controller.applyComponentState) and
-                    not self._isSetupModeMixinBridge(controller)):
-                    warnings = controller.applyComponentState(state, applyMode=apply_mode)
-                elif hasattr(controller, 'setWidgetState') and callable(controller.setWidgetState):
-                    controller.setWidgetState(state)
-                    warnings = []
-                elif hasattr(controller, 'applySetupModeState') and callable(controller.applySetupModeState):
-                    warnings = controller.applySetupModeState(state)
-            
-            if warnings is None:
-                return [f'Component {canonical_name} has no apply method']
-            
+            warnings = controller.applyComponentState(state, applyMode=apply_mode)
             return warnings if isinstance(warnings, list) else []
         
         except Exception as e:
@@ -377,8 +241,8 @@ class WidgetStatePersistence:
         controller = self._registry[canonical_name]
         
         try:
-            # Snapshot via unified interface with WIDGET preference (Phase 1 fix)
-            state = self.snapshotComponent(canonical_name, prefer=_StateInterface.WIDGET)
+            # Snapshot via unified interface
+            state = self.snapshotComponent(canonical_name)
             if state is None:
                 return False
             
@@ -460,8 +324,7 @@ class WidgetStatePersistence:
                 warnings = self.applyComponentState(
                     canonical_name,
                     state,
-                    apply_mode=ComponentStateApplyMode.STARTUP_RESTORE,
-                    prefer=_StateInterface.WIDGET
+                    apply_mode=ComponentStateApplyMode.STARTUP_RESTORE
                 )
                 if warnings:
                     self._logger.warning(
@@ -585,8 +448,8 @@ class WidgetStatePersistence:
         bundle: Dict[str, Any] = {}
         for canonical_name, controller in self._registry.items():
             try:
-                # Use WIDGET preference for legacy file export (Phase 1 fix)
-                state = self.snapshotComponent(canonical_name, prefer=_StateInterface.WIDGET)
+                # Export via unified interface
+                state = self.snapshotComponent(canonical_name)
                 if state is None:
                     continue
                 
@@ -628,12 +491,11 @@ class WidgetStatePersistence:
                 self._logger.debug(f'Skipping {name}: not registered (canonical: {canonical_name})')
                 continue
             try:
-                # Use WIDGET preference for legacy file import (Phase 1 fix)
+                # Import via unified interface
                 warnings = self.applyComponentState(
                     canonical_name,
                     entry.get('state', {}),
-                    apply_mode=ComponentStateApplyMode.STARTUP_RESTORE,
-                    prefer=_StateInterface.WIDGET
+                    apply_mode=ComponentStateApplyMode.STARTUP_RESTORE
                 )
                 if warnings:
                     self._logger.warning(f'Warnings while importing {name}: {warnings}')
@@ -717,57 +579,18 @@ class WidgetStatePersistence:
         """
         return self._ALIAS_TO_CANONICAL.get(name, name)
     
-    def _isSetupModeMixinBridge(self, controller: Any) -> bool:
-        """Detect if controller's getComponentState comes from SetupModeMixin bridge.
-        
-        A controller is only "genuinely unified" when it implements getComponentState
-        DIRECTLY (not merely inherited from SetupModeMixin bridge). This method checks
-        whether the controller's getComponentState resolves to the SetupModeMixin bridge
-        method, which means it should NOT be treated as a real unified implementation.
-        
-        Args:
-            controller: The controller instance to check
-        
-        Returns:
-            True if getComponentState comes from SetupModeMixin bridge, False otherwise
-        """
-        if not hasattr(controller, 'getComponentState'):
-            return False
-        
-        # Lazy-import to avoid circular dependency
-        try:
-            from imswitch.imcontrol.controller.basecontrollers import SetupModeMixin
-        except ImportError:
-            return False
-        
-        # Check if controller is a SetupModeMixin instance
-        if not isinstance(controller, SetupModeMixin):
-            return False
-        
-        # Check if the bound method resolves to SetupModeMixin.getComponentState
-        # If the controller overrides it, type(controller).getComponentState will be different
-        controller_method = type(controller).getComponentState
-        bridge_method = SetupModeMixin.getComponentState
-        
-        return controller_method is bridge_method
+    def _hasStateMethods(self, controller: Any) -> bool:
+        """Check if controller implements the unified state persistence interface."""
+        return (
+            hasattr(controller, 'getComponentState') and callable(getattr(controller, 'getComponentState'))
+            and hasattr(controller, 'applyComponentState') and callable(getattr(controller, 'applyComponentState'))
+        )
     
     def _getStatePath(self, controller_name: str, state_name: str) -> str:
         """Get the file path for a widget state (legacy path structure)."""
         controller_dir = os.path.join(self._stateDir, controller_name)
         os.makedirs(controller_dir, exist_ok=True)
         return os.path.join(controller_dir, f'{state_name}.json')
-    
-    def _hasAnyStateMethods(self, controller: Any) -> bool:
-        """Check if controller implements any state persistence interface."""
-        return (
-            (hasattr(controller, 'getComponentState') and callable(getattr(controller, 'getComponentState')))
-            or
-            (hasattr(controller, 'getWidgetState') and callable(getattr(controller, 'getWidgetState'))
-             and hasattr(controller, 'setWidgetState') and callable(getattr(controller, 'setWidgetState')))
-            or
-            (hasattr(controller, 'getSetupModeState') and callable(getattr(controller, 'getSetupModeState'))
-             and hasattr(controller, 'applySetupModeState') and callable(getattr(controller, 'applySetupModeState')))
-        )
     
     def _getSchemaVersion(self, controller: Any) -> int:
         """Get schema version from controller, default to 1."""
