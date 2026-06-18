@@ -2,11 +2,15 @@ from typing import Dict, Any
 
 from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from PyQt5.QtCore import QTimer 
 
-class RotatorController(ImConWidgetController):
+class RotatorController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to RotatorWidget."""
+
+    componentName = 'Rotator'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -32,8 +36,8 @@ class RotatorController(ImConWidgetController):
         for name, _ in self._master.rotatorsManager:
             self.updatePosition(name)
         
-        # Register for widget state persistence
-        getWidgetStatePersistence().register('RotatorController', self)
+        # Register for unified state persistence (canonical name)
+        getWidgetStatePersistence().register('Rotator', self)
  
     def closeEvent(self):
         pass
@@ -71,19 +75,17 @@ class RotatorController(ImConWidgetController):
     def setSyncInMovement(self, name, pos, rel_shift, enabled):
         self._master.rotatorsManager[name].set_sync_in_set(pos, rel_shift, enabled)
     
-    # Widget State Persistence Interface
+    # Unified State Persistence Interface (StatefulComponentMixin)
     
-    def getWidgetState(self) -> Dict[str, Any]:
-        """
-        Get current widget state for persistence.
+    def getComponentState(self) -> dict:
+        """Snapshot current rotator speed and step size settings.
         
         Returns speed and step size per rotator.
-        Does NOT include continuous rotation state or current position.
+        Does NOT include continuous rotation state or current position — those
+        are hardware state, not UI settings.
         
         Returns:
-            Dict with structure:
             {
-                'version': 1,
                 'rotators': {
                     name: {
                         'speed': int,
@@ -93,10 +95,7 @@ class RotatorController(ImConWidgetController):
                 }
             }
         """
-        state = {
-            'version': 1,
-            'rotators': {}
-        }
+        state = {'rotators': {}}
         
         for name, _ in self._master.rotatorsManager:
             state['rotators'][name] = {}
@@ -112,48 +111,97 @@ class RotatorController(ImConWidgetController):
         
         return state
     
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """
-        Restore widget state from persistence.
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode
+    ) -> list[str]:
+        """Restore rotator speed and step size settings from a snapshot.
         
-        SAFETY: Does NOT restore continuous rotation state or position. Only restores:
-        - Speed setting per rotator
-        - Step size per rotator
+        IDENTICAL behavior in both STARTUP_RESTORE and SETUP_MODE_APPLY:
+        - Restore speed setting per rotator
+        - Restore step size per rotator
+        
+        NEVER (in either mode):
+        - Rotate to a saved position
+        - Start continuous rotation
+        - Activate hardware
+        
+        Per spec Section 0 D2: settings only, never activation.
         
         Args:
-            state: Dict returned by getWidgetState()
-        """
-        try:
-            rotators_state = state.get('rotators', {})
-            known_rotators = {name for name, _ in self._master.rotatorsManager}
-            
-            for name, rotator_state in rotators_state.items():
-                if name not in known_rotators:
-                    self.__logger.debug(f'Skipping state for non-existent rotator: {name}')
-                    continue
-                
-                # Restore speed
-                if 'speed' in rotator_state:
-                    try:
-                        self._widget.setSpeed(name, rotator_state['speed'])
-                    except Exception as e:
-                        self.__logger.warning(f'Failed to restore speed for rotator {name}: {e}')
-                
-                # Restore step size
-                if 'step' in rotator_state:
-                    try:
-                        self._widget.setRelStepSize(name, str(rotator_state['step']))
-                    except Exception as e:
-                        self.__logger.warning(f'Failed to restore step size for rotator {name}: {e}')
-            
-            self.__logger.debug('Widget state restored successfully')
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (no behavioral difference)
         
-        except Exception as e:
-            self.__logger.error(f'Failed to restore widget state: {e}')
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
+        warnings = []
+        rotators_state = state.get('rotators', {})
+        known_rotators = {name for name, _ in self._master.rotatorsManager}
+        
+        for name, rotator_state in rotators_state.items():
+            if name not in known_rotators:
+                warnings.append(f'Rotator "{name}" not present in current setup; skipped.')
+                continue
+            
+            if 'speed' in rotator_state:
+                try:
+                    self._widget.setSpeed(name, rotator_state['speed'])
+                except Exception as e:
+                    warnings.append(f'Failed to restore speed for rotator "{name}": {e}')
+            
+            if 'step' in rotator_state:
+                try:
+                    self._widget.setRelStepSize(name, str(rotator_state['step']))
+                except Exception as e:
+                    warnings.append(f'Failed to restore step size for rotator "{name}": {e}')
+        
+        return warnings
     
-    def getStateSchemaVersion(self) -> int:
-        """Return schema version for state compatibility checking."""
-        return 1
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved rotator settings.
+        
+        Args:
+            state: Dict returned by getComponentState()
+        
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        rotators_state = state.get('rotators', {})
+        if not rotators_state:
+            return ['  no rotator settings saved']
+        
+        summaries = ['  settings:']
+        for name in sorted(rotators_state.keys()):
+            rotator_state = rotators_state[name]
+            speed = rotator_state.get('speed', 'N/A')
+            step = rotator_state.get('step', 'N/A')
+            summaries.append(f'    {name}: speed={speed}, step={step}°')
+        
+        return summaries
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify potential hazards in saved rotator state.
+        
+        Rotator speed and step settings have no hazards (they do not rotate).
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY
+            context: Optional consumer-provided context (unused)
+        
+        Returns:
+            Empty list (no hazards)
+        """
+        return []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

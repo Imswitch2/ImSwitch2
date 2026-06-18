@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 from threading import Lock
 
 from imswitch.imcommon.framework import Thread, Worker, Signal
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from ..display_transform import (
     DisplayTransform,
     apply_display_transform,
@@ -30,7 +30,12 @@ from imswitch.imcontrol.model.bead_recognition import (
     rescale_reconstruction_to_pixel_size,
 )
 
-class BeadRecController(ImConWidgetController):
+class BeadRecController(ImConWidgetController, StatefulComponentMixin):
+    
+    componentName = 'BeadRec'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.recIm = None
@@ -119,7 +124,7 @@ class BeadRecController(ImConWidgetController):
         self._commChannel.beadRecWorkflow.on_show_bead_rec_center_cross(self.showStateChanged)
         self._commChannel.beadRecWorkflow.on_auto_axial_toggled(self.onAutoAxialToggled)
         self._commChannel.beadRecWorkflow.on_new_axial_list_buffer(self.onNewAxialListBuffer)
-        getWidgetStatePersistence().register('BeadRecController', self)
+        getWidgetStatePersistence().register('BeadRec', self)
         
 
     def __del__(self) -> None:
@@ -764,8 +769,24 @@ class BeadRecController(ImConWidgetController):
         else:
             self._widget.removeCenterCoord()
 
-    def getWidgetState(self) -> dict[str, object]:
-        """Return passive BeadRec UI state for persistence."""
+    # Unified State Persistence Interface (StatefulComponentMixin)
+    
+    def getComponentState(self) -> dict:
+        """Snapshot current BeadRec analysis settings and UI state.
+        
+        Returns passive BeadRec UI state for persistence.
+        Does NOT include reconstruction buffers or ongoing acquisition state.
+        
+        Returns:
+            {
+                'analysis_parameters': dict,
+                'scale_enabled': bool,
+                'roi_visible': bool,
+                'orientation': {'rotation': int, 'flipH': bool, 'flipV': bool},
+                'last_dir': str | None,
+                'result_metadata': list
+            }
+        """
         return {
             "analysis_parameters": BeadAnalysisParameters.from_mapping(
                 self._widget.analysisPrm
@@ -779,18 +800,51 @@ class BeadRecController(ImConWidgetController):
                 record.metadata() for record in self.resultRecords
             ],
         }
-
-    def setWidgetState(self, state: dict[str, object]) -> None:
-        """Restore passive BeadRec UI state without starting reconstruction."""
+    
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode
+    ) -> list[str]:
+        """Restore BeadRec analysis settings and UI state from a snapshot.
+        
+        IDENTICAL behavior in both STARTUP_RESTORE and SETUP_MODE_APPLY:
+        - Restore analysis parameters
+        - Restore UI settings (scale, ROI visibility, orientation)
+        - Restore last directory if it exists
+        
+        NEVER (in either mode):
+        - Start reconstruction
+        - Start acquisition
+        - Activate hardware
+        
+        Per spec Section 0 D2: settings only, never activation.
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (no behavioral difference)
+        
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
+        warnings = []
+        
         try:
             analysisParameters = state.get("analysis_parameters")
             if isinstance(analysisParameters, dict):
                 self._widget.analysisPrm = BeadAnalysisParameters.from_mapping(
                     analysisParameters
                 ).as_dict()
-
+        except Exception as exc:
+            warnings.append(f"Failed to restore analysis parameters: {exc}")
+        
+        try:
             self._widget.scaleButton.setChecked(bool(state.get("scale_enabled", False)))
-
+        except Exception as exc:
+            warnings.append(f"Failed to restore scale setting: {exc}")
+        
+        try:
             orientation = state.get("orientation")
             if isinstance(orientation, dict):
                 self._widget.setOrientation(
@@ -799,24 +853,83 @@ class BeadRecController(ImConWidgetController):
                     orientation.get("flipV", False),
                 )
                 self._orientation = DisplayTransform(*self._toTransformArgs())
-
-            lastDir = state.get("last_dir")
-            if isinstance(lastDir, str) and os.path.isdir(lastDir):
+        except Exception as exc:
+            warnings.append(f"Failed to restore orientation: {exc}")
+        
+        lastDir = state.get("last_dir")
+        if isinstance(lastDir, str):
+            if os.path.isdir(lastDir):
                 self.lastDir = lastDir
-
+            else:
+                warnings.append(f'Last directory "{lastDir}" does not exist; skipped.')
+        
+        try:
             roiVisible = bool(state.get("roi_visible", False))
             signalsBlocked = self._widget.roiButton.blockSignals(True)
             self._widget.roiButton.setChecked(roiVisible)
             self._widget.roiButton.blockSignals(signalsBlocked)
             self.roiToggled(roiVisible)
-
-            self._widget.setStatusText("BeadRec passive state restored")
         except Exception as exc:
-            self._logger.warning("Failed to restore BeadRec widget state: %s", exc)
-
-    def getStateSchemaVersion(self) -> int:
-        """Return BeadRec widget-state schema version."""
-        return 1
+            warnings.append(f"Failed to restore ROI visibility: {exc}")
+        
+        return warnings
+    
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved BeadRec settings.
+        
+        Args:
+            state: Dict returned by getComponentState()
+        
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        summaries = []
+        
+        analysisParams = state.get("analysis_parameters", {})
+        if analysisParams:
+            summaries.append('  analysis parameters:')
+            for key, value in sorted(analysisParams.items()):
+                summaries.append(f'    {key}: {value}')
+        
+        scaleEnabled = state.get("scale_enabled", False)
+        summaries.append(f'  scale enabled: {scaleEnabled}')
+        
+        roiVisible = state.get("roi_visible", False)
+        summaries.append(f'  ROI visible: {roiVisible}')
+        
+        orientation = state.get("orientation", {})
+        if orientation:
+            rot = orientation.get("rotation", 0)
+            flipH = orientation.get("flipH", False)
+            flipV = orientation.get("flipV", False)
+            summaries.append(f'  orientation: rotation={rot}°, flipH={flipH}, flipV={flipV}')
+        
+        lastDir = state.get("last_dir")
+        if lastDir:
+            summaries.append(f'  last directory: {lastDir}')
+        
+        return summaries or ['  no BeadRec settings saved']
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify potential hazards in saved BeadRec state.
+        
+        BeadRec analysis settings have no hazards (they do not start acquisition).
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY
+            context: Optional consumer-provided context (unused)
+        
+        Returns:
+            Empty list (no hazards)
+        """
+        return []
         
 
             

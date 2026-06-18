@@ -104,9 +104,10 @@ def test_bead_rec_controller_uses_result_records_and_passive_state():
     assert 'BeadRecResultRecord(' in source
     assert 'self.resultRecords.insert(index, record)' in source
     assert 'record.image' in source
-    assert "getWidgetStatePersistence().register('BeadRecController', self)" in source
-    assert 'def getWidgetState(self) -> dict[str, object]:' in source
+    # Updated for Phase 2h: BeadRecController now uses unified state persistence
+    assert "getWidgetStatePersistence().register('BeadRec', self)" in source
+    assert 'def getComponentState(self) -> dict:' in source
     assert '"analysis_parameters": BeadAnalysisParameters.from_mapping(' in source
     assert '"result_metadata": [' in source
-    assert 'def setWidgetState(self, state: dict[str, object]) -> None:' in source
-    assert 'def getStateSchemaVersion(self) -> int:' in source
+    assert 'def applyComponentState(' in source
+    assert 'stateSchemaVersion' in source
