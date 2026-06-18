@@ -6,6 +6,51 @@
 
 ---
 
+## 0. Design decisions (2026-06-18 revision — OVERRIDES conflicting statements below)
+
+Two maintainer decisions supersede earlier text wherever they conflict. Phase 2
+tasks MUST follow this section over §2–§7 where they differ.
+
+### D1 — No setup-mode membership flag; every component is mode-eligible, each mode selects a subset
+
+There is NO `setupModeParticipant`/opt-in attribute. Every controller that
+implements `StatefulComponentMixin` and is registered in the unified registry is
+offered as a candidate component when saving a setup mode. The existing per-mode
+`includedComponents` list (already in the setup-mode data model and the
+Save-mode dialog's "Include in snapshot" checkboxes) determines which components
+a given mode snapshots and applies; all components NOT in that list are left
+untouched when the mode is applied.
+
+Consequences:
+- `SetupModeController` discovery changes from `isinstance(controller,
+  SetupModeMixin)` to "all components registered in the unified registry that
+  implement `StatefulComponentMixin`" (queried via the registry).
+- **Exception:** `GuiLayout` stays STARTUP_RESTORE-only and is NOT offered in
+  setup modes (it is a window-dock-layout adapter with no hardware semantics).
+- This removes the membership mechanism; any earlier "mode-eligible by
+  interface/marker" wording is superseded.
+
+### D2 — No backward compatibility with existing on-disk state/preset files
+
+The feature is new; existing files will be regenerated, not migrated. Therefore:
+- Migrated controllers REPLACE their legacy methods outright: delete
+  `getWidgetState`/`setWidgetState` (and `getSetupModeState`/
+  `applySetupModeState` for Scan/FlipMirror) and implement ONLY the four
+  `StatefulComponentMixin` methods.
+- Migrated controllers register under their CANONICAL name (e.g.
+  `register('Laser', self)`); legacy registration keys are dropped.
+- `applyComponentState` does NOT parse legacy payload shapes, and the registry
+  does NOT need legacy-alias file-path search. The alias table /
+  `legacyStateNames` may remain as harmless no-ops during the transition and be
+  removed in Phase 4.
+- The Phase 1 consumer-aware routing (WIDGET vs SETUP_MODE) is still required
+  DURING the transition window (some controllers migrated, others still exposing
+  dual legacy interfaces) and collapses once all controllers are migrated.
+- This supersedes the backward-compat requirements in §4.3, §6, and §7.1/§7.3
+  (those now apply only to the in-session transition, not to old files on disk).
+
+---
+
 ## 1. Component State Contract
 
 ### 1.1 ComponentStateApplyMode Enum
