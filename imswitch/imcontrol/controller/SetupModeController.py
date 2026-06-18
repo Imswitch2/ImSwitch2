@@ -268,29 +268,23 @@ class SetupModeController:
         return True
 
     def _getModeAwareControllers(self):
-        """Discover components registered in the unified registry that support setup modes.
-        
-        Returns controllers implementing StatefulComponentMixin (which includes both
-        newly migrated components and legacy SetupModeMixin shims), excluding GuiLayout
-        (which is STARTUP_RESTORE-only and has no hardware semantics).
+        """Discover the controllers that support setup modes.
+
+        Per spec D1: every StatefulComponentMixin component is mode-eligible
+        (each mode's includedComponents selects the subset it affects), except
+        GuiLayout (window-dock-layout adapter, STARTUP_RESTORE-only, no hardware
+        semantics). Discovery is over the controllers this SetupModeController
+        was given — not the persistence registry — so it does not depend on
+        registry state.
         """
         modeAwareControllers = {}
-        registry = getWidgetStatePersistence()
-        
-        # Get all registered component names from the unified registry
-        for componentName in registry.getRegisteredControllers():
+
+        for componentName, controller in self._controllers.items():
             if componentName == 'GuiLayout':
-                # GuiLayout is window-dock-layout adapter, not a mode-eligible component
                 continue
-            
-            controller = self._controllers.get(componentName)
-            if controller is None:
-                continue
-            
-            # Accept if controller implements StatefulComponentMixin (includes SetupModeMixin shims)
             if isinstance(controller, StatefulComponentMixin):
                 modeAwareControllers[componentName] = controller
-        
+
         return modeAwareControllers
 
     def _snapshotComponents(self, componentNames, modeAwareControllers):

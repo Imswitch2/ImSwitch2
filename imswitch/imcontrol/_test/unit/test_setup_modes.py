@@ -54,10 +54,14 @@ def load_setup_mode_module(monkeypatch):
         STARTUP_RESTORE = "startup_restore"
         SETUP_MODE_APPLY = "setup_mode_apply"
 
-    class SetupModeMixin:
+    class StatefulComponentMixin:
+        pass
+
+    class SetupModeMixin(StatefulComponentMixin):
         pass
 
     basecontrollers_module = types.ModuleType(f"{package_name}.basecontrollers")
+    basecontrollers_module.StatefulComponentMixin = StatefulComponentMixin
     basecontrollers_module.SetupModeMixin = SetupModeMixin
     basecontrollers_module.ComponentStateApplyMode = ComponentStateApplyMode
     monkeypatch.setitem(sys.modules, f"{package_name}.basecontrollers", basecontrollers_module)
