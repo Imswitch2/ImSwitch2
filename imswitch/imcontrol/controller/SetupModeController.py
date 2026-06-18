@@ -232,7 +232,7 @@ class SetupModeController:
             try:
                 # Try to apply via registry first (if registered)
                 # Use SETUP_MODE preference for setup-mode consumer (Phase 1 fix)
-                if registry.isRegistered(componentName):
+                if registry is not None and registry.isRegistered(componentName):
                     componentWarnings = registry.applyComponentState(
                         componentName,
                         modeState[componentName],
@@ -266,6 +266,117 @@ class SetupModeController:
 
         os.remove(path)
         return True
+
+    def describeModeComponent(self, componentName, state):
+        """Generate a human-readable summary of a component's saved state.
+
+        Delegates to the registry's describeComponentState method.
+
+        Args:
+            componentName: Name of the component (e.g., 'Laser', 'Settings').
+            state: Component state dict.
+
+        Returns:
+            list[str]: Human-readable summary lines.
+        """
+        registry = getWidgetStatePersistence()
+        if registry is None or not registry.isRegistered(componentName):
+            return []
+        
+        try:
+            return registry.describeComponentState(componentName, state)
+        except Exception as e:
+            self._logger.error(f'Failed to describe component state for "{componentName}": {e}')
+            self._logger.error(traceback.format_exc())
+            return [f"(error describing state: {e})"]
+
+    def getModeHazards(self, stateByComponent, applyMode, context=None):
+        """Identify potential hazards in a mode state before applying it.
+
+        Delegates to the registry's getComponentStateHazards method for each
+        component and aggregates the results.
+
+        Args:
+            stateByComponent: dict mapping component names to state dicts.
+            applyMode: ComponentStateApplyMode value.
+            context: Optional context dict (see spec §5.2).
+
+        Returns:
+            list[dict]: Aggregated hazard records (see spec §5.3).
+        """
+        registry = getWidgetStatePersistence()
+        hazards = []
+
+        for componentName, state in stateByComponent.items():
+            if registry is None or not registry.isRegistered(componentName):
+                continue
+
+            try:
+                componentHazards = registry.getComponentStateHazards(
+                    componentName,
+                    state,
+                    apply_mode=applyMode,
+                    context=context
+                )
+                # Tag each hazard with componentName if not already present
+                for hazard in componentHazards:
+                    if 'componentName' not in hazard:
+                        hazard['componentName'] = componentName
+                    hazards.append(hazard)
+            except Exception as e:
+                self._logger.error(f'Failed to get hazards for "{componentName}": {e}')
+                self._logger.error(traceback.format_exc())
+
+        return hazards
+
+    def diffModeComponents(self, oldStateByComponent, newStateByComponent):
+        """Compute per-component textual diffs between two mode states.
+
+        Args:
+            oldStateByComponent: dict mapping component names to old state dicts.
+            newStateByComponent: dict mapping component names to new state dicts.
+
+        Returns:
+            dict: {componentName: list[str]} where each list contains changed lines.
+        """
+        registry = getWidgetStatePersistence()
+        diffs = {}
+
+        allComponents = set(oldStateByComponent.keys()) | set(newStateByComponent.keys())
+
+        for componentName in allComponents:
+            oldState = oldStateByComponent.get(componentName)
+            newState = newStateByComponent.get(componentName)
+
+            if oldState == newState:
+                continue
+
+            if registry is None or not registry.isRegistered(componentName):
+                # Fallback for unregistered components
+                diffs[componentName] = ["(component not registered, cannot diff)"]
+                continue
+
+            try:
+                oldLines = set(registry.describeComponentState(componentName, oldState)) if oldState else set()
+                newLines = set(registry.describeComponentState(componentName, newState)) if newState else set()
+
+                removed = oldLines - newLines
+                added = newLines - oldLines
+
+                changes = []
+                for line in sorted(removed):
+                    changes.append(f"- {line}")
+                for line in sorted(added):
+                    changes.append(f"+ {line}")
+
+                if changes:
+                    diffs[componentName] = changes
+            except Exception as e:
+                self._logger.error(f'Failed to diff component "{componentName}": {e}')
+                self._logger.error(traceback.format_exc())
+                diffs[componentName] = [f"(error diffing: {e})"]
+
+        return diffs
 
     def _getModeAwareControllers(self):
         """Discover the controllers that support setup modes.
@@ -304,7 +415,7 @@ class SetupModeController:
             try:
                 # Try to snapshot via registry first (if registered)
                 # Use SETUP_MODE preference for setup-mode consumer (Phase 1 fix)
-                if registry.isRegistered(componentName):
+                if registry is not None and registry.isRegistered(componentName):
                     componentState = registry.snapshotComponent(
                         componentName,
                         prefer=_StateInterface.SETUP_MODE

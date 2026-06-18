@@ -362,9 +362,50 @@ class SetupModesController(ImConWidgetController):
         if not mode:
             return False
 
-        highPowerEntries = self._getHighPowerLaserEntries(mode)
+        # Obtain hazards via getModeHazards delegator
+        from ..basecontrollers import ComponentStateApplyMode
+        
+        thresholdMw = self._asFloat(
+            self._safetySettings.get(
+                "laserPowerThresholdMw",
+                self.defaultSafetySettings["laserPowerThresholdMw"]
+            )
+        )
+        if thresholdMw is None:
+            thresholdMw = self.defaultSafetySettings["laserPowerThresholdMw"]
+
+        context = {
+            "laserPowerThresholdMw": thresholdMw,
+            "suppressedWarnings": self._safetySettings.get("suppressedWarnings", []),
+            "applySource": source,
+        }
+
+        hazards = self._setupModeController.getModeHazards(
+            mode.get("state", {}),
+            ComponentStateApplyMode.SETUP_MODE_APPLY,
+            context
+        )
+
+        # Filter high-power laser hazards (preserve existing suppression logic)
+        highPowerHazards = [
+            h for h in hazards
+            if h.get("kind") == "high_laser_power"
+        ]
+
+        # Apply suppression filtering
+        suppressedWarnings = self._safetySettings.get("suppressedWarnings", [])
+        unsuppressedHazards = []
+        for hazard in highPowerHazards:
+            details = hazard.get("details", {})
+            componentName = hazard.get("componentName", "Laser")
+            laserName = details.get("laserName", "")
+            suppressionKey = f"{componentName}:{laserName}:high_power"
+            if suppressionKey not in suppressedWarnings:
+                unsuppressedHazards.append(hazard)
+
+        # Preserve existing high-power gate logic
         shouldWarnHighPower = (
-            highPowerEntries
+            unsuppressedHazards
             and self._safetySettings.get("warnAboveLaserPowerThreshold", True)
             and (
                 source != "shortcut"
@@ -373,7 +414,16 @@ class SetupModesController(ImConWidgetController):
         )
 
         if shouldWarnHighPower:
-            thresholdMw = self._laserPowerThresholdMw()
+            # Convert hazards to old highPowerEntries format for confirmHighPowerApply
+            highPowerEntries = []
+            for hazard in unsuppressedHazards:
+                details = hazard.get("details", {})
+                highPowerEntries.append({
+                    "laserName": details.get("laserName", ""),
+                    "value": details.get("value", 0),
+                    "units": details.get("units", "mW"),
+                })
+            
             if not self._widget.confirmHighPowerApply(modeName, highPowerEntries, thresholdMw):
                 return False
 
@@ -439,6 +489,7 @@ class SetupModesController(ImConWidgetController):
         return details
 
     def _summarizeSavedState(self, mode):
+        """Build per-component summary by delegating to describeModeComponent."""
         state = mode.get("state") or {}
         componentNames = mode.get("includedComponents") or sorted(state.keys())
         summaries = []
@@ -450,17 +501,17 @@ class SetupModesController(ImConWidgetController):
 
             if componentName not in state:
                 summaries.append("  not saved")
-            elif componentName == "Settings":
-                summaries.extend(self._summarizeSavedDetectorState(componentState))
-            elif componentName == "Laser":
-                summaries.extend(self._summarizeSavedLaserState(componentState))
-            elif componentName == "Scan":
-                summaries.extend(self._summarizeSavedScanState(componentState))
-            elif componentName in ("SLMs", "SLM"):
-                summaries.extend(self._summarizeSavedSLMState(componentState))
             else:
-                count = self._countSavedLeaves(componentState)
-                summaries.append(f"  {count} saved value(s)" if count else "  saved")
+                # Delegate to backend (registry's describeComponentState)
+                componentSummary = self._setupModeController.describeModeComponent(
+                    componentName, componentState
+                )
+                if componentSummary:
+                    # Indent each line
+                    for line in componentSummary:
+                        summaries.append(f"  {line}")
+                else:
+                    summaries.append("  (no description available)")
 
             summaries.append("")
 
@@ -468,351 +519,8 @@ class SetupModesController(ImConWidgetController):
             summaries.pop()
         return summaries
 
-    def _summarizeSavedDetectorState(self, state):
-        detectors = (state or {}).get("detectors") or {}
-        if not detectors:
-            return ["  no detector state"]
-
-        summaries = []
-        for detectorName, detectorState in sorted(detectors.items(), key=lambda item: str(item[0])):
-            roiMode = detectorState.get("roiMode", detectorState.get("frameMode"))
-            summaries.append(f"  {detectorName}:")
-            if roiMode is not None:
-                summaries.append(f"    mode: {self._fmt(roiMode)}")
-            if detectorState.get("roi") is not None:
-                summaries.append(f"    ROI: {self._fmt(detectorState.get('roi'))}")
-            if detectorState.get("binning") is not None:
-                summaries.append(f"    binning: {self._fmt(detectorState.get('binning'))}")
-
-            parameters = detectorState.get("parameters") or {}
-            triggerText = self._findSavedTriggerText(parameters)
-            if triggerText:
-                summaries.append(f"    {triggerText}")
-
-        return summaries
-
-    def _summarizeSavedLaserState(self, state):
-        state = state or {}
-        summaries = []
-
-        if state.get("currentPreset") is not None:
-            summaries.append(f"  preset: {self._fmt(state.get('currentPreset'))}")
-        if state.get("scanDefaultPreset") is not None:
-            summaries.append(f"  scan preset: {self._fmt(state.get('scanDefaultPreset'))}")
-
-        lasers = state.get("lasers") or {}
-        if lasers:
-            summaries.append("  states:")
-
-        for laserName, laserState in self._savedLaserItemsInDisplayOrder(lasers, state):
-            enabled = self._onOff(laserState.get("enabled"))
-            if laserState.get("isBinary"):
-                summaries.append(f"    {laserName}: {enabled}")
-            else:
-                units = laserState.get("valueUnits") or ""
-                unitText = f" {units}" if units else ""
-                summaries.append(
-                    f"    {laserName}: {enabled}, {self._fmt(laserState.get('value'))}{unitText}"
-                )
-
-        return summaries or ["  no laser state"]
-
-    def _savedLaserItemsInDisplayOrder(self, lasers, state):
-        names = []
-        savedOrder = state.get("laserOrder")
-        if isinstance(savedOrder, list):
-            names.extend(savedOrder)
-
-        names.extend(self._currentLaserDisplayOrder())
-        names.extend(lasers.keys())
-
-        orderedItems = []
-        seen = set()
-        for name in names:
-            if name in seen or name not in lasers:
-                continue
-            orderedItems.append((name, lasers[name]))
-            seen.add(name)
-
-        return orderedItems
-
-    def _currentLaserDisplayOrder(self):
-        setupModeController = getattr(self, "_setupModeController", None)
-        controllers = getattr(setupModeController, "_controllers", {}) or {}
-        laserController = controllers.get("Laser")
-        if laserController is None:
-            return []
-
-        lasersManager = getattr(getattr(laserController, "_master", None), "lasersManager", None)
-        if lasersManager is not None:
-            try:
-                return [laserName for laserName, _ in lasersManager]
-            except Exception:
-                pass
-
-        widget = getattr(laserController, "_widget", None)
-        laserModules = getattr(widget, "laserModules", None)
-        if isinstance(laserModules, dict):
-            return list(laserModules.keys())
-
-        return []
-
-    def _summarizeSavedSLMState(self, state):
-        slms = (state or {}).get("slms") or {}
-        if not slms:
-            return ["  no SLM state"]
-
-        summaries = []
-        for slmKey, slmState in sorted(slms.items(), key=lambda item: str(item[0])):
-            slmName = slmState.get("slmName") or slmKey
-            config = slmState.get("configName") or slmState.get("configPath") or "None"
-            summaries.append(f"  {slmName}: {self._fmt(config)}")
-
-        return summaries
-
-    def _summarizeSavedScanState(self, state):
-        if not isinstance(state, dict) or not state:
-            return ["  no scan state"]
-
-        analog = state.get("analogParameterDict") or {}
-        digital = state.get("digitalParameterDict") or {}
-        mode = state.get("mode") or {}
-        summaries = []
-
-        if state.get("controller"):
-            summaries.append(f"  controller: {self._fmt(state.get('controller'))}")
-        if state.get("scanWidgetType"):
-            summaries.append(f"  widget type: {self._fmt(state.get('scanWidgetType'))}")
-
-        modeLines = self._summarizeSavedScanMode(mode)
-        if modeLines:
-            summaries.append("  mode:")
-            summaries.extend(modeLines)
-
-        sequenceTime = analog.get("sequence_time", digital.get("sequence_time"))
-        if sequenceTime is not None:
-            summaries.append(f"  sequence time: {self._fmt(sequenceTime)}")
-
-        scanDimensions = state.get("positionersScan") or analog.get("scan_dim_target_device")
-        if scanDimensions:
-            summaries.append(f"  scan dimensions: {self._fmt(scanDimensions)}")
-
-        axisLines = self._summarizeSavedScanAxes(analog)
-        if axisLines:
-            summaries.append("  axes:")
-            summaries.extend(axisLines)
-
-        digitalOverviewLines = self._summarizeSavedScanDigitalOverview(digital)
-        if digitalOverviewLines:
-            summaries.append("  digital:")
-            summaries.extend(digitalOverviewLines)
-
-        ttlLines = self._summarizeSavedScanTTL(digital)
-        if ttlLines:
-            summaries.append("  TTL:")
-            summaries.extend(ttlLines)
-
-        analogExtraLines = self._summarizeSavedScanExtras(
-            analog,
-            {
-                "target_device", "axis_length", "axis_step_size",
-                "axis_centerpos", "axis_startpos", "scan_dim_target_device",
-                "sequence_time",
-            }
-        )
-        if analogExtraLines:
-            summaries.append("  analog extras:")
-            summaries.extend(analogExtraLines)
-
-        digitalExtraLines = self._summarizeSavedScanExtras(
-            digital,
-            {
-                "target_device", "TTL_start", "TTL_end", "TTL_sequence",
-                "TTL_sequence_axis", "sequence_time", "n_linesteps", "Nx", "Ny",
-                "advanced_mode", "linestep_enable", "pulse_starts_s",
-                "pulse_ends_s", "linestep_power_percent",
-            }
-        )
-        if digitalExtraLines:
-            summaries.append("  digital extras:")
-            summaries.extend(digitalExtraLines)
-
-        return summaries or ["  no scan state"]
-
-    def _summarizeSavedScanMode(self, mode):
-        if not isinstance(mode, dict):
-            return []
-
-        labels = {
-            "repeatEnabled": "repeat",
-            "scanMode": "scan mode",
-            "contLaserMode": "continuous laser mode",
-        }
-        summaries = []
-        for key in ("repeatEnabled", "scanMode", "contLaserMode"):
-            value = mode.get(key)
-            if value is not None:
-                summaries.append(f"    {labels[key]}: {self._fmt(value)}")
-        return summaries
-
-    def _summarizeSavedScanAxes(self, analog):
-        if not isinstance(analog, dict):
-            return []
-
-        devices = analog.get("target_device") or []
-        if not isinstance(devices, list):
-            devices = [devices]
-
-        axisKeys = [
-            ("length", "axis_length"),
-            ("step", "axis_step_size"),
-            ("center", "axis_centerpos"),
-            ("start", "axis_startpos"),
-        ]
-        maxAxisCount = max(
-            [len(devices)]
-            + [
-                len(analog.get(key) or [])
-                for _, key in axisKeys
-                if isinstance(analog.get(key), list)
-            ]
-        )
-
-        summaries = []
-        for index in range(maxAxisCount):
-            device = self._scanListValue(devices, index, f"axis {index + 1}")
-            parts = []
-            for label, key in axisKeys:
-                value = self._scanListValue(analog.get(key), index)
-                if value is not None:
-                    parts.append(f"{label} {self._fmt(value)}")
-
-            if parts:
-                summaries.append(f"    {device}: " + ", ".join(parts))
-
-        return summaries
-
-    def _summarizeSavedScanDigitalOverview(self, digital):
-        if not isinstance(digital, dict):
-            return []
-
-        labels = {
-            "Nx": "Nx",
-            "Ny": "Ny",
-            "n_linesteps": "line steps",
-            "advanced_mode": "advanced mode",
-        }
-        summaries = []
-        for key in ("Nx", "Ny", "n_linesteps", "advanced_mode"):
-            if key in digital:
-                summaries.append(f"    {labels[key]}: {self._fmt(digital.get(key))}")
-        return summaries
-
-    def _summarizeSavedScanTTL(self, digital):
-        if not isinstance(digital, dict):
-            return []
-
-        deviceNames = self._scanTTLDeviceNames(digital)
-        if not deviceNames:
-            return []
-
-        summaries = []
-        for index, deviceName in enumerate(deviceNames):
-            parts = []
-
-            ttlStart = self._scanListValue(digital.get("TTL_start"), index)
-            ttlEnd = self._scanListValue(digital.get("TTL_end"), index)
-            if ttlStart is not None:
-                parts.append(f"start {self._fmtMilliseconds(ttlStart)}")
-            if ttlEnd is not None:
-                parts.append(f"end {self._fmtMilliseconds(ttlEnd)}")
-
-            ttlSequence = self._scanListValue(digital.get("TTL_sequence"), index)
-            ttlAxis = self._scanListValue(digital.get("TTL_sequence_axis"), index)
-            if ttlSequence is not None:
-                parts.append(f"sequence {self._fmtShort(ttlSequence)}")
-            if ttlAxis is not None:
-                parts.append(f"axis {self._fmtShort(ttlAxis)}")
-
-            self._appendDictTTLPart(parts, digital.get("linestep_enable"), deviceName, "enabled")
-            self._appendDictTTLPart(
-                parts, digital.get("pulse_starts_s"), deviceName, "starts",
-                formatter=self._fmtMilliseconds
-            )
-            self._appendDictTTLPart(
-                parts, digital.get("pulse_ends_s"), deviceName, "ends",
-                formatter=self._fmtMilliseconds
-            )
-            self._appendDictTTLPart(
-                parts, digital.get("linestep_power_percent"), deviceName, "power"
-            )
-
-            summaries.append(f"    {deviceName}: " + (", ".join(parts) if parts else "saved"))
-
-        return summaries
-
-    def _scanTTLDeviceNames(self, digital):
-        names = []
-
-        targetDevices = digital.get("target_device") or []
-        if not isinstance(targetDevices, list):
-            targetDevices = [targetDevices]
-        names.extend([name for name in targetDevices if name is not None])
-
-        for key in ("linestep_enable", "pulse_starts_s", "pulse_ends_s", "linestep_power_percent"):
-            value = digital.get(key)
-            if isinstance(value, dict):
-                names.extend(value.keys())
-
-        uniqueNames = []
-        seen = set()
-        for name in names:
-            key = str(name)
-            if key in seen:
-                continue
-            uniqueNames.append(name)
-            seen.add(key)
-
-        return uniqueNames
-
-    def _appendDictTTLPart(self, parts, valuesByDevice, deviceName, label, formatter=None):
-        if not isinstance(valuesByDevice, dict) or deviceName not in valuesByDevice:
-            return
-        formatter = formatter or self._fmtShort
-        parts.append(f"{label} {formatter(valuesByDevice.get(deviceName))}")
-
-    def _summarizeSavedScanExtras(self, values, excludedKeys):
-        if not isinstance(values, dict):
-            return []
-
-        summaries = []
-        for key in sorted(set(values.keys()) - set(excludedKeys), key=str):
-            summaries.append(f"    {key}: {self._fmtShort(values.get(key))}")
-        return summaries
-
-    def _scanListValue(self, value, index, default=None):
-        if isinstance(value, list):
-            if 0 <= index < len(value):
-                return value[index]
-            return default
-        return value if value is not None else default
-
-    def _findSavedTriggerText(self, parameters):
-        for parameterName, parameterState in parameters.items():
-            if "trigger" not in parameterName.lower():
-                continue
-            value = parameterState.get("value") if isinstance(parameterState, dict) else parameterState
-            return f"{parameterName}: {self._fmt(value)}"
-        return None
-
-    def _countSavedLeaves(self, value):
-        if isinstance(value, dict):
-            return sum(self._countSavedLeaves(child) for child in value.values())
-        if isinstance(value, list):
-            return 1
-        return 1 if value is not None else 0
-
     def _buildUpdateSummaries(self, savedMode, snapshot):
+        """Build diff via diffModeComponents delegator."""
         savedState = savedMode.get("state") or {}
         currentState = snapshot.get("state") or {}
         componentNames = (
@@ -821,21 +529,22 @@ class SetupModesController(ImConWidgetController):
             or sorted(set(savedState.keys()) | set(currentState.keys()))
         )
 
+        # Delegate to backend (registry's describeComponentState for diff)
+        diffs = self._setupModeController.diffModeComponents(savedState, currentState)
+
         summaries = []
         for componentName in componentNames:
-            oldState = savedState.get(componentName)
-            newState = currentState.get(componentName)
             label = self._componentLabel(componentName)
 
             if componentName not in currentState:
                 summaries.append(f"{label}: unavailable in current setup")
                 continue
-            if oldState == newState:
-                continue
 
-            summaries.append(
-                f"{label}: {self._summarizeComponentChange(componentName, oldState, newState)}"
-            )
+            if componentName in diffs:
+                changes = diffs[componentName]
+                # Format the diff lines
+                changeText = "; ".join(changes)
+                summaries.append(f"{label}: {changeText}")
 
         return summaries
 
@@ -848,205 +557,6 @@ class SetupModesController(ImConWidgetController):
             "FlipMirror": "Flip mirror",
         }
         return labels.get(componentName, componentName)
-
-    def _summarizeComponentChange(self, componentName, oldState, newState):
-        if componentName == "Settings":
-            return self._summarizeDetectorChange(oldState, newState)
-        if componentName == "Laser":
-            return self._summarizeLaserChange(oldState, newState)
-        if componentName in ("SLMs", "SLM"):
-            return self._summarizeSLMChange(oldState, newState)
-
-        changes = self._collectScalarChanges(oldState, newState, maxChanges=3)
-        if changes:
-            return "; ".join(changes)
-
-        count = self._countChangedLeaves(oldState, newState)
-        return f"{count} value(s) changed" if count else "changed"
-
-    def _summarizeDetectorChange(self, oldState, newState):
-        oldDetectors = (oldState or {}).get("detectors") or {}
-        newDetectors = (newState or {}).get("detectors") or {}
-        changes = []
-
-        for detectorName in sorted(set(oldDetectors.keys()) | set(newDetectors.keys())):
-            oldDetector = oldDetectors.get(detectorName) or {}
-            newDetector = newDetectors.get(detectorName) or {}
-
-            oldMode = oldDetector.get("roiMode", oldDetector.get("frameMode"))
-            newMode = newDetector.get("roiMode", newDetector.get("frameMode"))
-            if oldMode != newMode:
-                changes.append(f"{detectorName} mode {self._fmt(oldMode)} => {self._fmt(newMode)}")
-
-            oldROI = oldDetector.get("roi")
-            newROI = newDetector.get("roi")
-            if oldROI != newROI and oldMode == newMode:
-                changes.append(f"{detectorName} ROI {self._fmt(oldROI)} => {self._fmt(newROI)}")
-
-            if oldDetector.get("binning") != newDetector.get("binning"):
-                changes.append(
-                    f"{detectorName} binning {self._fmt(oldDetector.get('binning'))} "
-                    f"=> {self._fmt(newDetector.get('binning'))}"
-                )
-
-            changes.extend(
-                self._summarizeParameterChanges(
-                    detectorName,
-                    oldDetector.get("parameters") or {},
-                    newDetector.get("parameters") or {},
-                    limit=max(0, 4 - len(changes)),
-                )
-            )
-            if len(changes) >= 4:
-                break
-
-        return "; ".join(changes[:4]) if changes else "changed"
-
-    def _summarizeLaserChange(self, oldState, newState):
-        oldState = oldState or {}
-        newState = newState or {}
-        changes = []
-
-        if oldState.get("currentPreset") != newState.get("currentPreset"):
-            changes.append(
-                f"preset {self._fmt(oldState.get('currentPreset'))} "
-                f"=> {self._fmt(newState.get('currentPreset'))}"
-            )
-        if oldState.get("scanDefaultPreset") != newState.get("scanDefaultPreset"):
-            changes.append(
-                f"scan preset {self._fmt(oldState.get('scanDefaultPreset'))} "
-                f"=> {self._fmt(newState.get('scanDefaultPreset'))}"
-            )
-
-        oldLasers = oldState.get("lasers") or {}
-        newLasers = newState.get("lasers") or {}
-        for laserName in sorted(set(oldLasers.keys()) | set(newLasers.keys())):
-            oldLaser = oldLasers.get(laserName) or {}
-            newLaser = newLasers.get(laserName) or {}
-            if oldLaser.get("enabled") != newLaser.get("enabled"):
-                changes.append(
-                    f"{laserName} {self._onOff(oldLaser.get('enabled'))} "
-                    f"=> {self._onOff(newLaser.get('enabled'))}"
-                )
-            elif oldLaser.get("value") != newLaser.get("value"):
-                units = newLaser.get("valueUnits") or oldLaser.get("valueUnits") or ""
-                changes.append(
-                    f"{laserName} {self._fmt(oldLaser.get('value'))}{units} "
-                    f"=> {self._fmt(newLaser.get('value'))}{units}"
-                )
-            if len(changes) >= 4:
-                break
-
-        return "; ".join(changes[:4]) if changes else "changed"
-
-    def _summarizeSLMChange(self, oldState, newState):
-        oldSlms = (oldState or {}).get("slms") or {}
-        newSlms = (newState or {}).get("slms") or {}
-        changes = []
-
-        for slmKey in sorted(set(oldSlms.keys()) | set(newSlms.keys())):
-            oldSlm = oldSlms.get(slmKey) or {}
-            newSlm = newSlms.get(slmKey) or {}
-            oldConfig = oldSlm.get("configName") or oldSlm.get("configPath")
-            newConfig = newSlm.get("configName") or newSlm.get("configPath")
-            if oldConfig != newConfig:
-                slmName = newSlm.get("slmName") or oldSlm.get("slmName") or slmKey
-                changes.append(f"{slmName} {self._fmt(oldConfig)} => {self._fmt(newConfig)}")
-            if len(changes) >= 4:
-                break
-
-        return "; ".join(changes[:4]) if changes else "changed"
-
-    def _summarizeParameterChanges(self, prefix, oldParameters, newParameters, limit):
-        if limit <= 0:
-            return []
-
-        changes = []
-        for parameterName in sorted(set(oldParameters.keys()) | set(newParameters.keys())):
-            oldParameter = oldParameters.get(parameterName)
-            newParameter = newParameters.get(parameterName)
-            oldValue = oldParameter.get("value") if isinstance(oldParameter, dict) else oldParameter
-            newValue = newParameter.get("value") if isinstance(newParameter, dict) else newParameter
-            if oldValue != newValue:
-                changes.append(
-                    f"{prefix} {parameterName} {self._fmt(oldValue)} => {self._fmt(newValue)}"
-                )
-                if len(changes) >= limit:
-                    break
-        return changes
-
-    def _collectScalarChanges(self, oldValue, newValue, prefix="", maxChanges=3):
-        if maxChanges <= 0 or oldValue == newValue:
-            return []
-
-        if isinstance(oldValue, dict) and isinstance(newValue, dict):
-            changes = []
-            for key in sorted(set(oldValue.keys()) | set(newValue.keys()), key=str):
-                childPrefix = f"{prefix}.{key}" if prefix else str(key)
-                changes.extend(
-                    self._collectScalarChanges(
-                        oldValue.get(key),
-                        newValue.get(key),
-                        childPrefix,
-                        maxChanges=maxChanges - len(changes),
-                    )
-                )
-                if len(changes) >= maxChanges:
-                    break
-            return changes
-
-        if isinstance(oldValue, list) and isinstance(newValue, list):
-            if oldValue == newValue:
-                return []
-            return [f"{prefix or 'value'} {self._fmt(oldValue)} => {self._fmt(newValue)}"]
-
-        return [f"{prefix or 'value'} {self._fmt(oldValue)} => {self._fmt(newValue)}"]
-
-    def _countChangedLeaves(self, oldValue, newValue):
-        if oldValue == newValue:
-            return 0
-        if isinstance(oldValue, dict) and isinstance(newValue, dict):
-            return sum(
-                self._countChangedLeaves(oldValue.get(key), newValue.get(key))
-                for key in set(oldValue.keys()) | set(newValue.keys())
-            )
-        if isinstance(oldValue, list) and isinstance(newValue, list):
-            return 0 if oldValue == newValue else 1
-        return 1
-
-    def _fmt(self, value):
-        if value is None:
-            return "None"
-        if isinstance(value, bool):
-            return self._onOff(value)
-        if isinstance(value, float):
-            return f"{value:.4g}"
-        if isinstance(value, (list, tuple)):
-            return "[" + ", ".join(self._fmt(item) for item in value) + "]"
-        return str(value)
-
-    def _fmtShort(self, value, maxLength=140):
-        text = self._fmt(value)
-        if len(text) <= maxLength:
-            return text
-        return text[:maxLength - 3] + "..."
-
-    def _fmtMilliseconds(self, value):
-        if isinstance(value, (list, tuple)):
-            return "[" + ", ".join(self._fmtMilliseconds(item) for item in value) + "]"
-
-        seconds = self._asFloat(value)
-        if seconds is None:
-            return self._fmtShort(value)
-
-        return f"{self._fmtDecimal(seconds * 1000)} ms"
-
-    def _fmtDecimal(self, value):
-        text = f"{value:.6f}".rstrip("0").rstrip(".")
-        return "0" if text in ("", "-0") else text
-
-    def _onOff(self, value):
-        return "ON" if bool(value) else "OFF"
 
     def _showWarnings(self, title, warnings):
         visibleWarnings = self._filterSuppressedWarnings(warnings)
@@ -1196,57 +706,6 @@ class SetupModesController(ImConWidgetController):
             index += 1
 
         return candidate
-
-    def _getHighPowerLaserEntries(self, mode):
-        laserState = ((mode.get("state") or {}).get("Laser") or {})
-        lasers = laserState.get("lasers") or {}
-        if not isinstance(lasers, dict):
-            return []
-
-        thresholdMw = self._laserPowerThresholdMw()
-        entries = []
-
-        for laserName, savedState in lasers.items():
-            if not isinstance(savedState, dict):
-                continue
-            if not savedState.get("enabled", False):
-                continue
-            if savedState.get("isBinary", False):
-                continue
-
-            value = self._asFloat(savedState.get("value"))
-            if value is None or value <= thresholdMw:
-                continue
-
-            units = savedState.get("valueUnits")
-            if not self._isMilliwattUnit(units):
-                continue
-
-            entries.append({
-                "laserName": laserName,
-                "value": value,
-                "units": units or "mW",
-            })
-
-        return entries
-
-    def _isMilliwattUnit(self, units):
-        if units is None or str(units).strip() == "":
-            return True
-
-        normalized = str(units).strip().lower()
-        return normalized in {"mw", "milliwatt", "milliwatts"}
-
-    def _laserPowerThresholdMw(self):
-        thresholdMw = self._asFloat(
-            self._safetySettings.get(
-                "laserPowerThresholdMw",
-                self.defaultSafetySettings["laserPowerThresholdMw"]
-            )
-        )
-        if thresholdMw is None:
-            return self.defaultSafetySettings["laserPowerThresholdMw"]
-        return thresholdMw
 
     def _asFloat(self, value):
         try:
