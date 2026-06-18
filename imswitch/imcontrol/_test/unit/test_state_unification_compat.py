@@ -111,6 +111,67 @@ class FakeNewUnifiedController(StatefulComponentMixin):
         return hazards
 
 
+class FakeDualInterfaceController(SetupModeMixin):
+    """
+    Fake controller implementing BOTH legacy widget interface AND setup-mode interface.
+    
+    Mirrors real Scan controllers (SuperScanController subclasses) that implement:
+    - getWidgetState/setWidgetState (widget-shaped payload)
+    - getSetupModeState/applySetupModeState via SetupModeMixin (setup-mode-shaped payload)
+    
+    Phase 1 regression test: the unified registry must route widget-persistence consumers
+    to the widget interface and setup-mode consumers to the setup-mode interface.
+    """
+    
+    def __init__(self):
+        # Widget state (distinct keys from setup-mode state)
+        self.widget_state_data = {
+            'version': 1,
+            'scan_mode': 'xy',
+            'repeat': False,
+            'scan_dims': [256, 256],
+            'analogParameterDict': {'laser': 100},
+            'digitalParameterDict': {'trigger': True}
+        }
+        self.last_widget_set_state = None
+        self.widget_set_count = 0
+        
+        # Setup-mode state (distinct keys from widget state)
+        self.setup_mode_state_data = {
+            'controller': 'ScanController',
+            'scanWidgetType': 'xy_scan',
+            'analogParameterDict': {'laser': 100},
+            'digitalParameterDict': {'trigger': True},
+            'positionersScan': {},
+            'mode': {
+                'repeatEnabled': False,
+                'scanMode': 'xy',
+                'contLaserMode': False
+            }
+        }
+        self.last_setup_mode_applied_state = None
+        self.setup_mode_apply_count = 0
+    
+    # Widget interface (should be used by widget persistence consumer)
+    def getWidgetState(self):
+        return dict(self.widget_state_data)
+    
+    def setWidgetState(self, state):
+        self.last_widget_set_state = state
+        self.widget_set_count += 1
+        self.widget_state_data = dict(state)
+    
+    # Setup-mode interface (should be used by setup-mode consumer)
+    def getSetupModeState(self):
+        return dict(self.setup_mode_state_data)
+    
+    def applySetupModeState(self, state):
+        self.last_setup_mode_applied_state = state
+        self.setup_mode_apply_count += 1
+        self.setup_mode_state_data = dict(state)
+        return []  # No warnings
+
+
 @pytest.fixture
 def temp_state_dir(monkeypatch, tmp_path):
     """Provide a temporary state directory for testing."""
@@ -477,6 +538,223 @@ class TestBackwardCompatibilityScenarios:
         loaded = clean_registry.loadWidgetState('GuiLayout', 'default', apply_immediately=True)
         assert loaded is not None
         assert controller.state_data == {'layout': 'docked', 'sizes': [100, 200]}
+
+
+class TestDualInterfaceRouting:
+    """
+    Test consumer-aware routing for dual-interface controllers (Phase 1 regression fix).
+    
+    Controllers implementing BOTH getWidgetState/setWidgetState AND setup-mode interface
+    (via SetupModeMixin bridge) must be routed correctly:
+    - Widget persistence consumer -> widget interface
+    - Setup-mode consumer -> setup-mode interface
+    """
+    
+    def test_widget_persistence_uses_widget_interface(self, clean_registry, temp_state_dir):
+        """Widget persistence (saveWidgetState/loadWidgetState) uses widget interface, not setup-mode."""
+        controller = FakeDualInterfaceController()
+        clean_registry.register('Scan', controller)
+        
+        # Save via widget persistence API
+        success = clean_registry.saveWidgetState('Scan', 'default')
+        assert success is True
+        
+        # Check on-disk payload has widget-shaped keys, not setup-mode keys
+        state_path = temp_state_dir / 'Scan' / 'default.json'
+        assert state_path.exists()
+        with open(state_path, 'r') as f:
+            saved = json.load(f)
+        
+        state_dict = saved['state']
+        # Widget keys should be present
+        assert 'version' in state_dict
+        assert 'scan_mode' in state_dict
+        assert 'repeat' in state_dict
+        assert 'scan_dims' in state_dict
+        # Setup-mode keys should NOT be present
+        assert 'controller' not in state_dict
+        assert 'scanWidgetType' not in state_dict
+        assert 'mode' not in state_dict
+        
+        # Load via widget persistence API
+        controller.widget_state_data = {'version': 99, 'scan_mode': 'z', 'repeat': True, 'scan_dims': [128, 128]}
+        loaded = clean_registry.loadWidgetState('Scan', 'default', apply_immediately=True)
+        assert loaded is not None
+        
+        # Assert setWidgetState was called, NOT applySetupModeState
+        assert controller.widget_set_count == 1
+        assert controller.setup_mode_apply_count == 0
+        assert controller.last_widget_set_state is not None
+        assert controller.last_setup_mode_applied_state is None
+        
+        # State should be restored via widget interface
+        assert controller.widget_state_data['version'] == 1
+        assert controller.widget_state_data['scan_mode'] == 'xy'
+    
+    def test_widget_persistence_all_uses_widget_interface(self, clean_registry, temp_state_dir):
+        """saveAllWidgetStates/loadAllWidgetStates uses widget interface for dual controllers."""
+        controller = FakeDualInterfaceController()
+        clean_registry.register('Scan', controller)
+        
+        # Save all widget states
+        count = clean_registry.saveAllWidgetStates('default')
+        assert count == 1
+        
+        # Check on-disk payload has widget-shaped keys
+        state_path = temp_state_dir / 'Scan' / 'default.json'
+        with open(state_path, 'r') as f:
+            saved = json.load(f)
+        assert 'scan_mode' in saved['state']
+        assert 'controller' not in saved['state']
+        
+        # Load all widget states
+        controller.widget_state_data = {'version': 99, 'scan_mode': 'z'}
+        count = clean_registry.loadAllWidgetStates('default')
+        assert count == 1
+        
+        # Assert widget interface was used
+        assert controller.widget_set_count == 1
+        assert controller.setup_mode_apply_count == 0
+    
+    def test_widget_persistence_file_export_uses_widget_interface(self, clean_registry, temp_state_dir):
+        """save_to_file/load_from_file uses widget interface for dual controllers."""
+        controller = FakeDualInterfaceController()
+        clean_registry.register('Scan', controller)
+        
+        # Ensure parent directory exists
+        temp_state_dir.mkdir(parents=True, exist_ok=True)
+        export_path = temp_state_dir / 'export.json'
+        
+        # Export to file
+        clean_registry.save_to_file(str(export_path))
+        
+        # Check file has widget-shaped keys
+        with open(export_path, 'r') as f:
+            bundle = json.load(f)
+        assert 'Scan' in bundle
+        assert 'scan_mode' in bundle['Scan']['state']
+        assert 'controller' not in bundle['Scan']['state']
+        
+        # Import from file
+        controller.widget_state_data = {'version': 99, 'scan_mode': 'z'}
+        count = clean_registry.load_from_file(str(export_path))
+        assert count == 1
+        
+        # Assert widget interface was used
+        assert controller.widget_set_count == 1
+        assert controller.setup_mode_apply_count == 0
+    
+    def test_setup_mode_uses_setup_mode_interface(self, clean_registry, temp_state_dir):
+        """SetupModeController uses setup-mode interface for dual controllers."""
+        from imswitch.imcontrol.controller.SetupModeController import SetupModeController
+        
+        controller = FakeDualInterfaceController()
+        clean_registry.register('Scan', controller)
+        
+        # Create SetupModeController
+        controllers = {'Scan': controller}
+        setup_mode_ctrl = SetupModeController(controllers)
+        
+        # Snapshot via setup-mode API
+        snapshot = setup_mode_ctrl.snapshotSetupModeState(componentNames=['Scan'])
+        
+        # Check setup-mode-shaped keys are present
+        scan_state = snapshot['state']['Scan']
+        assert 'controller' in scan_state
+        assert 'scanWidgetType' in scan_state
+        assert 'mode' in scan_state
+        # Widget keys should NOT be present
+        assert 'version' not in scan_state
+        assert 'scan_dims' not in scan_state
+        
+        # Save setup mode
+        result = setup_mode_ctrl.saveSetupMode('test_mode', componentNames=['Scan'])
+        assert result['mode']['name'] == 'test_mode'
+        assert 'Scan' in result['mode']['state']
+        
+        # Modify state
+        controller.setup_mode_state_data = {
+            'controller': 'Different',
+            'scanWidgetType': 'different',
+            'mode': {'scanMode': 'different'}
+        }
+        
+        # Load setup mode
+        warnings = setup_mode_ctrl.loadSetupMode('test_mode', componentNames=['Scan'])
+        assert len(warnings) == 0
+        
+        # Assert setup-mode interface was used, NOT widget interface
+        assert controller.setup_mode_apply_count == 1
+        assert controller.widget_set_count == 0
+        assert controller.last_setup_mode_applied_state is not None
+        assert controller.last_widget_set_state is None
+        
+        # State should be restored via setup-mode interface
+        assert controller.setup_mode_state_data['controller'] == 'ScanController'
+        assert controller.setup_mode_state_data['scanWidgetType'] == 'xy_scan'
+    
+    def test_old_widget_file_applies_via_widget_interface(self, clean_registry, temp_state_dir):
+        """Old widget-format file for dual controller applies via setWidgetState."""
+        controller = FakeDualInterfaceController()
+        clean_registry.register('Scan', controller)
+        
+        # Create an old widget-format file (pre-Phase 1)
+        old_state_path = temp_state_dir / 'Scan' / 'old_format.json'
+        old_state_path.parent.mkdir(parents=True, exist_ok=True)
+        old_state = {
+            '_metadata': {
+                'controller_name': 'ScanController',
+                'canonical_name': 'Scan',
+                'schema_version': 1
+            },
+            'state': {
+                'version': 2,
+                'scan_mode': 'xyz',
+                'repeat': True,
+                'scan_dims': [512, 512, 10],
+                'analogParameterDict': {'laser': 200},
+                'digitalParameterDict': {'trigger': False}
+            }
+        }
+        with open(old_state_path, 'w') as f:
+            json.dump(old_state, f)
+        
+        # Load old file
+        loaded = clean_registry.loadWidgetState('Scan', 'old_format', apply_immediately=True)
+        assert loaded is not None
+        
+        # Assert widget interface was used (widget keys consumed, no setup-mode mismatch)
+        assert controller.widget_set_count == 1
+        assert controller.setup_mode_apply_count == 0
+        assert controller.widget_state_data['version'] == 2
+        assert controller.widget_state_data['scan_mode'] == 'xyz'
+        assert controller.widget_state_data['repeat'] is True
+    
+    def test_genuinely_unified_controller_not_affected(self, clean_registry, temp_state_dir):
+        """Genuinely migrated controller (direct getComponentState) still uses unified interface."""
+        unified_controller = FakeNewUnifiedController()
+        clean_registry.register('TestUnified', unified_controller)
+        
+        # Widget persistence should use unified interface (no widget interface available)
+        success = clean_registry.saveWidgetState('TestUnified', 'default')
+        assert success is True
+        
+        state_path = temp_state_dir / 'TestUnified' / 'default.json'
+        with open(state_path, 'r') as f:
+            saved = json.load(f)
+        
+        # Should have unified controller's state shape
+        assert 'param' in saved['state']
+        assert 'hardware_active' in saved['state']
+        
+        # Load should apply via unified interface
+        unified_controller.state_data = {'param': 'different', 'hardware_active': False}
+        loaded = clean_registry.loadWidgetState('TestUnified', 'default', apply_immediately=True)
+        assert loaded is not None
+        
+        # Assert unified interface was used (applyComponentState called with correct mode)
+        assert unified_controller.last_applied_state is not None
+        assert unified_controller.last_apply_mode == ComponentStateApplyMode.STARTUP_RESTORE
 
 
 class TestJSONSerializability:

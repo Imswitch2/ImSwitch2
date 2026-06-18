@@ -6,6 +6,7 @@ from urllib.parse import quote
 
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.WidgetStatePersistence import _StateInterface
 
 from .basecontrollers import SetupModeMixin, ComponentStateApplyMode
 
@@ -230,21 +231,21 @@ class SetupModeController:
 
             try:
                 # Try to apply via registry first (if registered)
-                componentWarnings = registry.applyComponentState(
-                    componentName,
-                    modeState[componentName],
-                    apply_mode=ComponentStateApplyMode.SETUP_MODE_APPLY
-                )
-                
+                # Use SETUP_MODE preference for setup-mode consumer (Phase 1 fix)
+                if registry.isRegistered(componentName):
+                    componentWarnings = registry.applyComponentState(
+                        componentName,
+                        modeState[componentName],
+                        apply_mode=ComponentStateApplyMode.SETUP_MODE_APPLY,
+                        prefer=_StateInterface.SETUP_MODE
+                    )
                 # Fall back to direct call if not registered (e.g., in tests)
-                # Check if the only warning is "not registered"
-                if (componentWarnings and 
-                    len(componentWarnings) == 1 and 
-                    'not registered' in componentWarnings[0] and
-                    hasattr(controller, 'applySetupModeState')):
+                elif hasattr(controller, 'applySetupModeState'):
                     componentWarnings = controller.applySetupModeState(modeState[componentName])
                     if componentWarnings is None:
                         componentWarnings = []
+                else:
+                    componentWarnings = [f'{componentName} has no apply method']
             except Exception as e:
                 self._logger.error(f'Failed to apply setup mode component: {componentName}')
                 self._logger.error(traceback.format_exc())
@@ -291,11 +292,17 @@ class SetupModeController:
 
             try:
                 # Try to snapshot via registry first (if registered)
-                componentState = registry.snapshotComponent(componentName)
-                
+                # Use SETUP_MODE preference for setup-mode consumer (Phase 1 fix)
+                if registry.isRegistered(componentName):
+                    componentState = registry.snapshotComponent(
+                        componentName,
+                        prefer=_StateInterface.SETUP_MODE
+                    )
                 # Fall back to direct call if not registered (e.g., in tests)
-                if componentState is None and hasattr(controller, 'getSetupModeState'):
+                elif hasattr(controller, 'getSetupModeState'):
                     componentState = controller.getSetupModeState()
+                else:
+                    componentState = None
                 
                 if componentState is None:
                     warnings.append(f'Failed to snapshot "{componentName}"')
