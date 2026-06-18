@@ -8,7 +8,7 @@ from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.WidgetStatePersistence import _StateInterface
 
-from .basecontrollers import SetupModeMixin, ComponentStateApplyMode
+from .basecontrollers import SetupModeMixin, ComponentStateApplyMode, StatefulComponentMixin
 
 
 class SetupModeController:
@@ -268,10 +268,21 @@ class SetupModeController:
         return True
 
     def _getModeAwareControllers(self):
+        """Discover the controllers that support setup modes.
+
+        Per spec D1: every StatefulComponentMixin component is mode-eligible
+        (each mode's includedComponents selects the subset it affects), except
+        GuiLayout (window-dock-layout adapter, STARTUP_RESTORE-only, no hardware
+        semantics). Discovery is over the controllers this SetupModeController
+        was given — not the persistence registry — so it does not depend on
+        registry state.
+        """
         modeAwareControllers = {}
 
         for componentName, controller in self._controllers.items():
-            if isinstance(controller, SetupModeMixin):
+            if componentName == 'GuiLayout':
+                continue
+            if isinstance(controller, StatefulComponentMixin):
                 modeAwareControllers[componentName] = controller
 
         return modeAwareControllers
