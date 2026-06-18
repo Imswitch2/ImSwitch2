@@ -6,7 +6,7 @@ import numpy as np
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools as guitools
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 
 
 @dataclass
@@ -26,8 +26,13 @@ class SettingsControllerParams:
     allDetectorsFrame: Any
 
 
-class SettingsController(ImConWidgetController):
+class SettingsController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to SettingsWidget."""
+    
+    # StatefulComponentMixin attributes
+    componentName = 'Settings'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -93,8 +98,8 @@ class SettingsController(ImConWidgetController):
         self._widget.sigDetectorChanged.connect(self.detectorSwitchClicked)
         self._widget.sigNextDetectorClicked.connect(self.detectorNextClicked)
         
-        # Register for widget state persistence
-        getWidgetStatePersistence().register('SettingsController', self)
+        # Register for unified state persistence (canonical name)
+        getWidgetStatePersistence().register('Settings', self)
 
     def addROI(self):
         """ Adds the ROI to ImageWidget viewbox through the CommunicationChannel. """
@@ -654,30 +659,34 @@ class SettingsController(ImConWidgetController):
             import traceback
             traceback.print_exc()
 
-    # Widget State Persistence Interface
+    # Unified State Persistence Interface (StatefulComponentMixin)
     
-    def getWidgetState(self) -> Dict[str, Any]:
-        """
-        Get current detector settings state for persistence.
+    def getComponentState(self) -> dict:
+        """Snapshot current detector settings for both startup and setup modes.
         
-        Returns detector parameters like ROI, binning, frame mode, and detector-specific
-        parameters. Does NOT include acquisition state (running/stopped) for safety.
+        Returns detector ROI/binning/frame-mode/parameters for forAcquisition detectors only.
+        Does NOT include acquisition state (running/stopped) for safety.
         
-        Returns:
-            Dict with structure:
-            {
-                'detectors': {
-                    detectorName: {
-                        'binning': int,
-                        'frame_mode': str,
-                        'x0': int,
-                        'y0': int,
-                        'width': int,
-                        'height': int,
-                        'parameters': {paramName: value}
-                    }
+        Payload shape (canonical):
+        {
+            'detectors': {
+                detectorName: {
+                    'binning': int,
+                    'frame_mode': str,
+                    'x0': int,
+                    'y0': int,
+                    'width': int,
+                    'height': int,
+                    'parameters': {paramName: value}
                 }
             }
+        }
+        
+        This shape differs from the legacy SetupModesController summarizer
+        (which expected roiMode/roi tuple); describeComponentState adapts to this shape.
+        
+        Returns:
+            JSON-serializable dict per schema above
         """
         state = {'detectors': {}}
         
@@ -706,7 +715,6 @@ class SettingsController(ImConWidgetController):
                     if hasattr(detector, 'parameters'):
                         for paramName, parameter in detector.parameters.items():
                             try:
-                                # Get parameter value from widget tree
                                 paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
                                 detector_state['parameters'][paramName] = paramInWidget.value()
                             except Exception as e:
@@ -726,28 +734,33 @@ class SettingsController(ImConWidgetController):
         
         return state
     
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """
-        Restore detector settings state from persistence.
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore detector settings from a snapshot.
         
-        SAFETY: Does NOT start acquisition or enable lasers. Only restores:
-        - ROI settings (frame position and size)
-        - Binning
-        - Frame mode
-        - Detector-specific parameters (exposure, gain, etc.)
+        BEHAVIOR (IDENTICAL for both STARTUP_RESTORE and SETUP_MODE_APPLY):
+        - Restore ROI (x0, y0, width, height), binning, frame mode
+        - Restore detector-specific parameters (exposure, gain, etc.)
+        - NEVER start acquisition or live view in either mode
+        
+        Per spec §2.3, detector ROI/binning are allowed in both modes.
+        Acquisition control is not part of detector settings state.
         
         Args:
-            state: Dict returned by getWidgetState()
+            state: Dict returned by getComponentState()
+            applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
+        
+        Returns:
+            List of warning strings (empty if fully successful)
         """
+        warnings = []
+        
         try:
             detectors_state = state.get('detectors', {})
+            known_detectors = set(self._master.detectorsManager.getAllDeviceNames())
             
             for detectorName, detector_state in detectors_state.items():
-                # Check if detector exists
-                if detectorName not in self._master.detectorsManager.getAllDeviceNames():
-                    self._logger.debug(
-                        f'Skipping state for non-existent detector: {detectorName}'
-                    )
+                if detectorName not in known_detectors:
+                    warnings.append(f'Detector "{detectorName}" not present in current setup; skipped.')
                     continue
                 
                 detector = self._master.detectorsManager[detectorName]
@@ -756,6 +769,7 @@ class SettingsController(ImConWidgetController):
                 
                 params = self.allParams.get(detectorName)
                 if not params:
+                    warnings.append(f'Detector "{detectorName}" has no widget params; skipped.')
                     continue
                 
                 try:
@@ -764,39 +778,39 @@ class SettingsController(ImConWidgetController):
                         try:
                             params.binning.setValue(detector_state['binning'])
                         except Exception as e:
-                            self._logger.debug(f'Could not restore binning for {detectorName}: {e}')
+                            warnings.append(f'Could not restore binning for {detectorName}: {e}')
                     
                     # Restore frame mode
                     if 'frame_mode' in detector_state and detector_state['frame_mode'] is not None:
                         try:
                             params.frameMode.setValue(detector_state['frame_mode'])
                         except Exception as e:
-                            self._logger.debug(f'Could not restore frame mode for {detectorName}: {e}')
+                            warnings.append(f'Could not restore frame mode for {detectorName}: {e}')
                     
                     # Restore ROI settings
                     if 'x0' in detector_state and detector_state['x0'] is not None:
                         try:
                             params.x0.setValue(detector_state['x0'])
                         except Exception as e:
-                            self._logger.debug(f'Could not restore x0 for {detectorName}: {e}')
+                            warnings.append(f'Could not restore x0 for {detectorName}: {e}')
                     
                     if 'y0' in detector_state and detector_state['y0'] is not None:
                         try:
                             params.y0.setValue(detector_state['y0'])
                         except Exception as e:
-                            self._logger.debug(f'Could not restore y0 for {detectorName}: {e}')
+                            warnings.append(f'Could not restore y0 for {detectorName}: {e}')
                     
                     if 'width' in detector_state and detector_state['width'] is not None:
                         try:
                             params.width.setValue(detector_state['width'])
                         except Exception as e:
-                            self._logger.debug(f'Could not restore width for {detectorName}: {e}')
+                            warnings.append(f'Could not restore width for {detectorName}: {e}')
                     
                     if 'height' in detector_state and detector_state['height'] is not None:
                         try:
                             params.height.setValue(detector_state['height'])
                         except Exception as e:
-                            self._logger.debug(f'Could not restore height for {detectorName}: {e}')
+                            warnings.append(f'Could not restore height for {detectorName}: {e}')
                     
                     # Restore detector-specific parameters
                     parameters_state = detector_state.get('parameters', {})
@@ -807,23 +821,108 @@ class SettingsController(ImConWidgetController):
                                 paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
                                 paramInWidget.setValue(value)
                         except Exception as e:
-                            self._logger.debug(
+                            warnings.append(
                                 f'Could not restore parameter {paramName} for {detectorName}: {e}'
                             )
                     
                 except Exception as e:
-                    self._logger.warning(
-                        f'Failed to restore state for detector {detectorName}: {e}'
-                    )
-            
-            self._logger.info('Detector settings state restored successfully')
+                    warnings.append(f'Failed to restore state for detector {detectorName}: {e}')
             
         except Exception as e:
-            self._logger.error(f'Failed to restore detector settings state: {e}')
+            warnings.append(f'Failed to restore detector settings state: {e}')
+        
+        return warnings
     
-    def getStateSchemaVersion(self) -> int:
-        """Return schema version for state compatibility checking."""
-        return 1
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved detector settings.
+        
+        Lifted from SetupModesController._summarizeSavedDetectorState,
+        adapted to the canonical payload shape (x0/y0/width/height instead of roi tuple).
+        
+        Args:
+            state: Dict returned by getComponentState()
+        
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        detectors = (state or {}).get("detectors") or {}
+        if not detectors:
+            return ["  no detector state"]
+        
+        summaries = []
+        for detectorName, detectorState in sorted(detectors.items(), key=lambda item: str(item[0])):
+            frame_mode = detectorState.get("frame_mode")
+            summaries.append(f"  {detectorName}:")
+            if frame_mode is not None:
+                summaries.append(f"    mode: {self._fmt(frame_mode)}")
+            
+            # Reconstruct ROI from x0, y0, width, height
+            x0 = detectorState.get("x0")
+            y0 = detectorState.get("y0")
+            width = detectorState.get("width")
+            height = detectorState.get("height")
+            if all(v is not None for v in [x0, y0, width, height]):
+                roi = [x0, y0, width, height]
+                summaries.append(f"    ROI: {self._fmt(roi)}")
+            
+            if detectorState.get("binning") is not None:
+                summaries.append(f"    binning: {self._fmt(detectorState.get('binning'))}")
+            
+            parameters = detectorState.get("parameters") or {}
+            triggerText = self._findSavedTriggerText(parameters)
+            if triggerText:
+                summaries.append(f"    {triggerText}")
+        
+        return summaries
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify potential hazards in saved detector settings.
+        
+        Detector ROI/binning/parameters carry no activation hazard; they are
+        passive configuration. Returns empty list for both apply modes.
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: The mode in which the state would be applied
+            context: Optional consumer-provided context (unused here)
+        
+        Returns:
+            Empty list (no hazards)
+        """
+        return []
+    
+    # Helper methods (lifted from SetupModesController)
+    
+    def _findSavedTriggerText(self, parameters):
+        """Extract trigger parameter text from detector parameters dict."""
+        for parameterName, parameterState in parameters.items():
+            if "trigger" not in parameterName.lower():
+                continue
+            value = parameterState.get("value") if isinstance(parameterState, dict) else parameterState
+            return f"{parameterName}: {self._fmt(value)}"
+        return None
+    
+    def _fmt(self, value):
+        """Format a value for human-readable display."""
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return self._onOff(value)
+        if isinstance(value, float):
+            return f"{value:.4g}"
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._fmt(item) for item in value) + "]"
+        return str(value)
+    
+    def _onOff(self, value):
+        """Convert boolean to ON/OFF string."""
+        return "ON" if bool(value) else "OFF"
 
 
 _attrCategory = 'Detector'
