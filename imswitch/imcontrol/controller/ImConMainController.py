@@ -250,22 +250,75 @@ class ImConMainController(MainController):
 
 
 class _GuiLayoutStateAdapter:
-    """Persistence adapter for passive imcontrol dock layout state."""
+    """Persistence adapter for passive imcontrol dock layout state.
+    
+    GuiLayout is STARTUP_RESTORE-only and layout-only: applyComponentState
+    restores dock/splitter layout in both modes (layout is passive), and it is
+    excluded from setup modes by SetupModeController discovery.
+    """
+    
+    # Unified interface attributes
+    componentName = 'GuiLayout'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, view: Any) -> None:
         self._view = view
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        """Return the current GUI layout state."""
+    def getComponentState(self) -> Dict[str, Any]:
+        """Snapshot the current GUI layout state."""
         return self._view.getLayoutState()
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """Restore GUI layout state without triggering hardware actions."""
+    def applyComponentState(
+        self,
+        state: Dict[str, Any],
+        *,
+        applyMode: Any,
+    ) -> list:
+        """Restore GUI layout state without triggering hardware actions.
+        
+        GuiLayout is passive and applies in both modes (layout restoration
+        does not activate hardware).
+        
+        Args:
+            state: Layout state dict from getComponentState()
+            applyMode: ComponentStateApplyMode (ignored, layout is passive)
+        
+        Returns:
+            Empty list (no warnings, layout is passive)
+        """
         self._view.setLayoutState(state)
+        return []
 
-    def getStateSchemaVersion(self) -> int:
-        """Return the GUI layout persistence schema version."""
-        return 1
+    def describeComponentState(self, state: Dict[str, Any]) -> list[str]:
+        """Generate human-readable summary of saved GUI layout state.
+        
+        Args:
+            state: Layout state dict from getComponentState()
+        
+        Returns:
+            Simple summary line
+        """
+        return ["GUI layout: dock/splitter configuration saved"]
+
+    def getComponentStateHazards(
+        self,
+        state: Dict[str, Any],
+        *,
+        applyMode: Any,
+        context: Dict[str, Any] | None = None,
+    ) -> list[dict]:
+        """Identify hazards in GUI layout state (always none).
+        
+        Args:
+            state: Layout state dict from getComponentState()
+            applyMode: ComponentStateApplyMode (ignored)
+            context: Optional context (ignored)
+        
+        Returns:
+            Empty list (layout restoration has no hazards)
+        """
+        return []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

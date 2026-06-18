@@ -5,17 +5,27 @@ from pathlib import Path
 
 
 class DummySetupModeController:
+    """Mock controller implementing StatefulComponentMixin interface."""
+    
     def __init__(self, name, state, calls):
-        self.name = name
+        self.componentName = name
+        self.stateSchemaVersion = 1
+        self.legacyStateNames = ()
         self.state = state
         self.calls = calls
 
-    def getSetupModeState(self):
+    def getComponentState(self):
         return dict(self.state)
 
-    def applySetupModeState(self, state):
-        self.calls.append(self.name)
+    def applyComponentState(self, state, *, applyMode):
+        self.calls.append(self.componentName)
         self.state = dict(state)
+        return []
+    
+    def describeComponentState(self, state):
+        return [f"{self.componentName}: {state}"]
+    
+    def getComponentStateHazards(self, state, *, applyMode, context=None):
         return []
 
 
@@ -24,13 +34,20 @@ class UnsupportedController:
 
 
 class DummyWidgetStatePersistence:
-    """Mock registry for component state describe/hazard APIs."""
+    """Mock registry for component state snapshot/apply and describe/hazard APIs."""
     
     def __init__(self):
+        self._controllers = {}
         self._components = {}
     
+    def register(self, name, controller):
+        """Register a controller for state persistence."""
+        self._controllers[name] = controller
+        # Don't automatically add to _components - let tests explicitly register
+        # custom describe/hazard functions if needed
+    
     def register_component(self, name, describe_fn, hazard_fn):
-        """Register component handlers."""
+        """Register component handlers (legacy test helper)."""
         self._components[name] = {
             "describe": describe_fn,
             "hazard": hazard_fn,
@@ -38,19 +55,47 @@ class DummyWidgetStatePersistence:
     
     def isRegistered(self, component_name):
         """Check if component is registered."""
-        return component_name in self._components
+        return component_name in self._controllers or component_name in self._components
+    
+    def snapshotComponent(self, component_name):
+        """Snapshot a component's state."""
+        controller = self._controllers.get(component_name)
+        if controller is None:
+            return None
+        if hasattr(controller, 'getComponentState'):
+            return controller.getComponentState()
+        return None
+    
+    def applyComponentState(self, component_name, state, apply_mode):
+        """Apply state to a component."""
+        controller = self._controllers.get(component_name)
+        if controller is None:
+            return []
+        if hasattr(controller, 'applyComponentState'):
+            return controller.applyComponentState(state, applyMode=apply_mode)
+        return []
     
     def describeComponentState(self, component_name, state):
         """Delegate to component's describe function."""
-        if component_name not in self._components:
-            return [f"  {component_name}: no description available"]
-        return self._components[component_name]["describe"](state)
+        # Prefer custom component registration over controller registration
+        if component_name in self._components:
+            return self._components[component_name]["describe"](state)
+        # Fall back to controller method if available
+        controller = self._controllers.get(component_name)
+        if controller and hasattr(controller, 'describeComponentState'):
+            return controller.describeComponentState(state)
+        return [f"  {component_name}: no description available"]
     
     def getComponentStateHazards(self, component_name, state, apply_mode, context=None):
         """Delegate to component's hazard function."""
-        if component_name not in self._components:
-            return []
-        return self._components[component_name]["hazard"](state, apply_mode, context or {})
+        # Prefer custom component registration over controller registration
+        if component_name in self._components:
+            return self._components[component_name]["hazard"](state, apply_mode, context or {})
+        # Fall back to controller method if available
+        controller = self._controllers.get(component_name)
+        if controller and hasattr(controller, 'getComponentStateHazards'):
+            return controller.getComponentStateHazards(state, applyMode=apply_mode, context=context)
+        return []
 
 
 def make_controller(tmp_path, monkeypatch, controllers, state_registry=None):
@@ -67,10 +112,18 @@ def make_controller(tmp_path, monkeypatch, controllers, state_registry=None):
     dirtools = setup_mode_module.dirtools
     monkeypatch.setattr(dirtools.UserFileDirs, "Root", str(tmp_path))
     
-    # Set the registry instance if provided
-    if state_registry is not None:
-        model_module = setup_mode_module.model
-        model_module._RegistryRef.instance = state_registry
+    # Create a registry if not provided and register all controllers
+    if state_registry is None:
+        state_registry = DummyWidgetStatePersistence()
+    
+    # Register all controllers with the registry
+    for name, controller in controllers.items():
+        if hasattr(controller, 'getComponentState'):
+            state_registry.register(name, controller)
+    
+    # Set the registry instance
+    model_module = setup_mode_module.model
+    model_module._RegistryRef.instance = state_registry
     
     mode_controller = setup_mode_module.SetupModeController(controllers)
     return mode_controller
@@ -94,12 +147,8 @@ def load_setup_mode_module(monkeypatch):
     class StatefulComponentMixin:
         pass
 
-    class SetupModeMixin(StatefulComponentMixin):
-        pass
-
     basecontrollers_module = types.ModuleType(f"{package_name}.basecontrollers")
     basecontrollers_module.StatefulComponentMixin = StatefulComponentMixin
-    basecontrollers_module.SetupModeMixin = SetupModeMixin
     basecontrollers_module.ComponentStateApplyMode = ComponentStateApplyMode
     monkeypatch.setitem(sys.modules, f"{package_name}.basecontrollers", basecontrollers_module)
 
@@ -118,11 +167,6 @@ def load_setup_mode_module(monkeypatch):
     model_module._RegistryRef = _RegistryRef
     monkeypatch.setitem(sys.modules, "imswitch.imcontrol.model", model_module)
 
-    # Create a stub for WidgetStatePersistence._StateInterface
-    state_interface_module = types.ModuleType("imswitch.imcontrol.model.WidgetStatePersistence")
-    state_interface_module._StateInterface = object  # Minimal stub
-    monkeypatch.setitem(sys.modules, "imswitch.imcontrol.model.WidgetStatePersistence", state_interface_module)
-
     spec = importlib.util.spec_from_file_location(
         f"{package_name}.SetupModeController",
         controller_dir / "SetupModeController.py"
@@ -132,7 +176,7 @@ def load_setup_mode_module(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, setup_mode_module)
     spec.loader.exec_module(setup_mode_module)
 
-    return setup_mode_module, SetupModeMixin
+    return setup_mode_module, StatefulComponentMixin
 
 
 def test_setup_mode_roundtrip(tmp_path, monkeypatch):

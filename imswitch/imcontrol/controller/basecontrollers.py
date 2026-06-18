@@ -152,57 +152,6 @@ class StatefulComponentMixin:
         raise NotImplementedError
 
 
-class SetupModeMixin(StatefulComponentMixin):
-    """DEPRECATED: Legacy mixin for setup-mode state.
-    
-    Kept as a thin compatibility shim for FlipMirror and SuperScanController
-    until Phase 2 migration. New controllers should implement
-    StatefulComponentMixin directly.
-    
-    The setup-mode backend discovers controllers implementing this mixin and
-    delegates component-specific serialization to them. Returned state must be
-    JSON-serializable. Applying state should return warning strings for
-    recoverable mismatches, such as unavailable devices, instead of raising.
-    """
-
-    def getSetupModeState(self):
-        raise NotImplementedError
-
-    def applySetupModeState(self, state):
-        raise NotImplementedError
-    
-    # Bridge legacy methods to new interface (overridden by registry fallback)
-    def getComponentState(self) -> dict:
-        """Bridge to legacy getSetupModeState for compatibility."""
-        return self.getSetupModeState()
-    
-    def applyComponentState(
-        self,
-        state: dict,
-        *,
-        applyMode: ComponentStateApplyMode,
-    ) -> list[str]:
-        """Bridge to legacy applySetupModeState for compatibility."""
-        result = self.applySetupModeState(state)
-        if isinstance(result, list):
-            return result
-        return []
-    
-    def describeComponentState(self, state: dict) -> list[str]:
-        """Stub for legacy controllers - registry will handle summarization."""
-        return [f"Component state (legacy): {len(state)} keys"]
-    
-    def getComponentStateHazards(
-        self,
-        state: dict,
-        *,
-        applyMode: ComponentStateApplyMode,
-        context: dict | None = None,
-    ) -> list[dict]:
-        """Stub for legacy controllers - no hazard detection yet."""
-        return []
-
-
 class LiveUpdatedController(ImConWidgetController):
     """ Superclass for those controllers that will update the widgets with an
     upcoming frame from the camera.  Should be either active or not, and have
