@@ -21,7 +21,7 @@ class ScanControllerPointScan(SuperScanController):
         self.updateScanStageAttrs()
         self.updateScanTTLAttrs()
 
-        getWidgetStatePersistence().register('ScanControllerPointScan', self)
+        getWidgetStatePersistence().register('Scan', self)
 
     def setParameters(self):
         self.settingParameters = True
@@ -217,27 +217,7 @@ class ScanControllerPointScan(SuperScanController):
     # Widget State Persistence Interface
     # ------------------------------------------------------------------
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        self.getParameters()
-        return {
-            'version': 1,
-            'analogParameterDict': dict(self._analogParameterDict),
-            'digitalParameterDict': dict(self._digitalParameterDict),
-        }
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        try:
-            if 'analogParameterDict' in state:
-                self._analogParameterDict.update(state['analogParameterDict'])
-            if 'digitalParameterDict' in state:
-                self._digitalParameterDict.update(state['digitalParameterDict'])
-            self.setParameters()
-            self._logger.info('Point scan state restored successfully')
-        except Exception as e:
-            self._logger.error(f'Failed to restore point scan state: {e}')
-
-    def getStateSchemaVersion(self) -> int:
-        return 1
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

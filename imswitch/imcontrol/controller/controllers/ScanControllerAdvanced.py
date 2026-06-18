@@ -80,7 +80,7 @@ class ScanControllerAdvanced(SuperScanController):
             self._logger.debug("[ScanControllerAdvanced] initial plotSignalGraph failed:\n%s", traceback.format_exc())
 
         # Register for widget state persistence
-        getWidgetStatePersistence().register('ScanControllerAdvanced', self)
+        getWidgetStatePersistence().register('Scan', self)
 
     # ---------------------------------------------------------------------
     # Internal helpers: designer instances (no ScanManager in this branch)
@@ -1122,25 +1122,6 @@ class ScanControllerAdvanced(SuperScanController):
     # ------------------------------------------------------------------
     # Widget State Persistence Interface
     # ------------------------------------------------------------------
-
-    def getWidgetState(self) -> Dict[str, Any]:
-        self.getParameters()
-        return {
-            'version': 1,
-            'analogParameterDict': dict(self._analogParameterDict),
-            'digitalParameterDict': dict(self._digitalParameterDict),
-        }
-
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        try:
-            if 'analogParameterDict' in state:
-                self._analogParameterDict.update(state['analogParameterDict'])
-            if 'digitalParameterDict' in state:
-                self._digitalParameterDict = dict(state['digitalParameterDict'])
-            self.setParameters()
-            self._logger.info('Advanced scan state restored successfully')
-        except Exception as e:
-            self._logger.error(f'Failed to restore advanced scan state: {e}')
 
     def getStateSchemaVersion(self) -> int:
         return 1

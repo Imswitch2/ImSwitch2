@@ -52,7 +52,7 @@ class ScanControllerMoNaLISA(SuperScanController):
 
         self._commChannel.beadRecWorkflow.on_center_coord_pipeline_finished(self.centerCoordPipelineFinished)
 
-        getWidgetStatePersistence().register('ScanControllerMoNaLISA', self)
+        getWidgetStatePersistence().register('Scan', self)
 
     def getDimsScan(self):
         # TODO: Make sure this works as intended
@@ -440,39 +440,7 @@ class ScanControllerMoNaLISA(SuperScanController):
     # Widget State Persistence Interface
     # ------------------------------------------------------------------
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        self.getParameters()
-        state: Dict[str, Any] = {
-            'version': 1,
-            'analogParameterDict': dict(self._analogParameterDict),
-            'digitalParameterDict': dict(self._digitalParameterDict),
-        }
-        try:
-            state['scan_mode'] = self._widget.isScanMode()
-        except Exception:
-            pass
-        return state
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        try:
-            if 'analogParameterDict' in state:
-                self._analogParameterDict.update(state['analogParameterDict'])
-            if 'digitalParameterDict' in state:
-                self._digitalParameterDict.update(state['digitalParameterDict'])
-            self.setParameters()
-            if state.get('scan_mode', True):
-                try:
-                    self._widget.setScanMode()
-                except Exception:
-                    pass
-            else:
-                try:
-                    self._widget.setContLaserMode()
-                except Exception:
-                    pass
-            self._logger.info('MoNaLISA scan state restored successfully')
-        except Exception as e:
-            self._logger.error(f'Failed to restore MoNaLISA scan state: {e}')
 
     def getStateSchemaVersion(self) -> int:
         return 1

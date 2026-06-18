@@ -253,7 +253,11 @@ class ScanLifecycleMixin:
             self._commChannel.clearActiveScanSource(self)
 
 
-class SuperScanController(SetupModeMixin, ScanLifecycleMixin, ImConWidgetController):
+class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
+    componentName = 'Scan'
+    stateSchemaVersion = 1
+    legacyStateNames = ('ScanController', 'ScanControllerAdvanced', 'ScanControllerMoNaLISA', 'ScanControllerPointScan')
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Make non-overwritable functions
@@ -488,8 +492,8 @@ class SuperScanController(SetupModeMixin, ScanLifecycleMixin, ImConWidgetControl
         self.getParameters()
         self._commChannel.sigSendScanParameters.emit(self._analogParameterDict, self._digitalParameterDict, self._positionersScan)
 
-    def getSetupModeState(self):
-        """Return the current scan parameter dictionaries for setup modes."""
+    def getComponentState(self) -> dict:
+        """Snapshot the current scan parameter dictionaries for component state persistence."""
         self.getParameters()
 
         mode = {
@@ -514,8 +518,20 @@ class SuperScanController(SetupModeMixin, ScanLifecycleMixin, ImConWidgetControl
             'mode': mode,
         }
 
-    def applySetupModeState(self, state):
-        """Apply scan parameter dictionaries from a setup mode."""
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Apply scan parameter dictionaries from component state.
+        
+        CRITICAL SAFETY INVARIANT: This method MUST NEVER start a scan in either mode.
+        It only restores scan parameters (analogParameterDict, digitalParameterDict, mode flags).
+        Starting a scan requires explicit user action (runScan/runScanAdvanced).
+        
+        Args:
+            state: Component state dict from getComponentState().
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (behavior is identical for scan params).
+        
+        Returns:
+            List of warning strings for recoverable issues.
+        """
         warnings = []
 
         if self.isRunning:
@@ -603,17 +619,316 @@ class SuperScanController(SetupModeMixin, ScanLifecycleMixin, ImConWidgetControl
                 self.updateScanStageAttrs()
                 self.updateScanTTLAttrs()
             except Exception:
-                self._logger.error('Failed to update shared scan attributes after setup-mode apply')
+                self._logger.error('Failed to update shared scan attributes after component state apply')
                 self._logger.error(traceback.format_exc())
                 warnings.append(
                     'Scan parameters were applied, but shared scan attributes could not be updated.'
                 )
         except Exception as e:
-            self._logger.error('Failed to apply setup-mode scan state')
+            self._logger.error('Failed to apply scan component state')
             self._logger.error(traceback.format_exc())
             warnings.append(f'Failed to apply scan state: {e}')
 
         return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved scan state.
+        
+        Lifted from SetupModesController._summarizeSavedScanState and helpers.
+        """
+        if not isinstance(state, dict) or not state:
+            return ["  no scan state"]
+
+        analog = state.get("analogParameterDict") or {}
+        digital = state.get("digitalParameterDict") or {}
+        mode = state.get("mode") or {}
+        summaries = []
+
+        if state.get("controller"):
+            summaries.append(f"  controller: {self._fmt(state.get('controller'))}")
+        if state.get("scanWidgetType"):
+            summaries.append(f"  widget type: {self._fmt(state.get('scanWidgetType'))}")
+
+        modeLines = self._summarizeSavedScanMode(mode)
+        if modeLines:
+            summaries.append("  mode:")
+            summaries.extend(modeLines)
+
+        sequenceTime = analog.get("sequence_time", digital.get("sequence_time"))
+        if sequenceTime is not None:
+            summaries.append(f"  sequence time: {self._fmt(sequenceTime)}")
+
+        scanDimensions = state.get("positionersScan") or analog.get("scan_dim_target_device")
+        if scanDimensions:
+            summaries.append(f"  scan dimensions: {self._fmt(scanDimensions)}")
+
+        axisLines = self._summarizeSavedScanAxes(analog)
+        if axisLines:
+            summaries.append("  axes:")
+            summaries.extend(axisLines)
+
+        digitalOverviewLines = self._summarizeSavedScanDigitalOverview(digital)
+        if digitalOverviewLines:
+            summaries.append("  digital:")
+            summaries.extend(digitalOverviewLines)
+
+        ttlLines = self._summarizeSavedScanTTL(digital)
+        if ttlLines:
+            summaries.append("  TTL:")
+            summaries.extend(ttlLines)
+
+        analogExtraLines = self._summarizeSavedScanExtras(
+            analog,
+            {
+                "target_device", "axis_length", "axis_step_size",
+                "axis_centerpos", "axis_startpos", "scan_dim_target_device",
+                "sequence_time",
+            }
+        )
+        if analogExtraLines:
+            summaries.append("  analog extras:")
+            summaries.extend(analogExtraLines)
+
+        digitalExtraLines = self._summarizeSavedScanExtras(
+            digital,
+            {
+                "target_device", "TTL_start", "TTL_end", "TTL_sequence",
+                "TTL_sequence_axis", "sequence_time", "n_linesteps", "Nx", "Ny",
+                "advanced_mode", "linestep_enable", "pulse_starts_s",
+                "pulse_ends_s", "linestep_power_percent",
+            }
+        )
+        if digitalExtraLines:
+            summaries.append("  digital extras:")
+            summaries.extend(digitalExtraLines)
+
+        return summaries or ["  no scan state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved scan state.
+        
+        Scan parameters carry no laser-power-like hazards; laser hazards belong
+        to the Laser component. Returns an empty list.
+        """
+        return []
+
+    def _summarizeSavedScanMode(self, mode):
+        """Lifted from SetupModesController."""
+        if not isinstance(mode, dict):
+            return []
+
+        labels = {
+            "repeatEnabled": "repeat",
+            "scanMode": "scan mode",
+            "contLaserMode": "continuous laser mode",
+        }
+        summaries = []
+        for key in ("repeatEnabled", "scanMode", "contLaserMode"):
+            value = mode.get(key)
+            if value is not None:
+                summaries.append(f"    {labels[key]}: {self._fmt(value)}")
+        return summaries
+
+    def _summarizeSavedScanAxes(self, analog):
+        """Lifted from SetupModesController."""
+        if not isinstance(analog, dict):
+            return []
+
+        devices = analog.get("target_device") or []
+        if not isinstance(devices, list):
+            devices = [devices]
+
+        axisKeys = [
+            ("length", "axis_length"),
+            ("step", "axis_step_size"),
+            ("center", "axis_centerpos"),
+            ("start", "axis_startpos"),
+        ]
+        maxAxisCount = max(
+            [len(devices)]
+            + [
+                len(analog.get(key) or [])
+                for _, key in axisKeys
+                if isinstance(analog.get(key), list)
+            ]
+        )
+
+        summaries = []
+        for index in range(maxAxisCount):
+            device = self._scanListValue(devices, index, f"axis {index + 1}")
+            parts = []
+            for label, key in axisKeys:
+                value = self._scanListValue(analog.get(key), index)
+                if value is not None:
+                    parts.append(f"{label} {self._fmt(value)}")
+
+            if parts:
+                summaries.append(f"    {device}: " + ", ".join(parts))
+
+        return summaries
+
+    def _summarizeSavedScanDigitalOverview(self, digital):
+        """Lifted from SetupModesController."""
+        if not isinstance(digital, dict):
+            return []
+
+        labels = {
+            "Nx": "Nx",
+            "Ny": "Ny",
+            "n_linesteps": "line steps",
+            "advanced_mode": "advanced mode",
+        }
+        summaries = []
+        for key in ("Nx", "Ny", "n_linesteps", "advanced_mode"):
+            if key in digital:
+                summaries.append(f"    {labels[key]}: {self._fmt(digital.get(key))}")
+        return summaries
+
+    def _summarizeSavedScanTTL(self, digital):
+        """Lifted from SetupModesController."""
+        if not isinstance(digital, dict):
+            return []
+
+        deviceNames = self._scanTTLDeviceNames(digital)
+        if not deviceNames:
+            return []
+
+        summaries = []
+        for index, deviceName in enumerate(deviceNames):
+            parts = []
+
+            ttlStart = self._scanListValue(digital.get("TTL_start"), index)
+            ttlEnd = self._scanListValue(digital.get("TTL_end"), index)
+            if ttlStart is not None:
+                parts.append(f"start {self._fmtMilliseconds(ttlStart)}")
+            if ttlEnd is not None:
+                parts.append(f"end {self._fmtMilliseconds(ttlEnd)}")
+
+            ttlSequence = self._scanListValue(digital.get("TTL_sequence"), index)
+            ttlAxis = self._scanListValue(digital.get("TTL_sequence_axis"), index)
+            if ttlSequence is not None:
+                parts.append(f"sequence {self._fmtShort(ttlSequence)}")
+            if ttlAxis is not None:
+                parts.append(f"axis {self._fmtShort(ttlAxis)}")
+
+            self._appendDictTTLPart(parts, digital.get("linestep_enable"), deviceName, "enabled")
+            self._appendDictTTLPart(
+                parts, digital.get("pulse_starts_s"), deviceName, "starts",
+                formatter=self._fmtMilliseconds
+            )
+            self._appendDictTTLPart(
+                parts, digital.get("pulse_ends_s"), deviceName, "ends",
+                formatter=self._fmtMilliseconds
+            )
+            self._appendDictTTLPart(
+                parts, digital.get("linestep_power_percent"), deviceName, "power"
+            )
+
+            summaries.append(f"    {deviceName}: " + (", ".join(parts) if parts else "saved"))
+
+        return summaries
+
+    def _scanTTLDeviceNames(self, digital):
+        """Lifted from SetupModesController."""
+        names = []
+
+        targetDevices = digital.get("target_device") or []
+        if not isinstance(targetDevices, list):
+            targetDevices = [targetDevices]
+        names.extend([name for name in targetDevices if name is not None])
+
+        for key in ("linestep_enable", "pulse_starts_s", "pulse_ends_s", "linestep_power_percent"):
+            value = digital.get(key)
+            if isinstance(value, dict):
+                names.extend(value.keys())
+
+        uniqueNames = []
+        seen = set()
+        for name in names:
+            key = str(name)
+            if key in seen:
+                continue
+            uniqueNames.append(name)
+            seen.add(key)
+
+        return uniqueNames
+
+    def _appendDictTTLPart(self, parts, valuesByDevice, deviceName, label, formatter=None):
+        """Lifted from SetupModesController."""
+        if not isinstance(valuesByDevice, dict) or deviceName not in valuesByDevice:
+            return
+        formatter = formatter or self._fmtShort
+        parts.append(f"{label} {formatter(valuesByDevice.get(deviceName))}")
+
+    def _summarizeSavedScanExtras(self, values, excludedKeys):
+        """Lifted from SetupModesController."""
+        if not isinstance(values, dict):
+            return []
+
+        summaries = []
+        for key in sorted(set(values.keys()) - set(excludedKeys), key=str):
+            summaries.append(f"    {key}: {self._fmtShort(values.get(key))}")
+        return summaries
+
+    def _scanListValue(self, value, index, default=None):
+        """Lifted from SetupModesController."""
+        if isinstance(value, list):
+            if 0 <= index < len(value):
+                return value[index]
+            return default
+        return value if value is not None else default
+
+    def _fmt(self, value):
+        """Lifted from SetupModesController."""
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return self._onOff(value)
+        if isinstance(value, float):
+            return f"{value:.4g}"
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._fmt(item) for item in value) + "]"
+        return str(value)
+
+    def _fmtShort(self, value, maxLength=140):
+        """Lifted from SetupModesController."""
+        text = self._fmt(value)
+        if len(text) <= maxLength:
+            return text
+        return text[:maxLength - 3] + "..."
+
+    def _fmtMilliseconds(self, value):
+        """Lifted from SetupModesController."""
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._fmtMilliseconds(item) for item in value) + "]"
+
+        seconds = self._asFloat(value)
+        if seconds is None:
+            return self._fmtShort(value)
+
+        return f"{self._fmtDecimal(seconds * 1000)} ms"
+
+    def _fmtDecimal(self, value):
+        """Lifted from SetupModesController."""
+        text = f"{value:.6f}".rstrip("0").rstrip(".")
+        return "0" if text in ("", "-0") else text
+
+    def _onOff(self, value):
+        """Lifted from SetupModesController."""
+        return "ON" if bool(value) else "OFF"
+
+    def _asFloat(self, value):
+        """Lifted from SetupModesController."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _getMissingScanDevices(self, deviceNames, availableNames):
         missing = []
