@@ -1,5 +1,6 @@
 import copy
 import functools
+import json
 import os
 import traceback
 
@@ -313,16 +314,40 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         pass
 
     @APIExport(runOnUIThread=True)
-    @abstractmethod
     def saveScanParamsToFile(self, filePath: str) -> None:
         """ Saves the set scanning parameters to the specified file. """
-        pass
+        if not filePath.endswith('.json'):
+            filePath += '.json'
+        state = self.getComponentState()
+        try:
+            with open(filePath, 'w') as f:
+                json.dump(state, f, indent=2)
+            self._logger.info(f'Scan parameters saved to {filePath}')
+        except Exception:
+            self._logger.error(f'Failed to save scan parameters:\n{traceback.format_exc()}')
 
     @APIExport(runOnUIThread=True)
-    @abstractmethod
     def loadScanParamsFromFile(self, filePath: str) -> None:
         """ Loads scanning parameters from the specified file. """
-        pass
+        payload = self._read_scan_file(filePath)
+        if payload is None:
+            return
+        warnings = self.applyComponentState(payload, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+        if warnings:
+            for warning in warnings:
+                self._logger.warning(warning)
+
+    def _read_scan_file(self, filePath: str):
+        """Read a scan file, returning a component state dict.
+        
+        Returns None on error.
+        """
+        try:
+            with open(filePath, 'r') as f:
+                return json.load(f)
+        except Exception:
+            self._logger.error(f'Could not open or parse scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
 
     def getNextAxial(self):
         return None
