@@ -1,10 +1,12 @@
 import os
+import json
 import configparser
 from ast import literal_eval
-from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
+from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin, StatefulComponentMixin, ComponentStateApplyMode
 import numpy as np
 import traceback
-from imswitch.imcommon.model import APIExport, dirtools
+from imswitch.imcommon.model import APIExport, dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from imswitch.imcommon.view.guitools import colorutils
 from ._beadrec_scan_source import BeadRecScanSourceMixin
@@ -35,11 +37,17 @@ def trimRasterLengthForFirmwareBoundary(length, stepSize):
     return length - 0.5 * stepSize
 
 
-class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixin, ScanLifecycleMixin, ImConWidgetController):
     """Linked to TriggerScopeRasterWidget."""
+
+    componentName = 'Scan'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._logger = initLogger(self)
 
         self.settingAttr = False
         self.settingParameters = False
@@ -92,6 +100,8 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, I
         self._widget.sigSignalParChanged.connect(self.plotSignalGraph)
         self._widget.sigSignalParChanged.connect(self.updateScanTTLAttrs)
 
+        getWidgetStatePersistence().register('Scan', self)
+
     def saveScan(self):
         fileName = guitools.askForFilePath(self._widget, 'Save scan', self.scanDir, isSaving=True)
         if not fileName:
@@ -101,13 +111,15 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, I
     @APIExport(runOnUIThread=True)
     def saveScanParamsToFile(self, filePath: str) -> None:
         """Saves the set scanning parameters to the specified file."""
-        self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config['analogParameterDict'] = self._analogParameterDict
-        config['digitalParameterDict'] = self._digitalParameterDict
-        with open(filePath, 'w') as configfile:
-            config.write(configfile)
+        if not filePath.endswith('.json'):
+            filePath += '.json'
+        state = self.getComponentState()
+        try:
+            with open(filePath, 'w') as f:
+                json.dump(state, f, indent=2)
+            self._logger.info(f'Scan parameters saved to {filePath}')
+        except Exception:
+            self._logger.error(f'Failed to save scan parameters:\n{traceback.format_exc()}')
 
     def loadScan(self):
         fileName = guitools.askForFilePath(self._widget, 'Load scan', self.scanDir)
@@ -118,18 +130,50 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, I
     @APIExport(runOnUIThread=True)
     def loadScanParamsFromFile(self, filePath: str) -> None:
         """Loads scanning parameters from the specified file."""
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
-        for key in self._analogParameterDict:
-            self._analogParameterDict[key] = literal_eval(
-                config._sections['analogParameterDict'][key]
-            )
-        for key in self._digitalParameterDict:
-            self._digitalParameterDict[key] = literal_eval(
-                config._sections['digitalParameterDict'][key]
-            )
-        self.setParameters()
+        payload = self._read_scan_file(filePath)
+        if payload is None:
+            return
+        warnings = self.applyComponentState(payload, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+        if warnings:
+            for warning in warnings:
+                self._logger.warning(warning)
+
+    def _read_scan_file(self, filePath: str):
+        """Read a scan file, returning a component state dict.
+        
+        Tries JSON first; falls back to the legacy configparser INI format.
+        Returns None on unrecoverable error.
+        """
+        try:
+            with open(filePath, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass
+        except Exception:
+            self._logger.error(f'Could not open scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
+
+        try:
+            config = configparser.ConfigParser()
+            config.optionxform = str
+            config.read(filePath)
+            analogParameterDict = {}
+            digitalParameterDict = {}
+            if 'analogParameterDict' in config._sections:
+                for key, value in config._sections['analogParameterDict'].items():
+                    analogParameterDict[key] = literal_eval(value)
+            if 'digitalParameterDict' in config._sections:
+                for key, value in config._sections['digitalParameterDict'].items():
+                    digitalParameterDict[key] = literal_eval(value)
+            return {
+                'controller': 'TriggerScopeRasterController',
+                'scanWidgetType': 'TriggerScopeRaster',
+                'analogParameterDict': analogParameterDict,
+                'digitalParameterDict': digitalParameterDict,
+            }
+        except Exception:
+            self._logger.error(f'Could not parse legacy scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
 
     def setParameters(self):
         self.settingParameters = True
@@ -446,6 +490,157 @@ class TriggerScopeRasterController(BeadRecScanSourceMixin, ScanLifecycleMixin, I
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters."""
         self.runScanAdvanced(sigScanStartingEmitted=False)
+
+    def getComponentState(self) -> dict:
+        """Snapshot the current TriggerScope raster scan parameters."""
+        self.getParameters()
+
+        scanInfo = getattr(self._setupInfo, 'scan', None)
+
+        return {
+            'controller': type(self).__name__,
+            'scanWidgetType': getattr(scanInfo, 'scanWidgetType', None),
+            'analogParameterDict': dict(self._analogParameterDict),
+            'digitalParameterDict': dict(self._digitalParameterDict),
+        }
+
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore TriggerScope raster scan parameters from a snapshot.
+        
+        CRITICAL SAFETY INVARIANT: This method MUST NEVER start a scan in either mode.
+        It only restores scan parameters (analogParameterDict, digitalParameterDict).
+        Starting a scan requires explicit user action (runScan/runScanAdvanced).
+        
+        Args:
+            state: Component state dict from getComponentState().
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (behavior is identical).
+        
+        Returns:
+            List of warning strings for recoverable issues.
+        """
+        warnings = []
+
+        if self.isRunning:
+            return ['Scan is currently running; scan parameters were not changed.']
+
+        if not isinstance(state, dict):
+            return ['Saved scan state is not a dictionary.']
+
+        savedWidgetType = state.get('scanWidgetType')
+        currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)
+        if savedWidgetType and currentWidgetType and savedWidgetType != currentWidgetType:
+            warnings.append(
+                f'Saved scan widget type "{savedWidgetType}" differs from current '
+                f'"{currentWidgetType}".'
+            )
+
+        analogParameterDict = state.get('analogParameterDict', {})
+        digitalParameterDict = state.get('digitalParameterDict', {})
+
+        if not isinstance(analogParameterDict, dict):
+            return warnings + ['Saved analog scan parameters are not a dictionary.']
+        if not isinstance(digitalParameterDict, dict):
+            return warnings + ['Saved digital scan parameters are not a dictionary.']
+
+        targetDevices = analogParameterDict.get('target_device', [])
+        if not isinstance(targetDevices, list):
+            targetDevices = [targetDevices] if targetDevices else []
+        
+        missingPositioners = [d for d in targetDevices if d not in self.positioners]
+        if missingPositioners:
+            warnings.append(
+                f'Missing scan positioner(s): {", ".join(missingPositioners)}. '
+                'Scan state was not applied.'
+            )
+            return warnings
+
+        ttlDevices = digitalParameterDict.get('target_device', [])
+        if not isinstance(ttlDevices, list):
+            ttlDevices = [ttlDevices] if ttlDevices else []
+        
+        missingTTLDevices = [d for d in ttlDevices if d not in self.TTLDevices]
+        if missingTTLDevices:
+            warnings.append(
+                f'Missing TTL device(s): {", ".join(missingTTLDevices)}. '
+                'Scan state was not applied.'
+            )
+            return warnings
+
+        self._analogParameterDict = dict(analogParameterDict)
+        self._digitalParameterDict = dict(digitalParameterDict)
+
+        try:
+            self.setParameters()
+            self.updateSteps()
+            self.plotSignalGraph()
+            self.updateScanStageAttrs()
+            self.updateScanTTLAttrs()
+        except Exception as e:
+            self._logger.error('Failed to apply TriggerScope raster component state')
+            self._logger.error(traceback.format_exc())
+            warnings.append(f'Failed to apply scan state: {e}')
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved TriggerScope raster scan state."""
+        if not isinstance(state, dict) or not state:
+            return ["  no scan state"]
+
+        analog = state.get("analogParameterDict") or {}
+        digital = state.get("digitalParameterDict") or {}
+        summaries = []
+
+        if state.get("controller"):
+            summaries.append(f"  controller: {state.get('controller')}")
+        if state.get("scanWidgetType"):
+            summaries.append(f"  widget type: {state.get('scanWidgetType')}")
+
+        targetDevices = analog.get('target_device', [])
+        if targetDevices:
+            summaries.append(f"  scan axes: {targetDevices}")
+
+        axisLength = analog.get('axis_length', [])
+        axisStepSize = analog.get('axis_step_size', [])
+        if axisLength and axisStepSize:
+            for i, device in enumerate(targetDevices[:len(axisLength)]):
+                length = axisLength[i] if i < len(axisLength) else 0
+                step = axisStepSize[i] if i < len(axisStepSize) else 1
+                steps = 0 if step == 0 else round(length / step)
+                summaries.append(f"    {device}: length={length:.3f}, step={step:.3f}, steps={steps}")
+
+        ttlDevices = digital.get('target_device', [])
+        if ttlDevices:
+            summaries.append(f"  TTL devices: {ttlDevices}")
+
+        seqTime = digital.get('sequence_time')
+        if seqTime is not None:
+            summaries.append(f"  sequence time: {seqTime * 1e3:.3f} ms")
+
+        ttlStarts = digital.get('TTL_start', [])
+        ttlEnds = digital.get('TTL_end', [])
+        if ttlStarts and ttlEnds:
+            summaries.append("  TTL timing:")
+            for i, device in enumerate(ttlDevices[:len(ttlStarts)]):
+                start = ttlStarts[i] if i < len(ttlStarts) else 0
+                end = ttlEnds[i] if i < len(ttlEnds) else 0
+                summaries.append(f"    {device}: start={start * 1e3:.3f} ms, end={end * 1e3:.3f} ms")
+
+        return summaries or ["  no scan state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved TriggerScope raster scan state.
+        
+        Scan parameters carry no laser-power-like hazards; laser hazards belong
+        to the Laser component. Returns an empty list.
+        """
+        return []
 
 
 _attrCategoryStage = 'ScanStage'

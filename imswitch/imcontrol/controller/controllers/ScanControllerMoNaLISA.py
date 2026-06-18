@@ -1,3 +1,4 @@
+import json
 import traceback
 import configparser
 from math import ceil
@@ -6,7 +7,7 @@ import numpy as np
 from imswitch.imcommon.model import APIExport
 from ast import literal_eval
 
-from ..basecontrollers import SuperScanController
+from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.view.guitools import colorutils
 from PyQt5.QtCore import QTimer
 import copy
@@ -400,41 +401,85 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def saveScanParamsToFile(self, filePath: str) -> None:
         """ Saves the set scanning parameters to the specified file. """
-        self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-
-        config['analogParameterDict'] = self._analogParameterDict
-        config['digitalParameterDict'] = self._digitalParameterDict
-        config['Modes'] = {'scan_or_not': self._widget.isScanMode()}
-
-        with open(filePath, 'w') as configfile:
-            config.write(configfile)
+        if not filePath.endswith('.json'):
+            filePath += '.json'
+        state = self.getComponentState()
+        try:
+            with open(filePath, 'w') as f:
+                json.dump(state, f, indent=2)
+            self._logger.info(f'Scan parameters saved to {filePath}')
+        except Exception:
+            self._logger.error(f'Failed to save scan parameters:\n{traceback.format_exc()}')
 
     @APIExport(runOnUIThread=True)
     def loadScanParamsFromFile(self, filePath: str) -> None:
         """ Loads scanning parameters from the specified file. """
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
+        payload = self._read_scan_file(filePath)
+        if payload is None:
+            return
+        warnings = self.applyComponentState(payload, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+        if warnings:
+            for warning in warnings:
+                self._logger.warning(warning)
 
-        for key in self._analogParameterDict:
-            self._analogParameterDict[key] = literal_eval(
-                config._sections['analogParameterDict'][key]
-            )
+    def _read_scan_file(self, filePath: str):
+        """Read a scan file, returning a component state dict.
+        
+        Tries JSON first; falls back to the legacy configparser INI format.
+        Returns None on unrecoverable error.
+        """
+        try:
+            with open(filePath, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass
+        except Exception:
+            self._logger.error(f'Could not open scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
 
-        for key in self._digitalParameterDict:
-            self._digitalParameterDict[key] = literal_eval(
-                config._sections['digitalParameterDict'][key]
-            )
+        try:
+            config = configparser.ConfigParser()
+            config.optionxform = str
+            config.read(filePath)
 
-        scanOrNot = (config._sections['Modes']['scan_or_not'] == 'True')
-        if scanOrNot:
-            self._widget.setScanMode()
-        else:
-            self._widget.setContLaserMode()
+            analog = {}
+            if config.has_section('analogParameterDict'):
+                for key, val in config.items('analogParameterDict'):
+                    try:
+                        analog[key] = literal_eval(val)
+                    except (ValueError, SyntaxError):
+                        analog[key] = val
 
-        self.setParameters()
+            digital = {}
+            if config.has_section('digitalParameterDict'):
+                for key, val in config.items('digitalParameterDict'):
+                    try:
+                        digital[key] = literal_eval(val)
+                    except (ValueError, SyntaxError):
+                        digital[key] = val
+
+            mode = {}
+            if config.has_section('Modes') and 'scan_or_not' in config['Modes']:
+                scanOrNot = (config['Modes']['scan_or_not'] == 'True')
+                if scanOrNot:
+                    mode['scanMode'] = True
+                else:
+                    mode['contLaserMode'] = True
+
+            if not analog and not digital:
+                self._logger.error(f'Scan file {filePath!r} is neither valid JSON nor a recognised INI scan file')
+                return None
+
+            self._logger.info(f'Loaded legacy INI scan file {filePath!r}')
+            return {
+                'controller': type(self).__name__,
+                'analogParameterDict': analog,
+                'digitalParameterDict': digital,
+                'mode': mode,
+            }
+        except Exception:
+            self._logger.error(f'Failed to parse scan file {filePath!r} as INI:\n{traceback.format_exc()}')
+            return None
 
     # ------------------------------------------------------------------
     # Widget State Persistence Interface

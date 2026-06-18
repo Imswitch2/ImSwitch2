@@ -1030,14 +1030,10 @@ class ScanControllerAdvanced(SuperScanController):
     def saveScanParamsToFile(self, filePath: str) -> None:
         if not filePath.endswith('.json'):
             filePath += '.json'
-        self.getParameters()
-        payload = {
-            'analogParameterDict': self._analogParameterDict,
-            'digitalParameterDict': self._digitalParameterDict,
-        }
+        state = self.getComponentState()
         try:
             with open(filePath, 'w') as f:
-                json.dump(payload, f, indent=2)
+                json.dump(state, f, indent=2)
             self._logger.info(f'Scan parameters saved to {filePath}')
         except Exception:
             self._logger.error(f'Failed to save scan parameters:\n{traceback.format_exc()}')
@@ -1047,20 +1043,10 @@ class ScanControllerAdvanced(SuperScanController):
         payload = self._read_scan_file(filePath)
         if payload is None:
             return
-
-        analog = payload.get('analogParameterDict', {})
-        digital = payload.get('digitalParameterDict', {})
-
-        if not analog and not digital:
-            self._logger.warning(f'Scan file {filePath!r} contains no parameter dicts — nothing loaded')
-            return
-
-        if analog:
-            self._analogParameterDict = dict(analog)
-        if digital:
-            self._digitalParameterDict = dict(digital)
-
-        self.setParameters()
+        warnings = self.applyComponentState(payload, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+        if warnings:
+            for warning in warnings:
+                self._logger.warning(warning)
 
     def _read_scan_file(self, filePath: str):
         """Read a scan file, returning a dict with analogParameterDict / digitalParameterDict.
