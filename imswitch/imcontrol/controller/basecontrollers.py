@@ -4,6 +4,7 @@ import os
 import traceback
 
 from abc import abstractmethod
+from enum import Enum
 
 from imswitch.imcommon.controller.basecontrollers import (
     WidgetController,
@@ -36,9 +37,128 @@ class ImConWidgetController(WidgetController):
         super().__init__(*args, **kwargs)
 
 
-class SetupModeMixin:
-    """Mixin for controllers that can snapshot and restore setup-mode state.
+class ComponentStateApplyMode(Enum):
+    """Distinguishes passive UI restore from active hardware application."""
+    STARTUP_RESTORE = "startup_restore"
+    SETUP_MODE_APPLY = "setup_mode_apply"
 
+
+class StatefulComponentMixin:
+    """Mixin for controllers that provide unified component state snapshots.
+    
+    Supersedes both the legacy getWidgetState/setWidgetState interface and
+    the SetupModeMixin interface. A single component state payload serves
+    both startup persistence and named setup modes, with applyMode controlling
+    which activations are allowed.
+    """
+    
+    # Class attributes
+    stateSchemaVersion: int = 1
+    componentName: str | None = None
+    legacyStateNames: tuple = ()
+    
+    def getComponentState(self) -> dict:
+        """Snapshot the current component state.
+        
+        Returns:
+            A JSON-serializable dict. The schema is component-specific but
+            must remain compatible within a stateSchemaVersion.
+        
+        Raises:
+            May raise for unrecoverable failures (e.g., required hardware
+            unavailable). The registry logs and skips the component.
+        """
+        raise NotImplementedError
+    
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: 'ComponentStateApplyMode',
+    ) -> list[str]:
+        """Restore component state from a snapshot.
+        
+        Args:
+            state: A dict previously returned by getComponentState().
+            applyMode: Controls which actions are permitted (see spec Section 2).
+        
+        Returns:
+            A list of warning strings for recoverable issues (e.g., missing
+            devices, value clamps, skipped unavailable presets). An empty list
+            indicates full success.
+        
+        Raises:
+            MUST NOT raise for recoverable schema mismatches, missing optional
+            keys, or unavailable devices. Return a warning instead.
+            MAY raise for catastrophic errors (e.g., corrupted state that
+            cannot be parsed at all), but this should be rare.
+        
+        Safety:
+            The component MUST enforce the apply-mode safety policy (spec Section 2).
+            The consumer provides the mode; the component owns enforcement.
+        """
+        raise NotImplementedError
+    
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved state.
+        
+        Args:
+            state: A dict previously returned by getComponentState().
+        
+        Returns:
+            A list of formatted strings suitable for display in a setup-mode
+            inspector or update-preview dialog. May be multi-line; each string
+            is one logical block.
+        
+        Examples:
+            ["Laser 488nm: ON, 50.0 mW", "Laser 561nm: OFF"]
+            ["Detector Camera1: ROI=(0,0,512,512), binning=2x2"]
+        
+        Notes:
+            This replaces the component-specific raw-payload parsing currently
+            in SetupModesController._summarizeSaved* methods. The consumer
+            calls this instead of parsing the state dict directly.
+        """
+        raise NotImplementedError
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: 'ComponentStateApplyMode',
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved state before applying it.
+        
+        Args:
+            state: A dict previously returned by getComponentState().
+            applyMode: The mode in which the state would be applied.
+            context: Optional consumer-provided context (e.g., UI thresholds,
+                suppressed-warning lists). See spec Section 5.2 for schema.
+        
+        Returns:
+            A list of hazard records (see spec Section 5.3 for schema). An empty
+            list means no hazards detected.
+        
+        Examples:
+            High-power laser: severity="warning", kind="high_laser_power"
+            Missing device: severity="info", kind="device_unavailable"
+        
+        Notes:
+            The component identifies hazards; the consumer owns the policy
+            (thresholds, confirmation dialogs, suppression). This replaces
+            the current SetupModesController._getHighPowerLaserEntries logic.
+        """
+        raise NotImplementedError
+
+
+class SetupModeMixin(StatefulComponentMixin):
+    """DEPRECATED: Legacy mixin for setup-mode state.
+    
+    Kept as a thin compatibility shim for FlipMirror and SuperScanController
+    until Phase 2 migration. New controllers should implement
+    StatefulComponentMixin directly.
+    
     The setup-mode backend discovers controllers implementing this mixin and
     delegates component-specific serialization to them. Returned state must be
     JSON-serializable. Applying state should return warning strings for
@@ -50,6 +170,37 @@ class SetupModeMixin:
 
     def applySetupModeState(self, state):
         raise NotImplementedError
+    
+    # Bridge legacy methods to new interface (overridden by registry fallback)
+    def getComponentState(self) -> dict:
+        """Bridge to legacy getSetupModeState for compatibility."""
+        return self.getSetupModeState()
+    
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+    ) -> list[str]:
+        """Bridge to legacy applySetupModeState for compatibility."""
+        result = self.applySetupModeState(state)
+        if isinstance(result, list):
+            return result
+        return []
+    
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Stub for legacy controllers - registry will handle summarization."""
+        return [f"Component state (legacy): {len(state)} keys"]
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Stub for legacy controllers - no hazard detection yet."""
+        return []
 
 
 class LiveUpdatedController(ImConWidgetController):
