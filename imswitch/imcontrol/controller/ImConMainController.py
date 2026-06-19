@@ -322,95 +322,28 @@ class ImConMainController(MainController):
         if not hasattr(self.__setupInfo, 'positioners') or not self.__setupInfo.positioners:
             return
         
-        # Axis key mappings: axis (uppercase) -> (plusKey, minusKey) for both ctrl and ctrl-shift
-        axisKeyMap = {
-            'X': ('Right', 'Left'),
-            'Y': ('Up', 'Down'),
-            'Z': ('Y', 'A')
-        }
-        
-        # Track legacy first-come claims: axis (uppercase) -> positionerName
-        # Only positioners with no explicit shortcutModifier can claim on first-come basis
-        legacyClaimedAxes = {}
-        
-        # First pass: identify explicit "ctrl" positioners (they get priority in defaults)
-        # and track legacy first-come claims
-        positionersList = []
-        for positionerName, positionerInfo in self.__setupInfo.positioners.items():
-            mod = (positionerInfo.shortcutModifier or '').strip().lower().replace('+', '-')
-            positionersList.append((positionerName, positionerInfo, mod))
-            
-            # Legacy (no modifier) first-come: track first positioner per axis
-            if not mod:  # Empty string or None
-                for axis in positionerInfo.axes:
-                    axisUpper = axis.upper()
-                    if axisUpper not in legacyClaimedAxes:
-                        legacyClaimedAxes[axisUpper] = positionerName
-        
-        # Second pass: register actions for each positioner+axis+direction
+        # Compute default jog key sequences via the shared, unit-tested pure
+        # function (shortcutModifier alias expansion + legacy first-come).
         from imswitch.imcommon.model import ShortcutScope
-        
-        for positionerName, positionerInfo, mod in positionersList:
+        from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
+
+        jogDefaults = computePositionerJogDefaults(self.__setupInfo.positioners)
+
+        for positionerName, positionerInfo in self.__setupInfo.positioners.items():
             for axis in positionerInfo.axes:
-                axisUpper = axis.upper()
-                
-                # Determine defaultKeySequence based on shortcutModifier
-                if mod == 'ctrl':
-                    # Explicit ctrl: gets Ctrl+Arrow/Y/A
-                    if axisUpper in axisKeyMap:
-                        plusKey, minusKey = axisKeyMap[axisUpper]
-                        defaultPlusKey = f'Ctrl+{plusKey}'
-                        defaultMinusKey = f'Ctrl+{minusKey}'
-                    else:
-                        # Unknown axis, no default binding
-                        defaultPlusKey = None
-                        defaultMinusKey = None
-                elif mod in ('ctrl-shift', 'shift-ctrl'):
-                    # Explicit ctrl-shift: gets Ctrl+Shift+Arrow/Y/A
-                    if axisUpper in axisKeyMap:
-                        plusKey, minusKey = axisKeyMap[axisUpper]
-                        defaultPlusKey = f'Ctrl+Shift+{plusKey}'
-                        defaultMinusKey = f'Ctrl+Shift+{minusKey}'
-                    else:
-                        defaultPlusKey = None
-                        defaultMinusKey = None
-                else:
-                    # No explicit modifier: legacy first-come behavior
-                    # Only the first positioner claiming this axis gets the Ctrl+Arrow keys
-                    if legacyClaimedAxes.get(axisUpper) == positionerName:
-                        if axisUpper in axisKeyMap:
-                            plusKey, minusKey = axisKeyMap[axisUpper]
-                            defaultPlusKey = f'Ctrl+{plusKey}'
-                            defaultMinusKey = f'Ctrl+{minusKey}'
-                        else:
-                            defaultPlusKey = None
-                            defaultMinusKey = None
-                    else:
-                        # Not the first legacy claimant, no default binding
-                        defaultPlusKey = None
-                        defaultMinusKey = None
-                
-                # Register plus action
-                self.__shortcutManager.registerAction(
-                    actionId=f'positioner.{positionerName}.{axis}.plus',
-                    displayName=f'{positionerName} {axis} +',
-                    callback=lambda pName=positionerName, ax=axis: positionerWidget.stepAxis(pName, ax, 'plus'),
-                    defaultKeySequence=defaultPlusKey,
-                    scope=ShortcutScope.Application,
-                    owner=positionerWidget,
-                    initiallyBound=(defaultPlusKey is not None)
-                )
-                
-                # Register minus action
-                self.__shortcutManager.registerAction(
-                    actionId=f'positioner.{positionerName}.{axis}.minus',
-                    displayName=f'{positionerName} {axis} -',
-                    callback=lambda pName=positionerName, ax=axis: positionerWidget.stepAxis(pName, ax, 'minus'),
-                    defaultKeySequence=defaultMinusKey,
-                    scope=ShortcutScope.Application,
-                    owner=positionerWidget,
-                    initiallyBound=(defaultMinusKey is not None)
-                )
+                for direction, label in (('plus', '+'), ('minus', '-')):
+                    actionId = f'positioner.{positionerName}.{axis}.{direction}'
+                    defaultKey = jogDefaults.get(actionId)
+                    self.__shortcutManager.registerAction(
+                        actionId=actionId,
+                        displayName=f'{positionerName} {axis} {label}',
+                        callback=(lambda pName=positionerName, ax=axis, d=direction:
+                                  positionerWidget.stepAxis(pName, ax, d)),
+                        defaultKeySequence=defaultKey,
+                        scope=ShortcutScope.Application,
+                        owner=positionerWidget,
+                        initiallyBound=(defaultKey is not None)
+                    )
     
     def closeEvent(self):
         self.__logger.info('Shutting down')

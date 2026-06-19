@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import List, Optional
 from unittest.mock import Mock
 
-from imswitch.imcontrol.controller.ShortcutManager import ShortcutManager
+from imswitch.imcontrol.controller.ShortcutManager import (
+    ShortcutManager, computePositionerJogDefaults,
+)
 from imswitch.imcontrol.view.widgets import PositionerWidget
 from imswitch.imcommon.model import ShortcutScope
 
@@ -26,81 +28,28 @@ class MockSetupInfo:
 
 
 def _registerPositionerJogActionsForTest(shortcutManager, setupInfo, positionerWidget):
-    """Extracted version of ImConMainController._registerPositionerJogActions for testing."""
-    if not hasattr(setupInfo, 'positioners') or not setupInfo.positioners:
+    """Register jog actions exactly as production does, using the SHARED
+    production computePositionerJogDefaults (no reimplementation), so these tests
+    exercise real default-key logic rather than a copy."""
+    if not getattr(setupInfo, 'positioners', None):
         return
-    
-    axisKeyMap = {
-        'X': ('Right', 'Left'),
-        'Y': ('Up', 'Down'),
-        'Z': ('Y', 'A')
-    }
-    
-    legacyClaimedAxes = {}
-    positionersList = []
-    
+
+    jogDefaults = computePositionerJogDefaults(setupInfo.positioners)
     for positionerName, positionerInfo in setupInfo.positioners.items():
-        mod = (positionerInfo.shortcutModifier or '').strip().lower().replace('+', '-')
-        positionersList.append((positionerName, positionerInfo, mod))
-        
-        if not mod:
-            for axis in positionerInfo.axes:
-                axisUpper = axis.upper()
-                if axisUpper not in legacyClaimedAxes:
-                    legacyClaimedAxes[axisUpper] = positionerName
-    
-    for positionerName, positionerInfo, mod in positionersList:
         for axis in positionerInfo.axes:
-            axisUpper = axis.upper()
-            
-            if mod == 'ctrl':
-                if axisUpper in axisKeyMap:
-                    plusKey, minusKey = axisKeyMap[axisUpper]
-                    defaultPlusKey = f'Ctrl+{plusKey}'
-                    defaultMinusKey = f'Ctrl+{minusKey}'
-                else:
-                    defaultPlusKey = None
-                    defaultMinusKey = None
-            elif mod in ('ctrl-shift', 'shift-ctrl'):
-                if axisUpper in axisKeyMap:
-                    plusKey, minusKey = axisKeyMap[axisUpper]
-                    defaultPlusKey = f'Ctrl+Shift+{plusKey}'
-                    defaultMinusKey = f'Ctrl+Shift+{minusKey}'
-                else:
-                    defaultPlusKey = None
-                    defaultMinusKey = None
-            else:
-                if legacyClaimedAxes.get(axisUpper) == positionerName:
-                    if axisUpper in axisKeyMap:
-                        plusKey, minusKey = axisKeyMap[axisUpper]
-                        defaultPlusKey = f'Ctrl+{plusKey}'
-                        defaultMinusKey = f'Ctrl+{minusKey}'
-                    else:
-                        defaultPlusKey = None
-                        defaultMinusKey = None
-                else:
-                    defaultPlusKey = None
-                    defaultMinusKey = None
-            
-            shortcutManager.registerAction(
-                actionId=f'positioner.{positionerName}.{axis}.plus',
-                displayName=f'{positionerName} {axis} +',
-                callback=lambda pName=positionerName, ax=axis: positionerWidget.stepAxis(pName, ax, 'plus'),
-                defaultKeySequence=defaultPlusKey,
-                scope=ShortcutScope.Application,
-                owner=positionerWidget,
-                initiallyBound=(defaultPlusKey is not None)
-            )
-            
-            shortcutManager.registerAction(
-                actionId=f'positioner.{positionerName}.{axis}.minus',
-                displayName=f'{positionerName} {axis} -',
-                callback=lambda pName=positionerName, ax=axis: positionerWidget.stepAxis(pName, ax, 'minus'),
-                defaultKeySequence=defaultMinusKey,
-                scope=ShortcutScope.Application,
-                owner=positionerWidget,
-                initiallyBound=(defaultMinusKey is not None)
-            )
+            for direction, label in (('plus', '+'), ('minus', '-')):
+                actionId = f'positioner.{positionerName}.{axis}.{direction}'
+                defaultKey = jogDefaults.get(actionId)
+                shortcutManager.registerAction(
+                    actionId=actionId,
+                    displayName=f'{positionerName} {axis} {label}',
+                    callback=(lambda pName=positionerName, ax=axis, d=direction:
+                              positionerWidget.stepAxis(pName, ax, d)),
+                    defaultKeySequence=defaultKey,
+                    scope=ShortcutScope.Application,
+                    owner=positionerWidget,
+                    initiallyBound=(defaultKey is not None),
+                )
 
 
 def test_shortcut_modifier_ctrl_expansion(qtbot):

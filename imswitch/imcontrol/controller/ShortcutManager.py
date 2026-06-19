@@ -4,6 +4,68 @@ from qtpy import QtCore, QtWidgets, QtGui
 from imswitch.imcommon.model import initLogger, ShortcutAction, ShortcutScope
 
 
+# Axis -> (plus key, minus key) for the positioner jog alias expansion.
+_POSITIONER_AXIS_KEY_MAP = {
+    'X': ('Right', 'Left'),
+    'Y': ('Up', 'Down'),
+    'Z': ('Y', 'A'),
+}
+
+
+def computePositionerJogDefaults(positioners) -> Dict[str, Optional[str]]:
+    """Compute default jog key sequences per positioner axis action ID.
+
+    Pure function (no Qt / no hardware) implementing the Phase 3c
+    ``shortcutModifier`` alias expansion so it is unit-testable and shared by the
+    production registration path:
+
+    - ``shortcutModifier == "ctrl"``       -> Ctrl+Right/Left/Up/Down/Y/A
+    - ``shortcutModifier == "ctrl-shift"`` -> Ctrl+Shift+ equivalents
+    - no ``shortcutModifier``               -> legacy first-come (the first
+      positioner claiming an axis gets the Ctrl+Arrow set; later ones unbound)
+    - unknown axis / not claimed            -> ``None`` (unbound by default)
+
+    Args:
+        positioners: mapping of positionerName -> object with ``axes`` and
+            ``shortcutModifier`` attributes (e.g. PositionerInfo).
+
+    Returns:
+        ``{ "positioner.<name>.<axis>.plus"|".minus": defaultKey | None }``.
+    """
+    defaults: Dict[str, Optional[str]] = {}
+    if not positioners:
+        return defaults
+
+    # First pass: legacy first-come claims (only positioners with no modifier).
+    legacyClaimedAxes: Dict[str, str] = {}
+    normalized = []
+    for name, info in positioners.items():
+        mod = (getattr(info, 'shortcutModifier', None) or '').strip().lower().replace('+', '-')
+        normalized.append((name, info, mod))
+        if not mod:
+            for axis in info.axes:
+                legacyClaimedAxes.setdefault(axis.upper(), name)
+
+    for name, info, mod in normalized:
+        for axis in info.axes:
+            axisUpper = axis.upper()
+            keys = _POSITIONER_AXIS_KEY_MAP.get(axisUpper)
+
+            if mod == 'ctrl' and keys:
+                plusKey, minusKey = f'Ctrl+{keys[0]}', f'Ctrl+{keys[1]}'
+            elif mod in ('ctrl-shift', 'shift-ctrl') and keys:
+                plusKey, minusKey = f'Ctrl+Shift+{keys[0]}', f'Ctrl+Shift+{keys[1]}'
+            elif not mod and keys and legacyClaimedAxes.get(axisUpper) == name:
+                plusKey, minusKey = f'Ctrl+{keys[0]}', f'Ctrl+{keys[1]}'
+            else:
+                plusKey, minusKey = None, None
+
+            defaults[f'positioner.{name}.{axis}.plus'] = plusKey
+            defaults[f'positioner.{name}.{axis}.minus'] = minusKey
+
+    return defaults
+
+
 class ShortcutManager:
     """Unified keyboard shortcut manager.
     
