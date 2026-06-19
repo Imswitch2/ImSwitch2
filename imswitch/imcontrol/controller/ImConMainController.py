@@ -155,6 +155,9 @@ class ImConMainController(MainController):
                     owner=leicaController._widget
                 )
         
+        # Register per-positioner axis jog actions (Phase 3c migration)
+        self._registerPositionerJogActions()
+        
         self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
         self.__shortcutManager.computeEffectiveBindings()
         self.__shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
@@ -299,6 +302,49 @@ class ImConMainController(MainController):
                 f'Failed to load widget states:\n{str(e)}'
             )
 
+    def _registerPositionerJogActions(self):
+        """Register dynamic per-positioner axis jog actions with shortcutModifier alias expansion.
+        
+        Phase 3c: Each positioner's each axis gets plus/minus actions with action IDs like
+        `positioner.<name>.<axis>.plus`. The defaultKeySequence is computed from:
+        - shortcutModifier "ctrl" -> Ctrl+Arrow/Y/A keys
+        - shortcutModifier "ctrl-shift" -> Ctrl+Shift+Arrow/Y/A keys
+        - no shortcutModifier -> legacy first-come behavior (first such positioner per axis gets Ctrl keys)
+        
+        Explicit config in the shortcuts map always overrides these defaults.
+        """
+        if 'Positioner' not in self.controllers:
+            return
+        
+        positionerController = self.controllers['Positioner']
+        positionerWidget = positionerController._widget
+        
+        if not hasattr(self.__setupInfo, 'positioners') or not self.__setupInfo.positioners:
+            return
+        
+        # Compute default jog key sequences via the shared, unit-tested pure
+        # function (shortcutModifier alias expansion + legacy first-come).
+        from imswitch.imcommon.model import ShortcutScope
+        from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
+
+        jogDefaults = computePositionerJogDefaults(self.__setupInfo.positioners)
+
+        for positionerName, positionerInfo in self.__setupInfo.positioners.items():
+            for axis in positionerInfo.axes:
+                for direction, label in (('plus', '+'), ('minus', '-')):
+                    actionId = f'positioner.{positionerName}.{axis}.{direction}'
+                    defaultKey = jogDefaults.get(actionId)
+                    self.__shortcutManager.registerAction(
+                        actionId=actionId,
+                        displayName=f'{positionerName} {axis} {label}',
+                        callback=(lambda pName=positionerName, ax=axis, d=direction:
+                                  positionerWidget.stepAxis(pName, ax, d)),
+                        defaultKeySequence=defaultKey,
+                        scope=ShortcutScope.Application,
+                        owner=positionerWidget,
+                        initiallyBound=(defaultKey is not None)
+                    )
+    
     def closeEvent(self):
         self.__logger.info('Shutting down')
         try:

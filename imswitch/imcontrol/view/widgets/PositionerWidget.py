@@ -1,5 +1,4 @@
 from qtpy import QtCore, QtWidgets
-from imswitch.imcommon.model import initLogger, shortcut
 from imswitch.imcontrol.view import guitools as guitools
 from .basewidgets import Widget
 
@@ -16,11 +15,6 @@ class PositionerWidget(Widget):
         super().__init__(*args, **kwargs)
         self.numPositioners = 0
         self.pars = {}
-        # axis (upper) -> (positionerName, axis, explicit). Two registries: the
-        # primary one drives the Ctrl+Arrow shortcuts, the secondary one drives
-        # the Ctrl+Shift+Arrow shortcuts.
-        self._axisRegistry = {}
-        self._axisRegistrySecondary = {}
         self.gridContainer = QtWidgets.QWidget()
         self.grid = QtWidgets.QGridLayout()
         self.gridContainer.setLayout(self.grid)
@@ -89,9 +83,6 @@ class PositionerWidget(Widget):
                 lambda *args, axis=axis: self.sigStepDownClicked.emit(positionerName, axis)
             )
 
-            # Register axis for keyboard shortcuts.
-            self._registerAxisShortcut(positionerName, axis, shortcutModifier)
-
             if speed:
                 self.pars['Speed'] = QtWidgets.QLabel(f'<strong>{0:.2f} µm/s</strong>')
                 self.pars['Speed'].setTextFormat(QtCore.Qt.RichText)
@@ -135,120 +126,21 @@ class PositionerWidget(Widget):
         parNameSuffix = self._getParNameSuffix(positionerName, axis)
         self.pars['Position' + parNameSuffix].setText(f'<strong>{position:.2f} µm</strong>')
 
-    def _getParNameSuffix(self, positionerName, axis):
-        return f'{positionerName}--{axis}'
-
-    def _registerAxisShortcut(self, positionerName, axis, shortcutModifier):
-        """Bind a positioner axis to a keyboard-shortcut group.
-
-        ``shortcutModifier`` selects the target key group:
-
-        - ``"ctrl"``       -> Ctrl+Arrow set (primary registry, explicit claim)
-        - ``"ctrl-shift"`` -> Ctrl+Shift+Arrow set (secondary registry)
-        - anything else / ``None`` -> legacy behaviour: claim the Ctrl+Arrow set
-          on a first-come basis. An explicit ``"ctrl"`` positioner overrides such
-          a legacy claim regardless of registration order.
+    def stepAxis(self, positionerName, axis, direction):
+        """Trigger a step for the specified positioner axis.
+        
+        Args:
+            positionerName: Name of the positioner
+            axis: Axis name (e.g., 'X', 'Y', 'Z')
+            direction: 'plus' for positive direction, 'minus' for negative direction
         """
-        axisKey = axis.upper()
-        mod = (shortcutModifier or '').strip().lower().replace('+', '-')
-        if mod == 'ctrl':
-            registry, explicit = self._axisRegistry, True
-        elif mod in ('ctrl-shift', 'shift-ctrl'):
-            registry, explicit = self._axisRegistrySecondary, True
-        else:
-            registry, explicit = self._axisRegistry, False
-
-        existing = registry.get(axisKey)
-        if existing is None or (explicit and not existing[2]):
-            registry[axisKey] = (positionerName, axis, explicit)
-
-    def _emitStep(self, axisKey: str, up: bool, secondary: bool = False):
-        """Helper to emit step signal for the given axis key."""
-        registry = self._axisRegistrySecondary if secondary else self._axisRegistry
-        entry = registry.get(axisKey.upper())
-        if entry is None:
-            group = ' (secondary)' if secondary else ''
-            initLogger(self).debug(f'No positioner registered for axis {axisKey}{group}')
-            return
-        positionerName, axis = entry[0], entry[1]
-        if up:
+        if direction == 'plus':
             self.sigStepUpClicked.emit(positionerName, axis)
-        else:
+        elif direction == 'minus':
             self.sigStepDownClicked.emit(positionerName, axis)
 
-    @shortcut(actionId="positioner.X.plus", defaultKey="Ctrl+Right",
-              displayName="Positioner X +", initiallyBound=True)
-    def stepXPlus(self):
-        """Step X axis in positive direction."""
-        self._emitStep('X', up=True)
-
-    @shortcut(actionId="positioner.X.minus", defaultKey="Ctrl+Left",
-              displayName="Positioner X -", initiallyBound=True)
-    def stepXMinus(self):
-        """Step X axis in negative direction."""
-        self._emitStep('X', up=False)
-
-    @shortcut(actionId="positioner.Y.plus", defaultKey="Ctrl+Up",
-              displayName="Positioner Y +", initiallyBound=True)
-    def stepYPlus(self):
-        """Step Y axis in positive direction."""
-        self._emitStep('Y', up=True)
-
-    @shortcut(actionId="positioner.Y.minus", defaultKey="Ctrl+Down",
-              displayName="Positioner Y -", initiallyBound=True)
-    def stepYMinus(self):
-        """Step Y axis in negative direction."""
-        self._emitStep('Y', up=False)
-
-    @shortcut(actionId="positioner.Z.plus", defaultKey="Ctrl+Y",
-              displayName="Positioner Z +", initiallyBound=True)
-    def stepZPlus(self):
-        """Step Z axis in positive direction."""
-        self._emitStep('Z', up=True)
-
-    @shortcut(actionId="positioner.Z.minus", defaultKey="Ctrl+A",
-              displayName="Positioner Z -", initiallyBound=True)
-    def stepZMinus(self):
-        """Step Z axis in negative direction."""
-        self._emitStep('Z', up=False)
-
-    # --- Secondary set: drives positioners declaring shortcutModifier "ctrl-shift" ---
-
-    @shortcut(actionId="positioner.secondary.X.plus", defaultKey="Ctrl+Shift+Right",
-              displayName="Positioner (2nd) X +", initiallyBound=True)
-    def stepXPlusSecondary(self):
-        """Step the secondary positioner's X axis in positive direction."""
-        self._emitStep('X', up=True, secondary=True)
-
-    @shortcut(actionId="positioner.secondary.X.minus", defaultKey="Ctrl+Shift+Left",
-              displayName="Positioner (2nd) X -", initiallyBound=True)
-    def stepXMinusSecondary(self):
-        """Step the secondary positioner's X axis in negative direction."""
-        self._emitStep('X', up=False, secondary=True)
-
-    @shortcut(actionId="positioner.secondary.Y.plus", defaultKey="Ctrl+Shift+Up",
-              displayName="Positioner (2nd) Y +", initiallyBound=True)
-    def stepYPlusSecondary(self):
-        """Step the secondary positioner's Y axis in positive direction."""
-        self._emitStep('Y', up=True, secondary=True)
-
-    @shortcut(actionId="positioner.secondary.Y.minus", defaultKey="Ctrl+Shift+Down",
-              displayName="Positioner (2nd) Y -", initiallyBound=True)
-    def stepYMinusSecondary(self):
-        """Step the secondary positioner's Y axis in negative direction."""
-        self._emitStep('Y', up=False, secondary=True)
-
-    @shortcut(actionId="positioner.secondary.Z.plus", defaultKey="Ctrl+Shift+Y",
-              displayName="Positioner (2nd) Z +", initiallyBound=True)
-    def stepZPlusSecondary(self):
-        """Step the secondary positioner's Z axis in positive direction."""
-        self._emitStep('Z', up=True, secondary=True)
-
-    @shortcut(actionId="positioner.secondary.Z.minus", defaultKey="Ctrl+Shift+A",
-              displayName="Positioner (2nd) Z -", initiallyBound=True)
-    def stepZMinusSecondary(self):
-        """Step the secondary positioner's Z axis in negative direction."""
-        self._emitStep('Z', up=False, secondary=True)
+    def _getParNameSuffix(self, positionerName, axis):
+        return f'{positionerName}--{axis}'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
