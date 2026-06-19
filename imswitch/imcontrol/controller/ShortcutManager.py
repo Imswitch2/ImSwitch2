@@ -316,13 +316,20 @@ class ShortcutManager:
         """Dispose all Qt shortcut objects correctly (no setParent(None) leak)."""
         for actionId, objs in self._qtObjects.items():
             for obj in objs:
-                # Disconnect signals
+                # Disconnect signals (QShortcut uses activated, QAction uses triggered)
                 try:
-                    obj.triggered.disconnect()
-                except (TypeError, RuntimeError):
+                    if hasattr(obj, 'activated'):
+                        obj.activated.disconnect()
+                    elif hasattr(obj, 'triggered'):
+                        obj.triggered.disconnect()
+                except (AttributeError, TypeError, RuntimeError):
                     pass  # Already disconnected or object deleted
                     
-                # Schedule for deletion
+                # Disable and schedule for deletion
+                try:
+                    obj.setEnabled(False)
+                except (AttributeError, RuntimeError):
+                    pass  # Object may already be deleted
                 obj.deleteLater()
                 
         self._qtObjects.clear()
@@ -370,6 +377,102 @@ class ShortcutManager:
         # Remove override
         self._configOverrides.pop(actionId, None)
         self.__logger.debug(f'Reset action {actionId} to code default')
+        
+    def addOrUpdateAction(
+        self,
+        actionId: str,
+        displayName: str,
+        callback: Callable,
+        keySequence: Union[str, List[str], None],
+        scope: ShortcutScope = ShortcutScope.Application,
+        owner: Optional[QtCore.QObject] = None,
+        priority: int = 1,
+        shortcutsMenu: Optional[QtWidgets.QMenu] = None,
+        mainWindow: Optional[QtWidgets.QMainWindow] = None
+    ) -> None:
+        """Add or update a single action at runtime (for dynamic shortcuts like mode switches).
+        
+        This is used for shortcuts that change dynamically (e.g., when modes are added/renamed/deleted).
+        The action is registered/updated in the catalog, bound with the specified priority,
+        and Qt objects are created immediately if menu/window are provided.
+        
+        Args:
+            actionId: Stable, namespaced action identifier
+            displayName: Human-readable name for the Shortcuts menu
+            callback: Function to call when the shortcut is activated
+            keySequence: Key sequence(s) to bind, or None if unbound
+            scope: Shortcut scope (Application, Window, WidgetLocal, PressRelease)
+            owner: Qt object for lifecycle (parent for the QShortcut/QAction)
+            priority: Priority level (1=explicit/highest, 2=code default)
+            shortcutsMenu: Optional menu to add the action to
+            mainWindow: Optional main window for Application-scoped shortcuts
+        """
+        # Remove existing Qt objects for this action
+        self.removeAction(actionId, catalogOnly=True)
+        
+        # Register the action in the catalog
+        action = ShortcutAction(
+            actionId=actionId,
+            displayName=displayName,
+            defaultKeySequence=keySequence,
+            scope=scope,
+            owner=owner,
+            enabledPredicate=None,
+            activationSource=None,
+            callback=callback,
+            initiallyBound=True
+        )
+        self._catalog[actionId] = action
+        
+        # Set the effective binding with the specified priority
+        if keySequence is not None:
+            self._effectiveBindings[actionId] = keySequence
+            
+            # If menu/window provided, create Qt objects immediately
+            if shortcutsMenu is not None and mainWindow is not None:
+                sequences = [keySequence] if isinstance(keySequence, str) else keySequence
+                for seq in sequences:
+                    self._createQtObject(action, seq, shortcutsMenu, mainWindow)
+        
+        self.__logger.debug(f'Added/updated action {actionId} with key {keySequence}')
+        
+    def removeAction(self, actionId: str, catalogOnly: bool = False) -> None:
+        """Remove an action at runtime (for dynamic shortcuts like mode switches).
+        
+        Disposes the Qt objects for this action and optionally removes it from the catalog.
+        
+        Args:
+            actionId: Action to remove
+            catalogOnly: If True, only removes from catalog but keeps Qt objects
+        """
+        # Dispose Qt objects for this action
+        if not catalogOnly and actionId in self._qtObjects:
+            objs = self._qtObjects[actionId]
+            for obj in objs:
+                # Disconnect signals
+                try:
+                    if hasattr(obj, 'activated'):
+                        obj.activated.disconnect()
+                    elif hasattr(obj, 'triggered'):
+                        obj.triggered.disconnect()
+                except (AttributeError, TypeError, RuntimeError):
+                    pass
+                    
+                # Disable and schedule for deletion
+                try:
+                    obj.setEnabled(False)
+                except (AttributeError, RuntimeError):
+                    pass
+                obj.deleteLater()
+                
+            del self._qtObjects[actionId]
+        
+        # Remove from catalog and bindings
+        self._catalog.pop(actionId, None)
+        self._effectiveBindings.pop(actionId, None)
+        self._configOverrides.pop(actionId, None)
+        
+        self.__logger.debug(f'Removed action {actionId}')
         
     def getConflictWarnings(self) -> List[str]:
         """Get list of conflict warnings from last build."""

@@ -334,6 +334,89 @@ class TestShortcutManager:
         assert action.actionId == 'view.toggleLiveView'
         assert action.displayName == 'Toggle Live View'
         assert action.defaultKeySequence == 'Ctrl+L'
+        
+    def test_dispose_qshortcut_no_error(self, mock_main_window, qtbot):
+        """Test that disposing a QShortcut (activated signal) raises no error (Phase 3d regression test).
+        
+        Before Phase 3d fix, dispose() only handled QAction's triggered signal,
+        causing AttributeError when disposing QShortcut objects.
+        """
+        manager = ShortcutManager()
+        
+        # Manually create a QShortcut and register it as if it were a mode shortcut
+        callback = Mock()
+        qshortcut = QtWidgets.QShortcut(QtCore.Qt.Key_F3, mock_main_window)
+        qshortcut.setContext(QtCore.Qt.ApplicationShortcut)
+        qshortcut.activated.connect(callback)
+        
+        # Simulate the manager tracking this QShortcut
+        manager._qtObjects['test.shortcut'] = [qshortcut]
+        
+        # Dispose should not raise AttributeError
+        try:
+            manager.dispose()
+            disposed_successfully = True
+        except AttributeError:
+            disposed_successfully = False
+            
+        assert disposed_successfully, "dispose() raised AttributeError on QShortcut"
+        assert len(manager._qtObjects) == 0, "QShortcut not removed from catalog"
+        
+        # Give Qt event loop time to process deleteLater
+        qtbot.wait(10)
+        
+    def test_add_or_update_action(self, mock_shortcuts_menu, mock_main_window):
+        """Test addOrUpdateAction dynamic API (Phase 3d)."""
+        manager = ShortcutManager()
+        
+        callback = Mock()
+        manager.addOrUpdateAction(
+            actionId='mode.TestMode',
+            displayName='Apply Mode: TestMode',
+            callback=callback,
+            keySequence='F4',
+            scope=ShortcutScope.Application,
+            owner=mock_main_window,
+            priority=1,
+            shortcutsMenu=mock_shortcuts_menu,
+            mainWindow=mock_main_window
+        )
+        
+        # Action should be in catalog
+        assert 'mode.TestMode' in manager._catalog
+        # Action should be bound
+        assert 'mode.TestMode' in manager._effectiveBindings
+        assert manager._effectiveBindings['mode.TestMode'] == 'F4'
+        
+    def test_remove_action(self, mock_shortcuts_menu, mock_main_window, qtbot):
+        """Test removeAction dynamic API (Phase 3d)."""
+        manager = ShortcutManager()
+        
+        callback = Mock()
+        manager.addOrUpdateAction(
+            actionId='mode.TestMode',
+            displayName='Apply Mode: TestMode',
+            callback=callback,
+            keySequence='F4',
+            scope=ShortcutScope.Application,
+            owner=mock_main_window,
+            priority=1,
+            shortcutsMenu=mock_shortcuts_menu,
+            mainWindow=mock_main_window
+        )
+        
+        # Remove the action
+        manager.removeAction('mode.TestMode')
+        
+        # Action should be removed from catalog
+        assert 'mode.TestMode' not in manager._catalog
+        # Action should be removed from bindings
+        assert 'mode.TestMode' not in manager._effectiveBindings
+        # Qt objects should be disposed
+        assert 'mode.TestMode' not in manager._qtObjects
+        
+        # Give Qt event loop time to process deleteLater
+        qtbot.wait(10)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

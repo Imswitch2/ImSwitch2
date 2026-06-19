@@ -165,6 +165,14 @@ class ImConMainController(MainController):
         # Update File menu to show effective shortcuts
         self.__mainView.updateMenuActionShortcuts(self.__shortcutManager.getEffectiveBindings())
 
+        # Inject ShortcutManager into SetupModesController (Phase 3d)
+        if 'SetupModes' in self.controllers:
+            self.controllers['SetupModes'].setShortcutManager(
+                self.__shortcutManager,
+                self.__mainView.shortcutsMenu,
+                self.__mainView
+            )
+
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
 
