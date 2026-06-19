@@ -34,9 +34,10 @@ all bindings are fixed at source-compile time; very little is config-driven.
   - **Only widgets are scanned**, not controllers or managers.
   - `generateShortcuts` keys the dict by **method name**, and raises `NameError`
     on duplicate method names across widgets — a fragile global namespace.
-- Currently decorated: `PositionerWidget` (Ctrl+Arrows, Ctrl+Shift+Arrows,
-  Ctrl+Y/Ctrl+A for Z), `SettingsWidget` (Ctrl+N, next detector), `ImageWidget`
-  (Ctrl+U, update levels).
+- Currently decorated in `imcontrol`: `PositionerWidget` (Ctrl+Arrows,
+  Ctrl+Shift+Arrows, Ctrl+Y/Ctrl+A for Z), `SettingsWidget` (Ctrl+N, next
+  detector), `ImageWidget` (Ctrl+U, update levels), `ViewWidget` (Ctrl+L,
+  live view), and `RecordingWidget` (Ctrl+R, record).
 - **Dead bindings:** `GRBLStageManager` declares `@shortcut` methods (arrows,
   `+`/`-`) but managers are NOT in `mainView.widgets`, so they are never
   collected. (Confirm intent — see open question Q4.)
@@ -69,8 +70,14 @@ all bindings are fixed at source-compile time; very little is config-driven.
 - `ImConMainView` menu `QAction`s: `Ctrl+P` (load params), `Ctrl+Shift+S` /
   `Ctrl+Shift+L` (save/load widget states).
 - `LeicaStandController`: `F2` hardcoded `QShortcut` (`WindowShortcut`).
-- Local `keyPressEvent` handlers in `SLMDisplay`, `BSC203Widget`, several scan
-  widgets, and `LaserWidget` — invisible to any registry, not rebindable.
+- Local `keyPressEvent`/`keyReleaseEvent` handlers in `SLMDisplay` and
+  `BSC203Widget` — invisible to any registry, not rebindable. `BSC203Widget`
+  is press/release motion control, so it is not the same shape as one-shot
+  shortcut activation.
+- Outside `imcontrol`, there are also hardcoded module-local shortcuts (for
+  example ImProcess and ImScripting menu actions). Decide in Phase 0 whether
+  this effort is strictly `imcontrol`-scoped or whether those modules get their
+  own manager/adapters later.
 
 ### 1.5 Cross-cutting problems
 
@@ -96,9 +103,20 @@ manager that owns Qt binding/lifecycle/conflict-handling.
 - Every shortcut-able action gets a **stable, namespaced action ID**, e.g.
   `positioner.X.plus`, `settings.nextDetector`, `image.updateLevels`,
   `leica.toggleMode`, `app.saveWidgetStates`, `mode.<modeName>`.
-- `@shortcut` is extended (or wrapped) to declare `(actionId, defaultKey, name)`.
-  The default key is the code-level fallback; the action ID is the binding key
-  for config. Keep backward compatibility for existing decorator call sites.
+- The action contract includes more than a key:
+  - `actionId`
+  - display name
+  - default key sequence(s)
+  - scope/context (`ApplicationShortcut`, `WindowShortcut`, widget-local, or
+    press/release handler)
+  - owning widget/window, when needed for Qt binding
+  - enabled predicate / availability metadata
+  - activation source metadata, where callbacks need to distinguish shortcut
+    activation from menu/button activation
+- `@shortcut` is extended (or wrapped) to declare `(actionId, defaultKey, name,
+  metadata...)`. The default key is the code-level fallback; the action ID is
+  the binding key for config. Keep backward compatibility for existing decorator
+  call sites.
 
 ### 2.2 Config override layer
 
@@ -111,20 +129,24 @@ manager that owns Qt binding/lifecycle/conflict-handling.
   `shortcutModifier`), and/or a per-user override file (like
   `imcontrol_setup_mode_settings.json`). Recommended: setup config as the base,
   optional user-override file layered on top.
+- If the user-override file is adopted, the `ShortcutManager` owns the merge in
+  Phase 2: code defaults < setup config < user override. The editor in Phase 4
+  only writes through that already-tested persistence path.
 
 ### 2.3 Central `ShortcutManager`
 
 A single owner that:
 - collects default-decorated actions across widgets **and** controllers **and**
-  managers (fixing the widgets-only scope),
+  managers (fixing the widgets-only scope), but can catalog an action without
+  binding it yet,
 - merges config overrides over defaults to compute the effective binding per
   action ID,
-- creates the Qt objects with a consistent, documented context, and **disposes
-  them correctly** (no `setParent(None)` leak),
+- creates the Qt objects with each action's documented scope/context, and
+  **disposes them correctly** (no `setParent(None)` leak),
 - detects and reports conflicts (two action IDs → same sequence) instead of
   emitting Qt "ambiguous shortcut" warnings,
 - builds the `&Shortcuts` menu from the effective bindings,
-- exposes an API to query/rebind/reset at runtime (for the editor in Phase 5).
+- exposes an API to query/rebind/reset at runtime (for the editor in Phase 4).
 
 ### 2.4 Migrating the outliers
 
@@ -132,6 +154,11 @@ Bring menu actions, LeicaStand F2, the positioner jog, and (optionally)
 setup-mode shortcuts under the manager. Convert ad-hoc `keyPressEvent` handlers
 where they represent user-facing actions worth rebinding; leave purely-local
 widget key handling (e.g. canvas interactions) alone.
+
+Important migration guard: widening discovery must not implicitly activate
+currently-dead bindings. Manager-level shortcuts such as the GRBL arrow-key jog
+must be cataloged first and only enabled during an explicit migration step (or
+behind an explicit config/default decision).
 
 ---
 
@@ -156,6 +183,15 @@ widget key handling (e.g. canvas interactions) alone.
 - **Q6 — Conflict policy.** On a config conflict (two actions, same key): hard
   error at load, last-wins, or warn-and-disable-both? Recommendation:
   warn + keep the higher-priority/explicit binding, disable the other.
+- **Q7 — Scope boundary.** Is this effort `imcontrol` only, or should it also
+  define shared machinery for ImProcess/ImScripting hardcoded menu shortcuts?
+- **Q8 — Action metadata.** Confirm the required per-action metadata: Qt
+  context/scope, owner widget/window, enabled predicate, and activation source
+  payload.
+- **Q9 — Setup-mode compatibility.** Preserve the current setup-mode behavior
+  where duplicate mode shortcuts prompt to replace the other mode, and shortcut
+  application passes `source="shortcut"` for safety confirmation logic. Decide
+  how mode-vs-global conflicts behave.
 
 ---
 
@@ -167,24 +203,34 @@ Phases are dependency-ordered. Within a phase, task units are self-contained
 workflow).
 
 ### Phase 0 — Decisions + spec (single owner, blocking)
-- Resolve Q1–Q6. Produce `docs/shortcuts_contract_spec.md`: the extended
-  `@shortcut`/action-ID contract, the config schema, the ShortcutManager API,
-  conflict policy, and the migration list. Phase 1+ consume it verbatim.
+- Resolve Q1–Q9. Produce `docs/shortcuts_contract_spec.md`: the extended
+  `@shortcut`/action-ID contract, the required action metadata, the config and
+  user-override schema/merge order, the ShortcutManager API, conflict policy,
+  setup-mode compatibility rules, and the migration list. Phase 1+ consume it
+  verbatim.
+- Produce an authoritative inventory table with action ID, current source,
+  default key, scope/context, owner, enabled predicate, migration phase, and
+  whether the action is initially bound or only cataloged.
 
-### Phase 1 — Action IDs + widened collection (single owner, blocking)
+### Phase 1 — Action IDs + catalog-only widened collection (single owner, blocking)
 - Extend the decorator to carry stable action IDs (keep current call sites
   working). Replace method-name keying with action-ID keying in
   `generateShortcuts` (or its successor).
-- Widen collection to controllers + managers (or relocate manager shortcuts) so
-  nothing is silently dropped (resolves Q4). No user-visible behavior change;
-  defaults unchanged.
+- Widen collection to controllers + managers (or relocate manager shortcuts) in
+  catalog-only mode so nothing is silently dropped (resolves Q4) while keeping
+  the actually-bound default set unchanged. No user-visible behavior change;
+  currently-dead manager bindings remain unbound unless explicitly enabled by
+  the migration inventory.
 
 ### Phase 2 — ShortcutManager + config schema (single owner, blocking)
 - Add `ShortcutManager` (own the build/merge/conflict/dispose lifecycle) and the
   `shortcuts` config schema + validation in `SetupInfo`.
+- If Q1 chooses user overrides, add the user-override file loader/writer and
+  tested merge order here, not in the editor phase.
 - Route the `&Shortcuts` menu through the manager; effective bindings =
-  defaults + config overrides. Add tests: override applies, unknown id warns,
-  conflict handled per policy, disposal leaves no stale binding.
+  defaults + setup config overrides + optional user overrides. Add tests:
+  override applies, unknown id warns, conflict handled per policy, user
+  override wins setup config when enabled, disposal leaves no stale binding.
 
 ### Phase 3 — Migrate outliers (independent task units)
 - 3a: menu actions (Ctrl+P, Ctrl+Shift+S/L) → action IDs + manager.
@@ -192,8 +238,13 @@ workflow).
 - 3c: positioner jog → per-action bindings via manager, `shortcutModifier`
   back-compat alias (resolves Q3).
 - 3d: setup-mode shortcuts → through the manager (resolves Q5; fixes the
-  disposal leak as part of the unified lifecycle).
-- 3e (optional): selected `keyPressEvent` handlers → rebindable actions.
+  disposal leak as part of the unified lifecycle; preserves `source="shortcut"`
+  and existing duplicate-mode prompt semantics unless Q9 decides otherwise).
+- 3e (optional): selected `keyPressEvent` handlers → rebindable actions. Treat
+  press/release motion controls as a separate action shape; do not convert them
+  to one-shot `activated` callbacks by accident.
+- 3f (optional): GRBL manager shortcuts → explicit manager-level migration or
+  removal if they are confirmed obsolete.
 These depend only on Phase 2 and are mutually independent.
 
 ### Phase 4 — Editor + docs
@@ -206,18 +257,19 @@ These depend only on Phase 2 and are mutually independent.
 ## 5. Suggested agent task breakdown
 
 Self-contained units, dependency-ordered:
-1. `phase0_shortcuts_contract_spec` — decisions Q1–Q6 + spec doc. (blocking)
-2. `phase1_action_ids_and_collection` — decorator action IDs + widen collection. (blocking)
+1. `phase0_shortcuts_contract_spec` — decisions Q1–Q9 + spec doc + inventory table. (blocking)
+2. `phase1_action_ids_and_catalog` — decorator action IDs + widened catalog-only collection. (blocking)
 3. `phase2_shortcut_manager_and_config` — ShortcutManager + config schema + menu rewire + tests. (blocking)
 4. `phase3a_menu_actions_migrate`
 5. `phase3b_leicastand_migrate`
 6. `phase3c_positioner_jog_migrate`
 7. `phase3d_setup_mode_shortcuts_migrate` (also fixes the QShortcut disposal leak)
 8. `phase3e_keypress_handlers_migrate` (optional)
-9. `phase4_shortcut_editor_and_docs`
+9. `phase3f_grbl_manager_shortcuts_decide_or_migrate` (optional)
+10. `phase4_shortcut_editor_and_docs`
 
-Tasks 4–8 (Phase 3) are the independent, fan-out-friendly block; 1–3 are hard
-prerequisites and 9 depends on Phase 3.
+Tasks 4–9 (Phase 3) are the independent, fan-out-friendly block; 1–3 are hard
+prerequisites and 10 depends on Phase 3.
 
 Note (lessons carried from the state-persistence effort): review every agent
 task before merge — verify any file:line citations (agents fabricate them),
