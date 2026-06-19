@@ -289,7 +289,8 @@ class ImageWidget(QtWidgets.QWidget):
         if overlays is not None and item in overlays:
             overlays.remove(item)
 
-    @shortcut('Ctrl+U', "Update levels")
+    @shortcut(actionId="image.updateLevels", defaultKey="Ctrl+U",
+              displayName="Update levels", initiallyBound=True)
     def updateLevelsButton(self):
         self.updateLevelsWidget.updateLevelsButton.click()
 

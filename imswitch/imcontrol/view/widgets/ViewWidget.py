@@ -33,7 +33,8 @@ class ViewWidget(Widget):
         """ Sets whether the LiveView is active. """
         self.liveviewButton.setChecked(active)
 
-    @shortcut('Ctrl+L', "Liveview")
+    @shortcut(actionId="view.toggleLiveView", defaultKey="Ctrl+L",
+              displayName="Liveview", initiallyBound=True)
     def toggleLiveviewButton(self):
         self.liveviewButton.toggle()
 
