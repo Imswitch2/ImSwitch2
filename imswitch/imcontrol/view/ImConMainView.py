@@ -32,13 +32,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.factory = widgets.WidgetFactory(options)
         self.docks = {}
         self.widgets = {}
-        self.shortcuts = {}
 
         # Menu Bar
         menuBar = self.menuBar()
         file = menuBar.addMenu('&File')
         tools = menuBar.addMenu('&Tools')
-        self.shortcuts = menuBar.addMenu('&Shortcuts')
+        self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
 
         self.loadParamsAction = QtWidgets.QAction('Load parameters from saved HDF5 file…', self)
         self.loadParamsAction.setShortcut('Ctrl+P')
@@ -142,16 +141,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.resize(800, 600)
 
     def addShortcuts(self, shortcuts):
-        """Bind shortcuts from the catalog. Only binds actions where 
-        initiallyBound=True and a defaultKeySequence exists."""
-        from imswitch.imcommon.model import getBoundShortcuts
+        """Legacy method - shortcuts are now managed by ShortcutManager.
         
-        boundShortcuts = getBoundShortcuts(shortcuts)
-        for actionId, shortcutAction in boundShortcuts.items():
-            action = QtWidgets.QAction(shortcutAction.displayName, self)
-            action.setShortcut(shortcutAction.defaultKeySequence)
-            action.triggered.connect(shortcutAction.callback)
-            self.shortcuts.addAction(action)
+        This method is retained for backward compatibility but is no longer used.
+        The ShortcutManager handles all shortcut binding and menu population.
+        """
+        pass
 
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()

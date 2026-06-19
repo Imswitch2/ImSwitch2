@@ -499,6 +499,11 @@ class SetupInfo:
     triggerScope: Optional[TriggerScopeInfo] = field(default_factory=lambda: None)
     """ TriggerScope DAQ board settings. Required to use TriggerScope hardware. """
 
+    shortcuts: Optional[Dict[str, Union[str, List[str], None]]] = field(default_factory=lambda: None)
+    """ Keyboard shortcut configuration. Maps action IDs to key sequences. 
+    Each value can be a single string (e.g., "Ctrl+R"), a list of strings for 
+    multiple sequences, or null to explicitly disable a default binding. """
+
     _catchAll: CatchAll = None
 
     def getDevice(self, deviceName):

@@ -17,6 +17,7 @@ from .CommunicationChannel import CommunicationChannel
 from .MasterController import MasterController
 from .PickSetupController import PickSetupController
 from .SetupModeController import SetupModeController
+from .ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
 
 
@@ -96,8 +97,7 @@ class ImConMainController(MainController):
                                                   f' is not included in your currently active'
                                                   f' hardware setup file.'
         )
-        # Generate Shortcuts - scan widgets, controllers, and managers
-        self.__shortcuts = None
+        # Generate Shortcuts via ShortcutManager
         shorcutObjs = []
         shorcutObjs.extend(self.__mainView.widgets.values())
         shorcutObjs.extend(self.controllers.values())
@@ -108,8 +108,15 @@ class ImConMainController(MainController):
         
         # Additional manager types can be added here as needed
         
-        self.__shortcuts = generateShortcuts(shorcutObjs)
-        self.__mainView.addShortcuts(self.__shortcuts)
+        # Build catalog from decorated methods
+        catalog = generateShortcuts(shorcutObjs)
+        
+        # Create ShortcutManager and wire it up
+        self.__shortcutManager = ShortcutManager()
+        self.__shortcutManager.collect(catalog)
+        self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
+        self.__shortcutManager.computeEffectiveBindings()
+        self.__shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
 
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
@@ -134,8 +141,8 @@ class ImConMainController(MainController):
         return self.__api
 
     @property
-    def shortcuts(self):
-        return self.__shortcuts
+    def shortcutManager(self):
+        return self.__shortcutManager
 
     def loadParamsFromHDF5(self):
         """ Set detector, positioner, laser etc. params from values saved in a
