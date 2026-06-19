@@ -142,6 +142,19 @@ class ImConMainController(MainController):
             owner=self.__mainView
         )
         
+        # Register LeicaStand F2 toggle (Phase 3b migration)
+        if 'LeicaStand' in self.controllers:
+            leicaController = self.controllers['LeicaStand']
+            if hasattr(leicaController, '_widget') and hasattr(leicaController, 'toggleMode'):
+                self.__shortcutManager.registerAction(
+                    actionId='leica.toggleMode',
+                    displayName='Leica: toggle mode',
+                    callback=leicaController.toggleMode,
+                    defaultKeySequence='F2',
+                    scope=ShortcutScope.Window,
+                    owner=leicaController._widget
+                )
+        
         self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
         self.__shortcutManager.computeEffectiveBindings()
         self.__shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
