@@ -158,18 +158,22 @@ def test_generate_shortcuts_picks_up_all_six(qtbot):
     shortcuts = generateShortcuts([widget])
 
     # Primary (Ctrl) + secondary (Ctrl+Shift) sets = 12 shortcuts.
-    expected_keys = {
-        'stepXPlus', 'stepXMinus',
-        'stepYPlus', 'stepYMinus',
-        'stepZPlus', 'stepZMinus',
-        'stepXPlusSecondary', 'stepXMinusSecondary',
-        'stepYPlusSecondary', 'stepYMinusSecondary',
-        'stepZPlusSecondary', 'stepZMinusSecondary',
+    # With Phase 1, these are keyed by actionId (positioner.X.plus, etc.)
+    expected_action_ids = {
+        'positioner.X.plus', 'positioner.X.minus',
+        'positioner.Y.plus', 'positioner.Y.minus',
+        'positioner.Z.plus', 'positioner.Z.minus',
+        'positioner.secondary.X.plus', 'positioner.secondary.X.minus',
+        'positioner.secondary.Y.plus', 'positioner.secondary.Y.minus',
+        'positioner.secondary.Z.plus', 'positioner.secondary.Z.minus',
     }
 
     actual_keys = set(shortcuts.keys())
-    assert expected_keys.issubset(actual_keys), f"Missing shortcuts: {expected_keys - actual_keys}"
-    assert shortcuts['stepXPlusSecondary']['key'] == 'Ctrl+Shift+Right'
+    assert expected_action_ids.issubset(actual_keys), f"Missing shortcuts: {expected_action_ids - actual_keys}"
+    
+    # Check one of the shortcuts has the correct key binding
+    secondary_x_plus = shortcuts['positioner.secondary.X.plus']
+    assert secondary_x_plus.defaultKeySequence == 'Ctrl+Shift+Right'
 
 
 def test_explicit_modifier_targets_named_positioner(qtbot):
@@ -218,3 +222,48 @@ def test_secondary_set_empty_without_modifier(qtbot):
     # Primary still works as before (legacy first-wins)
     widget.stepXPlus()
     assert up == [('Stage', 'X')]
+
+
+def test_bound_set_excludes_grbl_manager_actions(qtbot):
+    """Test that GRBL manager shortcuts are cataloged but NOT bound.
+    
+    This is critical for Phase 1: ensure the set of ACTUALLY-BOUND shortcuts
+    matches prior behavior and does NOT include catalog-only manager actions.
+    """
+    from imswitch.imcommon.model import getBoundShortcuts
+    
+    # Create a mock GRBL manager with catalog-only shortcuts
+    class MockGRBLManager:
+        from imswitch.imcommon.model import shortcut
+        
+        @shortcut(actionId="grbl.jog.X.plus", defaultKey="Up",
+                  displayName="Move up", initiallyBound=False)
+        def key_moveXup(self):
+            pass
+        
+        @shortcut(actionId="grbl.jog.X.minus", defaultKey="Down",
+                  displayName="Move down", initiallyBound=False)
+        def key_moveXdown(self):
+            pass
+    
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+    manager = MockGRBLManager()
+    
+    # Collect from both widget and manager
+    allShortcuts = generateShortcuts([widget, manager])
+    
+    # GRBL actions should be in the full catalog
+    assert "grbl.jog.X.plus" in allShortcuts
+    assert "grbl.jog.X.minus" in allShortcuts
+    
+    # Get bound subset
+    boundShortcuts = getBoundShortcuts(allShortcuts)
+    
+    # GRBL actions must NOT be in the bound subset
+    assert "grbl.jog.X.plus" not in boundShortcuts
+    assert "grbl.jog.X.minus" not in boundShortcuts
+    
+    # Widget shortcuts should be in the bound subset
+    assert "positioner.X.plus" in boundShortcuts
+    assert "positioner.Y.plus" in boundShortcuts

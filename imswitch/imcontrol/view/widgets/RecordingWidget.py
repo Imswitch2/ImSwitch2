@@ -444,7 +444,8 @@ class RecordingWidget(Widget):
     def updateRecLapseNum(self, lapseNum):
         self.currentLapse.setText(str(lapseNum) + ' /')
 
-    @shortcut('Ctrl+R', "Record")
+    @shortcut(actionId="recording.toggleRecord", defaultKey="Ctrl+R",
+              displayName="Record", initiallyBound=True)
     def toggleRecButton(self):
         self.recButton.toggle()
 

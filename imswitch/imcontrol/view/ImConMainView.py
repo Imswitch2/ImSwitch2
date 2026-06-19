@@ -142,10 +142,15 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.resize(800, 600)
 
     def addShortcuts(self, shortcuts):
-        for s in shortcuts.values():
-            action = QtWidgets.QAction(s["name"], self)
-            action.setShortcut(s["key"])
-            action.triggered.connect(s["callback"])
+        """Bind shortcuts from the catalog. Only binds actions where 
+        initiallyBound=True and a defaultKeySequence exists."""
+        from imswitch.imcommon.model import getBoundShortcuts
+        
+        boundShortcuts = getBoundShortcuts(shortcuts)
+        for actionId, shortcutAction in boundShortcuts.items():
+            action = QtWidgets.QAction(shortcutAction.displayName, self)
+            action.setShortcut(shortcutAction.defaultKeySequence)
+            action.triggered.connect(shortcutAction.callback)
             self.shortcuts.addAction(action)
 
     def showPickSetupDialogBlocking(self):

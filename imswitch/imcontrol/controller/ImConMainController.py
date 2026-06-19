@@ -96,9 +96,18 @@ class ImConMainController(MainController):
                                                   f' is not included in your currently active'
                                                   f' hardware setup file.'
         )
-        # Generate Shorcuts
+        # Generate Shortcuts - scan widgets, controllers, and managers
         self.__shortcuts = None
-        shorcutObjs = list(self.__mainView.widgets.values())
+        shorcutObjs = []
+        shorcutObjs.extend(self.__mainView.widgets.values())
+        shorcutObjs.extend(self.controllers.values())
+        
+        # Scan positioner managers (includes GRBLStageManager, etc.)
+        for _, positionerMgr in self.__masterController.positionersManager:
+            shorcutObjs.append(positionerMgr)
+        
+        # Additional manager types can be added here as needed
+        
         self.__shortcuts = generateShortcuts(shorcutObjs)
         self.__mainView.addShortcuts(self.__shortcuts)
 

@@ -176,64 +176,76 @@ class PositionerWidget(Widget):
         else:
             self.sigStepDownClicked.emit(positionerName, axis)
 
-    @shortcut("Ctrl+Right", "Positioner X +")
+    @shortcut(actionId="positioner.X.plus", defaultKey="Ctrl+Right",
+              displayName="Positioner X +", initiallyBound=True)
     def stepXPlus(self):
         """Step X axis in positive direction."""
         self._emitStep('X', up=True)
 
-    @shortcut("Ctrl+Left", "Positioner X -")
+    @shortcut(actionId="positioner.X.minus", defaultKey="Ctrl+Left",
+              displayName="Positioner X -", initiallyBound=True)
     def stepXMinus(self):
         """Step X axis in negative direction."""
         self._emitStep('X', up=False)
 
-    @shortcut("Ctrl+Up", "Positioner Y +")
+    @shortcut(actionId="positioner.Y.plus", defaultKey="Ctrl+Up",
+              displayName="Positioner Y +", initiallyBound=True)
     def stepYPlus(self):
         """Step Y axis in positive direction."""
         self._emitStep('Y', up=True)
 
-    @shortcut("Ctrl+Down", "Positioner Y -")
+    @shortcut(actionId="positioner.Y.minus", defaultKey="Ctrl+Down",
+              displayName="Positioner Y -", initiallyBound=True)
     def stepYMinus(self):
         """Step Y axis in negative direction."""
         self._emitStep('Y', up=False)
 
-    @shortcut("Ctrl+Y", "Positioner Z +")
+    @shortcut(actionId="positioner.Z.plus", defaultKey="Ctrl+Y",
+              displayName="Positioner Z +", initiallyBound=True)
     def stepZPlus(self):
         """Step Z axis in positive direction."""
         self._emitStep('Z', up=True)
 
-    @shortcut("Ctrl+A", "Positioner Z -")
+    @shortcut(actionId="positioner.Z.minus", defaultKey="Ctrl+A",
+              displayName="Positioner Z -", initiallyBound=True)
     def stepZMinus(self):
         """Step Z axis in negative direction."""
         self._emitStep('Z', up=False)
 
     # --- Secondary set: drives positioners declaring shortcutModifier "ctrl-shift" ---
 
-    @shortcut("Ctrl+Shift+Right", "Positioner (2nd) X +")
+    @shortcut(actionId="positioner.secondary.X.plus", defaultKey="Ctrl+Shift+Right",
+              displayName="Positioner (2nd) X +", initiallyBound=True)
     def stepXPlusSecondary(self):
         """Step the secondary positioner's X axis in positive direction."""
         self._emitStep('X', up=True, secondary=True)
 
-    @shortcut("Ctrl+Shift+Left", "Positioner (2nd) X -")
+    @shortcut(actionId="positioner.secondary.X.minus", defaultKey="Ctrl+Shift+Left",
+              displayName="Positioner (2nd) X -", initiallyBound=True)
     def stepXMinusSecondary(self):
         """Step the secondary positioner's X axis in negative direction."""
         self._emitStep('X', up=False, secondary=True)
 
-    @shortcut("Ctrl+Shift+Up", "Positioner (2nd) Y +")
+    @shortcut(actionId="positioner.secondary.Y.plus", defaultKey="Ctrl+Shift+Up",
+              displayName="Positioner (2nd) Y +", initiallyBound=True)
     def stepYPlusSecondary(self):
         """Step the secondary positioner's Y axis in positive direction."""
         self._emitStep('Y', up=True, secondary=True)
 
-    @shortcut("Ctrl+Shift+Down", "Positioner (2nd) Y -")
+    @shortcut(actionId="positioner.secondary.Y.minus", defaultKey="Ctrl+Shift+Down",
+              displayName="Positioner (2nd) Y -", initiallyBound=True)
     def stepYMinusSecondary(self):
         """Step the secondary positioner's Y axis in negative direction."""
         self._emitStep('Y', up=False, secondary=True)
 
-    @shortcut("Ctrl+Shift+Y", "Positioner (2nd) Z +")
+    @shortcut(actionId="positioner.secondary.Z.plus", defaultKey="Ctrl+Shift+Y",
+              displayName="Positioner (2nd) Z +", initiallyBound=True)
     def stepZPlusSecondary(self):
         """Step the secondary positioner's Z axis in positive direction."""
         self._emitStep('Z', up=True, secondary=True)
 
-    @shortcut("Ctrl+Shift+A", "Positioner (2nd) Z -")
+    @shortcut(actionId="positioner.secondary.Z.minus", defaultKey="Ctrl+Shift+A",
+              displayName="Positioner (2nd) Z -", initiallyBound=True)
     def stepZMinusSecondary(self):
         """Step the secondary positioner's Z axis in negative direction."""
         self._emitStep('Z', up=False, secondary=True)
