@@ -40,19 +40,16 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
 
         self.loadParamsAction = QtWidgets.QAction('Load parameters from saved HDF5 file…', self)
-        self.loadParamsAction.setShortcut('Ctrl+P')
         self.loadParamsAction.triggered.connect(self.sigLoadParamsFromHDF5)
         file.addAction(self.loadParamsAction)
         
         file.addSeparator()
         
         self.saveWidgetStateAction = QtWidgets.QAction('Save Widget States…', self)
-        self.saveWidgetStateAction.setShortcut('Ctrl+Shift+S')
         self.saveWidgetStateAction.triggered.connect(self.sigSaveWidgetState)
         file.addAction(self.saveWidgetStateAction)
         
         self.loadWidgetStateAction = QtWidgets.QAction('Load Widget States…', self)
-        self.loadWidgetStateAction.setShortcut('Ctrl+Shift+L')
         self.loadWidgetStateAction.triggered.connect(self.sigLoadWidgetState)
         file.addAction(self.loadWidgetStateAction)
 
@@ -147,6 +144,32 @@ class ImConMainView(QtWidgets.QMainWindow):
         The ShortcutManager handles all shortcut binding and menu population.
         """
         pass
+        
+    def updateMenuActionShortcuts(self, effectiveBindings: Dict[str, str]) -> None:
+        """Update File menu actions to display their effective shortcut keys.
+        
+        Updates the QAction text to include the shortcut hint (\tKey) for display.
+        The actual keyboard binding is managed by ShortcutManager to avoid conflicts.
+        
+        Args:
+            effectiveBindings: Dict mapping actionId to effective key sequence
+        """
+        actionInfo = {
+            'app.loadParams': (self.loadParamsAction, 'Load parameters from saved HDF5 file…'),
+            'app.saveWidgetStates': (self.saveWidgetStateAction, 'Save Widget States…'),
+            'app.loadWidgetStates': (self.loadWidgetStateAction, 'Load Widget States…'),
+        }
+        
+        for actionId, (qAction, baseText) in actionInfo.items():
+            keySeq = effectiveBindings.get(actionId)
+            if keySeq:
+                # Format: "Menu Text\tShortcut" - Qt displays shortcut on the right
+                if isinstance(keySeq, list):
+                    keySeq = keySeq[0]  # Use first key if multiple
+                qAction.setText(f"{baseText}\t{keySeq}")
+            else:
+                # Action is disabled or has no binding
+                qAction.setText(baseText)
 
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()

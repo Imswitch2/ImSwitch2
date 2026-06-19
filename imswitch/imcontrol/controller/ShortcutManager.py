@@ -28,6 +28,55 @@ class ShortcutManager:
         self._catalog = catalog.copy()
         self.__logger.debug(f'Collected {len(self._catalog)} shortcut actions')
         
+    def registerAction(
+        self,
+        actionId: str,
+        displayName: str,
+        callback: Callable,
+        defaultKeySequence: Union[str, List[str], None] = None,
+        scope: ShortcutScope = ShortcutScope.Application,
+        owner: Optional[QtCore.QObject] = None,
+        enabledPredicate: Optional[Callable[[], bool]] = None,
+        activationSource: Optional[Dict[str, Any]] = None,
+        initiallyBound: bool = True
+    ) -> None:
+        """Register a non-decorator action directly with the manager.
+        
+        Used for menu actions and other shortcuts that cannot use the decorator.
+        
+        Args:
+            actionId: Stable, namespaced action identifier
+            displayName: Human-readable name for the Shortcuts menu
+            callback: Function to call when the shortcut is activated
+            defaultKeySequence: Default key(s) from code, or None if unbound by default
+            scope: Shortcut scope (Application, Window, WidgetLocal, PressRelease)
+            owner: Qt object for lifecycle (parent for the QShortcut/QAction)
+            enabledPredicate: Optional function returning bool for action availability
+            activationSource: Optional metadata passed to the callback
+            initiallyBound: Whether the action should be bound by default
+        """
+        if actionId in self._catalog:
+            raise RuntimeError(
+                f"Duplicate shortcut actionId '{actionId}' detected. "
+                f"Already registered by {self._catalog[actionId].owner.__class__.__name__}. "
+                f"This is a programming error - each actionId must be unique."
+            )
+        
+        action = ShortcutAction(
+            actionId=actionId,
+            displayName=displayName,
+            defaultKeySequence=defaultKeySequence,
+            scope=scope,
+            owner=owner,
+            enabledPredicate=enabledPredicate,
+            activationSource=activationSource,
+            callback=callback,
+            initiallyBound=initiallyBound
+        )
+        
+        self._catalog[actionId] = action
+        self.__logger.debug(f'Registered action {actionId}')
+        
     def loadConfigOverrides(self, shortcuts: Optional[Dict[str, Union[str, List[str], None]]]) -> None:
         """Load shortcuts configuration from setup config.
         

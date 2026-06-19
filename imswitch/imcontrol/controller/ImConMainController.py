@@ -114,9 +114,40 @@ class ImConMainController(MainController):
         # Create ShortcutManager and wire it up
         self.__shortcutManager = ShortcutManager()
         self.__shortcutManager.collect(catalog)
+        
+        # Register menu actions (Phase 3a migration)
+        from imswitch.imcommon.model import ShortcutScope
+        self.__shortcutManager.registerAction(
+            actionId='app.loadParams',
+            displayName='Load parameters from HDF5',
+            callback=lambda: self.__mainView.sigLoadParamsFromHDF5.emit(),
+            defaultKeySequence='Ctrl+P',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        self.__shortcutManager.registerAction(
+            actionId='app.saveWidgetStates',
+            displayName='Save Widget States',
+            callback=lambda: self.__mainView.sigSaveWidgetState.emit(),
+            defaultKeySequence='Ctrl+Shift+S',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        self.__shortcutManager.registerAction(
+            actionId='app.loadWidgetStates',
+            displayName='Load Widget States',
+            callback=lambda: self.__mainView.sigLoadWidgetState.emit(),
+            defaultKeySequence='Ctrl+Shift+L',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        
         self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
         self.__shortcutManager.computeEffectiveBindings()
         self.__shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
+        
+        # Update File menu to show effective shortcuts
+        self.__mainView.updateMenuActionShortcuts(self.__shortcutManager.getEffectiveBindings())
 
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
