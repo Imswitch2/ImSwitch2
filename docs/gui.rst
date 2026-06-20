@@ -91,6 +91,50 @@ bindings (when no ``shortcuts`` config overrides them):
   Positioner widget.
 
 
+Saving state and setup modes
+============================
+
+ImSwitch has two related but distinct ways to capture and restore widget/hardware
+state. They share one underlying mechanism but differ in *scope* and in *whether
+applying them touches hardware*.
+
+Widget state — general, passive restore
+---------------------------------------
+
+A **global snapshot of all widgets** (detector settings, laser values, scan
+parameters, SLM configuration, positioner step sizes, GUI layout, …). Think of it
+as "save/restore the whole setup's UI state".
+
+* *File → Save Widget States* (``Ctrl+Shift+S``) writes a snapshot to a file;
+  *Load Widget States* (``Ctrl+Shift+L``) restores one. The current state is also
+  auto-saved on exit and restored on the next launch.
+* **Passive by design:** restoring widget state never activates hardware — it
+  sets saved *parameters* (laser power values, ROI/binning, scan parameters, SLM
+  config selection, …) but does **not** turn lasers on, start acquisition or
+  scans, move stages, or push SLM patterns. You stay in control of when hardware
+  is actuated.
+
+Setup modes — fast runtime switching (can activate hardware)
+------------------------------------------------------------
+
+The **Setup Modes** widget stores named *modes* that each capture only a
+**chosen subset** of components (e.g. a mode that sets the scan type + laser
+powers + SLM configuration, leaving everything else untouched). Modes are for
+**switching configurations quickly during an experiment**.
+
+* Select a mode (or trigger its optional keyboard shortcut) to apply it; only the
+  components included in that mode are affected.
+* **Active by design:** applying a mode *does* drive hardware — it can enable
+  lasers at saved powers, push SLM patterns, flip mirrors, etc. Because of this,
+  applying a mode that would turn on high laser power prompts a safety
+  confirmation (configurable threshold). Mode-switch shortcuts can be assigned
+  per mode and are managed in the Setup Modes widget.
+
+In short: **Widget States = restore the whole setup's parameters without touching
+hardware; Setup Modes = quickly switch a selected subset and actuate the hardware
+to match.**
+
+
 Detector Settings
 =================
 
