@@ -66,6 +66,7 @@ def discover_contributions(
                 manifest_data,
                 plugin_name=plugin_name,
                 plugin_version=plugin_version,
+                source_package=package_name,
             )
             contributions.extend(plugin_contributions)
             

@@ -34,6 +34,7 @@ class DeviceManagerContribution:
     python_name: str
     plugin_name: str
     plugin_version: str | None = None
+    source_package: str | None = None
     mock_python_name: str | None = None
     manager_name_aliases: tuple[str, ...] = ()
     manager_properties_schema: str | None = None
@@ -47,6 +48,7 @@ def parse_manifest(
     *,
     plugin_name: str,
     plugin_version: str | None,
+    source_package: str | None = None,
 ) -> list[DeviceManagerContribution]:
     """Parse a manifest dictionary and return device manager contributions.
     
@@ -54,6 +56,7 @@ def parse_manifest(
         data: The parsed manifest JSON dictionary.
         plugin_name: The distribution name of the plugin.
         plugin_version: The version of the plugin, or None if unavailable.
+        source_package: The package name for resolving resources, or None.
     
     Returns:
         List of DeviceManagerContribution instances.
@@ -97,6 +100,7 @@ def parse_manifest(
             python_name=entry["python_name"],
             plugin_name=plugin_name,
             plugin_version=plugin_version,
+            source_package=source_package,
             mock_python_name=entry.get("mock_python_name"),
             manager_name_aliases=manager_name_aliases,
             manager_properties_schema=entry.get("manager_properties_schema"),
