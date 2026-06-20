@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "ImSwitch>=2.1",
+    "ImSwitch>=0.1",
     "numpy>=1.21",
 ]
 

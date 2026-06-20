@@ -128,7 +128,7 @@ through the ``imswitch.manifest`` entry point. The manifest value is a
      "name": "imswitch-my-plugin",
      "display_name": "My Device Support",
      "schema_version": "0.1",
-     "imswitch_min_version": "2.1",
+     "imswitch_min_version": "0.1",
      "license": "GPL-3.0-or-later",
      "contributions": {
        "device_managers": [

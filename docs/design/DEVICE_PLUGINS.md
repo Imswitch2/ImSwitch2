@@ -217,7 +217,7 @@ version = "0.1.0"
 description = "Acme device support for ImSwitch2"
 requires-python = ">=3.10"
 dependencies = [
-    "ImSwitch>=2.1",
+    "ImSwitch>=0.1",
 ]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
@@ -275,7 +275,7 @@ Recommended manifest shape (`imswitch.json`):
   "name": "imswitch-acme-devices",
   "display_name": "Acme Device Support",
   "schema_version": "0.1",
-  "imswitch_min_version": "2.1",
+  "imswitch_min_version": "0.1",
   "license": "GPL-3.0-or-later",
   "contributions": {
     "device_managers": [
@@ -978,7 +978,7 @@ Core safety expectations:
 Plugin compatibility should be versioned around these layers:
 
 - Manifest schema version, e.g. `schema_version: "0.1"`.
-- Minimum ImSwitch version, e.g. `imswitch_min_version: "2.1"`.
+- Minimum ImSwitch version, e.g. `imswitch_min_version: "0.1"`.
 - Public plugin API compatibility through `imswitch.pluginapi`.
 - Manager base class behavior.
 
