@@ -25,6 +25,7 @@ class SetupModesController(ImConWidgetController):
         self._shortcutManager = None
         self._shortcutsMenu = None
         self._mainWindow = None
+        self._registeredModeActionIds = set()
         self._activeModeName = None
         self._safetySettingsPath = os.path.join(
             dirtools.UserFileDirs.Root, "imcontrol_setup_mode_settings.json"
@@ -637,7 +638,7 @@ class SetupModesController(ImConWidgetController):
 
             modeName = summary["name"]
             actionId = f'mode.{modeName}'
-            
+
             # Register mode shortcut with priority 1 (explicit user config)
             # Preserve existing behavior: source="shortcut" for safety confirmation
             self._shortcutManager.addOrUpdateAction(
@@ -651,23 +652,22 @@ class SetupModesController(ImConWidgetController):
                 shortcutsMenu=self._shortcutsMenu,
                 mainWindow=self._mainWindow
             )
+            self._registeredModeActionIds.add(actionId)
 
     def _clearShortcuts(self):
         """Clear all mode shortcuts via the ShortcutManager (Phase 3d).
         
         Replaces the old setParent(None) leak with proper disposal.
         """
-        if self._shortcutManager is None or self._setupModeController is None:
+        if self._shortcutManager is None:
+            self._registeredModeActionIds.clear()
             return
 
-        try:
-            modeNames = self._setupModeController.listSetupModes()
-        except Exception:
-            modeNames = []
-
-        for modeName in modeNames:
-            actionId = f'mode.{modeName}'
+        # Remove exactly the mode actions THIS controller registered (robust to
+        # renamed/deleted modes, which no longer appear in listSetupModes()).
+        for actionId in self._registeredModeActionIds:
             self._shortcutManager.removeAction(actionId)
+        self._registeredModeActionIds.clear()
 
     def _ensureShortcutAvailable(self, shortcut, targetModeName):
         if not shortcut:

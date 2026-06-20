@@ -151,16 +151,26 @@ class TestSetupModesShortcuts:
     def test_clear_shortcuts_removes_via_manager(self, controller, mock_setup_mode_controller,
                                                  mock_shortcut_manager, mock_shortcuts_menu, 
                                                  mock_main_window):
-        """Test that _clearShortcuts removes mode shortcuts via the manager."""
+        """Test that _clearShortcuts removes exactly the mode shortcuts this
+        controller registered (robust to rename/delete)."""
         controller.setSetupModeController(mock_setup_mode_controller)
         controller.setShortcutManager(mock_shortcut_manager, mock_shortcuts_menu, mock_main_window)
-        
+
+        # Register two mode shortcuts so they are tracked, then clear.
+        controller._rebuildShortcuts([
+            {'name': 'Mode1', 'description': '', 'shortcut': 'F5'},
+            {'name': 'Mode2', 'description': '', 'shortcut': 'F6'},
+        ])
+        mock_shortcut_manager.removeAction.reset_mock()
+
         controller._clearShortcuts()
-        
-        # Should have called removeAction for each mode
+
+        # Should have removed exactly the two registered mode actions.
         assert mock_shortcut_manager.removeAction.call_count == 2
-        assert mock_shortcut_manager.removeAction.call_args_list[0] == call('mode.Mode1')
-        assert mock_shortcut_manager.removeAction.call_args_list[1] == call('mode.Mode2')
+        removed = {c.args[0] for c in mock_shortcut_manager.removeAction.call_args_list}
+        assert removed == {'mode.Mode1', 'mode.Mode2'}
+        # Tracking set is emptied after clearing.
+        assert controller._registeredModeActionIds == set()
         
     def test_mode_shortcut_callback_preserves_source(self, controller, mock_setup_mode_controller,
                                                      mock_shortcut_manager, mock_shortcuts_menu, 
@@ -202,13 +212,19 @@ class TestSetupModesShortcuts:
     def test_close_event_clears_shortcuts(self, controller, mock_setup_mode_controller,
                                          mock_shortcut_manager, mock_shortcuts_menu, 
                                          mock_main_window):
-        """Test that closeEvent clears shortcuts via the manager."""
+        """Test that closeEvent clears the registered mode shortcuts via the manager."""
         controller.setSetupModeController(mock_setup_mode_controller)
         controller.setShortcutManager(mock_shortcut_manager, mock_shortcuts_menu, mock_main_window)
-        
+
+        controller._rebuildShortcuts([
+            {'name': 'Mode1', 'description': '', 'shortcut': 'F5'},
+            {'name': 'Mode2', 'description': '', 'shortcut': 'F6'},
+        ])
+        mock_shortcut_manager.removeAction.reset_mock()
+
         controller.closeEvent()
-        
-        # Should have called removeAction for each mode
+
+        # Should have removed the two registered mode actions.
         assert mock_shortcut_manager.removeAction.call_count == 2
         
     def test_empty_shortcut_not_registered(self, controller, mock_setup_mode_controller,
