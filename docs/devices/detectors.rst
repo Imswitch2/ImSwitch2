@@ -660,6 +660,9 @@ scan.
                 "min_counts_per_pixel": 20,
                 "fit_method": "moment",
                 "laser_rep_rate_mhz": 80.0,
+                "click_trigger": 0.5,
+                "start_trigger": 0.5,
+                "line_trigger": 0.5,
                 "trigger_levels": { "1": 0.5, "2": 0.5, "3": 0.5 },
                 "enabled": true
             },
@@ -713,10 +716,22 @@ scan.
      - float
      - ``80.0``
      - Laser repetition rate in MHz.  Used by the phasor fit to set ω = 2π·f_rep.  The Swabian ``Flim`` API does not expose the rate, so it must be supplied here; measure it once with ``scripts/diagnostics/measure_laser_rep_rate.py`` if unsure.
+   * - ``click_trigger``
+     - float
+     - ``trigger_levels[str(click_channel)]`` or ``0.5``
+     - Trigger threshold in volts for the photon-click channel.
+   * - ``start_trigger``
+     - float
+     - ``trigger_levels[str(start_channel)]`` or ``0.5``
+     - Trigger threshold in volts for the TCSPC start/sync channel.
+   * - ``line_trigger``
+     - float
+     - ``trigger_levels[str(line_channel)]`` or ``0.5``
+     - Trigger threshold in volts for the per-line marker channel.
    * - ``trigger_levels``
      - dict
      - ``{}``
-     - Dict mapping channel-number-as-string to trigger threshold in volts.  Used only to seed the per-role ``click_trigger`` / ``start_trigger`` / ``line_trigger`` defaults (which default to ``0.5`` V if no entry matches).  Entries are looked up by the resolved channel numbers.
+     - Backward-compatible dict mapping channel-number-as-string to trigger threshold in volts.  Used only to seed the per-role ``click_trigger`` / ``start_trigger`` / ``line_trigger`` defaults.  Direct per-role fields take precedence.
    * - ``enabled``
      - bool
      - ``true``
@@ -744,6 +759,37 @@ located by ``argmax``.  Each fit then compensates for the resulting
 In addition to the per-pixel lifetime image, the worker also emits the
 aggregated decay and a global τ fit (using the same method) for the
 ``FLIMHistWidget`` decay view.
+
+**Time-resolved workflow products**
+
+The manager implements the generic time-resolved detector contract used
+by the headless workflows.  Normal LiveView, ``getLatestFrame()``, and
+recording behavior stay unchanged: the detector stream still exposes a
+2D lifetime image.  Advanced products are opt-in through
+``facade.time_resolved``:
+
+* binned per-pixel photon-arrival cube, ``cube_counts`` with axes
+  ``("y", "x", "tcspc_bin")``;
+* software gate images computed from configurable nanosecond windows;
+* intensity, lifetime image, aggregated decay, and global τ metadata.
+
+Scripts typically build the facade with:
+
+.. code-block:: python
+
+   facade = api.imcontrol.buildWorkflowFacade(
+       time_resolved_detector_name="FLIM",
+   )
+
+and then run one of ``BinnedPhotonArrivalWorkflow``,
+``GatedSTEDWorkflow``, or ``TauSTEDWorkflow``.  See
+:doc:`../scripting-time-resolved-workflows` for examples and the HDF5
+schema.
+
+The current Swabian product side-channel supports 2D ``x/y`` scans.  If
+explicit product capture is enabled for a scan with active outer axes
+such as ``z`` or time, the manager raises a clear error until
+multidimensional output support is implemented.
 
 **FLIM histogram widget modes**
 

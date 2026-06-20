@@ -48,6 +48,7 @@ config files).
     use-cases
     scripting
     scripting-wfs-workflows
+    scripting-time-resolved-workflows
 
 .. toctree::
     :hidden:

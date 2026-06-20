@@ -3,6 +3,13 @@ import threading
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.timeresolved import (
+    TimeResolvedDetectorMixin,
+    TimeResolvedScanConfig,
+    TimeResolvedScanProducts,
+    compute_gate_images,
+    copy_time_resolved_products,
+)
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter)
 
@@ -17,7 +24,7 @@ except ImportError:
     _TIMETAGGER_AVAILABLE = False
 
 
-class SwabianTimeTaggerManager(DetectorManager):
+class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     """
     TimeTagger FLIM detector. Returns fitted fluorescence lifetime per pixel.
 
@@ -63,9 +70,15 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._line_ch = int(props['line_channel'])
         # Trigger levels keyed by role — defaults pulled from the trigger_levels
         # dict (keyed by channel number string) for backward compatibility.
-        self._click_trigger = float(tl.get(str(self._click_ch), 0.5))
-        self._start_trigger = float(tl.get(str(self._start_ch), 0.5))
-        self._line_trigger = float(tl.get(str(self._line_ch), 0.5))
+        self._click_trigger = float(
+            props.get('click_trigger', tl.get(str(self._click_ch), 0.5))
+        )
+        self._start_trigger = float(
+            props.get('start_trigger', tl.get(str(self._start_ch), 0.5))
+        )
+        self._line_trigger = float(
+            props.get('line_trigger', tl.get(str(self._line_ch), 0.5))
+        )
         self._n_bins = int(props.get('n_bins', 64))
         self._binwidth_ps = int(props.get('binwidth_ps', 32))
         self._t0_ps = int(props.get('t0_ps', 0))
@@ -144,6 +157,12 @@ class SwabianTimeTaggerManager(DetectorManager):
         self._last_decay_counts: np.ndarray | None = None
         self._last_t_axis_ns: np.ndarray | None = None
         self._last_global_tau_ns: float = 0.0
+
+        self._tr_config = TimeResolvedScanConfig()
+        self._tr_enabled = False
+        self._tr_last_products: TimeResolvedScanProducts | None = None
+        self._tr_final_event = threading.Event()
+        self._tr_lock = threading.Lock()
 
         super().__init__(detectorInfo, name, fullShape=(64, 64),
                          supportedBinnings=[1], model=name,
@@ -242,11 +261,16 @@ class SwabianTimeTaggerManager(DetectorManager):
             self._logger.warning('TimeTagger not available — initiateScan skipped.')
             return
 
-        Nx, Ny, S, _outer_axes, _outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
+        Nx, Ny, S, outer_axes, outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
+        self._validate_time_resolved_scan_shape(outer_axes, outer_dims)
 
         self._newFrameReady = False
         self._image_display = np.zeros((1, Ny, Nx), dtype=np.float32)
         self._image_intensity = np.zeros((1, Ny, Nx), dtype=np.float32)
+        with self._tr_lock:
+            self._tr_final_event.clear()
+            if self._tr_enabled:
+                self._tr_last_products = None
 
         # pixel_sizes: list from low to high dim (matches APDManager convention)
         self.setPixelSize(list(scanInfoDict.get('pixel_sizes', [1, 1])) or [1, 1])
@@ -272,6 +296,7 @@ class SwabianTimeTaggerManager(DetectorManager):
             # share a timestamp, TimeTagger's edge ordering can drop or
             # reorder the end edge — Flim's pixel index then stalls mid-line.
             pixel_width_ps=pixel_period_ps - 1,
+            scan_info=dict(scanInfoDict),
         )
         self._shape = (Ny, Nx)
 
@@ -423,6 +448,142 @@ class SwabianTimeTaggerManager(DetectorManager):
         self.updateLatestFrame(True)
         self.sigNewFrame.emit()
 
+    # ------------------------------------------------------------------ #
+    # Generic time-resolved detector contract                              #
+    # ------------------------------------------------------------------ #
+
+    def timeResolvedCapabilities(self) -> dict:
+        return {
+            "time_axis": "tcspc",
+            "supports_binned_cube": True,
+            "supports_raw_tags": False,
+            "supports_software_gates": True,
+            "supports_hardware_gates": False,
+            "supports_lifetime_fit": True,
+            "supports_outer_scan_axes": False,
+            "native_cube_axes": ("y", "x", "tcspc_bin"),
+            "vendor": "Swabian Instruments",
+            "model": "Time Tagger",
+        }
+
+    def configureTimeResolvedProducts(self, config: TimeResolvedScanConfig) -> None:
+        if not isinstance(config, TimeResolvedScanConfig):
+            config = TimeResolvedScanConfig(
+                capture_cube=bool(getattr(config, "capture_cube", False)),
+                gates=tuple(getattr(config, "gates", ()) or ()),
+                fit=getattr(config, "fit", None) or self._tr_config.fit,
+                include_live_products=bool(
+                    getattr(config, "include_live_products", False)
+                ),
+                max_retained_products=int(
+                    getattr(config, "max_retained_products", 1)
+                ),
+            )
+        fit = config.fit
+        self._fit_method = str(fit.method)
+        self._min_counts_per_pixel = int(fit.min_counts_per_pixel)
+        if fit.laser_rep_rate_mhz is not None:
+            self._laser_rep_rate_mhz = float(fit.laser_rep_rate_mhz)
+        self.parameters["fit_method"].value = self._fit_method
+        self.parameters["min_counts_per_pixel"].value = self._min_counts_per_pixel
+        self.parameters["laser_rep_rate_mhz"].value = self._laser_rep_rate_mhz
+        with self._tr_lock:
+            self._tr_config = config
+            self._tr_enabled = True
+            self._tr_last_products = None
+            self._tr_final_event.clear()
+
+    def waitForFinalTimeResolvedProducts(
+        self,
+        timeout_s: float | None = None,
+    ) -> TimeResolvedScanProducts:
+        if not self._tr_final_event.wait(timeout=timeout_s):
+            raise TimeoutError("Timed out waiting for final time-resolved products")
+        products = self.getLastTimeResolvedProducts(copy=True)
+        if products is None:
+            raise RuntimeError("Final time-resolved event set without products")
+        return products
+
+    def getLastTimeResolvedProducts(
+        self,
+        *,
+        copy: bool = True,
+    ) -> TimeResolvedScanProducts | None:
+        with self._tr_lock:
+            products = self._tr_last_products
+            if copy:
+                return copy_time_resolved_products(products)
+            return products
+
+    def clearTimeResolvedProducts(self) -> None:
+        with self._tr_lock:
+            self._tr_config = TimeResolvedScanConfig()
+            self._tr_enabled = False
+            self._tr_last_products = None
+            self._tr_final_event.clear()
+
+    def _store_time_resolved_products(
+        self,
+        *,
+        cube_counts: np.ndarray,
+        intensity: np.ndarray,
+        lifetime_s: np.ndarray,
+        decay_counts: np.ndarray,
+        t_axis_ns: np.ndarray,
+        global_tau_ns: float,
+        peak_bin: int,
+        peak_time_ns: float,
+        is_final: bool,
+    ) -> None:
+        with self._tr_lock:
+            if not self._tr_enabled:
+                return
+            config = self._tr_config
+            should_store = is_final or config.include_live_products
+            if not should_store:
+                return
+
+            cube_for_storage = (
+                np.array(cube_counts, copy=True) if config.capture_cube else None
+            )
+            gate_images = compute_gate_images(cube_counts, t_axis_ns, config.gates)
+            metadata = {
+                "detector_name": self.name,
+                "backend": "SwabianTimeTaggerManager",
+                "click_channel": int(self._click_ch),
+                "start_channel": int(self._start_ch),
+                "line_channel": int(self._line_ch),
+                "click_trigger_v": float(self._click_trigger),
+                "start_trigger_v": float(self._start_trigger),
+                "line_trigger_v": float(self._line_trigger),
+                "n_bins": int(self._n_bins),
+                "binwidth_ps": int(self._binwidth_ps),
+                "t0_ps": int(self._t0_ps),
+                "fit_method": str(self._fit_method),
+                "laser_rep_rate_mhz": float(self._laser_rep_rate_mhz),
+                "min_counts_per_pixel": int(self._min_counts_per_pixel),
+                "peak_bin": int(peak_bin),
+                "peak_time_ns": float(peak_time_ns),
+                "scan_info": dict(self._scan.get("scan_info", {})),
+            }
+            self._tr_last_products = TimeResolvedScanProducts(
+                cube_counts=cube_for_storage,
+                cube_axes=("y", "x", "tcspc_bin"),
+                t_axis_ns=np.array(t_axis_ns, copy=True),
+                intensity=np.array(intensity, copy=True).astype(np.float32, copy=False),
+                lifetime_ns=(np.array(lifetime_s, copy=True) * 1e9).astype(np.float32),
+                gate_images={
+                    name: np.array(image, copy=True)
+                    for name, image in gate_images.items()
+                },
+                decay_counts=np.array(decay_counts, copy=True),
+                global_tau_ns=float(global_tau_ns),
+                metadata=metadata,
+                is_final=bool(is_final),
+            )
+            if is_final:
+                self._tr_final_event.set()
+
     def _accum_add_frame(self, lifetime_ns: np.ndarray):
         """Add a completed-scan lifetime image (ns) to the running accumulation.
         Only pixels with lifetime > 0 contribute; zeros are treated as "no data"."""
@@ -516,6 +677,23 @@ class SwabianTimeTaggerManager(DetectorManager):
         outer_axes = [a for a in scan_axes if a not in ('y', 'x')]
         outer_dims = [int(scan_dims[scan_axes.index(a)]) for a in outer_axes]
         return Nx, Ny, S, outer_axes, outer_dims
+
+    def _validate_time_resolved_scan_shape(self, outer_axes, outer_dims):
+        """Reject unsupported explicit product capture before acquisition starts."""
+
+        if not self._tr_enabled:
+            return
+        active_outer = [
+            (axis, dim)
+            for axis, dim in zip(outer_axes, outer_dims)
+            if int(dim) > 1
+        ]
+        if active_outer:
+            detail = ", ".join(f"{axis}={dim}" for axis, dim in active_outer)
+            raise RuntimeError(
+                "Swabian time-resolved product capture currently supports only "
+                f"2D x/y scans; unsupported outer scan axes: {detail}"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -779,6 +957,18 @@ class _TTFlimWorker(Worker):
         else:
             global_tau_ns = 0.0
         t_axis_ns = (t_axis * 1e9).astype(np.float32)
+
+        self._m._store_time_resolved_products(
+            cube_counts=cube,
+            intensity=intensity,
+            lifetime_s=lifetime,
+            decay_counts=decay_counts,
+            t_axis_ns=t_axis_ns,
+            global_tau_ns=float(global_tau_ns),
+            peak_bin=peak_bin,
+            peak_time_ns=t_peak * 1e9,
+            is_final=is_final,
+        )
 
         self.sigFrameReady.emit(
             intensity.astype(np.float32),

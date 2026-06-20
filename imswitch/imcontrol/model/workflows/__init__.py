@@ -11,16 +11,35 @@ from .facade import (
     MicroscopeFacade,
     RotatorFacade,
     RotatorPresets,
+    ScanWorkflowFacade,
     StageConFacade,
+    TimeResolvedDetectorFacade,
     TrigFacade,
     ZStageConFacade,
     build_facade_from_master,
+)
+from imswitch.imcontrol.model.timeresolved import (
+    GateSpec,
+    LifetimeFitConfig,
+    TimeResolvedScanConfig,
+    TimeResolvedScanProducts,
 )
 from .mock_facade import MockMicroscopeFacade, build_mock_facade
 from .multi_well_tiling import MultiWellTilingParams, MultiWellTilingWorkflow
 from .widefield_starss import WidefieldStarssParams, WidefieldStarssWorkflow
 from .serial_cwstarss import SerialCWSTARSSParams, SerialCWSTARSSWorkflow
 from .stitched_image import StitchedImage
+from .time_resolved import (
+    BinnedPhotonArrivalParams,
+    BinnedPhotonArrivalWorkflow,
+    GatedSTEDParams,
+    GatedSTEDWorkflow,
+    TauSTEDParams,
+    TauSTEDWorkflow,
+    TimeResolvedScanWorkflow,
+    TimeResolvedWorkflowParams,
+    TimeResolvedWorkflowResult,
+)
 from .tiling import TilingParams, TilingWorkflow
 from .z_stack import ZStackParams, ZStackWorkflow
 
@@ -30,12 +49,18 @@ RecordingWorkflow = WidefieldStarssWorkflow
 __all__ = [
     "CalibrationParams",
     "CalibrationWorkflow",
+    "BinnedPhotonArrivalParams",
+    "BinnedPhotonArrivalWorkflow",
     "CWSTARSSParams",
     "CWSTARSSWorkflow",
     "CamFacade",
     "DefocusScanParams",
     "DefocusScanWorkflow",
+    "GateSpec",
+    "GatedSTEDParams",
+    "GatedSTEDWorkflow",
     "LaserConFacade",
+    "LifetimeFitConfig",
     "MicroscopeFacade",
     "MockMicroscopeFacade",
     "MultiWellTilingParams",
@@ -48,8 +73,17 @@ __all__ = [
     "RotatorPresets",
     "SerialCWSTARSSParams",
     "SerialCWSTARSSWorkflow",
+    "ScanWorkflowFacade",
     "StageConFacade",
     "StitchedImage",
+    "TauSTEDParams",
+    "TauSTEDWorkflow",
+    "TimeResolvedDetectorFacade",
+    "TimeResolvedScanConfig",
+    "TimeResolvedScanWorkflow",
+    "TimeResolvedScanProducts",
+    "TimeResolvedWorkflowParams",
+    "TimeResolvedWorkflowResult",
     "TilingParams",
     "TilingWorkflow",
     "TrigFacade",

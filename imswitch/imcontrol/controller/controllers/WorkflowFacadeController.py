@@ -30,6 +30,8 @@ class WorkflowFacadeController(ImConWidgetController):
         # Lazy import to avoid slowing down ImSwitch startup
         from imswitch.imcontrol.model.workflows.facade import build_facade_from_master
 
+        kwargs.setdefault("scan_workflow", getattr(self._commChannel, "scanWorkflow", None))
+        kwargs.setdefault("scan_done_signal", getattr(self._commChannel, "sigScanDone", None))
         return build_facade_from_master(self._master, **kwargs)
 
     @APIExport()
@@ -46,8 +48,12 @@ class WorkflowFacadeController(ImConWidgetController):
                 - ``detector_name`` (str): name of detector/camera to expose
                 - ``xy_positioner_name`` (str): name of XY positioner
                 - ``z_positioner_name`` (str): name of Z positioner
+                - ``time_resolved_detector_name`` (str): detector implementing
+                  the time-resolved contract
                 - ``hwp_name`` / ``qwp_name`` (str): rotator names
                 - ``hwp_presets`` / ``qwp_presets`` (RotatorPresets)
+                - ``scan_workflow`` / ``scan_done_signal``: optional overrides;
+                  by default these are taken from the communication channel
 
         Returns:
             MicroscopeFacade: facade object with WFS-shaped sub-facades.

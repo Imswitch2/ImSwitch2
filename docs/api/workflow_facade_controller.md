@@ -22,12 +22,14 @@ Constructs a `MicroscopeFacade` from the current ImSwitch master controller.
 - `laser_aliases` (dict[str, str], optional): Map facade laser names to setupInfo laser names
   - Example: `{'488': 'Laser488', '405': 'Laser405'}`
 - `detector_name` (str, optional): Name of detector/camera to expose
+- `time_resolved_detector_name` (str, optional): Name of a detector manager that implements the time-resolved detector contract
 - `xy_positioner_name` (str, optional): Name of XY positioner to expose
 - `z_positioner_name` (str, optional): Name of Z positioner to expose
 - `hwp_name` / `qwp_name` (str, optional): Names of HWP/QWP rotators
 - `hwp_presets` / `qwp_presets` (`RotatorPresets`, optional): Script-level H/V angle overrides
 - `pulsegen_name` (str, optional): Name of the ImSwitch pulse generator manager
 - `wfs_teensy_port` / `wfs_teensy_baudrate` (optional): Direct serial connection for WFS Teensy firmware
+- `scan_workflow` / `scan_done_signal` (optional): Overrides for scan orchestration. When omitted, the controller supplies the running communication channel's `scanWorkflow` and `sigScanDone`.
 
 **Returns:**
 - `MicroscopeFacade`: Facade object with hardware manager wrappers
@@ -55,12 +57,39 @@ facade.cam.start_live()
 facade.cam.stop_live()
 ```
 
+### Time-resolved workflow example
+
+```python
+from imswitch.imcontrol.model.workflows import (
+    GateSpec,
+    GatedSTEDParams,
+    GatedSTEDWorkflow,
+)
+
+facade = api.imcontrol.buildWorkflowFacade(
+    time_resolved_detector_name='FLIM',
+)
+
+params = GatedSTEDParams(
+    gates=(
+        GateSpec('early', 0.5, 2.5),
+        GateSpec('late', 2.5, 8.0),
+    ),
+    timeout_s=120.0,
+)
+
+# Uses facade.scan.run_once() automatically when no acquisition callable
+# is passed, so it runs the currently configured ScanWidget scan.
+result = GatedSTEDWorkflow(facade, params).run()
+```
+
 ## Implementation Details
 
 - **Controller Type**: API-only (no widget)
 - **Registration**: Automatically registered in `ImConMainController.apiObjs`
 - **Base Class**: `ImConWidgetController`
 - **Exports**: `buildWorkflowFacade()` method via `@APIExport` decorator
+- **Scan integration**: `buildWorkflowFacade()` attaches `facade.scan` by default when called from the running ImSwitch controller, allowing workflows to trigger and wait for the current scan configuration.
 
 ## Usage in Workflows
 
@@ -97,6 +126,7 @@ facade = api.imcontrol.buildWorkflowFacade(
 Comprehensive unit tests validate:
 - Argument forwarding to `build_facade_from_master`
 - Facade object construction
+- Time-resolved detector and scan facade construction
 - Controller registration and API exposure
 - No-argument (minimal facade) construction
 
