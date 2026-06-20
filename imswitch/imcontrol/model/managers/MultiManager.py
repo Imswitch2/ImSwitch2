@@ -3,6 +3,24 @@ from abc import ABC, abstractmethod
 from imswitch.imcommon.model import initLogger
 
 from imswitch.imcommon.model import pythontools
+from imswitch.imcontrol.model.plugins.registry import (
+    get_default_registry,
+    UnknownDeviceManagerError,
+)
+
+# Maps a MultiManager ``subManagersPackage`` to a device plugin registry kind.
+# Only these device groups are loaded through MultiManager, so only they get
+# plugin resolution. StandManager and the pulse generator use bespoke loaders
+# (see docs/design/DEVICE_PLUGINS.md, "MultiManager-backed vs bespoke kinds").
+SUBMANAGERS_PACKAGE_TO_KIND = {
+    'detectors': 'detector',
+    'lasers': 'laser',
+    'positioners': 'positioner',
+    'rotators': 'rotator',
+    'rs232': 'rs232',
+    'flipMirrors': 'flip_mirror',
+    'slms': 'slm',
+}
 
 
 class MultiManager(ABC):
@@ -14,18 +32,46 @@ class MultiManager(ABC):
         #self.__logger = initLogger(self, instanceName='MultiManager')
         self._subManagers = {}
         currentPackage = '.'.join(__name__.split('.')[:-1])
+        kind = SUBMANAGERS_PACKAGE_TO_KIND.get(subManagersPackage)
         if managedDeviceInfos:
             for managedDeviceName, managedDeviceInfo in managedDeviceInfos.items():
                 # Create sub-manager
-                #self.__logger.debug(f'{currentPackage}.{subManagersPackage}, {managedDeviceInfo.managerName}')
-                #self.__logger.debug(managedDeviceInfo)
-                package = importlib.import_module(
-                    pythontools.joinModulePath(f'{currentPackage}.{subManagersPackage}',
-                                            managedDeviceInfo.managerName)
+                managerClass = self._resolveManagerClass(
+                    currentPackage, subManagersPackage, kind,
+                    managedDeviceInfo.managerName,
                 )
-                manager = getattr(package, managedDeviceInfo.managerName)
-                self._subManagers[managedDeviceName] = manager(
+                self._subManagers[managedDeviceName] = managerClass(
                     managedDeviceInfo, managedDeviceName, **lowLevelManagers)
+
+    @staticmethod
+    def _resolveManagerClass(currentPackage, subManagersPackage, kind, managerName):
+        """ Resolve a setup ``managerName`` to a manager class.
+
+        Device plugin registry first (for MultiManager-backed kinds), then the
+        legacy internal import path so existing setup files keep working. If
+        both miss for a registry-backed kind, raise the actionable registry
+        diagnostic instead of a raw ImportError. """
+        # 1. Device plugin registry (built-ins + installed plugins).
+        if kind is not None:
+            managerClass = get_default_registry().load_manager_class(
+                kind, managerName)
+            if managerClass is not None:
+                return managerClass
+
+        # 2. Legacy internal import path (imswitch.imcontrol.model.managers.<pkg>).
+        try:
+            package = importlib.import_module(
+                pythontools.joinModulePath(
+                    f'{currentPackage}.{subManagersPackage}', managerName)
+            )
+            return getattr(package, managerName)
+        except (ImportError, AttributeError) as exc:
+            if kind is not None:
+                raise UnknownDeviceManagerError(
+                    get_default_registry().format_resolution_error(
+                        kind, managerName)
+                ) from exc
+            raise
 
     def hasDevices(self):
         """ Returns whether this manager manages any devices. """

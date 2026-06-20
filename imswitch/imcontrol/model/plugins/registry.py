@@ -241,20 +241,37 @@ def build_default_registry(*, discover: bool = True) -> DevicePluginRegistry:
     # Register built-ins first
     for contrib in BUILTIN_DEVICE_MANAGERS:
         registry.register(contrib, is_builtin=True)
-    
+
     # Discover and register plugins
     if discover:
         contributions, errors = discover_contributions()
-        
+
         for contrib in contributions:
             try:
                 registry.register(contrib, is_builtin=False)
             except DuplicateContributionError:
                 # Built-ins win on collision; silently skip
                 pass
-        
+
         # Errors are collected but not raised (one broken plugin shouldn't
         # prevent the application from starting)
         # TODO: Log discovery errors once logging is configured
-    
+
     return registry
+
+
+_DEFAULT_REGISTRY: DevicePluginRegistry | None = None
+
+
+def get_default_registry() -> DevicePluginRegistry:
+    """Return the process-wide registry, building it once on first use.
+
+    Discovery (entry-point scanning + built-in registration) happens a single
+    time and the result is cached, matching the "discover once at startup"
+    policy. Callers that need a fresh, isolated registry (e.g. tests) should
+    construct one with ``build_default_registry`` instead.
+    """
+    global _DEFAULT_REGISTRY
+    if _DEFAULT_REGISTRY is None:
+        _DEFAULT_REGISTRY = build_default_registry(discover=True)
+    return _DEFAULT_REGISTRY
