@@ -257,6 +257,52 @@ confocal processing remain the main open modality targets.
 
 ---
 
+## Milestone 14: Device Plugin Architecture 🔄
+
+**Goal:** Let device support live in external plugin packages so the core
+repository stays stable while device support evolves independently — a
+napari-style model where plugins advertise device managers through package
+metadata and ImSwitch imports manager code only when a configured device needs
+it. Existing setup files keep working unchanged.
+
+**Design:** [docs/design/DEVICE_PLUGINS.md](docs/design/DEVICE_PLUGINS.md);
+user guide [docs/devices/plugins.rst](docs/devices/plugins.rst). GPLv3-or-later
+with no proprietary in-process exception; JSON manifests (no new core
+dependency).
+
+**Plan:**
+
+- ✅ **Public API + registry + discovery.** `imswitch.pluginapi` (the stable
+  surface for plugin authors), `DeviceManagerContribution`, JSON manifest
+  parsing, `imswitch.manifest` entry-point discovery, and
+  `DevicePluginRegistry` with an explicit built-in table.
+- ✅ **MultiManager integration.** Setup `managerName` resolves through the
+  registry first, then the legacy internal import path, so existing setups boot
+  unchanged; an unresolved registry-backed kind raises an actionable diagnostic.
+- ✅ **Diagnostics + validation.** `python -m imswitch.imcontrol.model.plugins
+  list | inspect | validate-setup`, plus best-effort managerProperties
+  JSON-Schema validation.
+- ✅ **Plugin template.** `imswitch-plugin-template` (private repo under the
+  Imswitch2 org) — a hardware-free demo detector + laser with manifest, schema,
+  setup templates, tests and CI.
+- ✅ **First plugin (new device).**
+  `examples/plugins/imswitch-zhinst-devices` — a Zurich Instruments lock-in
+  detector with a mock mode and managerProperties schema.
+- ✅ **Extraction safety net.** Known/extracted manager names map to an install
+  hint, so a setup naming a manager that moved to a plugin gets a clear
+  "pip install <package>" message instead of an opaque import error. Extraction
+  checklist in `docs/devices/plugins.rst`.
+- 🔄 **Gradual extraction of in-tree devices (Phase 8).** First extraction
+  done: `examples/plugins/imswitch-device-thorlabs` moves the Thorlabs TSI
+  camera into a plugin (legacy class name kept as an alias; in-tree copy
+  retained until the plugin is published). Extract non-safety-critical cameras
+  first; lasers/DAQ/stage paths need extra review.
+- ⬜ **Publish.** Make the template a public GitHub template repo; publish
+  device plugin packages to PyPI; remove in-tree copies once their plugins are
+  published (the install hint then becomes live).
+
+---
+
 ## Final Milestone 13: Real-World Setup Validation
 
 **Goal:** Validate ImSwitch2 end-to-end against the five physical setups
@@ -462,6 +508,17 @@ Major UI / workflow modernization. Headline items:
   pipeline, `SwabianTimeTaggerManager` fixes, IRF peak detection,
   rep-rate-aware phasor, dist / decay mode toggle, diagnostic
   rep-rate script.
+- Time-resolved detector workflows: a generic time-resolved detector
+  contract (`model/timeresolved`) plus opt-in workflows
+  (`model/workflows/time_resolved.py`) for binned photon-arrival cubes,
+  software gated-STED and tau-STED, with `SwabianTimeTaggerManager` as the
+  first backend via
+  `api.imcontrol.buildWorkflowFacade(time_resolved_detector_name=...)`.
+  Mock facade + unit tests, example scripts under `scripts/timeresolved/`,
+  and docs
+  ([plan](docs/design/plans/time-resolved-detector-workflows.md),
+  `docs/scripting-time-resolved-workflows.rst`). Software foundation
+  complete; hardware validation pending.
 - Tiling / stitching workflow with spiral scan, in-memory
   `StitchedImage`, passive cell-marker overlay + automated targeted
   workflow path.
