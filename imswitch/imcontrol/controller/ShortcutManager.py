@@ -478,6 +478,43 @@ class ShortcutManager:
         """Get list of conflict warnings from last build."""
         return self._conflictWarnings.copy()
         
+    def getConflicts(self, proposedBindings: Dict[str, Union[str, List[str], None]]) -> Dict[str, List[str]]:
+        """Detect conflicts in a proposed set of bindings.
+        
+        Used by the editor to provide live conflict feedback without applying changes.
+        
+        Args:
+            proposedBindings: Proposed actionId -> keySequence mapping
+            
+        Returns:
+            Dict mapping actionId -> list of conflicting actionIds
+        """
+        conflicts = {}
+        keyToActions = {}
+        
+        for actionId, keySeq in proposedBindings.items():
+            if keySeq is None or actionId not in self._catalog:
+                continue
+                
+            sequences = [keySeq] if isinstance(keySeq, str) else keySeq
+            
+            for seq in sequences:
+                normalized = self._normalizeKeySequence(seq)
+                if not normalized:
+                    continue
+                    
+                if normalized not in keyToActions:
+                    keyToActions[normalized] = []
+                keyToActions[normalized].append(actionId)
+        
+        # Identify conflicts
+        for normalized, actions in keyToActions.items():
+            if len(actions) > 1:
+                for actionId in actions:
+                    conflicts[actionId] = [aid for aid in actions if aid != actionId]
+        
+        return conflicts
+        
     # Helper methods
     
     def _validateKeySequence(self, keySeq: str) -> bool:

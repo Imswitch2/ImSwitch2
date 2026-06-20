@@ -37,6 +37,7 @@ class ImConMainController(MainController):
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigSaveWidgetState.connect(self.saveWidgetState)
         self.__mainView.sigLoadWidgetState.connect(self.loadWidgetState)
+        self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
@@ -309,6 +310,13 @@ class ImConMainController(MainController):
                 'Load Failed', 
                 f'Failed to load widget states:\n{str(e)}'
             )
+
+    def openShortcutEditor(self):
+        """Open the keyboard shortcut editor dialog."""
+        from imswitch.imcontrol.view.widgets.ShortcutEditorDialog import ShortcutEditorDialog
+        
+        dialog = ShortcutEditorDialog(self.__mainView, self.__shortcutManager)
+        dialog.exec_()
 
     def _registerPositionerJogActions(self):
         """Register dynamic per-positioner axis jog actions with shortcutModifier alias expansion.

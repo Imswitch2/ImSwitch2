@@ -16,6 +16,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigClosing = QtCore.Signal()
     sigSaveWidgetState = QtCore.Signal()
     sigLoadWidgetState = QtCore.Signal()
+    sigOpenShortcutEditor = QtCore.Signal()
 
     def __init__(self, options, viewSetupInfo, *args, **kwargs):
         self.__logger = initLogger(self)
@@ -56,6 +57,12 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.pickSetupAction = QtWidgets.QAction('Pick hardware setup…', self)
         self.pickSetupAction.triggered.connect(self.sigPickSetup)
         tools.addAction(self.pickSetupAction)
+        
+        # Add Configure Shortcuts action to Shortcuts menu
+        self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
+        self.configureShortcutsAction.triggered.connect(self.sigOpenShortcutEditor)
+        self.shortcutsMenu.addAction(self.configureShortcutsAction)
+        self.shortcutsMenu.addSeparator()
 
         # Window
         self.setWindowTitle('ImSwitch')
