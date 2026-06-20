@@ -180,6 +180,46 @@ Both are verified to be discovered and loaded by the registry with no changes to
 the ImSwitch core.
 
 
+Extracting an in-tree manager into a plugin
+==========================================
+
+Existing in-tree managers can be moved into plugin packages gradually. New
+device support should default to a plugin; established in-tree devices stay until
+there is a published plugin and a migration path. Extract non-safety-critical
+devices (cameras/detectors) before laser/DAQ/stage paths, which need extra
+review.
+
+Checklist for moving a manager out of the core tree:
+
+#. **Package it.** Start from the plugin template; move the manager file and its
+   ``managerProperties`` schema into the package. Import only from
+   ``imswitch.pluginapi``; keep vendor SDK imports lazy.
+#. **Keep the name stable.** Use the manager's existing setup ``managerName`` as
+   the contribution ``id`` *or* as a ``manager_name_aliases`` entry, so existing
+   setup files resolve to the plugin unchanged.
+#. **Register an install hint.** Add the old ``(kind, managerName)`` (id, legacy
+   class name, and aliases) to
+   ``imswitch.imcontrol.model.plugins.external.KNOWN_EXTERNAL_MANAGERS`` pointing
+   at the new package. ImSwitch then tells users to ``pip install`` it instead of
+   raising an opaque import error.
+#. **Remove from core only after the plugin is published**, and keep the install
+   hint for at least two minor releases. Until then, the in-tree manager and the
+   plugin can coexist (built-ins win on id collision).
+#. **Verify.** The plugin installs and is discovered; ``validate-setup`` passes
+   for an existing setup; the core still boots and its tests pass.
+
+The install hint is what turns a removed manager into an actionable error:
+
+.. code-block:: text
+
+   Could not resolve detector manager 'AcmeCamManager'.
+   Installed detector managers:
+     - AVManager (imswitch-core)
+     ...
+   'AcmeCamManager' is provided by the external plugin package 'imswitch-device-acme'.
+     Install it with: pip install imswitch-device-acme
+
+
 Compatibility
 =============
 

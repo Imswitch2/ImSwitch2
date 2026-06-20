@@ -22,8 +22,14 @@ The core of this plan is implemented on `codex/testalab-scandev-port`:
   Instruments lock-in detector) under `examples/plugins/`, verified discovered
   and loadable with a mock mode and managerProperties schema.
 
+- **Phase 8 — Gradual extraction** (started): the extraction safety net is in
+  place — `imswitch.imcontrol.model.plugins.external` maps known/extracted
+  manager names to an install hint, so an unresolved manager produces an
+  actionable "install <package>" error. An extraction checklist lives in
+  `docs/devices/plugins.rst`. No in-tree device has been extracted yet.
+
 User-facing documentation lives at `docs/devices/plugins.rst`. Remaining:
-publish the template repo, Phase 8 gradual extraction of in-tree devices, and an
+publish the template repo, extract the first in-tree device family, and an
 optional config-UI browser for plugin setup templates.
 
 The rest of this document is the original design record and remains the

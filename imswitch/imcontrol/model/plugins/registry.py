@@ -5,6 +5,7 @@ from typing import Type
 
 from .manifest import DeviceManagerContribution
 from .discovery import discover_contributions
+from .external import lookup_external_hint
 
 
 class DuplicateContributionError(Exception):
@@ -216,12 +217,25 @@ class DevicePluginRegistry:
                 lines.append(f"  - {contrib.id} ({contrib.plugin_name})")
                 for alias in contrib.manager_name_aliases:
                     lines.append(f"    alias: {alias}")
-        
+
+        # If this name is a known external/extracted manager, point the user at
+        # the package that provides it (Phase 8 extraction safety net).
+        hint = lookup_external_hint(kind, manager_name)
+        if hint is not None:
+            lines.append("")
+            lines.append(
+                f"'{manager_name}' is provided by the external plugin package "
+                f"'{hint.package}'."
+            )
+            if hint.note:
+                lines.append(f"  {hint.note}")
+            lines.append(f"  Install it with: {hint.install_command()}")
+
         lines.append("")
         lines.append(
             "Install the required plugin package or correct managerName in your setup."
         )
-        
+
         return "\n".join(lines)
 
 
