@@ -49,10 +49,25 @@ _ZHINST = ExternalManagerHint(
 #: Keyed by ``(kind, managerName)``. The name matches a setup ``managerName`` —
 #: a plugin id, a legacy class name, or an alias. One hint may appear under
 #: several keys.
+# First extracted in-tree manager: Thorlabs TSI cameras moved to a plugin. The
+# in-tree manager still exists during the transition, so this hint is dormant
+# until the in-tree copy is removed; it then turns an old setup into a clear
+# "install the plugin" message.
+_THORLABS = ExternalManagerHint(
+    package="imswitch-device-thorlabs",
+    extra="hardware",
+    note=(
+        "Thorlabs scientific camera (TSI); bundled under "
+        "examples/plugins/imswitch-device-thorlabs in the ImSwitch repository."
+    ),
+)
+
 KNOWN_EXTERNAL_MANAGERS: dict[tuple[str, str], ExternalManagerHint] = {
     ("detector", "zhinst.lockin-demod"): _ZHINST,
     ("detector", "ZhinstLockinDetectorManager"): _ZHINST,
     ("detector", "ZurichLockinDetectorManager"): _ZHINST,
+    ("detector", "thorlabs.tsi-camera"): _THORLABS,
+    ("detector", "ThorCamTSIManager"): _THORLABS,
 }
 
 

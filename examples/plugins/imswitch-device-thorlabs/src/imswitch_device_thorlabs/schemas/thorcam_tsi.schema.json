@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Thorlabs TSI camera managerProperties",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "cameraSerial": {
+      "type": ["string", "null"],
+      "description": "Camera serial number. null opens the first available camera; a value starting with 'MOCK_' loads a mock camera for headless testing."
+    },
+    "dllLocation": {
+      "type": "string",
+      "default": "dlls/64_lib",
+      "description": "Path to the ThorCam DLLs (Windows only)."
+    },
+    "cameraPixelSizeUm": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0.15,
+      "description": "Optically effective (sample-plane) pixel size in micrometers."
+    },
+    "flushFrameLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 256
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "exposure_us": { "type": "integer", "minimum": 1, "default": 50000 },
+        "gain": { "type": "number", "default": 0 },
+        "operation_mode": {
+          "type": "string",
+          "enum": ["Software", "Hardware", "Bulb"],
+          "default": "Software"
+        },
+        "trigger_polarity": {
+          "type": "string",
+          "enum": ["Active High", "Active Low"],
+          "default": "Active High"
+        },
+        "frame_rate": { "type": "number", "minimum": 0, "default": 30 }
+      }
+    }
+  }
+}

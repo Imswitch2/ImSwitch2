@@ -175,9 +175,14 @@ Examples and template
   repository under ``examples/plugins/imswitch-zhinst-devices/``. It exercises
   optional hardware extras (``zhinst-toolkit``), lazy hardware imports, a mock
   mode, a managerProperties schema and a setup template.
+* **First extraction** — ``examples/plugins/imswitch-device-thorlabs/`` is the
+  Thorlabs TSI camera manager (``ThorCamTSIManager``) moved out of the core tree
+  into a plugin, keeping its legacy class name as an alias so existing setups
+  resolve to it unchanged. During the transition the in-tree copy stays; the
+  install hint becomes active once it is removed.
 
-Both are verified to be discovered and loaded by the registry with no changes to
-the ImSwitch core.
+These are verified to be discovered and loaded by the registry with no changes
+to the ImSwitch core.
 
 
 Extracting an in-tree manager into a plugin

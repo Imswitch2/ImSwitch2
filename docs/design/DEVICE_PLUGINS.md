@@ -22,15 +22,19 @@ The core of this plan is implemented on `codex/testalab-scandev-port`:
   Instruments lock-in detector) under `examples/plugins/`, verified discovered
   and loadable with a mock mode and managerProperties schema.
 
-- **Phase 8 — Gradual extraction** (started): the extraction safety net is in
-  place — `imswitch.imcontrol.model.plugins.external` maps known/extracted
+- **Phase 8 — Gradual extraction** (in progress): the extraction safety net is
+  in place — `imswitch.imcontrol.model.plugins.external` maps known/extracted
   manager names to an install hint, so an unresolved manager produces an
   actionable "install <package>" error. An extraction checklist lives in
-  `docs/devices/plugins.rst`. No in-tree device has been extracted yet.
+  `docs/devices/plugins.rst`. First extraction done:
+  `examples/plugins/imswitch-device-thorlabs` moves the Thorlabs TSI camera
+  manager into a plugin (legacy class name kept as an alias). The in-tree copy
+  stays during the transition; it is removed only after the plugin is published,
+  at which point the install hint becomes active.
 
 User-facing documentation lives at `docs/devices/plugins.rst`. Remaining:
-publish the template repo, extract the first in-tree device family, and an
-optional config-UI browser for plugin setup templates.
+publish the template and device repos, extract further families as needed, and
+an optional config-UI browser for plugin setup templates.
 
 The rest of this document is the original design record and remains the
 normative reference for contracts and rationale.
