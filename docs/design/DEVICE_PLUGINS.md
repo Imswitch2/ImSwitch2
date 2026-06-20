@@ -1,7 +1,33 @@
 # ImSwitch2 Device Plugin Architecture
 
-Status: proposal and implementation plan
+Status: implemented (core) — design record + living reference
 Date: 2026-06-20
+
+## Implementation status
+
+The core of this plan is implemented on `codex/testalab-scandev-port`:
+
+- **Phase 1 — Public API + registry + discovery** (done): `imswitch.pluginapi`,
+  `DeviceManagerContribution`, JSON manifest parsing, entry-point discovery, and
+  `DevicePluginRegistry` with an explicit built-in table.
+- **Phase 2/4 — MultiManager integration** (done): registry-first resolution
+  with legacy fallback and an actionable diagnostic; existing setups unchanged.
+- **Phase 5 — Diagnostics + validation** (done): `python -m
+  imswitch.imcontrol.model.plugins list|inspect|validate-setup` and best-effort
+  managerProperties JSON-Schema validation.
+- **Phase 6 — Template** (done, separate repo): `imswitch-plugin-template`, a
+  minimal hardware-free demo detector + laser with manifest, schema, setup
+  templates, tests and CI.
+- **Phase 7 — First real plugin** (done): `imswitch-zhinst-devices` (Zurich
+  Instruments lock-in detector) under `examples/plugins/`, verified discovered
+  and loadable with a mock mode and managerProperties schema.
+
+User-facing documentation lives at `docs/devices/plugins.rst`. Remaining:
+publish the template repo, Phase 8 gradual extraction of in-tree devices, and an
+optional config-UI browser for plugin setup templates.
+
+The rest of this document is the original design record and remains the
+normative reference for contracts and rationale.
 
 This document describes how ImSwitch2 should support external device plugins so
 the main repository can stay stable while device support evolves in separate

@@ -4,8 +4,23 @@ Adding support for more devices
 
 Imswitch2's hardware control module supports four main device types:
 **detectors**, **lasers**, **positioners**, and **rotators**.
-In order to add support for a new device,
-a corresponding device manager class must be implemented in Imswitch2's code.
+
+.. note::
+
+   **For new device support, prefer an external plugin package.** ImSwitch2 can
+   discover and load device managers from installed plugins without any change
+   to the core repository — see :doc:`devices/plugins`. Implement an in-tree
+   manager (as described on this page) only for core/reference devices or
+   tightly-coupled infrastructure. In-tree managers and plugin managers share
+   the same base-class contracts, so the guidance below applies to both.
+
+In order to add an **in-tree** device, a corresponding device manager class is
+implemented in Imswitch2's code as described below.
+
+.. toctree::
+   :hidden:
+
+   devices/plugins
 
 For practical, task-oriented guides, see also:
 
