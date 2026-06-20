@@ -205,15 +205,19 @@ def validate_setup_file(path: str | Path, registry: DevicePluginRegistry) -> Val
     
     for section_name, kind in SETUP_SECTION_TO_KIND.items():
         section_data = setup_data.get(section_name)
-        if section_data is None:
+        if not isinstance(section_data, dict):
+            # Setup device sections are JSON objects keyed by device name
+            # (e.g. "detectors": {"Mock Camera": {...}}). Skip null/missing
+            # sections and anything not shaped like that.
             continue
-        
-        for device_entry in section_data:
+
+        for device_name, device_entry in section_data.items():
+            if not isinstance(device_entry, dict):
+                continue
             manager_name = device_entry.get("managerName")
             if manager_name is None:
                 continue
-            
-            device_name = device_entry.get("name")
+
             manager_properties = device_entry.get("managerProperties", {})
             
             # Resolve the manager

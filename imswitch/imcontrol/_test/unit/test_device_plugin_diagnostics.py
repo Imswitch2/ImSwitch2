@@ -58,19 +58,19 @@ def test_validate_setup_valid_and_unresolved(capsys):
     """Test validate-setup with one valid and one unresolved manager."""
     registry = build_default_registry(discover=False)
     
+    # Setup device sections are JSON objects keyed by device name (matching the
+    # real ImSwitch setup format, Dict[str, DetectorInfo]), NOT lists.
     setup_data = {
-        "detectors": [
-            {
-                "name": "TestCamera",
+        "detectors": {
+            "TestCamera": {
                 "managerName": "AVManager",
                 "managerProperties": {},
             },
-            {
-                "name": "BogusCamera",
+            "BogusCamera": {
                 "managerName": "NoSuchCam",
                 "managerProperties": {},
             },
-        ]
+        }
     }
     
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -184,34 +184,34 @@ def test_source_package_field_defaults_to_none():
 
 
 def test_validate_setup_file_with_legacy():
-    """Test validate_setup_file recognizes legacy managers."""
+    """validate_setup_file resolves an in-tree manager absent from the builtins
+    table via the legacy import path (dict-keyed section, real setup shape)."""
     registry = build_default_registry(discover=False)
-    
-    # Use a real legacy manager that exists in-tree
+
+    # GRBLStageManager is a real in-tree positioner manager that is NOT in the
+    # built-in registry table, so it must resolve via the legacy path.
     setup_data = {
-        "positioners": [
-            {
-                "name": "TestPositioner",
-                "managerName": "MockPositionerManager",
+        "positioners": {
+            "TestStage": {
+                "managerName": "GRBLStageManager",
                 "managerProperties": {},
             },
-        ]
+        }
     }
-    
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(setup_data, f)
         temp_path = f.name
-    
+
     try:
         report = validate_setup_file(temp_path, registry)
-        
-        # Should recognize the legacy manager
+
         assert len(report.devices) == 1
         device = report.devices[0]
-        assert device.manager_name == "MockPositionerManager"
-        # Should resolve via legacy since it's not in the registry but exists as a module
-        # (MockPositionerManager IS in builtins, so it will resolve via registry)
-        # Let's use a different one that's not in builtins
+        assert device.device_name == "TestStage"
+        assert device.manager_name == "GRBLStageManager"
+        assert device.resolved_via == "legacy"
+        assert report.has_errors is False
     finally:
         import os
         os.unlink(temp_path)
