@@ -1,5 +1,16 @@
 # Keyboard shortcuts unification — audit and plan
 
+> **STATUS: COMPLETE (2026-06-20).** Phases 0–4 implemented and merged into
+> `codex/testalab-scandev-port` (see `docs/agent_tasks/shortcuts_phase*.md`).
+> Shortcuts are now config-driven through one `ShortcutManager`: every action has
+> a stable ID, the setup-config `shortcuts` map rebinds/disables anything (with
+> conflict detection), and a "Configure Shortcuts…" editor dialog edits/persists
+> bindings. All outliers (File-menu actions, LeicaStand F2, positioner jog,
+> setup-mode shortcuts) migrated; the "Ambiguous shortcut overload" disposal bug
+> is fixed. User docs: `gui.rst` (Keyboard shortcuts) and `setupinfo-reference.rst`
+> (`shortcuts` field). Optional/skipped: Phase 3e (keyPressEvent handlers), Phase
+> 3f (GRBL manager-jog decision).
+
 Goal: move from today's mostly compile-time, per-widget/per-device shortcut
 bindings to a single, config-driven system where any action can be bound to any
 key sequence through the setup config (with sensible code-level defaults).
