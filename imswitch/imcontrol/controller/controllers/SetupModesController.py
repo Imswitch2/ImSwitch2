@@ -22,7 +22,10 @@ class SetupModesController(ImConWidgetController):
         super().__init__(*args, **kwargs)
 
         self._setupModeController = None
-        self._modeShortcuts = []
+        self._shortcutManager = None
+        self._shortcutsMenu = None
+        self._mainWindow = None
+        self._registeredModeActionIds = set()
         self._activeModeName = None
         self._safetySettingsPath = os.path.join(
             dirtools.UserFileDirs.Root, "imcontrol_setup_mode_settings.json"
@@ -46,6 +49,18 @@ class SetupModesController(ImConWidgetController):
         self._setupModeController = setupModeController
         self._widget.setBackendAvailable(True)
         self.refreshModes()
+
+    def setShortcutManager(self, shortcutManager, shortcutsMenu, mainWindow):
+        """Inject the ShortcutManager for routing mode shortcuts (Phase 3d).
+        
+        Args:
+            shortcutManager: The unified ShortcutManager instance
+            shortcutsMenu: The &Shortcuts menu for adding mode actions
+            mainWindow: The main window for Application-scoped shortcuts
+        """
+        self._shortcutManager = shortcutManager
+        self._shortcutsMenu = shortcutsMenu
+        self._mainWindow = mainWindow
 
     def closeEvent(self):
         self._clearShortcuts()
@@ -596,7 +611,21 @@ class SetupModesController(ImConWidgetController):
         self._safetySettings["suppressedWarnings"] = suppressedWarnings
 
     def _rebuildShortcuts(self, modeSummaries):
+        """Rebuild mode shortcuts via the ShortcutManager (Phase 3d).
+        
+        Routes all mode shortcuts through the manager to fix the disposal leak
+        (setParent(None) causes "Ambiguous shortcut overload" warnings).
+        Mode shortcuts are registered as priority 1 (explicit user config),
+        so they win in mode-vs-global conflicts per §7.4.
+        """
         self._clearShortcuts()
+
+        # Only route through manager if it's been injected
+        if self._shortcutManager is None or self._shortcutsMenu is None or self._mainWindow is None:
+            self._logger.warning('ShortcutManager not injected; mode shortcuts disabled')
+            return
+
+        from imswitch.imcommon.model import ShortcutScope
 
         for summary in modeSummaries:
             shortcutText = self._normalizeShortcut(summary.get("shortcut"))
@@ -607,17 +636,38 @@ class SetupModesController(ImConWidgetController):
             if self._isEmptyShortcut(shortcut):
                 continue
 
-            qshortcut = QtWidgets.QShortcut(shortcut, self._widget)
-            qshortcut.setContext(QtCore.Qt.ApplicationShortcut)
-            qshortcut.activated.connect(
-                lambda modeName=summary["name"]: self._applyMode(modeName, source="shortcut")
+            modeName = summary["name"]
+            actionId = f'mode.{modeName}'
+
+            # Register mode shortcut with priority 1 (explicit user config)
+            # Preserve existing behavior: source="shortcut" for safety confirmation
+            self._shortcutManager.addOrUpdateAction(
+                actionId=actionId,
+                displayName=f'Apply Mode: {modeName}',
+                callback=lambda mn=modeName: self._applyMode(mn, source="shortcut"),
+                keySequence=shortcutText,
+                scope=ShortcutScope.Application,
+                owner=self._widget,
+                priority=1,
+                shortcutsMenu=self._shortcutsMenu,
+                mainWindow=self._mainWindow
             )
-            self._modeShortcuts.append(qshortcut)
+            self._registeredModeActionIds.add(actionId)
 
     def _clearShortcuts(self):
-        for shortcut in self._modeShortcuts:
-            shortcut.setParent(None)
-        self._modeShortcuts = []
+        """Clear all mode shortcuts via the ShortcutManager (Phase 3d).
+        
+        Replaces the old setParent(None) leak with proper disposal.
+        """
+        if self._shortcutManager is None:
+            self._registeredModeActionIds.clear()
+            return
+
+        # Remove exactly the mode actions THIS controller registered (robust to
+        # renamed/deleted modes, which no longer appear in listSetupModes()).
+        for actionId in self._registeredModeActionIds:
+            self._shortcutManager.removeAction(actionId)
+        self._registeredModeActionIds.clear()
 
     def _ensureShortcutAvailable(self, shortcut, targetModeName):
         if not shortcut:
