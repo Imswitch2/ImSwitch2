@@ -34,7 +34,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         # Set up lasers
         for lName, lManager in self._master.lasersManager:
-            if "calibCsvPath" in lManager._laserInfo.managerProperties:
+            if lManager.usesCalibrationLookup():
                 valueRangeMin = 0
                 valueRangeMax = 100
                 valueUnits = "%"

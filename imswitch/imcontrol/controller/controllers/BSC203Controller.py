@@ -142,11 +142,11 @@ class BSC203Controller(ImConWidgetController):
         self._widget.pos0EditLabel.setText(str(x * 1000))
         self._widget.pos1EditLabel.setText(str(y * 1000))
         self._widget.pos2EditLabel.setText(str(z * 1000))
-        # Keep manager._position in sync with hardware so the Positioner widget
-        # always shows the real hardware position, not a stale tracked value.
-        self._stageManager._position['X'] = x * 1000
-        self._stageManager._position['Y'] = y * 1000
-        self._stageManager._position['Z'] = z * 1000
+        # Keep the manager's tracked position in sync with hardware so the
+        # Positioner widget shows the real position, not a stale tracked value.
+        self._stageManager.updateTrackedPosition(
+            {'X': x * 1000, 'Y': y * 1000, 'Z': z * 1000}
+        )
         return [x, y, z]
 
     # ------------------------------------------------------------------
