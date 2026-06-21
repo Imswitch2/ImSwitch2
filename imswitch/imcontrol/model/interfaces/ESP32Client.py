@@ -21,7 +21,7 @@ import sys
 try:
     import cv2
     is_cv2 = True
-except:
+except ImportError:
     is_cv2 = False
 import socket
 import serial
@@ -32,7 +32,7 @@ from tempfile import NamedTemporaryFile
 try:
     from imswitch.imcommon.model import initLogger
     IS_IMSWITCH = True
-except:
+except ImportError:
     print("No imswitch available")
     IS_IMSWITCH = False
 
@@ -56,7 +56,7 @@ class galvo(object):
         self.clk_div = clk_div
         self.path = "/dac_act"
 
-    
+
 
 
     def return_dict(self):
@@ -134,7 +134,14 @@ class ESP32Client(object):
                 self.serialdevice = serial.Serial(port=self.serialport, baudrate=baudrate, timeout=1)
                 time.sleep(2) # let it warm up
                 self.is_connected = True
-            except:
+            except Exception as e:
+                self.is_connected = False
+                if IS_IMSWITCH:
+                    self.__logger.warning(
+                        "Opening configured ESP32 serial port %s failed: %s",
+                        self.serialport,
+                        e,
+                    )
                 # try to find the PORT
                 _available_ports = serial.tools.list_ports.comports(include_links=False)
                 for iport in _available_ports:
@@ -169,8 +176,10 @@ class ESP32Client(object):
             s.settimeout(2)
             s.shutdown(2)
             return True
-        except:
+        except OSError:
             return False
+        finally:
+            s.close()
 
     @property
     def base_uri(self):
@@ -231,10 +240,7 @@ class ESP32Client(object):
 
         elif self.is_connected and self.is_serial:
             payload["task"] = path
-            try:
-                is_blocking = payload['isblock']
-            except:
-                is_blocking = True
+            is_blocking = payload.get('isblock', True)
             self.writeSerial(payload)
             #self.__logger.debug(payload)
             returnmessage = self.readSerial(is_blocking=is_blocking, timeout=timeout)
@@ -260,12 +266,16 @@ class ESP32Client(object):
                 #self.__logger.debug(rmessage)
                 returnmessage += rmessage
                 if rmessage.find("--")==0 or (time.time()-_time0)>timeout: break
-            except:
-                pass
+            except Exception as e:
+                if IS_IMSWITCH:
+                    self.__logger.debug("Reading ESP32 serial response failed", exc_info=True)
+                else:
+                    print(f"Reading ESP32 serial response failed: {e}")
+                break
         # casting to dict
         try:
             returnmessage = json.loads(returnmessage.split("--")[0].split("++")[-1])
-        except:
+        except (json.JSONDecodeError, TypeError, ValueError):
             if IS_IMSWITCH: self.__logger.debug("Casting json string from serial to Python dict failed")
             else: print("Casting json string from serial to Python dict failed")
             returnmessage = ""
@@ -378,7 +388,7 @@ class ESP32Client(object):
 
     def sendTrigger(self, triggerId=0):
         path = '/digital_act'
-        
+
         payload = {
             "task": path,
             "digitalid": triggerId,
@@ -521,7 +531,7 @@ class ESP32Client(object):
             "LEDArrMode": "full"
         }
         r = self.post_json(path, payload, timeout=timeout)
-    
+
     def send_LEDMatrix_single(self, led_pattern, indexled, timeout=1):
         path = '/ledarray_act'
         payload = {
@@ -533,7 +543,7 @@ class ESP32Client(object):
             "LEDArrMode": "individual"
         }
         r = self.post_json(path, payload, timeout=timeout)
-        
+
 
     def move_filter(self, steps=100, speed=200,timeout=250,is_blocking=False, axis=2):
         steps_xyz = (0,steps,0)

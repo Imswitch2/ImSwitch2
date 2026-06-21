@@ -47,6 +47,7 @@ class ZStackParams:
         laser_power_488_mw: Laser power in milliwatts for 488 nm laser.
         exposure_us: Camera exposure time in microseconds.
         measurements_root: Root directory for saving measurements.
+        laser_name: Facade laser key used for Z-stack illumination.
     """
 
     n_planes: int
@@ -57,6 +58,7 @@ class ZStackParams:
     laser_power_488_mw: float = 50.0
     exposure_us: float = 50000.0
     measurements_root: Optional[str | Path] = DEFAULT_MEASUREMENTS_ROOT
+    laser_name: str = "488"
 
 
 class ZStackWorkflow:
@@ -132,12 +134,12 @@ class ZStackWorkflow:
                     "pulsed=True requires laser_pin and camera_pin to be set"
                 )
             self.facade.laser_con.set_triggered_mode(
-                ["488"], [self.params.laser_power_488_mw]
+                self._laser_names, [self.params.laser_power_488_mw]
             )
             time.sleep(0.5)
         else:
             self.facade.laser_con.set_constant_power(
-                ["488"], [self.params.laser_power_488_mw]
+                self._laser_names, [self.params.laser_power_488_mw]
             )
             time.sleep(1.0)
 
@@ -161,7 +163,7 @@ class ZStackWorkflow:
                     frames.append(self._snap())
 
             # Restore laser and Z position
-            self.facade.laser_con.set_modulation_mode(["488"])
+            self.facade.laser_con.set_modulation_mode(self._laser_names)
             self.facade.z_stage_con.set_pos_um(z_start)
             logger.info("Z-stack done — returned to %.2f µm", z_start)
 
@@ -172,14 +174,14 @@ class ZStackWorkflow:
 
             return stack, z_positions
 
-        except Exception as e:
+        except Exception:
             logger.exception("Z-stack acquisition failed")
             # Attempt cleanup
             try:
-                self.facade.laser_con.set_modulation_mode(["488"])
+                self.facade.laser_con.set_modulation_mode(self._laser_names)
                 self.facade.z_stage_con.set_pos_um(z_start)
             except Exception:
-                pass
+                logger.exception("Z-stack cleanup after acquisition failure failed")
             raise
 
     def run_autofocus(
@@ -235,7 +237,7 @@ class ZStackWorkflow:
             raise RuntimeError(
                 "Autofocus failed: gradient profile is too flat or linear for quadratic fit"
             )
-        
+
         fit = np.poly1d(coeffs)
         z_focus = -fit.c[1] / (2 * fit.c[0])
 
@@ -252,7 +254,7 @@ class ZStackWorkflow:
         if self.facade.z_stage_con is not None:
             try:
                 self.facade.z_stage_con.set_pos_um(z_focus)
-            except Exception as e:
+            except Exception:
                 logger.exception("Failed to move stage to focus position")
                 raise
 
@@ -261,6 +263,10 @@ class ZStackWorkflow:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @property
+    def _laser_names(self) -> list[str]:
+        return [str(self.params.laser_name)]
 
     def _snap(self) -> np.ndarray:
         """Grab one frame from the camera in live mode."""

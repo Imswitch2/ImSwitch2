@@ -40,8 +40,8 @@ class ImSwitchServer(Worker):
                 port=self._port,
             )
 
-        except:
-            self.__loger.error("Couldn't start server.")
+        except Exception:
+            self.__logger.exception("Couldn't start server.")
         self.__logger.debug("Loop Finished")
 
     def stop(self):

@@ -52,7 +52,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         # Would be better to use only slmKey for all referencing and keep slmName for display only...
 
         self._slmNames = {}         # {slmKey (widget): slmName (Manager)}
-        self._slmKeys = {}          # {slmName (Manager): slmKey (widget)} 
+        self._slmKeys = {}          # {slmName (Manager): slmKey (widget)}
         self._slmInfos = {}         # {slmKey: slmInfo}
         self._targets = {}          # {slmKey: {secKey: TargetInstance}}
         self._cghResults = {}       # {slmKey: {secKey: {"cgh_pattern":..., "performances":...}}}
@@ -73,7 +73,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         for slmName, slmManager in self._master.slmsManager:
             device_connection = slmManager.requires_device_connection
             slmInfo = slmManager.slmInfo
-            slmKey = self._widget.add_slm(slmName,slmInfo,full_registry, 
+            slmKey = self._widget.add_slm(slmName,slmInfo,full_registry,
                                           device_connection = device_connection)
             engine = PatternEngine(slmManager.slmInfo)
             self._patternEngines[slmKey] = engine
@@ -98,7 +98,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                 else:
                     correctionPatternsDir = path
                     break
-            if correctionPatternsDir is None:        
+            if correctionPatternsDir is None:
                 self.__logger.error(f"Correction pattern directory for {slmName} could not be found at any of those locations: {path_candidates}")
             self._corrPatternsDir[slmKey] = correctionPatternsDir
 
@@ -124,7 +124,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         self._widget.sigVisualizeCghPerformances.connect(self.on_visualize_cgh_performances)
         self._widget.sigVisualizeTarget.connect(self.on_visualize_target)
         self._widget.sigShowCghResult.connect(self.on_show_cgh_result)
-        
+
         self._widget.sigLoadConfig.connect(self.on_load_config)
         self._widget.sigLoadAberr.connect(self.on_load_aberr)
         self._widget.sigLoadCgh.connect(self.on_load_cgh)
@@ -168,9 +168,9 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             slmName=self._slmNames.get(slmKey)
             self._logger.warning(f"Attempt to connect to SLM {slmName} at start-up failed.")
         return success
-        
+
     def on_update_pattern(self, slmKey, params):
-        
+
         engine = self._patternEngines[slmKey]
         sectList = self._widget._slmSectionList.get(slmKey)
         msgs = []
@@ -178,25 +178,25 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         # check if wl changed and update correction pattern only if needed
         for secKey in sectList:
             wl = params.get(secKey).get("general").get("wavelength_nm")
-            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0): 
+            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0):
                 msg = self.update_correction_patterns(slmKey,secKey,wl)
                 if msg is not None: msgs.append(msg)
 
-        # check if wl changed and update 2Pi value only if necessary 
+        # check if wl changed and update 2Pi value only if necessary
         for secKey in sectList:
             wl = params.get(secKey).get("general").get("wavelength_nm")
             if wl != self._wavelengths.get(slmKey,{}).get(secKey,0):
                 msg =  self.update_twopie_value(slmKey,secKey,wl)
                 if msg is not None: msgs.append(msg)
-        
+
         if len(msgs) >0:
             processed_msgs = [m.replace("\n", "<br>") for m in msgs]
             full_msg = "<br><br>".join(processed_msgs)
             self._widget.show_message_box(title="Correction Warnings",msg_type="warning",message=full_msg)
 
         # update cached wavelengths
-        self.update_cached_wl(slmKey,params) 
-        
+        self.update_cached_wl(slmKey,params)
+
         # compute pattern
         engine.compute_pattern(params)
         # engine.phase_to_eightbits(**params.get("correction_options",{}))
@@ -228,7 +228,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
 
     def update_correction_patterns(self, slmKey, secKey, wl):
         """
-        Searches for correction pattern according to correctionPatternsDir serial number defined 
+        Searches for correction pattern according to correctionPatternsDir serial number defined
         in config file. If found, loads it and update engine correction pattern for `secKey`.
         """
         slmName = self._slmNames.get(slmKey)
@@ -242,11 +242,11 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             correctionPatternsDir = self._corrPatternsDir.get(slmKey)
             if correctionPatternsDir is None:
                 raise FileNotFoundError(f"Correction Pattern Directory not found for {slmName}.")
-            
+
             serial = slmInfo.serial_number
             if serial is None:
                 raise KeyError(f"Cannot find serial number of {slmName} in config file")
-            
+
             correctionFile = f"CAL_{serial}_{wl}nm.bmp"
             correctionPatternFullPath = os.path.join(correctionPatternsDir,correctionFile)
             if not os.path.isfile(correctionPatternFullPath):
@@ -261,16 +261,16 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                                       f"closest one found in {correctionPatternsDir}: {wls_available[min_err_idx]}")
                 correctionPatternFullPath = os.path.join(correctionPatternsDir,f"CAL_{serial}_{wls_available[min_err_idx]}nm.bmp")
                 # raise FileNotFoundError(f"Cannot find correction pattern of {slmName} at wavelength {wl}")
-            
+
             correctionImg = np.array(Image.open(correctionPatternFullPath))
             engine.update_correction_pattern(secKey,correctionImg)
             msg = None
-        
+
         except Exception as e:
             sectionName = self._widget._tab_names_dict.get(slmKey,{}).get(secKey,secKey)
             msg = f"<b>{slmName} - {sectionName}</b>: Failed to load correction pattern :\n{e}"
             self.__logger.error(traceback.format_exc())
-        
+
         return msg
 
     def update_twopie_value(self, slmKey, secKey, wl):
@@ -329,27 +329,27 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             sectionName = self._widget._tab_names_dict.get(slmKey,{}).get(secKey,secKey)
             msg = f"<b>{slmName} - {sectionName}</b>: failed to update 2pi value:\n{e}"
             self.__logger.error(traceback.format_exc())
-            
+
         return msg
-    
+
     def update_cached_wl(self,slmKey,params):
         """ Update cached wavelengths of `slmKey` with wavelenghts in `params` for each section"""
         sectList = self._widget._slmSectionList.get(slmKey)
         for secKey in sectList:
             wl = params.get(secKey).get("general").get("wavelength_nm")
-            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0): 
+            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0):
                 self._wavelengths.setdefault(slmKey,{})[secKey] = wl
 
 
-    
+
     # --------- Saving/loading related -------- #
-    
+
     def get_slm_config_dir(self, slmKey):
         slm_id = self._slmInfos[slmKey].serial_number
         path = os.path.join(self.configsDir, slm_id)
         os.makedirs(path, exist_ok=True)
         return path
-    
+
     def refresh_available_configs(self, slmKey):
         """ Scan config dir for hdf5 or json files and populate widget combo box """
         cfg_dir = self.get_slm_config_dir(slmKey)
@@ -387,7 +387,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                 msg_type="error",
                 message=f"Could not rename configuration:\n{e}"
             )
-    
+
     def on_delete_config(self, slmKey, path):
         """Delete SLM configuration file."""
         try:
@@ -528,7 +528,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                 path = path + ".h5"
 
             # temporary path
-            tmp_path = path + ".tmp" 
+            tmp_path = path + ".tmp"
             creation_date = datetime.datetime.now().isoformat()
             self.save_hdf5_config(slmKey, tmp_path,creation_date, info, overwrite)
 
@@ -577,15 +577,15 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                     with open(path, "r", encoding="utf-8") as f:
                         slm_params = json.load(f)
                     config_dict = {"path": path,"date": "","info": ""}
-                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=True, 
+                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=True,
                                                   config_dict=config_dict, msg_box=True)
                 return
-            
+
             # HDF5 loading
             if ext in (".h5", ".hdf5"):
                 ok, slm_params, config_dict = self.load_hdf5_config(slmKey, path)
                 if ok:
-                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=False, 
+                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=False,
                                                   config_dict=config_dict, msg_box=True)
                 return
 
@@ -610,13 +610,13 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             path = path + ".json"
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(aberr_params, f, indent=2)
-        
+
         except Exception as e:
             if msg_box:
                 self._widget.show_message_box(title="Error Saving Aberrations",msg_type="error",
                                       message=f"Could not save aberrations:\n{e}")
                 raise
-        
+
 
     def on_load_aberr(self, slmKey, secKey, path=None):
         """Load aberration coefficients from a JSON file and send to widget."""
@@ -628,15 +628,15 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             aberr_params = json.load(f)
         label_name = os.path.basename(path)
         self._widget.on_aberr_loaded(slmKey,secKey,aberr_params,label_name,msg_box=True)
-    
 
-    
+
+
     # HDF5 saving/loading
     def save_hdf5_config(self, slmKey, path, creation_date, info="", overwrite=False):
         engine = self._patternEngines[slmKey]
         params = self._widget.get_params()[slmKey]
         info = "No information provided" if info=="" else info
-        
+
         # add tab names to params for restoration upon loading
         tab_names = self._widget.get_tab_names(slmKey)
         if tab_names:
@@ -692,7 +692,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         Extract params, images and config info from hdf5 file, and sync with config state:
             - final image sent to SLM and widget display
             - section images are restored in pattern engine
-        
+
         Returns:
             - success (bool)
             - params: dict of slm_params to be loaded in widget
@@ -705,7 +705,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             slm_id = f.attrs.get("slm_id", "")
             creation_date = f.attrs.get("date", "Unknown")
             info = f.attrs.get("info", "No information provided")
-            
+
             if slm_id != slmInfo.serial_number:
                 ok = self._widget.askYesNoQuestion("SLM mismatch",
                         f"This config was created for another SLM (sn: {slm_id}).\nLoad anyway?")
@@ -740,11 +740,11 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                             grp.attrs.get("comput_params", "{}")
                         )
                     }
-        
+
         # pushes image to SLM and widget, without recomputation
         self._widget.update_display(slmKey,final_image)
         self._master.slmsManager.execOn(slmName, lambda l: l.upload_pattern(final_image))
-        
+
         # restore cached sections and cgh results
         engine = self._patternEngines[slmKey]
         for secKey, comps in sections.items():
@@ -757,8 +757,8 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             "date": creation_date,
             "info": info
         }
-        return True, params, config_dict 
-        
+        return True, params, config_dict
+
     # --- hdf5 helpers --- #
     def write_params_to_hdf5(self, grp, data):
         for k, v in data.items():
@@ -788,7 +788,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         target_params = cgh_params.get(target_type)
         if cgh_params is None or target_type=="" or target_params is None:
             raise Exception(f"Could not find target parameters for {slmKey},{secKey}")
-        
+
         # get current cahed target and update or create
         target = self._targets.get(slmKey, {}).get(secKey)
         if target is None or target.target_type != target_type:
@@ -804,12 +804,12 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
 
     def create_target(self,target_type, **target_params):
         """
-        Creates a target object 
+        Creates a target object
         """
         target_class = TARGETS_REGISTRY.get(target_type,{}).get("class")
         if target_class is None:
             raise KeyError(f"{target_type} not found")
-        
+
         target = target_class(**target_params)
         return target
 
@@ -828,11 +828,11 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                                       message=f"CGH pattern should be a numpy (.npy, .npz) file, not {extension}.")
                 return
             array = np.load(path,allow_pickle=True)
-            result_dict = { 
+            result_dict = {
                 "cgh_name": name,
                 "cgh_pattern": array
             }
-            
+
             self._cghResults.setdefault(slmKey,{})[secKey] = result_dict
             self._widget.update_label(slmKey,secKey,"cgh_in_use_label",f"{name} (loaded)")
             self._patternEngines.get(slmKey).set_new_cgh_pattern(secKey, array)
@@ -842,22 +842,22 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
                 self._widget.show_message_box(title="Error Loading CGH Pattern",msg_type="error",
                                         message=f"Could not load CGH pattern:\n{e}")
             raise
-    
+
 
     def on_save_cgh(self, slmKey, secKey, msg_box=True):
         """Save the computed CGH pattern to a .npy file."""
-        
+
         slmName = self._slmNames.get(slmKey)
         secName = self._widget._tab_names_dict.get(slmKey,{}).get(secKey,secKey)
 
-        result_dict = self._cghResults.get(slmKey,{}).get(secKey,{}) 
+        result_dict = self._cghResults.get(slmKey,{}).get(secKey,{})
         if result_dict is None:
             self._widget.show_message_box(title="No CGH Pattern",msg_type="error",
                                       message=f"No CGH pattern found for {slmName}, {secName}")
             return
-        
+
         try:
-            name = self._cghResults.get(slmKey,{}).get(secKey,{}).get("cgh_name","cgh_pattern") 
+            name = self._cghResults.get(slmKey,{}).get(secKey,{}).get("cgh_name","cgh_pattern")
             name = "cgh_pattern" if name is None else name
 
             suggested = os.path.join(self.cghPatternsDir,name)
@@ -868,7 +868,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             if isinstance(pattern, np.ndarray):
                 np.save(path,pattern) #TODO: would be nice to also save the pattern metadata (parameters, perf, ...)
             else:
-                raise 
+                raise
         except Exception as e:
             if msg_box:
                 self._widget.show_message_box(title="Error Saving CGH Pattern",msg_type="error",
@@ -882,7 +882,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             return
 
         cgh_general = cgh_params.get("cgh_general", {})
-        
+
         # Target preparation
         target_type = cgh_general.get("target_type",None)
         target_params = cgh_params.get(target_type, None)
@@ -905,7 +905,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         comput_params = cgh_params.get("cgh_computation",{})
         self._cghWorker.prepareForNewComputation(slmKey, secKey, target_array,cgh_name, comput_params, target_params,previous_pattern)
         self._cghWorker.sigStartComputation.emit()
-    
+
 
     def on_cgh_computed(self,slmKey,secKey, result_dict,msg=""):
         """Handle CGH computed signal from CGH worker."""
@@ -916,14 +916,14 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             engine_msg = engine.set_new_cgh_pattern(secKey, result_dict["cgh_pattern"])
             if engine_msg is not None:
                 msgs.append(engine_msg)
-        except:
+        except Exception:
             m = f"Computation sucessful but setting new cgh pattern in PatternEngine failed, " \
                   f"likely due to padding/cropping patterns. Double-check that target sizes make sense."
             self._widget.on_cgh_computation_result(slmKey,secKey,success=False,msg=m)
             raise
 
         cgh_name = result_dict.get("cgh_name")
-        
+
         # format msg
         full_msg = None
         if len(msgs) >0:
@@ -955,16 +955,16 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         """Query CGH performances for given SLM and send them to widget to be displayed."""
         performances = self._cghResults.get(slmKey, {}).get(secKey, {}).get("performances", None)
         self._widget.plot_cgh_performances(performances)
-    
+
     def on_show_cgh_result(self, slmKey, secKey,pad_size):
         """Simulates CGH result (expected image in sample plane) and send it to widget to be displayed."""
         cgh_array = self._cghResults.get(slmKey, {}).get(secKey, {}).get("cgh_pattern", None)
-        
+
         if cgh_array is None:
             self._widget.show_message_box(title="No CGH Pattern",msg_type="warning",
                                           message="No CGH pattern computed yet for the selected SLM and section.")
             return
-        
+
         result = cgh.simulate_propagation_fft(cgh_array, padding=True, pad_size=pad_size)
         self._widget.plot_cgh_result(result)
 
@@ -993,13 +993,13 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             try:
                 self.sync_target(slmKey,secKey)
                 target = self._targets.get(slmKey,{}).get(secKey,None)
-            except:
+            except Exception:
                 self.__logger.error(traceback.format_exc())
-                return 
-            
+                return
+
         if not hasattr(target, "analysis_prm"):
             return
-        
+
         params = target.analysis_prm
         updated = JsonEditorDialog.edit_params(self._widget, params)
         if updated is not None:
@@ -1007,7 +1007,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
 
 
     def on_feedback_reset(self,slmKey,secKey):
-        target = self._targets.get(slmKey,{}).get(secKey) 
+        target = self._targets.get(slmKey,{}).get(secKey)
         if target is not None:
             target.reset_feedback()
         self._experimentalResults.setdefault(slmKey,{})[secKey]=None
@@ -1016,15 +1016,15 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
 
     def on_feedback_snap(self, slmKey, secKey):
         """
-        Connect communication channel signal "sigUpdateImage" to a handler waiting 
-        for the snap image to arrive, with a timeout of 1s. 
+        Connect communication channel signal "sigUpdateImage" to a handler waiting
+        for the snap image to arrive, with a timeout of 1s.
         """
         def handle_image(img=None, isCurrentDetector=None,timeout=False):
-            if timeout:                    
+            if timeout:
                 self._widget.show_message_box(title="Snap failed",msg_type="warning",
                                             message="No feedback image acquired.")
                 return False
-            
+
             if isCurrentDetector and img is not None:
                 self._experimentalResults.setdefault(slmKey, {})[secKey] = img
                 return True
@@ -1043,11 +1043,11 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             wait_for_success = True
         )
 
-    
+
     def on_feedback_analysis(self,slmKey,secKey):
-        target = self._targets.get(slmKey,{}).get(secKey) 
+        target = self._targets.get(slmKey,{}).get(secKey)
         result = self._experimentalResults.get(slmKey,{}).get(secKey)
-        
+
         if target is None:
             msg = "Target not created yet."
             success = False
@@ -1057,7 +1057,7 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
             success = False
 
         else:
-            try: 
+            try:
                 success, msg = target.analyze_result(result)
             except Exception as e:
                 success = False

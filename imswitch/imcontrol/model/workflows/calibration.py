@@ -43,6 +43,7 @@ class CalibrationParams:
         camera_pin: Pulse-generator pin for camera trigger.
         pulsed: If True, use hardware-triggered acquisition; if False, live mode.
         measurements_root: Base folder for saving calibration data.
+        laser_name: Facade laser key used for calibration illumination.
     """
 
     n_steps_qwp: int = 10
@@ -53,6 +54,7 @@ class CalibrationParams:
     camera_pin: int = 0
     pulsed: bool = True
     measurements_root: Optional[str | Path] = DEFAULT_MEASUREMENTS_ROOT
+    laser_name: str = "488"
 
 
 class CalibrationWorkflow:
@@ -136,7 +138,7 @@ class CalibrationWorkflow:
 
                     if self.facade.laser_con is not None:
                         self.facade.laser_con.set_triggered_mode(
-                            ["488"], [self.params.laser_power_488_mw]
+                            self._laser_names, [self.params.laser_power_488_mw]
                         )
 
                     time.sleep(0.5)
@@ -221,7 +223,7 @@ class CalibrationWorkflow:
 
         if self.facade.laser_con is not None:
             self.facade.laser_con.set_constant_power(
-                ["488"], [self.params.laser_power_488_mw]
+                self._laser_names, [self.params.laser_power_488_mw]
             )
         time.sleep(0.5)
 
@@ -232,7 +234,7 @@ class CalibrationWorkflow:
         data = self.facade.cam.get_data()
 
         if self.facade.laser_con is not None:
-            self.facade.laser_con.set_modulation_mode(["488"])
+            self.facade.laser_con.set_modulation_mode(self._laser_names)
 
         if not isinstance(data, np.ndarray):
             logger.warning("No data returned from camera during segmentation check")
@@ -247,6 +249,10 @@ class CalibrationWorkflow:
         )
         # In a full implementation this would call a segmentation module and
         # provide interactive parameter tuning. For now we just log success.
+
+    @property
+    def _laser_names(self) -> list[str]:
+        return [str(self.params.laser_name)]
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
