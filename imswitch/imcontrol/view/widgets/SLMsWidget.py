@@ -213,11 +213,15 @@ class SLMsWidget(Widget):
     # -------------------------------------------- #
 
     def build_tab_section(self, parent_layout, slmKey="slm", n_tabs=1,
-                          options={}, full_registry={}):
+                          options=None, full_registry=None):
         """
         Create N sub-tabs (e.g. for double-pass left/right).
         If N == 1, just builds the single SLM section directly.
         """
+        if options is None:
+            options = {}
+        if full_registry is None:
+            full_registry = {}
         if n_tabs is None:
             n_tabs = 1
             tab_names = ["Full SLM"]
@@ -247,10 +251,14 @@ class SLMsWidget(Widget):
         parent_layout.addWidget(subTabs)
     
 
-    def create_slm_section(self, slmKey="slm",secKey="sec_0",options={},full_registry={}):
+    def create_slm_section(self, slmKey="slm",secKey="sec_0",options=None,full_registry=None):
         """
         Create one complete SLM section.
         """
+        if options is None:
+            options = {}
+        if full_registry is None:
+            full_registry = {}
         self._param_definitions[slmKey][secKey]={}
 
         container = QtWidgets.QWidget()
@@ -485,10 +493,12 @@ class SLMsWidget(Widget):
         return group
     
     # Patterns section
-    def create_patterns_group(self, slmKey="slm",secKey="sec_0", options=None, pattern_registry={}):
+    def create_patterns_group(self, slmKey="slm",secKey="sec_0", options=None, pattern_registry=None):
         """
         Create the Patterns group with collapsible section.
         """
+        if pattern_registry is None:
+            pattern_registry = {}
         if options is None:
             self.__logger.warning("No patterns options, using all available patterns from registry.")
 
@@ -1396,8 +1406,10 @@ class SLMsWidget(Widget):
         self._on_config_index_changed(slmKey, combo.currentIndex())
     
     def on_config_loaded(self, slmKey, slm_params, update_pattern = False, 
-                         config_dict={}, msg_box=False):
+                         config_dict=None, msg_box=False):
         """ Should be called every time a new config is loaded """
+        if config_dict is None:
+            config_dict = {}
         try:
             self.set_params({slmKey: slm_params})
             tab_names = slm_params.get("tab_names", {})

@@ -33,6 +33,7 @@ try:
     from imswitch.imcommon.model import initLogger
     IS_IMSWITCH = True
 except ImportError:
+    import logging
     print("No imswitch available")
     IS_IMSWITCH = False
 
@@ -107,6 +108,8 @@ class ESP32Client(object):
 
         if IS_IMSWITCH:
             if IS_IMSWITCH: self.__logger = initLogger(self, tryInheritParent=True)
+        else:
+            self.__logger = logging.getLogger(__name__)
 
 
         self.galvo1 = galvo(channel=1)
@@ -217,8 +220,10 @@ class ESP32Client(object):
             return None
 
 
-    def post_json(self, path, payload={}, headers=None, timeout=1):
+    def post_json(self, path, payload=None, headers=None, timeout=1):
         """Make an HTTP POST request and return the JSON response"""
+        if payload is None:
+            payload = {}
         if self.is_connected and self.is_wifi:
             if not path.startswith("http"):
                 path = self.base_uri + path
@@ -267,17 +272,13 @@ class ESP32Client(object):
                 returnmessage += rmessage
                 if rmessage.find("--")==0 or (time.time()-_time0)>timeout: break
             except Exception as e:
-                if IS_IMSWITCH:
-                    self.__logger.debug("Reading ESP32 serial response failed", exc_info=True)
-                else:
-                    print(f"Reading ESP32 serial response failed: {e}")
+                self.__logger.debug("Reading ESP32 serial response failed", exc_info=True)
                 break
         # casting to dict
         try:
             returnmessage = json.loads(returnmessage.split("--")[0].split("++")[-1])
         except (json.JSONDecodeError, TypeError, ValueError):
-            if IS_IMSWITCH: self.__logger.debug("Casting json string from serial to Python dict failed")
-            else: print("Casting json string from serial to Python dict failed")
+            self.__logger.debug("Casting json string from serial to Python dict failed")
             returnmessage = ""
         return returnmessage
 

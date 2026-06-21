@@ -51,8 +51,10 @@ class RestPiCamera():
         else:
             return None
 
-    def post_json(self, path, payload={}):
+    def post_json(self, path, payload=None):
         """Make an HTTP POST request and return the JSON response"""
+        if payload is None:
+            payload = {}
         if self.is_connected:
             if not path.startswith("http"):
                 path = self.base_uri + path

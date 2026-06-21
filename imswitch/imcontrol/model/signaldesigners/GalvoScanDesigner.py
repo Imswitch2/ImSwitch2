@@ -263,7 +263,7 @@ class GalvoScanDesigner(ScanDesigner):
         return pos_ret, n_eval
 
     def __generate_step_scan(self, dim, len_axis, n_axis, smooth_axis,
-                             v_max=0, a_max=0, axis_reps=[0, 0], n_linesteps=1):
+                             v_max=0, a_max=0, axis_reps=None, n_linesteps=1):
         """Generate a step-function scanning curve, with optional smooth init/final positioning.
 
         Contract:
@@ -271,6 +271,8 @@ class GalvoScanDesigner(ScanDesigner):
           - axis_reps is computed for ny_phys (NOT expanded)
           - n_linesteps expands Y blocks internally
         """
+        if axis_reps is None:
+            axis_reps = [0, 0]
         l_scan = self.axis_length[dim]
         c_scan = self.axis_centerpos[dim]
         pad_prev_axis = False

@@ -231,7 +231,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         if self.imDisplay is not None:
             self.updateScaling() # will update scaling and send final image to be displayed to widget
         else: 
-            print("Selection changed, but self.imDisplay = none. current run: ",currentRun,"axialName:",axialName)
+            self._logger.warning(f"Selection changed, but self.imDisplay = none. current run: {currentRun} axialName: {axialName}")
         
     def removeRecFromList(self,idx:int=None):
         if idx is not None and idx<len(self.resultRecords):
@@ -339,7 +339,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         for path in paths:
             im = imread(path).astype(np.float64)
             if len(im.shape)!=2:
-                print("Loaded images should be 2d")
+                self._logger.error("Loaded images should be 2d")
                 return
             filename = os.path.splitext(os.path.basename(path))[0]
             itemName = self._widget.addToList(filename) # adds to list of items in widget
@@ -752,7 +752,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         if coord is not None and self.showCenterState:
             self._widget.displayCenterCoord(coord[0], coord[1])
         else:
-            print(f"Center search with '{mode}' method failed. Try manual coordinate")
+            self._logger.warning(f"Center search with '{mode}' method failed. Try manual coordinate")
 
     def updateCenterCross(self,y,x):    
         self.yCenter = y

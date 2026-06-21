@@ -251,7 +251,7 @@ class RotationScanController(ImConWidgetController):
         else:
             self._widget.setLoadCalibrate(calibname.split('/')[-1])
             calibname = calibname + '.json'
-        print(calibname)
+        self.__logger.info(calibname)
         with open(calibname, 'r') as f: #
             data = json.load(f)
         for idx, item in enumerate(data.items()):

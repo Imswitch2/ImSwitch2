@@ -178,9 +178,9 @@ class HamamatsuManager(DetectorManager):
         If the parameter doesn't exist, return 0."""
         try:
             value, _ = self._camera.getPropertyValue(name)
-        except:
+        except Exception as e:
             value = 0
-            self.__logger.error(f'Camera parmeter {name} not available. Returning default value 0.')
+            self.__logger.error(f'Camera parameter {name} not available: {e}. Returning default value 0.')
         return value
 
     def getAdvancedPropertyInfo(self):

@@ -199,7 +199,7 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def onPipelineTimeout(self):
         if self.awaitingPipeline:
-            print("Pipeline analysis timed out! Proceeding without axial scan.")
+            self._logger.warning("Pipeline analysis timed out! Proceeding without axial scan.")
             self.awaitingPipeline = False
             self.axialListBuffer = []
             self.scanDone()
@@ -217,7 +217,7 @@ class ScanControllerMoNaLISA(SuperScanController):
                 if (x>1 and y>1 and z < 2):
                     self.autoAxial = True
                 else:
-                    print("Auto axial scan only available for a 2d XY scan")
+                    self._logger.info("Auto axial scan only available for a 2d XY scan")
                     self.autoAxial = False
         except Exception as e:
             self.autoAxial = False
@@ -242,7 +242,7 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def updateScanParamForAxial(self):
         if self.centerCoord is None: #should never happen though
-            print("Could not update scan parameter for axial because self.centercoord = None")
+            self._logger.error("Could not update scan parameter for axial because self.centercoord = None")
             return
 
         # first we save XY scan parameters
@@ -361,7 +361,8 @@ class ScanControllerMoNaLISA(SuperScanController):
                 length = float(self._widget.scanPar['sizeAxial'].text())
                 pixels = round(float(length)/float(stepSize))
                 self._widget.scanPar['pixelsAxial'].setText(str(pixels))
-        except:
+        except Exception as e:
+            self._logger.debug(f"Failed to update axial pixels: {e}")
             pass
 
 

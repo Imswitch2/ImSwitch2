@@ -6,8 +6,8 @@ class MockLeicaDMIManager:
         self.__logger = initLogger(self)
         try:
             self._rs232Manager = kwargs['rs232sManager']._subManagers[deviceInfo.rs232device]
-        except:
-            self.__logger.error(f'Failed to access Leica DMI stand RS232 connection with name {deviceInfo.rs232device}, define it in your setup .json. Loading mocker.')
+        except Exception as e:
+            self.__logger.error(f'Failed to access Leica DMI stand RS232 connection with name {deviceInfo.rs232device}: {e}. Define it in your setup .json. Loading mocker.')
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name=deviceInfo.rs232device, settings={'port': 'Mock'})
 
