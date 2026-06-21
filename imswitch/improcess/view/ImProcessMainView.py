@@ -599,9 +599,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def _makeResultProcessorWidget(self, processor_id: str):
         from imswitch.improcess.reconstructors.registry import get_registry
 
+        # get_processor now raises KeyError with helpful diagnostic if not found
         processor = get_registry().get_processor(processor_id)
-        if processor is None:
-            raise RuntimeError(f"Processor {processor_id!r} is not registered")
         return ResultProcessorWidget(processor)
 
     def getRuntimeAnalysisWidget(self, tool_id: str):

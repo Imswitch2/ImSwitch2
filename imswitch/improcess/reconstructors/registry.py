@@ -50,13 +50,53 @@ class PluginRegistry:
         """Return all registered processors."""
         return list(self._processors.values())
     
-    def get_reconstructor(self, plugin_id: str) -> 'Reconstructor | None':
-        """Retrieve a reconstructor by ID, or None if not found."""
-        return self._reconstructors.get(plugin_id)
+    def get_reconstructor(self, plugin_id: str, raise_on_missing: bool = True) -> 'Reconstructor | None':
+        """
+        Retrieve a reconstructor by ID.
+        
+        Args:
+            plugin_id: The reconstructor plugin ID to look up
+            raise_on_missing: If True (default), raise KeyError when ID not found.
+                            If False, return None (legacy behavior).
+        
+        Returns:
+            The reconstructor instance, or None if not found and raise_on_missing=False
+        
+        Raises:
+            KeyError: If plugin_id is not registered and raise_on_missing=True
+        """
+        plugin = self._reconstructors.get(plugin_id)
+        if plugin is None and raise_on_missing:
+            available = sorted(self._reconstructors.keys())
+            raise KeyError(
+                f"Reconstructor plugin '{plugin_id}' is not registered. "
+                f"Available reconstructors: {available}"
+            )
+        return plugin
     
-    def get_processor(self, plugin_id: str) -> 'Processor | None':
-        """Retrieve a processor by ID, or None if not found."""
-        return self._processors.get(plugin_id)
+    def get_processor(self, plugin_id: str, raise_on_missing: bool = True) -> 'Processor | None':
+        """
+        Retrieve a processor by ID.
+        
+        Args:
+            plugin_id: The processor plugin ID to look up
+            raise_on_missing: If True (default), raise KeyError when ID not found.
+                            If False, return None (legacy behavior).
+        
+        Returns:
+            The processor instance, or None if not found and raise_on_missing=False
+        
+        Raises:
+            KeyError: If plugin_id is not registered and raise_on_missing=True
+        """
+        plugin = self._processors.get(plugin_id)
+        if plugin is None and raise_on_missing:
+            available = sorted(self._processors.keys())
+            raise KeyError(
+                f"Processor plugin '{plugin_id}' is not registered. "
+                f"Available processors: {available}"
+            )
+        return plugin
     
     def auto_select_reconstructor(self, data_obj: 'DataObj') -> 'Reconstructor':
         """

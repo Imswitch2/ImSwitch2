@@ -158,7 +158,7 @@ class ImProcessMainController(MainController):
         if processor_id not in set(available_processor_ids()):
             return
         registry = get_registry()
-        if registry.get_processor(processor_id) is not None:
+        if registry.get_processor(processor_id, raise_on_missing=False) is not None:
             return
         try:
             plugin = register_processor_by_id(registry, processor_id)
@@ -181,7 +181,7 @@ class ImProcessMainController(MainController):
 
         registry = get_registry()
         is_processor = processor_id in set(available_processor_ids())
-        plugin = registry.get_processor(processor_id) if is_processor else None
+        plugin = registry.get_processor(processor_id, raise_on_missing=False) if is_processor else None
         if plugin is not None:
             self.__logger.info(f"Processor already loaded: {processor_id}")
         elif is_processor:

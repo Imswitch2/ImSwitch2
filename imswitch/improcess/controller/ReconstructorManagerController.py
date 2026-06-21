@@ -98,6 +98,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         #   auto-routes the data to the viewer in that case.
         # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
         #   only makes sense for the MoNaLISA plugin.
+        # NOTE: Special-case by ID retained because update_reconstruction is a
+        # MoNaLISA-specific UI action that cannot be expressed through the
+        # plugin registry's current API.
         is_pass_through = bool(getattr(reconstructor, 'is_pass_through', False))
         try:
             self._widget.setReconstructionActionsVisible(
@@ -118,12 +121,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
+        # NOTE: Special-case by ID retained because MoNaLISA uses a legacy parameter
+        # tree that differs fundamentally from the standard plugin widget API.
+        # This will remain until the scan-params/find-pattern path is migrated.
         if reconstructor.id == "monalisa":
-            # Keep the legacy MoNaLISA parameter tree until the whole
-            # scan-params/find-pattern path is migrated to plugin widgets.
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        # NOTE: Special-case by ID retained because widefield-starss batch signals
+        # are plugin-specific and cannot be generically wired through the registry.
         if reconstructor.id == "widefield-starss" and hasattr(widget, "sigRunBatchRequested"):
             try:
                 widget.sigRunBatchRequested.connect(self._main.wfsBatchController.runBatch)
@@ -143,6 +149,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self.reconstruct(self._widget.getMultiDatas(), consolidate)
 
     def reconstruct(self, dataObjs, consolidate):
+        # NOTE: Special-case by ID retained because MoNaLISA uses a separate legacy
+        # reconstruction path (MoNaLISAController) that differs from the generic
+        # plugin process() API.
         if self._main._activeReconstructor is not None and self._main._activeReconstructor.id != "monalisa":
             self._reconstruct_with_plugin(dataObjs, consolidate)
             return
@@ -166,6 +175,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
             result = self._main._activeReconstructor.process(dataObj, params)
             self._commChannel.sigResultProduced.emit(result, result.name)
             self._commChannel.sigCurrentResultChanged.emit(result)
+            # NOTE: Special-case by ID retained because widefield-starss batch result
+            # collection is plugin-specific and not part of the generic plugin API.
             if self._main._activeReconstructor.id == "widefield-starss":
                 self._main.wfsBatchController.appendSingleResult(result)
             # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
