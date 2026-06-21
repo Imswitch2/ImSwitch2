@@ -379,6 +379,18 @@ class ImConMainController(MainController):
             getWidgetStatePersistence().saveAllWidgetStates('default')
         except Exception as e:
             self.__logger.warning(f'Failed to auto-save widget states: {e}')
+        
+        # Stop server thread before closing hardware managers
+        if hasattr(self, '_serverWorker') and hasattr(self, '_thread'):
+            try:
+                self.__logger.debug('Stopping server thread')
+                self._serverWorker.stop()
+                self._thread.quit()
+                if not self._thread.wait(5000):  # 5 second timeout
+                    self.__logger.warning('Server thread did not stop within timeout')
+            except Exception as e:
+                self.__logger.warning(f'Error stopping server thread: {e}')
+        
         self.__factory.closeAllCreatedControllers()
         self.__masterController.closeEvent()
 

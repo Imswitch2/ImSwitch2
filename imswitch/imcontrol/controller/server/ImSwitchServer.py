@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import Pyro5
 import Pyro5.server
 from imswitch.imcommon.framework import Worker
@@ -23,29 +25,73 @@ class ImSwitchServer(Worker):
 
         self._paused = False
         self._canceled = False
+        self._uvicorn_server = None
+        self._pyro_daemon = None
+        self._pyro_thread = None
+        self._uvicorn_loop = None
 
     def run(self):
         self.createAPI()
-        uvicorn.run(app)
+        
+        # Start FastAPI/uvicorn server in non-blocking mode on configured host/port
+        # Use port+1000 for uvicorn to avoid conflict with Pyro daemon
+        uvicorn_port = self._port + 1000
+        config = uvicorn.Config(
+            app,
+            host=self._host,
+            port=uvicorn_port,
+            log_level="info"
+        )
+        self._uvicorn_server = uvicorn.Server(config)
+        
+        # Run uvicorn in a separate thread with its own event loop
+        def run_uvicorn():
+            self._uvicorn_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._uvicorn_loop)
+            try:
+                self._uvicorn_loop.run_until_complete(self._uvicorn_server.serve())
+            finally:
+                self._uvicorn_loop.close()
+        
+        uvicorn_thread = threading.Thread(target=run_uvicorn, daemon=True)
+        uvicorn_thread.start()
+        
+        self.__logger.debug(f"Started FastAPI server at {self._host}:{uvicorn_port}")
         self.__logger.debug("Started server with URI -> PYRO:" + self._name + "@" + self._host + ":" + str(self._port))
+        
+        # Start Pyro server on configured port
         try:
             Pyro5.config.SERIALIZER = "msgpack"
-
             register_serializers()
 
-            Pyro5.server.serve(
-                {self: self._name},
-                use_ns=False,
-                host=self._host,
-                port=self._port,
-            )
+            self._pyro_daemon = Pyro5.server.Daemon(host=self._host, port=self._port)
+            self._pyro_daemon.register(self, self._name)
+            self.__logger.debug(f"Pyro daemon registered at {self._host}:{self._port}")
+            self._pyro_daemon.requestLoop()
 
         except Exception:
             self.__logger.exception("Couldn't start server.")
         self.__logger.debug("Loop Finished")
 
     def stop(self):
-        self._daemon.shutdown()
+        """Stop both uvicorn and Pyro servers. Idempotent."""
+        if self._uvicorn_server is not None:
+            try:
+                self._uvicorn_server.should_exit = True
+                if self._uvicorn_loop is not None and not self._uvicorn_loop.is_closed():
+                    self._uvicorn_loop.call_soon_threadsafe(self._uvicorn_server.should_exit.__setattr__, 'should_exit', True)
+            except Exception as e:
+                self.__logger.warning(f"Error stopping uvicorn server: {e}")
+            finally:
+                self._uvicorn_server = None
+        
+        if self._pyro_daemon is not None:
+            try:
+                self._pyro_daemon.shutdown()
+            except Exception as e:
+                self.__logger.warning(f"Error stopping Pyro daemon: {e}")
+            finally:
+                self._pyro_daemon = None
 
     @app.get("/")
     def createAPI(self):
