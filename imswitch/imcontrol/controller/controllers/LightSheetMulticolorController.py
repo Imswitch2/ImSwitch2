@@ -1,22 +1,38 @@
 import configparser
+import json
 import os
 import traceback
 from ast import literal_eval
 
-from imswitch.imcommon.model import dirtools
+from imswitch.imcommon.model import dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
+from ..basecontrollers import (
+    ImConWidgetController,
+    ScanLifecycleMixin,
+    StatefulComponentMixin,
+    ComponentStateApplyMode,
+    SetupModeApplyPriority
+)
 
 
-class LightSheetMulticolorController(ScanLifecycleMixin, ImConWidgetController):
+class LightSheetMulticolorController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     """ Controller for the multicolor light-sheet / pLS-RESOLFT scan widget.
 
     Builds a ``'MulticolorScan'`` parameter dict from the widget fields and
     submits it to ``ScanManagerTriggerScope.runScan()``.
     """
 
+    componentName = 'LightSheetMulticolor'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'scan'
+    setupModeApplyPriority = SetupModeApplyPriority.SCAN
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._logger = initLogger(self)
 
         self.settingAttr = False
         self.settingParameters = False
@@ -61,6 +77,8 @@ class LightSheetMulticolorController(ScanLifecycleMixin, ImConWidgetController):
         self._widget.sigLoadScanClicked.connect(self.loadScan)
         self._widget.sigRunScanClicked.connect(self.runScan)
         self._widget.sigParameterChanged.connect(self.updateScanParDict)
+
+        getWidgetStatePersistence().register('LightSheetMulticolor', self)
 
     # ------------------------------------------------------------------
     # Save / load
@@ -313,6 +331,160 @@ class LightSheetMulticolorController(ScanLifecycleMixin, ImConWidgetController):
 
     def closeEvent(self):
         pass
+
+    def getComponentState(self) -> dict:
+        """Snapshot the current LightSheet Multicolor scan parameters.
+
+        Captures timing (timelapse, laser delays), scan positions (RO, cycle,
+        multicolor offsets), and device assignments (5 lasers, camera TTL,
+        3 scan positioners).
+        """
+        self.getParameters()
+
+        scanInfo = getattr(self._setupInfo, 'scan', None)
+
+        return {
+            'controller': type(self).__name__,
+            'scanWidgetType': getattr(scanInfo, 'scanWidgetType', None),
+            'scanParameterDict': dict(self._scanParameterDict),
+            'deviceParameterDict': dict(self._deviceParameterDict),
+        }
+
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore LightSheet Multicolor scan parameters from a snapshot.
+
+        CRITICAL SAFETY INVARIANT: This method MUST NEVER start a scan. It only
+        restores scan parameters (timing, positions, device assignments). Starting
+        a scan requires explicit user action (runScan/runScanAdvanced).
+
+        Args:
+            state: Component state dict from getComponentState().
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (behavior is identical).
+
+        Returns:
+            List of warning strings for recoverable issues.
+        """
+        warnings = []
+
+        if self.isRunning:
+            return ['Scan is currently running; scan parameters were not changed.']
+
+        if not isinstance(state, dict):
+            return ['Saved scan state is not a dictionary.']
+
+        savedWidgetType = state.get('scanWidgetType')
+        currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)
+        if savedWidgetType and currentWidgetType and savedWidgetType != currentWidgetType:
+            warnings.append(
+                f'Saved scan widget type "{savedWidgetType}" differs from current '
+                f'"{currentWidgetType}".'
+            )
+
+        scanParameterDict = state.get('scanParameterDict', {})
+        deviceParameterDict = state.get('deviceParameterDict', {})
+
+        if not isinstance(scanParameterDict, dict):
+            return warnings + ['Saved scan parameters are not a dictionary.']
+        if not isinstance(deviceParameterDict, dict):
+            return warnings + ['Saved device parameters are not a dictionary.']
+
+        # Validate scan positioner devices
+        positionerDeviceKeys = ['roScanDevice', 'MulticolorScanDevice', 'cycleScanDevice']
+        missingPositioners = []
+        for key in positionerDeviceKeys:
+            device = deviceParameterDict.get(key)
+            if device and device not in self.positioners:
+                missingPositioners.append(device)
+
+        if missingPositioners:
+            return warnings + [
+                f'Missing scan positioner(s): {", ".join(set(missingPositioners))}. '
+                'Scan parameters were not applied.'
+            ]
+
+        # Validate TTL devices (lasers and camera)
+        ttlDeviceKeys = ['Laser1', 'Laser2', 'Laser3', 'Laser4', 'Laser5', 'CameraTTL']
+        missingTTLDevices = []
+        for key in ttlDeviceKeys:
+            device = deviceParameterDict.get(key)
+            if device and device not in self.TTLDevices:
+                missingTTLDevices.append(device)
+
+        if missingTTLDevices:
+            return warnings + [
+                f'Missing TTL device(s): {", ".join(set(missingTTLDevices))}. '
+                'Scan parameters were not applied.'
+            ]
+
+        # Apply the state
+        self._scanParameterDict = dict(scanParameterDict)
+        self._deviceParameterDict = dict(deviceParameterDict)
+
+        try:
+            self.setParameters()
+        except Exception as e:
+            self._logger.error('Failed to apply LightSheet Multicolor component state')
+            self._logger.error(traceback.format_exc())
+            return warnings + [f'Failed to apply scan state: {e}']
+
+        try:
+            self.setAllSharedAttr()
+        except Exception as e:
+            self._logger.error('Failed to set shared attributes after applying component state')
+            self._logger.error(traceback.format_exc())
+            warnings.append(f'Failed to set shared attributes: {e}')
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved LightSheet Multicolor scan state."""
+        if not isinstance(state, dict) or not state:
+            return ["  no scan state"]
+
+        summaries = []
+
+        if state.get("controller"):
+            summaries.append(f"  controller: {state.get('controller')}")
+        if state.get("scanWidgetType"):
+            summaries.append(f"  widget type: {state.get('scanWidgetType')}")
+
+        device = state.get("deviceParameterDict") or {}
+        if device:
+            lasers = [f"Laser{i+1}={device.get(f'Laser{i+1}')}" for i in range(5) if device.get(f'Laser{i+1}')]
+            positioners = [f"{k}={v}" for k, v in device.items() if 'Device' in k and v]
+            if lasers:
+                summaries.append(f"  lasers: {', '.join(lasers[:3])}" +
+                                 (f" (+{len(lasers)-3} more)" if len(lasers) > 3 else ""))
+            if positioners:
+                summaries.append(f"  positioners: {', '.join(positioners)}")
+
+        scan = state.get("scanParameterDict") or {}
+        if scan:
+            timing = []
+            if 'timeLapsePoints' in scan:
+                timing.append(f"timelapse={scan['timeLapsePoints']}")
+            if 'roSteps' in scan:
+                timing.append(f"roSteps={scan['roSteps']}")
+            if 'cycleSteps' in scan:
+                timing.append(f"cycleSteps={scan['cycleSteps']}")
+            if timing:
+                summaries.append(f"  scan: {', '.join(timing)}")
+
+        return summaries or ["  no scan state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved LightSheet Multicolor scan state.
+
+        Scan parameters carry no laser-power-like hazards; laser hazards belong
+        to the Laser component. Returns an empty list.
+        """
+        return []
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
