@@ -183,6 +183,7 @@ class TilingWorkflow:
         self,
         save_folder: Optional[Path] = None,
         tile_callback: Optional[Callable] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Execute the full tiling scan.
 
@@ -191,6 +192,12 @@ class TilingWorkflow:
                 or creates a timestamped folder under params.measurements_root.
             tile_callback: Optional callback ``f(image, grid_x, grid_y, tile_idx, n_total)``
                 called after each tile is acquired — use for live preview updates.
+            should_stop: Optional ``f() -> bool`` checked before each tile. When it
+                returns True the scan stops early; cleanup still runs.
+
+        Cleanup (laser modulation mode restore, H5 close) is guaranteed via a
+        ``finally`` block even if a tile, stage move, or callback raises or the
+        scan is cancelled.
         """
         save_folder = save_folder or self.params.save_folder or self._default_save_folder()
 
@@ -231,7 +238,6 @@ class TilingWorkflow:
 
         # Get initial stage position
         initial_pos = self._get_stage_position()
-        curr_pos = np.zeros(2, dtype=float)
 
         # Decide acquisition strategy
         hw_trigger = (
@@ -240,6 +246,41 @@ class TilingWorkflow:
             and self.params.camera_pin is not None
             and self.facade.trig.connected
         )
+
+        # Run the scan with guaranteed cleanup (laser-mode restore + H5 close)
+        # even if a tile, stage move, or callback raises, or the scan is cancelled.
+        try:
+            self._run_tiles(
+                save_folder=save_folder,
+                n_steps=n_steps,
+                initial_pos=initial_pos,
+                h5_file=h5_file,
+                hw_trigger=hw_trigger,
+                tile_callback=tile_callback,
+                should_stop=should_stop,
+            )
+        finally:
+            self._cleanup_run(h5_file)
+
+    def _run_tiles(
+        self,
+        *,
+        save_folder: Path,
+        n_steps: int,
+        initial_pos: tuple[float, float],
+        h5_file,
+        hw_trigger: bool,
+        tile_callback: Optional[Callable],
+        should_stop: Optional[Callable[[], bool]],
+    ) -> None:
+        """Configure the laser, run the spiral tile loop, and return to origin.
+
+        Cleanup is the caller's responsibility: :meth:`run` wraps this in
+        ``try/finally`` -> :meth:`_cleanup_run`. On cancellation (``should_stop``)
+        the scan returns to origin and cleans up; on a raised exception the origin
+        move is skipped and only :meth:`_cleanup_run` runs.
+        """
+        curr_pos = np.zeros(2, dtype=float)
 
         # Configure laser
         if hw_trigger:
@@ -259,6 +300,10 @@ class TilingWorkflow:
 
         # Execute spiral scan
         for ctr, pos in enumerate(spiral_moves(n_steps)):
+            if should_stop is not None and should_stop():
+                logger.info("Tiling: stop requested before tile %d/%d — ending scan",
+                            ctr + 1, n_steps)
+                break
             logger.info("Acquiring tile %d/%d", ctr + 1, n_steps)
             curr_pos += pos
             curr_pos_move = (
@@ -311,12 +356,6 @@ class TilingWorkflow:
             if tile_callback is not None:
                 tile_callback(tmp_im, int(curr_pos[0]), int(curr_pos[1]), ctr, n_steps)
 
-        # Clean up laser
-        self.facade.laser_con.set_modulation_mode(self._laser_names())
-
-        if h5_file is not None:
-            h5_file.close()
-
         # Move to origin (minimum x, y)
         if self._tile_positions_stage:
             pos_arr = np.array(self._tile_positions_stage)
@@ -326,6 +365,24 @@ class TilingWorkflow:
             self.facade.stage_con.move_to(min_x, min_y)
 
         logger.info("Tiling scan complete")
+
+    def _cleanup_run(self, h5_file) -> None:
+        """Restore laser modulation mode and close the H5 file.
+
+        Always invoked from :meth:`run`'s ``finally`` (success, failure, or
+        cancel). Each step is independently guarded so one failure cannot mask
+        the other or prevent the H5 handle from closing.
+        """
+        try:
+            self.facade.laser_con.set_modulation_mode(self._laser_names())
+        except Exception as exc:
+            logger.error("Tiling cleanup: failed to restore laser modulation mode — %s", exc)
+
+        if h5_file is not None:
+            try:
+                h5_file.close()
+            except Exception as exc:
+                logger.error("Tiling cleanup: failed to close H5 file — %s", exc)
 
     def _default_save_folder(self) -> Path:
         """Return a timestamped tiling folder under the configured measurements root."""
@@ -434,21 +491,22 @@ class TilingWorkflow:
         """
         self.facade.cam.prepare_acquisition(1)
         self.facade.cam.start_acquisition()
-        self.facade.trig.snap_trigger(
-            laser_pin=laser_pin,
-            camera_pin=camera_pin,
-            exposure_us=self.params.exposure_us,
-        )
+        try:
+            self.facade.trig.snap_trigger(
+                laser_pin=laser_pin,
+                camera_pin=camera_pin,
+                exposure_us=self.params.exposure_us,
+            )
+            # Wait for frame to arrive
+            arrived = self.facade.cam.wait_for_frame(timeout_s=2.0)
+            data = self.facade.cam.get_data() if arrived else None
+        finally:
+            # Always stop the acquisition, before any software fallback or on error.
+            self.facade.cam.stop_acquisition()
 
-        # Wait for frame to arrive
-        arrived = self.facade.cam.wait_for_frame(timeout_s=2.0)
         if not arrived:
             logger.warning("Hardware snap: no frame within 2 s, falling back to software")
-            self.facade.cam.stop_acquisition()
             return self._grab_image(savepath=savepath, filehandle=filehandle, pulsed_laser=False)
-
-        self.facade.cam.stop_acquisition()
-        data = self.facade.cam.get_data()
 
         if not isinstance(data, np.ndarray) or data.shape[0] == 0:
             logger.warning("Hardware snap: empty data, falling back to software")
@@ -479,15 +537,16 @@ class TilingWorkflow:
         """
         if pulsed_laser:
             self.facade.laser_con.laser_on(self._laser_names())
-
-        self.facade.cam.prepare_live()
-        self.facade.cam.start_live()
-        time.sleep(0.05)  # Brief delay for frame capture
-        self.facade.cam.stop_live()
-        data = self.facade.cam.get_data()
-
-        if pulsed_laser:
-            self.facade.laser_con.laser_off(self._laser_names())
+        try:
+            self.facade.cam.prepare_live()
+            self.facade.cam.start_live()
+            time.sleep(0.05)  # Brief delay for frame capture
+            self.facade.cam.stop_live()
+            data = self.facade.cam.get_data()
+        finally:
+            # Always disable a pulsed laser, even if the camera path raised.
+            if pulsed_laser:
+                self.facade.laser_con.laser_off(self._laser_names())
 
         if not isinstance(data, np.ndarray):
             if recursion_ctr > 10:
