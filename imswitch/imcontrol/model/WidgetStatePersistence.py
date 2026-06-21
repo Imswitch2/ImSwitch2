@@ -207,7 +207,7 @@ class WidgetStatePersistence:
         
         # Lazy-load ComponentStateApplyMode enum
         if apply_mode is None:
-            from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
+            from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
             apply_mode = ComponentStateApplyMode.STARTUP_RESTORE
         
         try:
@@ -320,7 +320,7 @@ class WidgetStatePersistence:
                     )
             
             if apply_immediately and canonical_name in self._registry:
-                from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
+                from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
                 warnings = self.applyComponentState(
                     canonical_name,
                     state,
@@ -482,7 +482,7 @@ class WidgetStatePersistence:
             bundle = json.load(f)
 
         count = 0
-        from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
+        from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
         
         for name, entry in bundle.items():
             canonical_name = self._resolveCanonicalName(name)

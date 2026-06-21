@@ -5,14 +5,18 @@ import os
 import traceback
 
 from abc import abstractmethod
-from enum import Enum
 
 from imswitch.imcommon.controller.basecontrollers import (
     WidgetController,
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import InvalidChildClassError
+from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
+
+# ``ComponentStateApplyMode`` is re-exported above (defined in model.state_contracts)
+# so existing ``from ..basecontrollers import ComponentStateApplyMode`` imports keep
+# working while the canonical definition lives in the model layer.
 
 
 class ImConWidgetControllerFactory(WidgetControllerFactory):
@@ -36,12 +40,6 @@ class ImConWidgetController(WidgetController):
 
         # Init superclass
         super().__init__(*args, **kwargs)
-
-
-class ComponentStateApplyMode(Enum):
-    """Distinguishes passive UI restore from active hardware application."""
-    STARTUP_RESTORE = "startup_restore"
-    SETUP_MODE_APPLY = "setup_mode_apply"
 
 
 class SetupModeApplyPriority:
