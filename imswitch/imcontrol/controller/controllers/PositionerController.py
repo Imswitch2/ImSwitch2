@@ -31,16 +31,21 @@ class PositionerController(ImConWidgetController, StatefulComponentMixin):
             if not pManager.forPositioning:
                 continue
 
-            if pName == 'Stage':
-                if self._master.positionersManager[pName].device is None:
-                    continue
+            if getattr(pManager, 'device', True) is None:
+                continue
 
             if pManager.joystick:
                 self._widget.addJoystick(pName)
 
             speed = hasattr(pManager, 'speed')
-            self._widget.addPositioner(pName, pManager.axes, speed, pManager.joystick,
-                                       shortcutModifier=pManager.shortcutModifier)
+            self._widget.addPositioner(
+                pName,
+                pManager.axes,
+                speed,
+                pManager.joystick,
+                shortcutModifier=pManager.shortcutModifier,
+                unit=getattr(pManager, 'positionUnit', 'µm')
+            )
             for axis in pManager.axes:
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:

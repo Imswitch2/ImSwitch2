@@ -10,6 +10,7 @@ Verifies the unified StatefulComponentMixin implementation on SuperScanControlle
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, patch, call
 from imswitch.imcontrol.controller.basecontrollers import SuperScanController, ComponentStateApplyMode
 
@@ -214,6 +215,31 @@ class TestScanComponentState:
         # Verify scan was NEVER started
         scan_controller.runScan.assert_not_called()
         scan_controller.runScanAdvanced.assert_not_called()
+
+    def test_return_to_center_after_scan_uses_positioner_metadata(self, scan_controller):
+        """Only positioners marked in setup metadata are reset after a scan."""
+        scan_controller._setupInfo.positioners = {
+            'X': SimpleNamespace(
+                managerProperties={
+                    'returnToCenterAfterScan': True,
+                    'returnToCenterAfterScanAxis': 'Z',
+                }
+            ),
+            'Y': SimpleNamespace(managerProperties={}),
+        }
+        scan_controller._analogParameterDict = {
+            'target_device': ['X', 'Y'],
+            'axis_centerpos': [12.5, 99.0],
+        }
+        xManager = Mock()
+        yManager = Mock()
+        scan_controller._master = Mock()
+        scan_controller._master.positionersManager = {'X': xManager, 'Y': yManager}
+
+        scan_controller._resetReturnToCenterPositionersAfterScan()
+
+        xManager.setPosition.assert_called_once_with(12.5, 'Z')
+        yManager.setPosition.assert_not_called()
 
     def test_applyComponentState_isRunning_guard(self, scan_controller):
         """Verify applyComponentState returns warning when scan is running."""

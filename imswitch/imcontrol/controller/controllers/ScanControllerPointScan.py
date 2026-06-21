@@ -99,13 +99,7 @@ class ScanControllerPointScan(SuperScanController):
             if not self.doingNonFinalPartOfSequence:
                 self._widget.setScanButtonChecked(False)
                 self.emitScanSignal(self._commChannel.sigScanEnded)
-            # set positions of certain scanners to centerpos
-            # TODO: fix this in a nicer way, to not hardcode the positionerNames here that should be centered.
-            # Make it a .json parameter of the scanners?
-            for index, positionerName in enumerate(self._analogParameterDict['target_device']):
-                if positionerName == 'ND-PiezoZ':
-                    position = self._analogParameterDict['axis_centerpos'][index]
-                    self._master.positionersManager[positionerName].setPosition(position, 0)
+            self._resetReturnToCenterPositionersAfterScan()
         else:
             self.runScanAdvanced(sigScanStartingEmitted=True)
 

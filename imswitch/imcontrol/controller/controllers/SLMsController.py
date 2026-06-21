@@ -8,7 +8,12 @@ import traceback
 import h5py
 import datetime
 
-from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view.guitools import askForFilePath, JsonEditorDialog
@@ -31,8 +36,12 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
 
     # StatefulComponentMixin attributes
     componentName = 'SLMs'
+    setupModeDisplayName = 'SLM'
     stateSchemaVersion = 1
     legacyStateNames = ()
+    setupModeCategory = 'spatial_light_modulator'
+    setupModeApplyPriority = SetupModeApplyPriority.MULTI_SPATIAL_LIGHT_MODULATOR
+    setupModeHardwareCritical = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1322,4 +1331,3 @@ class SLMsController(StatefulComponentMixin, ImConWidgetController):
         if isinstance(value, (list, tuple)):
             return '[' + ', '.join(self._fmt(item) for item in value) + ']'
         return str(value)
-

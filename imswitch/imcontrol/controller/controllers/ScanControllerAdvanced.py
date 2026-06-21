@@ -856,14 +856,10 @@ class ScanControllerAdvanced(SuperScanController):
                 self._widget.setScanButtonChecked(False)
                 self.emitScanSignal(self._commChannel.sigScanEnded)
 
-            # Optional special-case reset like your PointScan example
             try:
-                for index, positionerName in enumerate(self._analogParameterDict["target_device"]):
-                    if positionerName == "ND-PiezoZ":
-                        position = self._analogParameterDict["axis_centerpos"][index]
-                        self._master.positionersManager[positionerName].setPosition(position, 0)
+                self._resetReturnToCenterPositionersAfterScan()
             except Exception:
-                self._logger.warning("Failed to reset ND-PiezoZ after scan:\n%s", traceback.format_exc())
+                self._logger.warning("Failed to reset positioners after scan:\n%s", traceback.format_exc())
         else:
             self.runScanAdvanced(sigScanStartingEmitted=True)
 

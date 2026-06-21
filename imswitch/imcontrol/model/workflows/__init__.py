@@ -5,6 +5,13 @@ ImSwitch scripting module. See docs/design/plans/wfs-workflows-port.md.
 from .calibration import CalibrationParams, CalibrationWorkflow
 from .cwstarss import CWSTARSSParams, CWSTARSSWorkflow
 from .defocus_scan import DefocusScanParams, DefocusScanWorkflow
+from .event_probe import (
+    EventProbe,
+    EventProbeParams,
+    EventProbeResult,
+    EventGatedAcquisitionCallback,
+    EventGatedAcquisitionResult,
+)
 from .facade import (
     CamFacade,
     LaserConFacade,
@@ -29,6 +36,18 @@ from .multi_well_tiling import MultiWellTilingParams, MultiWellTilingWorkflow
 from .widefield_starss import WidefieldStarssParams, WidefieldStarssWorkflow
 from .serial_cwstarss import SerialCWSTARSSParams, SerialCWSTARSSWorkflow
 from .stitched_image import StitchedImage
+from .target import Target, TargetList
+from .target_timelapse import (
+    ModeConfig,
+    TargetTimelapseParams,
+    TargetTimelapseWorkflow,
+    TargetTimelapseResult,
+    TargetAcquisitionResult,
+)
+from .smart_mode_workflow import (
+    ModeTransition,
+    SmartModeWorkflowAdapter,
+)
 from .time_resolved import (
     BinnedPhotonArrivalParams,
     BinnedPhotonArrivalWorkflow,
@@ -56,12 +75,19 @@ __all__ = [
     "CamFacade",
     "DefocusScanParams",
     "DefocusScanWorkflow",
+    "EventProbe",
+    "EventProbeParams",
+    "EventProbeResult",
+    "EventGatedAcquisitionCallback",
+    "EventGatedAcquisitionResult",
     "GateSpec",
     "GatedSTEDParams",
     "GatedSTEDWorkflow",
     "LaserConFacade",
     "LifetimeFitConfig",
     "MicroscopeFacade",
+    "ModeConfig",
+    "ModeTransition",
     "MockMicroscopeFacade",
     "MultiWellTilingParams",
     "MultiWellTilingWorkflow",
@@ -74,8 +100,15 @@ __all__ = [
     "SerialCWSTARSSParams",
     "SerialCWSTARSSWorkflow",
     "ScanWorkflowFacade",
+    "SmartModeWorkflowAdapter",
     "StageConFacade",
     "StitchedImage",
+    "Target",
+    "TargetList",
+    "TargetAcquisitionResult",
+    "TargetTimelapseParams",
+    "TargetTimelapseResult",
+    "TargetTimelapseWorkflow",
     "TauSTEDParams",
     "TauSTEDWorkflow",
     "TimeResolvedDetectorFacade",

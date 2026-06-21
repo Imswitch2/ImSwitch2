@@ -69,9 +69,15 @@ scan preset = `{analogParameterDict, digitalParameterDict}`).
 - Storage: `UserFileDirs.Root/imcontrol_setup_modes/<name>.json`, one file per
   named mode, each carrying `includedComponents` (a user-chosen subset) +
   per-component `state`, metadata, and an optional keyboard `shortcut`.
-- Apply is **ordered** (`applyOrder = [Settings, Scan, SLMs, SLM, LeicaStand,
-  FlipMirror, Laser]`) and **intentionally drives hardware**, gated in the UI
-  by a laser-power safety dialog + suppressible warnings
+- Apply is **ordered** by component-local `setupModeApplyPriority` bands. The
+  default shipped priorities preserve the legacy relative order (`Settings`,
+  `Scan`, `SLMs`, `SLM`, microscope stands such as `LeicaStand`, beam-path
+  components such as `FlipMirror`, then `Laser`) without a central device-name
+  list. Components that make setup-mode apply safety-critical declare
+  `setupModeHardwareCritical = True`, which smart-microscopy mode switching
+  reads via the setup-mode backend instead of a central allowlist. It
+  **intentionally drives hardware**, gated in the UI by a laser-power
+  safety dialog + suppressible warnings
   (`SetupModesController`, `imcontrol_setup_mode_settings.json`).
 - **Mode-aware controllers actually wired today: only `SuperScanController`
   (all scan variants, via inheritance) and `FlipMirrorController`.**

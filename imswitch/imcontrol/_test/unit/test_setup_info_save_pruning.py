@@ -66,3 +66,22 @@ def test_round_trip_is_lossless():
     reloaded = SetupInfo.from_json(pruned, infer_missing=True)
 
     assert reloaded == setupInfo
+
+
+def test_smart_microscopy_mode_switching_flag_round_trips():
+    setup = json.loads(MINIMAL_TRIGGERSCOPE_SETUP)
+    setup['smartMicroscopyModes'] = {
+        'EtSnouty': {
+            'scouting': 'Scout mode',
+            'event': 'Event mode',
+        },
+    }
+    setup['smartMicroscopyModeSwitchingEnabled'] = {'EtSnouty': True}
+
+    setupInfo = SetupInfo.from_json(json.dumps(setup), infer_missing=True)
+    pruned = pruneDefaultSetupInfoFields(setupInfo)
+    reloaded = SetupInfo.from_json(json.dumps(pruned), infer_missing=True)
+
+    assert setupInfo.smartMicroscopyModeSwitchingEnabled == {'EtSnouty': True}
+    assert pruned['smartMicroscopyModeSwitchingEnabled'] == {'EtSnouty': True}
+    assert reloaded.smartMicroscopyModeSwitchingEnabled == {'EtSnouty': True}

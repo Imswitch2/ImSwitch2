@@ -6,7 +6,12 @@ import numpy as np
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.managers.SLMManager import MaskMode, Direction
-from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 
 
 class SLMController(StatefulComponentMixin, ImConWidgetController):
@@ -14,8 +19,12 @@ class SLMController(StatefulComponentMixin, ImConWidgetController):
 
     # StatefulComponentMixin attributes
     componentName = 'SLM'
+    setupModeDisplayName = 'SLM'
     stateSchemaVersion = 1
     legacyStateNames = ()
+    setupModeCategory = 'spatial_light_modulator'
+    setupModeApplyPriority = SetupModeApplyPriority.SPATIAL_LIGHT_MODULATOR
+    setupModeHardwareCritical = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

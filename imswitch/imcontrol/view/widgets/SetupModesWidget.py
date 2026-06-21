@@ -33,6 +33,7 @@ class SetupModesWidget(Widget):
     sigSafetySettings = QtCore.Signal()
     sigDeleteMode = QtCore.Signal()
     sigRevealFolder = QtCore.Signal()
+    sigSmartMicroscopyRoles = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -121,6 +122,7 @@ class SetupModesWidget(Widget):
         self.duplicateAction = self.moreMenu.addAction("Duplicate mode...")
         self.shortcutAction = self.moreMenu.addAction("Set shortcut...")
         self.moreMenu.addSeparator()
+        self.smartMicroscopyRolesAction = self.moreMenu.addAction("Smart microscopy roles...")
         self.safetySettingsAction = self.moreMenu.addAction("Safety settings...")
         self.revealFolderAction = self.moreMenu.addAction("Open modes folder")
         self.moreMenu.addSeparator()
@@ -149,6 +151,7 @@ class SetupModesWidget(Widget):
         self.renameAction.triggered.connect(self.sigRenameMode)
         self.duplicateAction.triggered.connect(self.sigDuplicateMode)
         self.shortcutAction.triggered.connect(self.sigSetShortcut)
+        self.smartMicroscopyRolesAction.triggered.connect(self.sigSmartMicroscopyRoles)
         self.safetySettingsAction.triggered.connect(self.sigSafetySettings)
         self.deleteAction.triggered.connect(self.sigDeleteMode)
         self.revealFolderAction.triggered.connect(self.sigRevealFolder)
@@ -250,6 +253,20 @@ class SetupModesWidget(Widget):
         detailLayout.addWidget(descriptionLabel)
         detailLayout.addWidget(descriptionEdit)
 
+        smartRolesLabel = QtWidgets.QLabel("Smart microscopy roles")
+        smartRolesFont = QtGui.QFont(dialogFont)
+        smartRolesFont.setBold(True)
+        smartRolesLabel.setFont(smartRolesFont)
+
+        smartRolesEdit = QtWidgets.QPlainTextEdit()
+        smartRolesEdit.setReadOnly(True)
+        smartRolesEdit.setMaximumHeight(60)
+        smartRolesEdit.setPlaceholderText("Not used in any workflow")
+        self._applyPlainTextEditFont(smartRolesEdit, dialogFont)
+
+        detailLayout.addWidget(smartRolesLabel)
+        detailLayout.addWidget(smartRolesEdit)
+
         savedStateLabel = QtWidgets.QLabel("Saved state summary")
         savedStateFont = QtGui.QFont(dialogFont)
         savedStateFont.setBold(True)
@@ -279,6 +296,7 @@ class SetupModesWidget(Widget):
                 createdLabel.setText("")
                 componentsLabel.setText("")
                 descriptionEdit.setPlainText("")
+                smartRolesEdit.setPlainText("")
                 stateSummary.setPlainText("")
                 return
 
@@ -289,6 +307,7 @@ class SetupModesWidget(Widget):
             createdLabel.setText(details.get("createdAt") or "Unknown")
             componentsLabel.setText(", ".join(details.get("includedComponents") or []))
             descriptionEdit.setPlainText(details.get("description") or "")
+            smartRolesEdit.setPlainText("\n".join(details.get("smartModeRoles") or []))
             stateSummary.setPlainText("\n".join(details.get("stateSummary") or []))
 
         modeList.currentRowChanged.connect(updateDetails)
@@ -527,6 +546,147 @@ class SetupModesWidget(Widget):
             "clearSuppressedWarnings": clearSuppressedCheck.isChecked(),
         }
 
+    def showSmartMicroscopyRolesDialog(self, workflowNames, availableModes, currentConfig):
+        """Show dialog for configuring smart microscopy role-to-mode mappings.
+
+        Args:
+            workflowNames: List of workflow names (from controllers + setupInfo)
+            availableModes: List of available setup mode names
+            currentConfig: Dict with 'modes', 'policies', 'enabled' keys containing
+                current configuration from setupInfo
+
+        Returns:
+            Dict with 'modes', 'policies', 'enabled' keys, or None if cancelled
+        """
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Smart Microscopy Roles")
+        dialog.setMinimumWidth(600)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        label = QtWidgets.QLabel(
+            "Assign setup modes to workflow roles. Each workflow can define modes for "
+            "scouting, event, resume, idle, and validation phases."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        layout.addSpacing(8)
+
+        currentModes = currentConfig.get("modes", {})
+        currentPolicies = currentConfig.get("policies", {})
+        currentEnabled = currentConfig.get("enabled", {})
+
+        roleNames = ("scouting", "event", "resume", "idle", "validation")
+        policyNames = ("blockOnHazard", "warnOnly", "allow")
+
+        roleWidgets = {}
+        missingAssignments = []
+
+        scrollArea = QtWidgets.QScrollArea()
+        scrollArea.setWidgetResizable(True)
+        scrollWidget = QtWidgets.QWidget()
+        scrollLayout = QtWidgets.QVBoxLayout(scrollWidget)
+
+        for workflowName in sorted(workflowNames):
+            groupBox = QtWidgets.QGroupBox(workflowName)
+            groupLayout = QtWidgets.QVBoxLayout(groupBox)
+
+            enabledCheck = QtWidgets.QCheckBox("Enable smart mode switching for this workflow")
+            enabledCheck.setChecked(currentEnabled.get(workflowName, False))
+            groupLayout.addWidget(enabledCheck)
+
+            rolesForm = QtWidgets.QFormLayout()
+            workflowRoleCombos = {}
+            workflowModes = currentModes.get(workflowName, {})
+
+            for role in roleNames:
+                combo = QtWidgets.QComboBox()
+                combo.addItem("", "")
+                for modeName in availableModes:
+                    combo.addItem(modeName, modeName)
+
+                currentMode = workflowModes.get(role, "")
+                if currentMode and currentMode not in availableModes:
+                    combo.addItem(f"{currentMode} (missing)", currentMode)
+                    missingAssignments.append(f"{workflowName}.{role}: {currentMode}")
+
+                index = combo.findData(currentMode)
+                combo.setCurrentIndex(index if index >= 0 else 0)
+                rolesForm.addRow(f"{role.capitalize()}:", combo)
+                workflowRoleCombos[role] = combo
+
+            groupLayout.addLayout(rolesForm)
+
+            policyForm = QtWidgets.QFormLayout()
+            policyCombo = QtWidgets.QComboBox()
+            policyCombo.addItems(policyNames)
+            currentPolicy = currentPolicies.get(workflowName, 'blockOnHazard')
+            if currentPolicy in policyNames:
+                policyCombo.setCurrentText(currentPolicy)
+            else:
+                policyCombo.setCurrentText('blockOnHazard')
+            policyForm.addRow("Hazard policy:", policyCombo)
+            groupLayout.addLayout(policyForm)
+
+            roleWidgets[workflowName] = {
+                'enabled': enabledCheck,
+                'roles': workflowRoleCombos,
+                'policy': policyCombo,
+            }
+
+            scrollLayout.addWidget(groupBox)
+
+        scrollLayout.addStretch(1)
+        scrollArea.setWidget(scrollWidget)
+        layout.addWidget(scrollArea)
+
+        statusLabel = QtWidgets.QLabel("")
+        statusLabel.setWordWrap(True)
+        if missingAssignments:
+            statusLabel.setText(
+                "Missing configured setup modes: " + "; ".join(missingAssignments)
+            )
+        layout.addWidget(statusLabel)
+
+        buttonBox = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        layout.addWidget(buttonBox)
+        buttonBox.accepted.connect(dialog.accept)
+        buttonBox.rejected.connect(dialog.reject)
+
+        if self._execDialog(dialog) != QtWidgets.QDialog.Accepted:
+            return None
+
+        resultModes = {}
+        resultPolicies = {}
+        resultEnabled = {}
+
+        for workflowName, widgets in roleWidgets.items():
+            enabled = widgets['enabled'].isChecked()
+            resultEnabled[workflowName] = enabled
+
+            workflowModes = {}
+            for role, combo in widgets['roles'].items():
+                modeName = combo.currentData()
+                modeName = str(modeName).strip() if modeName is not None else ""
+                if modeName:
+                    workflowModes[role] = modeName
+
+            if workflowModes:
+                resultModes[workflowName] = workflowModes
+
+            policy = widgets['policy'].currentText()
+            if policy and policy != 'blockOnHazard':
+                resultPolicies[workflowName] = policy
+
+        return {
+            'modes': resultModes,
+            'policies': resultPolicies,
+            'enabled': resultEnabled,
+        }
+
     def showNameDialog(self, title, label, suggested=""):
         result, okClicked = QtWidgets.QInputDialog.getText(
             self, title, label,
@@ -637,6 +797,7 @@ class SetupModesWidget(Widget):
         self.renameAction.setEnabled(hasUsableMode)
         self.duplicateAction.setEnabled(hasUsableMode)
         self.shortcutAction.setEnabled(hasUsableMode)
+        self.smartMicroscopyRolesAction.setEnabled(self._backendAvailable)
         self.deleteAction.setEnabled(hasUsableMode)
 
     def _makeShortcutEditor(self, shortcut):

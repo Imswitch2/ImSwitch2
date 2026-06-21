@@ -1,7 +1,12 @@
 from imswitch.imcommon.model import APIExport, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 
-from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 
 
 class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
@@ -11,6 +16,9 @@ class FlipMirrorController(StatefulComponentMixin, ImConWidgetController):
     componentName = 'FlipMirror'
     stateSchemaVersion = 1
     legacyStateNames = ()
+    setupModeCategory = 'beam_path'
+    setupModeApplyPriority = SetupModeApplyPriority.BEAM_PATH
+    setupModeHardwareCritical = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

@@ -282,7 +282,13 @@ def applyComponentState(self, state, *, applyMode):
 Each component has:
 - **Canonical name:** The single authoritative `componentName` class attribute.
 - **Legacy WidgetStatePersistence key:** The string passed to `register(key, self)` in the old system.
-- **Legacy SetupMode key:** The component key used in `SetupModeController.applyOrder` and setup-mode JSON files.
+- **Legacy SetupMode key:** The component key stored in setup-mode JSON files.
+  Apply order is declared by each component's `setupModeApplyPriority`, not by
+  a central device-name list in `SetupModeController`.
+- **Hardware-critical setup-mode flag:** Components that actively change
+  safety-relevant hardware during setup-mode apply declare
+  `setupModeHardwareCritical = True`; smart-microscopy mode switching uses this
+  metadata instead of a central component-name list.
 
 The unified registry MUST resolve legacy aliases to canonical names so that existing `imcontrol_widget_states/` files, setup-mode JSON files, and exported bundles continue to load.
 
@@ -290,13 +296,13 @@ The unified registry MUST resolve legacy aliases to canonical names so that exis
 
 | Canonical Name | Legacy WidgetStatePersistence Key | Legacy SetupMode Key | Current Implementation | Source File(s) |
 |----------------|-----------------------------------|----------------------|------------------------|----------------|
-| **Laser** | `LaserController` | `Laser` | `getWidgetState`/`setWidgetState` only | `LaserController.py:79` (register), `SetupModeController.py:29` (applyOrder) |
-| **Settings** | `SettingsController` | `Settings` | `getWidgetState`/`setWidgetState` only | `SettingsController.py:97` (register), `SetupModeController.py:23` (applyOrder) |
-| **Scan** | `ScanController` (from `ScanControllerBase`), `ScanControllerAdvanced`, `ScanControllerMoNaLISA`, `ScanControllerPointScan` | `Scan` | Both: `getWidgetState`/`setWidgetState` AND `getSetupModeState`/`applySetupModeState` (via `SuperScanController`) | `ScanControllerBase.py:30` (register as `ScanController`), `ScanControllerAdvanced.py:83`, `ScanControllerMoNaLISA.py:55`, `ScanControllerPointScan.py:24`, `SetupModeController.py:24` (applyOrder), `basecontrollers.py:105,340,366` (SuperScanController) |
-| **SLM** | *(not currently registered)* | `SLM` | *(not currently implemented)* | `SetupModeController.py:26` (applyOrder), `SetupModesController.py:459` (summarizer exists) |
-| **SLMs** | *(not currently registered)* | `SLMs` | *(not currently implemented)* | `SetupModeController.py:25` (applyOrder), `SetupModesController.py:459` (summarizer exists) |
-| **FlipMirror** | *(not currently registered for WidgetStatePersistence)* | `FlipMirror` | `getSetupModeState`/`applySetupModeState` only | `FlipMirrorController.py:6` (SetupModeMixin), `SetupModeController.py:28` (applyOrder) |
-| **LeicaStand** | *(not currently registered)* | `LeicaStand` | *(not currently implemented)* | `SetupModeController.py:27` (applyOrder), `LeicaStandController.py` (exists) |
+| **Laser** | `LaserController` | `Laser` | `getWidgetState`/`setWidgetState` only | `LaserController.py` (register + setup-mode priority) |
+| **Settings** | `SettingsController` | `Settings` | `getWidgetState`/`setWidgetState` only | `SettingsController.py` (register + setup-mode priority) |
+| **Scan** | `ScanController` (from `ScanControllerBase`), `ScanControllerAdvanced`, `ScanControllerMoNaLISA`, `ScanControllerPointScan` | `Scan` | Both: `getWidgetState`/`setWidgetState` AND `getSetupModeState`/`applySetupModeState` (via `SuperScanController`) | `basecontrollers.py` (SuperScanController + setup-mode priority) |
+| **SLM** | *(not currently registered)* | `SLM` | *(not currently implemented)* | `SLMController.py` (setup-mode priority), `SetupModesController.py` (summarizer exists) |
+| **SLMs** | *(not currently registered)* | `SLMs` | *(not currently implemented)* | `SLMsController.py` (setup-mode priority), `SetupModesController.py` (summarizer exists) |
+| **FlipMirror** | *(not currently registered for WidgetStatePersistence)* | `FlipMirror` | `getSetupModeState`/`applySetupModeState` only | `FlipMirrorController.py` (component + setup-mode priority) |
+| **LeicaStand** | *(not currently registered)* | `LeicaStand` | *(not currently implemented)* | `LeicaStandController.py` (component + setup-mode priority) |
 | **Positioner** | `PositionerController` | *(not in setup modes)* | `getWidgetState`/`setWidgetState` only | `PositionerController.py:81` (register) |
 | **Rotator** | `RotatorController` | *(not in setup modes)* | `getWidgetState`/`setWidgetState` only | `RotatorController.py:36` (register) |
 | **Recording** | `RecordingController` | *(not in setup modes)* | `getWidgetState`/`setWidgetState` only | `RecordingController.py:81` (register) |
@@ -372,7 +378,12 @@ The registry MUST read these legacy artifacts without modification:
 2. **Setup-mode files:** `imcontrol_setup_modes/MyMode.json`
    - Schema: `{"schemaVersion": 1, "name": "MyMode", "state": {"Laser": {...}, "Scan": {...}}}`
    - Alias resolution: `Laser` → canonical `Laser`, `Scan` → canonical `Scan`.
-   - Apply order: `SetupModeController.applyOrder = ['Settings', 'Scan', 'SLMs', 'SLM', 'LeicaStand', 'FlipMirror', 'Laser']`.
+   - Apply order: component-local `setupModeApplyPriority` values. The shipped
+     priorities preserve the legacy relative order: `Settings`, `Scan`, `SLMs`,
+     `SLM`, microscope stands such as `LeicaStand`, beam-path components such as
+     `FlipMirror`, then `Laser`.
+   - Smart-microscopy hardware criticality: component-local
+     `setupModeHardwareCritical` values.
 
 3. **Single-file bundles:** `my_export.json`
    - Schema: `{"LaserController": {"_metadata": {...}, "state": {...}}, "ScanController": {...}}`
@@ -530,7 +541,8 @@ hazards = component.getComponentStateHazards(
 2. **Legacy setup-mode controllers still snapshot and apply.**
    - `SuperScanController` and `FlipMirrorController` (the only two current `SetupModeMixin` implementers) MUST continue to work via `getSetupModeState` / `applySetupModeState`.
    - Calling `SetupModeController.saveSetupMode('Test', ['Scan', 'FlipMirror'])` MUST snapshot both components.
-   - Calling `SetupModeController.loadSetupMode('Test')` MUST apply both components in order (`Settings`, `Scan`, ..., `FlipMirror`, `Laser`).
+   - Calling `SetupModeController.loadSetupMode('Test')` MUST apply components
+     by their declared `setupModeApplyPriority`.
 
 3. **Old widget-state files and exported bundles load via aliases.**
    - An old `imcontrol_widget_states/LaserController/default.json` file MUST load into the canonical `Laser` component.
@@ -539,7 +551,9 @@ hazards = component.getComponentStateHazards(
 
 4. **Old setup-mode files still apply in order.**
    - An existing `imcontrol_setup_modes/MyMode.json` file with `"state": {"Laser": {...}, "Scan": {...}}` MUST load and apply.
-   - Apply order MUST be preserved: `Settings`, `Scan`, `SLMs`, `SLM`, `LeicaStand`, `FlipMirror`, `Laser`.
+   - Legacy relative order MUST be preserved through component priority bands:
+     `Settings`, `Scan`, `SLMs`, `SLM`, microscope stands such as `LeicaStand`,
+     beam-path components such as `FlipMirror`, then `Laser`.
 
 5. **STARTUP_RESTORE activates nothing.**
    - Test: Load a Laser state with `{"laser_values": {"488nm": 100.0}, "laser_enabled": {"488nm": true}}` in STARTUP_RESTORE mode. Assert that the laser power is set to 100.0 but the laser is NOT enabled.
@@ -627,7 +641,13 @@ All canonical names, legacy keys, and apply order entries in Section 3.2 are gro
 - `RecordingController.py:81`: `getWidgetStatePersistence().register('RecordingController', self)`
 - `BeadRecController.py:122`: `getWidgetStatePersistence().register('BeadRecController', self)`
 - `ImConMainController.py:106`: `_GuiLayoutStateAdapter` registered as `'GuiLayout'`
-- `SetupModeController.py:22-30`: `applyOrder = ['Settings', 'Scan', 'SLMs', 'SLM', 'LeicaStand', 'FlipMirror', 'Laser']`
+- `basecontrollers.py`: `SetupModeApplyPriority` defines ordering bands used by
+  component-local `setupModeApplyPriority` attributes.
+- `SetupModeController.py`: orders setup-mode components by
+  `setupModeApplyPriority`; it must not contain a device-name apply list.
+- `SmartMicroscopyModeService.py`: reads hardware-critical setup-mode component
+  metadata through `SetupModeController.isSetupModeHardwareCritical`; it must
+  not contain a device-name hardware allowlist.
 - `basecontrollers.py:39-52`: `SetupModeMixin` definition (`getSetupModeState` at 48, `applySetupModeState` at 51)
 - `basecontrollers.py:105,340,366`: `SuperScanController(SetupModeMixin, ...)` with `getSetupModeState` (340) / `applySetupModeState` (366)
 - `FlipMirrorController.py:6`: `class FlipMirrorController(SetupModeMixin, ImConWidgetController)`

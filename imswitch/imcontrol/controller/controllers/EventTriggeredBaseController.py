@@ -63,6 +63,7 @@ from imswitch.imcontrol.model.EventTriggeredSession import (
 )
 
 from ..basecontrollers import ImConWidgetController
+from .SmartModeRoleMixin import SmartModeRoleMixin
 
 
 def _now_us_tag() -> str:
@@ -97,11 +98,17 @@ _DEFAULT_SAMPLE_RATE_HZ = 100_000
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class EventTriggeredControllerBase(ImConWidgetController):
+class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     """Shared logic for EtSTED / EtMonalisa controllers.
 
     Subclasses must set the class attributes below and may override
     the ``_*_hook`` template methods.
+
+    Smart-microscopy role switching is provided by :class:`SmartModeRoleMixin`.
+    The base itself sets ``SMART_MODE_WORKFLOW = None`` so it is a no-op; each
+    concrete subclass declares its own workflow name to opt in. When the rollout
+    flag is off (or no service is injected), every role-application call below is
+    a complete no-op and the lifecycle behaves byte-for-byte as before.
     """
 
     # Subclass overrides ────────────────────────────────────────────────────
@@ -111,6 +118,19 @@ class EventTriggeredControllerBase(ImConWidgetController):
     INIT_FRAMES: int = 5
     VALIDATION_FRAMES_LIMIT: int = 5
     FLIP_WF_CALIB: bool = True
+    FAST_AXIS_SHIFT_COEFFICIENTS = (
+        -5.06873628,
+        -80.6978355,
+        104.06976744,
+        -7.12113356,
+        8.0065076,
+        0.68227188,
+    )
+    ANALYSIS_SCATTER_PIPELINE_NAME_MARKERS = ('cd_vesicle_prox', 'dynamin')
+
+    # Smart-microscopy role switching — subclasses set their own workflow name.
+    SMART_MODE_WORKFLOW = None
+    SMART_MODE_REQUIRED_ROLES = ('scouting', 'event')
 
     # ── Construction ──────────────────────────────────────────────────────── #
 
@@ -141,6 +161,7 @@ class EventTriggeredControllerBase(ImConWidgetController):
         self._pipelineRunner = EtSTEDPipelineRunner()
         self._transformService = EtSTEDTransformService()
         self._triggeredScanRunner = EtSTEDTriggeredScanRunner()
+        self._smartModeService = None
 
         # Helper for the coordinate-transform calibration sub-window.
         self._coordTransformHelper = EventTriggeredCoordTransformHelper(
@@ -179,6 +200,8 @@ class EventTriggeredControllerBase(ImConWidgetController):
         self._updatePeriod: Optional[int] = None
         self.signalDic = None
         self.scanInfoDict = None
+
+    # ``setSmartModeService`` is provided by SmartModeRoleMixin.
 
     # ── Subclass hooks (default no-ops) ──────────────────────────────────── #
 
@@ -224,7 +247,20 @@ class EventTriggeredControllerBase(ImConWidgetController):
 
         try:
             self._prepareExperiment()
+            if self._smartModeSwitchingEnabled() and not self._preflightSmartModeRoles():
+                raise RuntimeError(
+                    f'Smart microscopy mode preflight failed for {self.MODALITY_LABEL}.'
+                )
             self._pre_arm_hook()
+            # Apply the scouting beam-path mode *before* turning the fast laser on:
+            # the mode owns the beam path, the controller owns laser emission.
+            if self._smartModeSwitchingEnabled() and not self._applySmartModeRole(
+                'scouting', required=True
+            ):
+                raise RuntimeError(
+                    f'Failed to apply scouting smart microscopy mode for '
+                    f'{self.MODALITY_LABEL}.'
+                )
             self._connectRunSignals()
             self._setFastLaserEnabled(True, require_success=True)
 
@@ -246,6 +282,10 @@ class EventTriggeredControllerBase(ImConWidgetController):
         try:
             self._setFastLaserEnabled(False)
         finally:
+            # Best-effort safe idle mode once the fast laser is off; never raises,
+            # since the stop path must always complete.
+            if self._smartModeSwitchingEnabled():
+                self._applySmartModeRoleIfConfigured('idle')
             self._cleanupBinaryMaskRecording()
             self._widget.initiateButton.setText('Initiate')
             self._set_controls_armed(False)
@@ -457,13 +497,18 @@ class EventTriggeredControllerBase(ImConWidgetController):
             f'Min: {np.min(img_ana)}, max: {np.max(img_ana)}'
         )
 
-        if exinfo is not None and any(
-            name in getattr(self, '_pipelineName', '') for name in ['cd_vesicle_prox', 'dynamin']
-        ):
+        if exinfo is not None and self._pipelineSupportsAnalysisScatter():
             self._widget.analysisHelpWidget.scatter.setData(
                 x=np.array(exinfo['y']), y=np.array(exinfo['x']),
                 pen=pg.mkPen(None), brush='g', symbol='x', size=15,
             )
+
+    def _pipelineSupportsAnalysisScatter(self) -> bool:
+        pipeline_name = getattr(self, '_pipelineName', '')
+        return any(
+            marker in pipeline_name
+            for marker in self.ANALYSIS_SCATTER_PIPELINE_NAME_MARKERS
+        )
 
     # ── Scan parameter mgmt ─────────────────────────────────────────────── #
 
@@ -659,6 +704,16 @@ class EventTriggeredControllerBase(ImConWidgetController):
     # ── Slow scan trigger ───────────────────────────────────────────────── #
 
     def initiateSlowScan(self, position=None) -> bool:
+        # The event beam-path mode is applied here — after pauseFastModality has
+        # disabled the fast laser (in _handle_event_frame) and before the scan is
+        # prepared/triggered. A failure blocks the scan and recovers to idle;
+        # _handle_event_frame's bool-driven failure path then resumes/stops.
+        if self._smartModeSwitchingEnabled() and not self._applySmartModeRole(
+            'event', required=True
+        ):
+            self._applySmartModeRoleIfConfigured('idle')
+            return False
+
         result = self._triggeredScanRunner.prepare(
             position,
             self._state.scanInitiationMode.name,
@@ -710,16 +765,19 @@ class EventTriggeredControllerBase(ImConWidgetController):
     def addFastAxisShift(self, center: float) -> float:
         """Second-degree fit-based fast-axis shift compensation.
 
-        Coefficients are setup-specific; both modalities historically use the
-        same MoNaLISA fit, which is what's encoded here.
+        Subclasses can override ``FAST_AXIS_SHIFT_COEFFICIENTS`` with the six
+        fit coefficients for their setup.
         """
         dwell_time = float(self._analogParameterDict['sequence_time'])
         px_size = float(self._analogParameterDict['axis_step_size'][0])
-        C = np.array([-5.06873628, -80.6978355, 104.06976744,
-                      -7.12113356, 8.0065076, 0.68227188])
+        coefficients = np.asarray(self.FAST_AXIS_SHIFT_COEFFICIENTS, dtype=float)
+        if coefficients.shape != (6,):
+            raise ValueError(
+                "FAST_AXIS_SHIFT_COEFFICIENTS must contain exactly 6 values"
+            )
         params = np.array([px_size**2, dwell_time**2, px_size*dwell_time,
                            px_size, dwell_time, 1])
-        return center - float(np.sum(params * C))
+        return center - float(np.sum(params * coefficients))
 
     # ── Scan completion ──────────────────────────────────────────────────── #
 
@@ -761,6 +819,15 @@ class EventTriggeredControllerBase(ImConWidgetController):
         if self._widget.endlessScanCheck.isChecked() and not self._state.running:
             try:
                 self._on_resume_modality_hook()
+                # Reapply the scouting beam path before re-enabling the fast laser,
+                # preferring an explicit "resume" mode when configured.
+                if self._smartModeSwitchingEnabled() and not self._applySmartModeRole(
+                    self._resumeSmartModeRole(), required=True
+                ):
+                    raise RuntimeError(
+                        f'Failed to apply resume smart microscopy mode for '
+                        f'{self.MODALITY_LABEL}.'
+                    )
                 self._connectRunSignals()
                 self._setFastLaserEnabled(True, require_success=True)
             except Exception as e:

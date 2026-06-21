@@ -500,9 +500,38 @@ class SetupInfo:
     """ TriggerScope DAQ board settings. Required to use TriggerScope hardware. """
 
     shortcuts: Optional[Dict[str, Union[str, List[str], None]]] = field(default_factory=lambda: None)
-    """ Keyboard shortcut configuration. Maps action IDs to key sequences. 
-    Each value can be a single string (e.g., "Ctrl+R"), a list of strings for 
+    """ Keyboard shortcut configuration. Maps action IDs to key sequences.
+    Each value can be a single string (e.g., "Ctrl+R"), a list of strings for
     multiple sequences, or null to explicitly disable a default binding. """
+
+    smartMicroscopyModes: Optional[Dict[str, Dict[str, str]]] = field(
+        default_factory=lambda: None
+    )
+    """ Smart microscopy mode-switching configuration for event-triggered
+    workflows. Maps ``workflowName -> {role: setupModeName}``, where each role
+    names an existing setup mode to apply for that runtime phase. Recognized
+    roles are ``scouting``, ``event``, ``resume``, ``idle``, and ``validation``.
+    ``None`` (the default) or an absent key means no smart-mode mapping is
+    configured; setups without this section still parse. """
+
+    smartMicroscopyModePolicies: Optional[Dict[str, str]] = field(
+        default_factory=lambda: None
+    )
+    """ Per-workflow non-interactive hazard policy for smart microscopy mode
+    switching. Maps ``workflowName -> policyName``, where ``policyName`` is one
+    of ``allow``, ``warnOnly``, or ``blockOnHazard``. Workflows that are absent
+    (or name an unknown policy) default to ``blockOnHazard`` -- the safest
+    choice, blocking arming when a preflight finds hazards or missing role modes.
+    ``None`` (the default) or an absent key means every workflow uses the
+    ``blockOnHazard`` default; setups without this section still parse. """
+
+    smartMicroscopyModeSwitchingEnabled: Optional[Dict[str, bool]] = field(
+        default_factory=lambda: None
+    )
+    """ Per-workflow rollout flag for replacing legacy workflow-specific mode
+    switching with ``SmartMicroscopyModeService``. Maps ``workflowName -> bool``.
+    ``False`` or an absent workflow keeps the legacy path so labs can opt in and
+    roll back without changing code. """
 
     _catchAll: CatchAll = None
 

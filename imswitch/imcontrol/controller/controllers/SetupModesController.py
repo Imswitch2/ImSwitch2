@@ -1,10 +1,13 @@
 import json
 import os
+import re
 import traceback
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.model import dirtools
+from imswitch.imcontrol.controller.SetupModeController import SMART_MICROSCOPY_ROLES
+from imswitch.imcontrol.model import configfiletools
 from ..basecontrollers import ImConWidgetController
 
 
@@ -25,6 +28,7 @@ class SetupModesController(ImConWidgetController):
         self._shortcutManager = None
         self._shortcutsMenu = None
         self._mainWindow = None
+        self._smartModeService = None
         self._registeredModeActionIds = set()
         self._activeModeName = None
         self._safetySettingsPath = os.path.join(
@@ -42,6 +46,7 @@ class SetupModesController(ImConWidgetController):
         self._widget.sigDuplicateMode.connect(self.duplicateMode)
         self._widget.sigSetShortcut.connect(self.setShortcut)
         self._widget.sigSafetySettings.connect(self.editSafetySettings)
+        self._widget.sigSmartMicroscopyRoles.connect(self.editSmartMicroscopyRoles)
         self._widget.sigDeleteMode.connect(self.deleteMode)
         self._widget.sigRevealFolder.connect(self.revealModesFolder)
 
@@ -61,6 +66,10 @@ class SetupModesController(ImConWidgetController):
         self._shortcutManager = shortcutManager
         self._shortcutsMenu = shortcutsMenu
         self._mainWindow = mainWindow
+
+    def setSmartModeService(self, smartModeService):
+        """Inject the live smart-microscopy mode service."""
+        self._smartModeService = smartModeService
 
     def closeEvent(self):
         self._clearShortcuts()
@@ -335,6 +344,58 @@ class SetupModesController(ImConWidgetController):
             self._safetySettings["suppressedWarnings"] = []
         self._saveSafetySettings()
 
+    def editSmartMicroscopyRoles(self):
+        """Edit smart microscopy role-to-mode mappings via dialog."""
+        if self._setupModeController is None:
+            self._widget.showError(
+                "Smart microscopy roles",
+                "Setup mode controller is not available."
+            )
+            return
+
+        try:
+            workflowNames = self._buildWorkflowNames()
+            availableModes = self._setupModeController.listSetupModes()
+            currentConfig = self._getCurrentSmartModeConfig()
+        except Exception as e:
+            self._logger.error("Failed to prepare smart microscopy roles dialog")
+            self._logger.error(traceback.format_exc())
+            self._widget.showError(
+                "Smart microscopy roles",
+                f"Could not load current configuration: {e}"
+            )
+            return
+
+        result = self._widget.showSmartMicroscopyRolesDialog(
+            workflowNames, availableModes, currentConfig
+        )
+        if result is None:
+            return
+
+        validationProblems = self._validateSmartModeConfig(result, availableModes)
+        if validationProblems:
+            self._widget.showWarnings(
+                "Smart microscopy roles validation",
+                validationProblems
+            )
+
+        try:
+            self._applySmartModeConfig(result)
+        except Exception as e:
+            self._logger.error("Failed to save smart microscopy roles")
+            self._logger.error(traceback.format_exc())
+            self._widget.showError(
+                "Smart microscopy roles",
+                f"Could not save configuration: {e}"
+            )
+            return
+
+        self._widget.showInformation(
+            "Smart microscopy roles",
+            "Smart microscopy role configuration saved successfully."
+        )
+        self.refreshModes(self._widget.getSelectedModeName())
+
     def deleteMode(self):
         modeName = self._widget.getSelectedModeName()
         if not modeName or self._setupModeController is None:
@@ -492,6 +553,7 @@ class SetupModesController(ImConWidgetController):
             "description": mode.get("description", ""),
             "shortcut": shortcut,
             "includedComponents": includedComponents,
+            "smartModeRoles": self._summarizeSmartModeRoles(name),
         }
 
     def _makeInspectModeDetails(self, mode):
@@ -501,6 +563,7 @@ class SetupModesController(ImConWidgetController):
             "updatedAt": mode.get("updatedAt"),
             "stateSummary": self._summarizeSavedState(mode),
         })
+
         return details
 
     def _summarizeSavedState(self, mode):
@@ -564,14 +627,24 @@ class SetupModesController(ImConWidgetController):
         return summaries
 
     def _componentLabel(self, componentName):
-        labels = {
-            "Settings": "Detector",
-            "SLMs": "SLM",
-            "SLM": "SLM",
-            "LeicaStand": "Leica stand",
-            "FlipMirror": "Flip mirror",
-        }
-        return labels.get(componentName, componentName)
+        if self._setupModeController is not None:
+            try:
+                label = self._setupModeController.getSetupModeComponentLabel(componentName)
+                if label:
+                    return label
+            except Exception:
+                self._logger.debug(
+                    "Failed to resolve setup-mode component label for %s",
+                    componentName,
+                    exc_info=True,
+                )
+
+        return self._humanizeComponentName(componentName)
+
+    @staticmethod
+    def _humanizeComponentName(componentName):
+        label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(componentName)).strip()
+        return label or str(componentName)
 
     def _showWarnings(self, title, warnings):
         visibleWarnings = self._filterSuppressedWarnings(warnings)
@@ -801,6 +874,192 @@ class SetupModesController(ImConWidgetController):
                 "Setup mode safety",
                 "Could not save setup mode safety settings."
             )
+
+    def _summarizeSmartModeRoles(self, modeName):
+        """Build summary of which workflows use this mode in which roles.
+
+        Args:
+            modeName: Name of the setup mode
+
+        Returns:
+            List[str]: Human-readable lines describing workflow role assignments,
+            empty if this mode is not used in any smart microscopy workflow.
+        """
+        if not modeName:
+            return []
+
+        summary = []
+        currentModes = getattr(self._setupInfo, 'smartMicroscopyModes', None) or {}
+        currentEnabled = getattr(self._setupInfo, 'smartMicroscopyModeSwitchingEnabled', None) or {}
+
+        for workflowName, workflowModes in currentModes.items():
+            roles = []
+            for role, assignedMode in workflowModes.items():
+                if assignedMode == modeName:
+                    roles.append(role)
+
+            if roles:
+                enabled = currentEnabled.get(workflowName, False)
+                enabledText = "enabled" if enabled else "disabled"
+                rolesText = ", ".join(sorted(roles))
+                summary.append(f"{workflowName}: {rolesText} ({enabledText})")
+
+        return summary
+
+    def _buildWorkflowNames(self):
+        """Build list of workflow names from controllers and setupInfo.
+
+        Returns:
+            List[str]: Sorted unique workflow names from controllers with
+            SMART_MODE_WORKFLOW plus any workflow already in setupInfo smart
+            microscopy configuration.
+        """
+        workflowNames = set()
+
+        if self._setupModeController is not None:
+            getWorkflowNames = getattr(
+                self._setupModeController,
+                'getSmartMicroscopyWorkflowNames',
+                None,
+            )
+            if getWorkflowNames is not None:
+                workflowNames.update(getWorkflowNames())
+            else:
+                controllers = getattr(self._setupModeController, '_controllers', {}) or {}
+                for controller in controllers.values():
+                    workflowName = getattr(controller, 'SMART_MODE_WORKFLOW', None)
+                    if workflowName:
+                        workflowNames.add(workflowName)
+
+        currentModes = getattr(self._setupInfo, 'smartMicroscopyModes', None) or {}
+        for workflowName in currentModes.keys():
+            workflowNames.add(workflowName)
+
+        currentPolicies = getattr(self._setupInfo, 'smartMicroscopyModePolicies', None) or {}
+        for workflowName in currentPolicies.keys():
+            workflowNames.add(workflowName)
+
+        currentEnabled = getattr(self._setupInfo, 'smartMicroscopyModeSwitchingEnabled', None) or {}
+        for workflowName in currentEnabled.keys():
+            workflowNames.add(workflowName)
+
+        return sorted(workflowNames)
+
+    def _getCurrentSmartModeConfig(self):
+        """Extract current smart microscopy configuration from setupInfo.
+
+        Returns:
+            Dict with 'modes', 'policies', 'enabled' keys containing current
+            configuration.
+        """
+        modes = getattr(self._setupInfo, 'smartMicroscopyModes', None) or {}
+        policies = getattr(self._setupInfo, 'smartMicroscopyModePolicies', None) or {}
+        enabled = getattr(self._setupInfo, 'smartMicroscopyModeSwitchingEnabled', None) or {}
+
+        return {
+            'modes': {
+                workflowName: dict(workflowModes or {})
+                for workflowName, workflowModes in modes.items()
+            } if modes else {},
+            'policies': dict(policies) if policies else {},
+            'enabled': dict(enabled) if enabled else {},
+        }
+
+    def _validateSmartModeConfig(self, config, availableModes):
+        """Validate smart mode configuration against available modes.
+
+        Args:
+            config: Dict with 'modes', 'policies', 'enabled' keys
+            availableModes: List of available setup mode names
+
+        Returns:
+            List[str]: Human-readable validation problems, empty if valid
+        """
+        problems = []
+        availableModeSet = set(availableModes)
+        modes = config.get('modes', {})
+
+        for workflowName, workflowModes in modes.items():
+            for role, modeName in workflowModes.items():
+                if modeName and modeName not in availableModeSet:
+                    problems.append(
+                        f'Workflow "{workflowName}" role "{role}" points at setup mode '
+                        f'"{modeName}", which does not exist.'
+                    )
+
+        return problems
+
+    def _applySmartModeConfig(self, config):
+        """Apply smart mode configuration to setupInfo and persist.
+
+        Args:
+            config: Dict with 'modes', 'policies', 'enabled' keys
+        """
+        modes = self._normalizeSmartModeRoleConfig(config.get('modes', {}))
+        policies = self._normalizeSmartModePolicyConfig(config.get('policies', {}))
+        enabled = self._normalizeSmartModeEnabledConfig(config.get('enabled', {}))
+
+        self._replaceSetupInfoMapping('smartMicroscopyModes', modes)
+        self._replaceSetupInfoMapping('smartMicroscopyModePolicies', policies)
+        self._replaceSetupInfoMapping('smartMicroscopyModeSwitchingEnabled', enabled)
+
+        if self._smartModeService is not None:
+            self._smartModeService.updateConfig(
+                self._setupInfo.smartMicroscopyModes,
+                self._setupInfo.smartMicroscopyModePolicies,
+            )
+
+        options = configfiletools.loadOptions()[0]
+        configfiletools.saveSetupInfo(options, self._setupInfo)
+
+    def _normalizeSmartModeRoleConfig(self, modes):
+        normalized = {}
+        validRoles = set(SMART_MICROSCOPY_ROLES)
+        for workflowName, workflowModes in (modes or {}).items():
+            workflowName = str(workflowName).strip()
+            if not workflowName or not isinstance(workflowModes, dict):
+                continue
+
+            normalizedRoles = {}
+            for role, modeName in workflowModes.items():
+                role = str(role).strip()
+                modeName = str(modeName).strip() if modeName is not None else ''
+                if role in validRoles and modeName:
+                    normalizedRoles[role] = modeName
+            if normalizedRoles:
+                normalized[workflowName] = normalizedRoles
+        return normalized
+
+    def _normalizeSmartModePolicyConfig(self, policies):
+        normalized = {}
+        validPolicies = {'allow', 'warnOnly', 'blockOnHazard'}
+        for workflowName, policyName in (policies or {}).items():
+            workflowName = str(workflowName).strip()
+            policyName = str(policyName).strip() if policyName is not None else ''
+            if workflowName and policyName in validPolicies and policyName != 'blockOnHazard':
+                normalized[workflowName] = policyName
+        return normalized
+
+    def _normalizeSmartModeEnabledConfig(self, enabled):
+        normalized = {}
+        for workflowName, isEnabled in (enabled or {}).items():
+            workflowName = str(workflowName).strip()
+            if workflowName and bool(isEnabled):
+                normalized[workflowName] = True
+        return normalized
+
+    def _replaceSetupInfoMapping(self, attrName, mapping):
+        existing = getattr(self._setupInfo, attrName, None)
+        if not mapping:
+            setattr(self._setupInfo, attrName, None)
+            return
+
+        if isinstance(existing, dict):
+            existing.clear()
+            existing.update(mapping)
+            setattr(self._setupInfo, attrName, existing)
+        else:
+            setattr(self._setupInfo, attrName, mapping)
 
 
 # Copyright (C) 2026 ImSwitch developers

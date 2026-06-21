@@ -6,7 +6,12 @@ import numpy as np
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools as guitools
-from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 
 
 @dataclass
@@ -31,8 +36,11 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
     
     # StatefulComponentMixin attributes
     componentName = 'Settings'
+    setupModeDisplayName = 'Detector'
     stateSchemaVersion = 1
     legacyStateNames = ()
+    setupModeCategory = 'detector_settings'
+    setupModeApplyPriority = SetupModeApplyPriority.DETECTOR_SETTINGS
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

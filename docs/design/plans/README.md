@@ -17,6 +17,8 @@ the rationale behind the current code stays discoverable.
 | [beadrec-2.0.md](beadrec-2.0.md) | Active — Phase 1 started 2026-05-25 | Bead reconstruction controller/widget rewrite |
 | [etsted-2-0.md](etsted-2-0.md) | Active | EtSTED scan controller rewrite |
 | [etmonalisa-2-0.md](etmonalisa-2-0.md) | Active | EtMonalisa rewrite |
+| [smart-microscopy-mode-switching.md](smart-microscopy-mode-switching.md) | Active — Phases 1-6 implemented in-repo, external Snouty validation pending | Role-based setup-mode switching for event-triggered smart microscopy |
+| [tiled-target-timelapse-smart-events.md](tiled-target-timelapse-smart-events.md) | Active — T1-T4 workflow foundations implemented, T5 UI/controller adapters pending | Tiled target timelapse, smart modes, and event-gated acquisition |
 | [dynamic-layer-lifecycle.md](dynamic-layer-lifecycle.md) | Historical | Napari layer lifecycle redesign |
 | [widget-state-persistence.md](widget-state-persistence.md) | Historical (shipped 2026-05-14) | Save/load of widget controller states |
 | [manager-audit-todo.md](manager-audit-todo.md) | Reference | Per-manager audit notes |

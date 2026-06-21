@@ -7,10 +7,22 @@ from pathlib import Path
 class DummySetupModeController:
     """Mock controller implementing StatefulComponentMixin interface."""
     
-    def __init__(self, name, state, calls):
+    def __init__(
+        self,
+        name,
+        state,
+        calls,
+        setupModeApplyPriority=None,
+        setupModeHardwareCritical=False,
+        setupModeDisplayName=None,
+    ):
         self.componentName = name
         self.stateSchemaVersion = 1
         self.legacyStateNames = ()
+        if setupModeApplyPriority is not None:
+            self.setupModeApplyPriority = setupModeApplyPriority
+        self.setupModeHardwareCritical = setupModeHardwareCritical
+        self.setupModeDisplayName = setupModeDisplayName
         self.state = state
         self.calls = calls
 
@@ -27,6 +39,27 @@ class DummySetupModeController:
     
     def getComponentStateHazards(self, state, *, applyMode, context=None):
         return []
+
+
+class RaisingSetupModeController(DummySetupModeController):
+    """DummySetupModeController whose applyComponentState raises (catastrophic)."""
+
+    def applyComponentState(self, state, *, applyMode):
+        self.calls.append(self.componentName)
+        raise RuntimeError("boom")
+
+
+class WarningSetupModeController(DummySetupModeController):
+    """DummySetupModeController whose applyComponentState returns warnings."""
+
+    def __init__(self, name, state, calls, warnings):
+        super().__init__(name, state, calls)
+        self.warnings = list(warnings)
+
+    def applyComponentState(self, state, *, applyMode):
+        self.calls.append(self.componentName)
+        self.state = dict(state)
+        return list(self.warnings)
 
 
 class UnsupportedController:
@@ -103,9 +136,10 @@ def make_controller(tmp_path, monkeypatch, controllers, state_registry=None):
 
     for controller in controllers.values():
         if isinstance(controller, DummySetupModeController):
+            baseClass = type(controller)
             controller.__class__ = type(
-                "ModeAwareDummySetupModeController",
-                (setup_mode_mixin, DummySetupModeController),
+                f"ModeAware{baseClass.__name__}",
+                (setup_mode_mixin, baseClass),
                 {}
             )
 
@@ -147,9 +181,20 @@ def load_setup_mode_module(monkeypatch):
     class StatefulComponentMixin:
         pass
 
+    class SetupModeApplyPriority:
+        DETECTOR_SETTINGS = 100
+        SCAN = 200
+        MULTI_SPATIAL_LIGHT_MODULATOR = 300
+        SPATIAL_LIGHT_MODULATOR = 310
+        MICROSCOPE_STAND = 400
+        BEAM_PATH = 410
+        EXCITATION = 500
+        DEFAULT = 1000
+
     basecontrollers_module = types.ModuleType(f"{package_name}.basecontrollers")
     basecontrollers_module.StatefulComponentMixin = StatefulComponentMixin
     basecontrollers_module.ComponentStateApplyMode = ComponentStateApplyMode
+    basecontrollers_module.SetupModeApplyPriority = SetupModeApplyPriority
     monkeypatch.setitem(sys.modules, f"{package_name}.basecontrollers", basecontrollers_module)
 
     # Create a minimal model module for getWidgetStatePersistence
@@ -210,6 +255,7 @@ def test_setup_mode_roundtrip(tmp_path, monkeypatch):
     assert warnings == []
     assert laser.state == {"power": 10}
     assert calls == ["Laser"]
+    assert setup_modes.getLastAppliedModeName() == "test mode"
 
 
 def test_setup_mode_metadata_rename_duplicate(tmp_path, monkeypatch):
@@ -252,16 +298,105 @@ def test_setup_mode_apply_order(tmp_path, monkeypatch):
         tmp_path,
         monkeypatch,
         {
-            "Laser": DummySetupModeController("Laser", {"enabled": True}, calls),
-            "Scan": DummySetupModeController("Scan", {"size": 1}, calls),
-            "Settings": DummySetupModeController("Settings", {"roi": [0, 0, 10, 10]}, calls),
+            "Laser": DummySetupModeController(
+                "Laser", {"enabled": True}, calls, setupModeApplyPriority=500
+            ),
+            "Scan": DummySetupModeController(
+                "Scan", {"size": 1}, calls, setupModeApplyPriority=200
+            ),
+            "SLM": DummySetupModeController(
+                "SLM", {"pattern": "single"}, calls, setupModeApplyPriority=310
+            ),
+            "SLMs": DummySetupModeController(
+                "SLMs", {"pattern": "multi"}, calls, setupModeApplyPriority=300
+            ),
+            "Settings": DummySetupModeController(
+                "Settings", {"roi": [0, 0, 10, 10]}, calls,
+                setupModeApplyPriority=100,
+            ),
         }
     )
 
-    setup_modes.saveSetupMode("ordered", componentNames=["Laser", "Scan", "Settings"])
+    setup_modes.saveSetupMode(
+        "ordered",
+        componentNames=["Laser", "SLM", "Scan", "Settings", "SLMs"],
+    )
     setup_modes.loadSetupMode("ordered")
 
-    assert calls == ["Settings", "Scan", "Laser"]
+    assert calls == ["Settings", "Scan", "SLMs", "SLM", "Laser"]
+
+
+def test_setup_mode_apply_order_uses_declared_priority_for_new_stand(tmp_path, monkeypatch):
+    calls = []
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "Laser": DummySetupModeController(
+                "Laser", {"enabled": True}, calls, setupModeApplyPriority=500
+            ),
+            "BeamPathSelector": DummySetupModeController(
+                "BeamPathSelector", {"state": 1}, calls, setupModeApplyPriority=410
+            ),
+            "OlympusStand": DummySetupModeController(
+                "OlympusStand", {"mode": "FLUO"}, calls, setupModeApplyPriority=400
+            ),
+        }
+    )
+
+    setup_modes.saveSetupMode(
+        "metadata ordered",
+        componentNames=["Laser", "BeamPathSelector", "OlympusStand"],
+    )
+    setup_modes.loadSetupMode("metadata ordered")
+
+    assert calls == ["OlympusStand", "BeamPathSelector", "Laser"]
+
+
+def test_setup_mode_hardware_criticality_uses_component_metadata(tmp_path, monkeypatch):
+    calls = []
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "OlympusStand": DummySetupModeController(
+                "OlympusStand",
+                {"mode": "FLUO"},
+                calls,
+                setupModeHardwareCritical=True,
+            ),
+            "Settings": DummySetupModeController("Settings", {"roi": [0, 0, 10, 10]}, calls),
+        },
+    )
+
+    assert setup_modes.isSetupModeHardwareCritical("OlympusStand") is True
+    assert setup_modes.isSetupModeHardwareCritical("Settings") is False
+    assert setup_modes.isSetupModeHardwareCritical("MissingComponent") is False
+
+
+def test_setup_mode_component_label_uses_component_metadata(tmp_path, monkeypatch):
+    calls = []
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "OlympusStand": DummySetupModeController(
+                "OlympusStand",
+                {"mode": "FLUO"},
+                calls,
+                setupModeDisplayName="Olympus stand",
+            ),
+            "BeamPathSelector": DummySetupModeController(
+                "BeamPathSelector",
+                {"state": 1},
+                calls,
+            ),
+        },
+    )
+
+    assert setup_modes.getSetupModeComponentLabel("OlympusStand") == "Olympus stand"
+    assert setup_modes.getSetupModeComponentLabel("BeamPathSelector") == "BeamPathSelector"
+    assert setup_modes.getSetupModeComponentLabel("MissingComponent") == "MissingComponent"
 
 
 def test_describe_mode_component(tmp_path, monkeypatch):
@@ -410,10 +545,75 @@ def test_diff_mode_components(tmp_path, monkeypatch):
     }
     
     diff = setup_modes.diffModeComponents(old_state, new_state)
-    
+
     # Laser changed
     assert "Laser" in diff
     assert len(diff["Laser"]) > 0
-    
+
     # Scan unchanged (should not be in diff or empty)
     assert "Scan" not in diff or len(diff["Scan"]) == 0
+
+
+def test_apply_setup_mode_outcome_and_loadsetupmode_parity(tmp_path, monkeypatch):
+    """applySetupMode records failedComponents on the apply-exception path while
+    loadSetupMode returns the identical warnings list (plan §2 failure contract)."""
+    calls = []
+    flip = RaisingSetupModeController("FlipMirror", {"position": 1}, calls)
+    laser = DummySetupModeController("Laser", {"power": 10}, calls)
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "FlipMirror": flip,
+            "Laser": laser,
+        }
+    )
+
+    setup_modes.saveSetupMode("danger", componentNames=["FlipMirror", "Laser"])
+
+    outcome = setup_modes.applySetupMode("danger")
+
+    # FlipMirror raised -> recorded as a failed component and surfaced as a warning.
+    assert outcome.failedComponents == ["FlipMirror"]
+    assert outcome.warningComponents == []
+    assert any('Failed to apply "FlipMirror"' in w for w in outcome.warnings)
+    assert setup_modes.getLastAppliedModeName() is None
+    # Laser applied fine -> not a failed component.
+    assert "Laser" not in outcome.failedComponents
+
+    # loadSetupMode is a thin wrapper: identical warnings, in the same order.
+    warnings = setup_modes.loadSetupMode("danger")
+    assert warnings == outcome.warnings
+
+
+def test_apply_setup_mode_records_warning_components_and_does_not_mark_active(tmp_path, monkeypatch):
+    calls = []
+    flip = WarningSetupModeController(
+        "FlipMirror",
+        {"position": 1},
+        calls,
+        ['Failed to move flip mirror "detector" to state 1.'],
+    )
+    laser = DummySetupModeController("Laser", {"power": 10}, calls)
+    setup_modes = make_controller(
+        tmp_path,
+        monkeypatch,
+        {
+            "FlipMirror": flip,
+            "Laser": laser,
+        }
+    )
+
+    setup_modes.saveSetupMode("warning", componentNames=["FlipMirror", "Laser"])
+    setup_modes.saveSetupMode("clean", componentNames=["Laser"])
+
+    clean_outcome = setup_modes.applySetupMode("clean")
+    assert clean_outcome.warnings == []
+    assert setup_modes.getLastAppliedModeName() == "clean"
+
+    outcome = setup_modes.applySetupMode("warning")
+
+    assert outcome.failedComponents == []
+    assert outcome.warningComponents == ["FlipMirror"]
+    assert any('FlipMirror: Failed to move flip mirror' in w for w in outcome.warnings)
+    assert setup_modes.getLastAppliedModeName() is None

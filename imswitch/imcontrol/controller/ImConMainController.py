@@ -17,6 +17,7 @@ from .CommunicationChannel import CommunicationChannel
 from .MasterController import MasterController
 from .PickSetupController import PickSetupController
 from .SetupModeController import SetupModeController
+from .SmartMicroscopyModeService import SmartMicroscopyModeService
 from .ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
 
@@ -77,6 +78,17 @@ class ImConMainController(MainController):
         self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
         if 'SetupModes' in self.controllers:
             self.controllers['SetupModes'].setSetupModeController(self.setupModeController)
+
+        # Smart microscopy mode-switching service. Event controllers receive the
+        # handle here; Phase 3 decides when they start using it for transitions.
+        self.smartModeService = SmartMicroscopyModeService(
+            self.setupModeController,
+            getattr(self.__setupInfo, 'smartMicroscopyModes', None),
+            policyConfig=getattr(self.__setupInfo, 'smartMicroscopyModePolicies', None),
+        )
+        for controller in self.controllers.values():
+            if hasattr(controller, 'setSmartModeService'):
+                controller.setSmartModeService(self.smartModeService)
 
         # Create API-only controllers (no widget needed)
         # WorkflowFacadeController provides build_facade_from_master via API

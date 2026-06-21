@@ -208,6 +208,93 @@ RS-232 manager.  No mock fallback in this manager.
 `JenaPiezoZManager.py <../../imswitch/imcontrol/model/managers/positioners/JenaPiezoZManager.py>`_
 
 
+KDC101PositionerManager
+=======================
+
+Thorlabs KDC101 single-axis motor controller exposed through the
+generic Positioner widget.  Use this for KDC-driven linear stages,
+rotation stages, sliders, or other single-axis actuators where the
+KDC is the general-purpose motion controller rather than a semantic
+rotator.
+
+**Setup JSON**
+
+.. code-block:: json
+
+    "positioners": {
+        "Rotation stage": {
+            "managerName": "KDC101PositionerManager",
+            "managerProperties": {
+                "port": "COM15",
+                "posConvFac": 1919.6418578623391,
+                "velConvFac": 1.0,
+                "accConvFac": 1.0,
+                "positionUnit": "deg",
+                "homeOnInit": false
+            },
+            "axes": ["R"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false,
+            "liveUpdate": true
+        }
+    }
+
+**managerProperties**
+
+.. list-table::
+   :widths: 22 12 18 48
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Default
+     - Meaning
+   * - ``port``
+     - str
+     - **required**
+     - Serial port for the KDC101 controller.
+   * - ``posConvFac``
+     - float
+     - **required**
+     - Encoder counts per ImSwitch position unit.
+   * - ``velConvFac``
+     - float
+     - **required**
+     - Encoder velocity conversion factor.
+   * - ``accConvFac``
+     - float
+     - **required**
+     - Encoder acceleration conversion factor.
+   * - ``positionUnit``
+     - str
+     - ``"um"``
+     - Unit label passed to the Positioner widget, for example ``"deg"`` for
+       a KDC-driven rotation stage.
+   * - ``homeOnInit``
+     - bool
+     - ``false``
+     - If true, home the device during construction.
+
+**PositionerInfo fields used**
+
+* ``axes`` — must contain exactly one axis label.  The label is used
+  by the Positioner widget and API calls.
+* ``liveUpdate`` — useful for a KDC because moves may be asynchronous;
+  when true, the Positioner controller periodically refreshes the
+  displayed position.
+
+**Vendor library**
+
+``thorlabs_apt_device.devices.kdc101.KDC101`` from
+``thorlabs-apt-device``.  If the package or device is unavailable,
+the manager logs an error and leaves the device disabled.
+
+**Source**
+
+`KDC101PositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/KDC101PositionerManager.py>`_
+
+
 KinesisStageManager
 ===================
 

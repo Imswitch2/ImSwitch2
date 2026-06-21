@@ -15,6 +15,7 @@ class PositionerWidget(Widget):
         super().__init__(*args, **kwargs)
         self.numPositioners = 0
         self.pars = {}
+        self._positionUnits = {}
         self.gridContainer = QtWidgets.QWidget()
         self.grid = QtWidgets.QGridLayout()
         self.gridContainer.setLayout(self.grid)
@@ -47,15 +48,26 @@ class PositionerWidget(Widget):
         )
         self.numPositioners += 1
 
-    def addPositioner(self, positionerName, axes, speed, joystick, shortcutModifier=None):
+    def addPositioner(
+        self,
+        positionerName,
+        axes,
+        speed,
+        joystick,
+        shortcutModifier=None,
+        unit='µm'
+    ):
         for i in range(len(axes)):
             axis = axes[i]
             parNameSuffix = self._getParNameSuffix(positionerName, axis)
             label = f'{positionerName} -- {axis}' if positionerName != axis else positionerName
+            self._positionUnits[parNameSuffix] = unit
 
             self.pars['Label' + parNameSuffix] = QtWidgets.QLabel(f'<strong>{label}</strong>')
             self.pars['Label' + parNameSuffix].setTextFormat(QtCore.Qt.RichText)
-            self.pars['Position' + parNameSuffix] = QtWidgets.QLabel(f'<strong>{0:.2f} µm</strong>')
+            self.pars['Position' + parNameSuffix] = QtWidgets.QLabel(
+                f'<strong>{0:.2f} {unit}</strong>'
+            )
 
             self.pars['Position' + parNameSuffix].setTextFormat(QtCore.Qt.RichText)
             self.pars['UpButton' + parNameSuffix] = guitools.BetterPushButton('+')
@@ -65,7 +77,7 @@ class PositionerWidget(Widget):
             else:
                 self.pars['StepEdit' + parNameSuffix] = QtWidgets.QLineEdit('0.05')
 
-            self.pars['StepUnit' + parNameSuffix] = QtWidgets.QLabel(' µm')
+            self.pars['StepUnit' + parNameSuffix] = QtWidgets.QLabel(f' {unit}')
 
             self.grid.addWidget(self.pars['Label' + parNameSuffix], self.numPositioners, 0)
             self.grid.addWidget(self.pars['Position' + parNameSuffix], self.numPositioners, 1)
@@ -84,11 +96,11 @@ class PositionerWidget(Widget):
             )
 
             if speed:
-                self.pars['Speed'] = QtWidgets.QLabel(f'<strong>{0:.2f} µm/s</strong>')
+                self.pars['Speed'] = QtWidgets.QLabel(f'<strong>{0:.2f} {unit}/s</strong>')
                 self.pars['Speed'].setTextFormat(QtCore.Qt.RichText)
                 self.pars['ButtonSpeedEnter'] = guitools.BetterPushButton('Enter')
                 self.pars['SpeedEdit'] = QtWidgets.QLineEdit('1000')
-                self.pars['SpeedUnit'] = QtWidgets.QLabel(' µm/s')
+                self.pars['SpeedUnit'] = QtWidgets.QLabel(f' {unit}/s')
                 self.grid.addWidget(self.pars['SpeedEdit'], self.numPositioners, 10)
                 self.grid.addWidget(self.pars['SpeedUnit'], self.numPositioners, 11)
                 self.grid.addWidget(self.pars['ButtonSpeedEnter'], self.numPositioners, 12)
@@ -124,7 +136,10 @@ class PositionerWidget(Widget):
 
     def updatePosition(self, positionerName, axis, position):
         parNameSuffix = self._getParNameSuffix(positionerName, axis)
-        self.pars['Position' + parNameSuffix].setText(f'<strong>{position:.2f} µm</strong>')
+        unit = self._positionUnits.get(parNameSuffix, 'µm')
+        self.pars['Position' + parNameSuffix].setText(
+            f'<strong>{position:.2f} {unit}</strong>'
+        )
 
     def stepAxis(self, positionerName, axis, direction):
         """Trigger a step for the specified positioner axis.

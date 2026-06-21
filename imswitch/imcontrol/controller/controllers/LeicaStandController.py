@@ -1,12 +1,45 @@
+import time
+
 from qtpy import QtCore
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.controller.basecontrollers import ImConWidgetController
+from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.controller.basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 
 
-class LeicaStandController(ImConWidgetController):
-    """Click-driven controller for LeicaStandWidget."""
+class LeicaStandController(StatefulComponentMixin, ImConWidgetController):
+    """Click-driven controller for LeicaStandWidget.
+
+    This controller is also a setup-mode component (``LeicaStand``) carrying the
+    FLUO/CS stand mode as state. The component-apply path (``applyComponentState``
+    with ``SETUP_MODE_APPLY``) intentionally uses the *raw* FLUO/CS sequence —
+    ``setFLUO()``/``setCS()``/``setILshutter()`` — to exactly mirror EtMonalisa's
+    event-time stand switching (see ``EtMonalisaController._switchStandToFastMode``/
+    ``_switchStandToSlowMode``). This is deliberately distinct from the richer UI
+    methods ``setFluoMode``/``setCSMode``, which also drive cube/port/diaphragm.
+    Snapshot scope is FLUO/CS mode only; the raw path is the only stand sequence
+    that is virtual-testable against the in-repo mock and must stay
+    behavior-preserving because no hardware validation is available.
+    """
+
+    # StatefulComponentMixin attributes
+    componentName = 'LeicaStand'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'microscope_stand'
+    setupModeApplyPriority = SetupModeApplyPriority.MICROSCOPE_STAND
+    setupModeHardwareCritical = True
 
     FLUO_SHUTTER_DELAY_MS = 800
+
+    # Blocking settle after setFLUO() before opening the IL shutter, replicating
+    # EtMonalisa's _sleepPumpingEvents(1.0) so the component-apply path matches
+    # the event-time stand sequence byte-for-byte.
+    FLUO_SETTLE_SECONDS = 1.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -39,6 +72,116 @@ class LeicaStandController(ImConWidgetController):
 
         self._connect_widget_signals()
         self._init_widget()
+
+        # Register with unified state persistence (only reached when a usable
+        # manager is present — mock/disconnected paths return early above).
+        getWidgetStatePersistence().register('LeicaStand', self)
+
+    # ── Setup-mode component interface ──────────────────────────────────── #
+
+    def getComponentState(self) -> dict:
+        """Snapshot the current stand mode (FLUO/CS only)."""
+        return {"mode": self._current_mode}
+
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+    ) -> list[str]:
+        """Restore the stand mode from a snapshot.
+
+        STARTUP_RESTORE:
+        - Does NOT actuate the stand. If the saved mode differs from the current
+          tracked mode, append a warning noting it was not switched at startup.
+
+        SETUP_MODE_APPLY:
+        - Switches to ``state['mode']`` using the *raw* FLUO/CS sequence that
+          mirrors EtMonalisa's event-time hooks (setFLUO -> blocking settle ->
+          setILshutter(1) for FLUO; setCS for CS). Manager calls are wrapped so a
+          failure surfaces as a returned warning rather than being swallowed —
+          making stand failures visible is the point of this component.
+
+        Returns:
+            List of warning strings (empty if fully successful).
+        """
+        if self._manager is None:
+            return ["Leica stand is not available."]
+
+        if not self._manager.isConnected():
+            self._widget.setConnected(False)
+            return ["Leica stand is not connected."]
+
+        if not isinstance(state, dict):
+            return ["Saved Leica stand state is not a dictionary."]
+
+        mode = state.get("mode")
+
+        if mode not in ("FLUO", "CS"):
+            return [f'Unknown Leica stand mode "{mode}"; stand not switched.']
+
+        if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
+            warnings = []
+            if mode != self._current_mode:
+                warnings.append(
+                    f'Leica stand not switched at startup: '
+                    f'current mode={self._current_mode}, saved mode={mode}.'
+                )
+            return warnings
+
+        # SETUP_MODE_APPLY: raw FLUO/CS sequence mirroring EtMonalisa's hooks.
+        try:
+            if mode == "FLUO":
+                self._manager.setFLUO()
+                self._sleepPumpingEvents(self.FLUO_SETTLE_SECONDS)
+                self._manager.setILshutter(1)
+            else:  # mode == "CS"
+                self._manager.setCS()
+        except Exception as e:
+            self.__logger.error(f"Failed to switch Leica stand to {mode}: {e}")
+            self._widget.setConnected(self._manager.isConnected())
+            return [f"Failed to switch Leica stand to {mode}: {e}"]
+
+        self._current_mode = mode
+        self._widget.setMode(self._current_mode)
+        self._widget.setConnected(self._manager.isConnected())
+        return []
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Human-readable summary of a saved stand mode."""
+        state = state or {}
+        mode = state.get("mode")
+        if mode in ("FLUO", "CS"):
+            return [f"Stand: {mode}"]
+        return ["Stand: unknown"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list:
+        """No configurable hazards for stand actuation (same as FlipMirror)."""
+        return []
+
+    @staticmethod
+    def _sleepPumpingEvents(seconds: float) -> None:
+        """Block for ``seconds`` while keeping the Qt event loop responsive.
+
+        Mirrors ``EtMonalisaController._sleepPumpingEvents`` so the FLUO settle
+        in the component-apply path matches the event-time stand sequence.
+        """
+        deadline = time.monotonic() + max(0.0, seconds)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            QtCore.QCoreApplication.processEvents(
+                QtCore.QEventLoop.AllEvents,
+                int(min(remaining, 0.05) * 1000),
+            )
+            time.sleep(min(remaining, 0.01))
 
     def toggleMode(self):
         if self._manager is None or not self._manager.isConnected():

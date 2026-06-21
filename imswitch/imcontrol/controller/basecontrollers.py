@@ -44,6 +44,25 @@ class ComponentStateApplyMode(Enum):
     SETUP_MODE_APPLY = "setup_mode_apply"
 
 
+class SetupModeApplyPriority:
+    """Declarative ordering bands for setup-mode application.
+
+    Components should set ``setupModeApplyPriority`` to one of these bands
+    instead of adding their component name to ``SetupModeController``. Lower
+    numbers apply first; components with the same priority keep the mode file's
+    component order.
+    """
+
+    DETECTOR_SETTINGS = 100
+    SCAN = 200
+    MULTI_SPATIAL_LIGHT_MODULATOR = 300
+    SPATIAL_LIGHT_MODULATOR = 310
+    MICROSCOPE_STAND = 400
+    BEAM_PATH = 410
+    EXCITATION = 500
+    DEFAULT = 1000
+
+
 class StatefulComponentMixin:
     """Mixin for controllers that provide unified component state snapshots.
     
@@ -56,7 +75,11 @@ class StatefulComponentMixin:
     # Class attributes
     stateSchemaVersion: int = 1
     componentName: str | None = None
+    setupModeDisplayName: str | None = None
     legacyStateNames: tuple = ()
+    setupModeCategory: str = 'default'
+    setupModeApplyPriority: int = SetupModeApplyPriority.DEFAULT
+    setupModeHardwareCritical: bool = False
     
     def getComponentState(self) -> dict:
         """Snapshot the current component state.
@@ -207,6 +230,8 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     componentName = 'Scan'
     stateSchemaVersion = 1
     legacyStateNames = ('ScanController', 'ScanControllerAdvanced', 'ScanControllerMoNaLISA', 'ScanControllerPointScan')
+    setupModeCategory = 'scan'
+    setupModeApplyPriority = SetupModeApplyPriority.SCAN
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -465,6 +490,40 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def sendScanParameters(self):
         self.getParameters()
         self._commChannel.sigSendScanParameters.emit(self._analogParameterDict, self._digitalParameterDict, self._positionersScan)
+
+    def _getPositionerManagerProperties(self, positionerName):
+        positionerInfo = self._setupInfo.positioners.get(positionerName)
+        if positionerInfo is None:
+            return {}
+        return getattr(positionerInfo, 'managerProperties', {}) or {}
+
+    def _getReturnToCenterAxis(self, positionerName):
+        properties = self._getPositionerManagerProperties(positionerName)
+        return properties.get('returnToCenterAfterScanAxis', 0)
+
+    def _positionerReturnsToCenterAfterScan(self, positionerName):
+        properties = self._getPositionerManagerProperties(positionerName)
+        return bool(properties.get('returnToCenterAfterScan', False))
+
+    def _resetReturnToCenterPositionersAfterScan(self):
+        targetDevices = self._analogParameterDict.get('target_device', [])
+        centerPositions = self._analogParameterDict.get('axis_centerpos', [])
+
+        for index, positionerName in enumerate(targetDevices):
+            if positionerName == 'None':
+                continue
+            if not self._positionerReturnsToCenterAfterScan(positionerName):
+                continue
+            if index >= len(centerPositions):
+                self._logger.warning(
+                    'Cannot reset %s after scan because no center position is configured.',
+                    positionerName,
+                )
+                continue
+
+            position = centerPositions[index]
+            axis = self._getReturnToCenterAxis(positionerName)
+            self._master.positionersManager[positionerName].setPosition(position, axis)
 
     def getComponentState(self) -> dict:
         """Snapshot the current scan parameter dictionaries for component state persistence."""

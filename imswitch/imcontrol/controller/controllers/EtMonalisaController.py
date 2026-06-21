@@ -39,22 +39,48 @@ class EtMonalisaController(EventTriggeredControllerBase):
     LOGS_SUBFOLDER = 'logs_etmonalisa'
     MODALITY_LABEL = 'etMonalisa'
 
+    SMART_MODE_WORKFLOW = 'EtMonalisa'
+
     # ── Hook overrides ──────────────────────────────────────────────────── #
+    #
+    # ``LeicaStandController`` is now a ``StatefulComponentMixin`` setup-mode
+    # component (``LeicaStand``) that carries the FLUO/CS stand mode as state.
+    # The direct stand-manager commands below are the **legacy / flag-off path**:
+    # they only run when smart-mode switching is disabled for this workflow.
+    #
+    # With smart-mode switching **on**, the base already applies the
+    # ``scouting``/``event`` roles (which drive setup modes), and FLUO/CS belongs
+    # in those scouting/event setup modes — so switching the stand directly here
+    # too would double-actuate. The authored scouting/event modes for EtMonalisa
+    # must therefore include ``LeicaStand`` (just as Snouty's must include
+    # ``FlipMirror``).
+    #
+    # The ``sigInitiateEtMonalisa`` emissions are UI state, not hardware, and stay
+    # unconditional in both paths.
 
     def _pre_arm_hook(self) -> None:
         self._commChannel.sigInitiateEtMonalisa.emit(True)
-        if self._state.runMode == RunMode.Experiment:
+        if (
+            self._state.runMode == RunMode.Experiment
+            and not self._smartModeSwitchingEnabled()
+        ):
             self._switchStandToFastMode()
 
     def _post_stop_hook(self, *, reset_params: bool) -> None:
         self._commChannel.sigInitiateEtMonalisa.emit(False)
 
     def _on_pause_modality_hook(self) -> None:
-        if self._state.runMode == RunMode.Experiment:
+        if (
+            self._state.runMode == RunMode.Experiment
+            and not self._smartModeSwitchingEnabled()
+        ):
             self._switchStandToSlowMode()
 
     def _on_resume_modality_hook(self) -> None:
-        if self._state.runMode == RunMode.Experiment:
+        if (
+            self._state.runMode == RunMode.Experiment
+            and not self._smartModeSwitchingEnabled()
+        ):
             self._switchStandToFastMode()
             self._sleepPumpingEvents(0.1)  # let LEDs settle before next event
 

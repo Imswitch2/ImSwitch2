@@ -1,7 +1,6 @@
 """Inspired from EtMonalisaController"""
 
 import configparser
-import ctypes
 import enum
 import importlib
 import os
@@ -21,25 +20,19 @@ from qtpy.QtWidgets import QMessageBox
 
 from ..basecontrollers import ImConWidgetController
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.EtSnoutyPaths import getEtSnoutyPath
 from imswitch.imcontrol.view import guitools
 
-
-_logsDir = 'C:/Users/Snouty/imcontrol_etsnouty/recordings/logs_et'
-_paramsDir = 'C:/Users/Snouty/imcontrol_etsnouty/pipelinesParams'
-_binaryMask = 'C:/Users/Snouty/imcontrol_etsnouty/binaryMask'
+from .SmartModeRoleMixin import SmartModeRoleMixin
 
 
-def _timestamp():
-    tics = ctypes.c_int64()
-    freq = ctypes.c_int64()
-    ctypes.windll.Kernel32.QueryPerformanceCounter(ctypes.byref(tics))
-    ctypes.windll.Kernel32.QueryPerformanceFrequency(ctypes.byref(freq))
-    return tics.value, freq.value
+_logsDir = getEtSnoutyPath('recordings', 'logs_et')
+_paramsDir = getEtSnoutyPath('pipelinesParams')
+_binaryMask = getEtSnoutyPath('binaryMask')
 
 
 def _millis():
-    tics, freq = _timestamp()
-    return tics * 1e3 / freq
+    return time.perf_counter_ns() / 1e6
 
 
 class PeriodicSignalEmitter(QObject):
@@ -60,8 +53,12 @@ class PeriodicSignalEmitter(QObject):
         self.signal_to_emit.emit()
 
 
-class EtSnoutyController(ImConWidgetController):
+class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
     """Linked to EtSnoutyWidget."""
+
+    SMART_MODE_WORKFLOW = 'EtSnouty'
+    SMART_MODE_REQUIRED_ROLES = ('scouting', 'event')
+    ANALYSIS_SCATTER_PIPELINE_NAME_MARKERS = ('cd_vesicle_prox', 'dynamin')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -78,6 +75,7 @@ class EtSnoutyController(ImConWidgetController):
 
         sys.path.append(self._widget.analysisDir)
         sys.path.append(self._widget.transformDir)
+        self._ensureEtSnoutyFolders()
 
         self._widget.initiateButton.clicked.connect(self.initiate)
         self._widget.loadPipelineButton.clicked.connect(self.loadPipeline)
@@ -112,6 +110,7 @@ class EtSnoutyController(ImConWidgetController):
         self.__pipeline_params = {}
         self.__pipelinename = ''
         self.__exinfo = None
+        self._smartModeService = None
 
     # ------------------------------------------------------------------
     # Save / load pipeline parameters
@@ -165,6 +164,16 @@ class EtSnoutyController(ImConWidgetController):
     # Experiment lifecycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ensureEtSnoutyFolders():
+        for folder in (
+            _logsDir,
+            os.path.join(_logsDir, 'frames'),
+            _paramsDir,
+            _binaryMask,
+        ):
+            os.makedirs(folder, exist_ok=True)
+
     def initiate(self):
         """Start or stop an EtSnouty experiment."""
         if not self.__running:
@@ -192,7 +201,16 @@ class EtSnoutyController(ImConWidgetController):
             else:
                 self.__runMode = RunMode.Experiment
 
-            self.setConfig(widefield=True)
+            if not self._preflightSmartModeRolesForStart():
+                self._commChannel.sigInitiateEtSnouty.emit(False)
+                self.resetRunParams()
+                return
+
+            if not self.setConfig(widefield=True):
+                self._commChannel.sigInitiateEtSnouty.emit(False)
+                self.resetRunParams()
+                return
+
             self.detectorFast_controller = (
                 self._master.detectorsManager._subManagers[self.detectorFast]
             )
@@ -221,27 +239,83 @@ class EtSnoutyController(ImConWidgetController):
             self._commChannel.sigInitiateEtSnouty.emit(False)
 
             if self.ClockWidefield:
-                self._commChannel.sigClockWidefield.disconnect(self.clockWidefield_fct)
+                self._safeDisconnect(
+                    self._commChannel.sigClockWidefield, self.clockWidefield_fct
+                )
             else:
-                self._commChannel.sigUpdateImage.disconnect(self.runPipeline)
+                self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
 
             self._commChannel.sigToggleBlockScanWidget.emit(True)
-            self._commChannel.sigScanEnded.disconnect(self.scanEnded)
+            self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
 
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
+            self._master.lasersManager.execOn(
+                self.laserFast, lambda l: l.setEnabled(False)
+            )
+            self._applySmartModeRoleIfConfigured('idle')
 
             self._widget.initiateButton.setText('Initiate')
             self.resetParamVals()
             self.resetRunParams()
 
-    def setConfig(self, widefield=True):
+    def setConfig(self, widefield=True, role=None):
         if widefield:
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
-            self._commChannel.sigSetConfig.emit('Widefield imaging')
+            if self._smartModeSwitchingEnabled():
+                if not self._applySmartModeRole(role or 'scouting', required=True):
+                    self._recoverSmartModeFailure()
+                    return False
+                self._master.lasersManager.execOn(
+                    self.laserFast, lambda l: l.setEnabled(True)
+                )
+            else:
+                self._master.lasersManager.execOn(
+                    self.laserFast, lambda l: l.setEnabled(True)
+                )
+                self._commChannel.sigSetConfig.emit('Widefield imaging')
             self._commChannel.sigSetVisibleLayers.emit((self.detectorFast,))
         else:
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
-            self._commChannel.sigSetConfig.emit('Light sheet imaging')
+            self._master.lasersManager.execOn(
+                self.laserFast, lambda l: l.setEnabled(False)
+            )
+            if not self._applyModeOrLegacyConfig(
+                role or 'event',
+                legacyConfigName='Light sheet imaging',
+                required=True,
+            ):
+                self._recoverSmartModeFailure()
+                return False
+        return True
+
+    def _applyModeOrLegacyConfig(self, role, legacyConfigName, required):
+        if not self._smartModeSwitchingEnabled():
+            self._commChannel.sigSetConfig.emit(legacyConfigName)
+            return True
+        return self._applySmartModeRole(role, required=required)
+
+    def _preflightSmartModeRolesForStart(self):
+        # Thin wrapper kept for EtSnouty's lifecycle; the workflow-agnostic logic
+        # (required + configured-optional role resolution, preflight, logging)
+        # lives in SmartModeRoleMixin._preflightSmartModeRoles.
+        return self._preflightSmartModeRoles()
+
+    def _recoverSmartModeFailure(self):
+        self._master.lasersManager.execOn(
+            self.laserFast, lambda l: l.setEnabled(False)
+        )
+        self._applySmartModeRoleIfConfigured('idle')
+
+    def _stopAfterSmartModeFailure(self):
+        self._commChannel.sigInitiateEtSnouty.emit(False)
+        if self.ClockWidefield:
+            self._safeDisconnect(
+                self._commChannel.sigClockWidefield, self.clockWidefield_fct
+            )
+        else:
+            self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
+        self._commChannel.sigToggleBlockScanWidget.emit(True)
+        self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
+        self._widget.initiateButton.setText('Initiate')
+        self.__running = False
+        self.resetParamVals()
 
     def scanEnded(self):
         self.setDetLogLine('scan_end', datetime.now().strftime('%Ss%fus'))
@@ -265,13 +339,17 @@ class EtSnoutyController(ImConWidgetController):
 
     def runSlowScan(self):
         self.__detLog['scan_start'] = datetime.now().strftime('%Ss%fus')
-        self.setConfig(widefield=False)
+        if not self.setConfig(widefield=False):
+            self._stopAfterSmartModeFailure()
+            return False
         self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
         self._commChannel.sigRunScanTriggerScopePLSRMulticolor.emit()
+        return True
 
     def endRecording(self):
         self.setDetLogLine('pipeline', self.getPipelineName())
         self.logPipelineParamVals()
+        os.makedirs(_logsDir, exist_ok=True)
         filename = datetime.utcnow().strftime('%Hh%Mm%Ss%fus')
         name = os.path.join(_logsDir, filename) + '_log'
         log = [f'{key}: {self.__detLog[key]}' for key in self.__detLog]
@@ -306,8 +384,12 @@ class EtSnoutyController(ImConWidgetController):
 
     def continueFastModality(self):
         if self._widget.endlessScanCheck.isChecked() and not self.__running:
-            self.setConfig(widefield=True)
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
+            if not self.setConfig(widefield=True, role=self._resumeSmartModeRole()):
+                self._stopAfterSmartModeFailure()
+                return
+            self._master.lasersManager.execOn(
+                self.laserFast, lambda l: l.setEnabled(False)
+            )
             self.updateScatter([], clear=True)
 
             if self.ClockWidefield:
@@ -322,7 +404,7 @@ class EtSnoutyController(ImConWidgetController):
             self.updateScatter([], clear=True)
             self._widget.initiateButton.setText('Initiate')
             self._commChannel.sigToggleBlockScanWidget.emit(True)
-            self._commChannel.sigScanEnded.disconnect(self.scanEnded)
+            self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
             self.__running = False
             self.resetParamVals()
 
@@ -518,14 +600,18 @@ class EtSnoutyController(ImConWidgetController):
         self._widget.analysisHelpWidget.info_label.setText(
             f'Min: {np.min(img_ana)}, max: {np.max(img_ana)}'
         )
-        if exinfo is not None and any(
-            name in self.__pipelinename for name in ['cd_vesicle_prox', 'dynamin']
-        ):
+        if exinfo is not None and self._pipelineSupportsAnalysisScatter():
             self._widget.analysisHelpWidget.scatter.setData(
                 x=np.array(exinfo['y']), y=np.array(exinfo['x']),
                 pen=pg.mkPen(None), brush='g', symbol='x', size=15,
             )
         self._widget.analysisHelpWidget.img.render()
+
+    def _pipelineSupportsAnalysisScatter(self):
+        return any(
+            marker in self.__pipelinename
+            for marker in self.ANALYSIS_SCATTER_PIPELINE_NAME_MARKERS
+        )
 
     def updateScatter(self, coords, clear=True):
         if clear:
@@ -547,11 +633,22 @@ class EtSnoutyController(ImConWidgetController):
     def pauseFastModality(self):
         if self.__running:
             if self.ClockWidefield:
-                self._commChannel.sigClockWidefield.disconnect(self.clockWidefield_fct)
+                self._safeDisconnect(
+                    self._commChannel.sigClockWidefield, self.clockWidefield_fct
+                )
             else:
-                self._commChannel.sigUpdateImage.disconnect(self.runPipeline)
-            self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
+                self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
+            self._master.lasersManager.execOn(
+                self.laserFast, lambda l: l.setEnabled(False)
+            )
             self.__running = False
+
+    @staticmethod
+    def _safeDisconnect(signal, slot):
+        try:
+            signal.disconnect(slot)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Binary mask

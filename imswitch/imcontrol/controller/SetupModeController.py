@@ -2,12 +2,47 @@ import datetime
 import json
 import os
 import traceback
+from dataclasses import dataclass, field
+from typing import List
 from urllib.parse import quote
 
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 
-from .basecontrollers import ComponentStateApplyMode, StatefulComponentMixin
+from .basecontrollers import (
+    ComponentStateApplyMode,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
+
+
+# Runtime roles a setup mode may declare for a smart-microscopy workflow. These
+# mirror the roles understood by ``SmartMicroscopyModeService`` (plan §"Proposed
+# Model"); a role tag means "this mode is the <role> mode for <workflow>".
+SMART_MICROSCOPY_ROLES = frozenset(
+    {'scouting', 'event', 'resume', 'idle', 'validation'}
+)
+
+
+@dataclass(frozen=True)
+class ApplyOutcome:
+    """Structured result of applying a setup mode.
+
+    Carries the recoverable ``warnings`` (identical strings/order to the legacy
+    ``loadSetupMode`` return value) alongside structured component status:
+
+    - ``failedComponents``: component names whose ``applyComponentState`` raised.
+    - ``warningComponents``: component names that produced warnings without
+      raising, or could not be fully applied for setup-mode bookkeeping reasons.
+
+    The non-interactive ``SmartMicroscopyModeService`` reads these fields
+    structurally rather than parsing warning strings to decide whether a
+    hardware-component apply failed (see plan §2 failure contract).
+    """
+
+    warnings: List[str] = field(default_factory=list)
+    failedComponents: List[str] = field(default_factory=list)
+    warningComponents: List[str] = field(default_factory=list)
 
 
 class SetupModeController:
@@ -20,23 +55,30 @@ class SetupModeController:
     """
 
     schemaVersion = 1
-    applyOrder = [
-        'Settings',
-        'Scan',
-        'SLMs',
-        'SLM',
-        'LeicaStand',
-        'FlipMirror',
-        'Laser',
-    ]
+    # Components declare their setup-mode application order through
+    # ``setupModeApplyPriority``. This controller intentionally has no
+    # component-name apply list, so adding an Olympus stand or another
+    # beam-path component is a local controller decision.
+    applyOrder = ()
+    defaultApplyPriority = SetupModeApplyPriority.DEFAULT
 
     def __init__(self, controllers, setupInfo=None):
         self._controllers = controllers
         self._setupInfo = setupInfo
         self._logger = initLogger(self)
 
+        # Single source of truth for the most recently cleanly applied setup
+        # mode. Both the interactive SetupModesController and the non-interactive
+        # SmartMicroscopyModeService apply through loadSetupMode, so both share
+        # this value and can de-dup redundant reapplication (Design Principle 4).
+        self._lastAppliedModeName = None
+
         self._modeDir = os.path.join(dirtools.UserFileDirs.Root, 'imcontrol_setup_modes')
         os.makedirs(self._modeDir, exist_ok=True)
+
+    def getLastAppliedModeName(self):
+        """Return the name of the most recently cleanly applied setup mode."""
+        return self._lastAppliedModeName
 
     @APIExport()
     def getSetupModeStorageDir(self):
@@ -47,6 +89,28 @@ class SetupModeController:
     def getSetupModeComponents(self):
         """Return component names that currently support setup modes."""
         return sorted(self._getModeAwareControllers().keys())
+
+    @APIExport()
+    def getSetupModeComponentLabel(self, componentName):
+        """Return a human-readable label declared by a setup-mode component."""
+        controller = self._getModeAwareControllers().get(componentName)
+        label = getattr(controller, 'setupModeDisplayName', None)
+        return label or componentName
+
+    def getSmartMicroscopyWorkflowNames(self):
+        """Return smart-microscopy workflow names declared by controllers."""
+        workflowNames = set()
+        for controller in self._controllers.values():
+            workflowName = getattr(controller, 'SMART_MODE_WORKFLOW', None)
+            if workflowName:
+                workflowNames.add(workflowName)
+        return sorted(workflowNames)
+
+    @APIExport()
+    def isSetupModeHardwareCritical(self, componentName):
+        """Return whether a setup-mode component changes safety-critical hardware."""
+        controller = self._getModeAwareControllers().get(componentName)
+        return bool(getattr(controller, 'setupModeHardwareCritical', False))
 
     @APIExport()
     def listSetupModes(self):
@@ -191,9 +255,17 @@ class SetupModeController:
         self._writeMode(mode)
         return mode
 
-    @APIExport()
-    def loadSetupMode(self, name, componentNames=None):
-        """Apply a saved setup mode.
+    def applySetupMode(self, name, componentNames=None):
+        """Apply a saved setup mode and return a structured outcome.
+
+        This holds the real per-component apply loop. It produces exactly the
+        same ``warnings`` strings (in the same order) as the legacy
+        ``loadSetupMode`` did, and additionally records, in
+        ``failedComponents``, the name of each component whose apply *raised*
+        (the catastrophic ``except Exception`` branch). Components that return
+        warnings without raising are recorded in ``warningComponents`` so
+        non-interactive callers can distinguish "fully applied" from "applied
+        with degraded component state" without parsing warning text.
 
         Args:
             name: Saved mode name.
@@ -201,31 +273,42 @@ class SetupModeController:
                 omitted, the mode's saved component list is applied.
 
         Returns:
-            list of warning strings.
+            ApplyOutcome: ``warnings``, ``failedComponents``, and
+            ``warningComponents``.
         """
         mode = self._loadModeByName(name)
         modeAwareControllers = self._getModeAwareControllers()
         modeState = mode.get('state', {})
 
-        if componentNames is None:
+        isFullModeApply = componentNames is None
+        if isFullModeApply:
             componentNames = mode.get('includedComponents') or list(modeState.keys())
         else:
             componentNames = self._normalizeComponentNames(componentNames, modeAwareControllers)
 
-        componentNames = self._orderedComponentNames(componentNames)
+        componentNames = self._orderedComponentNames(componentNames, modeAwareControllers)
         warnings = []
-        
+        failedComponents = []
+        warningComponents = []
+
+        # Any setup-mode apply attempt may leave hardware in an intermediate
+        # state if a later component fails. Clear the clean-mode marker before
+        # touching components; set it again only after a full clean apply.
+        self._lastAppliedModeName = None
+
         # Use unified registry for apply
         registry = getWidgetStatePersistence()
 
         for componentName in componentNames:
             if componentName not in modeState:
                 warnings.append(f'Setup mode "{mode["name"]}" has no state for "{componentName}".')
+                self._appendUnique(warningComponents, componentName)
                 continue
 
             controller = modeAwareControllers.get(componentName)
             if controller is None:
                 warnings.append(f'Setup mode component "{componentName}" is not available.')
+                self._appendUnique(warningComponents, componentName)
                 continue
 
             try:
@@ -242,12 +325,44 @@ class SetupModeController:
                 self._logger.error(f'Failed to apply setup mode component: {componentName}')
                 self._logger.error(traceback.format_exc())
                 warnings.append(f'Failed to apply "{componentName}": {e}')
+                failedComponents.append(componentName)
                 continue
 
             if componentWarnings:
                 warnings.extend([f'{componentName}: {warning}' for warning in componentWarnings])
+                self._appendUnique(warningComponents, componentName)
 
-        return warnings
+        if isFullModeApply and not warnings:
+            self._lastAppliedModeName = mode['name']
+
+        return ApplyOutcome(
+            warnings=warnings,
+            failedComponents=failedComponents,
+            warningComponents=warningComponents,
+        )
+
+    @staticmethod
+    def _appendUnique(values, value):
+        if value not in values:
+            values.append(value)
+
+    @APIExport()
+    def loadSetupMode(self, name, componentNames=None):
+        """Apply a saved setup mode.
+
+        Thin wrapper over :meth:`applySetupMode` preserving the legacy return
+        value so the interactive ``SetupModesController`` and existing tests are
+        unchanged.
+
+        Args:
+            name: Saved mode name.
+            componentNames: Optional iterable of widget/component keys. If
+                omitted, the mode's saved component list is applied.
+
+        Returns:
+            list of warning strings.
+        """
+        return self.applySetupMode(name, componentNames).warnings
 
     @APIExport()
     def deleteSetupMode(self, name):
@@ -444,13 +559,34 @@ class SetupModeController:
         except TypeError:
             raise TypeError('componentNames must be None, a string, or an iterable of strings')
 
-    def _orderedComponentNames(self, componentNames):
+    def _orderedComponentNames(self, componentNames, modeAwareControllers=None):
         componentNames = list(componentNames)
-        order = {name: index for index, name in enumerate(self.applyOrder)}
-        return sorted(
-            componentNames,
-            key=lambda name: (order.get(name, len(order)), componentNames.index(name))
-        )
+        if modeAwareControllers is None:
+            modeAwareControllers = self._getModeAwareControllers()
+
+        return [
+            name
+            for _, name in sorted(
+                enumerate(componentNames),
+                key=lambda item: (
+                    self._componentApplyPriority(item[1], modeAwareControllers),
+                    item[0],
+                ),
+            )
+        ]
+
+    def _componentApplyPriority(self, componentName, modeAwareControllers):
+        controller = modeAwareControllers.get(componentName)
+        priority = getattr(controller, 'setupModeApplyPriority', self.defaultApplyPriority)
+
+        try:
+            return int(priority)
+        except (TypeError, ValueError):
+            self._logger.warning(
+                f'Setup mode component "{componentName}" has invalid '
+                f'setupModeApplyPriority "{priority}"; using default order.'
+            )
+            return self.defaultApplyPriority
 
     def _validateModeName(self, name):
         if not isinstance(name, str):
