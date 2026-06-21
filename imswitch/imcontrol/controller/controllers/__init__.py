@@ -55,6 +55,7 @@ _CONTROLLER_MODULES = {
     "ViewController": "ViewController",
     "ViewerToolsController": "ViewerToolsController",
     "WatcherController": "WatcherController",
+    "WellPlateController": "WellPlateController",
     "WorkflowFacadeController": "WorkflowFacadeController",
 }
 

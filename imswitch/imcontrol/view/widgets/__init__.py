@@ -54,6 +54,7 @@ _WIDGET_MODULES = {
     "ViewWidget": "ViewWidget",
     "ViewerToolsWidget": "ViewerToolsWidget",
     "WatcherWidget": "WatcherWidget",
+    "WellPlateWidget": "WellPlateWidget",
     "WidgetFactory": "basewidgets",
 }
 
