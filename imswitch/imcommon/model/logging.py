@@ -69,7 +69,11 @@ def initLogger(obj, *, instanceName=None, tryInheritParent=False):
                 continue
 
             parent = frameLocals['self']
-            parentRef = weakref.ref(parent)
+            try:
+                parentRef = weakref.ref(parent)
+            except TypeError:
+                # Some objects (e.g., pytest HookCaller) don't support weak references
+                continue
             if parentRef not in objLoggers:
                 continue
 
