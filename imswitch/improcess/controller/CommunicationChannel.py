@@ -37,6 +37,14 @@ class CommunicationChannel(SignalInterface):
     need to know which widget owns the napari layer list.
     """
 
+    sigLiveResultUpdated = Signal(object)
+    """Fires when a live reconstruction session has a new partial result.
+    
+    Emitted by LiveReconstructionController during streaming reconstruction
+    to update the viewer with intermediate results. The signal carries a
+    ProcessingResult snapshot.
+    """
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
