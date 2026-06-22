@@ -6,7 +6,8 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
-from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.reconstructors.base import StreamingReconstructor
+from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
 
 
-class MonalisaReconstructor(Reconstructor):
+class MonalisaReconstructor(StreamingReconstructor):
     """
     MoNaLISA structured illumination microscopy (SIM) reconstructor.
     
@@ -39,6 +40,7 @@ class MonalisaReconstructor(Reconstructor):
     id = "monalisa"
     file_extensions = ["hdf5", "zarr"]
     description = "Point-scanning SIM reconstruction with pattern-based signal extraction"
+    supports_streaming = True
     
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
@@ -222,6 +224,15 @@ class MonalisaReconstructor(Reconstructor):
 
         self._logger.info(f'Reconstruction complete: shape {result.data.shape}')
         return result
+    
+    def make_session(self) -> MonalisaLiveSession:
+        """
+        Create a fresh streaming session for live reconstruction.
+        
+        Returns:
+            MonalisaLiveSession instance.
+        """
+        return MonalisaLiveSession()
     
     def _apply_bleaching_correction(self, data: np.ndarray) -> np.ndarray:
         """
