@@ -91,6 +91,33 @@ def test_validate_setup_valid_and_unresolved(capsys):
         os.unlink(temp_path)
 
 
+def test_validate_setup_resolves_legacy_stand_mock_fallback():
+    registry = build_default_registry(discover=False)
+    setup_data = {
+        "microscopeStand": {
+            "managerName": "LeicaDMIManager",
+            "rs232device": "mock-rs232",
+            "managerProperties": {},
+        }
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(setup_data, f)
+        temp_path = f.name
+
+    try:
+        report = validate_setup_file(temp_path, registry)
+        assert report.has_errors is False
+        assert len(report.devices) == 1
+        device = report.devices[0]
+        assert device.section == "microscopeStand"
+        assert device.manager_name == "LeicaDMIManager"
+        assert device.resolved_via == "registry-mock"
+    finally:
+        import os
+        os.unlink(temp_path)
+
+
 def test_legacy_manager_exists_real():
     """Test legacy_manager_exists returns True for real in-tree module."""
     # MockPositionerManager exists in the managers/positioners directory

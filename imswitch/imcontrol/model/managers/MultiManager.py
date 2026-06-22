@@ -10,9 +10,10 @@ from imswitch.imcontrol.model.plugins.registry import (
 )
 
 # Maps a MultiManager ``subManagersPackage`` to a device plugin registry kind.
-# Only these device groups are loaded through MultiManager, so only they get
-# plugin resolution. StandManager and the pulse generator use bespoke loaders
-# (see docs/design/DEVICE_PLUGINS.md, "MultiManager-backed vs bespoke kinds").
+# Only these device groups are loaded through MultiManager. StandManager uses
+# its own registry-backed resolver because microscopeStand is a single setup
+# object rather than a named device map. The pulse generator still uses a
+# bespoke loader.
 SUBMANAGERS_PACKAGE_TO_KIND = {
     'detectors': 'detector',
     'lasers': 'laser',

@@ -231,7 +231,8 @@ contracts:
   base class contract to subclass.
   
 - **flip_mirror**: No `FlipMirrorManager` or `FlipMirrorInfo` exported. The
-  single in-tree manager (`ThorlabsMFF`) is a plain class with no base.
+  single in-tree manager (`ThorlabsMFFManager`, with legacy alias `ThorlabsMFF`)
+  is a plain class with no base.
   Plugin support is registry-backed but has no public API contract yet.
   
 - **slm**: No `SLMManager` or `SLMInfo` exported. In-tree managers inherit from
@@ -398,9 +399,10 @@ Core dataclass:
 from dataclasses import dataclass, field
 from typing import Literal
 
-# NOTE: `stand` and `pulse_generator` are accepted in manifests but are NOT
-# loaded through MultiManager in the first implementation (bespoke loaders — see
-# "MultiManager-backed vs bespoke kinds"). The other seven are registry-resolved.
+# NOTE: `stand` is registry-resolved by StandManager, but not loaded through
+# MultiManager because microscopeStand is a single setup object rather than a
+# named device map. `pulse_generator` is still a valid future kind but is not
+# registry-resolved yet.
 DeviceKind = Literal[
     "detector",
     "laser",
@@ -576,30 +578,27 @@ Map existing `subManagersPackage` values to manifest `kind`:
 | `flipMirrors` | `flip_mirror` |
 | `slms` | `slm` |
 
-### MultiManager-backed vs bespoke kinds
+### Registry-backed vs bespoke kinds
 
-Only these kinds are loaded through `MultiManager`, so only these get plugin
-resolution in the first implementation:
+These kinds are loaded through `MultiManager`, so they get registry resolution
+from the common `MultiManager` resolver:
 
 ```text
 detector, laser, positioner, rotator, rs232, flip_mirror, slm
 ```
 
-`stand` and `pulse_generator` are **not** loaded by `MultiManager` and must not
-be advertised as plugin-resolvable in the first milestone:
+`stand` is also registry-backed, but it is resolved by `StandManager` because
+`microscopeStand` is a single setup object instead of a named device map.
 
-- `StandManager` has its own import path with an unconditional mock fallback. It
-  should be migrated after `MultiManager` support lands, because it is a one-off
-  loader and should not block the first device plugin milestone.
 - The pulse generator (`TeensyPulseManager`) is constructed directly in
   `MasterController` and injected as a low-level manager
   (`pulseGeneratorManager`) — as are `nidaqManager` and `triggerScopeManager`.
   None of these flow through the `MultiManager` device loop, so the kind-mapping
   table above has no row for them.
 
-These two kinds stay in the manifest `kind` enum so plugin authors can write
-manifests ahead of time, but the registry will not wire them until their bespoke
-loaders are migrated to registry-first resolution in a later phase.
+`pulse_generator` stays in the manifest `kind` enum so plugin authors can write
+manifests ahead of time, but the registry will not wire it until its bespoke
+loader is migrated to registry-first resolution in a later phase.
 
 Error messages should improve:
 
@@ -639,10 +638,9 @@ def load_manager_class(
 ```
 
 It returns the mock class only when `prefer_mock` is set and the contribution
-declares a `mock_python_name`. The current `StandManager` loader — which falls
-back to a mock on *any* exception, unconditionally — is exactly the behavior to
-retire when stand support migrates; it must not be the template for
-registry-driven mock handling.
+declares a `mock_python_name`. Stand support uses registry resolution too; its
+legacy Leica fallback is retained only for the missing NDA-protected in-tree
+driver and should not be used as the template for new plugin managers.
 
 ## Setup JSON Compatibility
 

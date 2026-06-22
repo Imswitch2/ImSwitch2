@@ -1,0 +1,10 @@
+{
+  "display": "Generic Rotator",
+  "category": "rotators",
+  "blank": true,
+  "top": [
+    {"key": "analogChannel", "label": "Analog Channel", "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",   "label": "Digital Line",   "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": []
+}

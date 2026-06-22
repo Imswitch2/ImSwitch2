@@ -38,6 +38,27 @@ def test_flip_mirrors_manager_loads_mock_and_resets():
     assert not mirror.is_connected()
 
 
+def test_flip_mirrors_manager_loads_canonical_mock_name():
+    manager = FlipMirrorsManager({
+        "Mirror": _mock_info(managerName="ThorlabsMFFMockManager")
+    })
+
+    mirror = manager["Mirror"]
+    assert mirror.__class__.__name__ == "MockThorlabsMFFManager"
+    assert mirror.is_connected()
+
+    manager.finalize()
+
+
+def test_flip_mirrors_manager_loads_canonical_hardware_class():
+    from imswitch.imcontrol.model.managers.flipMirrors.ThorlabsMFF import (
+        ThorlabsMFF,
+        ThorlabsMFFManager,
+    )
+
+    assert ThorlabsMFF is ThorlabsMFFManager
+
+
 def test_flip_mirror_lazy_exports_are_registered():
     assert FlipMirrorController.__name__ == "FlipMirrorController"
     assert FlipMirrorWidget.__name__ == "FlipMirrorWidget"

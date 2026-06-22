@@ -23,16 +23,26 @@ MULTIMANAGER_BACKED_KINDS = {
     "slm",
 }
 
-# Kinds that use bespoke loaders (not MultiManager) in the current implementation.
-# Plugin support for these kinds is NOT yet implemented in runtime loading.
-# Manifests declaring these kinds will be rejected with a clear error.
-BESPOKE_LOADER_KINDS = {
+# Kinds that are registry-backed but not loaded by MultiManager. These use a
+# dedicated loader that still resolves through DevicePluginRegistry.
+STANDALONE_REGISTRY_BACKED_KINDS = {
     "stand",
+}
+
+# Kinds that use bespoke loaders in the current implementation. Plugin support
+# for these kinds is NOT yet implemented in runtime loading. Manifests declaring
+# these kinds will be rejected with a clear error.
+BESPOKE_LOADER_KINDS = {
     "pulse_generator",
 }
 
-# All valid device kinds (union of MultiManager-backed and bespoke).
-ALL_VALID_KINDS = MULTIMANAGER_BACKED_KINDS | BESPOKE_LOADER_KINDS
+# All kinds that can currently be resolved through DevicePluginRegistry.
+REGISTRY_BACKED_KINDS = (
+    MULTIMANAGER_BACKED_KINDS | STANDALONE_REGISTRY_BACKED_KINDS
+)
+
+# All valid device kinds (union of registry-backed and remaining bespoke kinds).
+ALL_VALID_KINDS = REGISTRY_BACKED_KINDS | BESPOKE_LOADER_KINDS
 
 # Type hint for device kinds (accepts all kinds for forward compatibility).
 DeviceKind = Literal[
@@ -113,8 +123,8 @@ def parse_manifest(
             raise ManifestError(
                 f"Device kind '{kind}' in plugin '{plugin_name}' is not supported "
                 f"by runtime plugin loading. Kind '{kind}' uses a bespoke loader "
-                f"(not MultiManager) and plugin support is not yet implemented. "
-                f"Supported kinds (MultiManager-backed): {sorted(MULTIMANAGER_BACKED_KINDS)}"
+                f"and plugin support is not yet implemented. "
+                f"Supported registry-backed kinds: {sorted(REGISTRY_BACKED_KINDS)}"
             )
         
         # Coerce list fields to tuples

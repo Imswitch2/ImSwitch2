@@ -1,0 +1,2 @@
+from .LeicaDMIManager_mock import MockLeicaDMIStandManager as LeicaDMIStandMockManager
+

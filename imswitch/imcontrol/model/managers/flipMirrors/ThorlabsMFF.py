@@ -3,7 +3,7 @@ import warnings
 from imswitch.imcommon.model import initLogger
 
 
-class ThorlabsMFF:
+class ThorlabsMFFManager:
     """Thorlabs MFF101/MFF102 flip mirror manager using pylablib."""
 
     def __init__(self, deviceInfo, name, **lowLevelManagers):
@@ -130,3 +130,7 @@ class ThorlabsMFF:
 
     def finalize(self):
         self.close()
+
+
+# Backward-compatible setup managerName used by existing setup files.
+ThorlabsMFF = ThorlabsMFFManager

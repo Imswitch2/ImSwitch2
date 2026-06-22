@@ -1,0 +1,128 @@
+"""
+Test config editor device coverage: category registry, blanks, and auto-discovery.
+"""
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("PyQt5")
+
+# Import the config editor module by file path
+_SCRIPT_PATH = Path(__file__).resolve().parents[4] / "utility_scripts" / "imswitch_config_editor.py"
+spec = importlib.util.spec_from_file_location("imswitch_config_editor", _SCRIPT_PATH)
+editor = importlib.util.module_from_spec(spec)
+sys.modules["imswitch_config_editor"] = editor
+spec.loader.exec_module(editor)
+
+
+def test_authoritative_category_registry_exists():
+    """All 9 categories from the registry must be present in DEVICE_CATS."""
+    expected = {
+        "detectors", "lasers", "positioners", "rotators",
+        "rs232devices", "slms", "flipMirrors", "pulsegen", "stands"
+    }
+    assert expected <= set(editor.DEVICE_CATS), \
+        f"Missing categories: {expected - set(editor.DEVICE_CATS)}"
+
+
+def test_missing_categories_present():
+    """flipMirrors, pulsegen, stands must be in DEVICE_CATS."""
+    assert "flipMirrors" in editor.DEVICE_CATS
+    assert "pulsegen" in editor.DEVICE_CATS
+    assert "stands" in editor.DEVICE_CATS
+
+
+def test_category_labels_and_colors():
+    """All registry categories must have labels and colors."""
+    for cat in editor._CATEGORY_REGISTRY:
+        assert cat in editor.CAT_LABEL, f"Missing label for {cat}"
+        assert cat in editor.CAT_COLOR, f"Missing color for {cat}"
+
+
+def test_blank_schemas_exist():
+    """Every category in the registry must have a non-None blank schema."""
+    for cat in editor._CATEGORY_REGISTRY:
+        assert cat in editor.BLANK_SCHEMAS, f"Missing blank schema for {cat}"
+        blank = editor.BLANK_SCHEMAS[cat]
+        assert blank is not None
+        assert blank.get("category") == cat
+        assert "top" in blank
+        assert "props" in blank
+
+
+def test_auto_discovery_finds_templated_managers():
+    """Auto-discovery must find at least the managers that have templates."""
+    # Check a few known templated managers
+    if "TISManager" in editor.SCHEMAS:
+        assert "TISManager" in editor.CAT_MANAGERS.get("detectors", [])
+    if "NidaqLaserManager" in editor.SCHEMAS:
+        assert "NidaqLaserManager" in editor.CAT_MANAGERS.get("lasers", [])
+
+
+def test_auto_discovery_finds_non_templated_managers():
+    """Auto-discovery must find managers that have no template."""
+    # BaslerManager exists in the codebase but may not have a template
+    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    if not managers_root.is_dir():
+        pytest.skip("Managers tree not found")
+    
+    basler_file = managers_root / "detectors" / "BaslerManager.py"
+    if basler_file.exists():
+        # BaslerManager should be discovered
+        assert "BaslerManager" in editor.CAT_MANAGERS.get("detectors", [])
+
+
+def test_auto_discovery_degrades_gracefully():
+    """Discovery must not raise even if managers tree is absent."""
+    # The module already loaded, so if it didn't crash, we're good
+    assert editor.DISCOVERED_MANAGERS is not None
+
+
+def test_build_default_device_with_template():
+    """Building a device for a templated manager yields correct structure."""
+    if "TISManager" not in editor.SCHEMAS:
+        pytest.skip("TISManager template not found")
+    
+    device = editor._build_default_device("TISManager")
+    assert device["managerName"] == "TISManager"
+    assert "managerProperties" in device
+    # TIS detector should have top-level fields
+    assert "analogChannel" in device or "forAcquisition" in device
+
+
+def test_build_default_device_without_template():
+    """Building a device for a non-templated manager uses category blank."""
+    # Use a known non-templated manager if discovered, or a fake one
+    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    if not managers_root.is_dir():
+        pytest.skip("Managers tree not found")
+    
+    basler_file = managers_root / "detectors" / "BaslerManager.py"
+    if basler_file.exists() and "BaslerManager" not in editor.SCHEMAS:
+        device = editor._build_default_device("BaslerManager")
+        assert device["managerName"] == "BaslerManager"
+        assert "managerProperties" in device
+        # Should have detector blank's top-level fields
+        assert "analogChannel" in device
+        assert "forAcquisition" in device
+
+
+def test_category_for_manager_lookup():
+    """_get_category_for_manager must resolve both templated and discovered."""
+    # Templated
+    if "TISManager" in editor.SCHEMAS:
+        assert editor._get_category_for_manager("TISManager") == "detectors"
+    
+    # Discovered non-templated
+    managers_root = _SCRIPT_PATH.parents[1] / "imswitch" / "imcontrol" / "model" / "managers"
+    if not managers_root.is_dir():
+        pytest.skip("Managers tree not found")
+    
+    basler_file = managers_root / "detectors" / "BaslerManager.py"
+    if basler_file.exists():
+        assert editor._get_category_for_manager("BaslerManager") == "detectors"
+    
+    # Unknown
+    assert editor._get_category_for_manager("NonexistentManager") is None

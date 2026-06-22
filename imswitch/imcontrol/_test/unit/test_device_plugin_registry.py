@@ -217,7 +217,7 @@ def test_builtin_device_managers():
     """Test that built-in managers are correctly defined."""
     from imswitch.imcontrol.model.plugins.builtins import BUILTIN_DEVICE_MANAGERS
     
-    assert len(BUILTIN_DEVICE_MANAGERS) == 6
+    assert len(BUILTIN_DEVICE_MANAGERS) == 9
     
     # Check that AVManager is in the list
     av_manager = next(c for c in BUILTIN_DEVICE_MANAGERS if c.id == "AVManager")
@@ -230,6 +230,14 @@ def test_builtin_device_managers():
     assert mock_pos.kind == "positioner"
     assert "builtin.mock-positioner" in mock_pos.manager_name_aliases
 
+    thorlabs_mff = next(c for c in BUILTIN_DEVICE_MANAGERS if c.id == "ThorlabsMFFManager")
+    assert thorlabs_mff.kind == "flip_mirror"
+    assert "ThorlabsMFF" in thorlabs_mff.manager_name_aliases
+
+    stand_mock = next(c for c in BUILTIN_DEVICE_MANAGERS if c.id == "LeicaDMIStandMockManager")
+    assert stand_mock.kind == "stand"
+    assert "LeicaDMIManager_mock" in stand_mock.manager_name_aliases
+
 
 def test_build_default_registry_no_discover():
     """Test building default registry without discovery."""
@@ -237,7 +245,7 @@ def test_build_default_registry_no_discover():
     
     # Should have the built-ins
     contribs = registry.list_contributions()
-    assert len(contribs) == 6
+    assert len(contribs) == 9
     
     # Test resolving a built-in
     av = registry.resolve("detector", "AVManager")
@@ -247,6 +255,14 @@ def test_build_default_registry_no_discover():
     mock_pos = registry.resolve("positioner", "MockPositionerManager")
     assert mock_pos is not None
     assert mock_pos.id == "MockPositionerManager"
+
+    thorlabs_mff = registry.resolve("flip_mirror", "ThorlabsMFF")
+    assert thorlabs_mff is not None
+    assert thorlabs_mff.id == "ThorlabsMFFManager"
+
+    stand_mock = registry.resolve("stand", "LeicaDMIManager_mock")
+    assert stand_mock is not None
+    assert stand_mock.id == "LeicaDMIStandMockManager"
 
 
 def test_load_real_builtin_manager():
@@ -280,11 +296,10 @@ def test_manifest_rejects_unknown_kind():
         parse_manifest(manifest, plugin_name="test-plugin", plugin_version="1.0.0")
 
 
-def test_manifest_rejects_bespoke_loader_kinds():
-    """Test that parse_manifest rejects stand and pulse_generator kinds."""
-    from imswitch.imcontrol.model.plugins.manifest import parse_manifest, ManifestError
-    
-    # Test stand kind (bespoke loader)
+def test_manifest_accepts_stand_kind():
+    """Test that parse_manifest accepts stand managers."""
+    from imswitch.imcontrol.model.plugins.manifest import parse_manifest
+
     stand_manifest = {
         "contributions": {
             "device_managers": [
@@ -297,14 +312,21 @@ def test_manifest_rejects_bespoke_loader_kinds():
             ]
         }
     }
+
+    contributions = parse_manifest(
+        stand_manifest,
+        plugin_name="test-plugin",
+        plugin_version="1.0.0",
+    )
+
+    assert len(contributions) == 1
+    assert contributions[0].kind == "stand"
+
+
+def test_manifest_rejects_bespoke_loader_kinds():
+    """Test that parse_manifest rejects pulse_generator kinds."""
+    from imswitch.imcontrol.model.plugins.manifest import parse_manifest, ManifestError
     
-    with pytest.raises(
-        ManifestError,
-        match="Device kind 'stand'.* is not supported by runtime plugin loading"
-    ):
-        parse_manifest(stand_manifest, plugin_name="test-plugin", plugin_version="1.0.0")
-    
-    # Test pulse_generator kind (bespoke loader)
     pulse_manifest = {
         "contributions": {
             "device_managers": [

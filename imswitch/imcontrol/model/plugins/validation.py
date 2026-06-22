@@ -19,6 +19,7 @@ KIND_TO_SUBMANAGERS_PACKAGE: dict[str, str] = {
     "rs232": "rs232",
     "flip_mirror": "flipMirrors",
     "slm": "slms",
+    "stand": "stands",
 }
 
 # Setup JSON section name -> device kind
@@ -30,6 +31,7 @@ SETUP_SECTION_TO_KIND: dict[str, str] = {
     "rs232devices": "rs232",
     "slms": "slm",
     "flipMirrors": "flip_mirror",
+    "microscopeStand": "stand",
 }
 
 
@@ -129,7 +131,7 @@ class DeviceValidationResult:
     section: str
     device_name: str | None
     manager_name: str
-    resolved_via: str  # "registry", "legacy", or "UNRESOLVED"
+    resolved_via: str
     schema_warnings: list[str]
 
 
@@ -205,6 +207,25 @@ def validate_setup_file(path: str | Path, registry: DevicePluginRegistry) -> Val
     
     for section_name, kind in SETUP_SECTION_TO_KIND.items():
         section_data = setup_data.get(section_name)
+        if section_name == "microscopeStand":
+            if isinstance(section_data, dict):
+                manager_name = section_data.get("managerName")
+                if manager_name is not None:
+                    devices.append(
+                        _validate_setup_device(
+                            registry=registry,
+                            jsonschema=jsonschema,
+                            section_name=section_name,
+                            kind=kind,
+                            device_name=None,
+                            manager_name=manager_name,
+                            manager_properties=section_data.get(
+                                "managerProperties", {}
+                            ),
+                        )
+                    )
+            continue
+
         if not isinstance(section_data, dict):
             # Setup device sections are JSON objects keyed by device name
             # (e.g. "detectors": {"Mock Camera": {...}}). Skip null/missing
@@ -218,35 +239,15 @@ def validate_setup_file(path: str | Path, registry: DevicePluginRegistry) -> Val
             if manager_name is None:
                 continue
 
-            manager_properties = device_entry.get("managerProperties", {})
-            
-            # Resolve the manager
-            contribution = registry.resolve(kind, manager_name)
-            
-            if contribution is not None:
-                resolved_via = "registry"
-            elif legacy_manager_exists(kind, manager_name):
-                resolved_via = "legacy"
-            else:
-                resolved_via = "UNRESOLVED"
-            
-            # Validate properties if we have a schema
-            schema_warnings = []
-            if contribution is not None and jsonschema is not None:
-                schema = resolve_schema(contribution)
-                if schema is not None:
-                    validation_errors = validate_manager_properties(
-                        schema, manager_properties
-                    )
-                    schema_warnings.extend(validation_errors)
-            
             devices.append(
-                DeviceValidationResult(
-                    section=section_name,
+                _validate_setup_device(
+                    registry=registry,
+                    jsonschema=jsonschema,
+                    section_name=section_name,
                     device_name=device_name,
+                    kind=kind,
                     manager_name=manager_name,
-                    resolved_via=resolved_via,
-                    schema_warnings=schema_warnings,
+                    manager_properties=device_entry.get("managerProperties", {}),
                 )
             )
     
@@ -254,4 +255,45 @@ def validate_setup_file(path: str | Path, registry: DevicePluginRegistry) -> Val
         path=str(path),
         devices=devices,
         jsonschema_available=jsonschema is not None,
+    )
+
+
+def _validate_setup_device(
+    *,
+    registry: DevicePluginRegistry,
+    jsonschema,
+    section_name: str,
+    kind: str,
+    device_name: str | None,
+    manager_name: str,
+    manager_properties: dict,
+) -> DeviceValidationResult:
+    contribution = registry.resolve(kind, manager_name)
+
+    if contribution is not None:
+        resolved_via = "registry"
+    elif legacy_manager_exists(kind, manager_name):
+        resolved_via = "legacy"
+    elif kind == "stand" and registry.resolve(kind, f"{manager_name}_mock"):
+        contribution = registry.resolve(kind, f"{manager_name}_mock")
+        resolved_via = "registry-mock"
+    elif kind == "stand" and legacy_manager_exists(kind, f"{manager_name}_mock"):
+        resolved_via = "legacy-mock"
+    else:
+        resolved_via = "UNRESOLVED"
+
+    schema_warnings = []
+    if contribution is not None and jsonschema is not None:
+        schema = resolve_schema(contribution)
+        if schema is not None:
+            schema_warnings.extend(
+                validate_manager_properties(schema, manager_properties)
+            )
+
+    return DeviceValidationResult(
+        section=section_name,
+        device_name=device_name,
+        manager_name=manager_name,
+        resolved_via=resolved_via,
+        schema_warnings=schema_warnings,
     )

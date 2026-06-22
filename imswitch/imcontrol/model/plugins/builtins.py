@@ -52,4 +52,36 @@ BUILTIN_DEVICE_MANAGERS: list[DeviceManagerContribution] = [
         plugin_name="imswitch-core",
         manager_name_aliases=("builtin.nidaq-positioner",),
     ),
+    DeviceManagerContribution(
+        id="ThorlabsMFFManager",
+        kind="flip_mirror",
+        display_name="Thorlabs MFF flip mirror",
+        python_name="imswitch.imcontrol.model.managers.flipMirrors.ThorlabsMFF:ThorlabsMFFManager",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("ThorlabsMFF", "builtin.thorlabs-mff"),
+    ),
+    DeviceManagerContribution(
+        id="ThorlabsMFFMockManager",
+        kind="flip_mirror",
+        display_name="Mock Thorlabs MFF flip mirror",
+        python_name="imswitch.imcontrol.model.managers.flipMirrors.ThorlabsMFF_mock:MockThorlabsMFFManager",
+        plugin_name="imswitch-core",
+        manager_name_aliases=(
+            "ThorlabsMFF_mock",
+            "MockThorlabsMFF",
+            "builtin.thorlabs-mff-mock",
+        ),
+    ),
+    DeviceManagerContribution(
+        id="LeicaDMIStandMockManager",
+        kind="stand",
+        display_name="Mock Leica DMI microscope stand",
+        python_name="imswitch.imcontrol.model.managers.stands.LeicaDMIManager_mock:MockLeicaDMIStandManager",
+        plugin_name="imswitch-core",
+        manager_name_aliases=(
+            "LeicaDMIManager_mock",
+            "MockLeicaDMIManager",
+            "builtin.leica-dmi-stand-mock",
+        ),
+    ),
 ]

@@ -1,7 +1,7 @@
 from imswitch.imcommon.model import initLogger
 
 
-class MockThorlabsMFF:
+class MockThorlabsMFFManager:
     """Mock flip mirror manager."""
 
     def __init__(self, deviceInfo, name, **lowLevelManagers):
@@ -72,7 +72,8 @@ class MockThorlabsMFF:
         self.close()
 
 
-# MultiManager imports modules and classes by the configured managerName.
-# Keep the source-branch managerName (`ThorlabsMFF_mock`) loadable while the
-# implementation class keeps its descriptive mock name.
-ThorlabsMFF_mock = MockThorlabsMFF
+# MultiManager imports modules and classes by the configured managerName. Keep
+# source-branch managerNames loadable while canonical class names follow the
+# project-wide manager naming convention.
+MockThorlabsMFF = MockThorlabsMFFManager
+ThorlabsMFF_mock = MockThorlabsMFFManager

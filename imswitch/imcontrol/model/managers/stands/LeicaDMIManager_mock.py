@@ -1,7 +1,7 @@
 from imswitch.imcommon.model import initLogger
 
 
-class MockLeicaDMIManager:
+class MockLeicaDMIStandManager:
     def __init__(self, deviceInfo, *args, **kwargs):
         self.__logger = initLogger(self)
         try:
@@ -56,3 +56,8 @@ class MockLeicaDMIManager:
     def setTLshutter(self, value):
         cmd = str(value)
         self._rs232Manager.query(cmd)
+
+
+# Backward-compatible setup/import names used by existing Leica stand setups.
+MockLeicaDMIManager = MockLeicaDMIStandManager
+LeicaDMIManager_mock = MockLeicaDMIStandManager
