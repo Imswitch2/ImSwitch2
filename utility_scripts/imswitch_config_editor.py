@@ -1901,26 +1901,6 @@ class PropertyEditor(QWidget):
             self._refresh_sections()
             self.sig_modified.emit()
 
-    def _on_fix_section_from_validation(self, section_key: str):
-        """Handle 'Configure…' link clicks from validation warnings.
-
-        Opens the section editor pre-filled with defaults if the section is not
-        yet configured, or with current values if it is.
-        """
-        schema = SECTION_SCHEMAS.get(section_key)
-        if not schema:
-            return
-        current = self._data.get(section_key)
-        if current in (None, {}, []):
-            # Section not configured yet - pre-fill with defaults
-            current = _build_default_section(schema)
-        dlg = SectionEditorDialog(section_key, schema, current, self._data, self)
-        if dlg.exec_() == QDialog.Accepted:
-            self._data[section_key] = dlg.result_data
-            self._refresh_sections()
-            self._val_panel.validate(self._data)  # refresh validation to clear the warning
-            self.sig_modified.emit()
-
     def _open_section_picker(self):
         """Open the picker for adding a new system section."""
         candidates = [
@@ -3535,6 +3515,20 @@ class MainWindow(QMainWindow):
         # Re-run validation so cross-reference issues update live as the user
         # adds, edits, or removes system sections.
         self._val_panel.validate(self._data)
+
+    def _on_fix_section_from_validation(self, section_key: str):
+        """Handle 'Configure…' link clicks from validation warnings."""
+        schema = SECTION_SCHEMAS.get(section_key)
+        if not schema:
+            return
+        current = self._data.get(section_key)
+        if current in (None, {}, []):
+            current = _build_default_section(schema)
+        dlg = SectionEditorDialog(section_key, schema, current, self._data, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._data[section_key] = dlg.result_data
+            self._editor._refresh_sections()
+            self._on_extras_modified()
 
     # ── Active config / options file ──────────────────────────────────────
     def _detect_options_file(self):

@@ -262,7 +262,7 @@ class WidgetStatePersistence:
             with open(file_path, 'w') as f:
                 json.dump(full_state, f, indent=2)
             
-            self._logger.info(f'Saved widget state: {controller_name} -> {state_name}')
+            self._logger.debug(f'Saved widget state: {controller_name} -> {state_name}')
             return True
             
         except Exception as e:
