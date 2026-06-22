@@ -96,7 +96,15 @@ def test_zstack_save_uses_default_root_when_params_root_is_none(monkeypatch, tmp
     saved_paths = []
 
     monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
-    monkeypatch.setattr(tf, "imwrite", lambda path, stack: saved_paths.append(path))
+    # _save() now writes the TIFF into a buffer then commits it atomically via
+    # atomic_write(content, out_path); capture the final path there (tf.imwrite
+    # receives the in-memory buffer, not the path).
+    from imswitch.imcontrol.model.workflows import z_stack as zstack_mod
+    monkeypatch.setattr(tf, "imwrite", lambda buf, stack: None)
+    monkeypatch.setattr(
+        zstack_mod, "atomic_write",
+        lambda content, target_path: saved_paths.append(target_path),
+    )
 
     workflow._save(np.zeros((1, 4, 4), dtype=np.uint16))
 
