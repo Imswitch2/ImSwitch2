@@ -74,6 +74,18 @@ def test_auto_discovery_finds_non_templated_managers():
         assert "BaslerManager" in editor.CAT_MANAGERS.get("detectors", [])
 
 
+def test_discovered_managers_without_templates_have_display_fallbacks():
+    """Template and combo rendering must not assume every manager has a schema."""
+    assert "AVManager" in editor.CAT_MANAGERS.get("detectors", [])
+    assert "AVManager" not in editor.SCHEMAS
+    assert editor._manager_display_name("AVManager") == "AVManager"
+    assert "AVManager" in editor._all_known_managers()
+
+    for managers in editor.CAT_MANAGERS.values():
+        for manager_name in managers:
+            assert editor._manager_display_name(manager_name)
+
+
 def test_auto_discovery_degrades_gracefully():
     """Discovery must not raise even if managers tree is absent."""
     # The module already loaded, so if it didn't crash, we're good

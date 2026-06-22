@@ -310,6 +310,22 @@ def _get_category_for_manager(manager_name: str) -> str | None:
     return None
 
 
+def _manager_display_name(manager_name: str) -> str:
+    """Return a UI label for templated and discovered managers."""
+    schema = SCHEMAS.get(manager_name)
+    if schema:
+        return schema.get("display") or manager_name
+    return manager_name
+
+
+def _all_known_managers() -> list[str]:
+    """Return all templated and discovered manager names."""
+    managers = set(SCHEMAS)
+    for mgrs in CAT_MANAGERS.values():
+        managers.update(mgrs)
+    return sorted(managers)
+
+
 def _build_default_device(manager_name: str) -> dict:
     """Return a new device dict pre-filled with schema defaults.
 
@@ -759,9 +775,7 @@ class DeviceCard(QFrame):
         layout.addWidget(self._name_lbl)
 
         mgr = self.device_data.get("managerName", "")
-        short_mgr = mgr.replace("Manager", "").replace("LaserManager", "")
-        schema = SCHEMAS.get(mgr, {})
-        self._mgr_lbl = QLabel(schema.get("display", short_mgr))
+        self._mgr_lbl = QLabel(_manager_display_name(mgr))
         self._mgr_lbl.setStyleSheet("color:#666;font-size:8pt;")
         layout.addWidget(self._mgr_lbl)
 
@@ -1199,8 +1213,8 @@ class PropertyEditor(QWidget):
         # Manager type: combo for known schemas + line-edit for custom/free-form
         self._mgr_combo = QComboBox()
         self._mgr_combo.addItem("— Custom / Free-form —", "__custom__")
-        for mgr in sorted(SCHEMAS):
-            self._mgr_combo.addItem(SCHEMAS[mgr]["display"], mgr)
+        for mgr in _all_known_managers():
+            self._mgr_combo.addItem(_manager_display_name(mgr), mgr)
         self._mgr_combo.currentIndexChanged.connect(self._on_manager_changed)
         hdr_lay.addWidget(self._mgr_combo)
 
@@ -2911,7 +2925,7 @@ class LeftPanel(QWidget):
             cat_item.setData(0, Qt.UserRole, ("builtin_cat", cat))
             builtin_root.addChild(cat_item)
             for mgr in managers:
-                child = QTreeWidgetItem([SCHEMAS[mgr]["display"]])
+                child = QTreeWidgetItem([_manager_display_name(mgr)])
                 child.setData(0, Qt.UserRole, ("builtin", cat, mgr))
                 cat_item.addChild(child)
             cat_item.setExpanded(True)
