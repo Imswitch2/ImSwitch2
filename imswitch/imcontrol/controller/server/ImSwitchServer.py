@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import threading
 import Pyro5
 import Pyro5.server
@@ -49,7 +50,9 @@ class ImSwitchServer(Worker):
             self._uvicorn_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._uvicorn_loop)
             try:
-                self._uvicorn_loop.run_until_complete(self._uvicorn_server.serve())
+                serveResult = self._uvicorn_server.serve()
+                if inspect.isawaitable(serveResult):
+                    self._uvicorn_loop.run_until_complete(serveResult)
             finally:
                 self._uvicorn_loop.close()
         
@@ -76,10 +79,13 @@ class ImSwitchServer(Worker):
     def stop(self):
         """Stop both uvicorn and Pyro servers. Idempotent."""
         if self._uvicorn_server is not None:
+            uvicorn_server = self._uvicorn_server
             try:
-                self._uvicorn_server.should_exit = True
+                uvicorn_server.should_exit = True
                 if self._uvicorn_loop is not None and not self._uvicorn_loop.is_closed():
-                    self._uvicorn_loop.call_soon_threadsafe(self._uvicorn_server.should_exit.__setattr__, 'should_exit', True)
+                    self._uvicorn_loop.call_soon_threadsafe(
+                        lambda server=uvicorn_server: setattr(server, 'should_exit', True)
+                    )
             except Exception as e:
                 self.__logger.warning(f"Error stopping uvicorn server: {e}")
             finally:

@@ -302,7 +302,7 @@ class ShortcutManager:
         # Create QAction for menu entry
         qtAction = QtWidgets.QAction(action.displayName, parent)
         qtAction.setShortcut(keySeq)
-        qtAction.triggered.connect(action.callback)
+        qtAction.triggered.connect(lambda checked=False, callback=action.callback: callback())
         
         # Add to menu
         shortcutsMenu.addAction(qtAction)

@@ -7,9 +7,10 @@ from imswitch.imcontrol.controller.ShortcutManager import ShortcutManager
 class ShortcutEditorDialog(QtWidgets.QDialog):
     """Dialog for viewing and editing keyboard shortcut bindings."""
     
-    def __init__(self, parent, shortcutManager: ShortcutManager):
+    def __init__(self, parent, shortcutManager: ShortcutManager, setupInfo: Optional[object] = None):
         super().__init__(parent)
         self._manager = shortcutManager
+        self._setupInfo = setupInfo
         self._pendingChanges = {}  # actionId -> keySequence | None
         self._originalBindings = {}  # actionId -> keySequence | None (for Cancel)
         
@@ -376,9 +377,14 @@ class ShortcutEditorDialog(QtWidgets.QDialog):
         
         # Persist to setup config
         from imswitch.imcontrol.model import configfiletools
-        options = configfiletools.loadOptions()
-        setupInfo = configfiletools.loadSetupInfo(options, options.setupFileName)
-        
+        options, _ = configfiletools.loadOptions()
+        setupInfo = self._setupInfo
+        if setupInfo is None:
+            from imswitch.imcontrol.view.guitools import ViewSetupInfo
+
+            setupInfo = configfiletools.loadSetupInfo(options, ViewSetupInfo)
+            self._setupInfo = setupInfo
+
         setupInfo.shortcuts = shortcutsMap
         configfiletools.saveSetupInfo(options, setupInfo)
         

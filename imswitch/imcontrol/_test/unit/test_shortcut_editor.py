@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from typing import Dict, Union, List
+from types import SimpleNamespace
 
 from qtpy import QtCore, QtWidgets, QtGui
 
@@ -331,6 +332,27 @@ def test_dialog_ok_persists_to_config(qapp, qtbot, mock_main_view, shortcut_mana
     
     # Should not include defaults (app.test2 is at its default Ctrl+Y)
     assert 'app.test2' not in shortcutsMap or shortcutsMap['app.test2'] == 'Ctrl+Y'
+
+
+def test_dialog_ok_persists_active_setup_info(qapp, qtbot, mock_main_view, shortcut_manager):
+    """OK persists against the active setup info and handles loadOptions' tuple."""
+    setupInfo = SimpleNamespace(shortcuts={'old.action': 'F9'})
+    dialog = ShortcutEditorDialog(mock_main_view, shortcut_manager, setupInfo)
+    qtbot.addWidget(dialog)
+
+    shortcut_manager.rebind('app.test1', 'Ctrl+Z')
+    shortcut_manager.computeEffectiveBindings()
+    options = SimpleNamespace(setupFileName='test.json')
+
+    with patch('imswitch.imcontrol.model.configfiletools.loadOptions', return_value=(options, False)) as loadOptions, \
+            patch('imswitch.imcontrol.model.configfiletools.loadSetupInfo') as loadSetupInfo, \
+            patch('imswitch.imcontrol.model.configfiletools.saveSetupInfo') as saveSetupInfo:
+        dialog._onOk()
+
+    loadOptions.assert_called_once_with()
+    loadSetupInfo.assert_not_called()
+    assert setupInfo.shortcuts['app.test1'] == 'Ctrl+Z'
+    saveSetupInfo.assert_called_once_with(options, setupInfo)
 
 
 def test_dialog_cancel_restores_bindings(qapp, qtbot, mock_main_view, shortcut_manager):

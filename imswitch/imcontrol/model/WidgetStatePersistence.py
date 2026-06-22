@@ -55,6 +55,7 @@ class WidgetStatePersistence:
         'Rotator': ('RotatorController',),
         'Recording': ('RecordingController',),
         'BeadRec': ('BeadRecController',),
+        'Image': ('ImageController',),
         'GuiLayout': ('GuiLayout',),  # Registered exactly as 'GuiLayout', no alias
     }
     

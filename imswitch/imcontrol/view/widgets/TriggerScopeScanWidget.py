@@ -122,6 +122,10 @@ class TriggerScopeScanWidget(Widget):
     def setMode(self, mode):
         self.modeCombo.setCurrentIndex(self._MODE_ORDER.index(mode))
 
+    def setCurrentMode(self, mode):
+        """Compatibility alias used by scan state restore code."""
+        self.setMode(mode)
+
     # ------------------------------------------------------------------
     # Shared chrome helpers (mirror the cousin widgets' API)
     # ------------------------------------------------------------------

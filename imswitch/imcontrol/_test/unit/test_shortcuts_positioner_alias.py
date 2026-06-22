@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 from unittest.mock import Mock
 
+from qtpy import QtWidgets
+
 from imswitch.imcontrol.controller.ShortcutManager import (
     ShortcutManager, computePositionerJogDefaults,
 )
@@ -43,7 +45,7 @@ def _registerPositionerJogActionsForTest(shortcutManager, setupInfo, positionerW
                 shortcutManager.registerAction(
                     actionId=actionId,
                     displayName=f'{positionerName} {axis} {label}',
-                    callback=(lambda pName=positionerName, ax=axis, d=direction:
+                    callback=(lambda *_, pName=positionerName, ax=axis, d=direction:
                               positionerWidget.stepAxis(pName, ax, d)),
                     defaultKeySequence=defaultKey,
                     scope=ShortcutScope.Application,
@@ -320,3 +322,35 @@ def test_case_insensitive_modifier(qtbot):
     assert catalog['positioner.Stage1.X.plus'].defaultKeySequence == 'Ctrl+Right'
     assert catalog['positioner.Stage2.Y.plus'].defaultKeySequence == 'Ctrl+Shift+Up'
     assert catalog['positioner.Stage3.Z.plus'].defaultKeySequence == 'Ctrl+Shift+Y'
+
+
+def test_positioner_qaction_trigger_uses_registered_axis(qtbot):
+    """Regression: QAction's checked bool must not replace the positioner name."""
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+    setupInfo = MockSetupInfo(
+        positioners={
+            'Stage': MockPositionerInfo(axes=['X'], shortcutModifier='ctrl')
+        }
+    )
+    manager = ShortcutManager()
+    _registerPositionerJogActionsForTest(manager, setupInfo, widget)
+    manager.computeEffectiveBindings()
+
+    mainWindow = QtWidgets.QMainWindow()
+    qtbot.addWidget(mainWindow)
+    shortcutsMenu = mainWindow.menuBar().addMenu('&Shortcuts')
+    stepUpSignals = []
+    widget.sigStepUpClicked.connect(
+        lambda positionerName, axis: stepUpSignals.append((positionerName, axis))
+    )
+
+    manager.build(shortcutsMenu, mainWindow)
+    qtAction = next(
+        action
+        for action in shortcutsMenu.actions()
+        if action.text() == 'Stage X +'
+    )
+    qtAction.trigger()
+
+    assert stepUpSignals == [('Stage', 'X')]

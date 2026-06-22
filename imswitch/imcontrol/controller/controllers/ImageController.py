@@ -1,17 +1,33 @@
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import LiveUpdatedController
+from imswitch.imcontrol.model import getWidgetStatePersistence
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    LiveUpdatedController,
+    StatefulComponentMixin,
+)
 from ..display_transform import apply_display_transform, display_transform_from_properties
 from imswitch.imcommon.model import initLogger
 import numpy as np
 import re
 
-class ImageController(LiveUpdatedController):
+class ImageController(LiveUpdatedController, StatefulComponentMixin):
     """ Linked to ImageWidget."""
+
+    componentName = 'Image'
+    stateSchemaVersion = 1
+    setupModeDisplayName = 'Image viewer'
+    setupModeCategory = 'viewer'
+    setupModeHardwareCritical = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.__logger = initLogger(self, tryInheritParent=True)
+        getWidgetStatePersistence().register('Image', self)
+
+        if hasattr(self._commChannel, 'sigSetVisibleLayers'):
+            self._commChannel.sigSetVisibleLayers.connect(self.setVisibleLayers)
+
         if not self._master.detectorsManager.hasDevices():
             return
 
@@ -111,6 +127,57 @@ class ImageController(LiveUpdatedController):
         detectorName = self._master.detectorsManager.getAllDeviceNames()[0]
         self.__logger.debug(f"Change exposure of {detectorName}, to {str(exp)}")
         #self._master.detectorsManager[detectorName].setParameter('Readout time', exp)
+
+    def setVisibleLayers(self, detectorNames):
+        self._widget.setVisibleLayers(detectorNames)
+
+    def getComponentState(self) -> dict:
+        """Snapshot passive napari layer visibility only.
+
+        Layer image data, static layer creation, camera acquisition state, and
+        viewer camera pose are intentionally excluded.
+        """
+        return self._widget.getLayerVisibilityState()
+
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+    ) -> list[str]:
+        """Restore visibility for layers that already exist in the viewer."""
+        return self._widget.applyLayerVisibilityState(state)
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        layers = state.get('layers', {}) if isinstance(state, dict) else {}
+        liveLayers = state.get('liveLayers', {}) if isinstance(state, dict) else {}
+
+        if not layers and not liveLayers:
+            return ['  no napari layer visibility saved']
+
+        summaries = []
+        if liveLayers:
+            visibleLive = sorted(name for name, visible in liveLayers.items() if visible)
+            hiddenLive = sorted(name for name, visible in liveLayers.items() if not visible)
+            summaries.append(
+                f'  live layers: visible={visibleLive or "none"}, hidden={hiddenLive or "none"}'
+            )
+        if layers:
+            visibleLayers = sorted(name for name, visible in layers.items() if visible)
+            hiddenLayers = sorted(name for name, visible in layers.items() if not visible)
+            summaries.append(
+                f'  napari layers: visible={visibleLayers or "none"}, hidden={hiddenLayers or "none"}'
+            )
+        return summaries
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        return []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

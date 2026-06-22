@@ -80,7 +80,8 @@ class ImageWidget(QtWidgets.QWidget):
             )
 
         for name in names:
-            if name not in self.napariViewer.layers:
+            if (name not in self.imgLayers
+                    or self.imgLayers[name] not in self.napariViewer.layers):
                 try:
                     addImage(name, name.lower())
                 except KeyError:
@@ -145,6 +146,10 @@ class ImageWidget(QtWidgets.QWidget):
 
         self._removeProtectedLayer(old)
         new = self.napariViewer.add_image(im, **properties)
+        try:
+            new.visible = old.visible
+        except AttributeError:
+            pass
         if index is not None:
             try:
                 new_index = layers.index(new)
@@ -288,6 +293,68 @@ class ImageWidget(QtWidgets.QWidget):
         overlays = getattr(self, '_overlayItems', None)
         if overlays is not None and item in overlays:
             overlays.remove(item)
+
+    def getLayerVisibilityState(self):
+        """Return JSON-safe napari layer visibility without storing layer data."""
+        layers = {}
+        for layer in self.napariViewer.layers:
+            name = getattr(layer, 'name', None)
+            if name:
+                layers[name] = bool(getattr(layer, 'visible', True))
+
+        liveLayers = {}
+        for detectorName, layer in self.imgLayers.items():
+            liveLayers[detectorName] = bool(getattr(layer, 'visible', True))
+
+        return {
+            'layers': layers,
+            'liveLayers': liveLayers,
+        }
+
+    def applyLayerVisibilityState(self, state):
+        """Apply saved napari visibility to layers that currently exist."""
+        warnings = []
+        if not isinstance(state, dict):
+            return ['Layer visibility state is not a mapping; skipped.']
+
+        liveLayers = state.get('liveLayers', {})
+        if isinstance(liveLayers, dict):
+            for detectorName, visible in liveLayers.items():
+                layer = self.imgLayers.get(detectorName)
+                if layer is not None:
+                    self._setLayerVisible(layer, visible)
+        else:
+            warnings.append('Saved live layer visibility is not a mapping; skipped.')
+
+        layers = state.get('layers', {})
+        if isinstance(layers, dict):
+            for layerName, visible in layers.items():
+                layer = self._findLayerByName(layerName)
+                if layer is not None:
+                    self._setLayerVisible(layer, visible)
+        else:
+            warnings.append('Saved layer visibility is not a mapping; skipped.')
+
+        return warnings
+
+    def setVisibleLayers(self, detectorNames):
+        """Show only the named live detector layers."""
+        visibleDetectorNames = set(detectorNames or ())
+        for detectorName, layer in self.imgLayers.items():
+            self._setLayerVisible(layer, detectorName in visibleDetectorNames)
+
+    def _findLayerByName(self, layerName):
+        for layer in self.napariViewer.layers:
+            if getattr(layer, 'name', None) == layerName:
+                return layer
+        return None
+
+    @staticmethod
+    def _setLayerVisible(layer, visible):
+        try:
+            layer.visible = bool(visible)
+        except AttributeError:
+            pass
 
     @shortcut(actionId="image.updateLevels", defaultKey="Ctrl+U",
               displayName="Update levels", initiallyBound=True)

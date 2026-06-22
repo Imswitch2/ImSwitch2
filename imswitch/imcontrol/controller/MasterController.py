@@ -2,8 +2,9 @@ from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
     DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
-    RotatorsManager, SLMsManager, ScanManagerAdvanced, TriggerScopeManager
+    RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
+from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
 
 
 class MasterController:

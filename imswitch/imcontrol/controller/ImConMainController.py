@@ -9,7 +9,7 @@ from imswitch.imcommon.model import (
     ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes
 )
 from imswitch.imcommon.framework import Thread
-from .server import ImSwitchServer
+from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from . import controllers
@@ -327,7 +327,7 @@ class ImConMainController(MainController):
         """Open the keyboard shortcut editor dialog."""
         from imswitch.imcontrol.view.widgets.ShortcutEditorDialog import ShortcutEditorDialog
         
-        dialog = ShortcutEditorDialog(self.__mainView, self.__shortcutManager)
+        dialog = ShortcutEditorDialog(self.__mainView, self.__shortcutManager, self.__setupInfo)
         dialog.exec_()
 
     def _registerPositionerJogActions(self):
@@ -365,7 +365,7 @@ class ImConMainController(MainController):
                     self.__shortcutManager.registerAction(
                         actionId=actionId,
                         displayName=f'{positionerName} {axis} {label}',
-                        callback=(lambda pName=positionerName, ax=axis, d=direction:
+                        callback=(lambda *_, pName=positionerName, ax=axis, d=direction:
                                   positionerWidget.stepAxis(pName, ax, d)),
                         defaultKeySequence=defaultKey,
                         scope=ShortcutScope.Application,
@@ -376,9 +376,19 @@ class ImConMainController(MainController):
     def closeEvent(self):
         self.__logger.info('Shutting down')
         try:
-            getWidgetStatePersistence().saveAllWidgetStates('default')
+            saveWidgetState = self._shouldSaveWidgetStateOnClose()
         except Exception as e:
-            self.__logger.warning(f'Failed to auto-save widget states: {e}')
+            self.__logger.warning(
+                f'Failed to ask whether widget states should be saved; '
+                f'saving by default: {e}'
+            )
+            saveWidgetState = True
+
+        if saveWidgetState:
+            try:
+                getWidgetStatePersistence().saveAllWidgetStates('default')
+            except Exception as e:
+                self.__logger.warning(f'Failed to auto-save widget states: {e}')
         
         # Stop server thread before closing hardware managers
         if hasattr(self, '_serverWorker') and hasattr(self, '_thread'):
@@ -393,6 +403,16 @@ class ImConMainController(MainController):
         
         self.__factory.closeAllCreatedControllers()
         self.__masterController.closeEvent()
+
+    def _shouldSaveWidgetStateOnClose(self):
+        result = QtWidgets.QMessageBox.question(
+            self.__mainView,
+            'Save Widget State',
+            'Save the current widget state as the default for the next startup?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        return result == QtWidgets.QMessageBox.Yes
 
 
 class _GuiLayoutStateAdapter:

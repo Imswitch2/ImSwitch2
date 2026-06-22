@@ -242,6 +242,25 @@ class TestShortcutManager:
         
         # Menu should have actions added
         assert len(mock_shortcuts_menu.actions()) > initial_action_count
+
+    def test_qaction_trigger_does_not_forward_checked_bool(
+        self, sample_catalog, mock_shortcuts_menu, mock_main_window
+    ):
+        """QAction.triggered(bool) must call shortcut callbacks with no args."""
+        manager = ShortcutManager()
+        manager.collect(sample_catalog)
+        manager.loadConfigOverrides(None)
+        manager.computeEffectiveBindings()
+        manager.build(mock_shortcuts_menu, mock_main_window)
+
+        qtAction = next(
+            action
+            for action in mock_shortcuts_menu.actions()
+            if action.text() == 'Toggle Live View'
+        )
+        qtAction.trigger()
+
+        sample_catalog['view.toggleLiveView'].callback.assert_called_once_with()
         
     def test_dispose_clears_shortcuts(self, sample_catalog, mock_shortcuts_menu, mock_main_window, qtbot):
         """Test that dispose() properly clears Qt shortcuts."""
