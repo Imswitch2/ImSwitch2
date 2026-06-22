@@ -144,6 +144,7 @@ def cmd_validate_setup(registry, path) -> int:
     
     if jsonschema is None:
         print("NOTE: jsonschema not installed, schema validation will be skipped.")
+        print()
     
     try:
         report = validate_setup_file(path, registry)

@@ -27,6 +27,32 @@ from PyQt5.QtWidgets import (
     QDialog, QTextEdit, QLayout, QLayoutItem,
 )
 
+# Try to import the manager catalog (Phase 1: registry-backed discovery)
+# and shared model helpers (Phase 5: consolidation). Falls back gracefully
+# if the model package is unavailable
+_MANAGER_CATALOG = None
+_coercion_module = None
+_io_module = None
+try:
+    # Ensure the repo root is on sys.path for import resolution
+    _script_path = Path(__file__).resolve()
+    _repo_root = _script_path.parents[1]
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+    
+    from imswitch.imcontrol.model.configeditor.catalog import build_catalog
+    _MANAGER_CATALOG = build_catalog()
+    from imswitch.imcontrol.model.configeditor import coercion as _coercion_module
+    from imswitch.imcontrol.model.configeditor import io as _io_module
+except ImportError as e:
+    # Model package unavailable; fallback implementations will be used
+    pass
+except Exception as e:
+    # Log but don't crash if imports fail
+    import logging
+    logging.getLogger(__name__).warning(f"Failed to import model helpers: {e}")
+    pass
+
 # =============================================================================
 # Authoritative category registry
 # =============================================================================
@@ -102,7 +128,19 @@ def _discover_managers() -> dict:
 
     Returns a dict: category → [manager_name, ...]
     Degrades gracefully if the managers tree is not found.
+    
+    Phase 1: Uses the manager catalog when available; falls back to legacy scan.
     """
+    # Use catalog if available
+    if _MANAGER_CATALOG is not None:
+        by_cat = _MANAGER_CATALOG.by_category()
+        result: dict = {}
+        for cat, infos in by_cat.items():
+            result[cat] = [info.manager_name for info in infos]
+            result[cat].sort()
+        return result
+    
+    # Legacy filesystem scan (fallback when catalog unavailable)
     discovered: dict = {}
     # Resolve path relative to this script: utility_scripts/ → imswitch/imcontrol/model/managers/
     script_path = Path(__file__).resolve()
@@ -272,6 +310,9 @@ for _lst in CAT_MANAGERS.values():
 # =============================================================================
 def _json_to_display(value, field_type: str) -> str:
     """Convert a JSON value to a display string for a text/select widget."""
+    if _coercion_module is not None:
+        return _coercion_module.json_to_display(value, field_type)
+    # Fallback implementation
     if value is None:
         return "null"
     if field_type in ("int", "float"):
@@ -281,6 +322,9 @@ def _json_to_display(value, field_type: str) -> str:
 
 def _display_to_json(text: str, field_type: str):
     """Convert a display string back to the correct Python type."""
+    if _coercion_module is not None:
+        return _coercion_module.display_to_json(text, field_type)
+    # Fallback implementation
     text = text.strip()
     if text.lower() == "null":
         return None
@@ -298,7 +342,20 @@ def _display_to_json(text: str, field_type: str):
 
 
 def _get_category_for_manager(manager_name: str) -> str | None:
-    """Find which category a manager belongs to (template or discovered)."""
+    """Find which category a manager belongs to (template or discovered).
+    
+    Phase 1: Uses the manager catalog when available; falls back to legacy lookup.
+    """
+    # Use catalog if available
+    if _MANAGER_CATALOG is not None:
+        cat = _MANAGER_CATALOG.category_for(manager_name)
+        if cat is not None:
+            return cat
+        # Fall through: template-only managers (a JSON template with no
+        # matching registry entry or scanned source file) are not in the
+        # catalog, so resolve their category from the template below.
+
+    # Legacy lookup (also covers template-only managers)
     # First check templates
     schema = SCHEMAS.get(manager_name)
     if schema:
@@ -311,15 +368,42 @@ def _get_category_for_manager(manager_name: str) -> str | None:
 
 
 def _manager_display_name(manager_name: str) -> str:
-    """Return a UI label for templated and discovered managers."""
+    """Return a UI label for templated and discovered managers.
+    
+    Phase 1: Prefers template display (so existing rich templates win), then
+    catalog display name, then bare name.
+    """
+    # First check template (existing templates win)
     schema = SCHEMAS.get(manager_name)
     if schema:
-        return schema.get("display") or manager_name
+        display = schema.get("display")
+        if display:
+            return display
+    
+    # Then use catalog display name if available
+    if _MANAGER_CATALOG is not None:
+        catalog_display = _MANAGER_CATALOG.display_name(manager_name)
+        if catalog_display != manager_name:
+            return catalog_display
+    
+    # Fall back to bare name
     return manager_name
 
 
 def _all_known_managers() -> list[str]:
-    """Return all templated and discovered manager names."""
+    """Return all templated and discovered manager names.
+    
+    Phase 1: Uses the manager catalog when available; falls back to legacy union.
+    """
+    # Use catalog if available, unioned with template-only managers so a JSON
+    # template with no matching registry entry or scanned source file (e.g.
+    # PiezoconceptZManager2, RS232Manager) is still offered in the picker.
+    if _MANAGER_CATALOG is not None:
+        managers = set(_MANAGER_CATALOG.all_manager_names())
+        managers.update(SCHEMAS)
+        return sorted(managers)
+
+    # Legacy union (fallback when catalog unavailable)
     managers = set(SCHEMAS)
     for mgrs in CAT_MANAGERS.values():
         managers.update(mgrs)
@@ -331,6 +415,9 @@ def _build_default_device(manager_name: str) -> dict:
 
     If the manager has a specific template, use it. Otherwise, fall back to
     the category's blank schema. If no category is found, return minimal dict.
+    
+    Phase 2: Delegates to defaults.build_default_device when available,
+    passing both template and schema from the catalog.
     """
     schema = SCHEMAS.get(manager_name)
 
@@ -340,6 +427,24 @@ def _build_default_device(manager_name: str) -> dict:
         if cat:
             schema = BLANK_SCHEMAS.get(cat, {})
 
+    # Try to use Phase 2 defaults module (graceful fallback if unavailable)
+    try:
+        from imswitch.imcontrol.model.configeditor.defaults import build_default_device as build_default
+        
+        # Get JSON schema from catalog if available
+        json_schema = None
+        if _MANAGER_CATALOG is not None:
+            manager_info = _MANAGER_CATALOG.get(manager_name)
+            if manager_info is not None:
+                json_schema = manager_info.properties_schema
+        
+        # Delegate to Phase 2 builder
+        return build_default(manager_name, template=schema, json_schema=json_schema)
+    except ImportError:
+        # Phase 2 module unavailable - use legacy inline implementation
+        pass
+    
+    # Legacy inline implementation (fallback)
     d: dict = {"managerName": manager_name, "managerProperties": {}}
     for f in schema.get("top", []):
         v = f["default"]
@@ -395,18 +500,6 @@ def _build_default_section(schema: dict) -> dict:
     return out
 
 
-def _collect_daq_channels(data: dict) -> dict:
-    """Return {channel_string: [device_name, ...]} for all assigned DAQ lines."""
-    used: dict = {}
-    for cat in DEVICE_CATS:
-        for name, dev in (data.get(cat) or {}).items():
-            for key in ("analogChannel", "digitalLine"):
-                val = dev.get(key)
-                if val and val != "null":
-                    used.setdefault(val, []).append(name)
-    return used
-
-
 # Maps each widget in availableWidgets that needs a section to the section key.
 # Built from section schemas' requires_widget field (single source of truth).
 def _build_widget_requires_section_map() -> dict:
@@ -419,156 +512,6 @@ def _build_widget_requires_section_map() -> dict:
     return mapping
 
 _WIDGET_REQUIRES_SECTION = _build_widget_requires_section_map()
-
-
-def _collect_xref_issues(data: dict) -> list:
-    """Return cross-reference issues as a list of ``(severity, message)`` tuples.
-
-    ``severity`` is ``"error"`` (red — real config problem), ``"warning"``
-    (orange — likely problem), or ``"note"`` (grey — legacy / dormant).
-    The checks here cover what falls silently between device flags and
-    system sections, e.g. a detector flagged ``forFocusLock: true`` while
-    the ``focusLock`` section is missing.
-    """
-    out: list = []
-
-    detectors = data.get("detectors") or {}
-    positioners = data.get("positioners") or {}
-    rs232s = data.get("rs232devices") or {}
-    widgets = data.get("availableWidgets") or []
-
-    # ── focusLock ⇄ detector forFocusLock ────────────────────────────────
-    focus_dets = [n for n, d in detectors.items() if d.get("forFocusLock")]
-    fl = data.get("focusLock")
-    if focus_dets and not fl:
-        out.append(("error",
-            f"Detector(s) flagged forFocusLock={focus_dets} but no "
-            f"<b>focusLock</b> section — flag has no effect."))
-    if fl:
-        if not focus_dets:
-            out.append(("error",
-                "<b>focusLock</b> section present but no detector has "
-                "forFocusLock=true."))
-        cam = fl.get("camera")
-        pos = fl.get("positioner")
-        if cam and cam not in detectors:
-            out.append(("error",
-                f"<b>focusLock.camera</b>='{cam}' is not a defined detector."))
-        elif cam and not detectors.get(cam, {}).get("forFocusLock"):
-            out.append(("warning",
-                f"focusLock.camera='{cam}' exists but does not have "
-                f"forFocusLock=true."))
-        if pos and pos not in positioners:
-            out.append(("error",
-                f"<b>focusLock.positioner</b>='{pos}' is not a defined "
-                f"positioner."))
-
-    # ── autofocus ⇄ devices ──────────────────────────────────────────────
-    af = data.get("autofocus")
-    if af:
-        cam = af.get("camera")
-        pos = af.get("positioner")
-        if cam and cam not in detectors:
-            out.append(("error",
-                f"<b>autofocus.camera</b>='{cam}' is not a defined detector."))
-        if pos and pos not in positioners:
-            out.append(("error",
-                f"<b>autofocus.positioner</b>='{pos}' is not a defined "
-                f"positioner."))
-
-    # ── tiling ⇄ positioners + optional camera ───────────────────────────
-    tl = data.get("tiling")
-    if tl:
-        xy = tl.get("xyPositioner")
-        z = tl.get("zPositioner")
-        cam = tl.get("camera")
-        if xy and xy not in positioners:
-            out.append(("error",
-                f"<b>tiling.xyPositioner</b>='{xy}' is not a defined "
-                f"positioner."))
-        if z and z not in positioners:
-            out.append(("error",
-                f"<b>tiling.zPositioner</b>='{z}' is not a defined "
-                f"positioner."))
-        if cam and cam not in detectors:
-            out.append(("error",
-                f"<b>tiling.camera</b>='{cam}' is not a defined detector."))
-
-    # ── scan ⇄ forScanning positioners ───────────────────────────────────
-    if data.get("scan"):
-        scanning = [n for n, p in positioners.items() if p.get("forScanning")]
-        if not scanning:
-            out.append(("warning",
-                "<b>scan</b> section present but no positioner has "
-                "forScanning=true."))
-
-    # ── etSTED ⇄ scan ────────────────────────────────────────────────────
-    if data.get("etSTED") and not data.get("scan"):
-        out.append(("warning",
-            "<b>etSTED</b> present but no <b>scan</b> section — "
-            "coordinate transforms have nothing to drive."))
-
-    # ── ImProcess processing plugin ids ──────────────────────────────────
-    processing = data.get("processing")
-    if processing:
-        known_reconstructors = set(_section_option_values("processing", "reconstructors"))
-        known_processors = set(_section_option_values("processing", "processors"))
-        reconstructors = processing.get("reconstructors")
-        processors = processing.get("processors")
-        if reconstructors is not None:
-            if not isinstance(reconstructors, list) or not reconstructors:
-                out.append(("error",
-                    "<b>processing.reconstructors</b> must be a non-empty list "
-                    "of ImProcess reconstructor IDs."))
-            else:
-                unknown = [r for r in reconstructors if r not in known_reconstructors]
-                if unknown:
-                    out.append(("error",
-                        f"<b>processing.reconstructors</b> contains unknown "
-                        f"plugin ID(s): {unknown}."))
-        if processors is not None:
-            if not isinstance(processors, list):
-                out.append(("error",
-                    "<b>processing.processors</b> must be a list of ImProcess "
-                    "processor IDs."))
-            else:
-                unknown = [p for p in processors if p not in known_processors]
-                if unknown:
-                    out.append(("error",
-                        f"<b>processing.processors</b> contains unknown "
-                        f"plugin ID(s): {unknown}."))
-
-    # ── microscopeStand ⇄ rs232devices ───────────────────────────────────
-    ms = data.get("microscopeStand")
-    if ms:
-        port = ms.get("rs232device")
-        if port and port not in rs232s:
-            out.append(("error",
-                f"<b>microscopeStand.rs232device</b>='{port}' is not a "
-                f"defined RS232 connection."))
-
-    # ── availableWidgets ↔ matching sections ─────────────────────────────
-    for widget, section_key in _WIDGET_REQUIRES_SECTION.items():
-        if widget in widgets and not data.get(section_key):
-            schema = SECTION_SCHEMAS.get(section_key)
-            display = schema.get("display", section_key) if schema else section_key
-            out.append(("warning",
-                f"Widget <b>{widget}</b> is enabled but no <b>{section_key}"
-                f"</b> section is configured — widget will not initialize. "
-                f"<a href='fixsection:{section_key}'>Configure {display}…</a>"))
-
-    # ── Legacy / dormant section notes ───────────────────────────────────
-    if data.get("pulseStreamer") and (data["pulseStreamer"] or {}).get("ipAddress"):
-        out.append(("note",
-            "<b>pulseStreamer</b> is configured but MasterController no "
-            "longer constructs PulseStreamerManager. Use <b>teensyPulse</b> "
-            "instead."))
-    if data.get("slm"):
-        out.append(("note",
-            "<b>slm</b> (singular) is deprecated — prefer <b>slms</b> "
-            "(plural) for new setups."))
-
-    return out
 
 
 def _section_option_values(section_key: str, field_key: str) -> list:
@@ -1622,6 +1565,26 @@ class PropertyEditor(QWidget):
                 if v is None or v == "":
                     warnings.append(f"⚠  Required: {f['label']}")
         self._val_lbl.setText("\n".join(warnings))
+
+        # Phase 2: Merge preserving unknown fields (including nested dicts)
+        try:
+            from imswitch.imcontrol.model.configeditor.defaults import merge_preserving_unknown
+            
+            # Build known keys sets from schema
+            schema_top_keys = {f["key"] for f in schema.get("top", [])}
+            schema_prop_keys = {f["key"] for f in schema.get("props", [])}
+            schema_prop_keys |= set(schema.get("nested", {}).keys())
+            
+            # Merge to restore unknown fields
+            new_device = merge_preserving_unknown(
+                self._device,
+                new_device,
+                schema_top_keys=schema_top_keys,
+                schema_prop_keys=schema_prop_keys,
+            )
+        except ImportError:
+            # Phase 2 module unavailable - continue without merge (legacy behavior)
+            pass
 
         self.sig_apply.emit(self._cat, self._name, new_device)
 
@@ -2750,6 +2713,19 @@ class LeftPanel(QWidget):
         self.setFixedWidth(242)
         self._store = TemplateStore()
         self._config_dir: object = None
+        
+        # Load plugin templates (Phase 3)
+        self._plugin_templates: list = []
+        self._plugin_template_errors: list = []
+        try:
+            if _MANAGER_CATALOG is not None:
+                from imswitch.imcontrol.model.configeditor.templates import load_plugin_templates
+                self._plugin_templates, self._plugin_template_errors = (
+                    load_plugin_templates(_MANAGER_CATALOG)
+                )
+        except Exception:
+            # If loading fails, just continue without plugin templates
+            pass
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -2911,6 +2887,70 @@ class LeftPanel(QWidget):
             cat_item.setExpanded(True)
         builtin_root.setExpanded(True)
 
+        # ── Plugin Templates section ──
+        if self._plugin_templates or self._plugin_template_errors:
+            plugin_root = QTreeWidgetItem(["Plugin Templates"])
+            plugin_root.setFont(0, bold)
+            plugin_root.setForeground(0, _QColor("#444"))
+            self._tmpl_tree.addTopLevelItem(plugin_root)
+
+            # Group templates by plugin name
+            from collections import defaultdict
+            by_plugin = defaultdict(list)
+            for tmpl in self._plugin_templates:
+                by_plugin[tmpl.plugin_name].append(tmpl)
+
+            # Add each plugin's templates
+            for plugin_name in sorted(by_plugin.keys()):
+                plugin_templates = by_plugin[plugin_name]
+                plugin_item = QTreeWidgetItem([f"{plugin_name}  ({len(plugin_templates)})"])
+                f_plugin = QFont(); f_plugin.setBold(True)
+                plugin_item.setFont(0, f_plugin)
+                plugin_item.setForeground(0, _QColor("#555"))
+                plugin_root.addChild(plugin_item)
+
+                # Group by category within plugin
+                by_cat = defaultdict(list)
+                for tmpl in plugin_templates:
+                    by_cat[tmpl.category].append(tmpl)
+
+                for cat in sorted(by_cat.keys()):
+                    cat_templates = by_cat[cat]
+                    color = CAT_COLOR.get(cat, "#888")
+                    label = CAT_LABEL.get(cat, cat)
+                    cat_item = QTreeWidgetItem([f"{label}  ({len(cat_templates)})"])
+                    cat_item.setForeground(0, _QColor(color))
+                    f_cat = QFont(); f_cat.setBold(True)
+                    cat_item.setFont(0, f_cat)
+                    cat_item.setData(0, Qt.UserRole, ("plugin_cat", plugin_name, cat))
+                    plugin_item.addChild(cat_item)
+
+                    for tmpl in sorted(cat_templates, key=lambda t: t.name):
+                        child = QTreeWidgetItem([tmpl.name])
+                        child.setData(0, Qt.UserRole, ("plugin", cat, tmpl.name, tmpl.device))
+                        cat_item.addChild(child)
+                    cat_item.setExpanded(True)
+                plugin_item.setExpanded(True)
+
+            # Add errors section if any
+            if self._plugin_template_errors:
+                errors_item = QTreeWidgetItem([f"Errors  ({len(self._plugin_template_errors)})"])
+                f_err = QFont(); f_err.setBold(True)
+                errors_item.setFont(0, f_err)
+                errors_item.setForeground(0, _QColor("#cc0000"))
+                plugin_root.addChild(errors_item)
+
+                for err in self._plugin_template_errors:
+                    err_label = f"{err.manager_name}: {Path(err.resource).name}"
+                    err_child = QTreeWidgetItem([err_label])
+                    err_child.setForeground(0, _QColor("#999"))
+                    err_child.setToolTip(0, err.message)
+                    err_child.setData(0, Qt.UserRole, ("error", err))
+                    errors_item.addChild(err_child)
+                errors_item.setExpanded(False)
+
+            plugin_root.setExpanded(True)
+
         # ── My Templates section ──
         user_cats = self._store.categories()
         if user_cats:
@@ -2958,6 +2998,9 @@ class LeftPanel(QWidget):
         elif kind == "user":
             _k, cat, tname, tdata = payload
             self.sig_tmpl_add.emit(cat, copy.deepcopy(tdata))
+        elif kind == "plugin":
+            _k, cat, name, device_dict = payload
+            self.sig_tmpl_add.emit(cat, copy.deepcopy(device_dict))
 
     def _tmpl_context_menu(self, pos):
         item = self._tmpl_tree.itemAt(pos)
@@ -3051,28 +3094,67 @@ class ValidationPanel(QFrame):
             self.sig_fix_section.emit(section_key)
 
     def validate(self, data: dict):
+        # Try to use model validation service (Phase 4)
+        try:
+            from imswitch.imcontrol.model.plugins.registry import build_default_registry
+            from imswitch.imcontrol.model.plugins.validation import (
+                validate_setup_data,
+                ValidationContext,
+            )
+            
+            # Build registry
+            registry = build_default_registry(discover=True)
+            
+            # Build context with editor-supplied inputs
+            context = ValidationContext(
+                widget_requires_section=_WIDGET_REQUIRES_SECTION,
+                known_reconstructor_ids=tuple(_section_option_values("processing", "reconstructors")),
+                known_processor_ids=tuple(_section_option_values("processing", "processors")),
+            )
+            
+            # Validate using model
+            report = validate_setup_data(data, registry, context=context)
+            
+            # Render diagnostics to HTML
+            self._render_diagnostics(report.diagnostics, data)
+            
+        except Exception as e:
+            # Graceful degradation: fall back to legacy validation
+            import logging
+            logging.getLogger(__name__).debug(f"Model validation unavailable, using legacy: {e}")
+            self._validate_legacy(data)
+    
+    def _render_diagnostics(self, diagnostics: list, data: dict):
+        """Render model diagnostics to HTML."""
         errors: list = []
         warnings: list = []
         notes: list = []
+        
+        for diag in diagnostics:
+            # Emphasize section names in the plain-text message. Do this BEFORE
+            # appending any fix link, so the link's href (which may itself be a
+            # section key like "scan" or "focusLock") is never corrupted by the
+            # keyword replacement below.
+            msg = diag.message
+            for _kw in ("focusLock", "autofocus", "tiling", "scan", "etSTED",
+                        "processing", "microscopeStand", "pulseStreamer",
+                        "availableWidgets"):
+                msg = msg.replace(_kw, f"<b>{_kw}</b>")
 
-        # Existing DAQ conflict check
-        used = _collect_daq_channels(data)
-        for ch, names in used.items():
-            if len(names) > 1:
-                errors.append(f"DAQ conflict <b>{ch}</b>: {', '.join(names)}")
+            # Add fix link if present (after bolding, so href stays intact)
+            if diag.fix and diag.fix.action == "configure_section":
+                msg += f" <a href='fixsection:{diag.fix.target}'>Configure…</a>"
 
-        # Cross-reference checks between system sections and devices
-        for severity, msg in _collect_xref_issues(data):
-            if severity == "error":
+            if diag.severity == "error":
                 errors.append(msg)
-            elif severity == "warning":
+            elif diag.severity == "warning":
                 warnings.append(msg)
             else:
                 notes.append(msg)
-
+        
         present = [CAT_LABEL[c] for c in DEVICE_CATS if data.get(c)]
         devcount = sum(len(data.get(c) or {}) for c in DEVICE_CATS)
-
+        
         lines: list = []
         for m in errors:
             lines.append(f"<span style='color:#C04000;'>⚠ {m}</span>")
@@ -3080,7 +3162,7 @@ class ValidationPanel(QFrame):
             lines.append(f"<span style='color:#B07000;'>⚠ {m}</span>")
         for m in notes:
             lines.append(f"<span style='color:#666;'>ℹ {m}</span>")
-
+        
         if lines:
             self._text.setText("<br>".join(lines))
             self._text.setStyleSheet("font-size:8pt;")
@@ -3092,6 +3174,14 @@ class ValidationPanel(QFrame):
                 f" ({cats_str})</span>"
             )
             self._text.setStyleSheet("font-size:8pt;")
+    
+    def _validate_legacy(self, data: dict):
+        """Fallback when model validation is unavailable (graceful degradation)."""
+        self._text.setText(
+            "<span style='color:#B07000;'>⚠ Validation unavailable "
+            "(model import failed)</span>"
+        )
+        self._text.setStyleSheet("font-size:8pt;")
 
 
 # =============================================================================
@@ -3261,8 +3351,12 @@ class MainWindow(QMainWindow):
 
     def _load_file(self, path: str):
         try:
-            with open(path, encoding="utf-8") as fh:
-                self._data = json.load(fh)
+            # Delegate to shared helper when available, otherwise fallback
+            if _io_module is not None:
+                self._data = _io_module.load_config_file(path)
+            else:
+                with open(path, encoding="utf-8") as fh:
+                    self._data = json.load(fh)
             self._path = path
             self._left.set_folder(str(Path(path).parent))
             self._modified = False
@@ -3297,10 +3391,14 @@ class MainWindow(QMainWindow):
 
     def _write_file(self, path: str):
         try:
-            data_to_write = copy.deepcopy(self._data)
-            # Strip empty "others" dict to keep saved JSON clean
-            if "others" in data_to_write and not data_to_write["others"]:
-                del data_to_write["others"]
+            # Delegate transform to shared helper when available
+            if _io_module is not None:
+                data_to_write = _io_module.prepare_for_save(self._data)
+            else:
+                data_to_write = copy.deepcopy(self._data)
+                # Strip empty "others" dict to keep saved JSON clean
+                if "others" in data_to_write and not data_to_write["others"]:
+                    del data_to_write["others"]
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data_to_write, fh, indent=2, ensure_ascii=False)
             self._path = path
