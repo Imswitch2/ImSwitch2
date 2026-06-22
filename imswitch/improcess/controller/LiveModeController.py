@@ -1,10 +1,9 @@
 """Controller for live reconstruction mode in the watcher UI."""
 
 import os
-from pathlib import Path
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live import ZarrLiveSource, Hdf5LiveSource
+from imswitch.improcess.live import make_live_source
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
 
@@ -86,22 +85,20 @@ class LiveModeController(ImProcessWidgetController):
 
     def _selectSource(self, path: str):
         """Select the appropriate LiveSource based on file format.
-        
+
+        Routes through the shared ``make_live_source`` factory; unsupported
+        formats (e.g. TIFF) un-toggle live mode with a clear message rather than
+        raising into the UI.
+
         Returns:
             LiveSource instance or None if format is not supported.
         """
-        path_lower = path.lower()
-        
-        if path_lower.endswith('.zarr'):
-            self._logger.debug(f"Selected ZarrLiveSource for {path}")
-            return ZarrLiveSource(detector_name=None)
-        elif path_lower.endswith('.h5') or path_lower.endswith('.hdf5'):
-            self._logger.debug(f"Selected Hdf5LiveSource for {path}")
-            return Hdf5LiveSource(detector_name=None)
-        else:
+        try:
+            return make_live_source(path, detector_name=None)
+        except (NotImplementedError, ValueError) as exc:
             self._logger.warning(
-                f"Live reconstruction not supported for format: {path}. "
-                "Use batch watch mode instead. Supported formats: .zarr, .h5, .hdf5"
+                f"Live reconstruction not supported for {path}: {exc} "
+                "Use batch watch mode instead (supported: .zarr, .h5, .hdf5)."
             )
             return None
 
