@@ -21,6 +21,7 @@ class ReconstructionViewController(ImProcessWidgetController):
 
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
         self._commChannel.sigResultProduced.connect(self.resultProduced)
+        self._commChannel.sigLiveResultUpdated.connect(self.liveResultUpdated)
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
@@ -200,6 +201,24 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
         name = displayName or getattr(result, 'name', '') or 'result'
         self._widget.addNewData(result, name)
+
+    def liveResultUpdated(self, result):
+        """Update the view with a live reconstruction result.
+        
+        Refreshes the current display with the latest partial result from
+        a streaming reconstruction session.
+        """
+        if result is None:
+            return
+        
+        current = self._widget.getCurrentItemData()
+        if current is None or getattr(current, 'name', '') != getattr(result, 'name', ''):
+            self._widget.addNewData(result, getattr(result, 'name', 'Live'))
+        else:
+            currentItem = self._widget.reconList.currentItem()
+            if currentItem is not None:
+                currentItem.setData(1, result)
+                self.fullUpdate(levels=None)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

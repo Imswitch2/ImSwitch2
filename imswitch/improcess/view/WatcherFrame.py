@@ -8,6 +8,7 @@ class WatcherFrame(QtWidgets.QFrame):
     """Frame for reconstructing files from a folder automatically."""
 
     sigWatchChanged = QtCore.Signal(bool)  # (enabled)
+    sigLiveChanged = QtCore.Signal(bool)  # (enabled)
     sigChangeFolder = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
@@ -18,6 +19,7 @@ class WatcherFrame(QtWidgets.QFrame):
 
         self.browseFolderButton = guitools.BetterPushButton('Browse')
         self.watchCheck = QtWidgets.QCheckBox('Watch and run')
+        self.liveCheck = QtWidgets.QCheckBox('Live (stream)')
 
         self.listWidget = QtWidgets.QListWidget()
         #self.updateFileList()
@@ -29,8 +31,10 @@ class WatcherFrame(QtWidgets.QFrame):
         layout.addWidget(self.browseFolderButton, 0, 0)
         layout.addWidget(self.listWidget, 1, 0, 1, 2)
         layout.addWidget(self.watchCheck, 2, 0)
+        layout.addWidget(self.liveCheck, 2, 1)
 
         self.watchCheck.toggled.connect(self.sigWatchChanged)
+        self.liveCheck.toggled.connect(self.sigLiveChanged)
         self.browseFolderButton.clicked.connect(self.browse)
 
     def updateFileList(self, extension):
