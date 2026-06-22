@@ -63,6 +63,11 @@ def test_recording_spec_frames(qtbot, detectorInfos, numFrames):
         dataset = detector_group.get('data')
         assert dataset is not None, f"Data dataset not found in group '{detectorName}'"
         assert dataset.shape[0] == numFrames
+        assert dataset.attrs['recording:detector_name'] == detectorName
+        assert dataset.attrs['recording:source_format'] == 'HDF5'
+        assert dataset.attrs['recording:expected_frames'] == numFrames
+        assert dataset.attrs['recording:frames_per_stack'] == numFrames
+        assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
         h5pyFile.close()  # Otherwise we can get segfaults
         file.close()  # Otherwise we can get segfaults
     for savedToDisk in savedToDiskPerDetector.values():
@@ -1068,6 +1073,45 @@ def test_recording_abort_discards_file(qtbot, tmp_path):
 
     assert not os.path.exists(f'{savename}_{detectorName}.hdf5'), \
         "aborted recording must not leave a file on disk"
+
+
+def test_zarr_streaming_recording_metadata(tmp_path):
+    """Zarr streaming datasets expose live-source recording metadata."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    path = str(tmp_path / 'live_metadata.zarr')
+    storer = ZarrStorer(path, detectorsManager)
+    frames = np.random.randint(0, 100, (4, 8, 8), dtype=np.uint16)
+
+    storer.openStream(
+        fileDests={detectorName: path},
+        detectorNames=[detectorName],
+        shapes={detectorName: (8, 8)},
+        attrs={detectorName: {
+            'recording:expected_frames': 4,
+            'recording:frames_per_stack': 4,
+            'custom:note': 'kept-in-metadata-group',
+        }},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames(detectorName, frames)
+    storer.finalizeStream(
+        currentFrames={detectorName: 4},
+        filePaths={detectorName: path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+
+    root = zarr.open(path, mode='r')
+    dataset = root[detectorName]['data']
+    assert dataset.attrs['recording:detector_name'] == detectorName
+    assert dataset.attrs['recording:source_format'] == 'ZARR'
+    assert dataset.attrs['recording:expected_frames'] == 4
+    assert dataset.attrs['recording:frames_per_stack'] == 4
+    assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
+    assert root[detectorName]['metadata']['custom'].attrs['note'] == 'kept-in-metadata-group'
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

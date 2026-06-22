@@ -1,12 +1,14 @@
 """Base contract for ImProcess reconstructor plugins."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.improcess.model import DataObj
-from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.result import ProcessingResult, ViewMode
 
 
 class Reconstructor(ABC):
@@ -104,6 +106,91 @@ class Reconstructor(ABC):
             DataFrame.imageItem.getViewBox(), or None for no overlay.
         """
         return None
+
+
+@dataclass(frozen=True)
+class StackInfo:
+    """Metadata for one logical live stack."""
+
+    frame_shape: tuple[int, ...]
+    dtype: np.dtype
+    attrs: dict[str, Any] = field(default_factory=dict)
+    frames_per_stack: int | None = None
+    expected_frames: int | None = None
+    detector_name: str | None = None
+    dataset_path: str | None = None
+    source_format: str | None = None
+
+
+@dataclass(frozen=True)
+class Chunk:
+    """Contiguous frame range yielded by a live source."""
+
+    data: np.ndarray
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class StreamPlan:
+    """Output shape and display metadata for a streaming session."""
+
+    out_shape: tuple[int, ...]
+    axis_labels: list[str]
+    view_modes: list[ViewMode]
+    dtype: np.dtype = np.dtype(np.float32)
+    scale_unit: str = "px"
+    axis_scales: list[float] | None = None
+
+
+@dataclass(frozen=True)
+class StreamInit:
+    """First frames plus metadata, without forcing chunks through DataObj."""
+
+    name: str
+    dataset_name: str
+    data: np.ndarray
+    attrs: dict[str, Any] = field(default_factory=dict)
+    source_path: str | None = None
+    stack_info: StackInfo | None = None
+
+
+class StreamingSession(ABC):
+    """Stateful live reconstruction for one stack or recording."""
+
+    @abstractmethod
+    def begin(self, init_obj: StreamInit, params: dict) -> StreamPlan:
+        """Inspect the first frames, allocate state, and return the output plan."""
+        ...
+
+    @abstractmethod
+    def push(self, chunk: np.ndarray, start: int, end: int) -> None:
+        """Process raw frames in the half-open range ``[start:end]``."""
+        ...
+
+    @abstractmethod
+    def result(self) -> ProcessingResult:
+        """Return a snapshot of the current reconstruction."""
+        ...
+
+    def finish(self) -> ProcessingResult:
+        """Finalize processing and return the final result."""
+        return self.result()
+
+    def close(self) -> None:
+        """Free optional resources such as GPU buffers."""
+        return None
+
+
+class StreamingReconstructor(Reconstructor):
+    """Reconstructor that supports sub-stack live updates."""
+
+    supports_streaming: bool = True
+
+    @abstractmethod
+    def make_session(self) -> StreamingSession:
+        """Create a fresh session for one live stack or recording."""
+        ...
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

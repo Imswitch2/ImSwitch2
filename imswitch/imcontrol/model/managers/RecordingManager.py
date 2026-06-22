@@ -315,7 +315,19 @@ class ZarrStorer(Storer):
         dataset.attrs['axes'] = ['T', 'Y', 'X']
         dataset.attrs['writing'] = True
 
-        grouped = self._group_metadata_by_category(attrs)
+        recording_attrs, other_attrs = self._split_recording_attrs(attrs)
+        recording_attrs['detector_name'] = detectorName
+        recording_attrs['dataset_path'] = (
+            f'/{groupPath}/{detectorName}/data' if groupPath else f'/{detectorName}/data'
+        )
+        recording_attrs.setdefault('source_format', 'ZARR')
+        for key, value in recording_attrs.items():
+            try:
+                dataset.attrs[f'recording:{key}'] = self._zarr_attr_value(value)
+            except Exception as e:
+                logger.debug(f'Could not save Zarr recording metadata {key}={value}: {e}')
+
+        grouped = self._group_metadata_by_category(other_attrs)
         if grouped:
             meta_group = det_group.create_group('metadata')
             for category, cat_attrs in grouped.items():
@@ -326,6 +338,17 @@ class ZarrStorer(Storer):
                     self._set_attrs(meta_group, cat_attrs, 'metadata')
 
         return dataset
+
+    @staticmethod
+    def _split_recording_attrs(attrs: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        recording_attrs = {}
+        other_attrs = {}
+        for key, value in attrs.items():
+            if isinstance(key, str) and key.startswith('recording:'):
+                recording_attrs[key.split(':', 1)[1]] = value
+            else:
+                other_attrs[key] = value
+        return recording_attrs, other_attrs
 
     def snap(self, images: Dict[str, np.ndarray],
              attrs: Dict[str, Dict[str, Any]] = None) -> None:
@@ -574,8 +597,21 @@ class HDF5Storer(Storer):
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self.detectorManager[detectorName].pixelSizeUm
 
+        recording_attrs, other_attrs = self._split_recording_attrs(attrs)
+        if maxshape is not None or recording_attrs:
+            recording_attrs['detector_name'] = detectorName
+            recording_attrs['dataset_path'] = (
+                f'/{groupPath}/{detectorName}/data' if groupPath else f'/{detectorName}/data'
+            )
+            recording_attrs.setdefault('source_format', 'HDF5')
+            for key, value in recording_attrs.items():
+                try:
+                    dataset.attrs[f'recording:{key}'] = value
+                except Exception as e:
+                    logger.debug(f'Could not save HDF5 recording metadata {key}={value}: {e}')
+
         # Group attrs by category and create metadata subgroups
-        grouped = self._group_metadata_by_category(attrs)
+        grouped = self._group_metadata_by_category(other_attrs)
 
         if grouped:
             meta_group = det_group.create_group('metadata')
@@ -595,6 +631,17 @@ class HDF5Storer(Storer):
                             logger.debug(f'Could not save metadata {key}={value}: {e}')
 
         return dataset
+
+    @staticmethod
+    def _split_recording_attrs(attrs: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        recording_attrs = {}
+        other_attrs = {}
+        for key, value in attrs.items():
+            if isinstance(key, str) and key.startswith('recording:'):
+                recording_attrs[key.split(':', 1)[1]] = value
+            else:
+                other_attrs[key] = value
+        return recording_attrs, other_attrs
 
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot with structured HDF5 layout.
@@ -1397,11 +1444,16 @@ class RecordingWorker(Worker):
         
         return fileDests, filePaths
     
-    def _augment_attrs_with_recording_metadata(self, attrs: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
-        """Augment per-detector attrs with exposure time, software version, and timestamp.
+    def _augment_attrs_with_recording_metadata(
+        self,
+        attrs: Dict[str, Dict[str, Any]],
+        expected_frames: Dict[str, int] | None = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Augment attrs with acquisition and live-source recording metadata.
         
         Args:
             attrs: Dict mapping detector name to flat metadata dict.
+            expected_frames: Optional total frame count per detector.
         
         Returns:
             New dict with augmented metadata for each detector.
@@ -1434,6 +1486,15 @@ class RecordingWorker(Worker):
                     "Could not get exposure time for detector %s: %s", 
                     detectorName, e
                 )
+
+            new_attrs['recording:detector_name'] = detectorName
+            new_attrs['recording:source_format'] = self.saveFormat.name
+            if expected_frames is not None and detectorName in expected_frames:
+                frame_count = int(expected_frames[detectorName])
+                new_attrs['recording:expected_frames'] = frame_count
+                # No generic multi-stack boundary exists yet. For single-stack
+                # recording modes, the expected frame count is the stack size.
+                new_attrs['recording:frames_per_stack'] = frame_count
             
             augmented[detectorName] = new_attrs
         
@@ -1469,8 +1530,23 @@ class RecordingWorker(Worker):
             if len(shape) > 2:
                 shapes[detectorName] = shape[-2:]
         
+        expected_frames = None
+        if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+            recFrames = self.recFrames
+            if recFrames is None:
+                raise ValueError('recFrames must be specified in SpecFrames, ScanOnce or ScanLapse mode')
+
+            numCamTTL = self.numCamTTL if self.numCamTTL is not None else {}
+            expected_frames = {
+                detectorName: recFrames * numCamTTL.get(detectorName, 1)
+                for detectorName in self.detectorNames
+            }
+
         # Augment attrs with recording metadata (exposure, version, timestamp)
-        augmented_attrs = self._augment_attrs_with_recording_metadata(self.attrs)
+        augmented_attrs = self._augment_attrs_with_recording_metadata(
+            self.attrs,
+            expected_frames,
+        )
         
         # Start writer thread and wait for openStream handshake
         writerThread = WriterThread(
@@ -1492,16 +1568,7 @@ class RecordingWorker(Worker):
         
         # Determine stop condition based on recMode
         if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
-            recFrames = self.recFrames
-            if recFrames is None:
-                raise ValueError('recFrames must be specified in SpecFrames, ScanOnce or ScanLapse mode')
-            
-            # Calculate total number of frames for each detector (recFrames * number of TTL)
-            numCamTTL = self.numCamTTL if self.numCamTTL is not None else {}
-            nFramesPerDetector = {
-                detectorName: recFrames * numCamTTL.get(detectorName, 1)
-                for detectorName in self.detectorNames
-            }
+            nFramesPerDetector = expected_frames
             
             def should_stop():
                 return not any(currentFrame[det] < nFramesPerDetector[det]

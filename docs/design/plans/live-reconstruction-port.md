@@ -75,7 +75,10 @@ The M12 generalization already landed a lot of the backbone:
   chunk-streaming** — it waits for the file to finish, then reconstructs it once.
 - **`DataObj` already reads all three formats** (HDF5, TIFF, Zarr) with the
   structured per-detector layout (M10 work) — so format generality on the
-  *load* side is solved for batch.
+  *load* side is solved for batch. It is still a whole-dataset loader today:
+  `data` materializes the full selected array, so streaming needs a separate
+  in-memory/array-slice payload contract instead of pretending every chunk is a
+  normal file-backed `DataObj`.
 - **Structured Zarr streaming save** (M10, 2026-05-29): `ZarrStorer` writes
   `(T,Y,X)` per-detector arrays via `resize`/slice-assign — the exact growing
   array the stream worker wants to follow.
@@ -85,11 +88,17 @@ The M12 generalization already landed a lot of the backbone:
   `sigMemorySnapAvailable` on `SaveMode.RAM`/`DiskAndRAM`;
   `improcess/controller/MultiDataFrameController.py` already *consumes*
   `memoryRecordings.sigDataSet` to surface RAM recordings as loadable datasets.
-  **The RAM hand-off path from imcontrol → improcess exists today — but only on
-  recording *completion*, not frame-by-frame.**
+  **Boundary:** this is currently HDF5-oriented. `VFileCollection` can save
+  `BytesIO`/`h5py.File`, `MultiDataFrameController` opens non-`h5py.File`
+  payloads with `h5py.File(...)`, Zarr RAM streaming is explicitly unsupported,
+  and TIFF recording has no RAM finalize path. The RAM hand-off path exists
+  today for completed HDF5 recordings, not frame-by-frame and not all formats.
 - **imcontrol can display extra image layers:** `ImageController.addImage(name)`
-  + `setImage(name, im, scale)` via `sigUpdateImage` — a reconstructed result
-  can be shown as a named layer in the live viewer.
+  is not a public controller API today. The usable existing surface is
+  `ImageWidget.addStaticLayer(name, image, scale)`, called from controller
+  slots such as `ImageController.memorySnapAvailable`. A reconstructed result
+  can be shown in the live viewer, but it needs a dedicated cross-module signal
+  and imcontrol slot rather than overloading detector `sigUpdateImage`.
 - **The fast Gauss reconstructor is NOT present in ImSwitch2.** `karl_models`
   (GaussProcessorCPU/GPU, localizer, geometry) were never ported; the ImSwitch2
   MoNaLISA plugin is the slower `SignalExtractor` path. Porting the live
@@ -105,13 +114,34 @@ existing batch plugins keep working untouched and new ones can opt in.
 
 ### 3.1 New optional contract — `StreamingReconstructor`
 
-Add to `reconstructors/base.py`:
+Add streaming types without changing the existing `Reconstructor.process(...)`
+contract. The exact module can be `reconstructors/base.py` for discoverability
+or `improcess/live/contracts.py` if the source-side contracts grow larger:
 
 ```python
+@dataclass(frozen=True)
+class StreamPlan:
+    out_shape: tuple[int, ...]
+    axis_labels: tuple[str, ...]
+    view_modes: tuple[ViewMode, ...]
+    dtype: np.dtype
+    scale_unit: str = "px"
+    axis_scales: tuple[float, ...] | None = None
+
+@dataclass(frozen=True)
+class StreamInit:
+    """First frames plus metadata; avoids forcing chunks through file-backed DataObj."""
+    name: str
+    dataset_name: str
+    data: np.ndarray
+    attrs: dict
+    source_path: str | None = None
+    stack_info: StackInfo | None = None
+
 class StreamingSession(ABC):
     """One live reconstruction in progress. Created per stack/recording."""
     @abstractmethod
-    def begin(self, init_obj: DataObj, params: dict) -> StreamPlan: ...
+    def begin(self, init_obj: StreamInit, params: dict) -> StreamPlan: ...
         # init_obj wraps the FIRST chunk/stack (+ metadata). The session
         # inspects geometry, allocates its output buffer, and returns a
         # StreamPlan(out_shape, axis_labels, view_modes, dtype).
@@ -132,11 +162,12 @@ class StreamingReconstructor(Reconstructor):
 
 - A reconstructor advertises live capability via `supports_streaming`.
 - **Batch fallback for everyone else:** for a plugin that is *not* streaming,
-  the live controller buffers a full stack and calls the existing
-  `process(data_obj, params)` once per completed stack/time-point. This
-  satisfies requirement (a) "arbitrary reconstructors" — every registered
-  reconstructor works live, just at stack granularity rather than chunk
-  granularity. Streaming-capable plugins additionally get sub-stack updates.
+  the live controller buffers a complete logical stack, wraps it as an
+  in-memory data object compatible with `process(...)`, and calls the existing
+  batch path once per completed stack/time-point. This is a P0/P2 requirement,
+  not a later stretch: without it, requirement (a) "arbitrary reconstructors"
+  is not satisfied. Streaming-capable plugins additionally get sub-stack
+  updates.
 - The MoNaLISA fast-Gauss session wraps `GaussProcessor` + `frame_inds`: `begin`
   runs `localizer`/`get_orientation` (today's `ZarrInitWorker` body), `push` is
   today's `ProcessorWorker.processChunk`, `result` snapshots the scatter buffer.
@@ -159,18 +190,35 @@ Implementations:
 
 - **`ZarrLiveSource`** — follows a growing `(T,Y,X)` array via `array.shape[0]`
   (works against the M10 structured `ZarrStorer` layout; no `.zarray`
-  file-count hack). Chunk size from `array.chunks[0]`.
+  file-count hack). Chunk size from `array.chunks[0]`; completeness from
+  generic recording metadata plus the existing `writing` attribute.
 - **`Hdf5LiveSource`** — re-open in SWMR (`libver='latest'`, `swmr=True`) and
-  watch the resizable dataset's growing length. The M10 `WriterThread` writes
-  HDF5 in resizable batches; enabling SWMR on the writer side makes this safe.
-- **`TiffLiveSource`** — best-effort: TIFF is append-by-file (one frame/file or
-  multi-page growth). Reuse the existing `FileWatcher` to detect new pages/files
-  in a stack folder. Documented as "polling, no partial-frame guarantee".
+  watch the resizable dataset's growing length, but only after a concrete
+  writer-side SWMR protocol lands: create the detector group/dataset early
+  enough for SWMR readers, flush after metadata/dataset creation, set
+  `file.swmr_mode = True`, flush after each appended batch, and call
+  `dataset.refresh()` in the reader before checking `shape[0]`. Current
+  lazy dataset creation is not enough.
+- **`TiffLiveSource`** — deferred for v1 streaming. Current TIFF recording writes
+  append-style detector files, can roll over at 4 GB, and has no RAM finalize
+  path. Keep TIFF on the batch watcher until a concrete TIFF-streaming
+  acquisition exists.
 
-Stack/geometry metadata (frames-per-stack, time-points) comes from the dataset
-attributes the structured storers already write — **not** from MoNaLISA-specific
-`ScanStage:*` keys. The MoNaLISA *session* may still read those keys for its own
-geometry; the *source* layer stays modality-agnostic.
+Stack/geometry metadata cannot be assumed from today's structured storer attrs:
+they currently persist detector/layout metadata (`axes`, `writing`,
+`detector_name`, `element_size_um`) but not a generic frames-per-stack or
+timepoint contract. Add a small, modality-neutral recording metadata block in
+HDF5/Zarr before implementing non-MoNaLISA live sources:
+
+- `recording:frames_per_stack`
+- `recording:timepoints` or `recording:expected_frames`
+- `recording:detector_name`
+- `recording:dataset_path`
+- `recording:source_format`
+
+The MoNaLISA *session* may still read `ScanStage:*` keys for its own geometry;
+the *source* layer stays modality-agnostic and uses the generic recording block
+for stack boundaries.
 
 ### 3.3 Refactored controller / worker topology
 
@@ -205,13 +253,16 @@ optionally display the result back inside imcontrol.
 Two depths, smallest-first:
 
 ### 4.1 Now-feasible: RAM-recording hand-off (whole stack)
-Already 90% wired. On `SaveMode.RAM`/`DiskAndRAM`, `RecordingManager` emits
+For v1, scope this explicitly to completed **HDF5** memory recordings. On
+`SaveMode.RAM`/`DiskAndRAM`, `RecordingManager` emits
 `sigMemoryRecordingAvailable` and improcess's `MultiDataFrameController` already
-ingests it as a `VFile` dataset. Add: when a live-reconstruction toggle is on,
-auto-route a newly-arrived memory recording through the active reconstructor's
-batch `process()` (or a streaming session in one shot) and display the result.
-**No new acquisition-thread coupling.** This delivers "reconstruct what was just
-recorded from RAM, no file on disk" with minimal risk.
+ingests HDF5-backed `VFile` datasets. Add: when a live-reconstruction toggle is
+on, auto-route a newly-arrived HDF5 memory recording through the active
+reconstructor's batch `process()` (or a streaming session in one shot) and
+display the result. **No new acquisition-thread coupling.** This delivers
+"reconstruct what was just recorded from RAM, no file on disk" with minimal
+risk for HDF5. Zarr RAM requires a new memory-store/VFile policy; TIFF RAM
+recording is out of scope until the recording layer supports it.
 
 ### 4.2 Stretch: true live frame streaming from the acquisition buffer
 The ROADMAP M10 "Phase 1.5 `ChunkBroker` subscription API" is the right hook:
@@ -227,11 +278,12 @@ Two options, pick per how tightly coupled we want the modules:
 
 1. **In improcess (default):** result shows in the ImProcess `ReconstructionView`
    (existing path via `sigResultProduced`). Lowest coupling, works today.
-2. **In imcontrol viewer (opt-in):** push the result as a named layer via
-   `ImageController.addImage`/`setImage` + `sigUpdateImage`. Requires a small
-   cross-module signal on `ModuleCommunicationChannel`
-   (`sigLiveReconResult(name, image, scale)`); imcontrol's `ImageController`
-   subscribes and shows it as an overlay layer alongside live detectors.
+2. **In imcontrol viewer (opt-in):** push the result as a named static/live
+   reconstruction layer via a small cross-module signal on
+   `ModuleCommunicationChannel` (`sigLiveReconResult(name, image, scale)`).
+   imcontrol's `ImageController` subscribes and calls an explicit helper on
+   `ImageWidget` (likely `addStaticLayer` or a new "update reconstruction layer"
+   helper) instead of overloading detector `sigUpdateImage`.
 
 Recommend shipping (1) first; add (2) behind a config flag once (1) is proven.
 
@@ -241,12 +293,12 @@ Recommend shipping (1) first; add (2) behind a config flag once (1) is proven.
 
 | Phase | Deliverable | Depends on | Risk |
 |---|---|---|---|
-| **P0** | This audit + contract spec; land `StreamingReconstructor`/`StreamingSession`/`StreamPlan`/`LiveSource` ABCs in `reconstructors/base.py` + `live/` package skeleton, with unit tests on the batch-fallback path (no hardware). | — | low |
+| **P0** | This audit + contract spec; land `StreamingReconstructor`/`StreamingSession`/`StreamPlan`/`StreamInit`/`LiveSource` ABCs in `reconstructors/base.py` and/or a `live/` package skeleton; add in-memory stack wrapper + unit tests for batch fallback (no hardware). | — | low |
 | **P1** | Port the **fast Gauss reconstructor** (`GaussProcessorCPU`, `localizer`, `geometry`) into `reconstructors/monalisa/` as a streaming session; rename `karl_*`→descriptive; GPU behind extra. Unit-test `process_chunk` scatter against a saved stack. | P0 | med (numerics) |
-| **P2** | `ZarrLiveSource` + generic `LiveStreamWorker`/`LiveProcessWorker` + `LiveReconstructionController`; wire to the existing `WatcherFrame` UI. Reproduce upstream Zarr live behavior end-to-end, cleaned. | P0,P1 | med |
-| **P3** | `Hdf5LiveSource` (SWMR) + `TiffLiveSource` (folder poll). Enable SWMR on the M10 HDF5 `WriterThread`. Format-matrix tests. | P2 | med (SWMR/locking) |
-| **P4** | Generic **batch-fallback streaming** so *any* registered reconstructor runs live at stack granularity (view-only, SNOUTY, WFS). | P2 | low |
-| **P5** | In-RAM mode 4.1 (auto-route RAM recordings through live recon). | P2 | low |
+| **P2** | Generic batch-fallback controller path + `ZarrLiveSource` + generic `LiveStreamWorker`/`LiveProcessWorker` + `LiveReconstructionController`; wire to the existing `WatcherFrame` UI. Reproduce upstream Zarr live behavior end-to-end, cleaned, while non-streaming plugins run at stack granularity. | P0,P1 | med |
+| **P3** | Recording metadata block in HDF5/Zarr storers + `Hdf5LiveSource` (SWMR). Enable and test the writer/reader SWMR protocol. Format-matrix tests for HDF5/Zarr. | P2 | med (SWMR/locking) |
+| **P4** | Broaden live UI/selection tests across view-only, SNOUTY, and WFS; keep TIFF batch-only unless a concrete TIFF live acquisition is introduced. | P2,P3 | low |
+| **P5** | In-RAM mode 4.1 for completed HDF5 RAM recordings (auto-route RAM recordings through live recon). | P2 | low |
 | **P6** | In-RAM mode 4.3 option (2): display result inside imcontrol viewer behind a config flag. | P5 | low |
 | **P7** (stretch) | `ChunkBrokerLiveSource` true frame streaming once M10 ChunkBroker lands. | M10 ChunkBroker | high |
 
