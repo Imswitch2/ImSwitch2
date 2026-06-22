@@ -36,14 +36,18 @@ class LiveReconstructionController(QtCore.QObject):
         self._is_streaming = False
         self._running = False
 
-    def start(self, reconstructor, source, params: dict | None = None) -> None:
+    def start(self, reconstructor, source, params: dict | None = None,
+              source_arg=None) -> None:
         """
         Start live reconstruction with the given reconstructor and source.
-        
+
         Args:
             reconstructor: A Reconstructor or StreamingReconstructor instance.
             source: A LiveSource instance (not yet opened).
             params: Reconstruction parameters dict.
+            source_arg: Path or handle passed to ``source.open(...)`` — e.g. the
+                Zarr/HDF5 recording path for ZarrLiveSource/Hdf5LiveSource.
+                ``None`` for sources pre-configured with their target.
         """
         if self._running:
             self._logger.warning("Live reconstruction already running, stopping first")
@@ -55,7 +59,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._buffer = []
 
         try:
-            self._stack_info = self._source.open(None)
+            self._stack_info = self._source.open(source_arg)
         except Exception as e:
             self._logger.error(f"Failed to open source: {e}")
             return

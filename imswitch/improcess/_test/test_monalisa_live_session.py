@@ -202,7 +202,7 @@ def test_live_session_missing_scan_geometry():
     reconstructor = MonalisaReconstructor()
     session = reconstructor.make_session()
 
-    with pytest.raises(ValueError, match="Missing ImswitchData"):
+    with pytest.raises(ValueError, match="Missing ScanStage"):
         session.begin(init_obj, params={})
 
 

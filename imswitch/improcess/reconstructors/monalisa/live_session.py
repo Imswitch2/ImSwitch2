@@ -62,9 +62,15 @@ class MonalisaLiveSession(StreamingSession):
         if data.ndim != 3:
             raise ValueError(f"Expected 3D data (frames, rows, cols), got shape {data.shape}")
 
-        imswitch_meta = attrs.get("ImswitchData", {})
-        if not imswitch_meta:
-            raise ValueError("Missing ImswitchData attrs; cannot derive scan geometry")
+        # Scan geometry may arrive either nested under an "ImswitchData" attr
+        # (upstream Zarr layout) or flattened to top-level "ScanStage:*" /
+        # "Rec:*" keys (ImSwitch2 ZarrLiveSource / Hdf5LiveSource flatten the
+        # structured metadata groups). Accept both.
+        imswitch_meta = attrs.get("ImswitchData") or attrs
+        if "ScanStage:axis_startpos" not in imswitch_meta:
+            raise ValueError(
+                "Missing ScanStage scan-geometry attrs; cannot derive scan geometry"
+            )
 
         try:
             axis_startpos = np.array(imswitch_meta["ScanStage:axis_startpos"]).flatten()
@@ -75,7 +81,7 @@ class MonalisaLiveSession(StreamingSession):
             self.ny_s = int(np.ceil((y1 - y0) / dy)) + 1
             num_time_points = imswitch_meta.get("Rec:LapseTime", 1)
         except KeyError as e:
-            raise ValueError(f"Missing required scan geometry key in ImswitchData: {e}") from e
+            raise ValueError(f"Missing required scan geometry key: {e}") from e
 
         self.num_frames_in_stack = self.nx_s * self.ny_s
 
@@ -148,6 +154,12 @@ class MonalisaLiveSession(StreamingSession):
         self._logger.info(
             f"Allocated output buffer: shape {self.reconstructed.shape}, dtype {self.reconstructed.dtype}"
         )
+
+        # begin() consumes the first chunk: scatter it into the output now so
+        # the LiveReconstructionController's stream worker only pushes the
+        # remaining chunks. The scatter is an idempotent index assignment, so a
+        # caller that re-pushes these frames produces the same result.
+        self.push(init_obj.data, 0, data.shape[0])
 
         out_shape = self.reconstructed.shape
         axis_labels = ["Dataset", "Base", "T", "Z", "Y", "X"]
