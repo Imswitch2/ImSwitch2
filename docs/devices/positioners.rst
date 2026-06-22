@@ -70,7 +70,12 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
     "positioners": {
         "BSC203": {
             "managerName": "BSC203StageManager",
-            "managerProperties": {},
+            "managerProperties": {
+                "port": "COM9",
+                "home": false,
+                "travelRangeUm": 8000,
+                "centerAxesOnHome": ["X", "Y"]
+            },
             "axes": ["X", "Y", "Z"],
             "forPositioning": true,
             "forScanning": false
@@ -79,8 +84,24 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
 
 **managerProperties**
 
-This manager reads no entries from ``managerProperties``.  The serial
-port (``COM9``) and homing flag are hard-coded in the constructor.
+* ``port`` — serial port of the BSC203 controller (default ``"COM9"``).
+* ``home`` — when ``true``, perform an APT homing operation on startup
+  (default ``false``).
+* ``travelRangeUm`` — full travel per axis in µm (default ``8000``, for
+  DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm``.
+* ``centerAxesOnHome`` — axes moved to mid-travel (``travelRangeUm / 2``)
+  immediately after homing, so the stage does not start parked at an
+  end-stop (default ``["X", "Y"]``).  APT homing always drives to a
+  physical end-stop; Z is left at that edge as the natural focus
+  reference.  Set to ``[]`` to disable recentring.
+
+.. note::
+
+   The BSC203 firmware reads the absolute-position field as **unsigned**,
+   so negative targets are rejected (clamped to 0) to avoid an integer
+   underflow that would otherwise drive the motor continuously toward an
+   unreachable position.  Relative jog moves are unaffected and work in
+   both directions.
 
 **PositionerInfo fields used**
 

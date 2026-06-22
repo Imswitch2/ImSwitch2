@@ -15,8 +15,19 @@ class BSC203StageManager(PositionerManager):
             axis: 0 for axis in positionerInfo.axes
         })
         self.__logger = initLogger(self, instanceName=name)
-        home = positionerInfo.managerProperties.get('home', False)
-        port = positionerInfo.managerProperties.get('port', 'COM9')
+        props = positionerInfo.managerProperties
+        home = props.get('home', False)
+        port = props.get('port', 'COM9')
+        # Full travel per axis in µm (DRV208 actuators = 8 mm). Used to compute
+        # mid-travel when recentring after homing. Absolute coordinates stay
+        # 0..travelRangeUm; the centre is simply travelRangeUm / 2.
+        self._travelRangeUm = props.get('travelRangeUm', 8000)
+        # Axes recentred to mid-travel after homing. APT homing always drives to
+        # a physical end-stop (position 0), an awkward place to leave an XY
+        # sample stage, so X/Y are moved to the centre by default. Z is left at
+        # its homed edge — the natural reference for a focus axis. Set to [] in
+        # managerProperties to disable recentring entirely.
+        self._centerAxesOnHome = props.get('centerAxesOnHome', ['X', 'Y'])
 
         try:
             from thorlabs_apt_device.devices.bsc import BSC
@@ -37,13 +48,18 @@ class BSC203StageManager(PositionerManager):
             while self.homing():
                 pass
             self.__logger.debug('Finished homing')
-
-        # Show the controller's actual (absolute) position at startup instead of
-        # resetting the displayed position to 0. The BSC203 tracks position in
-        # encoder steps and retains it while powered, so reading it back here
-        # keeps positions reproducible across ImSwitch restarts without having
-        # to re-home every time.
-        self._syncPositionFromController()
+            # We just homed to the edge; recentre X/Y so the operator starts at
+            # mid-travel. This sets the tracked position to the centre target,
+            # so no controller read-back is needed (or wanted — the move may
+            # still be in flight).
+            self.centerAxes()
+        else:
+            # Not homing this session — show the controller's actual (absolute)
+            # position at startup instead of resetting to 0. The BSC203 tracks
+            # position in encoder steps and retains it while powered, so reading
+            # it back here keeps positions reproducible across ImSwitch restarts
+            # without having to re-home every time.
+            self._syncPositionFromController()
 
     def _syncPositionFromController(self, timeout=3.0):
         """Set ``self._position`` from the controller's reported encoder position.
@@ -107,6 +123,27 @@ class BSC203StageManager(PositionerManager):
         self.dev.home(bay=2)
         while self.homing():
             pass
+        self.centerAxes()
+
+    def centerAxes(self):
+        """Move the configured axes to mid-travel after homing.
+
+        APT homing drives each axis to a physical end-stop (position 0). For an
+        XY sample stage that is an awkward corner to start from, so the axes in
+        ``_centerAxesOnHome`` (X/Y by default) are moved to ``travelRangeUm / 2``
+        so the operator can jog or Go-To in both directions immediately. Z is
+        left at its homed edge. Absolute coordinates are unchanged: the centre is
+        just a positive position (``travelRangeUm / 2``), not a new origin.
+        """
+        if self.dev is None:
+            return
+        centre = self._travelRangeUm / 2
+        for axis in self._centerAxesOnHome:
+            if axis in self._position:
+                self.__logger.info(
+                    f'{axis}: recentring to {centre:.0f} µm (mid-travel) after homing'
+                )
+                self.setPosition(centre, axis)
 
     def homing(self):
         return not all([self.dev.status_[0][0]['homed'],
@@ -140,6 +177,18 @@ class BSC203StageManager(PositionerManager):
             channel = 2
         self._position[axis] = value
         pos = self.to_enc_steps(value / 1000)
+        # BSC203 firmware interprets the absolute-position field as an unsigned
+        # 32-bit integer.  A negative Python int is packed as a signed two's-
+        # complement value by the APT library, but the firmware reads it as a
+        # huge positive number and drives the motor continuously toward an
+        # unreachable target.  Clamp to 0 (home end) instead.
+        if pos < 0:
+            self.__logger.warning(
+                f'{axis}: requested absolute position {value:.1f} µm maps to '
+                f'{pos} encoder steps (< 0); clamping to 0. '
+                f'BSC203 firmware uses unsigned positions — check your target.'
+            )
+            pos = 0
         self.dev.move_absolute(pos, now=True, bay=channel, channel=0)
 
     # Bay number whose APT "forward" direction is the physical NEGATIVE direction.

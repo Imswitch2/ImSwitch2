@@ -43,9 +43,6 @@ class BSC203Controller(ImConWidgetController):
         self._widget.XYVelEdit.editingFinished.connect(self.setXYVelocity)
         self._widget.ZVelEdit.editingFinished.connect(self.setZVelocity)
         self._widget.sigHomeAll.connect(self.homeAll)
-        self._widget.sigKeyPressed.connect(self.keyPressed)
-        self._widget.sigKeyReleased.connect(self.keyReleased)
-        self._widget.sigFocusLost.connect(self.stopAll)
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.getPosition_mm)
@@ -112,7 +109,11 @@ class BSC203Controller(ImConWidgetController):
         self.move_absolute_mm(self._widget.setZEdit.value() / 1000, Zchan)
 
     def move_absolute_mm(self, position_mm, axis):
-        self.dev.move_absolute(self.to_enc_steps(position_mm), now=True, bay=axis, channel=0)
+        # BSC203 firmware treats the absolute-position field as unsigned 32-bit;
+        # a negative step count wraps to a huge positive value and causes the
+        # motor to run continuously.  Clamp to 0 (home end of travel).
+        steps = max(0, self.to_enc_steps(position_mm))
+        self.dev.move_absolute(steps, now=True, bay=axis, channel=0)
 
     def move_constant(self, direction, axis):
         self.dev.move_velocity(direction=direction, bay=axis, channel=0)
@@ -130,6 +131,11 @@ class BSC203Controller(ImConWidgetController):
         self.dev.home(bay=2)
         while not all(self.dev.status_[b][0]['homed'] for b in range(3)):
             pass
+        # Homing parks each axis at its end-stop (0). Recentre X/Y to mid-travel
+        # so the operator does not start in a corner. The manager owns the
+        # travel range and updates its tracked position; the live-update timer
+        # then refreshes the widget read-outs.
+        self._stageManager.centerAxes()
 
     # ------------------------------------------------------------------
     # Position readback
@@ -149,51 +155,8 @@ class BSC203Controller(ImConWidgetController):
         )
         return [x, y, z]
 
-    # ------------------------------------------------------------------
-    # Keyboard control (arrow = XY, Q/A = Z)
-    # ------------------------------------------------------------------
-
-    def keyPressed(self, event):
-        if event.isAutoRepeat():
-            return
-        # Ctrl+Arrow (and Ctrl+Q/A) are claimed by the PositionerWidget as
-        # discrete step shortcuts.  If we also start a continuous velocity move
-        # here the stage runs until key-release and can travel hundreds of µm
-        # instead of the intended small step.  Bail out whenever any modifier
-        # is held so the two systems never fight each other.
-        if event.modifiers() & QtCore.Qt.ControlModifier:
-            return
-        key = event.key()
-        # Bay 0 (X): APT-forward = physical positive  → True=+X, False=-X
-        # Bay 1 (Y): APT-forward = physical negative  → False=+Y, True=-Y  (inverted)
-        # Bay 2 (Z): APT-forward = physical positive  → True=+Z, False=-Z
-        if key == QtCore.Qt.Key_Right:
-            self.move_constant(True, Xchan)
-        elif key == QtCore.Qt.Key_Left:
-            self.move_constant(False, Xchan)
-        elif key == QtCore.Qt.Key_Up:
-            self.move_constant(False, Ychan)
-        elif key == QtCore.Qt.Key_Down:
-            self.move_constant(True, Ychan)
-        elif key == QtCore.Qt.Key_Q:
-            self.move_constant(True, Zchan)
-        elif key == QtCore.Qt.Key_A:
-            self.move_constant(False, Zchan)
-
-    def keyReleased(self, event):
-        if event.isAutoRepeat():
-            return
-        # Mirror the modifier guard from keyPressed: if Ctrl is held we never
-        # started a velocity move, so there is nothing to stop here either.
-        if event.modifiers() & QtCore.Qt.ControlModifier:
-            return
-        key = event.key()
-        if key in (QtCore.Qt.Key_Right, QtCore.Qt.Key_Left):
-            self.stop(Xchan)
-        if key in (QtCore.Qt.Key_Up, QtCore.Qt.Key_Down):
-            self.stop(Ychan)
-        if key in (QtCore.Qt.Key_Q, QtCore.Qt.Key_A):
-            self.stop(Zchan)
-
     def closeEvent(self):
-        self.timer.stop()
+        if hasattr(self, 'dev') and self.dev is not None:
+            self.stopAll()
+        if hasattr(self, 'timer'):
+            self.timer.stop()
