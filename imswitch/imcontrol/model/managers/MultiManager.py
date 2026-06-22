@@ -136,9 +136,6 @@ class MultiManager(ABC):
         self._validateManagedDeviceName(managedDeviceName)
         return self._subManagers[managedDeviceName]
 
-    def __getitem__(self, managedDeviceName):
-        return self.getDevice(managedDeviceName)
-
     def execOnAll(self, func, *, condition=None):
         """ Executes a function on all sub-managers and returns the
         results. """
