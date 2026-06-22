@@ -1,0 +1,17 @@
+{
+  "detectors": {
+    "ThorCam": {
+      "managerName": "thorlabs.tsi-camera",
+      "managerProperties": {
+        "cameraSerial": "MOCK_KIRALUX",
+        "cameraPixelSizeUm": 0.15,
+        "defaults": {
+          "exposure_us": 50000,
+          "gain": 0,
+          "operation_mode": "Software"
+        }
+      },
+      "forAcquisition": true
+    }
+  }
+}

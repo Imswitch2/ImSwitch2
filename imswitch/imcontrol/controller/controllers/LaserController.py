@@ -3,11 +3,24 @@ from typing import List, Union, Dict, Any
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 
 
-class LaserController(ImConWidgetController):
+class LaserController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to LaserWidget."""
+
+    # StatefulComponentMixin attributes
+    componentName = 'Laser'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'excitation'
+    setupModeApplyPriority = SetupModeApplyPriority.EXCITATION
+    setupModeHardwareCritical = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -21,7 +34,7 @@ class LaserController(ImConWidgetController):
 
         # Set up lasers
         for lName, lManager in self._master.lasersManager:
-            if "calibCsvPath" in lManager._laserInfo.managerProperties:
+            if lManager.usesCalibrationLookup():
                 valueRangeMin = 0
                 valueRangeMax = 100
                 valueUnits = "%"
@@ -75,8 +88,8 @@ class LaserController(ImConWidgetController):
         self._widget.sigSavePresetAsClicked.connect(self.savePresetAs)
         self._widget.sigDeletePresetClicked.connect(self.deletePreset)
         
-        # Register for widget state persistence
-        getWidgetStatePersistence().register('LaserController', self)
+        # Register for unified state persistence (canonical name)
+        getWidgetStatePersistence().register('Laser', self)
 
     def closeEvent(self):
         self._master.lasersManager.execOnAll(lambda l: l.setScanModeActive(False))
@@ -320,118 +333,329 @@ class LaserController(ImConWidgetController):
     def sendTrigger(self, triggerId: int):
         """ Sends a trigger puls through external device """
         #TODo: Very special case, try to move in seperate manager 
-        self._master.rs232sManager["ESP32"]._esp32.sendTrigger(triggerId)
+        self._master.rs232sManager["ESP32"].sendTrigger(triggerId)
 
     @APIExport(runOnUIThread=True)
     def post_json(self, path: str, payload: dict) -> str:
         """ Sends the specified command to the RS232 device and returns a
         string encoded from the received bytes. """
-        return self._master.rs232sManager["ESP32"]._esp32.post_json(path, payload=payload, headers=None, timeout=1)
+        return self._master.rs232sManager["ESP32"].post_json(path, payload=payload, headers=None, timeout=1)
 
     @APIExport(runOnUIThread=True)
     def send_serial(self, payload: str) -> str:
         """ Sends the specified command to the RS232 device and returns a
         string encoded from the received bytes. """
-        self._master.rs232sManager["ESP32"]._esp32.writeSerial(payload)
+        self._master.rs232sManager["ESP32"].writeSerial(payload)
         #self.__logger.debug(payload)
-        returnmessage = self._master.rs232sManager["ESP32"]._esp32.readSerial(is_blocking=True, timeout=1)
+        returnmessage = self._master.rs232sManager["ESP32"].readSerial(is_blocking=True, timeout=1)
 
         return returnmessage
     
-    # Widget State Persistence Interface
+    # Unified State Persistence Interface (StatefulComponentMixin)
     
-    def getWidgetState(self) -> Dict[str, Any]:
-        """
-        Get current widget state for persistence.
+    def getComponentState(self) -> dict:
+        """Snapshot current laser state for both startup and setup modes.
         
-        Returns a dict containing laser values and modulation settings.
-        Does NOT include enable states for safety.
+        Returns a JSON-serializable dict with structure expected by the
+        existing SetupModesController summarizer (lifted in describeComponentState).
         
         Returns:
-            Dict with structure:
             {
-                'laser_values': {laserName: float},
-                'modulation_frequencies': {laserName: int},
-                'modulation_duty_cycles': {laserName: int},
-                'selected_preset': str or None
+                'lasers': {
+                    laserName: {
+                        'enabled': bool,
+                        'value': float | None,
+                        'isBinary': bool,
+                        'valueUnits': str
+                    }
+                },
+                'laserOrder': [laserName, ...],
+                'currentPreset': str | None,
+                'modulation': {
+                    laserName: {
+                        'frequency': int,
+                        'dutyCycle': int
+                    }
+                }
             }
+        
+        Note: scanDefaultPreset is NOT included because LaserController does
+        not expose such a concept. The summarizer already guards this with
+        `if state.get("scanDefaultPreset") is not None`.
         """
         state = {
-            'laser_values': {},
-            'modulation_frequencies': {},
-            'modulation_duty_cycles': {},
-            'selected_preset': self._widget.getCurrentPreset()
+            'lasers': {},
+            'laserOrder': [],
+            'currentPreset': self._widget.getCurrentPreset(),
+            'modulation': {}
         }
         
         for lName, lManager in self._master.lasersManager:
-            if not lManager.isBinary:
-                state['laser_values'][lName] = self._widget.getValue(lName)
-
+            state['laserOrder'].append(lName)
+            state['lasers'][lName] = {
+                'enabled': self._widget.isLaserActive(lName),
+                'value': self._widget.getValue(lName) if not lManager.isBinary else None,
+                'isBinary': lManager.isBinary,
+                'valueUnits': lManager.valueUnits
+            }
+            
             module = self._widget.laserModules.get(lName)
             if lManager.isModulated and module is not None:
+                modState = {}
                 if hasattr(module, 'getFrequency'):
-                    state['modulation_frequencies'][lName] = module.getFrequency()
+                    modState['frequency'] = module.getFrequency()
                 if hasattr(module, 'getDutyCycle'):
-                    state['modulation_duty_cycles'][lName] = module.getDutyCycle()
+                    modState['dutyCycle'] = module.getDutyCycle()
+                if modState:
+                    state['modulation'][lName] = modState
         
         return state
     
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """
-        Restore widget state from persistence.
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore laser state from a snapshot.
         
-        SAFETY: Does NOT restore laser enable states. Only restores:
-        - Laser power values (but doesn't turn lasers on)
-        - Modulation frequency/duty cycle settings
-        - Selected preset (for UI state only)
+        ALWAYS (both modes):
+        - Set non-binary laser power values
+        - Set modulation frequency/duty cycle
+        - Restore selected-preset label in UI (does not apply it)
+        
+        ONLY in SETUP_MODE_APPLY:
+        - Enable/disable lasers per saved 'enabled' state
+        
+        NEVER in STARTUP_RESTORE:
+        - Enable lasers or emit light (append warning if saved state has enabled=True)
         
         Args:
-            state: Dict returned by getWidgetState()
+            state: Dict returned by getComponentState()
+            applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
+        
+        Returns:
+            List of warning strings (empty if fully successful)
         """
-        try:
-            known_lasers = {name for name, _ in self._master.lasersManager}
-            binary_lasers = {name for name, mgr in self._master.lasersManager if mgr.isBinary}
-
-            # Restore power values — non-binary lasers only; does NOT enable them
-            for lName, value in state.get('laser_values', {}).items():
-                if lName in known_lasers and lName not in binary_lasers:
+        warnings = []
+        known_lasers = {name for name, _ in self._master.lasersManager}
+        lasers = state.get('lasers', {})
+        
+        # Always restore power values and modulation for non-binary lasers
+        for lName, laserState in lasers.items():
+            if lName not in known_lasers:
+                warnings.append(f'Laser "{lName}" not present in current setup; skipped.')
+                continue
+            
+            lManager = self._master.lasersManager[lName]
+            
+            # Set power value for non-binary lasers
+            if not laserState.get('isBinary', False):
+                value = laserState.get('value')
+                if value is not None:
                     try:
                         self.setLaserValue(lName, value)
                     except Exception as e:
-                        self._logger.warning(f'Failed to restore value for laser {lName}: {e}')
-
+                        warnings.append(f'Failed to restore value for laser "{lName}": {e}')
+            
             # Restore modulation settings
-            for lName, freq in state.get('modulation_frequencies', {}).items():
-                if lName in known_lasers:
+            modulation = state.get('modulation', {}).get(lName, {})
+            if modulation:
+                freq = modulation.get('frequency')
+                if freq is not None:
                     try:
                         self.frequencyChanged(lName, freq)
                     except Exception as e:
-                        self._logger.warning(
-                            f'Failed to restore modulation frequency for laser {lName}: {e}'
-                        )
-
-            for lName, dc in state.get('modulation_duty_cycles', {}).items():
-                if lName in known_lasers:
+                        warnings.append(f'Failed to restore modulation frequency for laser "{lName}": {e}')
+                
+                dc = modulation.get('dutyCycle')
+                if dc is not None:
                     try:
                         self.dutyCycleChanged(lName, dc)
                     except Exception as e:
-                        self._logger.warning(
-                            f'Failed to restore modulation duty cycle for laser {lName}: {e}'
-                        )
-
-            # Restore selected preset (UI label only — does NOT apply it to hardware)
-            selected_preset = state.get('selected_preset')
-            if selected_preset and selected_preset in self._setupInfo.laserPresets:
-                self._widget.setCurrentPreset(selected_preset)
-
-            self._logger.debug('Widget state restored successfully')
-
-        except Exception as e:
-            self._logger.error(f'Failed to restore widget state: {e}')
+                        warnings.append(f'Failed to restore modulation duty cycle for laser "{lName}": {e}')
+        
+        # Enable/disable lasers ONLY in SETUP_MODE_APPLY
+        if applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
+            for lName, laserState in lasers.items():
+                if lName not in known_lasers:
+                    continue
+                enabled = laserState.get('enabled', False)
+                try:
+                    self.setLaserActive(lName, enabled)
+                except Exception as e:
+                    warnings.append(f'Failed to set enable state for laser "{lName}": {e}')
+        elif any(laserState.get('enabled', False) for laserState in lasers.values()):
+            warnings.append('Laser enable states not restored in startup mode.')
+        
+        # Restore selected preset (UI label only — does NOT apply it to hardware)
+        selected_preset = state.get('currentPreset')
+        if selected_preset and selected_preset in self._setupInfo.laserPresets:
+            self._widget.setCurrentPreset(selected_preset)
+        
+        return warnings
     
-    def getStateSchemaVersion(self) -> int:
-        """Return schema version for state compatibility checking."""
-        return 1
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of a saved laser state.
+        
+        Lifted from SetupModesController._summarizeSavedLaserState,
+        _savedLaserItemsInDisplayOrder, _currentLaserDisplayOrder.
+        
+        Args:
+            state: Dict returned by getComponentState()
+        
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        state = state or {}
+        summaries = []
+        
+        if state.get("currentPreset") is not None:
+            summaries.append(f"  preset: {self._fmt(state.get('currentPreset'))}")
+        if state.get("scanDefaultPreset") is not None:
+            summaries.append(f"  scan preset: {self._fmt(state.get('scanDefaultPreset'))}")
+        
+        lasers = state.get("lasers") or {}
+        if lasers:
+            summaries.append("  states:")
+        
+        for laserName, laserState in self._savedLaserItemsInDisplayOrder(lasers, state):
+            enabled = self._onOff(laserState.get("enabled"))
+            if laserState.get("isBinary"):
+                summaries.append(f"    {laserName}: {enabled}")
+            else:
+                units = laserState.get("valueUnits") or ""
+                unitText = f" {units}" if units else ""
+                summaries.append(
+                    f"    {laserName}: {enabled}, {self._fmt(laserState.get('value'))}{unitText}"
+                )
+        
+        return summaries or ["  no laser state"]
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify high-power laser hazards in a saved state.
+        
+        Lifted from SetupModesController._getHighPowerLaserEntries,
+        _isMilliwattUnit, _laserPowerThresholdMw.
+        
+        Only reports hazards relevant to SETUP_MODE_APPLY (enabling lasers).
+        For STARTUP_RESTORE, returns empty list (no enable happens).
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: The mode in which the state would be applied
+            context: Optional dict with 'laserPowerThresholdMw' (default 50.0)
+        
+        Returns:
+            List of hazard records per spec §5.3
+        """
+        # No hazards for STARTUP_RESTORE since we don't enable lasers
+        if applyMode != ComponentStateApplyMode.SETUP_MODE_APPLY:
+            return []
+        
+        context = context or {}
+        thresholdMw = context.get('laserPowerThresholdMw', 50.0)
+        
+        lasers = state.get('lasers', {})
+        if not isinstance(lasers, dict):
+            return []
+        
+        hazards = []
+        for laserName, savedState in lasers.items():
+            if not isinstance(savedState, dict):
+                continue
+            if not savedState.get('enabled', False):
+                continue
+            if savedState.get('isBinary', False):
+                continue
+            
+            value = self._asFloat(savedState.get('value'))
+            if value is None or value <= thresholdMw:
+                continue
+            
+            units = savedState.get('valueUnits')
+            if not self._isMilliwattUnit(units):
+                continue
+            
+            hazards.append({
+                'kind': 'high_laser_power',
+                'severity': 'warning',
+                'message': f'Laser {laserName}: {value} mW exceeds {thresholdMw} mW threshold',
+                'details': {
+                    'laserName': laserName,
+                    'value': value,
+                    'units': units or 'mW',
+                    'threshold': thresholdMw
+                }
+            })
+        
+        return hazards
+    
+    # Helper methods (lifted from SetupModesController)
+    
+    def _savedLaserItemsInDisplayOrder(self, lasers, state):
+        """Order saved laser entries by saved order, current order, then keys."""
+        names = []
+        savedOrder = state.get("laserOrder")
+        if isinstance(savedOrder, list):
+            names.extend(savedOrder)
+        
+        names.extend(self._currentLaserDisplayOrder())
+        names.extend(lasers.keys())
+        
+        orderedItems = []
+        seen = set()
+        for name in names:
+            if name in seen or name not in lasers:
+                continue
+            orderedItems.append((name, lasers[name]))
+            seen.add(name)
+        
+        return orderedItems
+    
+    def _currentLaserDisplayOrder(self):
+        """Get current laser display order from lasersManager or widget."""
+        if hasattr(self._master, 'lasersManager'):
+            try:
+                return [laserName for laserName, _ in self._master.lasersManager]
+            except Exception:
+                pass
+        
+        if hasattr(self._widget, 'laserModules') and isinstance(self._widget.laserModules, dict):
+            return list(self._widget.laserModules.keys())
+        
+        return []
+    
+    def _fmt(self, value):
+        """Format a value for human-readable display."""
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return self._onOff(value)
+        if isinstance(value, float):
+            return f"{value:.4g}"
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._fmt(item) for item in value) + "]"
+        return str(value)
+    
+    def _onOff(self, value):
+        """Convert boolean to ON/OFF string."""
+        return "ON" if bool(value) else "OFF"
+    
+    def _asFloat(self, value):
+        """Safely convert value to float, returning None on failure."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    
+    def _isMilliwattUnit(self, units):
+        """Check if units represent milliwatts."""
+        if units is None or str(units).strip() == "":
+            return True
+        normalized = str(units).strip().lower()
+        return normalized in {"mw", "milliwatt", "milliwatts"}
 
 
 

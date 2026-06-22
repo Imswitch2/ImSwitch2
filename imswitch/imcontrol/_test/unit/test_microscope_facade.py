@@ -32,6 +32,8 @@ def test_build_mock_facade_returns_populated_facade():
     assert f.z_stage_con is not None
     assert f.rotator_hwp is not None
     assert f.rotator_qwp is not None
+    assert f.time_resolved is not None
+    assert f.scan is not None
     assert f.calls == []
 
 
@@ -172,6 +174,114 @@ def test_trig_facade_snap_without_pulsegen_raises():
     assert trig.connected is False
     with pytest.raises(RuntimeError, match="neither WFS Teensy nor pulse generator"):
         trig.snap_trigger(laser_pin=1, camera_pin=2, exposure_us=100)
+
+
+def test_time_resolved_mock_records_and_returns_canned_products():
+    from imswitch.imcontrol.model.timeresolved import (
+        GateSpec,
+        TimeResolvedScanConfig,
+        TimeResolvedScanProducts,
+    )
+
+    f = build_mock_facade()
+    products = TimeResolvedScanProducts(
+        cube_counts=np.ones((2, 3, 4), dtype=np.float32),
+        cube_axes=("y", "x", "tcspc_bin"),
+        t_axis_ns=np.arange(4, dtype=np.float32),
+        intensity=np.ones((2, 3), dtype=np.float32),
+        lifetime_ns=np.ones((2, 3), dtype=np.float32) * 2,
+        gate_images={"late": np.ones((2, 3), dtype=np.float32)},
+        decay_counts=np.ones(4, dtype=np.float32),
+        global_tau_ns=2.0,
+        metadata={"backend": "mock"},
+        is_final=True,
+    )
+    f.time_resolved.set_canned_products(products)
+    config = TimeResolvedScanConfig(gates=(GateSpec("late", 1.0, 3.0),))
+
+    f.time_resolved.configure(config)
+    result = f.time_resolved.wait_for_final(timeout_s=0.1)
+
+    assert result.metadata["backend"] == "mock"
+    assert f.call_names() == [
+        "time_resolved.configure",
+        "time_resolved.wait_for_final",
+    ]
+
+
+def test_time_resolved_facade_rejects_missing_contract():
+    from imswitch.imcontrol.model.workflows.facade import TimeResolvedDetectorFacade
+
+    with pytest.raises(TypeError, match="time-resolved contract"):
+        TimeResolvedDetectorFacade(object())
+
+
+def test_mock_scan_records_default_run_once():
+    f = build_mock_facade()
+
+    f.scan.run_once(timeout_s=0.25)
+
+    assert f.calls == [
+        (
+            "scan.run_once",
+            (),
+            {
+                "recalculate_signals": True,
+                "is_non_final_part_of_sequence": False,
+                "wait": True,
+                "timeout_s": 0.25,
+                "notify_starting": True,
+            },
+        )
+    ]
+
+
+def test_scan_workflow_facade_runs_and_waits_for_done_signal():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+        def emit(self):
+            for slot in list(self.slots):
+                slot()
+
+    class ScanWorkflow:
+        def __init__(self, signal):
+            self.signal = signal
+            self.calls = []
+
+        def notify_scan_starting(self):
+            self.calls.append(("notify_scan_starting",))
+
+        def run_scan(self, recalculate_signals, is_non_final_part_of_sequence):
+            self.calls.append(
+                (
+                    "run_scan",
+                    recalculate_signals,
+                    is_non_final_part_of_sequence,
+                )
+            )
+            self.signal.emit()
+
+    signal = Signal()
+    scan_workflow = ScanWorkflow(signal)
+    facade = ScanWorkflowFacade(scan_workflow, signal)
+
+    facade.run_once(timeout_s=0.1)
+
+    assert scan_workflow.calls == [
+        ("notify_scan_starting",),
+        ("run_scan", True, False),
+    ]
+    assert signal.slots == []
 
 
 def test_trig_facade_snap_uses_existing_legacy_teensy_driver():

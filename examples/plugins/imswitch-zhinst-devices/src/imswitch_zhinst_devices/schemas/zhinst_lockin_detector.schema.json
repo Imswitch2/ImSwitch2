@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Zurich Instruments lock-in demodulator detector managerProperties",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "deviceSerial": {
+      "type": "string",
+      "default": "DEVXXXX",
+      "description": "Zurich Instruments LabOne device serial, for example DEV1234."
+    },
+    "serverHost": {
+      "type": "string",
+      "default": "localhost",
+      "description": "LabOne data server host."
+    },
+    "serverPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "Optional LabOne data server port. Omit for toolkit defaults."
+    },
+    "hf2": {
+      "type": "boolean",
+      "description": "Use the HF2 data server defaults."
+    },
+    "interface": {
+      "type": "string",
+      "description": "Optional device interface passed to Session.connect_device, for example 1GbE or USB."
+    },
+    "allowVersionMismatch": {
+      "type": "boolean",
+      "default": false
+    },
+    "demodIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "signal": {
+      "type": "string",
+      "enum": ["x", "y", "r", "theta", "phase", "frequency"],
+      "default": "r"
+    },
+    "sampleCount": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 256
+    },
+    "frameShape": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "integer",
+          "minimum": 1
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "Frame shape as [height, width]. If sampleCount is smaller than the product, samples are padded."
+    },
+    "pollDurationS": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 0.05
+    },
+    "pollTimeoutS": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 0.5
+    },
+    "enableDemodulator": {
+      "type": "boolean",
+      "default": true
+    },
+    "demodRateHz": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Optional demodulator sample rate to set before polling."
+    },
+    "useMock": {
+      "type": "boolean",
+      "default": false
+    },
+    "useMockOnFailure": {
+      "type": "boolean",
+      "default": true
+    },
+    "mockAmplitude": {
+      "type": "number",
+      "default": 1.0
+    },
+    "mockFrequencyHz": {
+      "type": "number",
+      "default": 7.0
+    },
+    "mockNoiseStd": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0.02
+    },
+    "mockSampleRateHz": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 1000.0
+    },
+    "mockSeed": {
+      "type": "integer",
+      "default": 1
+    }
+  }
+}

@@ -126,7 +126,7 @@ class EditorController(ImScrWidgetController):
                                          'Are you sure that you want to stop the script?'):
             return
 
-        self.scriptExecutor.terminate()
+        self.scriptExecutor.cancel()
 
     def textChanged(self, instanceID):
         if self.loadingFile or instanceID not in self.scriptStore:
@@ -161,7 +161,8 @@ class EditorController(ImScrWidgetController):
             return _untitledFileName
 
     def runScript(self, code):
-        self.scriptExecutor.execute(r'C:\Users\xavie\OneDrive\Documents\ImSwitchConfig\scripts', code)
+        """Execute script code from external/remote source without a known file path."""
+        self.scriptExecutor.execute(None, code)
 
 _untitledFileName = '(untitled)'
 _scriptsFolderPath = os.path.join(dirtools.UserFileDirs.Root, 'scripts')

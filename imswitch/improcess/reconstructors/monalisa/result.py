@@ -7,6 +7,19 @@ import numpy as np
 import tifffile as tiff
 
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
+from .coeffs_to_image import output_pixel_size_nm, reconstruct_images_from_coeffs
+
+# Canonical semantic-name → scan-dimension-name map. Reconstructions produced
+# by MonalisaReconstructor use these names; the legacy controller path passes
+# its own widget-text map (e.g. "Right/Left") instead.
+DEFAULT_AXIS_LABEL_MAP = {
+    'r_l_text': 'Right-Left',
+    'u_d_text': 'Up-Down',
+    'b_f_text': 'Back-Front',
+    'timepoints_text': 'Timepoints',
+    'p_text': 'pos',
+    'n_text': 'neg',
+}
 
 
 class MonalisaProcessingResult(ProcessingResult):
@@ -29,6 +42,8 @@ class MonalisaProcessingResult(ProcessingResult):
         axis_scales: list[float] | None = None,
         scale_unit: str = "nm",
         output_pixel_size_nm: tuple[float, float] | None = None,
+        coeffs: np.ndarray | None = None,
+        axis_label_map: dict[str, str] | None = None,
     ):
         """
         Args:
@@ -46,9 +61,20 @@ class MonalisaProcessingResult(ProcessingResult):
                 reconstructed pixel pitch. Stored on the result for the
                 parameter widget to display, and used to populate the Y/X
                 entries of ``axis_scales`` when ``axis_scales`` is None.
+            coeffs: Optional 5D ``(Dataset, Base, frames, gridRows, gridCols)``
+                signal-extraction coefficients. Retained so the viewer can
+                re-reconstruct cheaply when scan params change (the "Update
+                reconstruction" action) and so coefficients can be exported.
+            axis_label_map: Semantic-name → scan-dimension-name map describing
+                how ``scan_params['dimensions']`` is named. Defaults to the
+                canonical reconstructor names; the legacy controller path
+                passes its widget-text names instead.
         """
         if axis_labels is None:
             axis_labels = ["Dataset", "Base", "T", "Z", "Y", "X"]
+
+        if axis_label_map is None:
+            axis_label_map = dict(DEFAULT_AXIS_LABEL_MAP)
 
         # Define view modes for MoNaLISA 6D data. The viewer displays the last
         # two transposed axes and puts sliders on the rest, so the orthogonal
@@ -76,7 +102,7 @@ class MonalisaProcessingResult(ProcessingResult):
                 # Z scale from scan_params if available — keeps 3D stacks
                 # visually proportional when the user flips through slices.
                 try:
-                    bf_index = scan_params['dimensions'].index('Back-Front')
+                    bf_index = scan_params['dimensions'].index(axis_label_map['b_f_text'])
                     z_nm = float(scan_params['step_sizes'][bf_index])
                     if "Z" in axis_labels:
                         axis_scales[axis_labels.index("Z")] = z_nm
@@ -95,7 +121,77 @@ class MonalisaProcessingResult(ProcessingResult):
 
         self.scan_params = scan_params
         self.output_pixel_size_nm = output_pixel_size_nm
-    
+        self.coeffs = coeffs
+        self.axis_label_map = axis_label_map
+
+    @classmethod
+    def from_coeffs(
+        cls,
+        name: str,
+        coeffs: np.ndarray,
+        scan_params: dict,
+        axis_label_map: dict[str, str],
+        display_levels: tuple[float, float] | None = None,
+    ) -> "MonalisaProcessingResult":
+        """Build a result by reassembling images from per-base coefficients.
+
+        Args:
+            name: Result name.
+            coeffs: 5D ``(Dataset, Base, frames, gridRows, gridCols)`` array.
+            scan_params: Scan metadata dict.
+            axis_label_map: Semantic-name → dimension-name map matching
+                ``scan_params['dimensions']``.
+            display_levels: Optional (min, max); auto-computed from the 1st /
+                99.9th percentile when omitted.
+        """
+        data = reconstruct_images_from_coeffs(coeffs, scan_params, axis_label_map)
+        grid_rows = int(coeffs.shape[3])
+        grid_cols = int(coeffs.shape[4])
+        out_px = output_pixel_size_nm(scan_params, axis_label_map, grid_rows, grid_cols)
+        if display_levels is None:
+            display_levels = (
+                float(np.percentile(data, 1)),
+                float(np.percentile(data, 99.9)),
+            )
+        return cls(
+            name=name,
+            data=data,
+            scan_params=scan_params,
+            display_levels=display_levels,
+            output_pixel_size_nm=out_px,
+            coeffs=coeffs,
+            axis_label_map=axis_label_map,
+        )
+
+    def getCoeffs(self) -> np.ndarray | None:
+        """Return the retained signal-extraction coefficients (or None)."""
+        return self.coeffs
+
+    def getScanParams(self) -> dict:
+        return self.scan_params
+
+    def updateScanParams(self, scan_params: dict) -> None:
+        """Replace scan params (used before :meth:`updateImages`)."""
+        self.scan_params = scan_params
+
+    def updateImages(self) -> None:
+        """Re-reassemble ``data`` from the retained coefficients.
+
+        Lets the viewer re-render after the user edits scan geometry without
+        re-running the expensive signal-extraction step. No-op when coefficients
+        were not retained (e.g. results loaded from disk).
+        """
+        if self.coeffs is None:
+            return
+        self.data = reconstruct_images_from_coeffs(
+            self.coeffs, self.scan_params, self.axis_label_map
+        )
+        grid_rows = int(self.coeffs.shape[3])
+        grid_cols = int(self.coeffs.shape[4])
+        self.output_pixel_size_nm = output_pixel_size_nm(
+            self.scan_params, self.axis_label_map, grid_rows, grid_cols
+        )
+
     def _base_component_name(self, base_index: int) -> str:
         """Return the semantic name for a base component."""
         if base_index == 0:
@@ -168,44 +264,37 @@ class MonalisaProcessingResult(ProcessingResult):
         if fmt != "tiff":
             raise ValueError(f"MoNaLISA result only supports 'tiff' format, got '{fmt}'")
         
-        # Compute ImageJ metadata
-        vxsizec = int(float(
-            self.scan_params['step_sizes'][self.scan_params['dimensions'].index('Right-Left')]
-        ))
-        vxsizer = int(float(
-            self.scan_params['step_sizes'][self.scan_params['dimensions'].index('Up-Down')]
-        ))
-        vxsizez = int(float(
-            self.scan_params['step_sizes'][self.scan_params['dimensions'].index('Back-Front')]
-        ))
+        # Compute ImageJ metadata. Dimension names are resolved through the
+        # result's axis-label map so both reconstructor-produced ("Right-Left")
+        # and legacy controller-produced ("Right/Left") scan params save.
+        dims = self.scan_params['dimensions']
+        step_sizes = self.scan_params['step_sizes']
+        vxsizec = int(float(step_sizes[dims.index(self.axis_label_map['r_l_text'])]))
+        vxsizer = int(float(step_sizes[dims.index(self.axis_label_map['u_d_text'])]))
+        vxsizez = int(float(step_sizes[dims.index(self.axis_label_map['b_f_text'])]))
         
-        # ImageJ axes attribute
+        # ImageJ hyperstack dimensions. The reconstruction is
+        # (Dataset, Base, T, Z, Y, X); ImageJ wants the canonical (T, Z, C, Y, X)
+        # ordering, so the Dataset and Base axes are folded into the channel
+        # axis (C = Dataset*Base, e.g. ds0-signal, ds0-background, ds1-signal …).
         numDatasets = self.data.shape[0]
         numBases = self.data.shape[1]
         numTimepoints = self.data.shape[2]
         numSlices = self.data.shape[3]
-        
-        ijmetadata = {
-            'axes': 'TZCYXS' if numDatasets > 1 else 'TZCYX'
-        }
-        
+        numRows = self.data.shape[4]
+        numCols = self.data.shape[5]
+
+        ijmetadata = {'axes': 'TZCYX'}
+
         # Resolution metadata
         resolution = (10000.0 / vxsizec, 10000.0 / vxsizer)
-        
-        # Reshape for ImageJ: collapse Dataset + Base into S (series/channels)
-        # ImageJ TIFF stacks expect (T, Z, C, Y, X) or (T, Z, C, Y, X, S)
-        data_to_save = self.data
-        if numDatasets > 1:
-            # (Dataset, Base, T, Z, Y, X) -> (T, Z, Base*Dataset, Y, X)
-            data_to_save = np.moveaxis(data_to_save, [0, 1, 2, 3, 4, 5], [2, 4, 0, 1, 5, 3])
-            data_to_save = data_to_save.reshape(
-                numTimepoints, numSlices, numBases * numDatasets, -1, data_to_save.shape[-1]
-            )
-        else:
-            # (1, Base, T, Z, Y, X) -> (T, Z, Base, Y, X)
-            data_to_save = data_to_save[0]  # drop Dataset axis
-            data_to_save = np.moveaxis(data_to_save, [0, 1, 2, 3], [0, 1, 3, 2])
-        
+
+        # (Dataset, Base, T, Z, Y, X) -> (T, Z, Dataset, Base, Y, X) -> (T, Z, C, Y, X)
+        data_to_save = np.moveaxis(self.data, [0, 1, 2, 3, 4, 5], [2, 3, 0, 1, 4, 5])
+        data_to_save = np.ascontiguousarray(data_to_save).reshape(
+            numTimepoints, numSlices, numDatasets * numBases, numRows, numCols
+        )
+
         # Save with ImageJ compatibility
         with tiff.TiffWriter(str(path), bigtiff=True, imagej=True) as tif:
             tif.write(

@@ -1,18 +1,25 @@
 import glob
 import json
 import os
+import shutil
 import numpy as np
 from PIL import Image
 import traceback
 import h5py
 import datetime
 
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view.guitools import askForFilePath, JsonEditorDialog
 from imswitch.imcommon.view.guitools.dialogtools import askYesNoQuestion
 from imswitch.imcommon.framework import Signal, Thread, Worker, Mutex
-from imswitch.imcommon.model import dirtools, signaltools
+from imswitch.imcommon.model import dirtools, ostools, signaltools
 
 from ..patterndesigners.registries import PATTERNS_REGISTRY, ABERRATIONS_REGISTRY, TARGETS_REGISTRY
 from ..patterndesigners import cghComputations as cgh
@@ -24,8 +31,17 @@ full_registry = {
     "cgh_targets": TARGETS_REGISTRY
 }
 
-class SLMsController(ImConWidgetController):
+class SLMsController(StatefulComponentMixin, ImConWidgetController):
     """Linked to SLMsWidget."""
+
+    # StatefulComponentMixin attributes
+    componentName = 'SLMs'
+    setupModeDisplayName = 'SLM'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'spatial_light_modulator'
+    setupModeApplyPriority = SetupModeApplyPriority.MULTI_SPATIAL_LIGHT_MODULATOR
+    setupModeHardwareCritical = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -36,7 +52,7 @@ class SLMsController(ImConWidgetController):
         # Would be better to use only slmKey for all referencing and keep slmName for display only...
 
         self._slmNames = {}         # {slmKey (widget): slmName (Manager)}
-        self._slmKeys = {}          # {slmName (Manager): slmKey (widget)} 
+        self._slmKeys = {}          # {slmName (Manager): slmKey (widget)}
         self._slmInfos = {}         # {slmKey: slmInfo}
         self._targets = {}          # {slmKey: {secKey: TargetInstance}}
         self._cghResults = {}       # {slmKey: {secKey: {"cgh_pattern":..., "performances":...}}}
@@ -57,7 +73,7 @@ class SLMsController(ImConWidgetController):
         for slmName, slmManager in self._master.slmsManager:
             device_connection = slmManager.requires_device_connection
             slmInfo = slmManager.slmInfo
-            slmKey = self._widget.add_slm(slmName,slmInfo,full_registry, 
+            slmKey = self._widget.add_slm(slmName,slmInfo,full_registry,
                                           device_connection = device_connection)
             engine = PatternEngine(slmManager.slmInfo)
             self._patternEngines[slmKey] = engine
@@ -82,7 +98,7 @@ class SLMsController(ImConWidgetController):
                 else:
                     correctionPatternsDir = path
                     break
-            if correctionPatternsDir is None:        
+            if correctionPatternsDir is None:
                 self.__logger.error(f"Correction pattern directory for {slmName} could not be found at any of those locations: {path_candidates}")
             self._corrPatternsDir[slmKey] = correctionPatternsDir
 
@@ -108,7 +124,7 @@ class SLMsController(ImConWidgetController):
         self._widget.sigVisualizeCghPerformances.connect(self.on_visualize_cgh_performances)
         self._widget.sigVisualizeTarget.connect(self.on_visualize_target)
         self._widget.sigShowCghResult.connect(self.on_show_cgh_result)
-        
+
         self._widget.sigLoadConfig.connect(self.on_load_config)
         self._widget.sigLoadAberr.connect(self.on_load_aberr)
         self._widget.sigLoadCgh.connect(self.on_load_cgh)
@@ -117,6 +133,9 @@ class SLMsController(ImConWidgetController):
         self._widget.sigSaveCgh.connect(self.on_save_cgh)
         self._widget.sigDeleteConfig.connect(self.on_delete_config)
         self._widget.sigRenameConfig.connect(self.on_rename_config)
+        self._widget.sigDuplicateConfig.connect(self.on_duplicate_config)
+        self._widget.sigSetStartupConfig.connect(self.on_set_startup_config)
+        self._widget.sigOpenConfigFolder.connect(self.on_open_config_folder)
 
         self._widget.sigSnapFeedback.connect(self.on_feedback_snap)
         self._widget.sigAnalysisFeedback.connect(self.on_feedback_analysis)
@@ -134,6 +153,10 @@ class SLMsController(ImConWidgetController):
         self._cghWorker.sigWorkerCGHComputationFailed.connect(self.on_cgh_computation_failed)
         self._cghThread.start()
 
+        # Register for unified state persistence only if at least one SLM is configured
+        if self._slmNames:
+            getWidgetStatePersistence().register('SLMs', self)
+
     def __del__(self):
         if hasattr(self,"_cghThread"):
             self._cghThread.quit()
@@ -145,9 +168,9 @@ class SLMsController(ImConWidgetController):
             slmName=self._slmNames.get(slmKey)
             self._logger.warning(f"Attempt to connect to SLM {slmName} at start-up failed.")
         return success
-        
+
     def on_update_pattern(self, slmKey, params):
-        
+
         engine = self._patternEngines[slmKey]
         sectList = self._widget._slmSectionList.get(slmKey)
         msgs = []
@@ -155,25 +178,25 @@ class SLMsController(ImConWidgetController):
         # check if wl changed and update correction pattern only if needed
         for secKey in sectList:
             wl = params.get(secKey).get("general").get("wavelength_nm")
-            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0): 
+            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0):
                 msg = self.update_correction_patterns(slmKey,secKey,wl)
                 if msg is not None: msgs.append(msg)
 
-        # check if wl changed and update 2Pi value only if necessary 
+        # check if wl changed and update 2Pi value only if necessary
         for secKey in sectList:
             wl = params.get(secKey).get("general").get("wavelength_nm")
             if wl != self._wavelengths.get(slmKey,{}).get(secKey,0):
                 msg =  self.update_twopie_value(slmKey,secKey,wl)
                 if msg is not None: msgs.append(msg)
-        
+
         if len(msgs) >0:
             processed_msgs = [m.replace("\n", "<br>") for m in msgs]
             full_msg = "<br><br>".join(processed_msgs)
             self._widget.show_message_box(title="Correction Warnings",msg_type="warning",message=full_msg)
 
         # update cached wavelengths
-        self.update_cached_wl(slmKey,params) 
-        
+        self.update_cached_wl(slmKey,params)
+
         # compute pattern
         engine.compute_pattern(params)
         # engine.phase_to_eightbits(**params.get("correction_options",{}))
@@ -205,7 +228,7 @@ class SLMsController(ImConWidgetController):
 
     def update_correction_patterns(self, slmKey, secKey, wl):
         """
-        Searches for correction pattern according to correctionPatternsDir serial number defined 
+        Searches for correction pattern according to correctionPatternsDir serial number defined
         in config file. If found, loads it and update engine correction pattern for `secKey`.
         """
         slmName = self._slmNames.get(slmKey)
@@ -219,11 +242,11 @@ class SLMsController(ImConWidgetController):
             correctionPatternsDir = self._corrPatternsDir.get(slmKey)
             if correctionPatternsDir is None:
                 raise FileNotFoundError(f"Correction Pattern Directory not found for {slmName}.")
-            
+
             serial = slmInfo.serial_number
             if serial is None:
                 raise KeyError(f"Cannot find serial number of {slmName} in config file")
-            
+
             correctionFile = f"CAL_{serial}_{wl}nm.bmp"
             correctionPatternFullPath = os.path.join(correctionPatternsDir,correctionFile)
             if not os.path.isfile(correctionPatternFullPath):
@@ -238,16 +261,16 @@ class SLMsController(ImConWidgetController):
                                       f"closest one found in {correctionPatternsDir}: {wls_available[min_err_idx]}")
                 correctionPatternFullPath = os.path.join(correctionPatternsDir,f"CAL_{serial}_{wls_available[min_err_idx]}nm.bmp")
                 # raise FileNotFoundError(f"Cannot find correction pattern of {slmName} at wavelength {wl}")
-            
+
             correctionImg = np.array(Image.open(correctionPatternFullPath))
             engine.update_correction_pattern(secKey,correctionImg)
             msg = None
-        
+
         except Exception as e:
             sectionName = self._widget._tab_names_dict.get(slmKey,{}).get(secKey,secKey)
             msg = f"<b>{slmName} - {sectionName}</b>: Failed to load correction pattern :\n{e}"
             self.__logger.error(traceback.format_exc())
-        
+
         return msg
 
     def update_twopie_value(self, slmKey, secKey, wl):
@@ -306,27 +329,27 @@ class SLMsController(ImConWidgetController):
             sectionName = self._widget._tab_names_dict.get(slmKey,{}).get(secKey,secKey)
             msg = f"<b>{slmName} - {sectionName}</b>: failed to update 2pi value:\n{e}"
             self.__logger.error(traceback.format_exc())
-            
+
         return msg
-    
+
     def update_cached_wl(self,slmKey,params):
         """ Update cached wavelengths of `slmKey` with wavelenghts in `params` for each section"""
         sectList = self._widget._slmSectionList.get(slmKey)
         for secKey in sectList:
             wl = params.get(secKey).get("general").get("wavelength_nm")
-            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0): 
+            if wl != self._wavelengths.get(slmKey,{}).get(secKey,0):
                 self._wavelengths.setdefault(slmKey,{})[secKey] = wl
 
 
-    
+
     # --------- Saving/loading related -------- #
-    
+
     def get_slm_config_dir(self, slmKey):
         slm_id = self._slmInfos[slmKey].serial_number
         path = os.path.join(self.configsDir, slm_id)
         os.makedirs(path, exist_ok=True)
         return path
-    
+
     def refresh_available_configs(self, slmKey):
         """ Scan config dir for hdf5 or json files and populate widget combo box """
         cfg_dir = self.get_slm_config_dir(slmKey)
@@ -348,7 +371,10 @@ class SLMsController(ImConWidgetController):
             if not new_path.endswith(".h5"):
                 new_path = new_path + ".h5"
             if os.path.isfile(old_path):
+                was_startup_config = self._is_startup_config(slmKey, old_path)
                 os.rename(old_path, new_path)
+                if was_startup_config:
+                    self._set_startup_config_filename(slmKey, os.path.basename(new_path))
                 self._widget.current_config_renamed(slmKey,new_path)
                 self.refresh_available_configs(slmKey)
             else:
@@ -361,12 +387,15 @@ class SLMsController(ImConWidgetController):
                 msg_type="error",
                 message=f"Could not rename configuration:\n{e}"
             )
-    
+
     def on_delete_config(self, slmKey, path):
         """Delete SLM configuration file."""
         try:
             if os.path.isfile(path):
+                was_startup_config = self._is_startup_config(slmKey, path)
                 os.remove(path)
+                if was_startup_config:
+                    self._set_startup_config_filename(slmKey, None)
                 self._widget.current_config_deleted(slmKey)
                 self.refresh_available_configs(slmKey)
             else:
@@ -380,6 +409,115 @@ class SLMsController(ImConWidgetController):
                 message=f"Could not delete configuration:\n{e}"
             )
 
+    def on_duplicate_config(self, slmKey, source_path, new_name):
+        """Duplicate an SLM configuration file into the SLM config directory."""
+        try:
+            if not source_path or not os.path.isfile(source_path):
+                raise FileNotFoundError(f"Configuration file not found: {source_path}")
+
+            config_dir = self.get_slm_config_dir(slmKey)
+            extension = os.path.splitext(source_path)[1] or ".h5"
+            new_filename = os.path.basename(new_name.strip())
+            if not new_filename:
+                return
+            if not os.path.splitext(new_filename)[1]:
+                new_filename = new_filename + extension
+
+            new_path = os.path.join(config_dir, new_filename)
+            if os.path.exists(new_path):
+                raise FileExistsError(f"Configuration file already exists: {new_path}")
+
+            shutil.copy2(source_path, new_path)
+            self.refresh_available_configs(slmKey)
+
+        except Exception as e:
+            self.__logger.error(traceback.format_exc())
+            self._widget.show_message_box(
+                title="Error Duplicating Configuration",
+                msg_type="error",
+                message=f"Could not duplicate configuration:\n{e}"
+            )
+
+    def on_set_startup_config(self, slmKey, config_path):
+        """Persist the selected SLM config as the config loaded on next startup."""
+        try:
+            if not config_path or not os.path.isfile(config_path):
+                raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+            config_dir = os.path.abspath(self.get_slm_config_dir(slmKey))
+            config_path = os.path.abspath(config_path)
+            filename = os.path.basename(config_path)
+            startup_path = os.path.abspath(os.path.join(config_dir, filename))
+
+            if (os.path.normcase(startup_path) != os.path.normcase(config_path)
+                    or not os.path.isfile(startup_path)):
+                raise FileNotFoundError(
+                    f"Startup config must be in this SLM config folder: {config_dir}"
+                )
+
+            self._set_startup_config_filename(slmKey, filename)
+
+            slmName = self._slmNames.get(slmKey, slmKey)
+            self.__logger.info(f"Set startup config for {slmName}: {filename}")
+            self._widget.show_message_box(
+                title="Startup config",
+                msg_type="info",
+                message=f"'{filename}' will be loaded at startup for {slmName}."
+            )
+
+        except Exception as e:
+            self.__logger.error(traceback.format_exc())
+            self._widget.show_message_box(
+                title="Startup config",
+                msg_type="error",
+                message=f"Could not set startup config:\n{e}"
+            )
+
+    def _is_startup_config(self, slmKey, config_path_or_name):
+        startupConfig = self._get_startup_config_filename(slmKey)
+        return bool(startupConfig) and startupConfig == os.path.basename(config_path_or_name)
+
+    def _get_startup_config_filename(self, slmKey):
+        slmInfo = self._slmInfos.get(slmKey)
+        managerProperties = getattr(slmInfo, "managerProperties", None) or {}
+        return managerProperties.get("startConfig")
+
+    def _set_startup_config_filename(self, slmKey, filename):
+        slmName = self._slmNames.get(slmKey)
+        slmInfos = [
+            self._slmInfos.get(slmKey),
+            getattr(self._setupInfo, "slms", {}).get(slmName)
+        ]
+
+        seen = set()
+        for slmInfo in slmInfos:
+            if slmInfo is None or id(slmInfo) in seen:
+                continue
+            seen.add(id(slmInfo))
+
+            managerProperties = getattr(slmInfo, "managerProperties", None)
+            if managerProperties is None:
+                managerProperties = {}
+                object.__setattr__(slmInfo, "managerProperties", managerProperties)
+
+            if filename:
+                managerProperties["startConfig"] = filename
+            else:
+                managerProperties.pop("startConfig", None)
+
+        configfiletools.saveSetupInfo(configfiletools.loadOptions()[0], self._setupInfo)
+
+    def on_open_config_folder(self, slmKey):
+        """Open this SLM's configuration directory in the OS file browser."""
+        try:
+            ostools.openFolderInOS(self.get_slm_config_dir(slmKey))
+        except Exception as e:
+            self.__logger.error(traceback.format_exc())
+            self._widget.show_message_box(
+                title="Open SLM Config Folder",
+                msg_type="error",
+                message=f"Could not open configuration folder:\n{e}"
+            )
 
     def on_save_config(self, slmKey, config_name,info="",overwrite=False, msg_box=True):
         """Save full SLM configuration (enforcing HDF5 format and in the right slm directory)."""
@@ -390,7 +528,7 @@ class SLMsController(ImConWidgetController):
                 path = path + ".h5"
 
             # temporary path
-            tmp_path = path + ".tmp" 
+            tmp_path = path + ".tmp"
             creation_date = datetime.datetime.now().isoformat()
             self.save_hdf5_config(slmKey, tmp_path,creation_date, info, overwrite)
 
@@ -439,15 +577,15 @@ class SLMsController(ImConWidgetController):
                     with open(path, "r", encoding="utf-8") as f:
                         slm_params = json.load(f)
                     config_dict = {"path": path,"date": "","info": ""}
-                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=True, 
+                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=True,
                                                   config_dict=config_dict, msg_box=True)
                 return
-            
+
             # HDF5 loading
             if ext in (".h5", ".hdf5"):
                 ok, slm_params, config_dict = self.load_hdf5_config(slmKey, path)
                 if ok:
-                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=False, 
+                    self._widget.on_config_loaded(slmKey, slm_params, update_pattern=False,
                                                   config_dict=config_dict, msg_box=True)
                 return
 
@@ -472,13 +610,13 @@ class SLMsController(ImConWidgetController):
             path = path + ".json"
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(aberr_params, f, indent=2)
-        
+
         except Exception as e:
             if msg_box:
                 self._widget.show_message_box(title="Error Saving Aberrations",msg_type="error",
                                       message=f"Could not save aberrations:\n{e}")
                 raise
-        
+
 
     def on_load_aberr(self, slmKey, secKey, path=None):
         """Load aberration coefficients from a JSON file and send to widget."""
@@ -490,15 +628,15 @@ class SLMsController(ImConWidgetController):
             aberr_params = json.load(f)
         label_name = os.path.basename(path)
         self._widget.on_aberr_loaded(slmKey,secKey,aberr_params,label_name,msg_box=True)
-    
 
-    
+
+
     # HDF5 saving/loading
     def save_hdf5_config(self, slmKey, path, creation_date, info="", overwrite=False):
         engine = self._patternEngines[slmKey]
         params = self._widget.get_params()[slmKey]
         info = "No information provided" if info=="" else info
-        
+
         # add tab names to params for restoration upon loading
         tab_names = self._widget.get_tab_names(slmKey)
         if tab_names:
@@ -554,7 +692,7 @@ class SLMsController(ImConWidgetController):
         Extract params, images and config info from hdf5 file, and sync with config state:
             - final image sent to SLM and widget display
             - section images are restored in pattern engine
-        
+
         Returns:
             - success (bool)
             - params: dict of slm_params to be loaded in widget
@@ -567,7 +705,7 @@ class SLMsController(ImConWidgetController):
             slm_id = f.attrs.get("slm_id", "")
             creation_date = f.attrs.get("date", "Unknown")
             info = f.attrs.get("info", "No information provided")
-            
+
             if slm_id != slmInfo.serial_number:
                 ok = self._widget.askYesNoQuestion("SLM mismatch",
                         f"This config was created for another SLM (sn: {slm_id}).\nLoad anyway?")
@@ -602,11 +740,11 @@ class SLMsController(ImConWidgetController):
                             grp.attrs.get("comput_params", "{}")
                         )
                     }
-        
+
         # pushes image to SLM and widget, without recomputation
         self._widget.update_display(slmKey,final_image)
         self._master.slmsManager.execOn(slmName, lambda l: l.upload_pattern(final_image))
-        
+
         # restore cached sections and cgh results
         engine = self._patternEngines[slmKey]
         for secKey, comps in sections.items():
@@ -619,8 +757,8 @@ class SLMsController(ImConWidgetController):
             "date": creation_date,
             "info": info
         }
-        return True, params, config_dict 
-        
+        return True, params, config_dict
+
     # --- hdf5 helpers --- #
     def write_params_to_hdf5(self, grp, data):
         for k, v in data.items():
@@ -650,7 +788,7 @@ class SLMsController(ImConWidgetController):
         target_params = cgh_params.get(target_type)
         if cgh_params is None or target_type=="" or target_params is None:
             raise Exception(f"Could not find target parameters for {slmKey},{secKey}")
-        
+
         # get current cahed target and update or create
         target = self._targets.get(slmKey, {}).get(secKey)
         if target is None or target.target_type != target_type:
@@ -666,12 +804,12 @@ class SLMsController(ImConWidgetController):
 
     def create_target(self,target_type, **target_params):
         """
-        Creates a target object 
+        Creates a target object
         """
         target_class = TARGETS_REGISTRY.get(target_type,{}).get("class")
         if target_class is None:
             raise KeyError(f"{target_type} not found")
-        
+
         target = target_class(**target_params)
         return target
 
@@ -690,11 +828,11 @@ class SLMsController(ImConWidgetController):
                                       message=f"CGH pattern should be a numpy (.npy, .npz) file, not {extension}.")
                 return
             array = np.load(path,allow_pickle=True)
-            result_dict = { 
+            result_dict = {
                 "cgh_name": name,
                 "cgh_pattern": array
             }
-            
+
             self._cghResults.setdefault(slmKey,{})[secKey] = result_dict
             self._widget.update_label(slmKey,secKey,"cgh_in_use_label",f"{name} (loaded)")
             self._patternEngines.get(slmKey).set_new_cgh_pattern(secKey, array)
@@ -704,22 +842,22 @@ class SLMsController(ImConWidgetController):
                 self._widget.show_message_box(title="Error Loading CGH Pattern",msg_type="error",
                                         message=f"Could not load CGH pattern:\n{e}")
             raise
-    
+
 
     def on_save_cgh(self, slmKey, secKey, msg_box=True):
         """Save the computed CGH pattern to a .npy file."""
-        
+
         slmName = self._slmNames.get(slmKey)
         secName = self._widget._tab_names_dict.get(slmKey,{}).get(secKey,secKey)
 
-        result_dict = self._cghResults.get(slmKey,{}).get(secKey,{}) 
+        result_dict = self._cghResults.get(slmKey,{}).get(secKey,{})
         if result_dict is None:
             self._widget.show_message_box(title="No CGH Pattern",msg_type="error",
                                       message=f"No CGH pattern found for {slmName}, {secName}")
             return
-        
+
         try:
-            name = self._cghResults.get(slmKey,{}).get(secKey,{}).get("cgh_name","cgh_pattern") 
+            name = self._cghResults.get(slmKey,{}).get(secKey,{}).get("cgh_name","cgh_pattern")
             name = "cgh_pattern" if name is None else name
 
             suggested = os.path.join(self.cghPatternsDir,name)
@@ -730,7 +868,7 @@ class SLMsController(ImConWidgetController):
             if isinstance(pattern, np.ndarray):
                 np.save(path,pattern) #TODO: would be nice to also save the pattern metadata (parameters, perf, ...)
             else:
-                raise 
+                raise
         except Exception as e:
             if msg_box:
                 self._widget.show_message_box(title="Error Saving CGH Pattern",msg_type="error",
@@ -744,7 +882,7 @@ class SLMsController(ImConWidgetController):
             return
 
         cgh_general = cgh_params.get("cgh_general", {})
-        
+
         # Target preparation
         target_type = cgh_general.get("target_type",None)
         target_params = cgh_params.get(target_type, None)
@@ -767,7 +905,7 @@ class SLMsController(ImConWidgetController):
         comput_params = cgh_params.get("cgh_computation",{})
         self._cghWorker.prepareForNewComputation(slmKey, secKey, target_array,cgh_name, comput_params, target_params,previous_pattern)
         self._cghWorker.sigStartComputation.emit()
-    
+
 
     def on_cgh_computed(self,slmKey,secKey, result_dict,msg=""):
         """Handle CGH computed signal from CGH worker."""
@@ -778,14 +916,14 @@ class SLMsController(ImConWidgetController):
             engine_msg = engine.set_new_cgh_pattern(secKey, result_dict["cgh_pattern"])
             if engine_msg is not None:
                 msgs.append(engine_msg)
-        except:
+        except Exception:
             m = f"Computation sucessful but setting new cgh pattern in PatternEngine failed, " \
                   f"likely due to padding/cropping patterns. Double-check that target sizes make sense."
             self._widget.on_cgh_computation_result(slmKey,secKey,success=False,msg=m)
             raise
 
         cgh_name = result_dict.get("cgh_name")
-        
+
         # format msg
         full_msg = None
         if len(msgs) >0:
@@ -817,16 +955,16 @@ class SLMsController(ImConWidgetController):
         """Query CGH performances for given SLM and send them to widget to be displayed."""
         performances = self._cghResults.get(slmKey, {}).get(secKey, {}).get("performances", None)
         self._widget.plot_cgh_performances(performances)
-    
+
     def on_show_cgh_result(self, slmKey, secKey,pad_size):
         """Simulates CGH result (expected image in sample plane) and send it to widget to be displayed."""
         cgh_array = self._cghResults.get(slmKey, {}).get(secKey, {}).get("cgh_pattern", None)
-        
+
         if cgh_array is None:
             self._widget.show_message_box(title="No CGH Pattern",msg_type="warning",
                                           message="No CGH pattern computed yet for the selected SLM and section.")
             return
-        
+
         result = cgh.simulate_propagation_fft(cgh_array, padding=True, pad_size=pad_size)
         self._widget.plot_cgh_result(result)
 
@@ -855,13 +993,13 @@ class SLMsController(ImConWidgetController):
             try:
                 self.sync_target(slmKey,secKey)
                 target = self._targets.get(slmKey,{}).get(secKey,None)
-            except:
+            except Exception:
                 self.__logger.error(traceback.format_exc())
-                return 
-            
+                return
+
         if not hasattr(target, "analysis_prm"):
             return
-        
+
         params = target.analysis_prm
         updated = JsonEditorDialog.edit_params(self._widget, params)
         if updated is not None:
@@ -869,7 +1007,7 @@ class SLMsController(ImConWidgetController):
 
 
     def on_feedback_reset(self,slmKey,secKey):
-        target = self._targets.get(slmKey,{}).get(secKey) 
+        target = self._targets.get(slmKey,{}).get(secKey)
         if target is not None:
             target.reset_feedback()
         self._experimentalResults.setdefault(slmKey,{})[secKey]=None
@@ -878,15 +1016,15 @@ class SLMsController(ImConWidgetController):
 
     def on_feedback_snap(self, slmKey, secKey):
         """
-        Connect communication channel signal "sigUpdateImage" to a handler waiting 
-        for the snap image to arrive, with a timeout of 1s. 
+        Connect communication channel signal "sigUpdateImage" to a handler waiting
+        for the snap image to arrive, with a timeout of 1s.
         """
         def handle_image(img=None, isCurrentDetector=None,timeout=False):
-            if timeout:                    
+            if timeout:
                 self._widget.show_message_box(title="Snap failed",msg_type="warning",
                                             message="No feedback image acquired.")
                 return False
-            
+
             if isCurrentDetector and img is not None:
                 self._experimentalResults.setdefault(slmKey, {})[secKey] = img
                 return True
@@ -905,11 +1043,11 @@ class SLMsController(ImConWidgetController):
             wait_for_success = True
         )
 
-    
+
     def on_feedback_analysis(self,slmKey,secKey):
-        target = self._targets.get(slmKey,{}).get(secKey) 
+        target = self._targets.get(slmKey,{}).get(secKey)
         result = self._experimentalResults.get(slmKey,{}).get(secKey)
-        
+
         if target is None:
             msg = "Target not created yet."
             success = False
@@ -919,7 +1057,7 @@ class SLMsController(ImConWidgetController):
             success = False
 
         else:
-            try: 
+            try:
                 success, msg = target.analyze_result(result)
             except Exception as e:
                 success = False
@@ -1016,3 +1154,180 @@ class SLMsController(ImConWidgetController):
                 self._numQueuedComputations -= 1
                 self._mutex.unlock()
 
+    # ─── StatefulComponentMixin methods ──────────────────────────────────────
+
+    def getComponentState(self) -> dict:
+        """Snapshot current multi-SLM state for both startup and setup modes.
+
+        Returns config REFERENCES only (slmName, configPath, configName, date, info)
+        for each SLM. Does NOT embed large HDF5/CGH pattern payloads (spec §6.1).
+
+        Returns:
+            {
+                'slms': {
+                    slmKey: {
+                        'slmName': str,
+                        'configPath': str | None,
+                        'configName': str | None,
+                        'date': str | None,
+                        'info': str | None
+                    },
+                    ...
+                }
+            }
+        """
+        slms_state = {}
+        for slmKey, slmName in self._slmNames.items():
+            config_dict = self._widget._currentConfigs.get(slmKey, {})
+            config_path = config_dict.get('path')
+            slms_state[slmKey] = {
+                'slmName': slmName,
+                'configPath': config_path,
+                'configName': os.path.basename(config_path) if config_path else None,
+                'date': config_dict.get('date'),
+                'info': config_dict.get('info')
+            }
+        return {'slms': slms_state}
+
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode
+    ) -> list[str]:
+        """Restore multi-SLM state from a snapshot.
+
+        CRITICAL SAFETY INVARIANT (spec Section 2):
+        - STARTUP_RESTORE: Only update widget's _currentConfigs bookkeeping
+          (select-only). DO NOT call on_load_config, which would push the
+          pattern to the SLM hardware. Append a warning if a config would
+          have been pushed.
+        - SETUP_MODE_APPLY: Load and apply the referenced config via
+          on_load_config (which pushes the pattern to the hardware).
+
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY
+
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
+        warnings = []
+        slms_state = state.get('slms', {})
+
+        if not slms_state:
+            warnings.append('No SLMs state to restore.')
+            return warnings
+
+        for slmKey, slm_config in slms_state.items():
+            # Skip SLMs not present in current setup
+            if slmKey not in self._slmNames:
+                slmName = slm_config.get('slmName', slmKey)
+                warnings.append(f'SLM "{slmName}" not present in current setup; skipped.')
+                continue
+
+            config_path = slm_config.get('configPath')
+            config_name = slm_config.get('configName', 'unknown')
+            slmName = self._slmNames[slmKey]
+
+            # If no config was saved, clear the selection
+            if not config_path:
+                if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
+                    # Clear _currentConfigs for this SLM
+                    self._widget._currentConfigs[slmKey] = {}
+                    self._widget._sync_current_config_combo(slmKey)
+                    self._widget.update_config_info(slmKey)
+                continue
+
+            # Check if config file exists
+            if not os.path.exists(config_path):
+                warnings.append(
+                    f'Config file "{config_name}" for SLM "{slmName}" not found at '
+                    f'{config_path}; skipped.'
+                )
+                continue
+
+            if applyMode == ComponentStateApplyMode.STARTUP_RESTORE:
+                # STARTUP_RESTORE: Select-only mode.
+                # Update the widget's _currentConfigs WITHOUT calling on_load_config
+                # (which would push the pattern to hardware).
+                config_dict = {
+                    'path': config_path,
+                    'date': slm_config.get('date', ''),
+                    'info': slm_config.get('info', '')
+                }
+                self._widget.current_config_changed(slmKey, config_dict)
+                warnings.append(
+                    f'SLM "{slmName}" config "{config_name}" selected but NOT loaded '
+                    f'(patterns not pushed to hardware at startup).'
+                )
+
+            elif applyMode == ComponentStateApplyMode.SETUP_MODE_APPLY:
+                # SETUP_MODE_APPLY: Load and apply the config (pushes to hardware).
+                try:
+                    self.on_load_config(slmKey, path=config_path)
+                except Exception as e:
+                    warnings.append(
+                        f'Failed to load config "{config_name}" for SLM "{slmName}": {e}'
+                    )
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved multi-SLM state.
+
+        Lifted from SetupModesController._summarizeSavedSLMState (line ~560).
+        Summarizes the config name/path for each SLM.
+
+        Args:
+            state: Dict returned by getComponentState()
+
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        slms = (state or {}).get('slms') or {}
+        if not slms:
+            return ['  no SLM state']
+
+        summaries = []
+        for slmKey, slmState in sorted(slms.items(), key=lambda item: str(item[0])):
+            slmName = slmState.get('slmName') or slmKey
+            config = slmState.get('configName') or slmState.get('configPath') or 'None'
+            summaries.append(f'  {slmName}: {self._fmt(config)}')
+
+        return summaries
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify hazards in saved multi-SLM state.
+
+        SLM configs contain phase patterns and CGH metadata with no
+        laser-power-like hazard. The startup no-push invariant already
+        covers safety, so this always returns an empty list for both modes.
+
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: The mode in which the state would be applied
+            context: Optional consumer-provided context (unused for SLMs)
+
+        Returns:
+            Empty list (no hazards)
+        """
+        return []
+
+    def _fmt(self, value):
+        """Format helper (adapted from SetupModesController)."""
+        if value is None:
+            return 'None'
+        if isinstance(value, bool):
+            return 'ON' if bool(value) else 'OFF'
+        if isinstance(value, float):
+            return f'{value:.4g}'
+        if isinstance(value, (list, tuple)):
+            return '[' + ', '.join(self._fmt(item) for item in value) + ']'
+        return str(value)

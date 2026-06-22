@@ -3,7 +3,6 @@ from scipy.interpolate import interp1d
 
 from .LaserManager import LaserManager
 from imswitch.imcommon.model import initLogger
-from imswitch.imcontrol.controller import CommunicationChannel
 
 class NidaqLaserManager(LaserManager):
     """ LaserManager for analog-value NI-DAQ-controlled lasers.

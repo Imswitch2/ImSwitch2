@@ -1,4 +1,5 @@
 from .DetectorsManager import DetectorsManager, NoDetectorsError
+from .FlipMirrorsManager import FlipMirrorsManager
 from .LasersManager import LasersManager
 from .MultiManager import MultiManager
 from .NidaqManager import NidaqManager
@@ -14,4 +15,23 @@ from .ScanManagerAdvanced import ScanManagerAdvanced
 from .ScanManagerTriggerScope import ScanManagerTriggerScope
 from .StandManager import StandManager
 from .RotatorsManager import RotatorsManager
-from .TriggerScopeManager import TriggerScopeManager
+
+__all__ = [
+    'DetectorsManager', 'NoDetectorsError',
+    'FlipMirrorsManager',
+    'LasersManager',
+    'MultiManager',
+    'NidaqManager',
+    'PositionersManager',
+    'RS232sManager',
+    'RecordingManager', 'RecMode', 'SaveMode', 'SaveFormat',
+    'SLMManager',
+    'SLMsManager',
+    'ScanManagerPointScan',
+    'ScanManagerBase',
+    'ScanManagerMoNaLISA',
+    'ScanManagerAdvanced',
+    'ScanManagerTriggerScope',
+    'StandManager',
+    'RotatorsManager',
+]

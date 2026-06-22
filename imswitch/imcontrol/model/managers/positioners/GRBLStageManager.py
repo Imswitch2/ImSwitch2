@@ -59,27 +59,33 @@ class GRBLStageManager(PositionerManager):
     try:
         from PyQt5 import QtCore as _QtCore
 
-        @shortcut(_QtCore.Qt.Key_Up, 'Move up')
+        @shortcut(actionId="grbl.jog.X.plus", defaultKey="Up",
+                  displayName="Move up", initiallyBound=False)
         def key_moveXup(self):
             self.move(value=100, axis='X')
 
-        @shortcut(_QtCore.Qt.Key_Down, 'Move down')
+        @shortcut(actionId="grbl.jog.X.minus", defaultKey="Down",
+                  displayName="Move down", initiallyBound=False)
         def key_moveXdown(self):
             self.move(value=-100, axis='X')
 
-        @shortcut(_QtCore.Qt.Key_Left, 'Move left')
+        @shortcut(actionId="grbl.jog.Y.minus", defaultKey="Left",
+                  displayName="Move left", initiallyBound=False)
         def key_moveYleft(self):
             self.move(value=-100, axis='Y')
 
-        @shortcut(_QtCore.Qt.Key_Right, 'Move right')
+        @shortcut(actionId="grbl.jog.Y.plus", defaultKey="Right",
+                  displayName="Move right", initiallyBound=False)
         def key_moveYright(self):
             self.move(value=100, axis='Y')
 
-        @shortcut('-', 'Move Z up')
+        @shortcut(actionId="grbl.jog.Z.plus", defaultKey="-",
+                  displayName="Move Z up", initiallyBound=False)
         def key_moveZup(self):
             self.move(value=100, axis='Z')
 
-        @shortcut('+', 'Move Z down')
+        @shortcut(actionId="grbl.jog.Z.minus", defaultKey="+",
+                  displayName="Move Z down", initiallyBound=False)
         def key_moveZdown(self):
             self.move(value=-100, axis='Z')
 

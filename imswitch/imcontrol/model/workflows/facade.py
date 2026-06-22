@@ -26,9 +26,15 @@ tests or partial setups.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
+
+from imswitch.imcontrol.model.timeresolved import (
+    TimeResolvedScanConfig,
+    TimeResolvedScanProducts,
+)
 
 #: readChunk consumer key for workflow camera reads (see
 #: DetectorManager.readChunk — plain getChunk would steal frames from
@@ -182,6 +188,127 @@ class CamFacade:
     @expo.setter
     def expo(self, value_us: float) -> None:
         self._detector.setParameter("Exposure", float(value_us))
+
+
+# ---------------------------------------------------------------------------
+# Time-resolved detector sub-facade
+# ---------------------------------------------------------------------------
+
+
+class TimeResolvedDetectorFacade:
+    """Workflow-facing adapter for TCSPC/time-gated detector products."""
+
+    _REQUIRED_METHODS = (
+        "timeResolvedCapabilities",
+        "configureTimeResolvedProducts",
+        "waitForFinalTimeResolvedProducts",
+        "getLastTimeResolvedProducts",
+        "clearTimeResolvedProducts",
+    )
+
+    def __init__(self, detector) -> None:
+        missing = [
+            name for name in self._REQUIRED_METHODS
+            if not callable(getattr(detector, name, None))
+        ]
+        if missing:
+            raise TypeError(
+                "Detector does not implement the time-resolved contract; "
+                "missing: " + ", ".join(missing)
+            )
+        self._detector = detector
+
+    def configure(self, config: TimeResolvedScanConfig) -> None:
+        self._detector.configureTimeResolvedProducts(config)
+
+    def wait_for_final(
+        self,
+        timeout_s: float | None = None,
+    ) -> TimeResolvedScanProducts:
+        return self._detector.waitForFinalTimeResolvedProducts(timeout_s)
+
+    def get_last(self, copy: bool = True) -> TimeResolvedScanProducts | None:
+        return self._detector.getLastTimeResolvedProducts(copy=copy)
+
+    def clear(self) -> None:
+        self._detector.clearTimeResolvedProducts()
+
+    def capabilities(self) -> dict:
+        return self._detector.timeResolvedCapabilities()
+
+
+# ---------------------------------------------------------------------------
+# Scan workflow sub-facade
+# ---------------------------------------------------------------------------
+
+
+class ScanWorkflowFacade:
+    """Small adapter over ``CommunicationChannel.scanWorkflow``.
+
+    This lets headless workflows trigger the currently configured scan surface
+    without depending on a specific ScanWidget controller or scanner backend.
+    """
+
+    def __init__(self, scan_workflow, scan_done_signal=None) -> None:
+        if not callable(getattr(scan_workflow, "run_scan", None)):
+            raise TypeError("scan_workflow must expose run_scan(...)")
+        self._scan_workflow = scan_workflow
+        self._scan_done_signal = scan_done_signal
+
+    def run_once(
+        self,
+        *,
+        recalculate_signals: bool = True,
+        is_non_final_part_of_sequence: bool = False,
+        wait: bool = True,
+        timeout_s: float | None = None,
+        notify_starting: bool = True,
+    ) -> None:
+        """Trigger one existing scan and optionally wait for ``sigScanDone``."""
+
+        done = threading.Event()
+
+        def _on_done(*_args, **_kwargs):
+            done.set()
+
+        connected = False
+        if wait and self._scan_done_signal is not None:
+            connected = self._connect(self._scan_done_signal, _on_done)
+
+        try:
+            notify = getattr(self._scan_workflow, "notify_scan_starting", None)
+            if notify_starting and callable(notify):
+                notify()
+            self._scan_workflow.run_scan(
+                bool(recalculate_signals),
+                bool(is_non_final_part_of_sequence),
+            )
+            if connected and not done.wait(timeout=timeout_s):
+                raise TimeoutError("Timed out waiting for scan workflow completion")
+        finally:
+            if connected:
+                self._disconnect(self._scan_done_signal, _on_done)
+
+    def __call__(self) -> None:
+        self.run_once()
+
+    @staticmethod
+    def _connect(signal, slot) -> bool:
+        connect = getattr(signal, "connect", None)
+        if not callable(connect):
+            return False
+        connect(slot)
+        return True
+
+    @staticmethod
+    def _disconnect(signal, slot) -> None:
+        disconnect = getattr(signal, "disconnect", None)
+        if not callable(disconnect):
+            return
+        try:
+            disconnect(slot)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +780,8 @@ class MicroscopeFacade:
     z_stage_con: Optional[ZStageConFacade] = None
     rotator_hwp: Optional[RotatorFacade] = None
     rotator_qwp: Optional[RotatorFacade] = None
+    time_resolved: Optional[TimeResolvedDetectorFacade] = None
+    scan: Optional[ScanWorkflowFacade] = None
 
 
 def build_facade_from_master(
@@ -660,6 +789,7 @@ def build_facade_from_master(
     *,
     laser_aliases: Optional[dict] = None,
     detector_name: Optional[str] = None,
+    time_resolved_detector_name: Optional[str] = None,
     pulsegen_name: str = "teensyPulse",
     wfs_teensy_port: Optional[str] = None,
     wfs_teensy_baudrate: int = 115200,
@@ -669,6 +799,8 @@ def build_facade_from_master(
     qwp_name: Optional[str] = "QWP",
     hwp_presets: Optional[RotatorPresets] = None,
     qwp_presets: Optional[RotatorPresets] = None,
+    scan_workflow=None,
+    scan_done_signal=None,
 ) -> MicroscopeFacade:
     """Build a :class:`MicroscopeFacade` from an ImSwitch ``MasterController``.
 
@@ -693,6 +825,14 @@ def build_facade_from_master(
 
     if detector_name is not None:
         facade.cam = CamFacade(master.detectorsManager[detector_name])
+
+    if time_resolved_detector_name is not None:
+        facade.time_resolved = TimeResolvedDetectorFacade(
+            master.detectorsManager[time_resolved_detector_name]
+        )
+
+    if scan_workflow is not None:
+        facade.scan = ScanWorkflowFacade(scan_workflow, scan_done_signal)
 
     # Trigger sub-facade: prefer WFS pass-through when a Teensy port was
     # given (Option A in docs/design/plans/wfs-workflows-port.md). Otherwise

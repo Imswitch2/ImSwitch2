@@ -1,0 +1,26 @@
+{
+  "name": "imswitch-zhinst-devices",
+  "display_name": "Zurich Instruments Device Support",
+  "schema_version": "0.1",
+  "imswitch_min_version": "0.1",
+  "license": "GPL-3.0-or-later",
+  "contributions": {
+    "device_managers": [
+      {
+        "id": "zhinst.lockin-demod",
+        "kind": "detector",
+        "display_name": "Zurich Instruments lock-in demodulator detector",
+        "python_name": "imswitch_zhinst_devices.detectors:ZhinstLockinDetectorManager",
+        "mock_python_name": "imswitch_zhinst_devices.detectors:MockZhinstLockinDetectorManager",
+        "manager_name_aliases": [
+          "ZhinstLockinDetectorManager",
+          "ZurichLockinDetectorManager"
+        ],
+        "manager_properties_schema": "schemas/zhinst_lockin_detector.schema.json",
+        "setup_templates": ["setup_templates/zhinst_lockin_mock.json"],
+        "docs_url": "https://github.com/zhinst/zhinst-toolkit",
+        "supported_platforms": ["linux", "darwin", "win32"]
+      }
+    ]
+  }
+}

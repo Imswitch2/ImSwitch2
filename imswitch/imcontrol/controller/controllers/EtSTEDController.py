@@ -34,6 +34,9 @@ class EtSTEDController(EventTriggeredControllerBase):
     LOGS_SUBFOLDER = 'logs_etsted'
     MODALITY_LABEL = 'etSTED'
 
+    SMART_MODE_WORKFLOW = 'EtSTED'
+    SMART_MODE_REQUIRED_ROLES = ('scouting', 'event')
+
     def _validate_pre_run(self) -> None:
         self._triggeredScanRunner.validate_scan_parameters(
             self._analogParameterDict,

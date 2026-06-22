@@ -25,31 +25,47 @@ intuitive to explore for both users and developers.
 Keyboard shortcuts
 ==================
 
-The following keyboard shortcuts are available for common operations:
+Keyboard shortcuts are **config-driven and rebindable**. Each shortcut-able
+action has a stable action ID; the tables below list the code defaults, but any
+binding can be changed, disabled, or extended without editing code.
+
+* **Edit interactively:** open *Shortcuts → Configure Shortcuts…* to view, edit,
+  reset, or disable any binding via a key-sequence editor with live conflict
+  detection. Changes apply immediately and are persisted to the active setup
+  config.
+* **Edit in the config:** add a ``shortcuts`` map to the setup config JSON
+  (``{ "<actionId>": "Ctrl+...", ... }``; ``null`` disables an action, a list
+  binds multiple sequences). See :doc:`setupinfo-reference`.
+
+Default bindings for common operations:
 
 .. list-table::
    :widths: 30 70
    :header-rows: 0
 
    * - ``Ctrl+R``
-     - Record start/stop
+     - Record start/stop (``recording.toggleRecord``)
    * - ``Ctrl+L``
-     - Liveview toggle
+     - Liveview toggle (``view.toggleLiveView``)
    * - ``Ctrl+U``
-     - Update image levels
+     - Update image levels (``image.updateLevels``)
    * - ``Ctrl+N``
-     - Next detector
+     - Next detector (``settings.nextDetector``)
+   * - ``Ctrl+P``
+     - Load parameters from HDF5 (``app.loadParams``)
    * - ``Ctrl+Shift+S``
-     - Save widget state
+     - Save widget state (``app.saveWidgetStates``)
    * - ``Ctrl+Shift+L``
-     - Load widget state
+     - Load widget state (``app.loadWidgetStates``)
 
 
 Positioner stepping
 -------------------
 
-The following shortcuts step the active positioner by the amount
-configured in the per-axis **Step** field of the Positioner widget:
+Each positioner axis has its own rebindable jog actions
+(``positioner.<name>.<axis>.plus`` / ``.minus``) that step by the amount
+configured in the per-axis **Step** field of the Positioner widget. Default
+bindings (when no ``shortcuts`` config overrides them):
 
 .. list-table::
    :widths: 30 70
@@ -59,19 +75,64 @@ configured in the per-axis **Step** field of the Positioner widget:
      - Step X − / +
    * - ``Ctrl+Up`` / ``Ctrl+Down``
      - Step Y − / +
-   * - ``Ctrl+Q`` / ``Ctrl+A``
+   * - ``Ctrl+Y`` / ``Ctrl+A``
      - Step Z + / −
 
 **Notes:**
 
-* The shortcuts target the first positioner declared with that axis in
-  the active setup; setups without that axis silently ignore the
-  shortcut.
-* Step size for each press is the value in the per-axis Step field of
-  the Positioner widget.
-* On some Linux desktops ``Ctrl+Q`` is bound to "Quit" at the window
-  manager level.  ImSwitch claims it via QAction so it should work
-  while the application is focused; report if it does not.
+* Defaults follow each positioner's ``shortcutModifier`` (``"ctrl"`` →
+  ``Ctrl+`` arrows, ``"ctrl-shift"`` → ``Ctrl+Shift+`` arrows). A positioner
+  without ``shortcutModifier`` claims the ``Ctrl+`` set on a first-come basis per
+  axis (legacy behaviour). See :doc:`setupinfo-reference`.
+* You can bind each jog action to any key via the ``shortcuts`` config map or the
+  *Configure Shortcuts…* editor; conflicting bindings are reported rather than
+  firing ambiguously.
+* Step size for each press is the value in the per-axis Step field of the
+  Positioner widget.
+
+
+Saving state and setup modes
+============================
+
+ImSwitch has two related but distinct ways to capture and restore widget/hardware
+state. They share one underlying mechanism but differ in *scope* and in *whether
+applying them touches hardware*.
+
+Widget state — general, passive restore
+---------------------------------------
+
+A **global snapshot of all widgets** (detector settings, laser values, scan
+parameters, SLM configuration, positioner step sizes, GUI layout, …). Think of it
+as "save/restore the whole setup's UI state".
+
+* *File → Save Widget States* (``Ctrl+Shift+S``) writes a snapshot to a file;
+  *Load Widget States* (``Ctrl+Shift+L``) restores one. The current state is also
+  auto-saved on exit and restored on the next launch.
+* **Passive by design:** restoring widget state never activates hardware — it
+  sets saved *parameters* (laser power values, ROI/binning, scan parameters, SLM
+  config selection, …) but does **not** turn lasers on, start acquisition or
+  scans, move stages, or push SLM patterns. You stay in control of when hardware
+  is actuated.
+
+Setup modes — fast runtime switching (can activate hardware)
+------------------------------------------------------------
+
+The **Setup Modes** widget stores named *modes* that each capture only a
+**chosen subset** of components (e.g. a mode that sets the scan type + laser
+powers + SLM configuration, leaving everything else untouched). Modes are for
+**switching configurations quickly during an experiment**.
+
+* Select a mode (or trigger its optional keyboard shortcut) to apply it; only the
+  components included in that mode are affected.
+* **Active by design:** applying a mode *does* drive hardware — it can enable
+  lasers at saved powers, push SLM patterns, flip mirrors, etc. Because of this,
+  applying a mode that would turn on high laser power prompts a safety
+  confirmation (configurable threshold). Mode-switch shortcuts can be assigned
+  per mode and are managed in the Setup Modes widget.
+
+In short: **Widget States = restore the whole setup's parameters without touching
+hardware; Setup Modes = quickly switch a selected subset and actuate the hardware
+to match.**
 
 
 Detector Settings

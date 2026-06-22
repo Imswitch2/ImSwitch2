@@ -28,17 +28,16 @@ class ESP32StageManager(PositionerManager):
         self.PHYS_FACTOR = positionerInfo.managerProperties.get('PHYS_FACTOR', self.PHYS_FACTOR)
 
     def move(self, value, axis):
-        if self._rs232manager._esp32 is None:
-            self.__logger.warning('ESP32 not connected, move ignored')
-            return
         if axis == 'X':
-            self._rs232manager._esp32.move_x(value * self.PHYS_FACTOR, self.SPEED, is_blocking=False)
+            moved = self._rs232manager.move_x(value * self.PHYS_FACTOR, self.SPEED, is_blocking=False)
         elif axis == 'Y':
-            self._rs232manager._esp32.move_y(value * self.PHYS_FACTOR, self.SPEED, is_blocking=False)
+            moved = self._rs232manager.move_y(value * self.PHYS_FACTOR, self.SPEED, is_blocking=False)
         elif axis == 'Z':
-            self._rs232manager._esp32.move_z(value * self.PHYS_FACTOR, self.SPEED, is_blocking=False)
+            moved = self._rs232manager.move_z(value * self.PHYS_FACTOR, self.SPEED, is_blocking=False)
         else:
             self.__logger.error(f'Unknown axis "{axis}", must be X, Y or Z')
+            return
+        if moved is False:
             return
         self._position[axis] = self._position[axis] + value
 

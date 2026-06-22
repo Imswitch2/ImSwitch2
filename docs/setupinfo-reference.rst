@@ -151,6 +151,12 @@ Each positioner requires:
 * ``axes``: List of axis names (e.g., ``["X", "Y"]`` or ``["Z"]``)
 * ``forPositioning``: ``true`` if used for manual positioning
 * ``forScanning``: ``true`` if used for scanning
+* ``shortcutModifier`` (optional): default keyboard-jog group for this
+  positioner — ``"ctrl"`` (``Ctrl+`` arrows / ``Ctrl+Y`` / ``Ctrl+A``) or
+  ``"ctrl-shift"`` (``Ctrl+Shift+`` equivalents). Omit to claim the ``Ctrl+`` set
+  on a first-come basis per axis. This only sets the *defaults*; individual jog
+  actions (``positioner.<name>.<axis>.plus`` / ``.minus``) can be rebound to any
+  key via the ``shortcuts`` section below.
 
 **Example** (mock XY stage):
 
@@ -196,6 +202,42 @@ Standa motorized rotator mounts.
    }
 
 **See also**: :doc:`devices/rotators`
+
+
+shortcuts
+---------
+
+Optional map overriding keyboard-shortcut bindings by **action ID**. Every
+shortcut-able action has a stable ID (e.g. ``recording.toggleRecord``,
+``view.toggleLiveView``, ``settings.nextDetector``, ``app.saveWidgetStates``,
+``positioner.<name>.<axis>.plus``). Without this section, code defaults apply
+(see :doc:`gui`).
+
+Each entry maps an action ID to:
+
+* a **string** — a single key sequence (e.g. ``"Ctrl+Shift+R"``),
+* a **list of strings** — multiple sequences that all trigger the action, or
+* ``null`` — explicitly **disable** the action's binding.
+
+Effective binding order is ``code defaults < setup config shortcuts``. Unknown
+action IDs and invalid key sequences are logged and ignored; if two actions
+resolve to the same key, the conflict is reported and the lower-priority one is
+disabled (Qt's native "ambiguous shortcut" behaviour is never triggered). Bindings
+can also be edited interactively via *Shortcuts → Configure Shortcuts…*, which
+writes back to this section.
+
+Mode-switch shortcuts are stored per-mode (in the Setup Modes data), **not** here.
+
+**Example**:
+
+.. code-block:: json
+
+   "shortcuts": {
+       "recording.toggleRecord": "Ctrl+Shift+R",
+       "view.toggleLiveView": ["Ctrl+L", "F5"],
+       "positioner.MotorizedStage.X.plus": "Alt+Right",
+       "image.updateLevels": null
+   }
 
 
 scan

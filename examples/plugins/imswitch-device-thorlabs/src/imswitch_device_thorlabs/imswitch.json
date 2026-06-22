@@ -1,0 +1,22 @@
+{
+  "name": "imswitch-device-thorlabs",
+  "display_name": "Thorlabs Device Support",
+  "schema_version": "0.1",
+  "imswitch_min_version": "0.1",
+  "license": "GPL-3.0-or-later",
+  "contributions": {
+    "device_managers": [
+      {
+        "id": "thorlabs.tsi-camera",
+        "kind": "detector",
+        "display_name": "Thorlabs Scientific Camera (TSI)",
+        "python_name": "imswitch_device_thorlabs.detectors:ThorCamTSIManager",
+        "manager_name_aliases": ["ThorCamTSIManager"],
+        "manager_properties_schema": "schemas/thorcam_tsi.schema.json",
+        "setup_templates": ["setup_templates/thorcam_tsi_mock.json"],
+        "docs_url": "https://github.com/Imswitch2/imswitch-device-thorlabs",
+        "supported_platforms": ["linux", "win32", "darwin"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,152 @@
+{
+    "// description": "CI fixture for the migrated Snouty smart-microscopy setup (Phase 4): a mock flip-mirror beam path, a fast detector, the KDC rotation stage as a normal positioner, and the Positioner/SetupModes/FlipMirror widgets. It deliberately omits SetupStatus and contains no real hardware, so it boots in CI. Role-to-setup-mode mappings are declared under smartMicroscopyModes.",
+    "detectors": {
+        "WidefieldCamera": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "AVManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "avcam": {
+                    "exposure": 100,
+                    "gain": 1
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        },
+        "Orca": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "AVManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "avcam": {
+                    "exposure": 100,
+                    "gain": 1
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {},
+    "positioners": {
+        "Mock X": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["X"],
+            "forPositioning": true,
+            "forScanning": true,
+            "resetOnClose": false
+        },
+        "Mock Y": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["Y"],
+            "forPositioning": true,
+            "forScanning": true,
+            "resetOnClose": false
+        },
+        "Rotation Stage": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "KDC101PositionerManager",
+            "managerProperties": {
+                "port": "MOCK_COM15",
+                "posConvFac": 1919.64,
+                "velConvFac": 42941.66,
+                "accConvFac": 14.66,
+                "positionUnit": "deg",
+                "homeOnInit": false
+            },
+            "axes": ["R"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false
+        }
+    },
+    "rs232devices": {},
+    "slms": {},
+    "flipMirrors": {
+        "Illumination": {
+            "managerName": "ThorlabsMFF_mock",
+            "initial_state": 0,
+            "state_names": {"0": "Widefield", "1": "Light sheet"}
+        },
+        "DetectionTilt": {
+            "managerName": "ThorlabsMFF_mock",
+            "initial_state": 0,
+            "state_names": {"0": "Straight", "1": "Tilted"}
+        },
+        "DetectionPath": {
+            "managerName": "ThorlabsMFF_mock",
+            "initial_state": 1,
+            "state_names": {"0": "Tilted", "1": "Straight"}
+        }
+    },
+    "scan": {
+        "scanWidgetType": "Base",
+        "scanDesigner": "BetaScanDesigner",
+        "scanDesignerParams": {
+            "return_time": 0.01
+        },
+        "TTLCycleDesigner": "BetaTTLCycleDesigner",
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "maxScanTimeMin": 1,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "tiling": {
+        "xyPositioner": "Mock X",
+        "defaultTileStepUm": 100.0
+    },
+    "smartMicroscopyModes": {
+        "EtSnouty": {
+            "scouting": "Snouty widefield scouting",
+            "event": "Snouty light-sheet event scan",
+            "resume": "Snouty widefield scouting",
+            "idle": "Snouty safe idle"
+        }
+    },
+    "smartMicroscopyModePolicies": {
+        "EtSnouty": "blockOnHazard"
+    },
+    "smartMicroscopyModeSwitchingEnabled": {
+        "EtSnouty": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Positioner",
+        "FlipMirror",
+        "SetupModes",
+        "ViewerTools",
+        "LineProfile"
+    ],
+    "widgetLayout": {
+        "right": [],
+        "left": [
+            ["Settings"],
+            ["View"],
+            ["Positioner"],
+            ["FlipMirror"],
+            ["SetupModes"],
+            ["ViewerTools", "LineProfile"],
+            ["Recording"]
+        ]
+    }
+}

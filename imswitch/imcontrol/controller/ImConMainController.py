@@ -9,13 +9,16 @@ from imswitch.imcommon.model import (
     ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes
 )
 from imswitch.imcommon.framework import Thread
-from .server import ImSwitchServer
+from .server.ImSwitchServer import ImSwitchServer
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from . import controllers
 from .CommunicationChannel import CommunicationChannel
 from .MasterController import MasterController
 from .PickSetupController import PickSetupController
+from .SetupModeController import SetupModeController
+from .SmartMicroscopyModeService import SmartMicroscopyModeService
+from .ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
 
 
@@ -35,6 +38,7 @@ class ImConMainController(MainController):
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigSaveWidgetState.connect(self.saveWidgetState)
         self.__mainView.sigLoadWidgetState.connect(self.loadWidgetState)
+        self.__mainView.sigOpenShortcutEditor.connect(self.openShortcutEditor)
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
@@ -71,6 +75,21 @@ class ImConMainController(MainController):
                 **_extraKwargs.get(widgetKey, {})
             )
 
+        self.setupModeController = SetupModeController(self.controllers, self.__setupInfo)
+        if 'SetupModes' in self.controllers:
+            self.controllers['SetupModes'].setSetupModeController(self.setupModeController)
+
+        # Smart microscopy mode-switching service. Event controllers receive the
+        # handle here; Phase 3 decides when they start using it for transitions.
+        self.smartModeService = SmartMicroscopyModeService(
+            self.setupModeController,
+            getattr(self.__setupInfo, 'smartMicroscopyModes', None),
+            policyConfig=getattr(self.__setupInfo, 'smartMicroscopyModePolicies', None),
+        )
+        for controller in self.controllers.values():
+            if hasattr(controller, 'setSmartModeService'):
+                controller.setSmartModeService(self.smartModeService)
+
         # Create API-only controllers (no widget needed)
         # WorkflowFacadeController provides build_facade_from_master via API
         self.workflowFacadeController = self.__factory.createController(
@@ -80,7 +99,10 @@ class ImConMainController(MainController):
         
         # Generate API
         self.__api = None
-        apiObjs = list(self.controllers.values()) + [self.__commChannel, self.workflowFacadeController]
+        apiObjs = (
+            list(self.controllers.values())
+            + [self.setupModeController, self.__commChannel, self.workflowFacadeController]
+        )
         self.__api = generateAPI(
             apiObjs,
             missingAttributeErrorMsg=lambda attr: f'The imcontrol API does either not have any'
@@ -88,11 +110,81 @@ class ImConMainController(MainController):
                                                   f' is not included in your currently active'
                                                   f' hardware setup file.'
         )
-        # Generate Shorcuts
-        self.__shortcuts = None
-        shorcutObjs = list(self.__mainView.widgets.values())
-        self.__shortcuts = generateShortcuts(shorcutObjs)
-        self.__mainView.addShortcuts(self.__shortcuts)
+        # Generate Shortcuts via ShortcutManager
+        shorcutObjs = []
+        shorcutObjs.extend(self.__mainView.widgets.values())
+        shorcutObjs.extend(self.controllers.values())
+        
+        # Scan positioner managers (includes GRBLStageManager, etc.)
+        for _, positionerMgr in self.__masterController.positionersManager:
+            shorcutObjs.append(positionerMgr)
+        
+        # Additional manager types can be added here as needed
+        
+        # Build catalog from decorated methods
+        catalog = generateShortcuts(shorcutObjs)
+        
+        # Create ShortcutManager and wire it up
+        self.__shortcutManager = ShortcutManager()
+        self.__shortcutManager.collect(catalog)
+        
+        # Register menu actions (Phase 3a migration)
+        from imswitch.imcommon.model import ShortcutScope
+        self.__shortcutManager.registerAction(
+            actionId='app.loadParams',
+            displayName='Load parameters from HDF5',
+            callback=lambda: self.__mainView.sigLoadParamsFromHDF5.emit(),
+            defaultKeySequence='Ctrl+P',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        self.__shortcutManager.registerAction(
+            actionId='app.saveWidgetStates',
+            displayName='Save Widget States',
+            callback=lambda: self.__mainView.sigSaveWidgetState.emit(),
+            defaultKeySequence='Ctrl+Shift+S',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        self.__shortcutManager.registerAction(
+            actionId='app.loadWidgetStates',
+            displayName='Load Widget States',
+            callback=lambda: self.__mainView.sigLoadWidgetState.emit(),
+            defaultKeySequence='Ctrl+Shift+L',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        
+        # Register LeicaStand F2 toggle (Phase 3b migration)
+        if 'LeicaStand' in self.controllers:
+            leicaController = self.controllers['LeicaStand']
+            if hasattr(leicaController, '_widget') and hasattr(leicaController, 'toggleMode'):
+                self.__shortcutManager.registerAction(
+                    actionId='leica.toggleMode',
+                    displayName='Leica: toggle mode',
+                    callback=leicaController.toggleMode,
+                    defaultKeySequence='F2',
+                    scope=ShortcutScope.Window,
+                    owner=leicaController._widget
+                )
+        
+        # Register per-positioner axis jog actions (Phase 3c migration)
+        self._registerPositionerJogActions()
+        
+        self.__shortcutManager.loadConfigOverrides(self.__setupInfo.shortcuts)
+        self.__shortcutManager.computeEffectiveBindings()
+        self.__shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
+        
+        # Update File menu to show effective shortcuts
+        self.__mainView.updateMenuActionShortcuts(self.__shortcutManager.getEffectiveBindings())
+
+        # Inject ShortcutManager into SetupModesController (Phase 3d)
+        if 'SetupModes' in self.controllers:
+            self.controllers['SetupModes'].setShortcutManager(
+                self.__shortcutManager,
+                self.__mainView.shortcutsMenu,
+                self.__mainView
+            )
 
         self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(self.__mainView)
         getWidgetStatePersistence().register('GuiLayout', self.__guiLayoutStateAdapter)
@@ -117,8 +209,8 @@ class ImConMainController(MainController):
         return self.__api
 
     @property
-    def shortcuts(self):
-        return self.__shortcuts
+    def shortcutManager(self):
+        return self.__shortcutManager
 
     def loadParamsFromHDF5(self):
         """ Set detector, positioner, laser etc. params from values saved in a
@@ -231,33 +323,168 @@ class ImConMainController(MainController):
                 f'Failed to load widget states:\n{str(e)}'
             )
 
+    def openShortcutEditor(self):
+        """Open the keyboard shortcut editor dialog."""
+        from imswitch.imcontrol.view.widgets.ShortcutEditorDialog import ShortcutEditorDialog
+        
+        dialog = ShortcutEditorDialog(self.__mainView, self.__shortcutManager, self.__setupInfo)
+        dialog.exec_()
+
+    def _registerPositionerJogActions(self):
+        """Register dynamic per-positioner axis jog actions with shortcutModifier alias expansion.
+        
+        Phase 3c: Each positioner's each axis gets plus/minus actions with action IDs like
+        `positioner.<name>.<axis>.plus`. The defaultKeySequence is computed from:
+        - shortcutModifier "ctrl" -> Ctrl+Arrow/Y/A keys
+        - shortcutModifier "ctrl-shift" -> Ctrl+Shift+Arrow/Y/A keys
+        - no shortcutModifier -> legacy first-come behavior (first such positioner per axis gets Ctrl keys)
+        
+        Explicit config in the shortcuts map always overrides these defaults.
+        """
+        if 'Positioner' not in self.controllers:
+            return
+        
+        positionerController = self.controllers['Positioner']
+        positionerWidget = positionerController._widget
+        
+        if not hasattr(self.__setupInfo, 'positioners') or not self.__setupInfo.positioners:
+            return
+        
+        # Compute default jog key sequences via the shared, unit-tested pure
+        # function (shortcutModifier alias expansion + legacy first-come).
+        from imswitch.imcommon.model import ShortcutScope
+        from imswitch.imcontrol.controller.ShortcutManager import computePositionerJogDefaults
+
+        jogDefaults = computePositionerJogDefaults(self.__setupInfo.positioners)
+
+        for positionerName, positionerInfo in self.__setupInfo.positioners.items():
+            for axis in positionerInfo.axes:
+                for direction, label in (('plus', '+'), ('minus', '-')):
+                    actionId = f'positioner.{positionerName}.{axis}.{direction}'
+                    defaultKey = jogDefaults.get(actionId)
+                    self.__shortcutManager.registerAction(
+                        actionId=actionId,
+                        displayName=f'{positionerName} {axis} {label}',
+                        callback=(lambda *_, pName=positionerName, ax=axis, d=direction:
+                                  positionerWidget.stepAxis(pName, ax, d)),
+                        defaultKeySequence=defaultKey,
+                        scope=ShortcutScope.Application,
+                        owner=positionerWidget,
+                        initiallyBound=(defaultKey is not None)
+                    )
+    
     def closeEvent(self):
         self.__logger.info('Shutting down')
         try:
-            getWidgetStatePersistence().saveAllWidgetStates('default')
+            saveWidgetState = self._shouldSaveWidgetStateOnClose()
         except Exception as e:
-            self.__logger.warning(f'Failed to auto-save widget states: {e}')
+            self.__logger.warning(
+                f'Failed to ask whether widget states should be saved; '
+                f'saving by default: {e}'
+            )
+            saveWidgetState = True
+
+        if saveWidgetState:
+            try:
+                getWidgetStatePersistence().saveAllWidgetStates('default')
+            except Exception as e:
+                self.__logger.warning(f'Failed to auto-save widget states: {e}')
+        
+        # Stop server thread before closing hardware managers
+        if hasattr(self, '_serverWorker') and hasattr(self, '_thread'):
+            try:
+                self.__logger.debug('Stopping server thread')
+                self._serverWorker.stop()
+                self._thread.quit()
+                if not self._thread.wait(5000):  # 5 second timeout
+                    self.__logger.warning('Server thread did not stop within timeout')
+            except Exception as e:
+                self.__logger.warning(f'Error stopping server thread: {e}')
+        
         self.__factory.closeAllCreatedControllers()
         self.__masterController.closeEvent()
 
+    def _shouldSaveWidgetStateOnClose(self):
+        result = QtWidgets.QMessageBox.question(
+            self.__mainView,
+            'Save Widget State',
+            'Save the current widget state as the default for the next startup?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        return result == QtWidgets.QMessageBox.Yes
+
 
 class _GuiLayoutStateAdapter:
-    """Persistence adapter for passive imcontrol dock layout state."""
+    """Persistence adapter for passive imcontrol dock layout state.
+    
+    GuiLayout is STARTUP_RESTORE-only and layout-only: applyComponentState
+    restores dock/splitter layout in both modes (layout is passive), and it is
+    excluded from setup modes by SetupModeController discovery.
+    """
+    
+    # Unified interface attributes
+    componentName = 'GuiLayout'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, view: Any) -> None:
         self._view = view
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        """Return the current GUI layout state."""
+    def getComponentState(self) -> Dict[str, Any]:
+        """Snapshot the current GUI layout state."""
         return self._view.getLayoutState()
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """Restore GUI layout state without triggering hardware actions."""
+    def applyComponentState(
+        self,
+        state: Dict[str, Any],
+        *,
+        applyMode: Any,
+    ) -> list:
+        """Restore GUI layout state without triggering hardware actions.
+        
+        GuiLayout is passive and applies in both modes (layout restoration
+        does not activate hardware).
+        
+        Args:
+            state: Layout state dict from getComponentState()
+            applyMode: ComponentStateApplyMode (ignored, layout is passive)
+        
+        Returns:
+            Empty list (no warnings, layout is passive)
+        """
         self._view.setLayoutState(state)
+        return []
 
-    def getStateSchemaVersion(self) -> int:
-        """Return the GUI layout persistence schema version."""
-        return 1
+    def describeComponentState(self, state: Dict[str, Any]) -> list[str]:
+        """Generate human-readable summary of saved GUI layout state.
+        
+        Args:
+            state: Layout state dict from getComponentState()
+        
+        Returns:
+            Simple summary line
+        """
+        return ["GUI layout: dock/splitter configuration saved"]
+
+    def getComponentStateHazards(
+        self,
+        state: Dict[str, Any],
+        *,
+        applyMode: Any,
+        context: Dict[str, Any] | None = None,
+    ) -> list[dict]:
+        """Identify hazards in GUI layout state (always none).
+        
+        Args:
+            state: Layout state dict from getComponentState()
+            applyMode: ComponentStateApplyMode (ignored)
+            context: Optional context (ignored)
+        
+        Returns:
+            Empty list (layout restoration has no hazards)
+        """
+        return []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

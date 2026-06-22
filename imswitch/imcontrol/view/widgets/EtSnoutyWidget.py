@@ -6,12 +6,10 @@ from imswitch.imcommon.model import initLogger
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
-from imswitch.imcommon.model import dirtools
+from imswitch.imcontrol.model.EtSnoutyPaths import getEtSnoutyPath
 from imswitch.imcontrol.view import guitools
 from imswitch.imcommon.view.guitools import naparitools
 from .basewidgets import Widget
-
-_etSnoutyDir = 'C:/Users/Snouty/imcontrol_etsnouty'
 
 
 class EtSnoutyWidget(Widget):
@@ -24,8 +22,8 @@ class EtSnoutyWidget(Widget):
         self.__logger = initLogger(self, instanceName='EtSnoutyWidget')
         super().__init__(*args, **kwargs)
 
-        self.analysisDir = os.path.join(_etSnoutyDir, 'analysis_pipelines')
-        self.transformDir = os.path.join(_etSnoutyDir, 'transform_pipelines')
+        self.analysisDir = getEtSnoutyPath('analysis_pipelines')
+        self.transformDir = getEtSnoutyPath('transform_pipelines')
 
         if not os.path.exists(self.analysisDir):
             os.makedirs(self.analysisDir)

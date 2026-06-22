@@ -1,5 +1,7 @@
 """Generic panel for applying result-based ImProcess processors."""
 
+import weakref
+
 from qtpy import QtCore, QtWidgets
 
 
@@ -12,6 +14,10 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.processor = processor
         self._currentResult = None
+        # Building the per-display-layer wrapper results in
+        # processor_input_choices() is non-trivial, so cache the filtered
+        # choices per result object (weak-keyed to avoid retaining results).
+        self._choicesCache = weakref.WeakKeyDictionary()
 
         self.inputCombo = QtWidgets.QComboBox()
         self.inputCombo.setToolTip("Processor input: whole result or a named result component")
@@ -46,14 +52,20 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             self.inputCombo.blockSignals(False)
             return
 
-        choices = []
-        for choice in result.processor_input_choices():
+        choices = self._choicesCache.get(result)
+        if choices is None:
+            choices = []
+            for choice in result.processor_input_choices():
+                try:
+                    applies = bool(self.processor.applies_to(choice.result))
+                except Exception:
+                    applies = False
+                if applies:
+                    choices.append(choice)
             try:
-                applies = bool(self.processor.applies_to(choice.result))
-            except Exception:
-                applies = False
-            if applies:
-                choices.append(choice)
+                self._choicesCache[result] = choices
+            except TypeError:
+                pass  # result not weak-referenceable; skip caching
 
         for choice in choices:
             self.inputCombo.addItem(choice.label, userData=choice)

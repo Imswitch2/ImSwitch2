@@ -4,23 +4,23 @@ from typing import Any, Dict, List, Optional, Union
 from dataclasses_json import dataclass_json, Undefined, CatchAll
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class DeviceInfo:
-    analogChannel: Optional[Union[str, int]]
+    managerName: str
+    """ Manager class name. """
+
+    analogChannel: Optional[Union[str, int]] = None
     """ Channel for analog communication. ``null`` if the device is digital or
     doesn't use NI-DAQ. If an integer is specified, it will be translated to
     "Dev1/ao{analogChannel}". """
 
-    digitalLine: Optional[Union[str, int]]
+    digitalLine: Optional[Union[str, int]] = None
     """ Line for digital communication. ``null`` if the device is analog or
     doesn't use NI-DAQ. If an integer is specified, it will be translated to
     "Dev1/port0/line{digitalLine}". """
 
-    managerName: str
-    """ Manager class name. """
-
-    managerProperties: Dict[str, Any]
-    """ Properties to be read by the manager. """
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Properties to be read by the manager. Empty when omitted. """
 
     def getAnalogChannel(self):
         """ :meta private: """
@@ -37,7 +37,7 @@ class DeviceInfo:
             return self.digitalLine
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class DetectorInfo(DeviceInfo):
     forAcquisition: bool = False
     """ Whether the detector is used for acquisition. """
@@ -46,7 +46,7 @@ class DetectorInfo(DeviceInfo):
     """ Whether the detector is used for focus lock. """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LaserInfo(DeviceInfo):
     valueRangeMin: Optional[Union[int, float]]
     """ Minimum value of the laser. ``null`` if laser doesn't setting a value.
@@ -73,7 +73,7 @@ class LaserInfo(DeviceInfo):
     """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PositionerInfo(DeviceInfo):
     axes: List[str]
     """ A list of axes (names) that the positioner controls. """
@@ -128,9 +128,6 @@ class SLMInfo:
 
     wavelength: int
     """ Wavelength of the laser line used with the SLM. """
-    
-    serial_number: str
-    """ Unique n° of the SLM head you use. """
 
     pixelSize: float
     """ Pixel size or pixel pitch of the SLM, in millimetres. """
@@ -140,10 +137,14 @@ class SLMInfo:
     at various wavelengths. A combination will be chosen based on the
     wavelength. """
 
+    serial_number: Optional[str] = None
+    """ Unique n° of the SLM head you use. ``null``/omitted if not needed
+    (e.g. simulated SLMs). """
 
 
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, kw_only=True)
 class SLMsInfo(DeviceInfo):
     monitorIdx: int
     """ Index of the monitor in the system list of monitors (indexing starts at
@@ -157,19 +158,9 @@ class SLMsInfo(DeviceInfo):
 
     wavelength: int
     """ Wavelength of the laser line used with the SLM. """
-    
-    serial_number: str
-    """ Unique n° of the SLM head you use. """
 
     pixelSize: float
     """ Pixel size or pixel pitch of the SLM, in millimetres. """
-
-    nSections: Optional[int]
-    """ Numbers of sections the SLM is divided into (e.g. 2 for double-pass).
-    If none, considered as single section. """
-
-    widgetOptions: Optional[Dict[str,Any]]
-    """ Widget options just as which patterns to display """
 
     correctionPatternsDir: str
     """ Directory of .bmp images provided by Hamamatsu for flatness correction
@@ -177,9 +168,20 @@ class SLMsInfo(DeviceInfo):
     wavelength. """
 
     wavelengthTableFile: str
-    """ Name of JSON file with table of wavelength correction values to transform 
+    """ Name of JSON file with table of wavelength correction values to transform
     2pi modulation into gray values (given my manufacturer.) File is expected to be
     in the same direction than `correctionPatternsDir """
+
+    nSections: Optional[int] = None
+    """ Numbers of sections the SLM is divided into (e.g. 2 for double-pass).
+    If none, considered as single section. """
+
+    widgetOptions: Optional[Dict[str,Any]] = None
+    """ Widget options just as which patterns to display """
+
+    serial_number: Optional[str] = None
+    """ Unique n° of the SLM head you use. ``null``/omitted if not needed
+    (e.g. simulated SLMs). """
 
 @dataclass(frozen=True)
 class FocusLockInfo:
@@ -204,14 +206,18 @@ class FocusLockInfo:
     frameCroph: int
     """ Height of camera frame crop. """
 
-    swapImageAxes: bool
-    """ Swap camera image axes when grabbing camera frame. """
-
     piKp: float
     """ Default kp value of feedback loop. """
 
     piKi: float
     """ Default ki value of feedback loop. """
+
+    swapImageAxes: bool = False
+    """ Swap camera image axes when grabbing camera frame. """
+
+    positionerAxis: Optional[Union[str, int]] = None
+    """ Positioner axis used for focus-lock movements. Defaults to ``"Z"`` if
+    available on the configured positioner, otherwise ``0``. """
 
 @dataclass(frozen=True)
 class AutofocusInfo:
@@ -272,20 +278,20 @@ class ScanInfo:
     sampleRate: int
     """ Scan sample rate. """
 
-    maxScanTimeMin: Optional[int]
-    """ Max scan time allowed, in min. """
+    maxScanTimeMin: Optional[int] = None
+    """ Max scan time allowed, in min. ``null``/omitted = no limit. """
 
-    lineClockLine: Optional[Union[str, int]]
+    lineClockLine: Optional[Union[str, int]] = None
     """ Line for line clock output. ``null`` if not wanted or NI-DAQ is not used.
     If integer, it will be translated to "Dev1/port0/line{lineClockLine}".
     """
 
-    frameStartClockLine: Optional[Union[str, int]]
+    frameStartClockLine: Optional[Union[str, int]] = None
     """ Line for frame startclock output. ``null`` if not wanted or NI-DAQ is not used.
     If integer, it will be translated to "Dev1/port0/line{frameStartClockLine}".
     """
 
-    frameEndClockLine: Optional[Union[str, int]]
+    frameEndClockLine: Optional[Union[str, int]] = None
     """ Line for frame end clock output. ``null`` if not wanted or NI-DAQ is not used.
     If integer, it will be translated to "Dev1/port0/line{frameEndClockLine}".
     """
@@ -403,6 +409,27 @@ class TriggerScopeInfo:
     TriggerScope board over serial. """
 
 
+@dataclass(frozen=True)
+class FlipMirrorInfo:
+    managerName: str
+    """ Flip mirror manager class name. """
+
+    serial_number: Optional[str] = None
+    """ Serial number used by hardware managers to find the device. """
+
+    invert: bool = False
+    """ Whether logical states 0 and 1 are swapped from hardware states. """
+
+    initial_state: Optional[int] = None
+    """ Optional state to move to at startup. ``None`` keeps the current state. """
+
+    state_names: Dict[str, str] = field(default_factory=dict)
+    """ Optional display names for logical states 0 and 1. """
+
+    managerProperties: Dict[str, Any] = field(default_factory=dict)
+    """ Optional manager-specific properties. """
+
+
 @dataclass_json(undefined=Undefined.INCLUDE)
 @dataclass
 class SetupInfo:
@@ -450,6 +477,9 @@ class SetupInfo:
     rotators: Optional[Dict[str, DeviceInfo]] = field(default_factory=lambda: None)
     """ Standa motorized rotator mounts settings. Required to be defined to use rotator functionality. """
 
+    flipMirrors: Optional[Dict[str, FlipMirrorInfo]] = field(default_factory=lambda: None)
+    """ Motorized flip mirror settings. """
+
     microscopeStand: Optional[MicroscopeStandInfo] = field(default_factory=lambda: None)
     """ Microscope stand settings. Required to be defined to use MotCorr widget. """
 
@@ -470,6 +500,40 @@ class SetupInfo:
 
     triggerScope: Optional[TriggerScopeInfo] = field(default_factory=lambda: None)
     """ TriggerScope DAQ board settings. Required to use TriggerScope hardware. """
+
+    shortcuts: Optional[Dict[str, Union[str, List[str], None]]] = field(default_factory=lambda: None)
+    """ Keyboard shortcut configuration. Maps action IDs to key sequences.
+    Each value can be a single string (e.g., "Ctrl+R"), a list of strings for
+    multiple sequences, or null to explicitly disable a default binding. """
+
+    smartMicroscopyModes: Optional[Dict[str, Dict[str, str]]] = field(
+        default_factory=lambda: None
+    )
+    """ Smart microscopy mode-switching configuration for event-triggered
+    workflows. Maps ``workflowName -> {role: setupModeName}``, where each role
+    names an existing setup mode to apply for that runtime phase. Recognized
+    roles are ``scouting``, ``event``, ``resume``, ``idle``, and ``validation``.
+    ``None`` (the default) or an absent key means no smart-mode mapping is
+    configured; setups without this section still parse. """
+
+    smartMicroscopyModePolicies: Optional[Dict[str, str]] = field(
+        default_factory=lambda: None
+    )
+    """ Per-workflow non-interactive hazard policy for smart microscopy mode
+    switching. Maps ``workflowName -> policyName``, where ``policyName`` is one
+    of ``allow``, ``warnOnly``, or ``blockOnHazard``. Workflows that are absent
+    (or name an unknown policy) default to ``blockOnHazard`` -- the safest
+    choice, blocking arming when a preflight finds hazards or missing role modes.
+    ``None`` (the default) or an absent key means every workflow uses the
+    ``blockOnHazard`` default; setups without this section still parse. """
+
+    smartMicroscopyModeSwitchingEnabled: Optional[Dict[str, bool]] = field(
+        default_factory=lambda: None
+    )
+    """ Per-workflow rollout flag for replacing legacy workflow-specific mode
+    switching with ``SmartMicroscopyModeService``. Maps ``workflowName -> bool``.
+    ``False`` or an absent workflow keeps the legacy path so labs can opt in and
+    roll back without changing code. """
 
     _catchAll: CatchAll = None
 

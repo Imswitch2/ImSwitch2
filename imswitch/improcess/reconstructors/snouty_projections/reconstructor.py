@@ -7,9 +7,8 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import Reconstructor
-from imswitch.improcess.reconstructors.snouty.deskew_cpu import DeskewProcessorCPU
+from imswitch.improcess.reconstructors.snouty._pipeline import load_restack_deskew_timelapse
 from imswitch.improcess.reconstructors.snouty.params_widget import SnoutyParamsWidget
-from imswitch.improcess.reconstructors.snouty.restack import restack_interleaved
 from .result import SnoutyProjectionsResult
 
 if TYPE_CHECKING:
@@ -71,97 +70,27 @@ class SnoutyProjectionsReconstructor(Reconstructor):
         Returns:
             SnoutyProjectionsResult containing three padded projections (3D or 4D)
         """
-        # Load data
-        preloaded = data_obj.dataLoaded
-        try:
-            data_obj.checkAndLoadData()
-            stack = data_obj.data
-        finally:
-            if not preloaded:
-                data_obj.checkAndUnloadData()
-        
-        # Validate data shape
-        if stack.ndim != 3:
-            raise ValueError(
-                f'Expected 3D data (planes, cam_y, cam_x), got shape {stack.shape}'
-            )
-        
-        # De-interlace if requested (MS-RESOLFT)
-        if params.get('restack', True):
-            cycles = params.get('cycles', 1)
-            planes_in_cycle = params.get('planes_in_cycle', 1)
-            if cycles > 1 or planes_in_cycle > 1:
-                stack = restack_interleaved(stack, cycles, planes_in_cycle)
-                self._logger.info(
-                    f'Restacked {cycles} cycles × {planes_in_cycle} planes/cycle'
-                )
-        
-        # Pick processor (CPU or GPU)
-        device = params.get('device', 'CPU').upper()
-        use_gpu = False
-        if device == 'GPU':
-            try:
-                from imswitch.improcess.reconstructors.snouty.deskew_gpu import DeskewProcessorGPU
-                import cupy as cp
-                processor_class = DeskewProcessorGPU
-                use_gpu = True
-            except (ImportError, RuntimeError) as e:
-                raise RuntimeError(
-                    f'GPU deskew unavailable: {e}. Use device="CPU" or install CuPy.'
-                ) from e
-        else:
-            processor_class = DeskewProcessorCPU
-        
-        # Build processor config (subset of params that constructor expects)
-        processor_params = {
-            'c_px': params['c_px'],
-            'alpha_deg': params['alpha_deg'],
-            'dy': params['dy'],
-            'sample_vx_size': params['sample_vx_size'],
-            'camera_offset': params.get('camera_offset', 0.0),
-            'flip_data': params.get('flip_data', False),
-        }
-        processor = processor_class(processor_params)
-        
-        # Timelapse handling
-        n_timepoints = params.get('n_timepoints', 1)
-        if n_timepoints > 1:
-            self._logger.info(
-                f'Processing {n_timepoints} timepoint projections with {device} deskew...'
-            )
-            # Split stack into timepoints along axis 0
-            timepoint_stacks = np.array_split(stack, n_timepoints, axis=0)
-            projection_timepoints = []
-            for t, tp_stack in enumerate(timepoint_stacks):
-                self._logger.info(f'  Timepoint {t+1}/{n_timepoints}...')
-                if use_gpu:
-                    projections = processor.process_projections(cp.asarray(tp_stack))
-                    try:
-                        cp.get_default_memory_pool().free_all_blocks()
-                    except Exception:
-                        pass
-                else:
-                    projections = processor.process_projections(tp_stack)
-                # Pad and stack projections
-                padded = self._pad_and_stack_projections(projections)
-                projection_timepoints.append(padded)
+        def per_timepoint(processor, tp_stack, use_gpu, cp):
+            if use_gpu:
+                projections = processor.process_projections(cp.asarray(tp_stack))
+            else:
+                projections = processor.process_projections(tp_stack)
+            # Pad and stack the three projections onto a common canvas
+            return self._pad_and_stack_projections(projections)
+
+        projection_timepoints = load_restack_deskew_timelapse(
+            data_obj, params,
+            per_timepoint_fn=per_timepoint,
+            logger=self._logger,
+        )
+
+        if params.get('n_timepoints', 1) > 1:
             # Stack into 4D: (T, 3, H, W)
             result_data = np.stack(projection_timepoints, axis=0)
-            self._logger.info(
-                f'Projections complete: {result_data.shape} (T, projection, Y, X)'
-            )
         else:
-            self._logger.info(f'Processing single timepoint projections with {device} deskew...')
-            if use_gpu:
-                projections = processor.process_projections(cp.asarray(stack))
-            else:
-                projections = processor.process_projections(stack)
-            # Pad and stack projections
-            result_data = self._pad_and_stack_projections(projections)
-            self._logger.info(
-                f'Projections complete: {result_data.shape} (projection, Y, X)'
-            )
-        
+            result_data = projection_timepoints[0]
+        self._logger.info(f'Projections complete: {result_data.shape}')
+
         # Compute display levels
         data_min = float(np.percentile(result_data, 1))
         data_max = float(np.percentile(result_data, 99.9))

@@ -2,12 +2,12 @@
 
 from typing import Callable
 
-import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.analysis.frc import frc_two_image, single_image_frc
 from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.processors._extraction import extract_2d_plane, resolve_axis
 from imswitch.improcess.processors.base import Processor
 
 from .result import FRCResult
@@ -24,6 +24,9 @@ class FRCProcessor(Processor):
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
+        """Require at least a 2-D image. Single-image FRC works on one plane;
+        two-image FRC needs a stack, which the ``apply`` path validates when it
+        resolves a compare axis."""
         return lambda result: result.data.ndim >= 2
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -94,9 +97,18 @@ class FRCProcessor(Processor):
         window = params.get("window", "hann")
 
         if mode == "two-image":
-            axis_label = self._resolve_compare_axis(result, params.get("compare_axis", "Auto"))
-            image_a = self._extract_2d(result, axis_label, int(params.get("index_a", 0)))
-            image_b = self._extract_2d(result, axis_label, int(params.get("index_b", 1)))
+            axis_label = resolve_axis(
+                result,
+                ("T", "C", "Z"),
+                requested=params.get("compare_axis", "Auto"),
+                error_message="Two-image FRC needs an axis with at least two planes",
+            )
+            image_a = extract_2d_plane(
+                result, compare_axis=axis_label, index=int(params.get("index_a", 0))
+            )
+            image_b = extract_2d_plane(
+                result, compare_axis=axis_label, index=int(params.get("index_b", 1))
+            )
             analysis = frc_two_image(
                 image_a,
                 image_b,
@@ -107,7 +119,7 @@ class FRCProcessor(Processor):
             )
             name = f"{result.name} (FRC {axis_label}{params.get('index_a', 0)}-{params.get('index_b', 1)})"
         elif mode == "single-image":
-            image = self._extract_2d(result, None, int(params.get("index_a", 0)))
+            image = extract_2d_plane(result, index=int(params.get("index_a", 0)))
             analysis = single_image_frc(
                 image,
                 split=params.get("single_image_split", "checkerboard"),
@@ -128,58 +140,3 @@ class FRCProcessor(Processor):
             analysis.resolution_unit,
         )
         return FRCResult(name=name, analysis=analysis, params=dict(params))
-
-    def _resolve_compare_axis(self, result: ProcessingResult, requested: str) -> str:
-        if requested != "Auto":
-            if requested not in result.axis_labels:
-                raise ValueError(f"Requested compare axis {requested!r} not in {result.axis_labels}")
-            if result.data.shape[result.axis_labels.index(requested)] < 2:
-                raise ValueError(f"Compare axis {requested!r} needs at least two planes")
-            return requested
-
-        for candidate in ("T", "C", "Z"):
-            if candidate in result.axis_labels:
-                axis = result.axis_labels.index(candidate)
-                if result.data.shape[axis] >= 2:
-                    return candidate
-        for axis, size in enumerate(result.data.shape[:-2]):
-            if size >= 2:
-                return result.axis_labels[axis]
-        raise ValueError("Two-image FRC needs an axis with at least two planes")
-
-    def _extract_2d(
-        self,
-        result: ProcessingResult,
-        compare_axis_label: str | None,
-        compare_index: int,
-    ) -> np.ndarray:
-        data = np.asarray(result.data)
-        if data.ndim == 2:
-            return data
-        if data.ndim < 2:
-            raise ValueError(f"FRC needs at least 2D data, got shape {data.shape}")
-
-        indexer = []
-        compare_axis = (
-            result.axis_labels.index(compare_axis_label)
-            if compare_axis_label is not None
-            else None
-        )
-        for axis, size in enumerate(data.shape):
-            is_spatial = axis >= data.ndim - 2
-            if is_spatial:
-                indexer.append(slice(None))
-            elif axis == compare_axis:
-                if compare_index < 0 or compare_index >= size:
-                    raise ValueError(
-                        f"FRC compare index {compare_index} out of range for axis "
-                        f"{compare_axis_label!r} with size {size}"
-                    )
-                indexer.append(compare_index)
-            else:
-                indexer.append(0)
-
-        image = np.asarray(data[tuple(indexer)])
-        if image.ndim != 2:
-            raise ValueError(f"Could not extract a 2D FRC image from shape {data.shape}")
-        return image

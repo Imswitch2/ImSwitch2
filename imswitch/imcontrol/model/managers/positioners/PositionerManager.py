@@ -45,6 +45,17 @@ class PositionerManager(ABC):
         ``{ axis: position }``. """
         return self._position
 
+    def updateTrackedPosition(self, positions: Dict[str, float]) -> None:
+        """ Sync the cached position from an external hardware read.
+
+        Public API for device-specific controllers that read the live position
+        straight from hardware and need the manager's tracked ``position`` to
+        match — *without* commanding a move. Only known axes are updated. Use
+        this instead of writing ``manager._position`` directly. """
+        for axis, value in positions.items():
+            if axis in self._position:
+                self._position[axis] = float(value)
+
     @property
     def axes(self) -> List[str]:
         """ The list of axes that are controlled by this positioner. """

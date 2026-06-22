@@ -114,7 +114,7 @@ class TriggerScopePositionerManager(PositionerManager):
         voltage = stored / self._conversionFactor
         clampedVoltage = min(max(voltage, self._minVolt), self._maxVolt)
         self._position[self.axes[0]] = clampedVoltage * self._conversionFactor
-        self.__logger.info(
+        self.__logger.debug(
             'Restored last known position %s for "%s" without moving the DAC '
             '(the board is assumed to still hold this voltage from the previous '
             'session).', self._position[self.axes[0]], self.name

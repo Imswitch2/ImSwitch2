@@ -1,17 +1,33 @@
 import os
+import json
 import configparser
 from ast import literal_eval
-from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
+from ..basecontrollers import (
+    ImConWidgetController,
+    ScanLifecycleMixin,
+    StatefulComponentMixin,
+    ComponentStateApplyMode,
+    SetupModeApplyPriority
+)
 import traceback
-from imswitch.imcommon.model import APIExport, dirtools
+from imswitch.imcommon.model import APIExport, dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 
 
-class TriggerScopeGalvoDetectionController(ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopeGalvoDetectionController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     """Linked to TriggerScopeGalvoDetectionWidget."""
+
+    componentName = 'TriggerScopeGalvoDetection'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'scan'
+    setupModeApplyPriority = SetupModeApplyPriority.SCAN
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._logger = initLogger(self)
 
         self.settingAttr = False
         self.settingParameters = False
@@ -53,6 +69,8 @@ class TriggerScopeGalvoDetectionController(ScanLifecycleMixin, ImConWidgetContro
         self._widget.sigLoadScanClicked.connect(self.loadScan)
         self._widget.sigRunScanClicked.connect(self.runScan)
         self._widget.sigParameterChanged.connect(self.updateScanParDict)
+
+        getWidgetStatePersistence().register('TriggerScopeGalvoDetection', self)
 
     def saveScan(self):
         fileName = guitools.askForFilePath(self._widget, 'Save scan', self.scanDir, isSaving=True)
@@ -279,6 +297,157 @@ class TriggerScopeGalvoDetectionController(ScanLifecycleMixin, ImConWidgetContro
 
     def closeEvent(self):
         pass
+
+    def getComponentState(self) -> dict:
+        """Snapshot the current TriggerScope GalvoDetection scan parameters."""
+        self.getParameters()
+
+        scanInfo = getattr(self._setupInfo, 'scan', None)
+
+        return {
+            'controller': type(self).__name__,
+            'scanWidgetType': getattr(scanInfo, 'scanWidgetType', None),
+            'scanParameterDict': dict(self._scanParameterDict),
+            'deviceParameterDict': dict(self._deviceParameterDict),
+        }
+
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore TriggerScope GalvoDetection scan parameters from a snapshot.
+
+        CRITICAL SAFETY INVARIANT: This method MUST NEVER start a scan in either mode.
+        It only restores scan parameters (scanParameterDict, deviceParameterDict).
+        Starting a scan requires explicit user action (runScan/runScanAdvanced).
+
+        Args:
+            state: Component state dict from getComponentState().
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (behavior is identical).
+
+        Returns:
+            List of warning strings for recoverable issues.
+        """
+        warnings = []
+
+        if self.isRunning:
+            return ['Scan is currently running; scan parameters were not changed.']
+
+        if not isinstance(state, dict):
+            return ['Saved scan state is not a dictionary.']
+
+        savedWidgetType = state.get('scanWidgetType')
+        currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)
+        if savedWidgetType and currentWidgetType and savedWidgetType != currentWidgetType:
+            warnings.append(
+                f'Saved scan widget type "{savedWidgetType}" differs from current '
+                f'"{currentWidgetType}".'
+            )
+
+        scanParameterDict = state.get('scanParameterDict', {})
+        deviceParameterDict = state.get('deviceParameterDict', {})
+
+        if not isinstance(scanParameterDict, dict):
+            return warnings + ['Saved scan parameters are not a dictionary.']
+        if not isinstance(deviceParameterDict, dict):
+            return warnings + ['Saved device parameters are not a dictionary.']
+
+        roScanDevice = deviceParameterDict.get('roScanDevice')
+        galvoScanDevice = deviceParameterDict.get('galvoScanDevice')
+        cycleScanDevice = deviceParameterDict.get('cycleScanDevice')
+
+        missingPositioners = []
+        for device in [roScanDevice, galvoScanDevice, cycleScanDevice]:
+            if device and device not in self.positioners:
+                missingPositioners.append(device)
+
+        if missingPositioners:
+            warnings.append(
+                f'Missing scan positioner(s): {", ".join(set(missingPositioners))}. '
+                'Scan state was not applied.'
+            )
+            return warnings
+
+        onLaser = deviceParameterDict.get('onLaser')
+        offLaser = deviceParameterDict.get('offLaser')
+        roLaser = deviceParameterDict.get('roLaser')
+
+        missingTTLDevices = []
+        for device in [onLaser, offLaser, roLaser]:
+            if device and device not in self.TTLDevices:
+                missingTTLDevices.append(device)
+
+        if missingTTLDevices:
+            warnings.append(
+                f'Missing TTL device(s): {", ".join(set(missingTTLDevices))}. '
+                'Scan state was not applied.'
+            )
+            return warnings
+
+        self._scanParameterDict = dict(scanParameterDict)
+        self._deviceParameterDict = dict(deviceParameterDict)
+
+        try:
+            self.setParameters()
+            self.setAllSharedAttr()
+        except Exception as e:
+            self._logger.error('Failed to apply TriggerScope GalvoDetection component state')
+            self._logger.error(traceback.format_exc())
+            warnings.append(f'Failed to apply scan state: {e}')
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved TriggerScope GalvoDetection scan state."""
+        if not isinstance(state, dict) or not state:
+            return ["  no scan state"]
+
+        scan = state.get("scanParameterDict") or {}
+        device = state.get("deviceParameterDict") or {}
+        summaries = []
+
+        if state.get("controller"):
+            summaries.append(f"  controller: {state.get('controller')}")
+        if state.get("scanWidgetType"):
+            summaries.append(f"  widget type: {state.get('scanWidgetType')}")
+
+        if device:
+            summaries.append("  devices:")
+            for key in ['onLaser', 'offLaser', 'roLaser',
+                        'roScanDevice', 'galvoScanDevice', 'cycleScanDevice']:
+                value = device.get(key)
+                if value:
+                    summaries.append(f"    {key}: {value}")
+
+        if scan:
+            summaries.append("  scan parameters:")
+            timingKeys = ['timeLapsePoints', 'timeLapseDelayS', 'onTimeMs', 'offTimeMs', 'roTimeMs']
+            for key in timingKeys:
+                value = scan.get(key)
+                if value is not None:
+                    summaries.append(f"    {key}: {value}")
+
+            roKeys = ['roSteps', 'roStepSizeUm', 'roStartPosUm', 'roRestingPosUm']
+            cycleKeys = ['cycleSteps', 'cycleStepSizeUm', 'cycleStartPosUm']
+            galvoKeys = ['galvoFirstPositionUm', 'galvoSecondPositionUm', 'galvoThirdPositionUm']
+
+            for keyList, label in [(roKeys, 'readout'), (cycleKeys, 'cycle'), (galvoKeys, 'galvo')]:
+                vals = {k: scan.get(k) for k in keyList if scan.get(k) is not None}
+                if vals:
+                    summaries.append(f"    {label}: {vals}")
+
+        return summaries or ["  no scan state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved TriggerScope GalvoDetection scan state.
+
+        Scan parameters carry no laser-power-like hazards; laser hazards belong
+        to the Laser component. Returns an empty list.
+        """
+        return []
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'

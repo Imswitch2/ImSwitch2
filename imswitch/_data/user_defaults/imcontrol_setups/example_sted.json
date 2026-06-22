@@ -151,7 +151,8 @@
         "minVolt": 0,
         "maxVolt": 10,
         "vel_max": 1000.0,
-        "acc_max": 1000.0
+        "acc_max": 1000.0,
+        "returnToCenterAfterScan": true
       },
       "axes": ["Z"],
       "forScanning": true
@@ -239,7 +240,7 @@
     "Scan",
     "FocusLock",
     "SLM",
-    "Rotation",
+    "Rotator",
     "RotationScan"
   ],
 

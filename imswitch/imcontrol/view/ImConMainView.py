@@ -16,6 +16,7 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigClosing = QtCore.Signal()
     sigSaveWidgetState = QtCore.Signal()
     sigLoadWidgetState = QtCore.Signal()
+    sigOpenShortcutEditor = QtCore.Signal()
 
     def __init__(self, options, viewSetupInfo, *args, **kwargs):
         self.__logger = initLogger(self)
@@ -32,34 +33,36 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.factory = widgets.WidgetFactory(options)
         self.docks = {}
         self.widgets = {}
-        self.shortcuts = {}
 
         # Menu Bar
         menuBar = self.menuBar()
         file = menuBar.addMenu('&File')
         tools = menuBar.addMenu('&Tools')
-        self.shortcuts = menuBar.addMenu('&Shortcuts')
+        self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
 
         self.loadParamsAction = QtWidgets.QAction('Load parameters from saved HDF5 file…', self)
-        self.loadParamsAction.setShortcut('Ctrl+P')
         self.loadParamsAction.triggered.connect(self.sigLoadParamsFromHDF5)
         file.addAction(self.loadParamsAction)
         
         file.addSeparator()
         
         self.saveWidgetStateAction = QtWidgets.QAction('Save Widget States…', self)
-        self.saveWidgetStateAction.setShortcut('Ctrl+Shift+S')
         self.saveWidgetStateAction.triggered.connect(self.sigSaveWidgetState)
         file.addAction(self.saveWidgetStateAction)
         
         self.loadWidgetStateAction = QtWidgets.QAction('Load Widget States…', self)
-        self.loadWidgetStateAction.setShortcut('Ctrl+Shift+L')
         self.loadWidgetStateAction.triggered.connect(self.sigLoadWidgetState)
         file.addAction(self.loadWidgetStateAction)
 
         self.pickSetupAction = QtWidgets.QAction('Pick hardware setup…', self)
         self.pickSetupAction.triggered.connect(self.sigPickSetup)
         tools.addAction(self.pickSetupAction)
+        
+        # Add Configure Shortcuts action to Shortcuts menu
+        self.configureShortcutsAction = QtWidgets.QAction('Configure Shortcuts…', self)
+        self.configureShortcutsAction.triggered.connect(self.sigOpenShortcutEditor)
+        self.shortcutsMenu.addAction(self.configureShortcutsAction)
+        self.shortcutsMenu.addSeparator()
 
         # Window
         self.setWindowTitle('ImSwitch')
@@ -142,11 +145,38 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.resize(800, 600)
 
     def addShortcuts(self, shortcuts):
-        for s in shortcuts.values():
-            action = QtWidgets.QAction(s["name"], self)
-            action.setShortcut(s["key"])
-            action.triggered.connect(s["callback"])
-            self.shortcuts.addAction(action)
+        """Legacy method - shortcuts are now managed by ShortcutManager.
+        
+        This method is retained for backward compatibility but is no longer used.
+        The ShortcutManager handles all shortcut binding and menu population.
+        """
+        pass
+        
+    def updateMenuActionShortcuts(self, effectiveBindings: Dict[str, str]) -> None:
+        """Update File menu actions to display their effective shortcut keys.
+        
+        Updates the QAction text to include the shortcut hint (\tKey) for display.
+        The actual keyboard binding is managed by ShortcutManager to avoid conflicts.
+        
+        Args:
+            effectiveBindings: Dict mapping actionId to effective key sequence
+        """
+        actionInfo = {
+            'app.loadParams': (self.loadParamsAction, 'Load parameters from saved HDF5 file…'),
+            'app.saveWidgetStates': (self.saveWidgetStateAction, 'Save Widget States…'),
+            'app.loadWidgetStates': (self.loadWidgetStateAction, 'Load Widget States…'),
+        }
+        
+        for actionId, (qAction, baseText) in actionInfo.items():
+            keySeq = effectiveBindings.get(actionId)
+            if keySeq:
+                # Format: "Menu Text\tShortcut" - Qt displays shortcut on the right
+                if isinstance(keySeq, list):
+                    keySeq = keySeq[0]  # Use first key if multiple
+                qAction.setText(f"{baseText}\t{keySeq}")
+            else:
+                # Action is disabled or has no binding
+                qAction.setText(baseText)
 
     def showPickSetupDialogBlocking(self):
         result = self.pickSetupDialog.exec_()
@@ -232,14 +262,15 @@ _DOCK_DISPLAY_NAMES = {
     'ULenses': 'uLenses Tool',
     'FFT': 'FFT Tool',
     'FLIMHist': 'FLIM Lifetime Histogram',
+    'FlipMirror': 'Flip Mirrors',
     'Watcher': 'File Watcher',
     'Tiling': 'Tiling',
     'BFTimelapse': 'BFTimelapse',
     'LightSheetMulticolor': 'Light-Sheet Multicolor',
     'WellPlate': 'Well Plate',
-    'Et': 'Et',
     'EtSnouty': 'EtSnouty',
     'SetupStatus': 'Setup Status',
+    'SetupModes': 'Setup Modes',
     'TriggerScopeRaster': 'TriggerScope Raster Scan',
     'TriggerScopePLSR': 'TriggerScope pLS-RESOLFT',
     'TriggerScopeGalvoDetection': 'TriggerScope Galvo Detection',
@@ -278,13 +309,14 @@ _DEFAULT_RIGHT_DOCK_INFOS = {
     'ULenses':       _DockInfo(name='uLenses Tool',                  yPosition=3),
     'FFT':           _DockInfo(name='FFT Tool',                      yPosition=3),
     'FLIMHist':      _DockInfo(name='FLIM Lifetime Histogram',       yPosition=3),
+    'FlipMirror':    _DockInfo(name='Flip Mirrors',                  yPosition=0),
     'Watcher':               _DockInfo(name='File Watcher',           yPosition=3),
     'Tiling':               _DockInfo(name='Tiling',                 yPosition=3),
     'LightSheetMulticolor': _DockInfo(name='Light-Sheet Multicolor', yPosition=3),
     'WellPlate':            _DockInfo(name='Well Plate',             yPosition=3),
-    'Et':                          _DockInfo(name='Et',                                    yPosition=3),
     'EtSnouty':                    _DockInfo(name='EtSnouty',                              yPosition=0),
     'SetupStatus':                 _DockInfo(name='Setup Status',                          yPosition=0),
+    'SetupModes':                  _DockInfo(name='Setup Modes',                           yPosition=0),
     'TriggerScopeRaster':          _DockInfo(name='TriggerScope Raster Scan',               yPosition=3),
     'TriggerScopePLSR':            _DockInfo(name='TriggerScope pLS-RESOLFT',               yPosition=3),
     'TriggerScopeGalvoDetection':  _DockInfo(name='TriggerScope Galvo Detection',           yPosition=3),

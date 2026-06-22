@@ -1,0 +1,47 @@
+{
+  "detectors": {
+    "ZI Lock-in": {
+      "analogChannel": null,
+      "digitalLine": null,
+      "managerName": "zhinst.lockin-demod",
+      "managerProperties": {
+        "deviceSerial": "DEVXXXX",
+        "serverHost": "localhost",
+        "demodIndex": 0,
+        "signal": "r",
+        "sampleCount": 256,
+        "frameShape": [16, 16],
+        "pollDurationS": 0.05,
+        "useMock": true,
+        "useMockOnFailure": true,
+        "mockAmplitude": 1.0,
+        "mockFrequencyHz": 7.0,
+        "mockNoiseStd": 0.02,
+        "mockSeed": 1
+      },
+      "forAcquisition": true,
+      "forFocusLock": false
+    }
+  },
+  "lasers": {},
+  "positioners": {},
+  "rs232devices": {},
+  "slms": {},
+  "availableWidgets": [
+    "Settings",
+    "View",
+    "Recording",
+    "Image",
+    "ViewerTools",
+    "LineProfile"
+  ],
+  "widgetLayout": {
+    "right": [],
+    "left": [
+      ["Settings"],
+      ["View"],
+      ["ViewerTools", "LineProfile"],
+      ["Recording"]
+    ]
+  }
+}

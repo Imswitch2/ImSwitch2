@@ -88,8 +88,11 @@ class TriggerScopeManager(SignalInterface):
                            len(self._deviceInfo))
 
     def __del__(self):
-        self._thread.quit()
-        self._thread.wait()
+        """ Defensive cleanup — real lifecycle must be explicit via finalize(). """
+        try:
+            self.finalize()
+        except Exception:
+            pass
         if hasattr(super(), '__del__'):
             super().__del__()
 
@@ -136,10 +139,18 @@ class TriggerScopeManager(SignalInterface):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def closeMonitor(self):
-        if self._monitoring:
-            self._thread.quit()
+    def finalize(self):
+        """ Idempotent shutdown: stop and wait for the serial monitor thread.
+        Safe to call multiple times and safe if the monitor was never started. """
+        if hasattr(self, '_monitoring') and self._monitoring:
+            if hasattr(self, '_thread'):
+                self._thread.quit()
+                self._thread.wait()
             self._monitoring = False
+
+    def closeMonitor(self):
+        """ Legacy method — now delegates to finalize() for proper stop+wait. """
+        self.finalize()
 
     # ------------------------------------------------------------------
     # Private

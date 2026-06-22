@@ -8,7 +8,9 @@ from imswitch.imcommon.model import initLogger
 
 class Denoiser:
     def __init__(self) -> None:
-        self.models_dir = os.path.join(getSystemUserDir(), 'ImSwitchConfig\denoising_models')
+        self.models_dir = os.path.join(
+            getSystemUserDir(), "ImSwitchConfig", "denoising_models"
+        )
         self.__logger = initLogger(self, tryInheritParent=False)
         try:
             import torch

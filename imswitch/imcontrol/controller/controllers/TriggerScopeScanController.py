@@ -1,11 +1,19 @@
 import os
+import json
 import configparser
 import traceback
 from ast import literal_eval
 
-from imswitch.imcommon.model import dirtools
+from imswitch.imcommon.model import dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
-from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
+from ..basecontrollers import (
+    ImConWidgetController,
+    ScanLifecycleMixin,
+    StatefulComponentMixin,
+    ComponentStateApplyMode,
+    SetupModeApplyPriority
+)
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
@@ -317,7 +325,7 @@ class _PLSRMulticolorAdapter(_ScanModeAdapter):
         return devices
 
 
-class TriggerScopeScanController(ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopeScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     """Unified controller for the two RESOLFT-family TriggerScope scans.
 
     Hosts a multicolor light-sheet panel and a pLS-RESOLFT multicolor panel
@@ -328,8 +336,16 @@ class TriggerScopeScanController(ScanLifecycleMixin, ImConWidgetController):
     mode.
     """
 
+    componentName = 'TriggerScopeScan'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'scan'
+    setupModeApplyPriority = SetupModeApplyPriority.SCAN
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._logger = initLogger(self)
 
         self.settingAttr = False
         self.isRunning = False
@@ -381,6 +397,8 @@ class TriggerScopeScanController(ScanLifecycleMixin, ImConWidgetController):
         self._commChannel.sigRequestScanParameters.connect(self.sendScanParameters)
         self._commChannel.sigRunScanTriggerScopePLSRMulticolor.connect(
             self.runScanPLSRMulticolorExternal)
+
+        getWidgetStatePersistence().register('TriggerScopeScan', self)
 
     # ------------------------------------------------------------------
     # Mode helpers
@@ -544,6 +562,200 @@ class TriggerScopeScanController(ScanLifecycleMixin, ImConWidgetController):
 
     def closeEvent(self):
         pass
+
+    def getComponentState(self) -> dict:
+        """Snapshot the current TriggerScope Scan (mode-switcher) parameters.
+
+        Saves the state of both adapters (LightSheet and PLSR Multicolor) plus
+        the currently active mode, so the full configuration can be restored.
+        """
+        for adapter in self._adapters.values():
+            adapter.getParameters()
+
+        scanInfo = getattr(self._setupInfo, 'scan', None)
+
+        return {
+            'controller': type(self).__name__,
+            'scanWidgetType': getattr(scanInfo, 'scanWidgetType', None),
+            'activeMode': self._widget.currentMode(),
+            'adapters': {
+                self._widget.MODE_LIGHTSHEET: {
+                    'scanParameterDict': dict(self._adapters[self._widget.MODE_LIGHTSHEET].scanParameterDict),
+                    'deviceParameterDict': dict(self._adapters[self._widget.MODE_LIGHTSHEET].deviceParameterDict),
+                },
+                self._widget.MODE_PLSR: {
+                    'scanParameterDict': dict(self._adapters[self._widget.MODE_PLSR].scanParameterDict),
+                    'deviceParameterDict': dict(self._adapters[self._widget.MODE_PLSR].deviceParameterDict),
+                },
+            },
+        }
+
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore TriggerScope Scan (mode-switcher) parameters from a snapshot.
+
+        CRITICAL SAFETY INVARIANT: This method MUST NEVER start a scan in either mode.
+        It only restores scan parameters for both adapters and the active mode.
+        Starting a scan requires explicit user action (runScan/runScanAdvanced).
+
+        Args:
+            state: Component state dict from getComponentState().
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (behavior is identical).
+
+        Returns:
+            List of warning strings for recoverable issues.
+        """
+        warnings = []
+
+        if self.isRunning:
+            return ['Scan is currently running; scan parameters were not changed.']
+
+        if not isinstance(state, dict):
+            return ['Saved scan state is not a dictionary.']
+
+        savedWidgetType = state.get('scanWidgetType')
+        currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)
+        if savedWidgetType and currentWidgetType and savedWidgetType != currentWidgetType:
+            warnings.append(
+                f'Saved scan widget type "{savedWidgetType}" differs from current '
+                f'"{currentWidgetType}".'
+            )
+
+        activeMode = state.get('activeMode')
+        adapters = state.get('adapters', {})
+
+        if not isinstance(adapters, dict):
+            return warnings + ['Saved adapters state is not a dictionary.']
+
+        # Restore both adapters
+        for modeName, adapterState in adapters.items():
+            if modeName not in self._adapters:
+                warnings.append(f'Unknown scan mode "{modeName}" in saved state.')
+                continue
+
+            if not isinstance(adapterState, dict):
+                warnings.append(f'Adapter state for mode "{modeName}" is not a dictionary.')
+                continue
+
+            scanParameterDict = adapterState.get('scanParameterDict', {})
+            deviceParameterDict = adapterState.get('deviceParameterDict', {})
+
+            if not isinstance(scanParameterDict, dict):
+                warnings.append(f'Scan parameters for mode "{modeName}" are not a dictionary.')
+                continue
+            if not isinstance(deviceParameterDict, dict):
+                warnings.append(f'Device parameters for mode "{modeName}" are not a dictionary.')
+                continue
+
+            # Validate devices for this adapter
+            adapter = self._adapters[modeName]
+
+            # Check positioners (device parameter keys vary by adapter)
+            positionerKeys = [k for k in deviceParameterDict.keys() if 'Device' in k]
+            missingPositioners = []
+            for key in positionerKeys:
+                device = deviceParameterDict.get(key)
+                if device and device not in self.positioners:
+                    missingPositioners.append(device)
+
+            if missingPositioners:
+                warnings.append(
+                    f'Mode "{modeName}": Missing scan positioner(s): {", ".join(set(missingPositioners))}. '
+                    'Parameters for this mode were not applied.'
+                )
+                continue
+
+            # Check TTL devices (laser keys vary by adapter)
+            laserKeys = [k for k in deviceParameterDict.keys() if 'Laser' in k or 'laser' in k]
+            missingTTLDevices = []
+            for key in laserKeys:
+                device = deviceParameterDict.get(key)
+                if device and device not in self.TTLDevices:
+                    missingTTLDevices.append(device)
+
+            if missingTTLDevices:
+                warnings.append(
+                    f'Mode "{modeName}": Missing TTL device(s): {", ".join(set(missingTTLDevices))}. '
+                    'Parameters for this mode were not applied.'
+                )
+                continue
+
+            # Apply the state to the adapter
+            adapter.scanParameterDict = dict(scanParameterDict)
+            adapter.deviceParameterDict = dict(deviceParameterDict)
+
+            try:
+                adapter.setParameters()
+            except Exception as e:
+                self._logger.error(f'Failed to apply TriggerScope Scan component state for mode "{modeName}"')
+                self._logger.error(traceback.format_exc())
+                warnings.append(f'Failed to apply scan state for mode "{modeName}": {e}')
+
+        # Restore the active mode
+        if activeMode and activeMode in self._adapters:
+            try:
+                self._widget.setCurrentMode(activeMode)
+            except Exception as e:
+                self._logger.error('Failed to restore active scan mode')
+                self._logger.error(traceback.format_exc())
+                warnings.append(f'Failed to restore active mode "{activeMode}": {e}')
+
+        try:
+            self.setAllSharedAttr()
+        except Exception as e:
+            self._logger.error('Failed to set shared attributes after applying component state')
+            self._logger.error(traceback.format_exc())
+            warnings.append(f'Failed to set shared attributes: {e}')
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved TriggerScope Scan state."""
+        if not isinstance(state, dict) or not state:
+            return ["  no scan state"]
+
+        summaries = []
+
+        if state.get("controller"):
+            summaries.append(f"  controller: {state.get('controller')}")
+        if state.get("scanWidgetType"):
+            summaries.append(f"  widget type: {state.get('scanWidgetType')}")
+        if state.get("activeMode"):
+            summaries.append(f"  active mode: {state.get('activeMode')}")
+
+        adapters = state.get("adapters", {})
+        if adapters:
+            summaries.append("  adapters:")
+            for modeName, adapterState in adapters.items():
+                summaries.append(f"    {modeName}:")
+                scan = adapterState.get("scanParameterDict") or {}
+                device = adapterState.get("deviceParameterDict") or {}
+
+                if device:
+                    deviceItems = [f"{k}={v}" for k, v in device.items() if v]
+                    if deviceItems:
+                        summaries.append(f"      devices: {', '.join(deviceItems[:3])}" +
+                                         (f" (+{len(deviceItems)-3} more)" if len(deviceItems) > 3 else ""))
+
+                if scan:
+                    scanItems = [f"{k}={v}" for k, v in scan.items() if v is not None]
+                    if scanItems:
+                        summaries.append(f"      parameters: {len(scanItems)} items")
+
+        return summaries or ["  no scan state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved TriggerScope Scan state.
+
+        Scan parameters carry no laser-power-like hazards; laser hazards belong
+        to the Laser component. Returns an empty list.
+        """
+        return []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

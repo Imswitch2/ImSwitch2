@@ -83,6 +83,20 @@ accepted target, and runs WidefieldStarss at each cell.
 **Output**: Tiling overview files plus one WidefieldStarss H/V acquisition per
 cell.
 
+### 10_photoswitching_kinetics.py
+Record repeated dark, readout, switch, and recovery phases for basic
+photoswitching, bleaching, and recovery kinetics measurements.
+
+**Output**: Phase TIFF stacks plus `per_frame_summary.csv` and `phase_plan.csv`
+under `~/ImSwitchMeasurements/<date>/photoswitching_<time>/`.
+
+### 11_scmos_dark_current_calibration.py
+Acquire dark stacks at multiple exposure times and fit first-pass offset, dark
+current, read-noise, and thermal-noise maps for an sCMOS camera.
+
+**Output**: Calibration TIFF maps plus `exposure_summary.csv` and `metadata.json`
+under `~/ImSwitchMeasurements/<date>/camera_dark_calibration_<time>/`.
+
 ## How to Run
 
 1. Open ImSwitch and load your setup configuration (e.g., `example_kiralux_teensy.json`)

@@ -1,3 +1,4 @@
+import json
 import traceback
 import configparser
 from math import ceil
@@ -6,7 +7,7 @@ import numpy as np
 from imswitch.imcommon.model import APIExport
 from ast import literal_eval
 
-from ..basecontrollers import SuperScanController
+from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.view.guitools import colorutils
 from PyQt5.QtCore import QTimer
 import copy
@@ -52,7 +53,7 @@ class ScanControllerMoNaLISA(SuperScanController):
 
         self._commChannel.beadRecWorkflow.on_center_coord_pipeline_finished(self.centerCoordPipelineFinished)
 
-        getWidgetStatePersistence().register('ScanControllerMoNaLISA', self)
+        getWidgetStatePersistence().register('Scan', self)
 
     def getDimsScan(self):
         # TODO: Make sure this works as intended
@@ -198,7 +199,7 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def onPipelineTimeout(self):
         if self.awaitingPipeline:
-            print("Pipeline analysis timed out! Proceeding without axial scan.")
+            self._logger.warning("Pipeline analysis timed out! Proceeding without axial scan.")
             self.awaitingPipeline = False
             self.axialListBuffer = []
             self.scanDone()
@@ -216,7 +217,7 @@ class ScanControllerMoNaLISA(SuperScanController):
                 if (x>1 and y>1 and z < 2):
                     self.autoAxial = True
                 else:
-                    print("Auto axial scan only available for a 2d XY scan")
+                    self._logger.info("Auto axial scan only available for a 2d XY scan")
                     self.autoAxial = False
         except Exception as e:
             self.autoAxial = False
@@ -241,7 +242,7 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def updateScanParamForAxial(self):
         if self.centerCoord is None: #should never happen though
-            print("Could not update scan parameter for axial because self.centercoord = None")
+            self._logger.error("Could not update scan parameter for axial because self.centercoord = None")
             return
 
         # first we save XY scan parameters
@@ -360,7 +361,8 @@ class ScanControllerMoNaLISA(SuperScanController):
                 length = float(self._widget.scanPar['sizeAxial'].text())
                 pixels = round(float(length)/float(stepSize))
                 self._widget.scanPar['pixelsAxial'].setText(str(pixels))
-        except:
+        except Exception as e:
+            self._logger.debug(f"Failed to update axial pixels: {e}")
             pass
 
 
@@ -398,81 +400,11 @@ class ScanControllerMoNaLISA(SuperScanController):
         if not self._widget.isContLaserMode():  # Cont. laser pulses mode is not a real scan
             signal.emit(*args)
 
-    def saveScanParamsToFile(self, filePath: str) -> None:
-        """ Saves the set scanning parameters to the specified file. """
-        self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-
-        config['analogParameterDict'] = self._analogParameterDict
-        config['digitalParameterDict'] = self._digitalParameterDict
-        config['Modes'] = {'scan_or_not': self._widget.isScanMode()}
-
-        with open(filePath, 'w') as configfile:
-            config.write(configfile)
-
-    @APIExport(runOnUIThread=True)
-    def loadScanParamsFromFile(self, filePath: str) -> None:
-        """ Loads scanning parameters from the specified file. """
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
-
-        for key in self._analogParameterDict:
-            self._analogParameterDict[key] = literal_eval(
-                config._sections['analogParameterDict'][key]
-            )
-
-        for key in self._digitalParameterDict:
-            self._digitalParameterDict[key] = literal_eval(
-                config._sections['digitalParameterDict'][key]
-            )
-
-        scanOrNot = (config._sections['Modes']['scan_or_not'] == 'True')
-        if scanOrNot:
-            self._widget.setScanMode()
-        else:
-            self._widget.setContLaserMode()
-
-        self.setParameters()
-
     # ------------------------------------------------------------------
     # Widget State Persistence Interface
     # ------------------------------------------------------------------
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        self.getParameters()
-        state: Dict[str, Any] = {
-            'version': 1,
-            'analogParameterDict': dict(self._analogParameterDict),
-            'digitalParameterDict': dict(self._digitalParameterDict),
-        }
-        try:
-            state['scan_mode'] = self._widget.isScanMode()
-        except Exception:
-            pass
-        return state
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        try:
-            if 'analogParameterDict' in state:
-                self._analogParameterDict.update(state['analogParameterDict'])
-            if 'digitalParameterDict' in state:
-                self._digitalParameterDict.update(state['digitalParameterDict'])
-            self.setParameters()
-            if state.get('scan_mode', True):
-                try:
-                    self._widget.setScanMode()
-                except Exception:
-                    pass
-            else:
-                try:
-                    self._widget.setContLaserMode()
-                except Exception:
-                    pass
-            self._logger.info('MoNaLISA scan state restored successfully')
-        except Exception as e:
-            self._logger.error(f'Failed to restore MoNaLISA scan state: {e}')
 
     def getStateSchemaVersion(self) -> int:
         return 1

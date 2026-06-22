@@ -6,7 +6,7 @@
   "summary": "Leica motorized stand (cubes, objectives, correction collar). Required for the MotCorr widget.",
   "requires_widget": "MotCorr",
   "fields": [
-    {"key": "managerName",        "label": "Manager class", "type": "text", "default": "LeicaStandManager", "req": true, "grp": "Basic", "tip": "Stand manager class name, e.g. LeicaStandManager.", "opts": []},
+    {"key": "managerName",        "label": "Manager class", "type": "text", "default": "LeicaDMIStandMockManager", "req": true, "grp": "Basic", "tip": "Stand manager class name, e.g. LeicaDMIStandMockManager.", "opts": []},
     {"key": "rs232device",        "label": "RS232 device",  "type": "ref",  "default": "",                   "req": true, "grp": "Basic", "tip": "Name of the RS232 connection to use (must match a rs232devices entry).", "opts": ["rs232devices"]},
     {"key": "managerProperties",  "label": "Properties",    "type": "json", "default": "{}",                 "req": false,"grp": "Basic", "tip": "Stand-specific JSON dict, e.g. available cubes.", "opts": []}
   ]

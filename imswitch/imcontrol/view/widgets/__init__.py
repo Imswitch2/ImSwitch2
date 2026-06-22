@@ -22,6 +22,7 @@ _WIDGET_MODULES = {
     # "EtWidget": "EtWidget",  # Prototype on old Monalisa machine.
     "FFTWidget": "FFTWidget",
     "FLIMHistWidget": "FLIMHistWidget",
+    "FlipMirrorWidget": "FlipMirrorWidget",
     "FocusLockWidget": "FocusLockWidget",
     "ImageWidget": "ImageWidget",
     "LaserWidget": "LaserWidget",
@@ -39,6 +40,7 @@ _WIDGET_MODULES = {
     "ScanWidgetPointScan": "ScanWidgetPointScan",
     "SettingsWidget": "SettingsWidget",
     "SetupStatusWidget": "SetupStatusWidget",
+    "SetupModesWidget": "SetupModesWidget",
     "SLMWidget": "SLMWidget",
     "SLMsWidget": "SLMsWidget",
     "TilingWidget": "TilingWidget",
@@ -52,6 +54,7 @@ _WIDGET_MODULES = {
     "ViewWidget": "ViewWidget",
     "ViewerToolsWidget": "ViewerToolsWidget",
     "WatcherWidget": "WatcherWidget",
+    "WellPlateWidget": "WellPlateWidget",
     "WidgetFactory": "basewidgets",
 }
 

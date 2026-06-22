@@ -2,12 +2,16 @@ from typing import Dict, List, Any
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
 from qtpy.QtCore import QTimer
 
-class PositionerController(ImConWidgetController):
+class PositionerController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to PositionerWidget."""
+
+    componentName = 'Positioner'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -27,16 +31,21 @@ class PositionerController(ImConWidgetController):
             if not pManager.forPositioning:
                 continue
 
-            if pName == 'Stage':
-                if self._master.positionersManager[pName].device is None:
-                    continue
+            if getattr(pManager, 'device', True) is None:
+                continue
 
             if pManager.joystick:
                 self._widget.addJoystick(pName)
 
             speed = hasattr(pManager, 'speed')
-            self._widget.addPositioner(pName, pManager.axes, speed, pManager.joystick,
-                                       shortcutModifier=pManager.shortcutModifier)
+            self._widget.addPositioner(
+                pName,
+                pManager.axes,
+                speed,
+                pManager.joystick,
+                shortcutModifier=pManager.shortcutModifier,
+                unit=getattr(pManager, 'positionUnit', 'µm')
+            )
             for axis in pManager.axes:
                 self.setSharedAttr(pName, axis, _positionAttr, pManager.position[axis])
                 if speed:
@@ -77,8 +86,8 @@ class PositionerController(ImConWidgetController):
         self._widget.sigStepDownClicked.connect(self.stepDown)
         self._widget.sigsetSpeedClicked.connect(self.setSpeedGUI)
         
-        # Register for widget state persistence
-        getWidgetStatePersistence().register('PositionerController', self)
+        # Register for unified state persistence (canonical name)
+        getWidgetStatePersistence().register('Positioner', self)
     
 
     def _onManagerJoystickStatusChanged(self, pName, enabled):
@@ -277,19 +286,17 @@ class PositionerController(ImConWidgetController):
         set step size. """
         self.stepDown(positionerName, axis)
     
-    # Widget State Persistence Interface
+    # Unified State Persistence Interface (StatefulComponentMixin)
     
-    def getWidgetState(self) -> Dict[str, Any]:
-        """
-        Get current widget state for persistence.
+    def getComponentState(self) -> dict:
+        """Snapshot current positioner step sizes for both startup and setup modes.
         
         Returns step sizes per (positionerName, axis) pair.
-        Does NOT include position values or speed — those are hardware state.
+        Does NOT include position values or speed — those are hardware state,
+        not UI settings.
         
         Returns:
-            Dict with structure:
             {
-                'version': 1,
                 'step_sizes': {
                     positionerName: {
                         axis: float,
@@ -299,10 +306,7 @@ class PositionerController(ImConWidgetController):
                 }
             }
         """
-        state = {
-            'version': 1,
-            'step_sizes': {}
-        }
+        state = {'step_sizes': {}}
         
         for pName, pManager in self._master.positionersManager:
             if not pManager.forPositioning:
@@ -319,54 +323,98 @@ class PositionerController(ImConWidgetController):
         
         return state
     
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        """
-        Restore widget state from persistence.
+    def applyComponentState(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode
+    ) -> list[str]:
+        """Restore positioner step sizes from a snapshot.
         
-        SAFETY: Does NOT restore position values or speed. Only restores:
-        - Step sizes per (positionerName, axis) pair
+        IDENTICAL behavior in both STARTUP_RESTORE and SETUP_MODE_APPLY:
+        - Restore step sizes per (positionerName, axis) pair
+        
+        NEVER (in either mode):
+        - Move any stage
+        - Change speed settings
+        - Activate hardware
+        
+        Per spec Section 0 D2: settings only, never activation.
         
         Args:
-            state: Dict returned by getWidgetState()
-        """
-        try:
-            step_sizes = state.get('step_sizes', {})
-            
-            for pName, axes_state in step_sizes.items():
-                # Check if positioner exists in current setup
-                if pName not in [name for name, _ in self._master.positionersManager]:
-                    self._logger.debug(
-                        f'Skipping state for non-existent positioner: {pName}'
-                    )
-                    continue
-                
-                pManager = self._master.positionersManager[pName]
-                if not pManager.forPositioning:
-                    continue
-                
-                for axis, step_size in axes_state.items():
-                    # Check if axis exists in current positioner
-                    if axis not in pManager.axes:
-                        self._logger.debug(
-                            f'Skipping state for non-existent axis: {pName}.{axis}'
-                        )
-                        continue
-                    
-                    try:
-                        self._widget.setStepSize(pName, axis, str(step_size))
-                    except Exception as e:
-                        self._logger.warning(
-                            f'Failed to restore step size for positioner {pName}, axis {axis}: {e}'
-                        )
-            
-            self._logger.debug('Widget state restored successfully')
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (no behavioral difference)
         
-        except Exception as e:
-            self._logger.error(f'Failed to restore widget state: {e}')
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
+        warnings = []
+        step_sizes = state.get('step_sizes', {})
+        known_positioners = {name for name, _ in self._master.positionersManager}
+        
+        for pName, axes_state in step_sizes.items():
+            if pName not in known_positioners:
+                warnings.append(f'Positioner "{pName}" not present in current setup; skipped.')
+                continue
+            
+            pManager = self._master.positionersManager[pName]
+            if not pManager.forPositioning:
+                continue
+            
+            for axis, step_size in axes_state.items():
+                if axis not in pManager.axes:
+                    warnings.append(f'Axis "{axis}" not present in positioner "{pName}"; skipped.')
+                    continue
+                
+                try:
+                    self._widget.setStepSize(pName, axis, str(step_size))
+                except Exception as e:
+                    warnings.append(f'Failed to restore step size for {pName}.{axis}: {e}')
+        
+        return warnings
     
-    def getStateSchemaVersion(self) -> int:
-        """Return schema version for state compatibility checking."""
-        return 1
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved positioner step sizes.
+        
+        Args:
+            state: Dict returned by getComponentState()
+        
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        step_sizes = state.get('step_sizes', {})
+        if not step_sizes:
+            return ['  no positioner step sizes saved']
+        
+        summaries = ['  step sizes:']
+        for pName in sorted(step_sizes.keys()):
+            axes_state = step_sizes[pName]
+            for axis in sorted(axes_state.keys()):
+                step_size = axes_state[axis]
+                summaries.append(f'    {pName}.{axis}: {step_size:.2f} µm')
+        
+        return summaries
+    
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify potential hazards in saved positioner state.
+        
+        Positioner step sizes have no hazards (they do not move the stage).
+        
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY
+            context: Optional consumer-provided context (unused)
+        
+        Returns:
+            Empty list (no hazards)
+        """
+        return []
 
 
 

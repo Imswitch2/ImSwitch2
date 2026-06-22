@@ -2,87 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 from scipy.ndimage import map_coordinates
-from scipy.optimize import curve_fit
 
 from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
-
-
-@dataclass
-class FitResult:
-    name: str
-    x: np.ndarray
-    y: np.ndarray
-    summary: str
-
-
-class ProfileFit:
-    """Base contract for profile fit backends."""
-
-    id = "none"
-    label = "No fit"
-
-    def fit(self, x: np.ndarray, y: np.ndarray) -> FitResult | None:
-        return None
-
-
-class GaussianFit(ProfileFit):
-    """Single Gaussian plus constant offset."""
-
-    id = "gaussian"
-    label = "Gaussian"
-
-    @staticmethod
-    def _model(x, offset, amplitude, center, sigma):
-        return offset + amplitude * np.exp(-((x - center) ** 2) / (2 * sigma ** 2))
-
-    def fit(self, x: np.ndarray, y: np.ndarray) -> FitResult | None:
-        finite = np.isfinite(x) & np.isfinite(y)
-        x = np.asarray(x[finite], dtype=float)
-        y = np.asarray(y[finite], dtype=float)
-        if x.size < 4:
-            return None
-
-        offset0 = float(np.nanmin(y))
-        amplitude0 = float(np.nanmax(y) - offset0)
-        if amplitude0 <= 0:
-            return None
-        center0 = float(x[np.nanargmax(y)])
-        sigma0 = max(float((x.max() - x.min()) / 6.0), 1.0)
-
-        try:
-            popt, _ = curve_fit(
-                self._model,
-                x,
-                y,
-                p0=(offset0, amplitude0, center0, sigma0),
-                bounds=(
-                    [-np.inf, 0.0, float(x.min()), 1e-6],
-                    [np.inf, np.inf, float(x.max()), np.inf],
-                ),
-                maxfev=10000,
-            )
-        except Exception:
-            return None
-
-        xx = np.linspace(float(x.min()), float(x.max()), max(200, x.size))
-        yy = self._model(xx, *popt)
-        _, amplitude, center, sigma = popt
-        fwhm = 2.354820045 * abs(float(sigma))
-        summary = (
-            f"A={amplitude:.4g}, center={center:.4g}, "
-            f"sigma={abs(float(sigma)):.4g}, FWHM={fwhm:.4g}"
-        )
-        return FitResult(self.label, xx, yy, summary)
+from imswitch.improcess.profile_helpers import (
+    ProfileFit,
+    GaussianFit,
+    build_profile_record,
+)
 
 
 class ProfileWidget(QtWidgets.QWidget):
     """Draw line/rectangle ROIs on a napari viewer and plot their profiles."""
+
+    sigResultPushed = QtCore.Signal(object, object)
 
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -91,6 +27,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self._fitters = {fit.id: fit for fit in (ProfileFit(), GaussianFit())}
         self._last_kind = None
         self._last_payload: list[tuple[str, np.ndarray, np.ndarray]] = []
+        self._current_record_inputs = []
 
         self.modeButtons = QtWidgets.QButtonGroup(self)
         self.panButton = self._makeModeButton("Pan", "pan", checked=True)
@@ -107,6 +44,9 @@ class ProfileWidget(QtWidgets.QWidget):
         self.fitCombo = QtWidgets.QComboBox()
         for fit in self._fitters.values():
             self.fitCombo.addItem(fit.label, fit.id)
+
+        self.pushButton = QtWidgets.QPushButton("Push to table")
+        self.saveButton = QtWidgets.QPushButton("Save CSV...")
 
         self.fitSummary = QtWidgets.QLabel("")
         self.fitSummary.setWordWrap(True)
@@ -128,6 +68,9 @@ class ProfileWidget(QtWidgets.QWidget):
         toolbar.addSpacing(8)
         toolbar.addWidget(QtWidgets.QLabel("Fit"))
         toolbar.addWidget(self.fitCombo)
+        toolbar.addSpacing(8)
+        toolbar.addWidget(self.pushButton)
+        toolbar.addWidget(self.saveButton)
         toolbar.addStretch()
 
         layout = QtWidgets.QVBoxLayout()
@@ -141,6 +84,8 @@ class ProfileWidget(QtWidgets.QWidget):
         self.clearButton.clicked.connect(self._clearShapes)
         self.widthSpinBox.valueChanged.connect(self._refresh)
         self.fitCombo.currentIndexChanged.connect(self._refresh)
+        self.pushButton.clicked.connect(self._onPushToTable)
+        self.saveButton.clicked.connect(self._onSaveCSV)
         self._toolManager.sigShapesChanged.connect(self._shapesChanged)
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self._refresh())
@@ -192,6 +137,7 @@ class ProfileWidget(QtWidgets.QWidget):
     def _drawEmpty(self):
         self._last_kind = None
         self._last_payload = []
+        self._current_record_inputs = []
         self.fitSummary.setText("")
         self.plot.clear()
         self.plot.setTitle("Draw a line or rectangle on the reconstruction view")
@@ -205,6 +151,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
         self.plot.setLabel("left", "Intensity")
         self._last_payload = []
+        self._current_record_inputs = []
 
         if endpoints is None:
             self.fitSummary.setText("")
@@ -220,11 +167,15 @@ class ProfileWidget(QtWidgets.QWidget):
             self.fitSummary.setText("")
             return
 
+        length_px = float(np.hypot(r1 - r0, c1 - c0))
         row_scale, col_scale = self._visiblePixelScales()
-        length = float(np.hypot((r1 - r0) * row_scale, (c1 - c0) * col_scale))
-        x = np.linspace(0.0, length, profile.size)
+        length_scaled = float(np.hypot((r1 - r0) * row_scale, (c1 - c0) * col_scale))
+        x = np.linspace(0.0, length_scaled, profile.size)
         self.plot.plot(x, profile, pen=pg.mkPen("r", width=2), name="line")
         self._last_payload = [("line", x, profile)]
+        
+        unit = self._distanceUnit()
+        self._current_record_inputs = [("line", x, profile, length_px, length_scaled, unit)]
         self._applyFits()
 
     def _plotRectangleProfiles(self, bounds):
@@ -234,6 +185,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
         self.plot.setLabel("left", "Mean intensity")
         self._last_payload = []
+        self._current_record_inputs = []
 
         if bounds is None:
             self.fitSummary.setText("")
@@ -262,6 +214,16 @@ class ProfileWidget(QtWidgets.QWidget):
         self.plot.plot(x, x_profile, pen=pg.mkPen("r", width=2), name="x")
         self.plot.plot(y, y_profile, pen=pg.mkPen("#00cc44", width=2), name="y")
         self._last_payload = [("x", x, x_profile), ("y", y, y_profile)]
+        
+        unit = self._distanceUnit()
+        x_length_px = float(chi - clo)
+        x_length_scaled = float(x_profile.size * col_scale)
+        y_length_px = float(rhi - rlo)
+        y_length_scaled = float(y_profile.size * row_scale)
+        self._current_record_inputs = [
+            ("rectangle-x", x, x_profile, x_length_px, x_length_scaled, unit),
+            ("rectangle-y", y, y_profile, y_length_px, y_length_scaled, unit)
+        ]
         self._applyFits()
 
     def _applyFits(self):
@@ -269,17 +231,41 @@ class ProfileWidget(QtWidgets.QWidget):
         fitter = self._fitters.get(fit_id)
         if fitter is None or fitter.id == "none":
             self.fitSummary.setText("")
+            updated_inputs = []
+            for rec_input in self._current_record_inputs:
+                if len(rec_input) == 6:
+                    updated_inputs.append(rec_input + (None,))
+                else:
+                    updated_inputs.append((rec_input[0], rec_input[1], rec_input[2], 
+                                         rec_input[3], rec_input[4], rec_input[5], None))
+            self._current_record_inputs = updated_inputs
             return
 
         summaries = []
+        updated_inputs = []
         for index, (name, x, y) in enumerate(self._last_payload):
             result = fitter.fit(x, y)
             if result is None:
                 summaries.append(f"{name}: fit failed")
+                if index < len(self._current_record_inputs):
+                    rec_input = self._current_record_inputs[index]
+                    if len(rec_input) == 6:
+                        updated_inputs.append(rec_input + (None,))
+                    else:
+                        updated_inputs.append((rec_input[0], rec_input[1], rec_input[2], 
+                                             rec_input[3], rec_input[4], rec_input[5], None))
                 continue
             pen = pg.mkPen(pg.intColor(index + 3), width=2, style=QtCore.Qt.DashLine)
             self.plot.plot(result.x, result.y, pen=pen, name=f"{name} {result.name}")
             summaries.append(f"{name}: {result.summary}")
+            if index < len(self._current_record_inputs):
+                rec_input = self._current_record_inputs[index]
+                if len(rec_input) == 6:
+                    updated_inputs.append(rec_input + (result.metrics,))
+                else:
+                    updated_inputs.append((rec_input[0], rec_input[1], rec_input[2], 
+                                         rec_input[3], rec_input[4], rec_input[5], result.metrics))
+        self._current_record_inputs = updated_inputs
         self.fitSummary.setText(" | ".join(summaries))
 
     def _currentImage2D(self):
@@ -333,6 +319,67 @@ class ProfileWidget(QtWidgets.QWidget):
         if unit == "um":
             return "µm"
         return str(unit or "px")
+
+    def _onPushToTable(self):
+        if not self._current_record_inputs:
+            return
+        from imswitch.improcess.view.ResultsTableWidget import merge_columns
+        
+        records = []
+        for rec_input in self._current_record_inputs:
+            if len(rec_input) == 7:
+                kind, x, y, length_px, length_scaled, unit, fit_metrics = rec_input
+            else:
+                kind, x, y, length_px, length_scaled, unit = rec_input
+                fit_metrics = None
+            record = build_profile_record(kind, x, y, 
+                                        length_px=length_px, 
+                                        length_scaled=length_scaled, 
+                                        unit=unit, 
+                                        fit_metrics=fit_metrics)
+            records.append(record)
+        
+        columns = []
+        for record in records:
+            columns = merge_columns(columns, record.keys())
+        
+        self.sigResultPushed.emit(columns, records)
+
+    def _onSaveCSV(self):
+        if not self._current_record_inputs:
+            return
+        from imswitch.improcess.view.ResultsTableWidget import merge_columns, records_to_csv
+        
+        records = []
+        for rec_input in self._current_record_inputs:
+            if len(rec_input) == 7:
+                kind, x, y, length_px, length_scaled, unit, fit_metrics = rec_input
+            else:
+                kind, x, y, length_px, length_scaled, unit = rec_input
+                fit_metrics = None
+            record = build_profile_record(kind, x, y, 
+                                        length_px=length_px, 
+                                        length_scaled=length_scaled, 
+                                        unit=unit, 
+                                        fit_metrics=fit_metrics)
+            records.append(record)
+        
+        columns = []
+        for record in records:
+            columns = merge_columns(columns, record.keys())
+        
+        filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save CSV", "", "CSV (*.csv)"
+        )
+        if not filepath:
+            return
+        
+        csv_text = records_to_csv(columns, records)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(csv_text)
+        except Exception as e:
+            self.fitSummary.setText(f"Error saving CSV: {e}")
 
     @staticmethod
     def _isImageLayer(layer):

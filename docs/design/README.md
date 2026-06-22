@@ -11,6 +11,7 @@ diagrams, subsystem specifications, and historical plans. These are
 | File | Purpose |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Dependency map: modules, managers, controllers, widgets, signal flow, third-party libraries |
+| [DEVICE_PLUGINS.md](DEVICE_PLUGINS.md) | Proposed architecture and implementation plan for external device plugin packages |
 | [WIDGET_STATE_PERSISTENCE.md](WIDGET_STATE_PERSISTENCE.md) | How widget controllers opt into save/load of their state |
 | [plans/](plans/) | Historical and active integration plans (etSTED 2.0, layer lifecycle, WS integration, etc.) |
 

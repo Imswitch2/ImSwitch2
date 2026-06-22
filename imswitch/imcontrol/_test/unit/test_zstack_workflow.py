@@ -16,12 +16,12 @@ from imswitch.imcontrol.model.workflows import (
 def test_zstack_software_mode():
     """Z-stack in software (live) mode: correct number of frames, return to start."""
     facade = build_mock_facade()
-    
+
     # Mock camera returns 10 planes of 64×64 frames
     n_planes = 10
     mock_frames = np.random.randint(0, 1000, (n_planes, 64, 64), dtype=np.uint16)
     facade.cam.set_canned_data(mock_frames)
-    
+
     params = ZStackParams(
         n_planes=n_planes,
         step_um=1.0,
@@ -30,18 +30,18 @@ def test_zstack_software_mode():
         exposure_us=50000.0,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
     stack, z_positions = workflow.run(save_stack=False, z_start=50.0)
-    
+
     # Verify stack shape
     assert stack.shape == (n_planes, 64, 64)
     assert len(z_positions) == n_planes
-    
+
     # Verify z positions are centered around z_start
     assert z_positions[0] == pytest.approx(50.0 - (n_planes - 1) * 0.5, abs=0.01)
     assert z_positions[-1] == pytest.approx(50.0 + (n_planes - 1) * 0.5, abs=0.01)
-    
+
     # Verify method call sequence
     call_names = facade.call_names()
     assert "z_stage_con.activate_ext_control" in call_names
@@ -51,10 +51,40 @@ def test_zstack_software_mode():
     assert call_names.count("cam.start_live") == n_planes
     assert call_names.count("cam.stop_live") == n_planes
     assert "laser_con.set_modulation_mode" in call_names
-    
+
     # Verify return to start position
     set_pos_calls = [c for c in facade.calls if c[0] == "z_stage_con.set_pos_um"]
     assert set_pos_calls[-1][1][0] == pytest.approx(50.0, abs=0.01)
+
+
+@pytest.mark.nohardware
+def test_zstack_software_mode_uses_configured_laser_name(monkeypatch):
+    """Continuous Z-stack mode should address the configured facade laser key."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.ones((1, 16, 16), dtype=np.uint16))
+    monkeypatch.setattr(
+        "imswitch.imcontrol.model.workflows.z_stack.time.sleep",
+        lambda _seconds: None,
+    )
+
+    params = ZStackParams(
+        n_planes=1,
+        step_um=1.0,
+        pulsed=False,
+        laser_power_488_mw=42.0,
+        measurements_root="/tmp",
+        laser_name="widefield",
+    )
+
+    workflow = ZStackWorkflow(facade, params)
+    workflow.run(save_stack=False, z_start=50.0)
+
+    assert (
+        "laser_con.set_constant_power",
+        (["widefield"], [42.0]),
+        {},
+    ) in facade.calls
+    assert ("laser_con.set_modulation_mode", (["widefield"],), {}) in facade.calls
 
 
 @pytest.mark.nohardware
@@ -66,7 +96,15 @@ def test_zstack_save_uses_default_root_when_params_root_is_none(monkeypatch, tmp
     saved_paths = []
 
     monkeypatch.setenv("IMSWITCH_WORKFLOW_MEASUREMENTS_ROOT", str(tmp_path))
-    monkeypatch.setattr(tf, "imwrite", lambda path, stack: saved_paths.append(path))
+    # _save() now writes the TIFF into a buffer then commits it atomically via
+    # atomic_write(content, out_path); capture the final path there (tf.imwrite
+    # receives the in-memory buffer, not the path).
+    from imswitch.imcontrol.model.workflows import z_stack as zstack_mod
+    monkeypatch.setattr(tf, "imwrite", lambda buf, stack, **kwargs: None)
+    monkeypatch.setattr(
+        zstack_mod, "atomic_write",
+        lambda content, target_path: saved_paths.append(target_path),
+    )
 
     workflow._save(np.zeros((1, 4, 4), dtype=np.uint16))
 
@@ -78,11 +116,11 @@ def test_zstack_save_uses_default_root_when_params_root_is_none(monkeypatch, tmp
 def test_zstack_hardware_triggered_mode():
     """Z-stack in hardware-triggered mode: uses trig.snap_trigger."""
     facade = build_mock_facade()
-    
+
     n_planes = 5
     mock_frames = np.random.randint(0, 1000, (n_planes, 128, 128), dtype=np.uint16)
     facade.cam.set_canned_data(mock_frames)
-    
+
     params = ZStackParams(
         n_planes=n_planes,
         step_um=2.0,
@@ -93,10 +131,10 @@ def test_zstack_hardware_triggered_mode():
         exposure_us=100000.0,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
     stack, z_positions = workflow.run(save_stack=False, z_start=60.0)
-    
+
     # Verify triggered mode was set
     call_names = facade.call_names()
     assert "laser_con.set_triggered_mode" in call_names
@@ -105,7 +143,7 @@ def test_zstack_hardware_triggered_mode():
     assert call_names.count("cam.start_acquisition") == n_planes
     assert call_names.count("cam.stop_acquisition") == n_planes
     assert call_names.count("cam.wait_for_frame") == n_planes
-    
+
     # Verify snap_trigger was called with correct parameters
     snap_calls = [c for c in facade.calls if c[0] == "trig.snap_trigger"]
     assert len(snap_calls) == n_planes
@@ -116,25 +154,57 @@ def test_zstack_hardware_triggered_mode():
 
 
 @pytest.mark.nohardware
+def test_zstack_triggered_mode_uses_configured_laser_name(monkeypatch):
+    """Triggered Z-stack mode should address the configured facade laser key."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.ones((1, 16, 16), dtype=np.uint16))
+    monkeypatch.setattr(
+        "imswitch.imcontrol.model.workflows.z_stack.time.sleep",
+        lambda _seconds: None,
+    )
+
+    params = ZStackParams(
+        n_planes=1,
+        step_um=1.0,
+        pulsed=True,
+        laser_pin=3,
+        camera_pin=4,
+        laser_power_488_mw=42.0,
+        measurements_root="/tmp",
+        laser_name="widefield",
+    )
+
+    workflow = ZStackWorkflow(facade, params)
+    workflow.run(save_stack=False, z_start=50.0)
+
+    assert (
+        "laser_con.set_triggered_mode",
+        (["widefield"], [42.0]),
+        {},
+    ) in facade.calls
+    assert ("laser_con.set_modulation_mode", (["widefield"],), {}) in facade.calls
+
+
+@pytest.mark.nohardware
 def test_zstack_position_clamping():
     """Z positions are clamped to piezo range."""
     facade = build_mock_facade()
     facade.z_stage_con.pos_range_um = (10.0, 90.0)
-    
+
     n_planes = 20
     mock_frames = np.random.randint(0, 1000, (n_planes, 64, 64), dtype=np.uint16)
     facade.cam.set_canned_data(mock_frames)
-    
+
     params = ZStackParams(
         n_planes=n_planes,
         step_um=10.0,  # Would span 190 µm unclamped
         pulsed=False,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
     stack, z_positions = workflow.run(save_stack=False, z_start=50.0)
-    
+
     # All positions should be within range
     assert all(10.0 <= z <= 90.0 for z in z_positions)
     assert z_positions[0] == 10.0  # Clamped to min
@@ -145,7 +215,7 @@ def test_zstack_position_clamping():
 def test_zstack_autofocus_success():
     """Autofocus computes focus from gradient energy and moves stage."""
     facade = build_mock_facade()
-    
+
     n_planes = 11
     # Create simple synthetic stack with clear peak at center
     # Use purely deterministic pattern (no random component)
@@ -154,36 +224,36 @@ def test_zstack_autofocus_success():
         # Simple triangular sharpness profile centered at plane 5
         sharpness = 1.0 - abs(i - 5) / 6.0
         sharpness = max(0.2, sharpness)  # Floor at 0.2
-        
+
         # Create deterministic edge grid
         frame = np.ones((128, 128), dtype=np.float32) * 500
         # Grid pattern with strength proportional to sharpness
         grid_val = sharpness * 3000.0
         frame[::4, :] = grid_val
         frame[:, ::4] = grid_val
-        
+
         frame = frame.astype(np.uint16)
         mock_frames.append(frame)
-    
+
     facade.cam.set_canned_data(np.array(mock_frames))
-    
+
     params = ZStackParams(
         n_planes=n_planes,
         step_um=1.0,
         pulsed=False,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
     stack, z_positions = workflow.run_autofocus(z_start=50.0)
-    
+
     # Verify autofocus moved the stage
     call_names = facade.call_names()
     set_pos_calls = [c for c in facade.calls if c[0] == "z_stage_con.set_pos_um"]
-    
+
     # Should have: initial set to z_start, n_planes moves, return to z_start, move to focus
     assert len(set_pos_calls) >= n_planes + 3
-    
+
     # Final position should be within scanned range (since peak is at center)
     final_z = set_pos_calls[-1][1][0]
     assert min(z_positions) <= final_z <= max(z_positions)
@@ -193,7 +263,7 @@ def test_zstack_autofocus_success():
 def test_zstack_autofocus_flat_profile_raises():
     """Autofocus raises if gradient profile is too flat for quadratic fit."""
     facade = build_mock_facade()
-    
+
     n_planes = 7
     # Create perfectly flat/constant frames - no gradient variation
     mock_frames = []
@@ -201,18 +271,18 @@ def test_zstack_autofocus_flat_profile_raises():
         # All planes identical - flat gradient profile
         frame = np.ones((128, 128), dtype=np.uint16) * 1000
         mock_frames.append(frame)
-    
+
     facade.cam.set_canned_data(np.array(mock_frames))
-    
+
     params = ZStackParams(
         n_planes=n_planes,
         step_um=1.0,
         pulsed=False,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
-    
+
     # Should raise because gradient profile has no variation
     with pytest.raises(RuntimeError, match="Autofocus failed"):
         workflow.run_autofocus(z_start=50.0)
@@ -223,7 +293,7 @@ def test_zstack_pulsed_without_trig_raises():
     """Hardware-triggered mode without trig facade raises RuntimeError."""
     facade = build_mock_facade()
     facade.trig = None  # Remove trigger facade
-    
+
     params = ZStackParams(
         n_planes=5,
         step_um=1.0,
@@ -232,9 +302,9 @@ def test_zstack_pulsed_without_trig_raises():
         camera_pin=4,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
-    
+
     with pytest.raises(RuntimeError, match="trig facade is not configured"):
         workflow.run(save_stack=False)
 
@@ -243,7 +313,7 @@ def test_zstack_pulsed_without_trig_raises():
 def test_zstack_pulsed_without_pins_raises():
     """Hardware-triggered mode without laser/camera pins raises ValueError."""
     facade = build_mock_facade()
-    
+
     params = ZStackParams(
         n_planes=5,
         step_um=1.0,
@@ -252,9 +322,9 @@ def test_zstack_pulsed_without_pins_raises():
         camera_pin=4,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
-    
+
     with pytest.raises(ValueError, match="pulsed=True requires laser_pin and camera_pin"):
         workflow.run(save_stack=False)
 
@@ -264,15 +334,15 @@ def test_zstack_missing_z_stage_raises():
     """Workflow raises if z_stage_con is missing from facade."""
     facade = build_mock_facade()
     facade.z_stage_con = None
-    
+
     params = ZStackParams(
         n_planes=5,
         step_um=1.0,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
-    
+
     with pytest.raises(RuntimeError, match="requires z_stage_con"):
         workflow.run(save_stack=False)
 
@@ -282,15 +352,15 @@ def test_zstack_missing_cam_raises():
     """Workflow raises if cam is missing from facade."""
     facade = build_mock_facade()
     facade.cam = None
-    
+
     params = ZStackParams(
         n_planes=5,
         step_um=1.0,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
-    
+
     with pytest.raises(RuntimeError, match="requires cam"):
         workflow.run(save_stack=False)
 
@@ -300,15 +370,15 @@ def test_zstack_missing_laser_raises():
     """Workflow raises if laser_con is missing from facade."""
     facade = build_mock_facade()
     facade.laser_con = None
-    
+
     params = ZStackParams(
         n_planes=5,
         step_um=1.0,
         measurements_root="/tmp",
     )
-    
+
     workflow = ZStackWorkflow(facade, params)
-    
+
     with pytest.raises(RuntimeError, match="requires laser_con"):
         workflow.run(save_stack=False)
 

@@ -3,36 +3,37 @@
 from __future__ import annotations
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
 from imswitch.improcess.analysis.roi_stats import ROIStats, compute_roi_stats
+from .ResultsTableWidget import ResultsTableWidget
 
 
 class ROIStatsWidget(QtWidgets.QWidget):
     """Compute basic statistics for the active image layer or a rectangle ROI."""
 
+    sigResultPushed = QtCore.Signal(object, object)
+
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolManager = ViewerToolManager(napariViewer)
+        self._current_stats = None
 
         self.modeCombo = QtWidgets.QComboBox()
         self.modeCombo.addItems(["Full image", "Rectangle ROI"])
         self.runButton = QtWidgets.QPushButton("Update")
         self.clearButton = QtWidgets.QPushButton("Clear ROI")
+        self.pushButton = QtWidgets.QPushButton("Push to table")
 
-        self.table = QtWidgets.QTableWidget(8, 2)
-        self.table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.table = ResultsTableWidget(show_filter=False, show_csv=False)
 
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(self.modeCombo)
         controls.addWidget(self.runButton)
         controls.addWidget(self.clearButton)
+        controls.addWidget(self.pushButton)
         controls.addStretch()
 
         layout = QtWidgets.QVBoxLayout()
@@ -44,6 +45,7 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self.modeCombo.currentIndexChanged.connect(self._mode_changed)
         self.runButton.clicked.connect(self.update_stats)
         self.clearButton.clicked.connect(self._clear_roi)
+        self.pushButton.clicked.connect(self._push_to_table)
         self._toolManager.sigShapesChanged.connect(self.update_stats)
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self.update_stats())
@@ -79,30 +81,41 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self._toolManager.clear_shapes()
         self.update_stats()
 
+    def _push_to_table(self) -> None:
+        if self._current_stats is None:
+            return
+        stats = self._current_stats
+        record = {
+            "kind": "roi-stats",
+            "area_px": float(stats.area_pixels),
+            "finite_px": float(stats.finite_pixels),
+            "mean": float(stats.mean),
+            "median": float(stats.median),
+            "std": float(stats.std),
+            "min": float(stats.minimum),
+            "max": float(stats.maximum),
+            "sum": float(stats.total),
+        }
+        columns = list(record.keys())
+        self.sigResultPushed.emit(columns, [record])
+
     def _show_stats(self, stats: ROIStats) -> None:
+        self._current_stats = stats
         rows = [
-            ("Area px", stats.area_pixels),
-            ("Finite px", stats.finite_pixels),
-            ("Mean", stats.mean),
-            ("Median", stats.median),
-            ("Std", stats.std),
-            ("Min", stats.minimum),
-            ("Max", stats.maximum),
-            ("Sum", stats.total),
+            {"Metric": "Area px", "Value": stats.area_pixels},
+            {"Metric": "Finite px", "Value": stats.finite_pixels},
+            {"Metric": "Mean", "Value": stats.mean},
+            {"Metric": "Median", "Value": stats.median},
+            {"Metric": "Std", "Value": stats.std},
+            {"Metric": "Min", "Value": stats.minimum},
+            {"Metric": "Max", "Value": stats.maximum},
+            {"Metric": "Sum", "Value": stats.total},
         ]
-        self.table.setRowCount(len(rows))
-        for row, (name, value) in enumerate(rows):
-            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(name)))
-            if isinstance(value, float):
-                text = f"{value:.6g}" if np.isfinite(value) else "nan"
-            else:
-                text = str(value)
-            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(text))
+        self.table.set_records(["Metric", "Value"], rows)
 
     def _set_message(self, message: str) -> None:
-        self.table.setRowCount(1)
-        self.table.setItem(0, 0, QtWidgets.QTableWidgetItem("Status"))
-        self.table.setItem(0, 1, QtWidgets.QTableWidgetItem(message))
+        self._current_stats = None
+        self.table.set_records(["Metric", "Value"], [{"Metric": "Status", "Value": message}])
 
     def _current_rectangle_roi(self) -> tuple[int, int, int, int] | None:
         for index, shape_type in enumerate(self._toolManager.get_shape_types()):

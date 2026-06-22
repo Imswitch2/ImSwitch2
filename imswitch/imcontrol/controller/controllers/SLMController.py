@@ -4,12 +4,27 @@ import os
 import numpy as np
 
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.managers.SLMManager import MaskMode, Direction
-from ..basecontrollers import ImConWidgetController
+from ..basecontrollers import (
+    ComponentStateApplyMode,
+    ImConWidgetController,
+    SetupModeApplyPriority,
+    StatefulComponentMixin,
+)
 
 
-class SLMController(ImConWidgetController):
+class SLMController(StatefulComponentMixin, ImConWidgetController):
     """Linked to SLMWidget."""
+
+    # StatefulComponentMixin attributes
+    componentName = 'SLM'
+    setupModeDisplayName = 'SLM'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
+    setupModeCategory = 'spatial_light_modulator'
+    setupModeApplyPriority = SetupModeApplyPriority.SPATIAL_LIGHT_MODULATOR
+    setupModeHardwareCritical = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -62,6 +77,10 @@ class SLMController(ImConWidgetController):
 
         # Initial SLM display
         self.displayMask(self._master.slmManager.maskCombined)
+
+        # Register for unified state persistence (canonical name)
+        # Only register when SLM is configured (not on error path above)
+        getWidgetStatePersistence().register('SLM', self)
 
     @APIExport(runOnUIThread=True)
     def toggleSLMDisplay(self, enabled):
@@ -238,6 +257,190 @@ class SLMController(ImConWidgetController):
     def updateDisplayImage(self, image):
         image = np.fliplr(image.transpose())
         self._widget.img.setImage(image, autoLevels=True, autoDownsample=False)
+
+    # StatefulComponentMixin implementation
+    def getComponentState(self) -> dict:
+        """Snapshot current SLM state for both startup and setup modes.
+
+        Returns a JSON-serializable dict containing inline SLM parameters:
+        general params (radius, sigma, rotation/tilt angles), position centers
+        (left/right mask centers), and aberration coefficients (left/right).
+
+        Returns:
+            {
+                'general': {
+                    'radius': float,
+                    'sigma': float,
+                    'rotationAngle': float,
+                    'tiltAngle': float
+                },
+                'position': {
+                    'left': {'xcenter': int, 'ycenter': int},
+                    'right': {'xcenter': int, 'ycenter': int}
+                },
+                'aber': {
+                    'left': {aberparamname: float, ...},
+                    'right': {aberparamname: float, ...}
+                },
+                'objective': str | None
+            }
+        """
+        slm_info_dict = self.getInfoDict(
+            generalParams=self._widget.slmParameterTree.p,
+            aberParams=self._widget.aberParameterTree.p,
+            centers=self._master.slmManager.getCenters()
+        )
+
+        # Include selected objective if available
+        obj = self._widget.controlPanel.objlensComboBox.currentText()
+        if obj and obj != 'No objective':
+            slm_info_dict['objective'] = obj
+        else:
+            slm_info_dict['objective'] = None
+
+        return slm_info_dict
+
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore SLM state from a snapshot.
+
+        Restoring the phase pattern (params) is permitted in BOTH modes as it is
+        a display pattern, not hazardous emission. Display visibility (turning
+        the SLM display output ON/visible) is NOT part of the persisted state,
+        so both modes apply params identically. Users manually control display
+        visibility via the widget toggle.
+
+        ALWAYS (both modes):
+        - Set general params (radius, sigma, rotation/tilt angles)
+        - Set position centers (left/right mask centers)
+        - Set aberration coefficients (left/right)
+        - Recompute and redisplay the phase mask
+
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
+
+        Returns:
+            List of warning strings (empty if fully successful)
+        """
+        warnings = []
+
+        state_general = state.get('general')
+        state_pos = state.get('position')
+        state_aber = state.get('aber')
+
+        if state_general is None and state_pos is None and state_aber is None:
+            warnings.append('No SLM state to restore (all sections missing).')
+            return warnings
+
+        try:
+            # Apply general params
+            if state_general:
+                self._master.slmManager.setGeneral(state_general)
+                self.setParamTree(state_general=state_general, state_aber=state_aber or {})
+
+            # Apply position centers
+            if state_pos:
+                self._master.slmManager.setCenters(state_pos)
+
+            # Apply aberration coefficients
+            if state_aber:
+                self._master.slmManager.setAberrationFactors(state_aber)
+                if not state_general:  # Only update param tree if not already done above
+                    self.setParamTree(state_general={}, state_aber=state_aber)
+
+            # Save state to manager and recompute mask
+            self._master.slmManager.saveState(state_general, state_pos, state_aber)
+            image = self._master.slmManager.update(maskChange=True, tiltChange=True, aberChange=True)
+            self.updateDisplayImage(image)
+
+        except Exception as e:
+            warnings.append(f'Failed to apply SLM state: {e}')
+            return warnings
+
+        # Restore objective selection (UI only)
+        obj = state.get('objective')
+        if obj:
+            idx = self._widget.controlPanel.objlensComboBox.findText(obj)
+            if idx >= 0:
+                self._widget.controlPanel.objlensComboBox.setCurrentIndex(idx)
+            else:
+                warnings.append(f'Objective "{obj}" not found in dropdown; skipped.')
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate human-readable summary of saved SLM state.
+
+        Summarizes the inline params directly: general params (radius, sigma,
+        angles), mask centers, and which aberration terms are non-zero.
+
+        Args:
+            state: Dict returned by getComponentState()
+
+        Returns:
+            List of formatted strings suitable for setup-mode inspector
+        """
+        state = state or {}
+        summaries = []
+
+        obj = state.get('objective')
+        if obj:
+            summaries.append(f"  objective: {obj}")
+
+        # General params
+        general = state.get('general')
+        if general:
+            summaries.append("  general:")
+            summaries.append(f"    radius: {general.get('radius')}, sigma: {general.get('sigma')}")
+            summaries.append(
+                f"    rotation: {general.get('rotationAngle')}°, tilt: {general.get('tiltAngle')}°"
+            )
+
+        # Position centers
+        position = state.get('position')
+        if position:
+            summaries.append("  mask centers:")
+            for mask in ['left', 'right']:
+                pos = position.get(mask)
+                if pos:
+                    summaries.append(f"    {mask}: ({pos.get('xcenter')}, {pos.get('ycenter')})")
+
+        # Aberration coefficients (only non-zero)
+        aber = state.get('aber')
+        if aber:
+            summaries.append("  aberrations:")
+            for mask in ['left', 'right']:
+                mask_aber = aber.get(mask)
+                if mask_aber:
+                    nonzero = [f"{k}={v}" for k, v in mask_aber.items() if v != 0.0]
+                    if nonzero:
+                        summaries.append(f"    {mask}: {', '.join(nonzero)}")
+                    else:
+                        summaries.append(f"    {mask}: all zero")
+
+        return summaries or ["  no SLM state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None
+    ) -> list[dict]:
+        """Identify hazards in saved SLM state.
+
+        SLM phase masks are display patterns with no laser-power-like hazard,
+        so this always returns an empty list for both apply modes.
+
+        Args:
+            state: Dict returned by getComponentState()
+            applyMode: The mode in which the state would be applied
+            context: Optional consumer-provided context (unused for SLM)
+
+        Returns:
+            Empty list (no hazards for SLM phase patterns)
+        """
+        return []
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

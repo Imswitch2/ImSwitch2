@@ -10,33 +10,50 @@ from imswitch.imcontrol.model.WidgetStatePersistence import WidgetStatePersisten
 
 
 class MockController:
-    """Mock controller implementing state persistence interface"""
+    """Mock controller implementing unified StatefulComponentMixin interface"""
+    
+    componentName = 'MockController'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
     
     def __init__(self, initial_state=None):
         self.state = initial_state or {'value': 0, 'setting': 'default'}
-        self.schema_version = 1
     
-    def getWidgetState(self) -> Dict[str, Any]:
+    def getComponentState(self) -> Dict[str, Any]:
         return self.state.copy()
     
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
+    def applyComponentState(self, state: Dict[str, Any], *, applyMode) -> list:
         self.state = state.copy()
+        return []
     
-    def getStateSchemaVersion(self) -> int:
-        return self.schema_version
+    def describeComponentState(self, state: Dict[str, Any]) -> list:
+        return [f"MockController state: {state}"]
+    
+    def getComponentStateHazards(self, state: Dict[str, Any], *, applyMode, context=None) -> list:
+        return []
 
 
 class MockControllerNoVersion:
-    """Mock controller without schema version method"""
+    """Mock controller without schema version (should still work with defaults)"""
+    
+    componentName = 'MockControllerNoVersion'
+    legacyStateNames = ()
     
     def __init__(self):
         self.state = {'value': 42}
     
-    def getWidgetState(self) -> Dict[str, Any]:
+    def getComponentState(self) -> Dict[str, Any]:
         return self.state.copy()
     
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
+    def applyComponentState(self, state: Dict[str, Any], *, applyMode) -> list:
         self.state = state.copy()
+        return []
+    
+    def describeComponentState(self, state: Dict[str, Any]) -> list:
+        return [f"MockControllerNoVersion state: {state}"]
+    
+    def getComponentStateHazards(self, state: Dict[str, Any], *, applyMode, context=None) -> list:
+        return []
 
 
 @pytest.fixture
@@ -97,13 +114,17 @@ def test_register_controller(persistence_service, mock_controller):
 
 
 def test_register_controller_without_methods(persistence_service):
-    """Test that registration fails gracefully for invalid controllers"""
+    """Test that registration raises ValueError for invalid controllers"""
     class InvalidController:
         pass
     
     controller = InvalidController()
-    # Should log warning but not crash
-    persistence_service.register('InvalidController', controller)
+    # Should raise ValueError for controllers without required methods
+    try:
+        persistence_service.register('InvalidController', controller)
+        assert False, "Expected ValueError to be raised"
+    except ValueError as e:
+        assert "must implement StatefulComponentMixin" in str(e)
     # Controller should not be registered
     assert 'InvalidController' not in persistence_service._registry
 
@@ -291,7 +312,7 @@ def test_get_registered_controllers(persistence_service):
 
 
 def test_schema_version_default(persistence_service):
-    """Test default schema version when controller doesn't implement getStateSchemaVersion"""
+    """Test default schema version when controller doesn't define stateSchemaVersion"""
     controller = MockControllerNoVersion()
     persistence_service.register('TestController', controller)
     persistence_service.saveWidgetState('TestController', 'test_state')

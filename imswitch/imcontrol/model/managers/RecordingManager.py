@@ -5,6 +5,7 @@ import shutil
 import time
 import threading
 import queue
+from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, Union
 
@@ -18,6 +19,7 @@ from imswitch.imcommon.model import initLogger
 import abc
 import logging
 
+import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 
 logger = logging.getLogger(__name__)
@@ -1394,6 +1396,48 @@ class RecordingWorker(Worker):
                 fileDests[detectorName] = filePaths[detectorName]
         
         return fileDests, filePaths
+    
+    def _augment_attrs_with_recording_metadata(self, attrs: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+        """Augment per-detector attrs with exposure time, software version, and timestamp.
+        
+        Args:
+            attrs: Dict mapping detector name to flat metadata dict.
+        
+        Returns:
+            New dict with augmented metadata for each detector.
+        """
+        augmented = {}
+        acquisition_start = datetime.now(timezone.utc).isoformat()
+        
+        for detectorName, detector_attrs in attrs.items():
+            # Copy existing attrs
+            new_attrs = dict(detector_attrs) if detector_attrs else {}
+            
+            # Add software version
+            new_attrs['acquisition:software_version'] = imswitch.__version__
+            
+            # Add acquisition start timestamp
+            new_attrs['acquisition:start_time'] = acquisition_start
+            
+            # Add exposure time from detector if available
+            try:
+                detector = self.__recordingManager.detectorsManager[detectorName]
+                # Different detectors may expose this differently; try common attributes
+                if hasattr(detector, 'getExposureTime'):
+                    exposure_ms = detector.getExposureTime()
+                    new_attrs['acquisition:exposure_time_ms'] = str(exposure_ms)
+                elif hasattr(detector, 'exposure'):
+                    exposure_ms = detector.exposure
+                    new_attrs['acquisition:exposure_time_ms'] = str(exposure_ms)
+            except Exception as e:
+                logger.debug(
+                    "Could not get exposure time for detector %s: %s", 
+                    detectorName, e
+                )
+            
+            augmented[detectorName] = new_attrs
+        
+        return augmented
 
     def _record(self):
         """Unified streaming recording loop delegating all I/O to Storer.
@@ -1425,13 +1469,16 @@ class RecordingWorker(Worker):
             if len(shape) > 2:
                 shapes[detectorName] = shape[-2:]
         
+        # Augment attrs with recording metadata (exposure, version, timestamp)
+        augmented_attrs = self._augment_attrs_with_recording_metadata(self.attrs)
+        
         # Start writer thread and wait for openStream handshake
         writerThread = WriterThread(
             storer=storer,
             fileDests=fileDests,
             detectorNames=self.detectorNames,
             shapes=shapes,
-            attrs=self.attrs,
+            attrs=augmented_attrs,
             singleMultiDetectorFile=self.singleMultiDetectorFile,
             singleLapseFile=self.recMode == RecMode.ScanLapse and self.singleLapseFile,
             saveMode=self.saveMode,

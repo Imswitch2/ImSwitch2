@@ -20,6 +20,11 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
+from imswitch.imcontrol.model.timeresolved import (
+    TimeResolvedScanConfig,
+    TimeResolvedScanProducts,
+    copy_time_resolved_products,
+)
 from imswitch.imcontrol.model.workflows.facade import (
     MicroscopeFacade,
     RotatorPresets,
@@ -122,6 +127,85 @@ class _MockCam:
     def wait_for_frame(self, timeout_s: float = 2.0) -> bool:
         self._r.record("cam.wait_for_frame", (float(timeout_s),))
         return self._canned is not None and self._canned.size > 0
+
+
+class _MockTimeResolved:
+    def __init__(self, recorder: _Recorder) -> None:
+        self._r = recorder
+        self._config = TimeResolvedScanConfig()
+        self._canned_products: Optional[TimeResolvedScanProducts] = None
+        self._last_products: Optional[TimeResolvedScanProducts] = None
+
+    def set_canned_products(self, products: TimeResolvedScanProducts) -> None:
+        self._canned_products = copy_time_resolved_products(products)
+        self._last_products = copy_time_resolved_products(products)
+
+    def configure(self, config: TimeResolvedScanConfig) -> None:
+        self._r.record("time_resolved.configure", (config,))
+        self._config = config
+
+    def wait_for_final(
+        self,
+        timeout_s: float | None = None,
+    ) -> TimeResolvedScanProducts:
+        self._r.record("time_resolved.wait_for_final", (timeout_s,))
+        if self._canned_products is None:
+            raise RuntimeError("No canned time-resolved products configured")
+        self._last_products = copy_time_resolved_products(self._canned_products)
+        return copy_time_resolved_products(self._last_products)
+
+    def get_last(self, copy: bool = True) -> TimeResolvedScanProducts | None:
+        self._r.record("time_resolved.get_last", (), {"copy": copy})
+        if copy:
+            return copy_time_resolved_products(self._last_products)
+        return self._last_products
+
+    def clear(self) -> None:
+        self._r.record("time_resolved.clear")
+        self._last_products = None
+
+    def capabilities(self) -> dict:
+        self._r.record("time_resolved.capabilities")
+        return {
+            "time_axis": "tcspc",
+            "supports_binned_cube": True,
+            "supports_raw_tags": False,
+            "supports_software_gates": True,
+            "supports_hardware_gates": False,
+            "supports_lifetime_fit": True,
+            "native_cube_axes": ("y", "x", "tcspc_bin"),
+            "vendor": "mock",
+            "model": "mock-time-resolved",
+        }
+
+
+class _MockScan:
+    def __init__(self, recorder: _Recorder) -> None:
+        self._r = recorder
+
+    def run_once(
+        self,
+        *,
+        recalculate_signals: bool = True,
+        is_non_final_part_of_sequence: bool = False,
+        wait: bool = True,
+        timeout_s: float | None = None,
+        notify_starting: bool = True,
+    ) -> None:
+        self._r.record(
+            "scan.run_once",
+            (),
+            {
+                "recalculate_signals": bool(recalculate_signals),
+                "is_non_final_part_of_sequence": bool(is_non_final_part_of_sequence),
+                "wait": bool(wait),
+                "timeout_s": timeout_s,
+                "notify_starting": bool(notify_starting),
+            },
+        )
+
+    def __call__(self) -> None:
+        self.run_once()
 
 
 class _MockTrig:
@@ -244,6 +328,8 @@ class MockMicroscopeFacade(MicroscopeFacade):
             z_stage_con=_MockZStageCon(recorder),      # type: ignore[arg-type]
             rotator_hwp=_MockRotator(recorder, "rotator_hwp"),  # type: ignore[arg-type]
             rotator_qwp=_MockRotator(recorder, "rotator_qwp"),  # type: ignore[arg-type]
+            time_resolved=_MockTimeResolved(recorder),  # type: ignore[arg-type]
+            scan=_MockScan(recorder),                  # type: ignore[arg-type]
         )
         self._recorder = recorder
 

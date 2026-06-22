@@ -1,10 +1,11 @@
+import json
 import traceback
 import configparser
 
 from ast import literal_eval
 from typing import Dict, Any
 
-from ..basecontrollers import SuperScanController
+from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from ._beadrec_scan_source import BeadRecScanSourceMixin
 
@@ -27,7 +28,7 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
         self._widget.sigContLaserPulsesToggled.connect(self.setContLaserPulses)
         
         # Register for widget state persistence
-        getWidgetStatePersistence().register('ScanController', self)
+        getWidgetStatePersistence().register('Scan', self)
 
     def setParameters(self):
         self.settingParameters = True
@@ -198,95 +199,9 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
         y_step = stepSizes[1] if len(stepSizes) > 1 else 0.0
         return (x_step, y_step)
 
-    def saveScanParamsToFile(self, filePath: str) -> None:
-        """ Saves the set scanning parameters to the specified file. """
-        self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-
-        config['analogParameterDict'] = self._analogParameterDict
-        config['digitalParameterDict'] = self._digitalParameterDict
-        config['Modes'] = {'scan_or_not': self._widget.isScanMode()}
-
-        with open(filePath, 'w') as configfile:
-            config.write(configfile)
-
-    def loadScanParamsFromFile(self, filePath: str) -> None:
-        """ Loads scanning parameters from the specified file. """
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
-
-        for key in self._analogParameterDict:
-            self._analogParameterDict[key] = literal_eval(
-                config._sections['analogParameterDict'][key]
-            )
-
-        for key in self._digitalParameterDict:
-            self._digitalParameterDict[key] = literal_eval(
-                config._sections['digitalParameterDict'][key]
-            )
-
-        scanOrNot = (config._sections['Modes']['scan_or_not'] == 'True')
-        if scanOrNot:
-            self._widget.setScanMode()
-        else:
-            self._widget.setContLaserMode()
-
-        self.setParameters()
-
     # Widget State Persistence Interface
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        self.getParameters()
-        state: Dict[str, Any] = {
-            'version': 2,
-            'analogParameterDict': dict(self._analogParameterDict),
-            'digitalParameterDict': dict(self._digitalParameterDict),
-        }
-        try:
-            # Scan mode radio (True = Scan, False = Cont. Laser Pulses)
-            state['scan_mode'] = self._widget.scanRadio.isChecked()
-            # Repeat checkbox
-            state['repeat'] = self._widget.repeatBox.isChecked()
-            # Dimension combo selections: index → positioner name string
-            state['scan_dims'] = {}
-            for i in range(2):   # ScanWidgetBase exposes getScanDim(index) for 0 and 1
-                try:
-                    state['scan_dims'][str(i)] = self._widget.getScanDim(i)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return state
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        try:
-            if 'analogParameterDict' in state:
-                self._analogParameterDict.update(state['analogParameterDict'])
-            if 'digitalParameterDict' in state:
-                self._digitalParameterDict.update(state['digitalParameterDict'])
-            self.setParameters()
-            
-            if state.get('scan_mode', True):
-                self._widget.setScanMode()          # sets scanRadio checked
-            else:
-                self._widget.setContLaserMode()     # sets contLaserPulsesRadio checked
-            
-            self._widget.setRepeatEnabled(state.get('repeat', False))
-            
-            for i_str, posName in state.get('scan_dims', {}).items():
-                try:
-                    self._widget.setScanDim(int(i_str), posName)
-                except Exception:
-                    pass
-            
-            self._logger.info('Scan settings state restored successfully')
-        except Exception as e:
-            self._logger.error(f'Failed to restore scan state: {e}')
-
-    def getStateSchemaVersion(self) -> int:
-        return 2
 
     def getNumLineSteps(self) -> int:
         """Return the number of linesteps in the scan. Base implementation returns 1."""

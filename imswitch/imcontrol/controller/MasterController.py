@@ -1,9 +1,10 @@
 from imswitch.imcommon.model import VFileItem, initLogger
 from imswitch.imcontrol.model import (
-    DetectorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
+    DetectorsManager, FlipMirrorsManager, LasersManager, MultiManager, NidaqManager, PositionersManager, RecordingManager, RS232sManager,
     ScanManagerPointScan, ScanManagerBase, ScanManagerMoNaLISA, ScanManagerTriggerScope, StandManager,
-    RotatorsManager, SLMsManager, ScanManagerAdvanced, TriggerScopeManager
+    RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
+from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
 
 
 class MasterController:
@@ -57,6 +58,10 @@ class MasterController:
                                                      **lowLevelManagers)
         self.rotatorsManager = RotatorsManager(self.__setupInfo.rotators,
                                                **lowLevelManagers)
+        self.flipMirrorsManager = FlipMirrorsManager(
+            self.__setupInfo.flipMirrors,
+            **lowLevelManagers
+        )
 
         self.recordingManager = RecordingManager(self.detectorsManager)
 
@@ -110,11 +115,32 @@ class MasterController:
     def closeEvent(self):
         self.recordingManager.endRecording(emitSignal=False, wait=True)
 
-        for attrName in dir(self):
-            attr = getattr(self, attrName)
+        # Finalize all manager attributes explicitly, not only MultiManager instances.
+        # Each wrapped in try/except so one failing finalize cannot prevent the others.
+        manager_attrs = [
+            'detectorsManager', 'lasersManager', 'positionersManager', 'rotatorsManager',
+            'flipMirrorsManager', 'recordingManager', 'slmsManager', 'nidaqManager',
+            'rs232sManager', 'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
+            'scanManager'
+        ]
 
-            if isinstance(attr, MultiManager):
-                attr.finalize()
+        for attrName in manager_attrs:
+            if not hasattr(self, attrName):
+                continue
+            attr = getattr(self, attrName)
+            if attr is None:
+                continue
+
+            # Try finalize() first, fall back to close()
+            for method_name in ['finalize', 'close']:
+                if hasattr(attr, method_name):
+                    try:
+                        method = getattr(attr, method_name)
+                        method()
+                        self.__logger.debug(f'Finalized {attrName} via {method_name}()')
+                        break
+                    except Exception as e:
+                        self.__logger.error(f'Error finalizing {attrName}.{method_name}(): {e}', exc_info=True)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

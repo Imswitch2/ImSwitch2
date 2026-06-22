@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imswitch-zhinst-devices"
+version = "0.1.0"
+description = "Example Zurich Instruments device plugin for ImSwitch2"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [
+    { name = "ImSwitch2 developers" }
+]
+keywords = ["imswitch", "imswitch-plugin", "zurich-instruments", "lock-in"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "ImSwitch>=0.1",
+    "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+hardware = [
+    "zhinst-toolkit>=0.8",
+]
+test = [
+    "pytest>=7",
+    "jsonschema>=4",
+]
+
+# Discovered by ImSwitch via importlib.metadata. The value is
+# "<package>:<resource>" (a manifest resource, not a module:attr import target);
+# ImSwitch parses it manually and never calls entry_point.load().
+[project.entry-points."imswitch.manifest"]
+imswitch-zhinst-devices = "imswitch_zhinst_devices:imswitch.json"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+imswitch_zhinst_devices = [
+    "imswitch.json",
+    "schemas/*.schema.json",
+    "setup_templates/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

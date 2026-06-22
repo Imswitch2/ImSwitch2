@@ -1,0 +1,12 @@
+{
+  "display": "Generic Detector",
+  "category": "detectors",
+  "blank": true,
+  "top": [
+    {"key": "analogChannel",  "label": "Analog Channel",  "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "digitalLine",    "label": "Digital Line",    "type": "text", "default": "null", "req": false, "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forAcquisition", "label": "For Acquisition", "type": "bool", "default": true,   "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forFocusLock",   "label": "For Focus Lock",  "type": "bool", "default": false,  "req": false, "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": []
+}

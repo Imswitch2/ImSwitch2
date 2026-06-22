@@ -45,9 +45,6 @@ class ESP32LightSheetManager(LaserManager):
         pass
 
     def setValue(self, value=0):
-        if self._rs232manager._esp32 is None:
-            self.__logger.warning('ESP32 not connected, galvo update ignored')
-            return
         try:
             kind, axis_str = self.__axis.split('_')
             axis = int(axis_str)
@@ -56,9 +53,9 @@ class ESP32LightSheetManager(LaserManager):
             return
 
         if kind == 'freq':
-            self._rs232manager._esp32.set_galvo_freq(axis=axis, value=value)
+            self._rs232manager.set_galvo_freq(axis=axis, value=value)
         elif kind == 'amp':
-            self._rs232manager._esp32.set_galvo_amp(axis=axis, value=value)
+            self._rs232manager.set_galvo_amp(axis=axis, value=value)
         else:
             self.__logger.error(f'Unknown axis kind "{kind}", expected "freq" or "amp"')
 

@@ -1,8 +1,28 @@
 import importlib
+import logging
 from abc import ABC, abstractmethod
 from imswitch.imcommon.model import initLogger
 
 from imswitch.imcommon.model import pythontools
+from imswitch.imcontrol.model.plugins.registry import (
+    get_default_registry,
+    UnknownDeviceManagerError,
+)
+
+# Maps a MultiManager ``subManagersPackage`` to a device plugin registry kind.
+# Only these device groups are loaded through MultiManager. StandManager uses
+# its own registry-backed resolver because microscopeStand is a single setup
+# object rather than a named device map. The pulse generator still uses a
+# bespoke loader.
+SUBMANAGERS_PACKAGE_TO_KIND = {
+    'detectors': 'detector',
+    'lasers': 'laser',
+    'positioners': 'positioner',
+    'rotators': 'rotator',
+    'rs232': 'rs232',
+    'flipMirrors': 'flip_mirror',
+    'slms': 'slm',
+}
 
 
 class MultiManager(ABC):
@@ -14,18 +34,82 @@ class MultiManager(ABC):
         #self.__logger = initLogger(self, instanceName='MultiManager')
         self._subManagers = {}
         currentPackage = '.'.join(__name__.split('.')[:-1])
+        kind = SUBMANAGERS_PACKAGE_TO_KIND.get(subManagersPackage)
         if managedDeviceInfos:
             for managedDeviceName, managedDeviceInfo in managedDeviceInfos.items():
                 # Create sub-manager
-                #self.__logger.debug(f'{currentPackage}.{subManagersPackage}, {managedDeviceInfo.managerName}')
-                #self.__logger.debug(managedDeviceInfo)
-                package = importlib.import_module(
-                    pythontools.joinModulePath(f'{currentPackage}.{subManagersPackage}',
-                                            managedDeviceInfo.managerName)
+                managerClass = self._resolveManagerClass(
+                    currentPackage, subManagersPackage, kind,
+                    managedDeviceInfo.managerName,
                 )
-                manager = getattr(package, managedDeviceInfo.managerName)
-                self._subManagers[managedDeviceName] = manager(
+                self._subManagers[managedDeviceName] = managerClass(
                     managedDeviceInfo, managedDeviceName, **lowLevelManagers)
+
+    @staticmethod
+    def _resolveManagerClass(currentPackage, subManagersPackage, kind, managerName):
+        """ Resolve a setup ``managerName`` to a manager class.
+
+        Device plugin registry first (for MultiManager-backed kinds), then the
+        legacy internal import path so existing setup files keep working. If
+        both miss for a registry-backed kind, raise the actionable registry
+        diagnostic instead of a raw ImportError.
+        
+        Precedence rule (deterministic, registry-first):
+        1. Device plugin registry (built-ins + installed plugins)
+        2. Legacy internal import path (fallback for un-registered managers)
+        
+        When both paths would resolve, registry wins and a WARNING is logged.
+        """
+        logger = logging.getLogger('imswitch.imcontrol.MultiManager')
+        
+        # 1. Device plugin registry (built-ins + installed plugins).
+        registry_contribution = None
+        if kind is not None:
+            registry_contribution = get_default_registry().resolve(kind, managerName)
+            if registry_contribution is not None:
+                managerClass = get_default_registry().load_manager_class(
+                    kind, managerName)
+                
+                # Check if legacy path would also resolve (shadowing detection).
+                legacy_would_resolve = False
+                try:
+                    package = importlib.import_module(
+                        pythontools.joinModulePath(
+                            f'{currentPackage}.{subManagersPackage}', managerName)
+                    )
+                    legacy_class = getattr(package, managerName, None)
+                    if legacy_class is not None:
+                        legacy_would_resolve = True
+                        # Warn about shadowing: registry is hiding an in-tree manager.
+                        logger.warning(
+                            f"Registry-backed {kind} manager '{managerName}' from "
+                            f"plugin '{registry_contribution.plugin_name}' is shadowing "
+                            f"an in-tree manager at "
+                            f"{currentPackage}.{subManagersPackage}.{managerName}. "
+                            f"Registry resolution takes precedence (deterministic). "
+                            f"Consider removing the in-tree manager or renaming the "
+                            f"plugin contribution to avoid confusion."
+                        )
+                except (ImportError, AttributeError):
+                    # Legacy path does not exist, no shadowing
+                    pass
+                
+                return managerClass
+
+        # 2. Legacy internal import path (imswitch.imcontrol.model.managers.<pkg>).
+        try:
+            package = importlib.import_module(
+                pythontools.joinModulePath(
+                    f'{currentPackage}.{subManagersPackage}', managerName)
+            )
+            return getattr(package, managerName)
+        except (ImportError, AttributeError) as exc:
+            if kind is not None:
+                raise UnknownDeviceManagerError(
+                    get_default_registry().format_resolution_error(
+                        kind, managerName)
+                ) from exc
+            raise
 
     def hasDevices(self):
         """ Returns whether this manager manages any devices. """
@@ -45,6 +129,13 @@ class MultiManager(ABC):
         result. """
         self._validateManagedDeviceName(managedDeviceName)
         return func(self._subManagers[managedDeviceName])
+
+    def getDevice(self, managedDeviceName):
+        """ Public access to a named sub-manager device. Use this instead of
+        reaching into ``manager._subManagers[name]`` from controllers. Raises a
+        clear error for an unknown device name. """
+        self._validateManagedDeviceName(managedDeviceName)
+        return self._subManagers[managedDeviceName]
 
     def execOnAll(self, func, *, condition=None):
         """ Executes a function on all sub-managers and returns the

@@ -1,0 +1,11 @@
+{
+  "display": "Generic Positioner",
+  "category": "positioners",
+  "blank": true,
+  "top": [
+    {"key": "axes",           "label": "Axes (comma-sep)", "type": "text", "default": "X",   "req": true,  "grp": "Basic", "tip": "e.g. X or X,Y,Z", "opts": []},
+    {"key": "forPositioning", "label": "For Positioning",  "type": "bool", "default": true,  "req": true,  "grp": "Basic", "tip": "", "opts": []},
+    {"key": "forScanning",    "label": "For Scanning",     "type": "bool", "default": false, "req": true,  "grp": "Basic", "tip": "", "opts": []}
+  ],
+  "props": []
+}

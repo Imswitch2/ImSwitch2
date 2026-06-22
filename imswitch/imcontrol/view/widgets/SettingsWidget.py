@@ -641,7 +641,8 @@ class SettingsWidget(Widget):
         """
         return detectorName in self.advancedWidgets and self.advancedWidgets[detectorName] is not None
     
-    @shortcut("Ctrl+N", "Next detector")
+    @shortcut(actionId="settings.nextDetector", defaultKey="Ctrl+N",
+              displayName="Next detector", initiallyBound=True)
     def toggleNextButton(self):
         self.nextDetectorButton.click()
 

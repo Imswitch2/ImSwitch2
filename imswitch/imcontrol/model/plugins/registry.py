@@ -1,0 +1,325 @@
+"""Device plugin registry for resolving and loading manager classes."""
+
+import importlib
+import logging
+from typing import Type
+
+from .manifest import DeviceManagerContribution
+from .discovery import discover_contributions
+from .external import lookup_external_hint
+
+
+class DuplicateContributionError(Exception):
+    """Raised when a duplicate contribution is registered."""
+    pass
+
+
+class UnknownDeviceManagerError(RuntimeError):
+    """Raised when a device manager cannot be resolved."""
+    pass
+
+
+class DevicePluginRegistry:
+    """Registry for device manager contributions from plugins and built-ins."""
+    
+    def __init__(self):
+        # Index by (kind, id) -> contribution
+        self._by_id: dict[tuple[str, str], DeviceManagerContribution] = {}
+        # Index by (kind, alias) -> contribution
+        self._by_alias: dict[tuple[str, str], DeviceManagerContribution] = {}
+        # Track which contributions are built-ins
+        self._builtins: set[tuple[str, str]] = set()
+    
+    def register(
+        self,
+        contribution: DeviceManagerContribution,
+        *,
+        is_builtin: bool = False,
+    ) -> None:
+        """Register a device manager contribution.
+        
+        Args:
+            contribution: The contribution to register.
+            is_builtin: If True, marks this as a built-in contribution that
+                cannot be overridden by plugins.
+        
+        Raises:
+            DuplicateContributionError: If a duplicate (kind, id) or if a
+                plugin tries to override a built-in.
+        """
+        key = (contribution.kind, contribution.id)
+        
+        # Check if plugin is trying to override a built-in
+        if not is_builtin and key in self._builtins:
+            existing = self._by_id.get(key) or self._by_alias.get(key)
+            existing_id = existing.id if existing is not None else contribution.id
+            raise DuplicateContributionError(
+                f"Cannot override built-in {contribution.kind} manager "
+                f"'{existing_id}' from plugin '{contribution.plugin_name}'"
+            )
+        
+        # Check for duplicate ID
+        if key in self._by_id:
+            existing = self._by_id[key]
+            raise DuplicateContributionError(
+                f"Duplicate {contribution.kind} manager '{contribution.id}': "
+                f"already registered by plugin '{existing.plugin_name}', "
+                f"cannot register from '{contribution.plugin_name}'"
+            )
+        
+        # Register by ID
+        self._by_id[key] = contribution
+        if is_builtin:
+            self._builtins.add(key)
+        
+        # Register by aliases
+        for alias in contribution.manager_name_aliases:
+            alias_key = (contribution.kind, alias)
+            
+            # Check if alias collision with built-in
+            if not is_builtin and alias_key in self._builtins:
+                existing = self._by_alias.get(alias_key) or self._by_id.get(alias_key)
+                if existing:
+                    raise DuplicateContributionError(
+                        f"Cannot use alias '{alias}' for {contribution.kind} "
+                        f"manager '{contribution.id}': conflicts with built-in "
+                        f"'{existing.id}'"
+                    )
+            
+            # Aliases can map to multiple IDs only if identical contribution
+            if alias_key in self._by_alias:
+                existing = self._by_alias[alias_key]
+                if existing != contribution:
+                    raise DuplicateContributionError(
+                        f"Alias '{alias}' for {contribution.kind} manager "
+                        f"already resolves to '{existing.id}' from plugin "
+                        f"'{existing.plugin_name}', cannot also resolve to "
+                        f"'{contribution.id}' from '{contribution.plugin_name}'"
+                    )
+            else:
+                self._by_alias[alias_key] = contribution
+                if is_builtin:
+                    self._builtins.add(alias_key)
+    
+    def resolve(
+        self,
+        kind: str,
+        manager_name: str,
+    ) -> DeviceManagerContribution | None:
+        """Resolve a manager name to a contribution.
+        
+        Resolution order: exact ID match first, then alias match.
+        
+        Args:
+            kind: The device kind (e.g., "detector", "laser").
+            manager_name: The manager name or alias to resolve.
+        
+        Returns:
+            The matching contribution, or None if not found.
+        """
+        key = (kind, manager_name)
+        
+        # Try ID first
+        if key in self._by_id:
+            return self._by_id[key]
+        
+        # Try alias
+        if key in self._by_alias:
+            return self._by_alias[key]
+        
+        return None
+    
+    def load_python_object(self, python_name: str):
+        """Load a Python object from a 'module:attr' string.
+        
+        Args:
+            python_name: String in format "module.path:ObjectName".
+        
+        Returns:
+            The loaded object.
+        """
+        module_name, object_name = python_name.split(":", 1)
+        module = importlib.import_module(module_name)
+        return getattr(module, object_name)
+    
+    def load_manager_class(
+        self,
+        kind: str,
+        manager_name: str,
+        *,
+        prefer_mock: bool = False,
+    ) -> Type | None:
+        """Resolve and load a manager class.
+        
+        Args:
+            kind: The device kind.
+            manager_name: The manager name or alias.
+            prefer_mock: If True and the contribution has a mock_python_name,
+                load the mock instead of the real implementation.
+        
+        Returns:
+            The manager class, or None if not found.
+        """
+        contribution = self.resolve(kind, manager_name)
+        if contribution is None:
+            return None
+        
+        # Choose mock or real implementation
+        if prefer_mock and contribution.mock_python_name:
+            python_name = contribution.mock_python_name
+        else:
+            python_name = contribution.python_name
+        
+        return self.load_python_object(python_name)
+    
+    def list_contributions(
+        self,
+        kind: str | None = None,
+    ) -> list[DeviceManagerContribution]:
+        """List all registered contributions.
+        
+        Args:
+            kind: If provided, filter to only this device kind.
+        
+        Returns:
+            List of contributions, deduplicated by (kind, id).
+        """
+        contributions = list(self._by_id.values())
+        
+        if kind is not None:
+            contributions = [c for c in contributions if c.kind == kind]
+        
+        return contributions
+    
+    def format_resolution_error(
+        self,
+        kind: str,
+        manager_name: str,
+    ) -> str:
+        """Format an error message for when a manager cannot be resolved.
+        
+        Args:
+            kind: The device kind that was requested.
+            manager_name: The manager name that could not be resolved.
+        
+        Returns:
+            A formatted error message with installed managers listed.
+        """
+        installed = self.list_contributions(kind=kind)
+        
+        lines = [
+            f"Could not resolve {kind} manager '{manager_name}'.",
+            f"Installed {kind} managers:",
+        ]
+        
+        if not installed:
+            lines.append(f"  (none)")
+        else:
+            for contrib in sorted(installed, key=lambda c: c.id):
+                lines.append(f"  - {contrib.id} ({contrib.plugin_name})")
+                for alias in contrib.manager_name_aliases:
+                    lines.append(f"    alias: {alias}")
+
+        # If this name is a known external/extracted manager, point the user at
+        # the package that provides it (Phase 8 extraction safety net).
+        hint = lookup_external_hint(kind, manager_name)
+        if hint is not None:
+            lines.append("")
+            lines.append(
+                f"'{manager_name}' is provided by the external plugin package "
+                f"'{hint.package}'."
+            )
+            if hint.note:
+                lines.append(f"  {hint.note}")
+            lines.append(f"  Install it with: {hint.install_command()}")
+
+        lines.append("")
+        lines.append(
+            "Install the required plugin package or correct managerName in your setup."
+        )
+
+        return "\n".join(lines)
+
+
+def build_default_registry(*, discover: bool = True) -> DevicePluginRegistry:
+    """Build a registry with built-ins and optionally discovered plugins.
+    
+    Args:
+        discover: If True, discover and register plugins from entry points.
+    
+    Returns:
+        A configured DevicePluginRegistry.
+    """
+    from .builtins import BUILTIN_DEVICE_MANAGERS
+    
+    logger = logging.getLogger('imswitch.plugins.registry')
+    registry = DevicePluginRegistry()
+    
+    # Register built-ins first
+    logger.debug(f"Registering {len(BUILTIN_DEVICE_MANAGERS)} built-in device managers")
+    for contrib in BUILTIN_DEVICE_MANAGERS:
+        registry.register(contrib, is_builtin=True)
+        logger.debug(
+            f"  Registered built-in {contrib.kind} manager: {contrib.id} "
+            f"(aliases: {', '.join(contrib.manager_name_aliases) or 'none'})"
+        )
+
+    # Discover and register plugins
+    if discover:
+        contributions, errors = discover_contributions()
+        
+        # Log discovery errors (one broken plugin shouldn't prevent startup)
+        if errors:
+            logger.warning(
+                f"Encountered {len(errors)} error(s) during plugin discovery:"
+            )
+            for err in errors:
+                logger.warning(
+                    f"  Plugin '{err.plugin_name}' "
+                    f"(manifest: {err.manifest or 'unknown'}): {err.error}"
+                )
+        
+        # Register discovered contributions
+        registered_count = 0
+        skipped_count = 0
+        for contrib in contributions:
+            try:
+                registry.register(contrib, is_builtin=False)
+                registered_count += 1
+                logger.debug(
+                    f"  Registered plugin {contrib.kind} manager: {contrib.id} "
+                    f"from '{contrib.plugin_name}' "
+                    f"(aliases: {', '.join(contrib.manager_name_aliases) or 'none'})"
+                )
+            except DuplicateContributionError as e:
+                # Built-ins or other plugins win on collision; log and skip
+                skipped_count += 1
+                logger.warning(
+                    f"  Skipping duplicate contribution {contrib.kind}/{contrib.id} "
+                    f"from plugin '{contrib.plugin_name}': {e}"
+                )
+        
+        if contributions:
+            logger.info(
+                f"Discovered {len(contributions)} plugin contribution(s): "
+                f"{registered_count} registered, {skipped_count} skipped (duplicates)"
+            )
+
+    return registry
+
+
+_DEFAULT_REGISTRY: DevicePluginRegistry | None = None
+
+
+def get_default_registry() -> DevicePluginRegistry:
+    """Return the process-wide registry, building it once on first use.
+
+    Discovery (entry-point scanning + built-in registration) happens a single
+    time and the result is cached, matching the "discover once at startup"
+    policy. Callers that need a fresh, isolated registry (e.g. tests) should
+    construct one with ``build_default_registry`` instead.
+    """
+    global _DEFAULT_REGISTRY
+    if _DEFAULT_REGISTRY is None:
+        _DEFAULT_REGISTRY = build_default_registry(discover=True)
+    return _DEFAULT_REGISTRY

@@ -47,6 +47,7 @@ def _make_manager(name='TSZ', **kwargs):
     return mgr, ts
 
 
+@pytest.mark.nohardware
 def test_no_movement_on_startup():
     """Construction must not move the stage: no homing, no DAC command. This is
     what preserves a manually centred focus across restarts and crashes."""
@@ -55,6 +56,7 @@ def test_no_movement_on_startup():
     assert mgr.position['Z'] == 0.0
 
 
+@pytest.mark.nohardware
 def test_set_position_commands_expected_voltage_and_tracks_it():
     mgr, ts = _make_manager(conversionFactor=2.0)  # position = 2 * volt
 
@@ -63,6 +65,7 @@ def test_set_position_commands_expected_voltage_and_tracks_it():
     assert mgr.position['Z'] == 6.0
 
 
+@pytest.mark.nohardware
 def test_negative_request_clamps_to_floor_and_tracks_clamped_position():
     """A negative move on a minVolt=0 axis parks at 0 and reports 0 (no drift)."""
     mgr, ts = _make_manager(minVolt=0.0, conversionFactor=2.0)
@@ -73,6 +76,7 @@ def test_negative_request_clamps_to_floor_and_tracks_clamped_position():
     assert mgr.position['Z'] == 0.0
 
 
+@pytest.mark.nohardware
 def test_over_range_request_clamps_to_ceiling():
     mgr, ts = _make_manager(minVolt=0.0, maxVolt=10.0, conversionFactor=2.0)
 
@@ -81,6 +85,7 @@ def test_over_range_request_clamps_to_ceiling():
     assert mgr.position['Z'] == 20.0
 
 
+@pytest.mark.nohardware
 def test_move_uses_clamped_tracked_position():
     """Relative moves build on the real (clamped) position, not the request."""
     mgr, ts = _make_manager(minVolt=0.0, conversionFactor=2.0)
@@ -91,6 +96,7 @@ def test_move_uses_clamped_tracked_position():
     assert mgr.position['Z'] == 6.0
 
 
+@pytest.mark.nohardware
 def test_position_persists_across_restart_without_moving():
     """A new manager (simulating an ImSwitch restart) re-adopts the last
     commanded position and issues no DAC command to do so — the board is still
@@ -103,6 +109,7 @@ def test_position_persists_across_restart_without_moving():
     assert ts2.calls == []                # ...and nothing moved
 
 
+@pytest.mark.nohardware
 def test_restore_clamps_to_current_range_without_moving():
     """If the range shrank since the position was written, the restored value is
     clamped to the new range — still without commanding the DAC."""
@@ -115,6 +122,7 @@ def test_restore_clamps_to_current_range_without_moving():
     assert ts2.calls == []
 
 
+@pytest.mark.nohardware
 def test_persistence_is_per_positioner_name():
     """Two axes with different names don't clobber each other's stored position."""
     mgr_a, _ = _make_manager(name='TSZ', conversionFactor=2.0)
@@ -126,3 +134,33 @@ def test_persistence_is_per_positioner_name():
     mgr_b2, _ = _make_manager(name='TSX', conversionFactor=2.0)
     assert mgr_a2.position['Z'] == 6.0
     assert mgr_b2.position['Z'] == 4.0
+
+
+@pytest.mark.nohardware
+def test_close_event_does_not_move():
+    """closeEvent is a no-op that does not command the DAC."""
+    mgr, ts = _make_manager(conversionFactor=2.0)
+    mgr.setPosition(6.0, 'Z')
+    ts.calls.clear()
+    mgr.closeEvent()
+    assert ts.calls == []
+
+
+@pytest.mark.nohardware
+def test_multi_axis_construction_raises_runtime_error():
+    """TriggerScopePositionerManager only supports one axis."""
+    ts = FakeTriggerScopeManager()
+    info = PositionerInfo(
+        analogChannel=None,
+        digitalLine=None,
+        managerName='TriggerScopePositionerManager',
+        managerProperties={
+            'conversionFactor': 2.0,
+            'minVolt': 0.0,
+            'maxVolt': 10.0,
+        },
+        axes=['X', 'Y', 'Z'],
+        forScanning=True,
+    )
+    with pytest.raises(RuntimeError, match='only supports one axis'):
+        TriggerScopePositionerManager(info, 'TSXYZ', triggerScopeManager=ts)

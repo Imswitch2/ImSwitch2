@@ -25,6 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,6 +39,7 @@ from imswitch.imcontrol.model.workflows.paths import (
     default_measurements_root,
     resolve_measurements_root,
 )
+from imswitch.imcontrol.model.workflows.provenance import write_acquisition_metadata
 from imswitch.imcontrol.model.workflows.stitched_image import StitchedImage
 
 if TYPE_CHECKING:
@@ -53,42 +55,71 @@ DEFAULT_MEASUREMENTS_ROOT = default_measurements_root()
 @dataclass
 class TilingParams:
     """Parameters for a tiling scan.
-    
+
     Attributes:
         n_tiles: Number of tiles to acquire (rounded up to perfect square).
         step_units: Stage step size in stage units between tile centers (default 1560).
         laser_pin: Teensy pin number for laser TTL output (for hardware triggering).
         camera_pin: Teensy pin number for camera trigger output (for hardware triggering).
         pulsed: Whether to use pulsed/triggered acquisition mode.
-        laser_power_488_mw: Laser power in mW for 488 nm.
+        laser_power_488_mw: Backward-compatible default laser power in mW for
+            legacy single-channel 488 nm tiling.
+        laser_names: Laser channel names to use for tiling illumination.
+        laser_powers_mw: Per-channel laser powers in mW. Defaults to
+            ``laser_power_488_mw`` for every configured laser name.
         exposure_us: Camera exposure time in microseconds.
         tile_display_size: Target tile size for downsampled stitching preview (default 256).
             Set to 0 for full resolution (required for cell segmentation).
         save_individual: Whether to save individual .npy tile files (default True).
         skip_cell_targeting: If True, skip automatic cell segmentation/targeting.
+        build_stitched_overview: If True, build and expose StitchedImage during run().
+            Defaults to False for conservative backward compatibility. Requires pixel_size_um.
+        pixel_size_um: Detector pixel size in um. Required when build_stitched_overview=True.
+            Can be a single float or tuple (y, x).
         measurements_root: Base directory for saving tiles. Defaults to
             ``~/ImSwitchMeasurements`` if not provided.
         save_folder: Pre-set save folder path. If None, run() creates a timestamped
             folder under measurements_root.
     """
-    
+
     n_tiles: int
     step_units: int = 1560
     laser_pin: int = 0
     camera_pin: int = 1
     pulsed: bool = False
     laser_power_488_mw: float = 5.0
+    laser_names: tuple[str, ...] = ("488",)
+    laser_powers_mw: Optional[tuple[float, ...]] = None
     exposure_us: int = 50000
     tile_display_size: int = 256
     save_individual: bool = True
     skip_cell_targeting: bool = False
+    build_stitched_overview: bool = False
+    pixel_size_um: Optional[float | tuple[float, float]] = None
     measurements_root: Optional[Path | str] = field(default_factory=lambda: DEFAULT_MEASUREMENTS_ROOT)
     save_folder: Optional[Path] = None
+
+    def __post_init__(self) -> None:
+        self.laser_names = tuple(str(name) for name in (self.laser_names or ()))
+        if not self.laser_names:
+            raise ValueError("TilingParams.laser_names must contain at least one laser")
+
+        if self.laser_powers_mw is None:
+            self.laser_powers_mw = tuple(
+                float(self.laser_power_488_mw) for _ in self.laser_names
+            )
+        else:
+            self.laser_powers_mw = tuple(float(power) for power in self.laser_powers_mw)
+
+        if len(self.laser_powers_mw) != len(self.laser_names):
+            raise ValueError(
+                "TilingParams.laser_powers_mw must have the same length as laser_names"
+            )
 
 
 class TilingWorkflow:
     """Orchestrate a spiral tiling scan with optional cell targeting.
-    
+
     Args:
         facade: MicroscopeFacade providing access to hardware managers.
         widefield_starss_workflow: Optional WidefieldStarssWorkflow instance for
@@ -109,7 +140,7 @@ class TilingWorkflow:
                 "max_intensity_enabled": False,
             }
     """
-    
+
     def __init__(
         self,
         facade: MicroscopeFacade,
@@ -140,11 +171,12 @@ class TilingWorkflow:
         self._recording = widefield_starss_workflow  # Deprecated compatibility attribute
         self.params = params
         self.seg_filter = seg_filter or {}
-        
+
         # Populated during a scan
         self.stitched_image: Optional[StitchedImage] = None
         self._tile_positions_stage: list[tuple[float, float]] = []
         self._origin_stage_xy: Optional[tuple[float, float]] = None
+        self._scan_completed: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -154,46 +186,63 @@ class TilingWorkflow:
         self,
         save_folder: Optional[Path] = None,
         tile_callback: Optional[Callable] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Execute the full tiling scan.
-        
+
         Args:
             save_folder: Directory to save tiles and H5 file. If None, uses params.save_folder
                 or creates a timestamped folder under params.measurements_root.
             tile_callback: Optional callback ``f(image, grid_x, grid_y, tile_idx, n_total)``
                 called after each tile is acquired — use for live preview updates.
+            should_stop: Optional ``f() -> bool`` checked before each tile. When it
+                returns True the scan stops early; cleanup still runs.
+
+        Cleanup (laser modulation mode restore, H5 close) is guaranteed via a
+        ``finally`` block even if a tile, stage move, or callback raises or the
+        scan is cancelled.
         """
         save_folder = save_folder or self.params.save_folder or self._default_save_folder()
-        
+
         save_folder = Path(save_folder)
         save_folder.mkdir(parents=True, exist_ok=True)
         self.params.save_folder = save_folder
-        
+
+        self.stitched_image = None
+        self._tile_positions_stage = []
+        self._origin_stage_xy = None
+        self._scan_completed = False
+
+        # Validate stitching prerequisites
+        if self.params.build_stitched_overview:
+            if self.params.pixel_size_um is None:
+                raise ValueError(
+                    "build_stitched_overview=True requires pixel_size_um to be set in TilingParams"
+                )
+
         # Round n_tiles up to perfect square for spiral
         n_steps = int(np.ceil(np.sqrt(self.params.n_tiles)) ** 2)
         logger.info("Starting tiling scan: %d tiles (rounded from %d)", n_steps, self.params.n_tiles)
-        
+
         self._prepare_h5(save_folder)
-        
+
         # Lazy import h5py
         try:
             import h5py
         except ImportError:
             h5py = None
             logger.warning("h5py not available; H5 master file will not be created")
-        
+
         if h5py is not None:
             h5_file = h5py.File(str(save_folder / "Tiling_measurement.h5"), "a")
             h5_file["n_steps"] = n_steps
             h5_file["folder"] = str(save_folder)
         else:
             h5_file = None
-        
+
         # Get initial stage position
         initial_pos = self._get_stage_position()
-        curr_pos = np.zeros(2, dtype=float)
-        self._tile_positions_stage = []
-        
+
         # Decide acquisition strategy
         hw_trigger = (
             self.params.pulsed
@@ -201,21 +250,65 @@ class TilingWorkflow:
             and self.params.camera_pin is not None
             and self.facade.trig.connected
         )
-        
+
+        # Run the scan with guaranteed cleanup (laser-mode restore + H5 close)
+        # even if a tile, stage move, or callback raises, or the scan is cancelled.
+        try:
+            self._run_tiles(
+                save_folder=save_folder,
+                n_steps=n_steps,
+                initial_pos=initial_pos,
+                h5_file=h5_file,
+                hw_trigger=hw_trigger,
+                tile_callback=tile_callback,
+                should_stop=should_stop,
+            )
+            self._scan_completed = True
+        finally:
+            self._cleanup_run(h5_file, save_folder)
+
+    def _run_tiles(
+        self,
+        *,
+        save_folder: Path,
+        n_steps: int,
+        initial_pos: tuple[float, float],
+        h5_file,
+        hw_trigger: bool,
+        tile_callback: Optional[Callable],
+        should_stop: Optional[Callable[[], bool]],
+    ) -> None:
+        """Configure the laser, run the spiral tile loop, and return to origin.
+
+        Cleanup is the caller's responsibility: :meth:`run` wraps this in
+        ``try/finally`` -> :meth:`_cleanup_run`. On cancellation (``should_stop``)
+        the scan returns to origin and cleans up; on a raised exception the origin
+        move is skipped and only :meth:`_cleanup_run` runs.
+        """
+        curr_pos = np.zeros(2, dtype=float)
+
         # Configure laser
         if hw_trigger:
-            self.facade.laser_con.set_triggered_mode(["488"], [self.params.laser_power_488_mw])
+            self.facade.laser_con.set_triggered_mode(
+                self._laser_names(), self._laser_powers_mw()
+            )
             time.sleep(0.5)
             logger.info("Tiling: hardware-triggered mode (laser_pin=%d, camera_pin=%d)",
                        self.params.laser_pin, self.params.camera_pin)
         else:
-            self.facade.laser_con.set_constant_power(["488"], [self.params.laser_power_488_mw])
+            self.facade.laser_con.set_constant_power(
+                self._laser_names(), self._laser_powers_mw()
+            )
             time.sleep(2)
             if self.params.pulsed:
-                self.facade.laser_con.laser_off(["488"])
-        
+                self.facade.laser_con.laser_off(self._laser_names())
+
         # Execute spiral scan
         for ctr, pos in enumerate(spiral_moves(n_steps)):
+            if should_stop is not None and should_stop():
+                logger.info("Tiling: stop requested before tile %d/%d — ending scan",
+                            ctr + 1, n_steps)
+                break
             logger.info("Acquiring tile %d/%d", ctr + 1, n_steps)
             curr_pos += pos
             curr_pos_move = (
@@ -223,15 +316,15 @@ class TilingWorkflow:
                 int(initial_pos[1] + self.params.step_units * curr_pos[1]),
             )
             self.facade.stage_con.move_to(curr_pos_move[0], curr_pos_move[1])
-            
+
             # Record actual position
             curr_pos_is = self._get_stage_position()
             self._tile_positions_stage.append(curr_pos_is)
-            
+
             if h5_file is not None:
                 h5_file[f"{int(curr_pos[0])}_{int(curr_pos[1])}_is_pos"] = curr_pos_is
                 h5_file[f"{int(curr_pos[0])}_{int(curr_pos[1])}_should_pos"] = curr_pos_move
-            
+
             # Acquire tile
             save_path = save_folder / f"img_new_{int(curr_pos[0])}_{int(curr_pos[1])}.npy"
             if hw_trigger:
@@ -247,16 +340,27 @@ class TilingWorkflow:
                     filehandle=h5_file,
                     pulsed_laser=self.params.pulsed,
                 )
-            
+
+            # Build stitched overview if requested
+            if self.params.build_stitched_overview:
+                if self.stitched_image is None:
+                    # Lazy init after first frame
+                    tile_step_um = self.params.step_units
+                    self.stitched_image = StitchedImage(
+                        tile_size_px=None,
+                        tile_step_um=tile_step_um,
+                        px_per_um=None,
+                        tile_shape_px=tmp_im.shape[:2],
+                        pixel_size_um=self.params.pixel_size_um,
+                        blend_overlaps=True,
+                        intensity_correction=False,
+                    )
+
+                self.stitched_image.add_tile(tmp_im, int(curr_pos[0]), int(curr_pos[1]))
+
             if tile_callback is not None:
                 tile_callback(tmp_im, int(curr_pos[0]), int(curr_pos[1]), ctr, n_steps)
-        
-        # Clean up laser
-        self.facade.laser_con.set_modulation_mode(["488"])
-        
-        if h5_file is not None:
-            h5_file.close()
-        
+
         # Move to origin (minimum x, y)
         if self._tile_positions_stage:
             pos_arr = np.array(self._tile_positions_stage)
@@ -264,14 +368,43 @@ class TilingWorkflow:
             min_y = int(np.min(pos_arr[:, 1]))
             self._origin_stage_xy = (float(min_x), float(min_y))
             self.facade.stage_con.move_to(min_x, min_y)
-        
+
         logger.info("Tiling scan complete")
+
+    def _cleanup_run(self, h5_file, save_folder: Path) -> None:
+        """Restore laser modulation mode, close H5 file, and write provenance metadata.
+
+        Always invoked from :meth:`run`'s ``finally`` (success, failure, or
+        cancel). Each step is independently guarded so one failure cannot mask
+        the others. Provenance metadata is written even on partial runs.
+        """
+        try:
+            self.facade.laser_con.set_modulation_mode(self._laser_names())
+        except Exception as exc:
+            logger.error("Tiling cleanup: failed to restore laser modulation mode — %s", exc)
+
+        if h5_file is not None:
+            try:
+                h5_file.close()
+            except Exception as exc:
+                logger.error("Tiling cleanup: failed to close H5 file — %s", exc)
+
+        try:
+            write_acquisition_metadata(save_folder, self.params, self._scan_completed)
+        except Exception as exc:
+            logger.error("Tiling cleanup: failed to write provenance metadata — %s", exc)
 
     def _default_save_folder(self) -> Path:
         """Return a timestamped tiling folder under the configured measurements root."""
         root = resolve_measurements_root(self.params.measurements_root)
         now = datetime.now()
         return root / now.strftime("%Y_%m_%d") / f"tiling_{now.strftime('%H%M%S')}"
+
+    def _laser_names(self) -> list[str]:
+        return list(self.params.laser_names)
+
+    def _laser_powers_mw(self) -> list[float]:
+        return list(self.params.laser_powers_mw or ())
 
     def run_cell_targeting(
         self,
@@ -360,7 +493,7 @@ class TilingWorkflow:
         filehandle = None,
     ) -> np.ndarray:
         """Acquire one frame using Teensy Snap hardware synchronization.
-        
+
         The Teensy fires laser_pin and camera_pin simultaneously for exactly
         exposure_us microseconds. The camera is armed in HARDWARE_TRIGGER mode
         so it captures exactly on the rising edge. The laser is in digital-
@@ -368,35 +501,36 @@ class TilingWorkflow:
         """
         self.facade.cam.prepare_acquisition(1)
         self.facade.cam.start_acquisition()
-        self.facade.trig.snap_trigger(
-            laser_pin=laser_pin,
-            camera_pin=camera_pin,
-            exposure_us=self.params.exposure_us,
-        )
-        
-        # Wait for frame to arrive
-        arrived = self.facade.cam.wait_for_frame(timeout_s=2.0)
+        try:
+            self.facade.trig.snap_trigger(
+                laser_pin=laser_pin,
+                camera_pin=camera_pin,
+                exposure_us=self.params.exposure_us,
+            )
+            # Wait for frame to arrive
+            arrived = self.facade.cam.wait_for_frame(timeout_s=2.0)
+            data = self.facade.cam.get_data() if arrived else None
+        finally:
+            # Always stop the acquisition, before any software fallback or on error.
+            self.facade.cam.stop_acquisition()
+
         if not arrived:
             logger.warning("Hardware snap: no frame within 2 s, falling back to software")
-            self.facade.cam.stop_acquisition()
             return self._grab_image(savepath=savepath, filehandle=filehandle, pulsed_laser=False)
-        
-        self.facade.cam.stop_acquisition()
-        data = self.facade.cam.get_data()
-        
+
         if not isinstance(data, np.ndarray) or data.shape[0] == 0:
             logger.warning("Hardware snap: empty data, falling back to software")
             return self._grab_image(savepath=savepath, filehandle=filehandle, pulsed_laser=False)
-        
+
         img = data[:, :]
-        
+
         if savepath is not None:
-            np.save(str(savepath).replace(".npy", "") + ".npy", img)
-        
+            self._atomic_save_npy(str(savepath).replace(".npy", "") + ".npy", img)
+
         if filehandle is not None and savepath is not None:
             key = savepath.name.split("new_")[-1].replace(".npy", "")
             filehandle[key] = data
-        
+
         return img
 
     def _grab_image(
@@ -407,42 +541,69 @@ class TilingWorkflow:
         recursion_ctr: int = 0,
     ) -> np.ndarray:
         """Acquire a single image from the camera using software control.
-        
+
         When pulsed_laser is True, the laser is enabled immediately before
         the camera snap and disabled right after.
         """
         if pulsed_laser:
-            self.facade.laser_con.laser_on(["488"])
-        
-        self.facade.cam.prepare_live()
-        self.facade.cam.start_live()
-        time.sleep(0.05)  # Brief delay for frame capture
-        self.facade.cam.stop_live()
-        data = self.facade.cam.get_data()
-        
-        if pulsed_laser:
-            self.facade.laser_con.laser_off(["488"])
-        
+            self.facade.laser_con.laser_on(self._laser_names())
+        try:
+            self.facade.cam.prepare_live()
+            self.facade.cam.start_live()
+            time.sleep(0.05)  # Brief delay for frame capture
+            self.facade.cam.stop_live()
+            data = self.facade.cam.get_data()
+        finally:
+            # Always disable a pulsed laser, even if the camera path raised.
+            if pulsed_laser:
+                self.facade.laser_con.laser_off(self._laser_names())
+
         if not isinstance(data, np.ndarray):
             if recursion_ctr > 10:
                 raise RuntimeError("Camera failed to acquire image after 10 retries")
             logger.warning("No image acquired, retrying...")
             return self._grab_image(savepath, filehandle, pulsed_laser, recursion_ctr + 1)
-        
+
         img = data[0, :, :]
-        
+
         if savepath is not None:
-            np.save(str(savepath).replace(".npy", "") + ".npy", img)
-        
+            self._atomic_save_npy(str(savepath).replace(".npy", "") + ".npy", img)
+
         if filehandle is not None and savepath is not None:
             key = savepath.name.split("new_")[-1].replace(".npy", "")
             filehandle[key] = data
-        
+
         return img
 
     def _get_stage_position(self) -> tuple[float, float]:
         """Return current (x, y) stage position."""
         return self.facade.stage_con.get_position()
+
+    def _atomic_save_npy(self, filepath: str, arr: np.ndarray) -> None:
+        """Atomically save numpy array to .npy file using temp-then-rename pattern.
+        
+        Args:
+            filepath: Final destination path for the .npy file.
+            arr: Numpy array to save.
+        """
+        # np.save automatically adds .npy extension, so we need to remove it from filepath
+        # for the temp file to avoid double extension
+        if filepath.endswith('.npy'):
+            base = filepath[:-4]
+        else:
+            base = filepath
+        
+        tmp_base = base + ".tmp"
+        tmp_path = tmp_base + ".npy"  # np.save will not add another .npy
+        final_path = base + ".npy"
+        
+        try:
+            np.save(tmp_base, arr)  # This creates tmp_base.npy
+            os.replace(tmp_path, final_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     def _prepare_h5(self, save_folder: Path) -> None:
         """Remove old H5 and npy files before starting a new scan."""
@@ -450,6 +611,6 @@ class TilingWorkflow:
         if h5_path.exists():
             h5_path.unlink()
             logger.info("Removed existing %s", h5_path)
-        
+
         for old_npy in save_folder.glob("img_new_*.npy"):
             old_npy.unlink()

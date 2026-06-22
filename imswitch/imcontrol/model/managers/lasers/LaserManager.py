@@ -138,6 +138,23 @@ class LaserManager(ABC):
         """ The initial frequency of the laser modulation. """
         return self.__freqRangeInit
 
+    def hasProperty(self, key: str) -> bool:
+        """ Whether ``key`` is present in this laser's managerProperties.
+
+        Public accessor so callers do not reach into ``manager._laserInfo``. """
+        return key in (self._laserInfo.managerProperties or {})
+
+    def getProperty(self, key: str, default=None):
+        """ Return the managerProperty ``key`` (or ``default``). Public accessor
+        so callers do not read ``manager._laserInfo.managerProperties`` directly. """
+        return (self._laserInfo.managerProperties or {}).get(key, default)
+
+    def usesCalibrationLookup(self) -> bool:
+        """ Whether this laser is driven through a calibration lookup table
+        (``calibCsvPath`` configured), which means its UI value is a 0-100 %%
+        setpoint rather than the raw value range. """
+        return self.hasProperty("calibCsvPath")
+
     @abstractmethod
     def setEnabled(self, enabled: bool) -> None:
         """ Sets whether the laser is enabled. """

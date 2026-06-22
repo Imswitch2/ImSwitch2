@@ -55,6 +55,8 @@ def test_build_forwards_to_facade_builder():
             mock_master,
             laser_aliases=laser_aliases,
             detector_name=detector_name,
+            scan_workflow=mock_comm_channel.scanWorkflow,
+            scan_done_signal=mock_comm_channel.sigScanDone,
         )
         
         # Verify the result is the facade

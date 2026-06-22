@@ -70,7 +70,11 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
     "positioners": {
         "BSC203": {
             "managerName": "BSC203StageManager",
-            "managerProperties": {},
+            "managerProperties": {
+                "port": "COM9",
+                "home": false,
+                "travelRangeUm": 8000
+            },
             "axes": ["X", "Y", "Z"],
             "forPositioning": true,
             "forScanning": false
@@ -79,8 +83,37 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
 
 **managerProperties**
 
-This manager reads no entries from ``managerProperties``.  The serial
-port (``COM9``) and homing flag are hard-coded in the constructor.
+* ``port`` — serial port of the BSC203 controller (default ``"COM9"``).
+* ``home`` — when ``true``, perform an APT homing operation on startup
+  (default ``false``).  Homing parks each axis at its end-stop (position 0).
+* ``travelRangeUm`` — full travel per axis in µm (default ``8000``, for
+  DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and
+  every move is clamped to that range.
+
+**Movement model**
+
+Both absolute (:meth:`setPosition`) and relative (:meth:`move`) moves are
+issued as a bounded **jog**: a positive step size of ``|target - current|``
+encoder counts plus a direction flag.  ``move_absolute`` / ``move_relative``
+are **never** used.
+
+This is essential, not stylistic.  The BSC203 firmware mishandles a move whose
+*displacement* is negative — i.e. any move to a position **below** the current
+one — reading the signed displacement as unsigned and driving the motor to the
+end-stop at full speed ("the negative direction runs away").  This fires for
+*any* downward move, even to a perfectly valid positive target, so clamping the
+target alone never fixed it.  The jog command takes a positive size and an
+explicit direction, which the firmware handles correctly both ways.
+
+The target is pre-clamped to ``[0, travelRangeUm]`` so a jog can never drive
+past an end-stop, and the displacement is taken from the *live* encoder so
+repeated moves self-correct.  A forward jog is assumed to increase the encoder
+(so ``+target`` increases the displayed position); if an axis moves the wrong
+way on your rig, list it in ``invertJogAxes``.
+
+* ``invertJogAxes`` — axis labels whose jog direction should be flipped
+  (default ``[]``).  Use ``utility_scripts/bsc203_diag.py calibrate`` to confirm
+  direction empirically.
 
 **PositionerInfo fields used**
 
@@ -206,6 +239,93 @@ RS-232 manager.  No mock fallback in this manager.
 **Source**
 
 `JenaPiezoZManager.py <../../imswitch/imcontrol/model/managers/positioners/JenaPiezoZManager.py>`_
+
+
+KDC101PositionerManager
+=======================
+
+Thorlabs KDC101 single-axis motor controller exposed through the
+generic Positioner widget.  Use this for KDC-driven linear stages,
+rotation stages, sliders, or other single-axis actuators where the
+KDC is the general-purpose motion controller rather than a semantic
+rotator.
+
+**Setup JSON**
+
+.. code-block:: json
+
+    "positioners": {
+        "Rotation stage": {
+            "managerName": "KDC101PositionerManager",
+            "managerProperties": {
+                "port": "COM15",
+                "posConvFac": 1919.6418578623391,
+                "velConvFac": 1.0,
+                "accConvFac": 1.0,
+                "positionUnit": "deg",
+                "homeOnInit": false
+            },
+            "axes": ["R"],
+            "forPositioning": true,
+            "forScanning": false,
+            "resetOnClose": false,
+            "liveUpdate": true
+        }
+    }
+
+**managerProperties**
+
+.. list-table::
+   :widths: 22 12 18 48
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Default
+     - Meaning
+   * - ``port``
+     - str
+     - **required**
+     - Serial port for the KDC101 controller.
+   * - ``posConvFac``
+     - float
+     - **required**
+     - Encoder counts per ImSwitch position unit.
+   * - ``velConvFac``
+     - float
+     - **required**
+     - Encoder velocity conversion factor.
+   * - ``accConvFac``
+     - float
+     - **required**
+     - Encoder acceleration conversion factor.
+   * - ``positionUnit``
+     - str
+     - ``"um"``
+     - Unit label passed to the Positioner widget, for example ``"deg"`` for
+       a KDC-driven rotation stage.
+   * - ``homeOnInit``
+     - bool
+     - ``false``
+     - If true, home the device during construction.
+
+**PositionerInfo fields used**
+
+* ``axes`` — must contain exactly one axis label.  The label is used
+  by the Positioner widget and API calls.
+* ``liveUpdate`` — useful for a KDC because moves may be asynchronous;
+  when true, the Positioner controller periodically refreshes the
+  displayed position.
+
+**Vendor library**
+
+``thorlabs_apt_device.devices.kdc101.KDC101`` from
+``thorlabs-apt-device``.  If the package or device is unavailable,
+the manager logs an error and leaves the device disabled.
+
+**Source**
+
+`KDC101PositionerManager.py <../../imswitch/imcontrol/model/managers/positioners/KDC101PositionerManager.py>`_
 
 
 KinesisStageManager

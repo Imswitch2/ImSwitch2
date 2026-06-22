@@ -19,8 +19,13 @@ class SetupStatusController(ImConWidgetController):
         self.tiltedCamName = 'Orca'
         self.straightCamName = 'WidefieldCamera'
 
-        self._elliptecSliderManager = self._master.rs232sManager['elliptecSlider']
-        self._rotationStageManager = self._master.rs232sManager['rotationStage']
+        self._elliptecSliderManager = self._getOptionalRS232Manager(
+            'elliptecSlider', 'Elliptec slider hot keys'
+        )
+        self._rotationStageManager = self._getOptionalRS232Manager(
+            'rotationStage', 'rotation stage controls'
+        )
+        self.timer = None
 
         self.flipMirrors = []
         if _APT_AVAILABLE:
@@ -87,6 +92,39 @@ class SetupStatusController(ImConWidgetController):
             lambda config_name: self.setConfig(self.setupConfigs[config_name])
         )
 
+        if self._rotationStageManager is not None:
+            self._connectRotationStageControls()
+        else:
+            self._setRotationStageControlsEnabled(False)
+            self._widget.currentPosOfRotationStageDisp.setText('Unavailable')
+
+        self.setConfig(self.setupConfigs['Widefield imaging'])
+
+        if self._rotationStageManager is not None:
+            self.timer = QtCore.QTimer()
+            self.timer.timeout.connect(self.getPositions)
+            self.timer.start(100)
+
+    def _getOptionalRS232Manager(self, managerName, featureLabel):
+        rs232sManager = getattr(self._master, 'rs232sManager', None)
+        if rs232sManager is None:
+            self._logger.warning(
+                '%s disabled in SetupStatusController: rs232sManager is unavailable',
+                featureLabel,
+            )
+            return None
+
+        try:
+            return rs232sManager[managerName]
+        except KeyError:
+            self._logger.warning(
+                '%s disabled in SetupStatusController: RS232 device "%s" is not configured',
+                featureLabel,
+                managerName,
+            )
+            return None
+
+    def _connectRotationStageControls(self):
         self._widget.rotationStagePosEdit.editingFinished.connect(
             self.setRotationStagePosFromEdit
         )
@@ -100,25 +138,46 @@ class SetupStatusController(ImConWidgetController):
             lambda: self._rotationStageManager.jog(False)
         )
 
-        self.setConfig(self.setupConfigs['Widefield imaging'])
-
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self.getPositions)
-        self.timer.start(100)
+    def _setRotationStageControlsEnabled(self, enabled):
+        for attrName in (
+            'rotationStageHeader',
+            'rotationStagePosLabel',
+            'rotationStagePosEdit',
+            'jogStepSizeLabel',
+            'jogStepSizeEdit',
+            'jogPositiveButton',
+            'jogNegativeButton',
+            'currentPosOfRotationStageLabel',
+            'currentPosOfRotationStageDisp',
+        ):
+            widget = getattr(self._widget, attrName, None)
+            if widget is not None and hasattr(widget, 'setEnabled'):
+                widget.setEnabled(enabled)
 
     def setRotationJogStepSizeFromEdit(self):
+        if self._rotationStageManager is None:
+            return
         newStepSize = self._widget.jogStepSizeEdit.value()
         self._rotationStageManager.setJogDistanceInUnits(newStepSize)
 
     def setRotationStagePosFromEdit(self):
+        if self._rotationStageManager is None:
+            return
         newPos = self._widget.rotationStagePosEdit.value()
         self.setRotationStagePos(newPos)
 
     def setRotationStagePos(self, pos):
+        if self._rotationStageManager is None:
+            self._logger.warning(
+                'Cannot set rotation stage position: rotation stage is not configured'
+            )
+            return
         self._logger.debug('Setting rotation stage position')
         self._rotationStageManager.moveToInUnits(pos)
 
     def getPositions(self):
+        if self._rotationStageManager is None:
+            return
         self._widget.currentPosOfRotationStageDisp.setText(
             str(self._rotationStageManager.getPositionInUnits())
         )
@@ -152,16 +211,25 @@ class SetupStatusController(ImConWidgetController):
                 if event.key() == item['Hot key']:
                     self.setConfig(item)
             if event.key() == QtCore.Qt.Key_1:
-                self._elliptecSliderManager.moveToPosition(0)
+                self._moveElliptecSlider(0)
             if event.key() == QtCore.Qt.Key_2:
-                self._elliptecSliderManager.moveToPosition(1)
+                self._moveElliptecSlider(1)
             if event.key() == QtCore.Qt.Key_3:
-                self._elliptecSliderManager.moveToPosition(2)
+                self._moveElliptecSlider(2)
             if event.key() == QtCore.Qt.Key_4:
-                self._elliptecSliderManager.moveToPosition(3)
+                self._moveElliptecSlider(3)
+
+    def _moveElliptecSlider(self, position):
+        if self._elliptecSliderManager is None:
+            self._logger.warning(
+                'Cannot move Elliptec slider: elliptecSlider is not configured'
+            )
+            return
+        self._elliptecSliderManager.moveToPosition(position)
 
     def closeEvent(self):
-        self.timer.stop()
+        if self.timer is not None:
+            self.timer.stop()
         for fm in self.flipMirrors:
             try:
                 fm.close()

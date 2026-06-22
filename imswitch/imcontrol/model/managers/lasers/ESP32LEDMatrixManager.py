@@ -40,11 +40,8 @@ class ESP32LEDMatrixManager(LaserManager):
         self._send_pattern()
 
     def _send_pattern(self):
-        if self._rs232manager._esp32 is None:
-            self.__logger.warning('ESP32 not connected, LED matrix update ignored')
-            return
         pattern = self._led_pattern if self._enabled else np.zeros_like(self._led_pattern)
-        self._rs232manager._esp32.send_LEDMatrix_array(pattern)
+        self._rs232manager.send_LEDMatrix_array(pattern)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

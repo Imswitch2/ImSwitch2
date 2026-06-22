@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import tifffile as tiff
 
@@ -30,8 +31,7 @@ class DenoisedResult(ProcessingResult):
         self.pad = pad
 
     def save(self, path: Path, fmt: str = 'tiff') -> None:
-        """Save the denoised array. TIFF is the default; HDF5 is not supported
-        yet because it would duplicate the upstream reconstructor's storage."""
+        """Save the denoised array as TIFF (default) or HDF5."""
         if fmt.lower() in ('tiff', 'tif'):
             tiff.imwrite(
                 str(path),
@@ -48,9 +48,21 @@ class DenoisedResult(ProcessingResult):
                     'denoise_pad': self.pad,
                 },
             )
+        elif fmt.lower() in ('hdf5', 'h5', 'hdf'):
+            with h5py.File(str(path), 'w') as f:
+                f.create_dataset(
+                    'denoised',
+                    data=np.asarray(self.data, dtype=np.float32),
+                    compression='gzip',
+                )
+                f.attrs['axis_labels'] = ''.join(self.axis_labels)
+                f.attrs['denoise_model_name'] = self.model_name
+                f.attrs['denoise_model_type'] = self.model_type
+                f.attrs['denoise_crop_size'] = self.crop_size
+                f.attrs['denoise_pad'] = self.pad
         else:
             raise ValueError(
-                f"DenoisedResult supports TIFF, got {fmt!r}"
+                f"DenoisedResult supports TIFF or HDF5, got {fmt!r}"
             )
 
 

@@ -8,9 +8,6 @@ class BSC203Widget(Widget):
     """ Widget for the Thorlabs BSC203 3-axis NanoMax motorised stage. """
 
     sigHomeAll = QtCore.Signal()
-    sigKeyPressed = QtCore.Signal(object)
-    sigKeyReleased = QtCore.Signal(object)
-    sigFocusLost = QtCore.Signal()  # emitted when widget loses keyboard focus
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -34,15 +31,15 @@ class BSC203Widget(Widget):
         self.setXLabel = QtWidgets.QLabel('X')
         self.setXEdit = guitools.BetterDoubleSpinBox(allowScrollChanges=False)
         self.setXEdit.setMaximum(8000)
-        self.setXEdit.setMinimum(-500)
+        self.setXEdit.setMinimum(0)
         self.setYLabel = QtWidgets.QLabel('Y')
         self.setYEdit = guitools.BetterDoubleSpinBox(allowScrollChanges=False)
         self.setYEdit.setMaximum(8000)
-        self.setYEdit.setMinimum(-500)
+        self.setYEdit.setMinimum(0)
         self.setZLabel = QtWidgets.QLabel('Z')
         self.setZEdit = guitools.BetterDoubleSpinBox(allowScrollChanges=False)
         self.setZEdit.setMaximum(8000)
-        self.setZEdit.setMinimum(-500)
+        self.setZEdit.setMinimum(0)
 
         self.moveToBtn = guitools.BetterPushButton('Move to pos')
         self.stopBtn = guitools.BetterPushButton('Stop movement')
@@ -78,7 +75,6 @@ class BSC203Widget(Widget):
         grid.addWidget(self.homeBtn,       11, 0, 1, 2)
 
         self._msg = QtWidgets.QMessageBox
-        self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
     def _homeClicked(self):
         answer = self._msg.question(
@@ -87,20 +83,3 @@ class BSC203Widget(Widget):
         )
         if answer == self._msg.Yes:
             self.sigHomeAll.emit()
-
-    def keyPressEvent(self, event):
-        self.sigKeyPressed.emit(event)
-
-    def keyReleaseEvent(self, event):
-        self.sigKeyReleased.emit(event)
-
-    def focusOutEvent(self, event):
-        """Stop all stage motion when the widget loses keyboard focus.
-
-        Qt does not deliver keyReleaseEvent if a key is held while focus
-        moves to another widget.  Without this guard a velocity move started
-        by an arrow-key press would keep running until it hits the hardware
-        end-stop (~-2500 µm).
-        """
-        self.sigFocusLost.emit()
-        super().focusOutEvent(event)

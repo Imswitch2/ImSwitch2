@@ -101,7 +101,7 @@ class ZernikeGenerator:
             Vertical relative offset from the geometric center of the image in pixel unit .
         radius : float (optional)
             Normalization radius in pixel unit.If None, defaults to min(width, height) / 2 (Full Inscribed Circle).
-            NOTE: /!\ Changing the radius can affect drastically the calculation!
+            NOTE: Changing the radius can drastically affect the calculation!
         unit : str (optional)
             "waves" (default): Coefficient 1.0 = 1 wavelength of aberration (2*pi phase).
             "rad": Coefficient 1.0 = 1 radian of phase.

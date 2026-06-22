@@ -24,6 +24,10 @@ from imswitch.imcontrol.model.workflows.paths import (
     default_measurements_root,
     resolve_measurements_root,
 )
+from imswitch.imcontrol.model.workflows.provenance import (
+    write_acquisition_metadata,
+    atomic_write,
+)
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
@@ -47,6 +51,7 @@ class ZStackParams:
         laser_power_488_mw: Laser power in milliwatts for 488 nm laser.
         exposure_us: Camera exposure time in microseconds.
         measurements_root: Root directory for saving measurements.
+        laser_name: Facade laser key used for Z-stack illumination.
     """
 
     n_planes: int
@@ -57,6 +62,7 @@ class ZStackParams:
     laser_power_488_mw: float = 50.0
     exposure_us: float = 50000.0
     measurements_root: Optional[str | Path] = DEFAULT_MEASUREMENTS_ROOT
+    laser_name: str = "488"
 
 
 class ZStackWorkflow:
@@ -71,6 +77,8 @@ class ZStackWorkflow:
     def __init__(self, facade: MicroscopeFacade, params: ZStackParams) -> None:
         self.facade = facade
         self.params = params
+        self._acquisition_completed: bool = False
+        self._save_folder: Optional[Path] = None
 
     def run(
         self,
@@ -93,6 +101,9 @@ class ZStackWorkflow:
             raise RuntimeError("Z-stack workflow requires cam in facade")
         if self.facade.laser_con is None:
             raise RuntimeError("Z-stack workflow requires laser_con in facade")
+
+        self._acquisition_completed = False
+        self._save_folder = None
 
         # Centre the stack around the current piezo position
         if z_start is None:
@@ -132,12 +143,12 @@ class ZStackWorkflow:
                     "pulsed=True requires laser_pin and camera_pin to be set"
                 )
             self.facade.laser_con.set_triggered_mode(
-                ["488"], [self.params.laser_power_488_mw]
+                self._laser_names, [self.params.laser_power_488_mw]
             )
             time.sleep(0.5)
         else:
             self.facade.laser_con.set_constant_power(
-                ["488"], [self.params.laser_power_488_mw]
+                self._laser_names, [self.params.laser_power_488_mw]
             )
             time.sleep(1.0)
 
@@ -161,7 +172,7 @@ class ZStackWorkflow:
                     frames.append(self._snap())
 
             # Restore laser and Z position
-            self.facade.laser_con.set_modulation_mode(["488"])
+            self.facade.laser_con.set_modulation_mode(self._laser_names)
             self.facade.z_stage_con.set_pos_um(z_start)
             logger.info("Z-stack done — returned to %.2f µm", z_start)
 
@@ -170,17 +181,26 @@ class ZStackWorkflow:
             if save_stack:
                 self._save(stack)
 
+            self._acquisition_completed = True
             return stack, z_positions
 
-        except Exception as e:
+        except Exception:
             logger.exception("Z-stack acquisition failed")
             # Attempt cleanup
             try:
-                self.facade.laser_con.set_modulation_mode(["488"])
+                self.facade.laser_con.set_modulation_mode(self._laser_names)
                 self.facade.z_stage_con.set_pos_um(z_start)
             except Exception:
-                pass
+                logger.exception("Z-stack cleanup after acquisition failure failed")
             raise
+        finally:
+            if self._save_folder is not None:
+                try:
+                    write_acquisition_metadata(
+                        self._save_folder, self.params, self._acquisition_completed
+                    )
+                except Exception as exc:
+                    logger.error("Z-stack: failed to write provenance metadata — %s", exc)
 
     def run_autofocus(
         self, z_start: Optional[float] = None
@@ -235,7 +255,7 @@ class ZStackWorkflow:
             raise RuntimeError(
                 "Autofocus failed: gradient profile is too flat or linear for quadratic fit"
             )
-        
+
         fit = np.poly1d(coeffs)
         z_focus = -fit.c[1] / (2 * fit.c[0])
 
@@ -252,7 +272,7 @@ class ZStackWorkflow:
         if self.facade.z_stage_con is not None:
             try:
                 self.facade.z_stage_con.set_pos_um(z_focus)
-            except Exception as e:
+            except Exception:
                 logger.exception("Failed to move stage to focus position")
                 raise
 
@@ -261,6 +281,10 @@ class ZStackWorkflow:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @property
+    def _laser_names(self) -> list[str]:
+        return [str(self.params.laser_name)]
 
     def _snap(self) -> np.ndarray:
         """Grab one frame from the camera in live mode."""
@@ -300,15 +324,23 @@ class ZStackWorkflow:
         return np.zeros((512, 512), dtype=np.uint16)
 
     def _save(self, stack: np.ndarray) -> None:
-        """Save the stack as a TIFF to measurements_root/{YYYY_MM_DD}/zstack_{HHMMSS}.tif."""
+        """Save the stack as a TIFF to measurements_root/{YYYY_MM_DD}/zstack_{HHMMSS}.tif.
+        
+        Uses atomic write (temp-then-rename) to prevent partial files on crash.
+        """
         root = resolve_measurements_root(self.params.measurements_root)
         date_folder = root / time.strftime("%Y_%m_%d")
         date_folder.mkdir(parents=True, exist_ok=True)
+        self._save_folder = date_folder
 
         timestamp = time.strftime("%H%M%S")
         out_path = date_folder / f"zstack_{timestamp}.tif"
 
-        tf.imwrite(out_path, stack)
+        # Write to memory buffer then atomic write to disk
+        import io
+        buf = io.BytesIO()
+        tf.imwrite(buf, stack, photometric="minisblack")
+        atomic_write(buf.getvalue(), out_path)
         logger.info("Z-stack saved to %s", out_path)
 
 

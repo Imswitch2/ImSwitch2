@@ -1,17 +1,25 @@
 import os
+import json
 import configparser
 from ast import literal_eval
-from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin
+from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin, StatefulComponentMixin, ComponentStateApplyMode
 import traceback
-from imswitch.imcommon.model import APIExport, dirtools
+from imswitch.imcommon.model import APIExport, dirtools, initLogger
+from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 
 
-class TriggerScopeLSXYRController(ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopeLSXYRController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     """Linked to TriggerScopeLSXYRWidget."""
+
+    componentName = 'Scan'
+    stateSchemaVersion = 1
+    legacyStateNames = ()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._logger = initLogger(self)
 
         self.settingAttr = False
         self.settingParameters = False
@@ -57,6 +65,8 @@ class TriggerScopeLSXYRController(ScanLifecycleMixin, ImConWidgetController):
         self._widget.sigRunScanClicked.connect(self.runScan)
         self._widget.sigParameterChanged.connect(self.updateScanParDict)
 
+        getWidgetStatePersistence().register('Scan', self)
+
     def sendScanParameters(self):
         triggerscopeParameters = self.getTriggerscopeParameters()
         self._commChannel.sigSendScanParameters.emit(triggerscopeParameters)
@@ -69,13 +79,15 @@ class TriggerScopeLSXYRController(ScanLifecycleMixin, ImConWidgetController):
 
     def saveScanParamsToFile(self, filePath: str) -> None:
         """Saves the set scanning parameters to the specified file."""
-        self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config['scanParameterDict'] = self._scanParameterDict
-        config['deviceParameterDict'] = self._deviceParameterDict
-        with open(filePath, 'w') as configfile:
-            config.write(configfile)
+        if not filePath.endswith('.json'):
+            filePath += '.json'
+        state = self.getComponentState()
+        try:
+            with open(filePath, 'w') as f:
+                json.dump(state, f, indent=2)
+            self._logger.info(f'Scan parameters saved to {filePath}')
+        except Exception:
+            self._logger.error(f'Failed to save scan parameters:\n{traceback.format_exc()}')
 
     def loadScan(self):
         fileName = guitools.askForFilePath(self._widget, 'Load scan', self.scanDir)
@@ -85,17 +97,52 @@ class TriggerScopeLSXYRController(ScanLifecycleMixin, ImConWidgetController):
 
     def loadScanParamsFromFile(self, filePath: str) -> None:
         """Loads scanning parameters from the specified file."""
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
-        for key in self._scanParameterDict:
-            self._scanParameterDict[key] = literal_eval(
-                config._sections['scanParameterDict'][key]
-            )
-        for key in self._deviceParameterDict:
-            self._deviceParameterDict[key] = config._sections['deviceParameterDict'][key]
-        self.setParameters()
-        self.setAllSharedAttr()
+        payload = self._read_scan_file(filePath)
+        if payload is None:
+            return
+        warnings = self.applyComponentState(payload, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+        if warnings:
+            for warning in warnings:
+                self._logger.warning(warning)
+
+    def _read_scan_file(self, filePath: str):
+        """Read a scan file, returning a component state dict.
+        
+        Tries JSON first; falls back to the legacy configparser INI format.
+        Returns None on unrecoverable error.
+        """
+        try:
+            with open(filePath, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass
+        except Exception:
+            self._logger.error(f'Could not open scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
+
+        try:
+            config = configparser.ConfigParser()
+            config.optionxform = str
+            config.read(filePath)
+            scanParameterDict = {}
+            deviceParameterDict = {}
+            if 'scanParameterDict' in config._sections:
+                for key, value in config._sections['scanParameterDict'].items():
+                    try:
+                        scanParameterDict[key] = literal_eval(value)
+                    except (ValueError, SyntaxError):
+                        scanParameterDict[key] = value
+            if 'deviceParameterDict' in config._sections:
+                deviceParameterDict = dict(config._sections['deviceParameterDict'])
+            return {
+                'controller': 'TriggerScopeLSXYRController',
+                'scanWidgetType': 'TriggerScopeLSXYR',
+                'scanParameterDict': scanParameterDict,
+                'deviceParameterDict': deviceParameterDict,
+            }
+        except Exception:
+            self._logger.error(f'Could not parse legacy scan file {filePath!r}:\n{traceback.format_exc()}')
+            return None
 
     def setParameters(self):
         """Set parameter fields in widget according to parameter values in parameter dictionaries."""
@@ -304,6 +351,160 @@ class TriggerScopeLSXYRController(ScanLifecycleMixin, ImConWidgetController):
 
     def closeEvent(self):
         pass
+
+    def getComponentState(self) -> dict:
+        """Snapshot the current TriggerScope LSXYR scan parameters."""
+        self.getParameters()
+
+        scanInfo = getattr(self._setupInfo, 'scan', None)
+
+        return {
+            'controller': type(self).__name__,
+            'scanWidgetType': getattr(scanInfo, 'scanWidgetType', None),
+            'scanParameterDict': dict(self._scanParameterDict),
+            'deviceParameterDict': dict(self._deviceParameterDict),
+        }
+
+    def applyComponentState(self, state: dict, *, applyMode: ComponentStateApplyMode) -> list[str]:
+        """Restore TriggerScope LSXYR scan parameters from a snapshot.
+        
+        CRITICAL SAFETY INVARIANT: This method MUST NEVER start a scan in either mode.
+        It only restores scan parameters (scanParameterDict, deviceParameterDict).
+        Starting a scan requires explicit user action (runScan/runScanAdvanced).
+        
+        Args:
+            state: Component state dict from getComponentState().
+            applyMode: STARTUP_RESTORE or SETUP_MODE_APPLY (behavior is identical).
+        
+        Returns:
+            List of warning strings for recoverable issues.
+        """
+        warnings = []
+
+        if self.isRunning:
+            return ['Scan is currently running; scan parameters were not changed.']
+
+        if not isinstance(state, dict):
+            return ['Saved scan state is not a dictionary.']
+
+        savedWidgetType = state.get('scanWidgetType')
+        currentWidgetType = getattr(getattr(self._setupInfo, 'scan', None), 'scanWidgetType', None)
+        if savedWidgetType and currentWidgetType and savedWidgetType != currentWidgetType:
+            warnings.append(
+                f'Saved scan widget type "{savedWidgetType}" differs from current '
+                f'"{currentWidgetType}".'
+            )
+
+        scanParameterDict = state.get('scanParameterDict', {})
+        deviceParameterDict = state.get('deviceParameterDict', {})
+
+        if not isinstance(scanParameterDict, dict):
+            return warnings + ['Saved scan parameters are not a dictionary.']
+        if not isinstance(deviceParameterDict, dict):
+            return warnings + ['Saved device parameters are not a dictionary.']
+
+        roScanDevice = deviceParameterDict.get('roScanDevice')
+        cycleScanDevice = deviceParameterDict.get('cycleScanDevice')
+        rasterXScanDevice = deviceParameterDict.get('rasterXScanDevice')
+        rasterYScanDevice = deviceParameterDict.get('rasterYScanDevice')
+
+        missingPositioners = []
+        for device in [roScanDevice, cycleScanDevice, rasterXScanDevice, rasterYScanDevice]:
+            if device and device not in self.positioners:
+                missingPositioners.append(device)
+        
+        if missingPositioners:
+            warnings.append(
+                f'Missing scan positioner(s): {", ".join(set(missingPositioners))}. '
+                'Scan state was not applied.'
+            )
+            return warnings
+
+        onLaser = deviceParameterDict.get('onLaser')
+        offLaser = deviceParameterDict.get('offLaser')
+        roLaser = deviceParameterDict.get('roLaser')
+        cameraTTL = deviceParameterDict.get('CameraTTL')
+
+        missingTTLDevices = []
+        for device in [onLaser, offLaser, roLaser, cameraTTL]:
+            if device and device not in self.TTLDevices:
+                missingTTLDevices.append(device)
+        
+        if missingTTLDevices:
+            warnings.append(
+                f'Missing TTL device(s): {", ".join(set(missingTTLDevices))}. '
+                'Scan state was not applied.'
+            )
+            return warnings
+
+        self._scanParameterDict = dict(scanParameterDict)
+        self._deviceParameterDict = dict(deviceParameterDict)
+
+        try:
+            self.setParameters()
+            self.setAllSharedAttr()
+        except Exception as e:
+            self._logger.error('Failed to apply TriggerScope LSXYR component state')
+            self._logger.error(traceback.format_exc())
+            warnings.append(f'Failed to apply scan state: {e}')
+
+        return warnings
+
+    def describeComponentState(self, state: dict) -> list[str]:
+        """Generate a human-readable summary of a saved TriggerScope LSXYR scan state."""
+        if not isinstance(state, dict) or not state:
+            return ["  no scan state"]
+
+        scan = state.get("scanParameterDict") or {}
+        device = state.get("deviceParameterDict") or {}
+        summaries = []
+
+        if state.get("controller"):
+            summaries.append(f"  controller: {state.get('controller')}")
+        if state.get("scanWidgetType"):
+            summaries.append(f"  widget type: {state.get('scanWidgetType')}")
+
+        if device:
+            summaries.append("  devices:")
+            for key in ['onLaser', 'offLaser', 'roLaser', 'CameraTTL', 
+                        'roScanDevice', 'cycleScanDevice', 'rasterXScanDevice', 'rasterYScanDevice']:
+                value = device.get(key)
+                if value:
+                    summaries.append(f"    {key}: {value}")
+
+        if scan:
+            summaries.append("  scan parameters:")
+            timingKeys = ['timeLapsePoints', 'timeLapseDelayS', 'onTimeMs', 'offTimeMs', 'roTimeMs']
+            for key in timingKeys:
+                value = scan.get(key)
+                if value is not None:
+                    summaries.append(f"    {key}: {value}")
+            
+            roKeys = ['roSteps', 'roStepSizeUm', 'roStartPosUm', 'roRestingPosUm']
+            cycleKeys = ['cycleSteps', 'cycleStepSizeUm', 'cycleStartPosUm']
+            rasterKeys = ['rasterXSteps', 'rasterXStepSizeUm', 'rasterXStartPosUm',
+                          'rasterYSteps', 'rasterYStepSizeUm', 'rasterYStartPosUm']
+            
+            for keyList, label in [(roKeys, 'readout'), (cycleKeys, 'cycle'), (rasterKeys, 'raster')]:
+                vals = {k: scan.get(k) for k in keyList if scan.get(k) is not None}
+                if vals:
+                    summaries.append(f"    {label}: {vals}")
+
+        return summaries or ["  no scan state"]
+
+    def getComponentStateHazards(
+        self,
+        state: dict,
+        *,
+        applyMode: ComponentStateApplyMode,
+        context: dict | None = None,
+    ) -> list[dict]:
+        """Identify potential hazards in a saved TriggerScope LSXYR scan state.
+        
+        Scan parameters carry no laser-power-like hazards; laser hazards belong
+        to the Laser component. Returns an empty list.
+        """
+        return []
 
 
 _attrCategoryScan = 'LSXYR_Scan'

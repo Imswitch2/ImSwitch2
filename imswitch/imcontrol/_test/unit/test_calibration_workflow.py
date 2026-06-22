@@ -22,6 +22,7 @@ def test_calibration_params_defaults():
     assert params.laser_power_488_mw == 5.0
     assert params.exposure_us == 50000
     assert params.pulsed is True
+    assert params.laser_name == "488"
 
 
 def test_polarisation_calibration_writes_csv():
@@ -131,6 +132,34 @@ def test_polarisation_calibration_rotator_calls():
     assert 180.0 in hwp_angles
 
 
+def test_polarisation_calibration_uses_configured_laser_name(tmp_path, monkeypatch):
+    """Polarisation calibration should address the configured facade laser key."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.ones((1, 20, 20), dtype=np.uint16))
+    monkeypatch.setattr(
+        "imswitch.imcontrol.model.workflows.calibration.time.sleep",
+        lambda _seconds: None,
+    )
+
+    params = CalibrationParams(
+        n_steps_qwp=1,
+        n_steps_hwp=1,
+        laser_power_488_mw=10.0,
+        laser_name="widefield",
+    )
+
+    wf = CalibrationWorkflow(facade, params)
+    wf.run_polarisation_calibration(save_folder=tmp_path)
+
+    triggered_calls = [
+        call for call in facade.calls
+        if call[0] == "laser_con.set_triggered_mode"
+    ]
+    assert triggered_calls == [
+        ("laser_con.set_triggered_mode", (["widefield"], [10.0]), {})
+    ]
+
+
 def test_polarisation_calibration_default_path():
     """run_polarisation_calibration without save_folder should create timestamped CSV."""
     facade = build_mock_facade()
@@ -204,6 +233,28 @@ def test_segmentation_param_check_runs():
     assert "cam.start_live" in call_names
     assert "cam.stop_live" in call_names
     assert "cam.get_data" in call_names
+
+
+def test_segmentation_param_check_uses_configured_laser_name(monkeypatch):
+    """Segmentation check should set and reset the configured facade laser key."""
+    facade = build_mock_facade()
+    facade.cam.set_canned_data(np.ones((1, 20, 20), dtype=np.uint16))
+    monkeypatch.setattr(
+        "imswitch.imcontrol.model.workflows.calibration.time.sleep",
+        lambda _seconds: None,
+    )
+
+    params = CalibrationParams(laser_power_488_mw=12.0, laser_name="widefield")
+    wf = CalibrationWorkflow(facade, params)
+
+    wf.run_segmentation_param_check()
+
+    assert (
+        "laser_con.set_constant_power",
+        (["widefield"], [12.0]),
+        {},
+    ) in facade.calls
+    assert ("laser_con.set_modulation_mode", (["widefield"],), {}) in facade.calls
 
 
 def test_snap_triggered_calls_correct_pins():

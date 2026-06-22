@@ -26,7 +26,8 @@ class CoboltLaser:
     def __repr__(self):
         try:
             return f'Serial number: {self.serialnumber}, Model number: {self.modelnumber}, Wavelength: {"{:.0f}".format(float(self.modelnumber[0:4]))} nm, Type: {self.__class__.__name__} Port: {self.port}'
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to format full laser representation: {e}")
             return f"Serial number: {self.serialnumber}, Model number: {self.modelnumber}, Port: {self.port}"
 
     def connect(self):
@@ -68,7 +69,8 @@ class CoboltLaser:
                         self.port = port.device
                         self.address = serial.Serial(self.port, baudrate=self.baudrate)
                         break
-                except:
+                except Exception as e:
+                    logger.debug(f"Failed to connect to laser on port {port.device}: {e}")
                     pass
             if self.port == None:
                 raise RuntimeError("No laser found")
@@ -99,7 +101,8 @@ class CoboltLaser:
                         self.serialnumber = self.serialnumber[1:]
             else:
                 self.modelnumber = self.send_cmd("glm?")
-        except:
+        except Exception as e:
+            logger.error(f"Failed to identify Cobolt laser: {e}")
             self.disconnect()
             raise RuntimeError("Not a Cobolt laser")
 
@@ -112,7 +115,8 @@ class CoboltLaser:
                 self.__class__ = Cobolt06MLD
             elif re.search("-06-(5|9).*-(\d{3})(|-C)$", self.modelnumber):
                 self.__class__ = Cobolt06DPL
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to classify Cobolt laser model {self.modelnumber}: {e}")
             pass
 
     def is_connected(self):
@@ -125,11 +129,13 @@ class CoboltLaser:
                         return True
                     else:
                         return False
-                except:
+                except Exception as e:
+                    logger.debug(f"Laser communication test failed: {e}")
                     return False
             else:
                 return False
-        except:
+        except Exception as e:
+            logger.debug(f"Failed to check laser connection status: {e}")
             return False
 
     def disconnect(self):
@@ -624,6 +630,7 @@ def list_lasers():
                 del laser
             else:
                 lasers.append(laser)
-        except:
+        except Exception as e:
+            logger.debug(f"Port {port.device} does not have a Cobolt laser: {e}")
             pass
     return lasers

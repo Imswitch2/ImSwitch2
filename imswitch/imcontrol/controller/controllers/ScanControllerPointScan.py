@@ -1,10 +1,11 @@
+import json
 import traceback
 import configparser
 
 from ast import literal_eval
 from typing import Dict, Any
 
-from ..basecontrollers import SuperScanController
+from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 
@@ -21,7 +22,7 @@ class ScanControllerPointScan(SuperScanController):
         self.updateScanStageAttrs()
         self.updateScanTTLAttrs()
 
-        getWidgetStatePersistence().register('ScanControllerPointScan', self)
+        getWidgetStatePersistence().register('Scan', self)
 
     def setParameters(self):
         self.settingParameters = True
@@ -98,13 +99,7 @@ class ScanControllerPointScan(SuperScanController):
             if not self.doingNonFinalPartOfSequence:
                 self._widget.setScanButtonChecked(False)
                 self.emitScanSignal(self._commChannel.sigScanEnded)
-            # set positions of certain scanners to centerpos
-            # TODO: fix this in a nicer way, to not hardcode the positionerNames here that should be centered.
-            # Make it a .json parameter of the scanners?
-            for index, positionerName in enumerate(self._analogParameterDict['target_device']):
-                if positionerName == 'ND-PiezoZ':
-                    position = self._analogParameterDict['axis_centerpos'][index]
-                    self._master.positionersManager[positionerName].setPosition(position, 0)
+            self._resetReturnToCenterPositionersAfterScan()
         else:
             self.runScanAdvanced(sigScanStartingEmitted=True)
 
@@ -170,37 +165,6 @@ class ScanControllerPointScan(SuperScanController):
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)
 
-    def saveScanParamsToFile(self, filePath: str) -> None:
-        """ Saves the set scanning parameters to the specified file. """
-        self.getParameters()
-        config = configparser.ConfigParser()
-        config.optionxform = str
-
-        config['analogParameterDict'] = self._analogParameterDict
-        config['digitalParameterDict'] = self._digitalParameterDict
-
-        with open(filePath, 'w') as configfile:
-            config.write(configfile)
-
-    @APIExport(runOnUIThread=True)
-    def loadScanParamsFromFile(self, filePath: str) -> None:
-        """ Loads scanning parameters from the specified file. """
-        config = configparser.ConfigParser()
-        config.optionxform = str
-        config.read(filePath)
-
-        for key in self._analogParameterDict:
-            self._analogParameterDict[key] = literal_eval(
-                config._sections['analogParameterDict'][key]
-            )
-
-        for key in self._digitalParameterDict:
-            self._digitalParameterDict[key] = literal_eval(
-                config._sections['digitalParameterDict'][key]
-            )
-
-        self.setParameters()
-
     @APIExport(runOnUIThread=True)
     def changed3StepDelayPar(self, d3StepDelay): #Simone: Simone added this to allow imscripting
         self._widget.setd3StepDelayPar(d3StepDelay)
@@ -217,27 +181,7 @@ class ScanControllerPointScan(SuperScanController):
     # Widget State Persistence Interface
     # ------------------------------------------------------------------
 
-    def getWidgetState(self) -> Dict[str, Any]:
-        self.getParameters()
-        return {
-            'version': 1,
-            'analogParameterDict': dict(self._analogParameterDict),
-            'digitalParameterDict': dict(self._digitalParameterDict),
-        }
 
-    def setWidgetState(self, state: Dict[str, Any]) -> None:
-        try:
-            if 'analogParameterDict' in state:
-                self._analogParameterDict.update(state['analogParameterDict'])
-            if 'digitalParameterDict' in state:
-                self._digitalParameterDict.update(state['digitalParameterDict'])
-            self.setParameters()
-            self._logger.info('Point scan state restored successfully')
-        except Exception as e:
-            self._logger.error(f'Failed to restore point scan state: {e}')
-
-    def getStateSchemaVersion(self) -> int:
-        return 1
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
