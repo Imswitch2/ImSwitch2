@@ -24,6 +24,10 @@ from imswitch.imcontrol.model.workflows.paths import (
     default_measurements_root,
     resolve_measurements_root,
 )
+from imswitch.imcontrol.model.workflows.provenance import (
+    write_acquisition_metadata,
+    atomic_write,
+)
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
@@ -73,6 +77,8 @@ class ZStackWorkflow:
     def __init__(self, facade: MicroscopeFacade, params: ZStackParams) -> None:
         self.facade = facade
         self.params = params
+        self._acquisition_completed: bool = False
+        self._save_folder: Optional[Path] = None
 
     def run(
         self,
@@ -95,6 +101,9 @@ class ZStackWorkflow:
             raise RuntimeError("Z-stack workflow requires cam in facade")
         if self.facade.laser_con is None:
             raise RuntimeError("Z-stack workflow requires laser_con in facade")
+
+        self._acquisition_completed = False
+        self._save_folder = None
 
         # Centre the stack around the current piezo position
         if z_start is None:
@@ -172,6 +181,7 @@ class ZStackWorkflow:
             if save_stack:
                 self._save(stack)
 
+            self._acquisition_completed = True
             return stack, z_positions
 
         except Exception:
@@ -183,6 +193,14 @@ class ZStackWorkflow:
             except Exception:
                 logger.exception("Z-stack cleanup after acquisition failure failed")
             raise
+        finally:
+            if self._save_folder is not None:
+                try:
+                    write_acquisition_metadata(
+                        self._save_folder, self.params, self._acquisition_completed
+                    )
+                except Exception as exc:
+                    logger.error("Z-stack: failed to write provenance metadata — %s", exc)
 
     def run_autofocus(
         self, z_start: Optional[float] = None
@@ -306,15 +324,23 @@ class ZStackWorkflow:
         return np.zeros((512, 512), dtype=np.uint16)
 
     def _save(self, stack: np.ndarray) -> None:
-        """Save the stack as a TIFF to measurements_root/{YYYY_MM_DD}/zstack_{HHMMSS}.tif."""
+        """Save the stack as a TIFF to measurements_root/{YYYY_MM_DD}/zstack_{HHMMSS}.tif.
+        
+        Uses atomic write (temp-then-rename) to prevent partial files on crash.
+        """
         root = resolve_measurements_root(self.params.measurements_root)
         date_folder = root / time.strftime("%Y_%m_%d")
         date_folder.mkdir(parents=True, exist_ok=True)
+        self._save_folder = date_folder
 
         timestamp = time.strftime("%H%M%S")
         out_path = date_folder / f"zstack_{timestamp}.tif"
 
-        tf.imwrite(out_path, stack)
+        # Write to memory buffer then atomic write to disk
+        import io
+        buf = io.BytesIO()
+        tf.imwrite(buf, stack)
+        atomic_write(buf.getvalue(), out_path)
         logger.info("Z-stack saved to %s", out_path)
 
 

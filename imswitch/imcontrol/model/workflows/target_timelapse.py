@@ -32,7 +32,10 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Tuple
+
+from imswitch.imcontrol.model.workflows.provenance import write_acquisition_metadata
 
 if TYPE_CHECKING:
     from imswitch.imcontrol.model.workflows.facade import MicroscopeFacade
@@ -83,12 +86,15 @@ class TargetTimelapseParams:
             Defaults to 0.
         failure_policy: Action on acquisition failure. ``"continue"`` proceeds to
             next target/timepoint; ``"abort"`` stops immediately. Defaults to ``"continue"``.
+        save_folder: Optional folder path for provenance metadata. If None, no
+            metadata is written. Defaults to None.
     """
 
     n_timepoints: int
     interval_s: float = 0.0
     settle_s: float = 0.0
     failure_policy: Literal["continue", "abort"] = "continue"
+    save_folder: Optional[Path] = None
 
 
 @dataclass
@@ -223,6 +229,7 @@ class TargetTimelapseWorkflow:
         self.mode_config = mode_config
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
         self._time = time_fn if time_fn is not None else time.time
+        self._workflow_completed: bool = False
 
     def run(self) -> TargetTimelapseResult:
         """Execute the full target timelapse workflow.
@@ -231,10 +238,12 @@ class TargetTimelapseWorkflow:
             TargetTimelapseResult with per-acquisition metadata and completion status.
         """
         result = TargetTimelapseResult()
+        self._workflow_completed = False
         enabled = self.targets.enabled_targets()
 
         if not enabled:
             logger.warning("No enabled targets - nothing to acquire")
+            self._write_provenance_metadata()
             return result
 
         if self.mode_adapter and self.mode_config:
@@ -242,6 +251,7 @@ class TargetTimelapseWorkflow:
                 logger.error("Mode preflight failed - aborting before stage motion")
                 result.mode_failure = True
                 self._apply_idle_if_configured(result)
+                self._write_provenance_metadata()
                 return result
 
         logger.info(
@@ -268,6 +278,9 @@ class TargetTimelapseWorkflow:
                 if tp_idx < self.params.n_timepoints - 1:
                     self._wait_for_next_cycle(cycle_start)
 
+            if not result.aborted:
+                self._workflow_completed = True
+
             logger.info(
                 "Target timelapse complete: %d acquisitions, %d/%d timepoints completed%s",
                 len(result.acquisitions),
@@ -277,6 +290,7 @@ class TargetTimelapseWorkflow:
             )
         finally:
             self._apply_idle_if_configured(result)
+            self._write_provenance_metadata()
 
         return result
 
@@ -468,3 +482,18 @@ class TargetTimelapseWorkflow:
             transitions = self.mode_adapter.getTransitions()
             if transitions:
                 result.idle_transition = transitions[-1]
+
+    def _write_provenance_metadata(self) -> None:
+        """Write acquisition metadata sidecar if save_folder is configured.
+        
+        Called from finally block to ensure metadata is written even on partial runs.
+        """
+        if self.params.save_folder is None:
+            return
+        
+        try:
+            write_acquisition_metadata(
+                self.params.save_folder, self.params, self._workflow_completed
+            )
+        except Exception as exc:
+            logger.error("Target timelapse: failed to write provenance metadata — %s", exc)

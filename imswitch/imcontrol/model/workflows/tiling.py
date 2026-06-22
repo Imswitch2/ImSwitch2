@@ -25,6 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,6 +39,7 @@ from imswitch.imcontrol.model.workflows.paths import (
     default_measurements_root,
     resolve_measurements_root,
 )
+from imswitch.imcontrol.model.workflows.provenance import write_acquisition_metadata
 from imswitch.imcontrol.model.workflows.stitched_image import StitchedImage
 
 if TYPE_CHECKING:
@@ -174,6 +176,7 @@ class TilingWorkflow:
         self.stitched_image: Optional[StitchedImage] = None
         self._tile_positions_stage: list[tuple[float, float]] = []
         self._origin_stage_xy: Optional[tuple[float, float]] = None
+        self._scan_completed: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -208,6 +211,7 @@ class TilingWorkflow:
         self.stitched_image = None
         self._tile_positions_stage = []
         self._origin_stage_xy = None
+        self._scan_completed = False
 
         # Validate stitching prerequisites
         if self.params.build_stitched_overview:
@@ -259,8 +263,9 @@ class TilingWorkflow:
                 tile_callback=tile_callback,
                 should_stop=should_stop,
             )
+            self._scan_completed = True
         finally:
-            self._cleanup_run(h5_file)
+            self._cleanup_run(h5_file, save_folder)
 
     def _run_tiles(
         self,
@@ -366,12 +371,12 @@ class TilingWorkflow:
 
         logger.info("Tiling scan complete")
 
-    def _cleanup_run(self, h5_file) -> None:
-        """Restore laser modulation mode and close the H5 file.
+    def _cleanup_run(self, h5_file, save_folder: Path) -> None:
+        """Restore laser modulation mode, close H5 file, and write provenance metadata.
 
         Always invoked from :meth:`run`'s ``finally`` (success, failure, or
         cancel). Each step is independently guarded so one failure cannot mask
-        the other or prevent the H5 handle from closing.
+        the others. Provenance metadata is written even on partial runs.
         """
         try:
             self.facade.laser_con.set_modulation_mode(self._laser_names())
@@ -383,6 +388,11 @@ class TilingWorkflow:
                 h5_file.close()
             except Exception as exc:
                 logger.error("Tiling cleanup: failed to close H5 file — %s", exc)
+
+        try:
+            write_acquisition_metadata(save_folder, self.params, self._scan_completed)
+        except Exception as exc:
+            logger.error("Tiling cleanup: failed to write provenance metadata — %s", exc)
 
     def _default_save_folder(self) -> Path:
         """Return a timestamped tiling folder under the configured measurements root."""
@@ -515,7 +525,7 @@ class TilingWorkflow:
         img = data[:, :]
 
         if savepath is not None:
-            np.save(str(savepath).replace(".npy", "") + ".npy", img)
+            self._atomic_save_npy(str(savepath).replace(".npy", "") + ".npy", img)
 
         if filehandle is not None and savepath is not None:
             key = savepath.name.split("new_")[-1].replace(".npy", "")
@@ -557,7 +567,7 @@ class TilingWorkflow:
         img = data[0, :, :]
 
         if savepath is not None:
-            np.save(str(savepath).replace(".npy", "") + ".npy", img)
+            self._atomic_save_npy(str(savepath).replace(".npy", "") + ".npy", img)
 
         if filehandle is not None and savepath is not None:
             key = savepath.name.split("new_")[-1].replace(".npy", "")
@@ -568,6 +578,32 @@ class TilingWorkflow:
     def _get_stage_position(self) -> tuple[float, float]:
         """Return current (x, y) stage position."""
         return self.facade.stage_con.get_position()
+
+    def _atomic_save_npy(self, filepath: str, arr: np.ndarray) -> None:
+        """Atomically save numpy array to .npy file using temp-then-rename pattern.
+        
+        Args:
+            filepath: Final destination path for the .npy file.
+            arr: Numpy array to save.
+        """
+        # np.save automatically adds .npy extension, so we need to remove it from filepath
+        # for the temp file to avoid double extension
+        if filepath.endswith('.npy'):
+            base = filepath[:-4]
+        else:
+            base = filepath
+        
+        tmp_base = base + ".tmp"
+        tmp_path = tmp_base + ".npy"  # np.save will not add another .npy
+        final_path = base + ".npy"
+        
+        try:
+            np.save(tmp_base, arr)  # This creates tmp_base.npy
+            os.replace(tmp_path, final_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     def _prepare_h5(self, save_folder: Path) -> None:
         """Remove old H5 and npy files before starting a new scan."""
