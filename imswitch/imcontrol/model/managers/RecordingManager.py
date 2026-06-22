@@ -679,6 +679,7 @@ class HDF5Storer(Storer):
         self._groupPaths = {}  # Track group paths for lapse files
         self._saveMode = saveMode
         self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
+        self._swmr_enabled = set()  # Track files for which SWMR mode was enabled
 
         # Temporarily disable compression for RAM mode (BytesIO) due to h5py instability
         self._streamCompression = None if saveMode == SaveMode.RAM else self.compression
@@ -691,8 +692,12 @@ class HDF5Storer(Storer):
             else:
                 # Open new file (append mode for lapse files, write mode otherwise)
                 mode = 'a' if singleLapseFile else 'w-'
-                # Let h5py automatically handle BytesIO (RAM mode) vs file paths (Disk mode)
-                self._files[detectorName] = h5py.File(fileDests[detectorName], mode)
+                # Enable SWMR (libver='latest') for disk-based streaming recordings
+                # (not RAM mode, which uses BytesIO and doesn't support SWMR)
+                if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+                    self._files[detectorName] = h5py.File(fileDests[detectorName], mode, libver='latest')
+                else:
+                    self._files[detectorName] = h5py.File(fileDests[detectorName], mode)
 
             # Determine group path for lapse files (structured: scan{N}/detector)
             if singleLapseFile:
@@ -743,6 +748,14 @@ class HDF5Storer(Storer):
             dataset.attrs['writing'] = True
             self._datasets[detectorName] = dataset
 
+            # Enable SWMR mode after creating datasets and metadata
+            # (SWMR forbids creating objects after swmr_mode=True)
+            file_id = id(file)
+            if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM) and file_id not in self._swmr_enabled:
+                file.flush()
+                file.swmr_mode = True
+                self._swmr_enabled.add(file_id)
+
         # Warn-once on dtype mismatch (loud alert, not silent)
         dataset = self._datasets[detectorName]
         if frames.dtype != dataset.dtype and detectorName not in self._dtypeWarned:
@@ -759,21 +772,28 @@ class HDF5Storer(Storer):
         newSize = currentSize + len(frames)
         dataset.resize(newSize, axis=0)
         dataset[currentSize:newSize, :, :] = frames
+
+        # Flush after each write so SWMR readers see growth
+        if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            file = self._files[detectorName]
+            file.flush()
     
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close HDF5 files and emit signals."""
         # Track unique files to avoid duplicate close (singleMultiDetectorFile mode)
         processed_files = set()
         
+        # Track dataset paths for updating writing attribute after SWMR close
+        dataset_paths = {}
+        for detectorName, dataset in self._datasets.items():
+            if dataset is not None:
+                dataset_paths[detectorName] = dataset.name
+        
         for detectorName, file in self._files.items():
             # Remove empty datasets (if no frames captured)
             dataset = self._datasets.get(detectorName)
             if dataset is not None and currentFrames[detectorName] < 1:
                 dataset.resize(0, axis=0)
-            
-            # Mark dataset as complete
-            if dataset is not None:
-                dataset.attrs['writing'] = False
             
             # Emit signal for each detector (even in singleMultiDetectorFile mode)
             if saveMode == SaveMode.RAM or saveMode == SaveMode.DiskAndRAM:
@@ -795,11 +815,29 @@ class HDF5Storer(Storer):
             processed_files.add(file_id)
             
             if saveMode == SaveMode.RAM:
+                # For RAM mode, we can directly modify the writing attribute
+                if dataset is not None:
+                    dataset.attrs['writing'] = False
                 file.close()
             elif saveMode == SaveMode.DiskAndRAM:
                 file.flush()
             elif saveMode == SaveMode.Disk:
                 file.close()
+        
+        # For disk-based SWMR recordings, reopen files to set writing=False
+        # (cannot modify attributes while in SWMR mode)
+        if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+            processed_paths = set()
+            for detectorName, dataset_path in dataset_paths.items():
+                filePath = filePaths[detectorName]
+                if filePath in processed_paths:
+                    continue
+                processed_paths.add(filePath)
+                
+                # Reopen file in read/write mode (not SWMR) to update writing attribute
+                with h5py.File(filePath, 'r+') as f:
+                    if dataset_path in f:
+                        f[dataset_path].attrs['writing'] = False
 
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close HDF5 files and remove the partial on-disk file(s)."""

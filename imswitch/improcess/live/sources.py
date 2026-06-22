@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import zarr
 
@@ -317,6 +318,258 @@ class ZarrLiveSource(LiveSource):
         if not self._array_path:
             return None
         return '/' + '/'.join(self._array_path)
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_bool(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {'0', 'false', 'no', 'off'}
+        return bool(value)
+
+
+class Hdf5LiveSource(LiveSource):
+    """Polls a growing HDF5 dataset for new frames (SWMR protocol)."""
+
+    def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
+        """
+        Args:
+            detector_name: Detector name for structured layout. If None, auto-detect.
+            chunk_size: Override chunk size for polling. If None, use dataset.chunks[0].
+        """
+        self._detector_name = detector_name
+        self._chunk_size_override = chunk_size
+        self._path: str | None = None
+        self._file = None
+        self._dataset = None
+        self._dataset_path: str | None = None
+        self._cursor = 0
+        self._chunk_size = 1
+        self._expected_frames: int | None = None
+        self._writing = True
+        self._owns_file = False
+
+    def open(self, path_or_handle: Any) -> StackInfo:
+        """Open the HDF5 file in SWMR mode and return stack metadata."""
+        self._cursor = 0
+
+        if isinstance(path_or_handle, h5py.File):
+            self._file = path_or_handle
+            self._path = None
+            self._owns_file = False
+        else:
+            path = Path(path_or_handle)
+            self._path = str(path)
+            self._file = h5py.File(self._path, 'r', libver='latest', swmr=True)
+            self._owns_file = True
+
+        attrs = self._read_root_attrs()
+        detector_name = self._detector_name or attrs.get('recording:detector_name')
+
+        if detector_name is None:
+            detector_name = self._auto_detect_detector()
+
+        self._dataset, dataset_attrs = self._open_dataset(detector_name, attrs)
+
+        if self._dataset.ndim != 3:
+            raise ValueError(f"Expected 3D dataset (T, Y, X), got shape {self._dataset.shape}")
+
+        if self._chunk_size_override is not None:
+            self._chunk_size = max(1, int(self._chunk_size_override))
+        elif self._dataset.chunks is not None and len(self._dataset.chunks) > 0:
+            self._chunk_size = max(1, int(self._dataset.chunks[0]))
+        else:
+            self._chunk_size = 1
+
+        frame_shape = self._dataset.shape[-2:]
+        all_attrs = {**attrs, **dataset_attrs}
+        self._refresh_state_from_attrs(all_attrs)
+
+        return StackInfo(
+            frame_shape=frame_shape,
+            dtype=self._dataset.dtype,
+            attrs=dict(all_attrs),
+            expected_frames=self._expected_frames,
+            frames_per_stack=self._coerce_int(all_attrs.get('recording:frames_per_stack')),
+            detector_name=all_attrs.get('recording:detector_name') or detector_name,
+            dataset_path=all_attrs.get('recording:dataset_path') or self._dataset_path,
+            source_format=all_attrs.get('recording:source_format') or 'HDF5',
+        )
+
+    def poll(self) -> list[Chunk]:
+        """Return newly available chunks since the previous poll."""
+        if self._dataset is None:
+            return []
+
+        self._dataset.refresh()
+        self._refresh_state_from_attrs(self._read_dataset_attrs())
+        readable_length = self._readable_length()
+
+        if self._cursor >= readable_length:
+            return []
+
+        chunks = []
+        while self._cursor < readable_length:
+            start = self._cursor
+            end = min(start + self._chunk_size, readable_length)
+
+            data = self._dataset[start:end]
+            chunks.append(Chunk(data=data, start=start, end=end))
+
+            self._cursor = end
+
+        return chunks
+
+    def is_complete(self) -> bool:
+        """Return whether the source has no more frames to yield."""
+        if self._dataset is None:
+            return True
+
+        self._dataset.refresh()
+        self._refresh_state_from_attrs(self._read_dataset_attrs())
+        current_length = self._dataset.shape[0]
+
+        if self._expected_frames is not None:
+            if self._cursor >= self._expected_frames:
+                return True
+
+        if not self._writing and self._cursor >= current_length:
+            return True
+
+        return False
+
+    def close(self) -> None:
+        """Release source resources."""
+        if self._owns_file and self._file is not None:
+            self._file.close()
+        self._path = None
+        self._file = None
+        self._dataset = None
+        self._dataset_path = None
+
+    def _auto_detect_detector(self) -> str:
+        """Auto-detect detector name from file contents."""
+        if self._file is None:
+            raise ValueError("File not opened")
+
+        for key in self._file.keys():
+            item = self._file[key]
+            if isinstance(item, h5py.Group):
+                if 'data' in item:
+                    return key
+            elif isinstance(item, h5py.Dataset) and item.ndim == 3:
+                return key
+
+        raise ValueError("No detector dataset found in HDF5 file")
+
+    def _open_dataset(self, detector_name: str, root_attrs: dict[str, Any]) -> tuple[h5py.Dataset, dict[str, Any]]:
+        """Open dataset and collect attributes from structured or legacy layout."""
+        if self._file is None:
+            raise ValueError("File not opened")
+
+        dataset_path = root_attrs.get('recording:dataset_path')
+        if dataset_path:
+            if dataset_path.startswith('/'):
+                dataset_path = dataset_path[1:]
+            if dataset_path in self._file:
+                self._dataset_path = '/' + dataset_path
+                dataset = self._file[dataset_path]
+                return dataset, self._read_dataset_attrs_at(dataset.name)
+
+        if detector_name in self._file:
+            item = self._file[detector_name]
+
+            if isinstance(item, h5py.Group):
+                if 'data' not in item:
+                    raise ValueError(f"Detector group '{detector_name}' has no 'data' dataset")
+                dataset = item['data']
+                self._dataset_path = f'/{detector_name}/data'
+
+            elif isinstance(item, h5py.Dataset):
+                dataset = item
+                self._dataset_path = f'/{detector_name}'
+
+            else:
+                raise ValueError(f"'{detector_name}' is neither a group nor a dataset")
+        else:
+            raise ValueError(f"Detector '{detector_name}' not found in HDF5 file")
+
+        return dataset, self._read_dataset_attrs_at(dataset.name)
+
+    def _read_root_attrs(self) -> dict[str, Any]:
+        """Read and flatten root-level attributes."""
+        attrs: dict[str, Any] = {}
+        if self._file is None:
+            return attrs
+
+        attrs.update(dict(self._file.attrs))
+        return attrs
+
+    def _read_dataset_attrs(self) -> dict[str, Any]:
+        """Read and flatten dataset-level attributes."""
+        if self._dataset is None:
+            return {}
+        return self._read_dataset_attrs_at(self._dataset.name)
+
+    def _read_dataset_attrs_at(self, path: str) -> dict[str, Any]:
+        """Read attributes at a specific path, flattening recording: prefixes and metadata groups."""
+        attrs: dict[str, Any] = {}
+        if self._file is None:
+            return attrs
+
+        dataset = self._file[path]
+        for key, value in dataset.attrs.items():
+            attrs[key] = value
+
+        # Find parent group path and check for metadata group
+        path_parts = path.strip('/').split('/')
+        if len(path_parts) > 1:
+            parent_path = '/' + '/'.join(path_parts[:-1])
+            if parent_path in self._file:
+                parent = self._file[parent_path]
+                if isinstance(parent, h5py.Group) and 'metadata' in parent:
+                    self._flatten_metadata(parent['metadata'], attrs, prefix='')
+
+        return attrs
+
+    def _flatten_metadata(self, group: h5py.Group, attrs: dict[str, Any], prefix: str) -> None:
+        """Recursively flatten metadata group into attrs dict with category prefixes."""
+        for key in group.attrs.keys():
+            flat_key = f"{prefix}{key}" if prefix else key
+            attrs[flat_key] = group.attrs[key]
+
+        for subgroup_name in group.keys():
+            subgroup = group[subgroup_name]
+            if isinstance(subgroup, h5py.Group):
+                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
+                self._flatten_metadata(subgroup, attrs, new_prefix)
+
+    def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
+        """Update internal state from attributes."""
+        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        if expected_frames is not None:
+            self._expected_frames = expected_frames
+
+        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+
+    def _readable_length(self) -> int:
+        """Return the number of frames that can be read."""
+        if self._dataset is None:
+            return 0
+
+        current_length = int(self._dataset.shape[0])
+        if self._expected_frames is None:
+            return current_length
+        return min(current_length, self._expected_frames)
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:

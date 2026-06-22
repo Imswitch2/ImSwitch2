@@ -1114,6 +1114,116 @@ def test_zarr_streaming_recording_metadata(tmp_path):
     assert root[detectorName]['metadata']['custom'].attrs['note'] == 'kept-in-metadata-group'
 
 
+def test_hdf5_streaming_swmr_readable(tmp_path):
+    """Test that HDF5 streaming recordings are SWMR-readable with recording:* metadata."""
+    from imswitch.improcess.live import Hdf5LiveSource
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer
+    
+    detectorName = 'TestCam'
+    detectorInfos = {detectorName: DetectorInfo(
+        analogChannel=None,
+        digitalLine=3,
+        managerName='HamamatsuManager',
+        managerProperties={
+            'cameraListIndex': 'mock',
+            'hamamatsu': {
+                'readout_speed': 3,
+                'trigger_global_exposure': 5,
+                'trigger_active': 2,
+                'trigger_polarity': 2,
+                'exposure_time': 0.01,
+                'trigger_source': 1,
+                'subarray_hpos': 0,
+                'subarray_vpos': 0,
+                'subarray_hsize': 5,
+                'subarray_vsize': 4,
+                'image_width': 5,
+                'image_height': 4
+            }
+        },
+        forAcquisition=True
+    )}
+    
+    detectorsManager = DetectorsManager(detectorInfos, updatePeriod=100)
+    path = tmp_path / f'swmr_test_{detectorName}.h5'
+    
+    storer = HDF5Storer(str(path), detectorsManager)
+    
+    attrs = {
+        detectorName: {
+            'recording:frames_per_stack': 10,
+            'recording:expected_frames': 10,
+            'custom:metadata': 'test_value'
+        }
+    }
+    
+    storer.openStream(
+        fileDests={detectorName: str(path)},
+        detectorNames=[detectorName],
+        shapes={detectorName: (4, 5)},
+        attrs=attrs,
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    
+    # Write frames in batches
+    frames1 = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    storer.writeFrames(detectorName, frames1)
+    
+    frames2 = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5) + 100
+    storer.writeFrames(detectorName, frames2)
+    
+    # Verify SWMR-readable before finalize
+    with h5py.File(path, 'r', libver='latest', swmr=True) as f:
+        assert f.swmr_mode is True
+        dataset = f[detectorName]['data']
+        assert dataset.shape[0] == 6
+        assert dataset.attrs['writing'] == True
+        assert dataset.attrs['recording:detector_name'] == detectorName
+        assert dataset.attrs['recording:source_format'] == 'HDF5'
+        assert dataset.attrs['recording:expected_frames'] == 10
+        assert dataset.attrs['recording:frames_per_stack'] == 10
+        assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
+    
+    # Test with Hdf5LiveSource while writing=True
+    source = Hdf5LiveSource(detector_name=detectorName)
+    info = source.open(path)
+    assert info.expected_frames == 10
+    assert info.detector_name == detectorName
+    assert info.source_format == 'HDF5'
+    
+    chunks = source.poll()
+    assert len(chunks) > 0
+    total_frames = sum(c.end - c.start for c in chunks)
+    assert total_frames == 6
+    assert not source.is_complete()  # writing=True and cursor < expected_frames
+    source.close()
+    
+    # Finalize
+    storer.finalizeStream(
+        currentFrames={detectorName: 6},
+        filePaths={detectorName: str(path)},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+    
+    # Verify writing=False after finalize
+    with h5py.File(path, 'r', libver='latest', swmr=True) as f:
+        dataset = f[detectorName]['data']
+        assert dataset.attrs['writing'] == False
+        assert dataset.shape[0] == 6
+    
+    # Test with Hdf5LiveSource after finalize
+    source2 = Hdf5LiveSource(detector_name=detectorName)
+    source2.open(path)
+    chunks2 = source2.poll()
+    total_frames2 = sum(c.end - c.start for c in chunks2)
+    assert total_frames2 == 6
+    assert source2.is_complete()  # writing=False and all frames read
+    source2.close()
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #
