@@ -326,3 +326,41 @@ recordings).
 4. **TIFF live** — default: hdf5 + zarr for v1 streaming; TIFF stays batch-only
    until a concrete TIFF-streaming acquisition exists (P3 `TiffLiveSource` is
    best-effort folder-poll, deferred if not needed).
+
+---
+
+## 7. Implementation status (2026-06-22, branch `feat/live-reconstruction`)
+
+**Landed & tested** (44 live unit tests green in openhands-clean venv):
+
+- **P0** — streaming contracts (`StreamingReconstructor`/`StreamingSession`/
+  `StreamPlan`/`StreamInit`/`StackInfo`/`Chunk`), `ZarrLiveSource`,
+  `InMemoryStackWrapper`, `recording:*` metadata block in both storers.
+- **P1** — fast-Gauss MoNaLISA: `gauss_processor` (CPU + guarded GPU),
+  `localizer`, `scan_geometry`, `MonalisaLiveSession`; `MonalisaReconstructor`
+  is now a `StreamingReconstructor` (`supports_streaming=True`, `make_session()`).
+- **P2** — generic runtime: `live/workers.py` (`LiveStreamWorker`,
+  `LiveProcessWorker`), `LiveReconstructionController` (streaming + batch
+  fallback), comm-channel `sigLiveResultUpdated`.
+- **P3** — `Hdf5LiveSource` + SWMR writer protocol in `HDF5Storer`
+  (gated to Disk/DiskAndRAM; full `test_recording` regression green).
+- **Integration glue** — `begin()` accepts nested *or* flattened scan-geometry
+  attrs and scatters its first chunk; controller threads a `source_arg` to
+  `LiveSource.open()`.
+
+**Open integration items (for review / next waves):**
+
+- ⬜ **UI wiring**: `LiveReconstructionController` is not yet instantiated by any
+  ImProcess controller and has no UI entry point (live-mode toggle, source
+  selection by format, result routing to `ReconstructionView`). Keystone next.
+- ⬜ **Full-stack init for orientation**: `begin()` currently localizes/orients
+  from the *first chunk*. Upstream initialized from the first full stack. The
+  controller should buffer `frames_per_stack` before `begin()` for robust
+  orientation detection (degrades gracefully to default orientation today).
+- ⬜ **Qt end-to-end test**: synthetic growing Zarr → controller → session →
+  result, exercising the real thread wiring (units cover the pieces, not the
+  full loop).
+- ⬜ **P4** batch-fallback coverage across view-only/SNOUTY/WFS + a
+  `make_live_source(path, format)` selector.
+- ⬜ **P5** in-RAM HDF5 hand-off; **P6** imcontrol-viewer display; **P7**
+  ChunkBroker source.
