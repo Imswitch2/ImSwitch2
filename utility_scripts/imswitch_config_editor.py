@@ -371,7 +371,8 @@ def _manager_display_name(manager_name: str) -> str:
     """Return a UI label for templated and discovered managers.
     
     Phase 1: Prefers template display (so existing rich templates win), then
-    catalog display name, then bare name.
+    bare manager names for non-templated manager IDs. Catalog display names are
+    used only when resolving a legacy alias.
     """
     # First check template (existing templates win)
     schema = SCHEMAS.get(manager_name)
@@ -380,11 +381,13 @@ def _manager_display_name(manager_name: str) -> str:
         if display:
             return display
     
-    # Then use catalog display name if available
+    # Use catalog display names only for aliases. Non-templated manager IDs
+    # intentionally fall back to the bare name because they have no editor
+    # schema whose display metadata can drive the UI.
     if _MANAGER_CATALOG is not None:
-        catalog_display = _MANAGER_CATALOG.display_name(manager_name)
-        if catalog_display != manager_name:
-            return catalog_display
+        manager_info = _MANAGER_CATALOG.get(manager_name)
+        if manager_info is not None and manager_info.manager_name != manager_name:
+            return manager_info.display_name
     
     # Fall back to bare name
     return manager_name
@@ -520,6 +523,60 @@ def _section_option_values(section_key: str, field_key: str) -> list:
         if field.get("key") == field_key:
             return list(field.get("opts") or [])
     return []
+
+
+def _diagnostic_message_to_html(diag) -> str:
+    msg = diag.message
+    for _kw in ("focusLock", "autofocus", "tiling", "scan", "etSTED",
+                "processing", "microscopeStand", "pulseStreamer",
+                "availableWidgets"):
+        msg = msg.replace(_kw, f"<b>{_kw}</b>")
+
+    fix = getattr(diag, "fix", None)
+    if fix and fix.action == "configure_section":
+        msg += f" <a href='fixsection:{fix.target}'>Configure…</a>"
+    return msg
+
+
+def _collect_xref_issues(data: dict) -> list[tuple[str, str]]:
+    """Collect cross-reference diagnostics as ``(severity, html_message)`` pairs.
+
+    Kept as a compatibility wrapper for tests and external script users after
+    validation moved into ``imswitch.imcontrol.model.plugins.validation``.
+    """
+    try:
+        from imswitch.imcontrol.model.plugins.registry import build_default_registry
+        from imswitch.imcontrol.model.plugins.validation import (
+            ValidationContext,
+            validate_setup_data,
+        )
+
+        context = ValidationContext(
+            widget_requires_section=_WIDGET_REQUIRES_SECTION,
+            known_reconstructor_ids=tuple(_section_option_values("processing", "reconstructors")),
+            known_processor_ids=tuple(_section_option_values("processing", "processors")),
+        )
+        report = validate_setup_data(
+            data,
+            build_default_registry(discover=True),
+            context=context,
+        )
+        return [
+            (diag.severity, _diagnostic_message_to_html(diag))
+            for diag in report.diagnostics
+            if diag.code.startswith(("xref.", "widget.", "legacy."))
+        ]
+    except Exception:
+        issues = []
+        widgets = data.get("availableWidgets") or []
+        for widget, section_key in _WIDGET_REQUIRES_SECTION.items():
+            if widget in widgets and not data.get(section_key):
+                issues.append((
+                    "warning",
+                    f"Widget '{widget}' is enabled but no '{section_key}' section is configured. "
+                    f"<a href='fixsection:{section_key}'>Configure…</a>",
+                ))
+        return issues
 
 
 # =============================================================================
@@ -3131,19 +3188,7 @@ class ValidationPanel(QFrame):
         notes: list = []
         
         for diag in diagnostics:
-            # Emphasize section names in the plain-text message. Do this BEFORE
-            # appending any fix link, so the link's href (which may itself be a
-            # section key like "scan" or "focusLock") is never corrupted by the
-            # keyword replacement below.
-            msg = diag.message
-            for _kw in ("focusLock", "autofocus", "tiling", "scan", "etSTED",
-                        "processing", "microscopeStand", "pulseStreamer",
-                        "availableWidgets"):
-                msg = msg.replace(_kw, f"<b>{_kw}</b>")
-
-            # Add fix link if present (after bolding, so href stays intact)
-            if diag.fix and diag.fix.action == "configure_section":
-                msg += f" <a href='fixsection:{diag.fix.target}'>Configure…</a>"
+            msg = _diagnostic_message_to_html(diag)
 
             if diag.severity == "error":
                 errors.append(msg)

@@ -4,7 +4,12 @@ from imswitch.imcommon.model import initLogger
 
 
 class ThorlabsMFFManager:
-    """Thorlabs MFF101/MFF102 flip mirror manager using pylablib."""
+    """Thorlabs MFF101/MFF102 flip mirror manager using pylablib.
+
+    pylablib's MFF support is serial-number based. If a setup needs legacy
+    COM-port selection, add an explicit APT backend that honors ``serial_port``
+    instead of passing COM-port names into ``Thorlabs.MFF``.
+    """
 
     def __init__(self, deviceInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)

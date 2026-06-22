@@ -100,7 +100,7 @@ def test_zstack_save_uses_default_root_when_params_root_is_none(monkeypatch, tmp
     # atomic_write(content, out_path); capture the final path there (tf.imwrite
     # receives the in-memory buffer, not the path).
     from imswitch.imcontrol.model.workflows import z_stack as zstack_mod
-    monkeypatch.setattr(tf, "imwrite", lambda buf, stack: None)
+    monkeypatch.setattr(tf, "imwrite", lambda buf, stack, **kwargs: None)
     monkeypatch.setattr(
         zstack_mod, "atomic_write",
         lambda content, target_path: saved_paths.append(target_path),

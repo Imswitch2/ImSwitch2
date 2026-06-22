@@ -339,7 +339,7 @@ class ZStackWorkflow:
         # Write to memory buffer then atomic write to disk
         import io
         buf = io.BytesIO()
-        tf.imwrite(buf, stack)
+        tf.imwrite(buf, stack, photometric="minisblack")
         atomic_write(buf.getvalue(), out_path)
         logger.info("Z-stack saved to %s", out_path)
 
