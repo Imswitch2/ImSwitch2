@@ -1,6 +1,7 @@
 from .DataFrameController import DataFrameController
 from .WatcherFrameController import WatcherFrameController
 from .LiveModeController import LiveModeController
+from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
 from .ScanParamsController import ScanParamsController
@@ -27,6 +28,9 @@ class ImProcessMainViewController(ImProcessWidgetController):
         )
         self.liveModeController = self._factory.createController(
             LiveModeController, self._widget.watcherFrame, mainController=self
+        )
+        self.memoryLiveController = self._factory.createController(
+            MemoryLiveController, self._widget.watcherFrame, mainController=self
         )
         self.wfsBatchController = self._factory.createController(
             WidefieldStarssBatchController, self._widget, mainController=self
