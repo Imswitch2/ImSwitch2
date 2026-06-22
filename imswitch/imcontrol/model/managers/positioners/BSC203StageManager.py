@@ -18,16 +18,16 @@ class BSC203StageManager(PositionerManager):
         props = positionerInfo.managerProperties
         home = props.get('home', False)
         port = props.get('port', 'COM9')
-        # Full travel per axis in µm (DRV208 actuators = 8 mm). Used to compute
-        # mid-travel when recentring after homing. Absolute coordinates stay
-        # 0..travelRangeUm; the centre is simply travelRangeUm / 2.
+        # Full travel per axis in µm (DRV208 actuators = 8 mm). Used as the upper
+        # bound when clamping moves. Coordinates run 0..travelRangeUm.
         self._travelRangeUm = props.get('travelRangeUm', 8000)
-        # Axes recentred to mid-travel after homing. APT homing always drives to
-        # a physical end-stop (position 0), an awkward place to leave an XY
-        # sample stage, so X/Y are moved to the centre by default. Z is left at
-        # its homed edge — the natural reference for a focus axis. Set to [] in
-        # managerProperties to disable recentring entirely.
-        self._centerAxesOnHome = props.get('centerAxesOnHome', ['X', 'Y'])
+        # Axes whose encoder counts DOWN when the APT 'forward' jog runs. By
+        # default a forward jog is assumed to INCREASE the encoder (so +target
+        # increases the displayed position) on every axis. If an axis physically
+        # moves the wrong way / the displayed value changes opposite to the
+        # command, add its label here to flip the jog direction. Confirm per rig
+        # with utility_scripts/bsc203_diag.py calibrate.
+        self._invertJogAxes = set(props.get('invertJogAxes', []))
 
         try:
             from thorlabs_apt_device.devices.bsc import BSC
@@ -45,21 +45,14 @@ class BSC203StageManager(PositionerManager):
             self.dev = None
         if home:
             self.__logger.debug('Is homing')
-            while self.homing():
-                pass
+            # The BSC constructor (home=True) already initiated homing; wait for
+            # it to finish. Homing parks each axis at its end-stop (position 0).
+            self._waitHomed()
             self.__logger.debug('Finished homing')
-            # We just homed to the edge; recentre X/Y so the operator starts at
-            # mid-travel. This sets the tracked position to the centre target,
-            # so no controller read-back is needed (or wanted — the move may
-            # still be in flight).
-            self.centerAxes()
-        else:
-            # Not homing this session — show the controller's actual (absolute)
-            # position at startup instead of resetting to 0. The BSC203 tracks
-            # position in encoder steps and retains it while powered, so reading
-            # it back here keeps positions reproducible across ImSwitch restarts
-            # without having to re-home every time.
-            self._syncPositionFromController()
+        # Show the controller's actual (absolute) position at startup. After a
+        # home this reads ~0 (the end-stop); without a home it recovers the
+        # retained encoder position so positions survive an ImSwitch restart.
+        self._syncPositionFromController()
 
     def _syncPositionFromController(self, timeout=3.0):
         """Set ``self._position`` from the controller's reported encoder position.
@@ -117,33 +110,77 @@ class BSC203StageManager(PositionerManager):
         self.dev.set_velocity_params(acceleration=4506, max_velocity=21987328 * 5, bay=1, channel=0)
         self.dev.set_velocity_params(acceleration=4506, max_velocity=21987328 * 5, bay=2, channel=0)
 
+    # Safety bound (s) for how long to wait for the controller to ENTER homing
+    # before giving up on observing the in-progress state. Not timing-critical:
+    # if homing is never observed in-progress we still confirm via 'homed' in
+    # phase 2. See _waitHomed.
+    _HOMING_START_TIMEOUT_S = 5.0
+
     def homeAll(self):
+        if self.dev is None:
+            return
         self.dev.home(bay=0)
         self.dev.home(bay=1)
         self.dev.home(bay=2)
-        while self.homing():
-            pass
-        self.centerAxes()
+        self._waitHomed()
 
-    def centerAxes(self):
-        """Move the configured axes to mid-travel after homing.
+    def _homingInProgress(self):
+        """True if any bay currently reports it is homing.
 
-        APT homing drives each axis to a physical end-stop (position 0). For an
-        XY sample stage that is an awkward corner to start from, so the axes in
-        ``_centerAxesOnHome`` (X/Y by default) are moved to ``travelRangeUm / 2``
-        so the operator can jog or Go-To in both directions immediately. Z is
-        left at its homed edge. Absolute coordinates are unchanged: the centre is
-        just a positive position (``travelRangeUm / 2``), not a new origin.
+        Uses the 'homing' status bit, or a cleared 'homed' flag, as the
+        in-progress signal — either indicates the controller has actually started
+        a home (as opposed to sitting idle and still reporting the previous
+        ``homed=True``).
+        """
+        try:
+            return any(self.dev.status_[b][0].get('homing')
+                       or not self.dev.status_[b][0].get('homed')
+                       for b in range(3))
+        except (IndexError, KeyError, TypeError):
+            return False
+
+    def _waitHomed(self, timeout=120.0):
+        """Block until all three bays finish homing, or ``timeout`` elapses.
+
+        ``dev.home()`` only *queues* the command on the device's own I/O thread,
+        and for a short while afterwards the controller is still idle and keeps
+        reporting its previous ``homed=True``. The library polls status every
+        ~10 ms, so a wait that trusts ``homed`` immediately is satisfied by a
+        stale "idle, homed" reply and returns before homing has even started.
+
+        Rather than betting on a fixed delay (which races the other way if homing
+        is slow to *start*), we OBSERVE the controller: phase 1 waits for the
+        in-progress state to appear, phase 2 waits for it to clear with ``homed``
+        set. Because homing involves real motion (≫ the 10 ms poll interval), the
+        in-progress state is reliably observed whether homing is fast or slow. If
+        it is never seen within ``_HOMING_START_TIMEOUT_S`` (a device that does
+        not signal in-progress, or a home that somehow completed before we
+        looked), we fall through to phase 2, which confirms completion via
+        ``homed`` — so an already-finished home is handled correctly, never
+        prematurely.
+
+        The device updates ``status_`` from its own thread, so this works even
+        when called from the GUI thread (e.g. the Home button); the sleeps avoid
+        a 100%-CPU busy-spin and the timeout prevents a permanent hang.
         """
         if self.dev is None:
             return
-        centre = self._travelRangeUm / 2
-        for axis in self._centerAxesOnHome:
-            if axis in self._position:
-                self.__logger.info(
-                    f'{axis}: recentring to {centre:.0f} µm (mid-travel) after homing'
+        import time
+        # Phase 1 — wait for homing to actually begin.
+        startDeadline = time.time() + min(self._HOMING_START_TIMEOUT_S, timeout)
+        while time.time() < startDeadline:
+            if self._homingInProgress():
+                break
+            time.sleep(0.02)
+        # Phase 2 — wait for homing to complete on all bays.
+        deadline = time.time() + timeout
+        while self.homing():
+            if time.time() >= deadline:
+                self.__logger.warning(
+                    f'Homing did not complete within {timeout:.0f}s; continuing.'
                 )
-                self.setPosition(centre, axis)
+                return
+            time.sleep(0.05)
 
     def homing(self):
         return not all([self.dev.status_[0][0]['homed'],
@@ -159,79 +196,107 @@ class BSC203StageManager(PositionerManager):
         return mm
 
     def move(self, dist, axis):
-        self._position[axis] = self._position[axis] + dist
-        if axis == "X":
-            channel = 0  # X is wired to bay 0
-        elif axis == "Y":
-            channel = 1  # Y is wired to bay 1
-        elif axis == "Z":
-            channel = 2
-        self.move_relative_mm(dist, channel)
+        """Relative move, implemented as a clamped *absolute* move.
+
+        Implemented via :meth:`setPosition`, which jogs by the displacement.
+        """
+        self.setPosition(self._position[axis] + dist, axis)
+
+    def _clampSteps(self, steps, axis):
+        """Clamp an absolute encoder-step target to the reachable travel range.
+
+        Single clamp authority for every absolute move, whatever the caller
+        (Go-To button, tiling, scan return-to-origin, recentre …). Two failure
+        modes are guarded:
+
+        * **Negative target** — the BSC203 firmware reads the absolute-position
+          field as an *unsigned* 32-bit integer, so a negative count underflows
+          to a huge positive value and drives the motor continuously toward an
+          unreachable point (the runaway). Clamp to 0.
+        * **Past the far end** — a target beyond ``travelRangeUm`` just grinds the
+          stage into the limit switch. Clamp to the max.
+        """
+        maxSteps = self.to_enc_steps(self._travelRangeUm / 1000)
+        if steps < 0:
+            self.__logger.warning(
+                f'{axis}: absolute target {steps} steps < 0; clamping to 0 '
+                f'(firmware uses unsigned positions — a negative target runs away).'
+            )
+            return 0
+        if steps > maxSteps:
+            self.__logger.warning(
+                f'{axis}: absolute target {steps} steps exceeds travel '
+                f'({maxSteps} steps = {self._travelRangeUm} µm); clamping to max.'
+            )
+            return maxSteps
+        return steps
+
+    # Set True to log every commanded move at INFO level. Leave False in
+    # production; flip on to capture a "goes crazy" reproduction.
+    LOG_MOVES = True
+
+    _AXIS_TO_BAY = {"X": 0, "Y": 1, "Z": 2}
+
+    def _currentSteps(self, channel, axis):
+        """Live encoder position (steps) for a bay, with a tracked-position
+        fallback if the controller has not reported yet."""
+        try:
+            pos = self.dev.status_[channel][0].get('position')
+        except (IndexError, KeyError, TypeError):
+            pos = None
+        if pos is None:
+            pos = self.to_enc_steps(self._position[axis] / 1000)
+        return int(pos)
 
     def setPosition(self, value, axis):
-        if axis == "X":
-            channel = 0  # X is wired to bay 0
-        elif axis == "Y":
-            channel = 1  # Y is wired to bay 1
-        elif axis == "Z":
-            channel = 2
-        self._position[axis] = value
-        pos = self.to_enc_steps(value / 1000)
-        # BSC203 firmware interprets the absolute-position field as an unsigned
-        # 32-bit integer.  A negative Python int is packed as a signed two's-
-        # complement value by the APT library, but the firmware reads it as a
-        # huge positive number and drives the motor continuously toward an
-        # unreachable target.  Clamp to 0 (home end) instead.
-        if pos < 0:
-            self.__logger.warning(
-                f'{axis}: requested absolute position {value:.1f} µm maps to '
-                f'{pos} encoder steps (< 0); clamping to 0. '
-                f'BSC203 firmware uses unsigned positions — check your target.'
-            )
-            pos = 0
-        self.dev.move_absolute(pos, now=True, bay=channel, channel=0)
+        channel = self._AXIS_TO_BAY[axis]
+        targetSteps = self._clampSteps(self.to_enc_steps(value / 1000), axis)
+        self._jogToSteps(targetSteps, channel, axis)
 
-    # Bay number whose APT "forward" direction is the physical NEGATIVE direction.
-    # Determined by the velocity key mapping in BSC203Controller:
-    #   bay 0 (X): Right key → move_velocity(True/forward) → physical positive  (normal)
-    #   bay 1 (Y): Up   key → move_velocity(False/reverse) → physical positive  (inverted)
-    #   bay 2 (Z): Q    key → move_velocity(True/forward)  → physical positive  (normal)
-    # Bay 1 (Y) is the only bay where APT-forward maps to the physical-negative direction.
-    _APT_FWD_IS_NEGATIVE_BAYS = frozenset({1})  # bay 1 = Y axis
+    def _jogToSteps(self, targetSteps, channel, axis):
+        """Move to absolute encoder position ``targetSteps`` using a bounded JOG.
 
-    def move_relative_mm(self, value, axis):
-        """Move `value` µm on hardware bay `axis` using the jog mechanism.
+        Why not ``move_absolute`` / ``move_relative``: on the BSC203 a move whose
+        DISPLACEMENT is negative (target *below* the current position) runs away —
+        the firmware reads the signed displacement as unsigned and drives the
+        motor at full speed to the end-stop. This is the long-standing "negative
+        direction accelerates" bug, and it fires for any downward move, even when
+        the target itself is a perfectly valid positive position. Clamping the
+        target to ≥0 never fixed it.
 
-        The BSC203 firmware does not handle negative distances in
-        MGMSG_MOT_MOVE_RELATIVE correctly — a negative signed value is
-        interpreted as a huge unsigned count, firing the motor at full
-        speed until the hardware end-stop.  The old code worked around this
-        by always using a positive jog-step size and an explicit direction
-        flag.  We do the same here, using the velocity parameters already
-        configured on that bay so the speed is consistent with normal moves.
+        The JOG command instead takes a POSITIVE step size plus a direction flag,
+        which the firmware handles correctly in both directions. So every move —
+        relative or absolute — becomes: jog ``|target - current|`` steps, forward
+        when the target is higher. The target is pre-clamped to ``[0, travel]`` so
+        the jog can never drive past an end-stop, and the displacement is taken
+        from the *live* encoder so repeated moves self-correct.
         """
-        if value == 0:
+        current = self._currentSteps(channel, axis)
+        delta = int(targetSteps) - current
+        # Track the (clamped) target so the display reflects what we commanded;
+        # the live read-back keeps it honest thereafter.
+        self._position[axis] = self.to_mm(targetSteps) * 1000
+        direction = delta > 0          # forward jog increases the encoder count
+        if axis in self._invertJogAxes:
+            direction = not direction
+        if self.LOG_MOVES:
+            self.__logger.info(
+                f'MOVE {axis}/bay{channel}: target={targetSteps}st '
+                f'current={current}st delta={delta}st '
+                f'dir={"fwd" if direction else "rev"} size={abs(delta)}st (jog)'
+            )
+        if delta == 0:
             return
-        steps = self.to_enc_steps(abs(value) / 1000)
-        if steps == 0:
-            return
-        # Determine the APT jog direction that produces the desired physical
-        # direction.  For bay 1 (X) APT-forward = physical-negative, so a
-        # negative value needs direction=True; for Y/Z it is the opposite.
-        if axis in self._APT_FWD_IS_NEGATIVE_BAYS:
-            direction = value < 0   # True → APT forward → physical negative (X)
-        else:
-            direction = value > 0   # True → APT forward → physical positive (Y/Z)
-        # Use the move-velocity parameters already set on this bay so jog
-        # speed is consistent with what the user configured.
-        vel = self.dev.velparams_[axis][0].get('max_velocity',
-                                               int(300 / 1000 * 21987328))
-        acc = self.dev.velparams_[axis][0].get('acceleration',
-                                               int(4000 / 1000 * 4506))
-        self.dev.set_jog_params(steps, acc, vel,
-                                continuous=False, immediate_stop=False,
-                                bay=axis, channel=0)
-        self.dev.move_jog(direction=direction, bay=axis, channel=0)
+        size = abs(delta)
+        # Use the bay's configured velocity so jog speed matches normal moves.
+        vel = self.dev.velparams_[channel][0].get('max_velocity',
+                                                   int(300 / 1000 * 21987328))
+        acc = self.dev.velparams_[channel][0].get('acceleration',
+                                                   int(4000 / 1000 * 4506))
+        # Single-step (continuous=False) jog of exactly `size` steps, then stop.
+        self.dev.set_jog_params(size, acc, vel, continuous=False,
+                                immediate_stop=False, bay=channel, channel=0)
+        self.dev.move_jog(direction=direction, bay=channel, channel=0)
 
     def get_abs(self, axis):
         return self._position[axis]

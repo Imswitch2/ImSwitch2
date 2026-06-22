@@ -73,8 +73,7 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
             "managerProperties": {
                 "port": "COM9",
                 "home": false,
-                "travelRangeUm": 8000,
-                "centerAxesOnHome": ["X", "Y"]
+                "travelRangeUm": 8000
             },
             "axes": ["X", "Y", "Z"],
             "forPositioning": true,
@@ -86,22 +85,35 @@ Thorlabs BSC203 three-channel benchtop stepper controller (driving a
 
 * ``port`` — serial port of the BSC203 controller (default ``"COM9"``).
 * ``home`` — when ``true``, perform an APT homing operation on startup
-  (default ``false``).
+  (default ``false``).  Homing parks each axis at its end-stop (position 0).
 * ``travelRangeUm`` — full travel per axis in µm (default ``8000``, for
-  DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm``.
-* ``centerAxesOnHome`` — axes moved to mid-travel (``travelRangeUm / 2``)
-  immediately after homing, so the stage does not start parked at an
-  end-stop (default ``["X", "Y"]``).  APT homing always drives to a
-  physical end-stop; Z is left at that edge as the natural focus
-  reference.  Set to ``[]`` to disable recentring.
+  DRV208 8 mm actuators).  Absolute coordinates run ``0..travelRangeUm`` and
+  every move is clamped to that range.
 
-.. note::
+**Movement model**
 
-   The BSC203 firmware reads the absolute-position field as **unsigned**,
-   so negative targets are rejected (clamped to 0) to avoid an integer
-   underflow that would otherwise drive the motor continuously toward an
-   unreachable position.  Relative jog moves are unaffected and work in
-   both directions.
+Both absolute (:meth:`setPosition`) and relative (:meth:`move`) moves are
+issued as a bounded **jog**: a positive step size of ``|target - current|``
+encoder counts plus a direction flag.  ``move_absolute`` / ``move_relative``
+are **never** used.
+
+This is essential, not stylistic.  The BSC203 firmware mishandles a move whose
+*displacement* is negative — i.e. any move to a position **below** the current
+one — reading the signed displacement as unsigned and driving the motor to the
+end-stop at full speed ("the negative direction runs away").  This fires for
+*any* downward move, even to a perfectly valid positive target, so clamping the
+target alone never fixed it.  The jog command takes a positive size and an
+explicit direction, which the firmware handles correctly both ways.
+
+The target is pre-clamped to ``[0, travelRangeUm]`` so a jog can never drive
+past an end-stop, and the displacement is taken from the *live* encoder so
+repeated moves self-correct.  A forward jog is assumed to increase the encoder
+(so ``+target`` increases the displayed position); if an axis moves the wrong
+way on your rig, list it in ``invertJogAxes``.
+
+* ``invertJogAxes`` — axis labels whose jog direction should be flipped
+  (default ``[]``).  Use ``utility_scripts/bsc203_diag.py calibrate`` to confirm
+  direction empirically.
 
 **PositionerInfo fields used**
 

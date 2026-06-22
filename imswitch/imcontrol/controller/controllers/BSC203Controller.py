@@ -104,19 +104,12 @@ class BSC203Controller(ImConWidgetController):
     # ------------------------------------------------------------------
 
     def moveTo(self):
-        self.move_absolute_mm(self._widget.setXEdit.value() / 1000, Xchan)
-        self.move_absolute_mm(self._widget.setYEdit.value() / 1000, Ychan)
-        self.move_absolute_mm(self._widget.setZEdit.value() / 1000, Zchan)
-
-    def move_absolute_mm(self, position_mm, axis):
-        # BSC203 firmware treats the absolute-position field as unsigned 32-bit;
-        # a negative step count wraps to a huge positive value and causes the
-        # motor to run continuously.  Clamp to 0 (home end of travel).
-        steps = max(0, self.to_enc_steps(position_mm))
-        self.dev.move_absolute(steps, now=True, bay=axis, channel=0)
-
-    def move_constant(self, direction, axis):
-        self.dev.move_velocity(direction=direction, bay=axis, channel=0)
+        # Route absolute moves through the manager so the single clamp authority
+        # (0..travelRange, unsigned-underflow guard) applies and the tracked
+        # position stays in sync. Widget values are µm and already bounded ≥ 0.
+        self._stageManager.setPosition(self._widget.setXEdit.value(), 'X')
+        self._stageManager.setPosition(self._widget.setYEdit.value(), 'Y')
+        self._stageManager.setPosition(self._widget.setZEdit.value(), 'Z')
 
     def stopAll(self):
         for axis in range(3):
@@ -126,16 +119,9 @@ class BSC203Controller(ImConWidgetController):
         self.dev.stop(bay=axis)
 
     def homeAll(self):
-        self.dev.home(bay=0)
-        self.dev.home(bay=1)
-        self.dev.home(bay=2)
-        while not all(self.dev.status_[b][0]['homed'] for b in range(3)):
-            pass
-        # Homing parks each axis at its end-stop (0). Recentre X/Y to mid-travel
-        # so the operator does not start in a corner. The manager owns the
-        # travel range and updates its tracked position; the live-update timer
-        # then refreshes the widget read-outs.
-        self._stageManager.centerAxes()
+        # Delegate to the manager (single source of truth). Homing parks each
+        # axis at its end-stop (position 0); the manager waits for completion.
+        self._stageManager.homeAll()
 
     # ------------------------------------------------------------------
     # Position readback
