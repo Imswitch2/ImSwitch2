@@ -348,19 +348,42 @@ recordings).
   attrs and scatters its first chunk; controller threads a `source_arg` to
   `LiveSource.open()`.
 
-**Open integration items (for review / next waves):**
+**Also landed (waves D/E/P5/P6):**
 
-- ⬜ **UI wiring**: `LiveReconstructionController` is not yet instantiated by any
-  ImProcess controller and has no UI entry point (live-mode toggle, source
-  selection by format, result routing to `ReconstructionView`). Keystone next.
-- ⬜ **Full-stack init for orientation**: `begin()` currently localizes/orients
-  from the *first chunk*. Upstream initialized from the first full stack. The
-  controller should buffer `frames_per_stack` before `begin()` for robust
-  orientation detection (degrades gracefully to default orientation today).
-- ⬜ **Qt end-to-end test**: synthetic growing Zarr → controller → session →
-  result, exercising the real thread wiring (units cover the pieces, not the
-  full loop).
-- ⬜ **P4** batch-fallback coverage across view-only/SNOUTY/WFS + a
-  `make_live_source(path, format)` selector.
-- ⬜ **P5** in-RAM HDF5 hand-off; **P6** imcontrol-viewer display; **P7**
-  ChunkBroker source.
+- ✅ **UI wiring** (D): `WatcherFrame` "Live (stream)" toggle + `sigLiveChanged`;
+  new `LiveModeController` owns the `LiveReconstructionController` lifecycle,
+  selects the source via `make_live_source`, routes results to
+  `ReconstructionView`. Qt end-to-end test (synthetic growing Zarr → controller
+  → stub streaming session → result) included.
+- ✅ **P4** (E): `make_live_source(path, fmt=…)` factory + batch-fallback
+  coverage proving non-streaming reconstructors (view-only + stub) run live at
+  stack granularity.
+- ✅ **P5**: `MemoryLiveController` (default-OFF) subscribes
+  `memoryRecordings.sigDataSet` and routes completed HDF5 RAM recordings through
+  the active reconstructor's batch `process()`, emitting `sigResultProduced`.
+- ✅ **P6**: optional imcontrol-viewer display — `ModuleCommunicationChannel.
+  sigLiveReconResult`, an `ImProcessMainController` bridge gated by a
+  `live_display_in_imcontrol` config flag (default OFF) + imcontrol-registered
+  check, and an `ImageController.liveReconResultAvailable` slot →
+  `ImageWidget.addStaticLayer`.
+
+Total: 110 live + recording tests green.
+
+**Open items / cleanup for review (2026-06-23):**
+
+- ⬜ **Full-stack init for orientation**: `begin()` localizes/orients from the
+  *first chunk*. Upstream initialized from the first full stack. The controller
+  should buffer `frames_per_stack` before `begin()` for robust orientation
+  (degrades gracefully to default orientation today).
+- ⬜ **Real end-to-end with MoNaLISA numerics**: the Qt e2e test uses a stub
+  streaming session; no test drives a real `MonalisaLiveSession` from a
+  `ZarrLiveSource` (needs a valid synthetic MoNaLISA recording fixture).
+- ⬜ **Param-fetch path**: `LiveModeController`/`MemoryLiveController`
+  `_getReconstructorParams()` guesses `_widget.parTree.get_param_dict()` (try/
+  except → `{}`); confirm or wire to the real active-reconstructor param widget.
+- ⬜ **P6 polish**: `live_display_in_imcontrol` is read assuming
+  `__processingConfig` is a `dict` — verify against the real config type; move
+  the in-method `import numpy`; the 2D slice picks the middle index of leading
+  dims (revisit for multi-timepoint live).
+- ⬜ **P7** (stretch): `ChunkBrokerLiveSource` true frame streaming once M10
+  ChunkBroker lands.
