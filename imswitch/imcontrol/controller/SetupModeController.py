@@ -8,19 +8,12 @@ from urllib.parse import quote
 
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.workflows.smart_mode_workflow import SMART_MICROSCOPY_ROLES
 
 from .basecontrollers import (
     ComponentStateApplyMode,
     SetupModeApplyPriority,
     StatefulComponentMixin,
-)
-
-
-# Runtime roles a setup mode may declare for a smart-microscopy workflow. These
-# mirror the roles understood by ``SmartMicroscopyModeService`` (plan §"Proposed
-# Model"); a role tag means "this mode is the <role> mode for <workflow>".
-SMART_MICROSCOPY_ROLES = frozenset(
-    {'scouting', 'event', 'resume', 'idle', 'validation'}
 )
 
 

@@ -29,16 +29,123 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Optional
-
-if TYPE_CHECKING:
-    from imswitch.imcontrol.controller.SmartMicroscopyModeService import (
-        ApplyResult,
-        PreflightResult,
-        SmartMicroscopyModeService,
-    )
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+
+# Runtime roles a setup mode may declare for a smart-microscopy workflow. These
+# are model-level workflow roles, not UI/controller concepts.
+SMART_MICROSCOPY_ROLES = frozenset(
+    {'scouting', 'event', 'resume', 'idle', 'validation'}
+)
+SMART_MICROSCOPY_POLICIES = frozenset({'allow', 'warnOnly', 'blockOnHazard'})
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """Structured result of applying a workflow mode role.
+
+    The camelCase field names match the existing smart-mode service contract and
+    are intentionally kept stable for controller and workflow callers.
+    """
+
+    applied: bool
+    ok: bool
+    modeName: Optional[str]
+    warnings: list[str] = field(default_factory=list)
+    failedComponents: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    """Structured result of non-interactive mode-role preflight."""
+
+    ok: bool
+    hazards: list[dict] = field(default_factory=list)
+    missingModes: list[str] = field(default_factory=list)
+    failedModes: list[str] = field(default_factory=list)
+    messages: list[str] = field(default_factory=list)
+
+
+@runtime_checkable
+class ModeRoleApplier(Protocol):
+    """Model-layer protocol for objects that apply smart-microscopy roles."""
+
+    def resolveMode(self, workflowName: str, role: str) -> Optional[str]:
+        """Resolve a workflow role to a setup mode name, or None when unmapped."""
+        ...
+
+    def preflight(
+        self, workflowName: str, roles: Optional[list[str]] = None
+    ) -> PreflightResult:
+        """Preflight one workflow's configured mode roles."""
+        ...
+
+    def applyRole(self, workflowName: str, role: str) -> ApplyResult:
+        """Apply one workflow role and return the structured result."""
+        ...
+
+
+def validate_smart_mode_config(config, available_modes):
+    """Validate workflow role mappings against available setup mode names."""
+    problems = []
+    available_mode_set = set(available_modes)
+    modes = config.get('modes', {})
+
+    for workflow_name, workflow_modes in modes.items():
+        for role, mode_name in workflow_modes.items():
+            if mode_name and mode_name not in available_mode_set:
+                problems.append(
+                    f'Workflow "{workflow_name}" role "{role}" points at setup mode '
+                    f'"{mode_name}", which does not exist.'
+                )
+
+    return problems
+
+
+def normalize_smart_mode_role_config(modes):
+    """Normalize role-to-mode mappings loaded from setup smart-mode config."""
+    normalized = {}
+    for workflow_name, workflow_modes in (modes or {}).items():
+        workflow_name = str(workflow_name).strip()
+        if not workflow_name or not isinstance(workflow_modes, dict):
+            continue
+
+        normalized_roles = {}
+        for role, mode_name in workflow_modes.items():
+            role = str(role).strip()
+            mode_name = str(mode_name).strip() if mode_name is not None else ''
+            if role in SMART_MICROSCOPY_ROLES and mode_name:
+                normalized_roles[role] = mode_name
+        if normalized_roles:
+            normalized[workflow_name] = normalized_roles
+    return normalized
+
+
+def normalize_smart_mode_policy_config(policies):
+    """Normalize workflow hazard policies, omitting default block-on-hazard."""
+    normalized = {}
+    for workflow_name, policy_name in (policies or {}).items():
+        workflow_name = str(workflow_name).strip()
+        policy_name = str(policy_name).strip() if policy_name is not None else ''
+        if (
+            workflow_name
+            and policy_name in SMART_MICROSCOPY_POLICIES
+            and policy_name != 'blockOnHazard'
+        ):
+            normalized[workflow_name] = policy_name
+    return normalized
+
+
+def normalize_smart_mode_enabled_config(enabled):
+    """Normalize workflow smart-mode enablement flags."""
+    normalized = {}
+    for workflow_name, is_enabled in (enabled or {}).items():
+        workflow_name = str(workflow_name).strip()
+        if workflow_name and bool(is_enabled):
+            normalized[workflow_name] = True
+    return normalized
 
 
 @dataclass
@@ -81,7 +188,7 @@ class SmartModeWorkflowAdapter:
 
     def __init__(
         self,
-        mode_service: "SmartMicroscopyModeService",
+        mode_service: ModeRoleApplier,
         logger_instance: Optional[logging.Logger] = None,
         time_fn: Optional[Callable[[], float]] = None,
     ) -> None:
@@ -92,7 +199,7 @@ class SmartModeWorkflowAdapter:
 
     def preflight(
         self, workflow_name: str, roles: Optional[list[str]] = None
-    ) -> "PreflightResult":
+    ) -> PreflightResult:
         """Preflight workflow roles before arming.
 
         Delegates to SmartMicroscopyModeService.preflight(). Does not touch
@@ -124,7 +231,7 @@ class SmartModeWorkflowAdapter:
 
     def applyRole(
         self, workflow_name: str, role: str, required: bool = True
-    ) -> "ApplyResult":
+    ) -> ApplyResult:
         """Apply a workflow role through the mode service.
 
         Delegates to SmartMicroscopyModeService.applyRole() and records the
@@ -184,7 +291,7 @@ class SmartModeWorkflowAdapter:
         self,
         workflow_name: str,
         role: str = "idle",
-    ) -> "ApplyResult":
+    ) -> ApplyResult:
         """Apply idle role as a safe fallback after failure or completion.
 
         Convenience method that applies the configured idle role with

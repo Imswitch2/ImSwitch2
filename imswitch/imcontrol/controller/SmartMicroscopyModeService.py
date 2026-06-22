@@ -1,8 +1,10 @@
 import enum
-from dataclasses import dataclass, field
-from typing import List, Optional
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.workflows.smart_mode_workflow import (
+    ApplyResult,
+    PreflightResult,
+)
 
 from .basecontrollers import ComponentStateApplyMode
 
@@ -23,49 +25,6 @@ class SmartModeHazardPolicy(enum.Enum):
     ALLOW = 'allow'
     WARN_ONLY = 'warnOnly'
     BLOCK_ON_HAZARD = 'blockOnHazard'
-
-
-@dataclass(frozen=True)
-class ApplyResult:
-    """Structured result of applying a runtime role.
-
-    Richer than a bare warning list so callers can branch on success/failure
-    (plan §1/§2):
-
-    - ``applied``: whether a setup mode was actually applied (``False`` for a
-      no-op or an unmapped role).
-    - ``ok``: ``False`` when a *hardware* component apply raised or returned a
-      component warning; non-hardware warnings and unmapped roles keep
-      ``ok=True``.
-    - ``modeName``: the resolved setup mode name, or ``None`` when unmapped.
-    - ``warnings``: warning strings surfaced for logging.
-    - ``failedComponents``: hardware components that did not apply cleanly.
-    """
-
-    applied: bool
-    ok: bool
-    modeName: Optional[str]
-    warnings: List[str] = field(default_factory=list)
-    failedComponents: List[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class PreflightResult:
-    """Structured result of a non-interactive hazard preflight (plan §2).
-
-    - ``ok``: whether arming may proceed under the workflow's policy.
-    - ``hazards``: aggregated hazard records from ``getModeHazards``.
-    - ``missingModes``: resolved mode names that do not exist in the backend.
-    - ``failedModes``: resolved modes that could not be inspected during
-      preflight.
-    - ``messages``: human-readable summary lines for the event log.
-    """
-
-    ok: bool
-    hazards: List[dict] = field(default_factory=list)
-    missingModes: List[str] = field(default_factory=list)
-    failedModes: List[str] = field(default_factory=list)
-    messages: List[str] = field(default_factory=list)
 
 
 class SmartMicroscopyModeService:

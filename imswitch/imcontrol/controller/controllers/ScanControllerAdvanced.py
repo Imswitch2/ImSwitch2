@@ -403,22 +403,29 @@ class ScanControllerAdvanced(SuperScanController):
         if getattr(self, "settingParameters", False):
             return
 
-        # -------------------------
-        # Analog (PointScan-style)
-        # -------------------------
-        self._analogParameterDict["target_device"] = []
-        self._analogParameterDict["axis_length"] = []
-        self._analogParameterDict["axis_step_size"] = []
-        self._analogParameterDict["axis_centerpos"] = []
-        self._analogParameterDict["axis_startpos"] = []
+        self._analogParameterDict, self._positionersScan = (
+            self._buildAnalogParameterDict()
+        )
+        self._digitalParameterDict = self._buildDigitalParameterDict(
+            self._analogParameterDict
+        )
 
-        # Keep scan dim selection like PointScan
-        self._positionersScan = []
-        for i in range(len(self.positioners)):
-            self._positionersScan.append(self._widget.getScanDim(i))
-        self._analogParameterDict["scan_dim_target_device"] = list(self._positionersScan)
+    def _buildAnalogParameterDict(self):
+        """Serialize PointScan-compatible analog scan parameters from the widget."""
+        analogParameterDict = {
+            "target_device": [],
+            "axis_length": [],
+            "axis_step_size": [],
+            "axis_centerpos": [],
+            "axis_startpos": [],
+        }
 
-        for positionerName in self._positionersScan:
+        positionersScan = [
+            self._widget.getScanDim(i) for i in range(len(self.positioners))
+        ]
+        analogParameterDict["scan_dim_target_device"] = list(positionersScan)
+
+        for positionerName in positionersScan:
             if positionerName == "None":
                 continue
 
@@ -426,59 +433,57 @@ class ScanControllerAdvanced(SuperScanController):
             stepSize = self._widget.getScanStepSize(positionerName)
             center = self._widget.getScanCenterPos(positionerName)
 
-            # startpos from current hardware
-            start = [center]
+            analogParameterDict["target_device"].append(positionerName)
+            analogParameterDict["axis_length"].append(size)
+            analogParameterDict["axis_step_size"].append(stepSize)
+            analogParameterDict["axis_centerpos"].append(center)
+            analogParameterDict["axis_startpos"].append([center])
 
-            self._analogParameterDict["target_device"].append(positionerName)
-            self._analogParameterDict["axis_length"].append(size)
-            self._analogParameterDict["axis_step_size"].append(stepSize)
-            self._analogParameterDict["axis_centerpos"].append(center)
-            self._analogParameterDict["axis_startpos"].append(start)
-
-        # Add non-scan axes as dummy (keeps older scan designers happy)
+        # Add non-scan axes as dummy entries to keep older scan designers happy.
         for positionerName in self.positioners:
-            if positionerName not in self._positionersScan:
+            if positionerName not in positionersScan:
                 center = self._widget.getScanCenterPos(positionerName)
-                self._analogParameterDict["target_device"].append(positionerName)
-                self._analogParameterDict["axis_length"].append(1.0)
-                self._analogParameterDict["axis_step_size"].append(1.0)
-                self._analogParameterDict["axis_centerpos"].append(center)
-                self._analogParameterDict["axis_startpos"].append([center])
+                analogParameterDict["target_device"].append(positionerName)
+                analogParameterDict["axis_length"].append(1.0)
+                analogParameterDict["axis_step_size"].append(1.0)
+                analogParameterDict["axis_centerpos"].append(center)
+                analogParameterDict["axis_startpos"].append([center])
 
-        # timing
         seq_time = self._widget.getSeqTimePar()
-        self._analogParameterDict["sequence_time"] = seq_time
+        analogParameterDict["sequence_time"] = seq_time
         try:
-            self._analogParameterDict["phase_delay"] = self._widget.getPhaseDelayPar()
+            analogParameterDict["phase_delay"] = self._widget.getPhaseDelayPar()
         except Exception:
-            self._analogParameterDict["phase_delay"] = 0
+            analogParameterDict["phase_delay"] = 0
         try:
-            self._analogParameterDict["d3step_delay"] = self._widget.getd3StepDelayPar()
+            analogParameterDict["d3step_delay"] = self._widget.getd3StepDelayPar()
         except Exception:
-            self._analogParameterDict["d3step_delay"] = 0
+            analogParameterDict["d3step_delay"] = 0
 
-        def _pixels_for(dev_name: str) -> int:
-            if dev_name is None or dev_name == "None":
-                return 1
-            try:
-                idx = self._analogParameterDict["target_device"].index(dev_name)
-            except ValueError:
-                return 1
-            step = float(self._analogParameterDict["axis_step_size"][idx])
-            if step == 0:
-                return 1
-            length = float(self._analogParameterDict["axis_length"][idx])
-            return max(1, int(round(length / step)))
+        return analogParameterDict, positionersScan
 
+    def _pixelsForScanDevice(self, analogParameterDict, deviceName: str) -> int:
+        """Return pixel count for a selected scan device from analog params."""
+        if deviceName is None or deviceName == "None":
+            return 1
+        try:
+            idx = analogParameterDict["target_device"].index(deviceName)
+        except ValueError:
+            return 1
+        step = float(analogParameterDict["axis_step_size"][idx])
+        if step == 0:
+            return 1
+        length = float(analogParameterDict["axis_length"][idx])
+        return max(1, int(round(length / step)))
+
+    def _buildDigitalParameterDict(self, analogParameterDict):
+        """Serialize advanced TTL and line-step parameters from the widget."""
+        seq_time = analogParameterDict["sequence_time"]
         x_dev = self._widget.getScanDim(0)
         y_dev = self._widget.getScanDim(1)
+        Nx = self._pixelsForScanDevice(analogParameterDict, x_dev)
+        Ny = self._pixelsForScanDevice(analogParameterDict, y_dev)
 
-        Nx = _pixels_for(x_dev)
-        Ny = _pixels_for(y_dev)
-
-        # -------------------------
-        # Digital (advanced schema)
-        # -------------------------
         try:
             self._widget.commitAdvancedProgramEdits()
         except Exception:
@@ -597,7 +602,7 @@ class ScanControllerAdvanced(SuperScanController):
                     positioner_movement_ends_s[positionerName] = ends_steps
                     positioner_step_size_um[positionerName] = step_sizes
 
-        self._digitalParameterDict = {
+        digitalParameterDict = {
             "target_device": included_devices,
             "n_linesteps": S,
             "Nx": Nx,
@@ -617,23 +622,25 @@ class ScanControllerAdvanced(SuperScanController):
         }
 
         try:
-            self._digitalParameterDict["advanced_program_mode"] = (
+            digitalParameterDict["advanced_program_mode"] = (
                 self._widget.getAdvancedProgramMode()
             )
-            self._digitalParameterDict["advanced_sequence_rows"] = (
+            digitalParameterDict["advanced_sequence_rows"] = (
                 self._widget.getAdvancedSequenceRows()
             )
-            self._digitalParameterDict["line_program_devices_enabled"] = (
+            digitalParameterDict["line_program_devices_enabled"] = (
                 self._widget.isLineProgramDevicesMode()
             )
-            self._digitalParameterDict["advanced_device_lock_master"] = (
+            digitalParameterDict["advanced_device_lock_master"] = (
                 self._widget.getAdvancedDeviceLockMaster()
             )
-            self._digitalParameterDict["advanced_device_lock_target"] = (
+            digitalParameterDict["advanced_device_lock_target"] = (
                 self._widget.getAdvancedDeviceLockTarget()
             )
         except Exception:
             pass
+
+        return digitalParameterDict
 
     # ---------------------------------------------------------------------
     # Parameters: dicts -> UI (used by loadScan)

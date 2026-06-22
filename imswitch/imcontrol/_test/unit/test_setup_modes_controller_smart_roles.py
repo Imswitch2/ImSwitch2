@@ -6,6 +6,13 @@ from imswitch.imcontrol.controller.SetupModeController import SetupModeControlle
 from imswitch.imcontrol.controller.controllers.SetupModesController import (
     SetupModesController,
 )
+from imswitch.imcontrol.model.workflows import (
+    SMART_MICROSCOPY_ROLES,
+    normalize_smart_mode_enabled_config,
+    normalize_smart_mode_policy_config,
+    normalize_smart_mode_role_config,
+    validate_smart_mode_config,
+)
 
 
 pytestmark = pytest.mark.nohardware
@@ -48,6 +55,37 @@ def test_setup_mode_controller_lists_declared_smart_workflows():
     }
 
     assert controller.getSmartMicroscopyWorkflowNames() == ["EtSTED", "EtSnouty"]
+
+
+def test_smart_mode_config_helpers_are_model_owned():
+    from imswitch.imcontrol.controller.SetupModeController import (
+        SMART_MICROSCOPY_ROLES as controller_roles,
+    )
+
+    assert controller_roles is SMART_MICROSCOPY_ROLES
+    assert normalize_smart_mode_role_config(
+        {
+            " EtSnouty ": {
+                "event": "event mode",
+                "idle": "",
+                "unknown": "ignored",
+            },
+            "": {"event": "ignored"},
+        }
+    ) == {"EtSnouty": {"event": "event mode"}}
+    assert normalize_smart_mode_policy_config(
+        {"EtSnouty": "warnOnly", "Default": "blockOnHazard", "Bad": "nope"}
+    ) == {"EtSnouty": "warnOnly"}
+    assert normalize_smart_mode_enabled_config(
+        {"EtSnouty": 1, "EtSTED": False, "": True}
+    ) == {"EtSnouty": True}
+    assert validate_smart_mode_config(
+        {"modes": {"EtSnouty": {"event": "missing", "resume": ""}}},
+        available_modes=["widefield"],
+    ) == [
+        'Workflow "EtSnouty" role "event" points at setup mode "missing", '
+        'which does not exist.'
+    ]
 
 
 def test_build_workflow_names_combines_backend_and_saved_setup_info():

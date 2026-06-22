@@ -6,8 +6,13 @@ import traceback
 from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.model import dirtools
-from imswitch.imcontrol.controller.SetupModeController import SMART_MICROSCOPY_ROLES
 from imswitch.imcontrol.model import configfiletools
+from imswitch.imcontrol.model.workflows.smart_mode_workflow import (
+    normalize_smart_mode_enabled_config,
+    normalize_smart_mode_policy_config,
+    normalize_smart_mode_role_config,
+    validate_smart_mode_config,
+)
 from ..basecontrollers import ImConWidgetController
 
 
@@ -975,19 +980,7 @@ class SetupModesController(ImConWidgetController):
         Returns:
             List[str]: Human-readable validation problems, empty if valid
         """
-        problems = []
-        availableModeSet = set(availableModes)
-        modes = config.get('modes', {})
-
-        for workflowName, workflowModes in modes.items():
-            for role, modeName in workflowModes.items():
-                if modeName and modeName not in availableModeSet:
-                    problems.append(
-                        f'Workflow "{workflowName}" role "{role}" points at setup mode '
-                        f'"{modeName}", which does not exist.'
-                    )
-
-        return problems
+        return validate_smart_mode_config(config, availableModes)
 
     def _applySmartModeConfig(self, config):
         """Apply smart mode configuration to setupInfo and persist.
@@ -1013,40 +1006,13 @@ class SetupModesController(ImConWidgetController):
         configfiletools.saveSetupInfo(options, self._setupInfo)
 
     def _normalizeSmartModeRoleConfig(self, modes):
-        normalized = {}
-        validRoles = set(SMART_MICROSCOPY_ROLES)
-        for workflowName, workflowModes in (modes or {}).items():
-            workflowName = str(workflowName).strip()
-            if not workflowName or not isinstance(workflowModes, dict):
-                continue
-
-            normalizedRoles = {}
-            for role, modeName in workflowModes.items():
-                role = str(role).strip()
-                modeName = str(modeName).strip() if modeName is not None else ''
-                if role in validRoles and modeName:
-                    normalizedRoles[role] = modeName
-            if normalizedRoles:
-                normalized[workflowName] = normalizedRoles
-        return normalized
+        return normalize_smart_mode_role_config(modes)
 
     def _normalizeSmartModePolicyConfig(self, policies):
-        normalized = {}
-        validPolicies = {'allow', 'warnOnly', 'blockOnHazard'}
-        for workflowName, policyName in (policies or {}).items():
-            workflowName = str(workflowName).strip()
-            policyName = str(policyName).strip() if policyName is not None else ''
-            if workflowName and policyName in validPolicies and policyName != 'blockOnHazard':
-                normalized[workflowName] = policyName
-        return normalized
+        return normalize_smart_mode_policy_config(policies)
 
     def _normalizeSmartModeEnabledConfig(self, enabled):
-        normalized = {}
-        for workflowName, isEnabled in (enabled or {}).items():
-            workflowName = str(workflowName).strip()
-            if workflowName and bool(isEnabled):
-                normalized[workflowName] = True
-        return normalized
+        return normalize_smart_mode_enabled_config(enabled)
 
     def _replaceSetupInfoMapping(self, attrName, mapping):
         existing = getattr(self._setupInfo, attrName, None)

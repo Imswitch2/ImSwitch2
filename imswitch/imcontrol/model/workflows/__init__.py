@@ -45,8 +45,17 @@ from .target_timelapse import (
     TargetAcquisitionResult,
 )
 from .smart_mode_workflow import (
+    ApplyResult,
+    ModeRoleApplier,
     ModeTransition,
+    PreflightResult,
+    SMART_MICROSCOPY_POLICIES,
+    SMART_MICROSCOPY_ROLES,
     SmartModeWorkflowAdapter,
+    normalize_smart_mode_enabled_config,
+    normalize_smart_mode_policy_config,
+    normalize_smart_mode_role_config,
+    validate_smart_mode_config,
 )
 from .time_resolved import (
     BinnedPhotonArrivalParams,
@@ -87,7 +96,12 @@ __all__ = [
     "LifetimeFitConfig",
     "MicroscopeFacade",
     "ModeConfig",
+    "ApplyResult",
+    "ModeRoleApplier",
     "ModeTransition",
+    "PreflightResult",
+    "SMART_MICROSCOPY_POLICIES",
+    "SMART_MICROSCOPY_ROLES",
     "MockMicroscopeFacade",
     "MultiWellTilingParams",
     "MultiWellTilingWorkflow",
@@ -125,4 +139,8 @@ __all__ = [
     "ZStageConFacade",
     "build_facade_from_master",
     "build_mock_facade",
+    "normalize_smart_mode_enabled_config",
+    "normalize_smart_mode_policy_config",
+    "normalize_smart_mode_role_config",
+    "validate_smart_mode_config",
 ]

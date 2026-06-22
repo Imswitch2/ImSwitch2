@@ -2,6 +2,12 @@ import importlib
 
 import pytest
 
+from imswitch.imcontrol.model.workflows import (
+    ApplyResult as ModelApplyResult,
+    ModeRoleApplier,
+    PreflightResult as ModelPreflightResult,
+)
+
 
 service_module = importlib.import_module(
     'imswitch.imcontrol.controller.SmartMicroscopyModeService'
@@ -133,6 +139,23 @@ ALL_MODES = [
     'Snouty light-sheet event scan',
     'Snouty safe idle',
 ]
+
+
+def test_smart_mode_results_are_model_layer_contracts():
+    """Controller service re-exports model-owned result dataclasses."""
+    assert ApplyResult is ModelApplyResult
+    assert PreflightResult is ModelPreflightResult
+    assert ApplyResult.__module__ == 'imswitch.imcontrol.model.workflows.smart_mode_workflow'
+    assert PreflightResult.__module__ == 'imswitch.imcontrol.model.workflows.smart_mode_workflow'
+
+
+def test_smart_mode_service_satisfies_mode_role_applier_protocol():
+    """SmartMicroscopyModeService is structurally usable by model workflows."""
+    service, _ = _makeService(ROLE_CONFIG, modes=ALL_MODES)
+
+    assert isinstance(service, ModeRoleApplier)
+    assert isinstance(service.applyRole('EtSnouty', 'scouting'), ModelApplyResult)
+    assert isinstance(service.preflight('EtSnouty'), ModelPreflightResult)
 
 
 def test_resolve_mode_configured_and_unconfigured():
