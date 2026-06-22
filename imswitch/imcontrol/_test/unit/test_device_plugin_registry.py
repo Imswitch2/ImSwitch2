@@ -183,6 +183,30 @@ def test_builtin_alias_protection(registry):
         registry.register(plugin, is_builtin=False)
 
 
+def test_plugin_id_cannot_collide_with_builtin_alias(registry):
+    """A plugin ID matching a built-in alias must fail clearly."""
+    builtin = DeviceManagerContribution(
+        id="BuiltinDetector",
+        kind="detector",
+        display_name="Built-in",
+        python_name="collections:OrderedDict",
+        plugin_name="imswitch-core",
+        manager_name_aliases=("builtin.alias",),
+    )
+    registry.register(builtin, is_builtin=True)
+
+    plugin = DeviceManagerContribution(
+        id="builtin.alias",
+        kind="detector",
+        display_name="Plugin",
+        python_name="collections:defaultdict",
+        plugin_name="test-plugin",
+    )
+
+    with pytest.raises(DuplicateContributionError, match="Cannot override built-in"):
+        registry.register(plugin, is_builtin=False)
+
+
 def test_format_resolution_error(registry, fake_detector_contribution):
     """Test error message formatting."""
     registry.register(fake_detector_contribution)

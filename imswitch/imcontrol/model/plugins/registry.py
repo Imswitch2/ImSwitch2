@@ -51,10 +51,11 @@ class DevicePluginRegistry:
         
         # Check if plugin is trying to override a built-in
         if not is_builtin and key in self._builtins:
-            existing = self._by_id[key]
+            existing = self._by_id.get(key) or self._by_alias.get(key)
+            existing_id = existing.id if existing is not None else contribution.id
             raise DuplicateContributionError(
                 f"Cannot override built-in {contribution.kind} manager "
-                f"'{contribution.id}' from plugin '{contribution.plugin_name}'"
+                f"'{existing_id}' from plugin '{contribution.plugin_name}'"
             )
         
         # Check for duplicate ID

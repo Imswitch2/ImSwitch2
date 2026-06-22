@@ -126,6 +126,17 @@ def test_build_default_section_for_requiring_sections():
                 f"Required field '{field}' missing from defaults for section '{section_key}'"
 
 
+def test_microscope_stand_section_uses_loadable_manager_name():
+    """The config editor must not suggest the LeicaStand controller as a manager."""
+    schema = editor.SECTION_SCHEMAS.get("microscopeStand")
+    assert schema is not None
+
+    defaults = editor._build_default_section(schema)
+
+    assert defaults["managerName"] == "LeicaDMIStandMockManager"
+    assert defaults["managerName"] in editor.CAT_MANAGERS.get("stands", [])
+
+
 def test_validation_warning_includes_clickable_link():
     """
     Widget→section validation warnings must include a clickable 'Configure…' link.
