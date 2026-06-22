@@ -161,3 +161,94 @@ def test_init_with_no_devices_is_noop(patch_registry):
     patch_registry(DevicePluginRegistry())
     multi = _ConcreteMulti({}, "detectors")
     assert multi.hasDevices() is False
+
+
+def test_shadowing_warning_when_both_paths_resolve(patch_registry, caplog):
+    """Test that a WARNING is logged when a registry manager shadows an in-tree manager.
+    
+    When both the registry and legacy internal path would resolve the same
+    managerName, the registry wins (deterministic precedence) and a clear
+    WARNING is logged naming both sources.
+    """
+    import logging
+    
+    # Register a plugin manager with the same name as an in-tree manager
+    registry = DevicePluginRegistry()
+    registry.register(
+        DeviceManagerContribution(
+            id="MockPositionerManager",  # Same name as in-tree manager
+            kind="positioner",
+            display_name="Plugin Mock Positioner",
+            python_name=f"{THIS_MODULE}:FakePluginManager",
+            plugin_name="imswitch-test-shadowing-plugin",
+        )
+    )
+    patch_registry(registry)
+    
+    # Clear any previous log records
+    caplog.clear()
+    
+    # Resolve the manager (should get plugin version, with a warning)
+    with caplog.at_level(logging.WARNING):
+        cls = MultiManager._resolveManagerClass(
+            CURRENT_PACKAGE, "positioners", "positioner", "MockPositionerManager"
+        )
+    
+    # Verify registry resolution wins
+    assert cls is FakePluginManager
+    
+    # Verify warning was logged with all key information
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 1
+    
+    warning_msg = warning_records[0].message
+    assert "MockPositionerManager" in warning_msg
+    assert "imswitch-test-shadowing-plugin" in warning_msg
+    assert "shadowing" in warning_msg.lower()
+    assert "positioner" in warning_msg
+    # Check that legacy path is mentioned
+    assert "imswitch.imcontrol.model.managers.positioners.MockPositionerManager" in warning_msg
+    # Check that precedence rule is mentioned
+    assert "precedence" in warning_msg.lower() or "takes precedence" in warning_msg
+
+
+def test_no_shadowing_warning_when_only_registry_resolves(patch_registry, caplog):
+    """Test that no warning is logged when only the registry resolves (no shadowing)."""
+    import logging
+    
+    patch_registry(_registry_with_fake_detector())
+    
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        cls = MultiManager._resolveManagerClass(
+            CURRENT_PACKAGE, "detectors", "detector", "my.fakecam"
+        )
+    
+    assert cls is FakePluginManager
+    
+    # No warning should be logged (no in-tree manager to shadow)
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 0
+
+
+def test_no_shadowing_warning_when_only_legacy_resolves(patch_registry, caplog):
+    """Test that no warning is logged when only legacy path resolves (no shadowing)."""
+    import logging
+    
+    # Empty registry -> only legacy path will resolve
+    patch_registry(DevicePluginRegistry())
+    
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        cls = MultiManager._resolveManagerClass(
+            CURRENT_PACKAGE, "positioners", "positioner", "MockPositionerManager"
+        )
+    
+    from imswitch.imcontrol.model.managers.positioners.MockPositionerManager import (
+        MockPositionerManager,
+    )
+    assert cls is MockPositionerManager
+    
+    # No warning should be logged (registry doesn't resolve, no shadowing)
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 0

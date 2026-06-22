@@ -1,4 +1,5 @@
 import importlib
+import logging
 from abc import ABC, abstractmethod
 from imswitch.imcommon.model import initLogger
 
@@ -50,12 +51,48 @@ class MultiManager(ABC):
         Device plugin registry first (for MultiManager-backed kinds), then the
         legacy internal import path so existing setup files keep working. If
         both miss for a registry-backed kind, raise the actionable registry
-        diagnostic instead of a raw ImportError. """
+        diagnostic instead of a raw ImportError.
+        
+        Precedence rule (deterministic, registry-first):
+        1. Device plugin registry (built-ins + installed plugins)
+        2. Legacy internal import path (fallback for un-registered managers)
+        
+        When both paths would resolve, registry wins and a WARNING is logged.
+        """
+        logger = logging.getLogger('imswitch.imcontrol.MultiManager')
+        
         # 1. Device plugin registry (built-ins + installed plugins).
+        registry_contribution = None
         if kind is not None:
-            managerClass = get_default_registry().load_manager_class(
-                kind, managerName)
-            if managerClass is not None:
+            registry_contribution = get_default_registry().resolve(kind, managerName)
+            if registry_contribution is not None:
+                managerClass = get_default_registry().load_manager_class(
+                    kind, managerName)
+                
+                # Check if legacy path would also resolve (shadowing detection).
+                legacy_would_resolve = False
+                try:
+                    package = importlib.import_module(
+                        pythontools.joinModulePath(
+                            f'{currentPackage}.{subManagersPackage}', managerName)
+                    )
+                    legacy_class = getattr(package, managerName, None)
+                    if legacy_class is not None:
+                        legacy_would_resolve = True
+                        # Warn about shadowing: registry is hiding an in-tree manager.
+                        logger.warning(
+                            f"Registry-backed {kind} manager '{managerName}' from "
+                            f"plugin '{registry_contribution.plugin_name}' is shadowing "
+                            f"an in-tree manager at "
+                            f"{currentPackage}.{subManagersPackage}.{managerName}. "
+                            f"Registry resolution takes precedence (deterministic). "
+                            f"Consider removing the in-tree manager or renaming the "
+                            f"plugin contribution to avoid confusion."
+                        )
+                except (ImportError, AttributeError):
+                    # Legacy path does not exist, no shadowing
+                    pass
+                
                 return managerClass
 
         # 2. Legacy internal import path (imswitch.imcontrol.model.managers.<pkg>).

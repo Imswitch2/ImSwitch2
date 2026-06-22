@@ -1,6 +1,7 @@
 """Device plugin registry for resolving and loading manager classes."""
 
 import importlib
+import logging
 from typing import Type
 
 from .manifest import DeviceManagerContribution
@@ -250,26 +251,58 @@ def build_default_registry(*, discover: bool = True) -> DevicePluginRegistry:
     """
     from .builtins import BUILTIN_DEVICE_MANAGERS
     
+    logger = logging.getLogger('imswitch.plugins.registry')
     registry = DevicePluginRegistry()
     
     # Register built-ins first
+    logger.debug(f"Registering {len(BUILTIN_DEVICE_MANAGERS)} built-in device managers")
     for contrib in BUILTIN_DEVICE_MANAGERS:
         registry.register(contrib, is_builtin=True)
+        logger.debug(
+            f"  Registered built-in {contrib.kind} manager: {contrib.id} "
+            f"(aliases: {', '.join(contrib.manager_name_aliases) or 'none'})"
+        )
 
     # Discover and register plugins
     if discover:
         contributions, errors = discover_contributions()
-
+        
+        # Log discovery errors (one broken plugin shouldn't prevent startup)
+        if errors:
+            logger.warning(
+                f"Encountered {len(errors)} error(s) during plugin discovery:"
+            )
+            for err in errors:
+                logger.warning(
+                    f"  Plugin '{err.plugin_name}' "
+                    f"(manifest: {err.manifest or 'unknown'}): {err.error}"
+                )
+        
+        # Register discovered contributions
+        registered_count = 0
+        skipped_count = 0
         for contrib in contributions:
             try:
                 registry.register(contrib, is_builtin=False)
-            except DuplicateContributionError:
-                # Built-ins win on collision; silently skip
-                pass
-
-        # Errors are collected but not raised (one broken plugin shouldn't
-        # prevent the application from starting)
-        # TODO: Log discovery errors once logging is configured
+                registered_count += 1
+                logger.debug(
+                    f"  Registered plugin {contrib.kind} manager: {contrib.id} "
+                    f"from '{contrib.plugin_name}' "
+                    f"(aliases: {', '.join(contrib.manager_name_aliases) or 'none'})"
+                )
+            except DuplicateContributionError as e:
+                # Built-ins or other plugins win on collision; log and skip
+                skipped_count += 1
+                logger.warning(
+                    f"  Skipping duplicate contribution {contrib.kind}/{contrib.id} "
+                    f"from plugin '{contrib.plugin_name}': {e}"
+                )
+        
+        if contributions:
+            logger.info(
+                f"Discovered {len(contributions)} plugin contribution(s): "
+                f"{registered_count} registered, {skipped_count} skipped (duplicates)"
+            )
 
     return registry
 

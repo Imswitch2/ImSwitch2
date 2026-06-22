@@ -1,6 +1,7 @@
 """Device plugin manifest parsing and contribution dataclass."""
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,8 +11,30 @@ class ManifestError(Exception):
     pass
 
 
-# NOTE: `stand` and `pulse_generator` are accepted in manifests but are NOT
-# loaded through MultiManager in the first implementation (bespoke loaders).
+# Kinds that are loaded through MultiManager and fully support plugin resolution.
+# These have deterministic registry-first resolution with legacy fallback.
+MULTIMANAGER_BACKED_KINDS = {
+    "detector",
+    "laser",
+    "positioner",
+    "rotator",
+    "rs232",
+    "flip_mirror",
+    "slm",
+}
+
+# Kinds that use bespoke loaders (not MultiManager) in the current implementation.
+# Plugin support for these kinds is NOT yet implemented in runtime loading.
+# Manifests declaring these kinds will be rejected with a clear error.
+BESPOKE_LOADER_KINDS = {
+    "stand",
+    "pulse_generator",
+}
+
+# All valid device kinds (union of MultiManager-backed and bespoke).
+ALL_VALID_KINDS = MULTIMANAGER_BACKED_KINDS | BESPOKE_LOADER_KINDS
+
+# Type hint for device kinds (accepts all kinds for forward compatibility).
 DeviceKind = Literal[
     "detector",
     "laser",
@@ -19,8 +42,8 @@ DeviceKind = Literal[
     "rotator",
     "rs232",
     "flip_mirror",
-    "stand",
     "slm",
+    "stand",
     "pulse_generator",
 ]
 
@@ -62,15 +85,12 @@ def parse_manifest(
         List of DeviceManagerContribution instances.
     
     Raises:
-        ManifestError: If required fields are missing or invalid.
+        ManifestError: If required fields are missing or invalid, or if a
+            kind is not supported by runtime loading.
     """
+    logger = logging.getLogger('imswitch.plugins.manifest')
     contributions = []
     device_managers = data.get("contributions", {}).get("device_managers", [])
-    
-    valid_kinds = {
-        "detector", "laser", "positioner", "rotator", "rs232",
-        "flip_mirror", "stand", "slm", "pulse_generator",
-    }
     
     for entry in device_managers:
         # Validate required fields
@@ -82,10 +102,19 @@ def parse_manifest(
         
         # Validate kind
         kind = entry["kind"]
-        if kind not in valid_kinds:
+        if kind not in ALL_VALID_KINDS:
             raise ManifestError(
                 f"Unknown device kind '{kind}' in plugin '{plugin_name}'. "
-                f"Valid kinds: {sorted(valid_kinds)}"
+                f"Valid kinds: {sorted(ALL_VALID_KINDS)}"
+            )
+        
+        # Reject kinds that use bespoke loaders (not yet supported by plugin system)
+        if kind in BESPOKE_LOADER_KINDS:
+            raise ManifestError(
+                f"Device kind '{kind}' in plugin '{plugin_name}' is not supported "
+                f"by runtime plugin loading. Kind '{kind}' uses a bespoke loader "
+                f"(not MultiManager) and plugin support is not yet implemented. "
+                f"Supported kinds (MultiManager-backed): {sorted(MULTIMANAGER_BACKED_KINDS)}"
             )
         
         # Coerce list fields to tuples

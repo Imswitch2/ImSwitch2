@@ -210,6 +210,40 @@ Avoid exposing:
 - private utilities
 - concrete in-tree manager classes
 
+### Public API Coverage Status (as of 2026-06-22)
+
+The public API (`imswitch.pluginapi`) currently provides base classes and info
+dataclasses for the following MultiManager-backed kinds:
+
+- **detector**: `DetectorManager`, `DetectorInfo`, plus action/parameter classes
+- **laser**: `LaserManager`, `LaserInfo`
+- **positioner**: `PositionerManager`, `PositionerInfo`
+- **rotator**: `RotatorManager` (info class is `PositionerInfo`)
+
+The following MultiManager-backed kinds are **intentionally internal** (no
+public API exports yet) because they lack stable base classes or common
+contracts:
+
+- **rs232**: Only `RS232Info` is exported; no `RS232Manager` base class exists.
+  Current in-tree managers (`ESP32Manager`, `ElliptecManager`) do not share a
+  common interface beyond the constructor signature. Plugin authors can
+  implement rs232 managers using the raw `RS232Info` dataclass, but there's no
+  base class contract to subclass.
+  
+- **flip_mirror**: No `FlipMirrorManager` or `FlipMirrorInfo` exported. The
+  single in-tree manager (`ThorlabsMFF`) is a plain class with no base.
+  Plugin support is registry-backed but has no public API contract yet.
+  
+- **slm**: No `SLMManager` or `SLMInfo` exported. In-tree managers inherit from
+  `SignalInterface` (a framework utility, not a device contract). Plugin support
+  is registry-backed but has no public API contract yet.
+
+**Recommendation**: When stable contracts emerge for these kinds (common methods,
+required interfaces), export base classes and info dataclasses through
+`imswitch.pluginapi`. Until then, plugin authors can implement these managers
+using the internal paths (understanding they're subject to change) or wait for
+public API stabilization.
+
 ## Plugin Discovery
 
 Use Python entry points. The entry point group should be:
