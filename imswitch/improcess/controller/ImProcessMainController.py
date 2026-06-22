@@ -36,6 +36,10 @@ class ImProcessMainController(MainController):
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel()
 
+        # Bridge live results to imcontrol if enabled
+        self.__commChannel.sigResultProduced.connect(self._onResultProduced)
+        self.__commChannel.sigLiveResultUpdated.connect(self._onLiveResultUpdated)
+
         # List of Controllers for the GUI Widgets
         self.__factory = ImProcessWidgetControllerFactory(
             self.__commChannel, self.__moduleCommChannel
@@ -223,6 +227,59 @@ class ImProcessMainController(MainController):
 
         for processor_id in runtime_result_processor_ids():
             self._wire_runtime_result_processor(processor_id)
+
+    def _onResultProduced(self, result, name):
+        """Bridge processing result to imcontrol if display is enabled."""
+        self._bridgeResultToImcontrol(result, name)
+
+    def _onLiveResultUpdated(self, result):
+        """Bridge live result update to imcontrol if display is enabled."""
+        self._bridgeResultToImcontrol(result, result.name if hasattr(result, 'name') else 'Live Result')
+
+    def _bridgeResultToImcontrol(self, result, name):
+        """Extract displayable image and emit to imcontrol viewer if configured."""
+        # Check config flag (default: OFF)
+        if self.__processingConfig is None:
+            return
+        
+        config_dict = self.__processingConfig if isinstance(self.__processingConfig, dict) else {}
+        if not config_dict.get('live_display_in_imcontrol', False):
+            return
+        
+        # Check if imcontrol is registered
+        if not self.__moduleCommChannel.isModuleRegistered('imcontrol'):
+            return
+        
+        # Extract displayable 2D image from result
+        if not hasattr(result, 'data'):
+            return
+        
+        import numpy as np
+        data = result.data
+        
+        # Squeeze to last 2 dimensions for display
+        if data.ndim < 2:
+            return
+        
+        if data.ndim > 2:
+            # Take the last 2D slice (squeeze out extra dimensions or take current slice)
+            # For multi-dimensional data, show the middle slice of each dimension except last 2
+            indices = []
+            for i in range(data.ndim - 2):
+                mid_idx = data.shape[i] // 2
+                indices.append(mid_idx)
+            image = data[tuple(indices)] if indices else data
+        else:
+            image = data
+        
+        # Extract scale for the last 2 dimensions
+        scale = None
+        if hasattr(result, 'axis_scales') and result.axis_scales:
+            # Get scales for the last 2 dimensions
+            scale = result.axis_scales[-2:] if len(result.axis_scales) >= 2 else None
+        
+        # Emit to module channel
+        self.__moduleCommChannel.sigLiveReconResult.emit(name, image, scale)
 
     def closeEvent(self):
         # Persist the current dock layout before tearing the controllers down,

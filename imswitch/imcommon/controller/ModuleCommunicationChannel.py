@@ -9,6 +9,7 @@ class ModuleCommunicationChannel(SignalInterface):
     """
     sigRunScript = Signal(str)
     sigExecutionFinished = Signal()
+    sigLiveReconResult = Signal(str, object, object)  # (name, image, scale)
 
     @property
     def memoryRecordings(self):

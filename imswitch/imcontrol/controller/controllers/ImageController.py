@@ -46,6 +46,10 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
         self._commChannel.sigMemorySnapAvailable.connect(self.memorySnapAvailable)
         self._commChannel.sigSetExposure.connect(lambda t: self.setExposure(t))
 
+        # Connect ModuleCommunicationChannel signals if available
+        if self._moduleCommChannel is not None:
+            self._moduleCommChannel.sigLiveReconResult.connect(self.liveReconResultAvailable)
+
     def autoLevels(self, detectorNames=None, im=None):
         """ Set histogram levels automatically with current detector image."""
         if detectorNames is None:
@@ -120,6 +124,12 @@ class ImageController(LiveUpdatedController, StatefulComponentMixin):
     def memorySnapAvailable(self, name, image, _, __):
         """ Adds captured image to widget. """
         self._widget.addStaticLayer(name, image)
+        if self._shouldResetView:
+            self.adjustFrame(image.shape, instantResetView=True)
+
+    def liveReconResultAvailable(self, name, image, scale):
+        """ Adds live reconstruction result to widget. """
+        self._widget.addStaticLayer(name, image, scale)
         if self._shouldResetView:
             self.adjustFrame(image.shape, instantResetView=True)
 
