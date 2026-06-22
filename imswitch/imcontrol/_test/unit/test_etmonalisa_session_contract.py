@@ -40,10 +40,11 @@ def test_etmonalisa_direct_stand_hooks_are_flag_gated():
     # The direct stand switches are guarded by the smart-mode flag.
     assert 'not self._smartModeSwitchingEnabled()' in controller_source
 
-    # The raw stand helpers themselves are unchanged (flag-off path identical).
-    assert 'self._master.standManager._subManager.setFLUO()' in controller_source
-    assert 'self._master.standManager._subManager.setCS()' in controller_source
-    assert 'self._master.standManager._subManager.setILshutter(1)' in controller_source
+    # The stand helpers route through the public StandManager API (WP3:
+    # controllers no longer reach into standManager._subManager).
+    assert 'self._master.standManager.setFLUO()' in controller_source
+    assert 'self._master.standManager.setCS()' in controller_source
+    assert 'self._master.standManager.setILshutter(1)' in controller_source
 
     # sigInitiateEtMonalisa stays unconditional (not inside a flag/runMode guard).
     pre_arm = controller_source.split('def _pre_arm_hook', 1)[1].split('def ', 1)[0]

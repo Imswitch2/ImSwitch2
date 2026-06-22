@@ -212,7 +212,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 return
 
             self.detectorFast_controller = (
-                self._master.detectorsManager._subManagers[self.detectorFast]
+                self._master.detectorsManager.getDevice(self.detectorFast)
             )
 
             if self._widget.setUpdatePeriodCheck.isChecked():
@@ -658,7 +658,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
         self.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
         self.detectorFast_controller = (
-            self._master.detectorsManager._subManagers[self.detectorFast]
+            self._master.detectorsManager.getDevice(self.detectorFast)
         )
         time.sleep(1)
         self.latest_image = self.detectorFast_controller.getLatestFrame()
@@ -718,7 +718,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
         self.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
         self.detectorFast_controller = (
-            self._master.detectorsManager._subManagers[self.detectorFast]
+            self._master.detectorsManager.getDevice(self.detectorFast)
         )
         time.sleep(1)
         img = self.detectorFast_controller.getLatestFrame()

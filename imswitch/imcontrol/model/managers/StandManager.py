@@ -28,6 +28,25 @@ class StandManager(ABC):
     def motCorrPos(self, position):
         self._subManager.motCorrPos(position)
 
+    # Public capability passthroughs — controllers should call these instead of
+    # reaching into ``standManager._subManager`` (driver-specific, may be a mock).
+    # Each is a no-op when no sub-manager is loaded.
+
+    def setFLUO(self) -> None:
+        """ Switch the stand to fluorescence (widefield) mode. """
+        if self._subManager is not None:
+            self._subManager.setFLUO()
+
+    def setCS(self) -> None:
+        """ Switch the stand to confocal-scanning mode. """
+        if self._subManager is not None:
+            self._subManager.setCS()
+
+    def setILshutter(self, value) -> None:
+        """ Set the incident/illumination-light shutter state. """
+        if self._subManager is not None:
+            self._subManager.setILshutter(value)
+
 
 # Copyright (C) 2020-2023 ImSwitch developers
 # This file is part of ImSwitch.

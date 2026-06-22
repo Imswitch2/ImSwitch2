@@ -87,12 +87,12 @@ class EtMonalisaController(EventTriggeredControllerBase):
     # ── Stand-mode helpers ──────────────────────────────────────────────── #
 
     def _switchStandToFastMode(self) -> None:
-        self._master.standManager._subManager.setFLUO()
+        self._master.standManager.setFLUO()
         self._sleepPumpingEvents(1.0)
-        self._master.standManager._subManager.setILshutter(1)
+        self._master.standManager.setILshutter(1)
 
     def _switchStandToSlowMode(self) -> None:
-        self._master.standManager._subManager.setCS()
+        self._master.standManager.setCS()
         self._sleepPumpingEvents(1.0)
 
     @staticmethod
