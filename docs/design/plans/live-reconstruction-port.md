@@ -405,11 +405,13 @@ batch-fallback / factory / RAM-handoff / imcontrol-gating (120 tests green).
 
 Findings and dispositions:
 
-- 🔴 **#1 UI not runnable end-to-end** — the watcher UI gives a *folder*, but
-  `LiveModeController` passed it straight to a `LiveSource` expecting a single
-  `.zarr`/`.h5` *store*; no discovery layer. **Fix in progress**: port
-  DirectoryWatcher/FileWatcher (folder→store discovery + sequential queue) into
-  `LiveModeController` (branch `codex/openhands-live-discovery`).
+- ✅ **#1 UI not runnable end-to-end** — FIXED. `LiveModeController` now watches
+  the selected *folder* (via the shared `FileWatcher`, keyed by the comm-channel
+  extension), discovers each new `.zarr`/`.h5` store, and runs a
+  `LiveReconstructionController` per store **sequentially** (queue + advance on a
+  new `sigFinished`). `start()` returns whether it actually started so an
+  empty/not-yet-ready store advances the queue instead of stalling it. Skips
+  unsupported stores. Tests in `test_live_discovery.py`.
 - 🟠 **#2 multi-timepoint/lapse** — `recording:expected_frames` = one stack and
   no directory loop, so only timepoint 0 fills for a multi-stack lapse.
   Single-stack works. Deferred (needs lapse on-disk layout confirmation).
