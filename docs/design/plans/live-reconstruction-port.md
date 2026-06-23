@@ -412,13 +412,25 @@ Findings and dispositions:
   new `sigFinished`). `start()` returns whether it actually started so an
   empty/not-yet-ready store advances the queue instead of stalling it. Skips
   unsupported stores. Tests in `test_live_discovery.py`.
-- 🟠 **#2 multi-timepoint/lapse** — `recording:expected_frames` = one stack and
-  no directory loop, so only timepoint 0 fills for a multi-stack lapse.
-  Single-stack works. Deferred (needs lapse on-disk layout confirmation).
-- 🟠 **#3 live-growing init** — `_collect_initial_chunks` breaks early if a store
-  has < `frames_per_stack` frames at discovery time (no non-blocking wait;
-  blocking would freeze the UI thread). Best-effort today; proper
-  incremental/deferred `begin()` is a follow-up. Interacts with #1.
+- ✅ **#2 multi-timepoint/lapse** — FIXED. (a) Self-describing metadata:
+  `recording:num_timepoints`/`lapse_index`/`single_lapse_file` written by the
+  recorder (#2a). (b) **Per-file** lapses (`name_scanN.zarr`) already stream via
+  the discovery layer. (c) **Single-file** lapses (`scan{N}` groups in one store)
+  stream via a new `ZarrLapseSource` that presents the groups as one continuous
+  global frame stream, which the existing session accumulates into one
+  multi-timepoint result (#2b); `make_live_source` auto-routes to it.
+  `MonalisaLiveSession` reads `recording:num_timepoints`, and a latent
+  `push()` bug (per-stack `frame_inds` indexed with global indices) was fixed +
+  regression-tested. Layout confirmed: each timepoint is its own
+  store/`scan{N}` group (never one array spanning timepoints).
+- 🟠 **#3 live-growing init / discovered-too-early stores** — a Zarr store's
+  `data` array is created lazily on first `writeFrames`, and discovery fires the
+  moment the `.zarr` dir appears, so `source.open()` / `_collect_initial_chunks`
+  can run before any frames exist. With the stall-fix, `start()` then returns
+  False and the discovery queue **skips the store entirely** (FileWatcher won't
+  re-emit it). Proper fix: move open+first-stack collection+`begin()` onto the
+  stream-worker thread with bounded retry (no main-thread block, no skip).
+  NEXT.
 - 🟡 **#4/#5/#6 fixed** — controller lifecycle: path methods report success so
   `start()` only marks running on success and resets workers on failed startup;
   session closed via controller-owned reference (no private `_session` reach);
