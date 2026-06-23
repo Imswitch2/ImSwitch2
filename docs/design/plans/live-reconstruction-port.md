@@ -423,14 +423,15 @@ Findings and dispositions:
   `push()` bug (per-stack `frame_inds` indexed with global indices) was fixed +
   regression-tested. Layout confirmed: each timepoint is its own
   store/`scan{N}` group (never one array spanning timepoints).
-- 🟠 **#3 live-growing init / discovered-too-early stores** — a Zarr store's
-  `data` array is created lazily on first `writeFrames`, and discovery fires the
-  moment the `.zarr` dir appears, so `source.open()` / `_collect_initial_chunks`
-  can run before any frames exist. With the stall-fix, `start()` then returns
-  False and the discovery queue **skips the store entirely** (FileWatcher won't
-  re-emit it). Proper fix: move open+first-stack collection+`begin()` onto the
-  stream-worker thread with bounded retry (no main-thread block, no skip).
-  NEXT.
+- ✅ **#3 live-growing init / discovered-too-early stores** — FIXED. Open +
+  first-stack collection moved onto the stream-worker thread:
+  `LiveStreamWorker(do_open=True)` opens with bounded retry (a store discovered
+  before its `data` array exists is *waited on*, not skipped), collects the
+  first `frames_per_stack` frames, then a resume gate lets the controller
+  `begin()` before the remainder streams. `start()` returns True for the
+  streaming path and always drives a `sigFinished` (even on failure) so the
+  discovery queue advances rather than stalling. No main-thread block. Covered
+  by `test_stream_worker_startup_*`.
 - 🟡 **#4/#5/#6 fixed** — controller lifecycle: path methods report success so
   `start()` only marks running on success and resets workers on failed startup;
   session closed via controller-owned reference (no private `_session` reach);
