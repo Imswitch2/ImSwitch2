@@ -1,5 +1,7 @@
 """Format-agnostic live source contracts and in-memory batch fallback."""
 
+import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,21 @@ def _numeric_vector(value: Any, min_len: int) -> np.ndarray | None:
     return vector
 
 
+def _meta_lookup(attrs: dict[str, Any], key: str) -> Any:
+    """Read a metadata key from flat attrs or a nested ``ImswitchData`` block.
+
+    ImSwitch2's structured storer flattens scan metadata to top-level keys
+    (``ScanStage:axis_length`` …); legacy ImSwitch-1 Zarr nests the same keys
+    under an ``ImswitchData`` attr. Prefer the flat key, then the nested one.
+    """
+    if key in attrs:
+        return attrs[key]
+    nested = attrs.get("ImswitchData")
+    if isinstance(nested, dict) and key in nested:
+        return nested[key]
+    return None
+
+
 def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     """Return frames per MoNaLISA scan stack from recorder metadata.
 
@@ -67,18 +84,20 @@ def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     ``ScanTTL:Ny`` counts. Otherwise derive the X/Y scan counts from
     ImControl's scan-size convention, where ``axis_length`` is a physical
     length and the number of positions is ``ceil(length / step_size)``.
+    Metadata is read from flat attrs or a nested ``ImswitchData`` block so both
+    the ImSwitch2 structured layout and legacy ImSwitch-1 Zarr work.
     """
-    explicit = _coerce_positive_int(attrs.get("recording:frames_per_stack"))
+    explicit = _coerce_positive_int(_meta_lookup(attrs, "recording:frames_per_stack"))
     if explicit is not None:
         return explicit
 
-    nx_ttl = _coerce_positive_int(attrs.get("ScanTTL:Nx"))
-    ny_ttl = _coerce_positive_int(attrs.get("ScanTTL:Ny"))
+    nx_ttl = _coerce_positive_int(_meta_lookup(attrs, "ScanTTL:Nx"))
+    ny_ttl = _coerce_positive_int(_meta_lookup(attrs, "ScanTTL:Ny"))
     if nx_ttl is not None and ny_ttl is not None:
         return nx_ttl * ny_ttl
 
-    lengths = _numeric_vector(attrs.get("ScanStage:axis_length"), 2)
-    step_sizes = _numeric_vector(attrs.get("ScanStage:axis_step_size"), 2)
+    lengths = _numeric_vector(_meta_lookup(attrs, "ScanStage:axis_length"), 2)
+    step_sizes = _numeric_vector(_meta_lookup(attrs, "ScanStage:axis_step_size"), 2)
     if lengths is None or step_sizes is None:
         return None
     if step_sizes[0] == 0 or step_sizes[1] == 0:
@@ -211,7 +230,26 @@ class ZarrLiveSource(LiveSource):
 
         frame_shape = self._array.shape[-2:]
         self._refresh_state_from_attrs(attrs)
-        frames_per_stack = _derive_scan_frames_per_stack(attrs)
+
+        # Legacy / metadata-less stores carry no recording:expected_frames. A
+        # completed store (not writing) is one whole stack, so its length is the
+        # expected frame count — without this, downstream startup would treat
+        # frames_per_stack as unknown and grab only the first chunk.
+        if self._expected_frames is None and not self._writing:
+            self._expected_frames = int(self._array.shape[0])
+
+        # frames_per_stack: an explicit recording attr wins; for a completed
+        # single-stack store the exact array length is more reliable than the
+        # scan-size guess (which is sensitive to the size-vs-endpoint length
+        # convention); only fall back to the ScanStage-derived count for a
+        # still-writing store with no explicit metadata.
+        explicit_fps = _coerce_positive_int(_meta_lookup(attrs, "recording:frames_per_stack"))
+        if explicit_fps is not None:
+            frames_per_stack = explicit_fps
+        elif not self._writing and self._expected_frames is not None:
+            frames_per_stack = self._expected_frames
+        else:
+            frames_per_stack = _derive_scan_frames_per_stack(attrs)
 
         return StackInfo(
             frame_shape=frame_shape,
@@ -399,6 +437,129 @@ class ZarrLiveSource(LiveSource):
         if isinstance(value, str):
             return value.strip().lower() not in {'0', 'false', 'no', 'off'}
         return bool(value)
+
+
+def _lapse_index_template(path: str):
+    """Derive how to build sibling per-file-lapse paths from one file name.
+
+    Matches the scan index in names like ``..._scan__00__CAM.zarr`` (legacy)
+    or ``..._scan0.zarr`` (ImSwitch2). Returns ``(folder, prefix, width,
+    suffix, index)`` so ``prefix + str(i).zfill(width) + suffix`` reconstructs
+    timepoint ``i``'s file, or ``None`` if the name carries no scan index.
+    """
+    folder = os.path.dirname(path)
+    name = os.path.basename(path)
+    match = re.search(r"(?i)scan[_]*(\d+)", name)
+    if match is None:
+        return None
+    start, end = match.span(1)
+    width = end - start
+    return folder, name[:start], width, name[end:], int(match.group(1))
+
+
+class ZarrMultiFileLapseSource(LiveSource):
+    """Stream a per-file timelapse (one ``.zarr`` per timepoint) as one stream.
+
+    Each ``<base>_scan<NN>_<...>.zarr`` store holds a single stack (one
+    timepoint). Files are streamed in index order and frames are emitted with
+    GLOBAL indices (``position * frames_per_stack + local``) so a streaming
+    session's ``time_index = start // frames_per_stack`` routes each file into
+    its own timepoint, accumulating one multi-timepoint result. Later timepoint
+    files (live recording) are picked up by re-deriving the next index path.
+    """
+
+    def __init__(self, first_path, detector_name=None, chunk_size=None,
+                 num_timepoints=None):
+        self._first_path = str(first_path)
+        self._detector_name = detector_name
+        self._chunk_size = chunk_size
+        self._num_timepoints = num_timepoints
+        self._inner: ZarrLiveSource | None = None
+        self._template = None
+        self._first_index = 0
+        self._position = 0  # 0-based timepoint position
+        self._frames_per_stack = 1
+
+    def open(self, path_or_handle: Any) -> StackInfo:
+        first = str(path_or_handle) if path_or_handle is not None else self._first_path
+        self._first_path = first
+        self._template = _lapse_index_template(first)
+        self._first_index = self._template[4] if self._template else 0
+        self._position = 0
+
+        self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)
+        info = self._inner.open(first)
+        self._frames_per_stack = int(info.frames_per_stack or info.expected_frames or 1)
+
+        num_tp = (
+            self._num_timepoints
+            or _coerce_positive_int(_meta_lookup(info.attrs, "recording:num_timepoints"))
+            or _coerce_positive_int(_meta_lookup(info.attrs, "Rec:LapseTime"))
+            or self._count_present_timepoints()
+        )
+        self._num_timepoints = max(1, int(num_tp or 1))
+        expected_total = self._frames_per_stack * self._num_timepoints
+
+        return StackInfo(
+            frame_shape=info.frame_shape,
+            dtype=info.dtype,
+            attrs=dict(info.attrs),
+            expected_frames=expected_total,
+            frames_per_stack=self._frames_per_stack,
+            detector_name=info.detector_name,
+            dataset_path=info.dataset_path,
+            source_format=info.source_format or "ZARR",
+        )
+
+    def poll(self) -> list[Chunk]:
+        if self._inner is None:
+            return []
+
+        offset = self._position * self._frames_per_stack
+        chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
+
+        # Current timepoint fully read: advance to the next file if it exists.
+        if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
+            next_path = self._build_path(self._position + 1)
+            if next_path is not None and os.path.exists(next_path):
+                self._inner.close()
+                self._position += 1
+                self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)
+                self._inner.open(next_path)
+        return chunks
+
+    def is_complete(self) -> bool:
+        if self._inner is None:
+            return True
+        if not self._inner.is_complete():
+            return False
+        # On the last expected timepoint with its file fully read -> done.
+        if self._position + 1 >= self._num_timepoints:
+            return True
+        # Otherwise wait for the next timepoint file (live). If it isn't going
+        # to appear, the user stops live mode; we don't guess completion here.
+        return False
+
+    def close(self) -> None:
+        if self._inner is not None:
+            self._inner.close()
+        self._inner = None
+
+    def _build_path(self, position: int) -> str | None:
+        if self._template is None:
+            return None
+        folder, prefix, width, suffix, _ = self._template
+        index = self._first_index + position
+        return os.path.join(folder, f"{prefix}{index:0{width}d}{suffix}")
+
+    def _count_present_timepoints(self) -> int:
+        count = 1
+        while True:
+            path = self._build_path(count)
+            if path is None or not os.path.exists(path):
+                break
+            count += 1
+        return count
 
 
 class ZarrLapseSource(LiveSource):

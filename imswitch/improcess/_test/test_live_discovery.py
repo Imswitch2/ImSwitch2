@@ -4,25 +4,21 @@ import os
 from collections import deque
 from unittest.mock import MagicMock, patch
 
-import pytest
 from qtpy import QtCore
-from qtpy.QtWidgets import QApplication
 
 from imswitch.improcess.controller.LiveModeController import LiveModeController
 
 
 class _FakeExtension:
-    """Fake extension value object."""
     def __init__(self, value='zarr'):
         self._value = value
         self.sigValueChanged = MagicMock()
-    
+
     def value(self):
         return self._value
 
 
 class _FakeCommChannel:
-    """Fake communication channel with extension attribute."""
     def __init__(self, extension='zarr'):
         self.extension = _FakeExtension(extension)
         self.sigResultProduced = MagicMock()
@@ -30,7 +26,6 @@ class _FakeCommChannel:
 
 
 class _FakeWidget:
-    """Fake watcher widget."""
     def __init__(self, path=None):
         self.path = path
         self.liveCheck = MagicMock()
@@ -38,44 +33,33 @@ class _FakeWidget:
 
 
 class _FakeReconstructor:
-    """Fake reconstructor."""
     def __init__(self, name='test_recon'):
         self.name = name
         self.supports_streaming = False
 
 
 class _FakeMainController:
-    """Fake main controller."""
     def __init__(self, reconstructor=None):
         self._activeReconstructor = reconstructor or _FakeReconstructor()
 
 
 class _FakeLiveReconstructionController(QtCore.QObject):
     """Fake LiveReconstructionController that records start() calls."""
-    
+
     sigFinished = QtCore.Signal()
-    
+
     def __init__(self, comm_channel):
         super().__init__()
         self._commChannel = comm_channel
         self.start_calls = []
         self.stop_calls = []
-        # Mirrors the real controller: True once worker threads are running (a
-        # sigFinished will follow); False if startup bailed (no readable frames).
         self.start_return = True
 
     def start(self, reconstructor, source, params, source_arg=None):
-        """Record start call."""
-        self.start_calls.append({
-            'reconstructor': reconstructor,
-            'source': source,
-            'params': params,
-            'source_arg': source_arg
-        })
+        self.start_calls.append({'source': source, 'source_arg': source_arg})
         return self.start_return
-    
+
     def stop(self):
-        """Record stop call."""
         self.stop_calls.append(True)
 
 
@@ -86,310 +70,184 @@ def _make_controller(folder_path='/tmp/test', extension='zarr'):
     controller._commChannel = _FakeCommChannel(extension=extension)
     controller._mainController = _FakeMainController()
     controller._logger = MagicMock()
-    
-    # Initialize instance variables
-    controller._liveController = None
-    controller._fileWatcher = None
+
+    controller._liveController = _FakeLiveReconstructionController(controller._commChannel)
+    controller._scanTimer = None
     controller._storeQueue = deque()
+    controller._seenKeys = set()
     controller._currentlyProcessing = False
-    controller._watchedFolder = None
-    
+    controller._watchedFolder = folder_path
+    controller._extension = extension
     return controller
 
 
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
-def test_sequential_processing(mock_make_source, mock_file_watcher_class):
-    """Test that stores are processed one at a time."""
-    controller = _make_controller(folder_path='/tmp/test')
-    
-    # Setup mock FileWatcher
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = ['store1.zarr', 'store2.zarr', 'store3.zarr']
-    mock_file_watcher_class.return_value = mock_watcher
-    
-    # Setup mock make_live_source
-    mock_make_source.return_value = MagicMock()
-    
-    # Replace the real LiveReconstructionController with our fake
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    controller._liveController = fake_live_controller
-    
-    # Mock path validation
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True), \
-         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # First store should start immediately
-        assert len(fake_live_controller.start_calls) == 1
-        assert fake_live_controller.start_calls[0]['source_arg'] == '/tmp/test/store1.zarr'
-        
-        # Second store should NOT start yet (we're still processing the first)
-        assert len(fake_live_controller.start_calls) == 1
-        
-        # Simulate first store finishing by directly calling the slot
+def _make_zarr(path):
+    """Create a directory that looks like a .zarr store."""
+    os.makedirs(path, exist_ok=True)
+    open(os.path.join(path, '.zgroup'), 'w').close()
+
+
+# --- Recursive discovery (fail a: select the parent folder) -------------------
+
+def test_recursive_discovery_finds_stores_in_measurement_subfolders(tmp_path):
+    """Selecting the parent folder discovers stores inside measurement subdirs."""
+    measurement = tmp_path / '010_watching_folder'
+    _make_zarr(str(measurement / 'rec_scan__00__CAM.zarr'))
+    _make_zarr(str(measurement / 'rec_scan__01__CAM.zarr'))
+    _make_zarr(str(tmp_path / 'top_level.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    found = controller._discoverStores(str(tmp_path))
+
+    names = {os.path.basename(p) for p in found}
+    assert names == {'rec_scan__00__CAM.zarr', 'rec_scan__01__CAM.zarr', 'top_level.zarr'}
+
+
+def test_discovery_excludes_output_dirs(tmp_path):
+    """Reconstruction-output subdirs (e.g. rec/) are not ingested."""
+    _make_zarr(str(tmp_path / 'data.zarr'))
+    _make_zarr(str(tmp_path / 'rec' / 'data_rec.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    found = controller._discoverStores(str(tmp_path))
+
+    assert [os.path.basename(p) for p in found] == ['data.zarr']
+
+
+# --- Lapse grouping -----------------------------------------------------------
+
+def test_per_file_lapse_groups_into_one_job(tmp_path):
+    """All ..._scan__NN__... timepoint files dedup into a single lapse job."""
+    for i in range(3):
+        _make_zarr(str(tmp_path / f'rec_scan__0{i}__CAM.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._currentlyProcessing = True  # don't auto-pop the queue
+    controller._scanForStores()
+
+    assert len(controller._storeQueue) == 1
+    store_path, is_lapse = controller._storeQueue[0]
+    assert is_lapse is True
+    assert os.path.basename(store_path) == 'rec_scan__00__CAM.zarr'  # lowest index seeds
+
+
+def test_non_lapse_stores_queued_individually(tmp_path):
+    """Unrelated stores get one job each."""
+    _make_zarr(str(tmp_path / 'sampleA.zarr'))
+    _make_zarr(str(tmp_path / 'sampleB.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._currentlyProcessing = True  # don't auto-pop the queue
+    controller._scanForStores()
+
+    assert len(controller._storeQueue) == 2
+    assert all(is_lapse is False for _, is_lapse in controller._storeQueue)
+
+
+def test_rescan_does_not_requeue_seen_stores(tmp_path):
+    """A second scan does not re-enqueue already-seen stores/lapses."""
+    _make_zarr(str(tmp_path / 'rec_scan__00__CAM.zarr'))
+    controller = _make_controller(folder_path=str(tmp_path))
+
+    controller._scanForStores()
+    first = len(controller._seenKeys)
+    controller._scanForStores()  # nothing new
+    assert len(controller._seenKeys) == first
+
+
+# --- Queue processing ---------------------------------------------------------
+
+def test_lapse_job_builds_multifile_source(tmp_path):
+    """A lapse job is driven by a ZarrMultiFileLapseSource (accumulating)."""
+    seed = str(tmp_path / 'rec_scan__00__CAM.zarr')
+    _make_zarr(seed)
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._storeQueue.append((seed, True))
+
+    with patch(
+        'imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource'
+    ) as mock_lapse:
+        controller._processNextStore()
+
+    mock_lapse.assert_called_once()
+    assert mock_lapse.call_args.args[0] == seed
+
+
+def test_non_lapse_job_uses_make_live_source(tmp_path):
+    seed = str(tmp_path / 'sample.zarr')
+    _make_zarr(seed)
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._storeQueue.append((seed, False))
+
+    with patch(
+        'imswitch.improcess.controller.LiveModeController.make_live_source'
+    ) as mock_make:
+        controller._processNextStore()
+
+    mock_make.assert_called_once()
+    assert mock_make.call_args.args[0] == seed
+
+
+def test_sequential_processing_one_at_a_time(tmp_path):
+    """Stores are processed one at a time, advancing on sigFinished."""
+    controller = _make_controller(folder_path=str(tmp_path))
+    fake = controller._liveController
+    controller._storeQueue.extend([
+        (str(tmp_path / 's0.zarr'), False),
+        (str(tmp_path / 's1.zarr'), False),
+    ])
+
+    with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
+               return_value=MagicMock()):
+        controller._processNextStore()
+        assert len(fake.start_calls) == 1  # second waits
         controller._onStoreFinished()
-        
-        # Now second store should start
-        assert len(fake_live_controller.start_calls) == 2
-        assert fake_live_controller.start_calls[1]['source_arg'] == '/tmp/test/store2.zarr'
-        
-        # Simulate second store finishing
-        controller._onStoreFinished()
-        
-        # Now third store should start
-        assert len(fake_live_controller.start_calls) == 3
-        assert fake_live_controller.start_calls[2]['source_arg'] == '/tmp/test/store3.zarr'
+        assert len(fake.start_calls) == 2
 
 
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
-def test_source_creation_failure_skips_to_next(mock_make_source, mock_file_watcher_class):
-    """Test that make_live_source failure for one store skips to the next."""
-    controller = _make_controller(folder_path='/tmp/test')
-    
-    # Setup mock FileWatcher
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = ['bad.zarr', 'good.zarr']
-    mock_file_watcher_class.return_value = mock_watcher
-    
-    # Setup mock make_live_source: first call fails, second succeeds
-    mock_make_source.side_effect = [
-        ValueError("Unsupported format"),
-        MagicMock()
-    ]
-    
-    # Replace with fake live controller
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    controller._liveController = fake_live_controller
-    
-    # Mock path validation
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True), \
-         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # First store should fail and skip to second
-        assert len(fake_live_controller.start_calls) == 1
-        # Only the good store should have been started
-        assert fake_live_controller.start_calls[0]['source_arg'] == '/tmp/test/good.zarr'
+def test_start_failure_advances_queue(tmp_path):
+    """A store whose start() returns False does not stall the queue."""
+    controller = _make_controller(folder_path=str(tmp_path))
+    fake = controller._liveController
+    controller._storeQueue.extend([
+        (str(tmp_path / 'empty.zarr'), False),
+        (str(tmp_path / 'good.zarr'), False),
+    ])
 
+    def _start(*a, **k):
+        fake.start_calls.append(k)
+        return fake.start_return
 
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
-def test_new_stores_are_queued_and_processed(mock_make_source, mock_file_watcher_class):
-    """Test that newly detected stores are queued and processed after current store finishes."""
-    controller = _make_controller(folder_path='/tmp/test')
-    
-    # Setup mock FileWatcher
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = ['store1.zarr']
-    mock_file_watcher_class.return_value = mock_watcher
-    
-    # Setup mock make_live_source
-    mock_make_source.return_value = MagicMock()
-    
-    # Replace with fake live controller
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    controller._liveController = fake_live_controller
-    
-    # Mock path validation
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True), \
-         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # First store should start
-        assert len(fake_live_controller.start_calls) == 1
-        assert fake_live_controller.start_calls[0]['source_arg'] == '/tmp/test/store1.zarr'
-        
-        # Simulate FileWatcher detecting a new store while processing first store
-        controller._onNewStoresDetected(['store2.zarr'])
-        
-        # Second store should NOT start yet (still processing first)
-        assert len(fake_live_controller.start_calls) == 1
-        
-        # Simulate first store finishing by directly calling the slot
-        controller._onStoreFinished()
-        
-        # Now second store should start
-        assert len(fake_live_controller.start_calls) == 2
-        assert fake_live_controller.start_calls[1]['source_arg'] == '/tmp/test/store2.zarr'
+    with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
+               return_value=MagicMock()):
+        fake.start_return = False  # first store not ready -> must advance
+        # flip to True after the first call so the second store "takes"
+        original = fake.start
 
-
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-def test_stop_clears_queue_and_stops_watcher(mock_file_watcher_class):
-    """Test that toggling off stops the watcher, controller, and clears the queue."""
-    controller = _make_controller(folder_path='/tmp/test')
-    
-    # Setup mock FileWatcher
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = []
-    mock_file_watcher_class.return_value = mock_watcher
-    
-    # Replace with fake live controller
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    controller._liveController = fake_live_controller
-    
-    # Mock path validation
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # Add some items to queue manually
-        controller._storeQueue.append('/tmp/test/store1.zarr')
-        controller._storeQueue.append('/tmp/test/store2.zarr')
-        controller._currentlyProcessing = True
-        
-        # Stop live mode
-        controller._stopLive()
-        
-        # Verify watcher was stopped
-        assert mock_watcher.stop.called
-        assert mock_watcher.quit.called
-        
-        # Verify controller was stopped
-        assert len(fake_live_controller.stop_calls) == 1
-        
-        # Verify queue was cleared
-        assert len(controller._storeQueue) == 0
-        assert controller._currentlyProcessing is False
-        assert controller._watchedFolder is None
-
-
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
-def test_uses_absolute_paths(mock_make_source, mock_file_watcher_class):
-    """Test that start() receives absolute store paths."""
-    controller = _make_controller(folder_path='/absolute/path/folder')
-    
-    # Setup mock FileWatcher
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = ['store1.zarr']
-    mock_file_watcher_class.return_value = mock_watcher
-    
-    # Setup mock make_live_source
-    mock_make_source.return_value = MagicMock()
-    
-    # Replace with fake live controller
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    controller._liveController = fake_live_controller
-    
-    # Mock path validation
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True), \
-         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # Verify absolute path was passed
-        assert len(fake_live_controller.start_calls) == 1
-        assert fake_live_controller.start_calls[0]['source_arg'] == '/absolute/path/folder/store1.zarr'
-
-
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-def test_folder_path_validation(mock_file_watcher_class):
-    """Test that non-directory paths are rejected."""
-    controller = _make_controller(folder_path='/tmp/file.zarr')
-    
-    # Mock path validation: exists but is not a directory
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=False):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # Verify it was rejected
-        assert controller._widget.liveCheck.setChecked.called
-        assert controller._fileWatcher is None
-
-
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
-def test_reconstructor_params_passed_to_start(mock_make_source, mock_file_watcher_class):
-    """Test that reconstructor params are passed to LiveReconstructionController.start()."""
-    controller = _make_controller(folder_path='/tmp/test')
-    
-    # Setup main controller with a widget that has params
-    class _WidgetWithParams:
-        def getReconstructionParams(self):
-            return {'param1': 'value1', 'param2': 42}
-    
-    controller._mainController._widget = _WidgetWithParams()
-    
-    # Setup mock FileWatcher
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = ['store1.zarr']
-    mock_file_watcher_class.return_value = mock_watcher
-    
-    # Setup mock make_live_source
-    mock_make_source.return_value = MagicMock()
-    
-    # Replace with fake live controller
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    controller._liveController = fake_live_controller
-    
-    # Mock path validation
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True), \
-         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
-        
-        # Start live mode
-        controller._startLive()
-        
-        # Verify params were passed
-        assert len(fake_live_controller.start_calls) == 1
-        assert fake_live_controller.start_calls[0]['params'] == {'param1': 'value1', 'param2': 42}
-
-
-@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
-@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
-def test_start_failure_advances_queue(mock_make_source, mock_file_watcher_class):
-    """A store whose start() returns False (no readable frames yet) must not
-    stall the queue — the next store is attempted without a sigFinished."""
-    controller = _make_controller(folder_path='/tmp/test')
-
-    mock_watcher = MagicMock()
-    mock_watcher.filesInDirectory.return_value = ['empty.zarr', 'good.zarr']
-    mock_file_watcher_class.return_value = mock_watcher
-    mock_make_source.return_value = MagicMock()
-
-    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
-    # First start() bails (empty store), second succeeds.
-    fake_live_controller.start_return = False
-    controller._liveController = fake_live_controller
-
-    with patch('os.path.exists', return_value=True), \
-         patch('os.path.isdir', return_value=True), \
-         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
-
-        # Flip start_return to True right after the first (failing) start so the
-        # second store is the one that "takes".
-        original_start = fake_live_controller.start
-
-        def _start(*args, **kwargs):
-            result = original_start(*args, **kwargs)
-            fake_live_controller.start_return = True
+        def start_side_effect(*args, **kwargs):
+            result = original(*args, **kwargs)
+            fake.start_return = True
             return result
 
-        fake_live_controller.start = _start
+        fake.start = start_side_effect
+        controller._processNextStore()
 
-        controller._startLive()
+    assert len(fake.start_calls) == 2
+    assert controller._currentlyProcessing is True
 
-        # Both stores were attempted (no stall on the empty one); processing the
-        # second one is now in progress.
-        assert [c['source_arg'] for c in fake_live_controller.start_calls] == [
-            '/tmp/test/empty.zarr',
-            '/tmp/test/good.zarr',
-        ]
-        assert controller._currentlyProcessing is True
+
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

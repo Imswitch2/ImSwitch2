@@ -3,11 +3,20 @@
 import os
 from collections import deque
 
+from qtpy import QtCore
+
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.imcommon.view.guitools.FileWatcher import FileWatcher
-from imswitch.improcess.live import make_live_source
+from imswitch.improcess.live import ZarrMultiFileLapseSource, make_live_source
+from imswitch.improcess.live.sources import _lapse_index_template
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
+
+# How deep below the selected folder to look for recording stores. Measurement
+# folders are created one level under the watched root; depth 2 covers
+# "select the parent folder" without scanning the whole tree.
+_DISCOVERY_MAX_DEPTH = 2
+# Output subdirectories (reconstructions/logs) that must never be ingested.
+_DISCOVERY_EXCLUDE_DIRS = {"rec", "deskew", "Mini_Recon_Results", "__pycache__"}
 
 
 class LiveModeController(ImProcessWidgetController):
@@ -24,10 +33,12 @@ class LiveModeController(ImProcessWidgetController):
         self._logger = initLogger(self, tryInheritParent=False)
         
         self._liveController = None
-        self._fileWatcher = None
+        self._scanTimer = None
         self._storeQueue = deque()
+        self._seenKeys = set()
         self._currentlyProcessing = False
         self._watchedFolder = None
+        self._extension = "zarr"
         self._widget.sigLiveChanged.connect(self._onLiveToggled)
 
     def _onLiveToggled(self, enabled: bool) -> None:
@@ -58,73 +69,106 @@ class LiveModeController(ImProcessWidgetController):
 
         # Get the extension from the comm channel
         extension = self._commChannel.extension.value() if hasattr(self._commChannel, 'extension') else 'zarr'
-        if not extension:
-            extension = 'zarr'
+        self._extension = extension or 'zarr'
 
         self._watchedFolder = folder_path
         self._storeQueue.clear()
+        self._seenKeys.clear()
         self._currentlyProcessing = False
 
-        # Start file watcher
-        self._fileWatcher = FileWatcher(folder_path, extension, pollTime=1)
-        
-        # Seed the queue with existing stores
-        existing_stores = self._fileWatcher.filesInDirectory()
-        for store_name in existing_stores:
-            store_path = os.path.join(folder_path, store_name)
-            self._storeQueue.append(store_path)
-        
-        # Connect signal for newly appearing stores
-        self._fileWatcher.sigNewFiles.connect(self._onNewStoresDetected)
-        
-        # Start the watcher thread
-        self._fileWatcher.start()
-        
         # Create the live controller if needed and ensure signal is connected
         if self._liveController is None:
             self._liveController = LiveReconstructionController(self._commChannel)
-        
-        # Ensure the signal is connected (handles both new and existing controllers)
         try:
             self._liveController.sigFinished.disconnect(self._onStoreFinished)
         except TypeError:
             pass  # Signal wasn't connected yet
         self._liveController.sigFinished.connect(self._onStoreFinished)
-        
-        self._logger.info(f"Live mode started: watching {folder_path} for .{extension} stores")
-        self._logger.info(f"Found {len(self._storeQueue)} existing store(s) to process")
-        
-        # Start processing the first store
-        self._processNextStore()
+
+        # Poll the folder tree (the selected folder and its measurement
+        # sub-folders) for new recording stores. Recursive so the user can
+        # select the parent folder and have new measurement folders picked up.
+        self._scanTimer = QtCore.QTimer(self)
+        self._scanTimer.setInterval(1000)
+        self._scanTimer.timeout.connect(self._scanForStores)
+        self._scanTimer.start()
+
+        self._logger.info(
+            f"Live mode started: watching {folder_path} (recursively) for .{self._extension} stores"
+        )
+        self._scanForStores()
 
     def _stopLive(self) -> None:
         """Stop folder watching and live reconstruction."""
-        # Stop the file watcher
-        if self._fileWatcher is not None:
-            self._fileWatcher.stop()
-            self._fileWatcher.quit()
-            self._fileWatcher = None
-        
-        # Stop the live controller
+        if self._scanTimer is not None:
+            self._scanTimer.stop()
+            self._scanTimer.deleteLater()
+            self._scanTimer = None
+
         if self._liveController is not None:
             self._liveController.stop()
-        
-        # Clear the queue
+
         self._storeQueue.clear()
+        self._seenKeys.clear()
         self._currentlyProcessing = False
         self._watchedFolder = None
-        
+
         self._logger.info("Live mode stopped")
 
-    def _onNewStoresDetected(self, store_names: list) -> None:
-        """Handle newly detected stores from FileWatcher."""
-        for store_name in store_names:
-            store_path = os.path.join(self._watchedFolder, store_name)
-            self._storeQueue.append(store_path)
-            self._logger.info(f"New store detected: {store_path}")
-        
-        # Try to process if we're not currently processing
-        self._processNextStore()
+    def _scanForStores(self) -> None:
+        """Discover new recording stores under the watched folder.
+
+        Groups per-file timelapse stores (``..._scan__NN__...``) into a single
+        job so the whole lapse accumulates into one multi-timepoint result;
+        non-lapse stores are queued individually. Each lapse / store is enqueued
+        only once (keyed by its index-independent name).
+        """
+        if not self._watchedFolder:
+            return
+
+        new_jobs = 0
+        for store_path in self._discoverStores(self._watchedFolder):
+            key, is_lapse = self._lapse_key(store_path)
+            if key in self._seenKeys:
+                continue
+            self._seenKeys.add(key)
+            self._storeQueue.append((store_path, is_lapse))
+            new_jobs += 1
+            self._logger.info(
+                f"Discovered {'timelapse' if is_lapse else 'store'}: {store_path}"
+            )
+
+        if new_jobs:
+            self._processNextStore()
+
+    def _discoverStores(self, root: str) -> list:
+        """Return sorted recording-store paths under ``root`` (depth-limited)."""
+        suffix = f".{self._extension}".lower()
+        found = []
+        root = os.path.abspath(root)
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Prune output/cache dirs and respect the depth limit.
+            dirnames[:] = [d for d in dirnames if d not in _DISCOVERY_EXCLUDE_DIRS]
+            depth = dirpath[len(root):].count(os.sep)
+            if depth >= _DISCOVERY_MAX_DEPTH:
+                dirnames[:] = []
+            # Zarr stores are directories; HDF5 are files. Check both.
+            for name in list(dirnames) + filenames:
+                if name.lower().endswith(suffix):
+                    found.append(os.path.join(dirpath, name))
+        return sorted(found)
+
+    def _lapse_key(self, store_path: str):
+        """Return ``(dedup_key, is_lapse)`` for a discovered store.
+
+        A per-file lapse member maps to an index-independent key so all its
+        timepoint files dedup to one job; other stores key on their own path.
+        """
+        template = _lapse_index_template(store_path)
+        if template is None:
+            return store_path, False
+        folder, prefix, width, suffix, _ = template
+        return (folder, prefix, suffix), True
 
     def _processNextStore(self) -> None:
         """Process the next store in the queue if not currently processing."""
@@ -135,21 +179,26 @@ class LiveModeController(ImProcessWidgetController):
             self._logger.debug("No stores in queue to process")
             return
         
-        store_path = self._storeQueue.popleft()
+        store_path, is_lapse = self._storeQueue.popleft()
         self._currentlyProcessing = True
-        
-        self._logger.info(f"Processing store: {store_path}")
-        
+
+        self._logger.info(f"Processing {'timelapse' if is_lapse else 'store'}: {store_path}")
+
         reconstructor = self._getActiveReconstructor()
         if reconstructor is None:
             self._logger.error("No active reconstructor available, skipping store")
             self._currentlyProcessing = False
             self._processNextStore()
             return
-        
-        # Try to create a source for this store
+
+        # Per-file timelapses stream all their timepoint files into one
+        # accumulated multi-timepoint result; other stores use the format-based
+        # source (single growing array, single-file scan{N} lapse, HDF5, ...).
         try:
-            source = make_live_source(store_path, detector_name=None)
+            if is_lapse:
+                source = ZarrMultiFileLapseSource(store_path, detector_name=None)
+            else:
+                source = make_live_source(store_path, detector_name=None)
         except (NotImplementedError, ValueError) as exc:
             self._logger.warning(
                 f"Skipping unsupported store {store_path}: {exc}"
