@@ -262,6 +262,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self.recordingArgs['recFrames'] = self._commChannel.getNumScanPositions()  # Update
             self.recordingArgs['numCamTTL'] = self._commChannel.getNumCamTTL()
 
+        # Set lapse metadata for this timepoint
+        self.recordingArgs['recLapseTotal'] = self.lapseTotal
+        self.recordingArgs['recLapseIndex'] = self.lapseCurrent
+
         self._master.recordingManager.startRecording(**self.recordingArgs)
         time.sleep(0.3)
 

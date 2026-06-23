@@ -68,6 +68,10 @@ def test_recording_spec_frames(qtbot, detectorInfos, numFrames):
         assert dataset.attrs['recording:expected_frames'] == numFrames
         assert dataset.attrs['recording:frames_per_stack'] == numFrames
         assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
+        # Non-lapse recordings should have default lapse metadata
+        assert dataset.attrs['recording:num_timepoints'] == 1
+        assert dataset.attrs['recording:lapse_index'] == 0
+        assert dataset.attrs['recording:single_lapse_file'] == False
         h5pyFile.close()  # Otherwise we can get segfaults
         file.close()  # Otherwise we can get segfaults
     for savedToDisk in savedToDiskPerDetector.values():
@@ -1090,6 +1094,9 @@ def test_zarr_streaming_recording_metadata(tmp_path):
         attrs={detectorName: {
             'recording:expected_frames': 4,
             'recording:frames_per_stack': 4,
+            'recording:num_timepoints': 1,
+            'recording:lapse_index': 0,
+            'recording:single_lapse_file': False,
             'custom:note': 'kept-in-metadata-group',
         }},
         singleMultiDetectorFile=False,
@@ -1111,6 +1118,10 @@ def test_zarr_streaming_recording_metadata(tmp_path):
     assert dataset.attrs['recording:expected_frames'] == 4
     assert dataset.attrs['recording:frames_per_stack'] == 4
     assert dataset.attrs['recording:dataset_path'] == f'/{detectorName}/data'
+    # Non-lapse recordings should have default lapse metadata
+    assert dataset.attrs['recording:num_timepoints'] == 1
+    assert dataset.attrs['recording:lapse_index'] == 0
+    assert dataset.attrs['recording:single_lapse_file'] == False
     assert root[detectorName]['metadata']['custom'].attrs['note'] == 'kept-in-metadata-group'
 
 
@@ -1222,6 +1233,111 @@ def test_hdf5_streaming_swmr_readable(tmp_path):
     assert total_frames2 == 6
     assert source2.is_complete()  # writing=False and all frames read
     source2.close()
+
+
+def test_worker_lapse_metadata_augmentation():
+    """Test that RecordingWorker._augment_attrs_with_recording_metadata adds lapse fields."""
+    from imswitch.imcontrol.model.managers.RecordingManager import RecordingWorker
+    
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    worker = recordingManager._RecordingManager__recordingWorker
+    
+    # Configure worker as if it were a ScanLapse recording
+    worker.saveFormat = SaveFormat.ZARR
+    worker.recLapseTotal = 3
+    worker.recLapseIndex = 1
+    worker.singleLapseFile = True
+    
+    detectorName = list(detectorInfosBasic.keys())[0]
+    input_attrs = {detectorName: {'user_key': 'user_value'}}
+    expected_frames = {detectorName: 10}
+    
+    augmented = worker._augment_attrs_with_recording_metadata(input_attrs, expected_frames)
+    
+    assert detectorName in augmented
+    attrs = augmented[detectorName]
+    
+    # Check that lapse metadata was added
+    assert attrs['recording:num_timepoints'] == 3
+    assert attrs['recording:lapse_index'] == 1
+    assert attrs['recording:single_lapse_file'] == True
+    
+    # Check that other metadata was also added
+    assert attrs['recording:detector_name'] == detectorName
+    assert attrs['recording:source_format'] == 'ZARR'
+    assert attrs['recording:expected_frames'] == 10
+    assert attrs['recording:frames_per_stack'] == 10
+    
+    # Check that user attrs were preserved
+    assert attrs['user_key'] == 'user_value'
+    
+    # Test with default values (non-lapse)
+    worker.recLapseTotal = None
+    worker.recLapseIndex = None
+    worker.singleLapseFile = False
+    
+    augmented_default = worker._augment_attrs_with_recording_metadata(input_attrs, expected_frames)
+    attrs_default = augmented_default[detectorName]
+    
+    assert attrs_default['recording:num_timepoints'] == 1
+    assert attrs_default['recording:lapse_index'] == 0
+    assert attrs_default['recording:single_lapse_file'] == False
+
+
+def test_lapse_metadata_end_to_end(qtbot):
+    """Test that lapse metadata flows through to HDF5 file via RecordingManager."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    
+    filePerDetector, savedToDiskPerDetector = {}, {}
+
+    def memoryRecordingAvailable(_, file, __, savedToDisk, detName):
+        nonlocal filePerDetector, savedToDiskPerDetector
+        filePerDetector[detName], savedToDiskPerDetector[detName] = file, savedToDisk
+        return True
+
+    # Start a recording with explicit lapse parameters
+    recordingManager.startRecording(
+        detectorNames=[detectorName],
+        recMode=RecMode.SpecFrames,
+        savename='test_lapse_metadata',
+        saveMode=SaveMode.RAM,
+        attrs={detectorName: {'test_attr': 'test_value'}},
+        recFrames=5,
+        recLapseTotal=4,
+        recLapseIndex=2,
+        singleLapseFile=True,
+    )
+    
+    with qtbot.waitSignals(
+        [recordingManager.sigMemoryRecordingAvailable],
+        check_params_cbs=[lambda *args, **kwargs: memoryRecordingAvailable(*args, detName=detectorName, **kwargs)],
+        timeout=30000
+    ):
+        pass
+
+    assert detectorName in filePerDetector
+    file = filePerDetector[detectorName]
+    h5pyFile = h5py.File(file)
+    
+    detector_group = h5pyFile.get(detectorName)
+    assert detector_group is not None
+    dataset = detector_group.get('data')
+    assert dataset is not None
+    
+    # Verify lapse metadata
+    assert dataset.attrs['recording:num_timepoints'] == 4
+    assert dataset.attrs['recording:lapse_index'] == 2
+    assert dataset.attrs['recording:single_lapse_file'] == True
+    
+    # Verify other recording metadata still works
+    assert dataset.attrs['recording:detector_name'] == detectorName
+    assert dataset.attrs['recording:expected_frames'] == 5
+    
+    h5pyFile.close()
+    file.close()
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -1067,7 +1067,8 @@ class RecordingManager(SignalInterface):
 
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
-                       recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None):
+                       recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
+                       recLapseTotal=1, recLapseIndex=0):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
@@ -1078,6 +1079,8 @@ class RecordingManager(SignalInterface):
             stallTimeout: Maximum seconds without frame progress before aborting
                          (None uses DEFAULT_STALL_TIMEOUT). Watchdog only applies
                          to streaming recording, not snap().
+            recLapseTotal: Total timepoints in the lapse (default 1 for non-lapse).
+            recLapseIndex: 0-based index of this stack within the lapse (default 0).
         """
 
         self.__logger.info('Starting recording')
@@ -1094,6 +1097,8 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.recTime = recTime
         self.__recordingWorker.singleMultiDetectorFile = singleMultiDetectorFile
         self.__recordingWorker.singleLapseFile = singleLapseFile
+        self.__recordingWorker.recLapseTotal = recLapseTotal
+        self.__recordingWorker.recLapseIndex = recLapseIndex
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
         self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
                                           condition=lambda c: c.forAcquisition)
@@ -1533,6 +1538,11 @@ class RecordingWorker(Worker):
                 # No generic multi-stack boundary exists yet. For single-stack
                 # recording modes, the expected frame count is the stack size.
                 new_attrs['recording:frames_per_stack'] = frame_count
+            
+            # Add lapse metadata
+            new_attrs['recording:num_timepoints'] = int(self.recLapseTotal or 1)
+            new_attrs['recording:lapse_index'] = int(self.recLapseIndex or 0)
+            new_attrs['recording:single_lapse_file'] = bool(self.singleLapseFile)
             
             augmented[detectorName] = new_attrs
         
