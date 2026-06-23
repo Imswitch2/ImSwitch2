@@ -393,3 +393,36 @@ Total: 110 live + recording tests green.
   scope, and chooses the latest frame for time-labelled axes).
 - ⬜ **P7** (stretch): `ChunkBrokerLiveSource` true frame streaming once M10
   ChunkBroker lands.
+
+---
+
+## 8. Big sanity check (2026-06-23)
+
+Deep review of the assembled branch across six dimensions. Confirmed sound:
+GaussProcessor numerics (byte-faithful port), attrs reconciliation (validated
+by the real-zarr e2e), cross-thread result copies, SWMR gating, contracts /
+batch-fallback / factory / RAM-handoff / imcontrol-gating (120 tests green).
+
+Findings and dispositions:
+
+- 🔴 **#1 UI not runnable end-to-end** — the watcher UI gives a *folder*, but
+  `LiveModeController` passed it straight to a `LiveSource` expecting a single
+  `.zarr`/`.h5` *store*; no discovery layer. **Fix in progress**: port
+  DirectoryWatcher/FileWatcher (folder→store discovery + sequential queue) into
+  `LiveModeController` (branch `codex/openhands-live-discovery`).
+- 🟠 **#2 multi-timepoint/lapse** — `recording:expected_frames` = one stack and
+  no directory loop, so only timepoint 0 fills for a multi-stack lapse.
+  Single-stack works. Deferred (needs lapse on-disk layout confirmation).
+- 🟠 **#3 live-growing init** — `_collect_initial_chunks` breaks early if a store
+  has < `frames_per_stack` frames at discovery time (no non-blocking wait;
+  blocking would freeze the UI thread). Best-effort today; proper
+  incremental/deferred `begin()` is a follow-up. Interacts with #1.
+- 🟡 **#4/#5/#6 fixed** — controller lifecycle: path methods report success so
+  `start()` only marks running on success and resets workers on failed startup;
+  session closed via controller-owned reference (no private `_session` reach);
+  dropped unused import.
+- 🟡 **#7** — the imcontrol bridge forwards *every* `sigResultProduced` (batch
+  too), not only live; harmless, default-OFF. Left as-is.
+- 🟡 **#8 CI** — running the whole `improcess/_test/` dir segfaults (Qt/vispy
+  native crash, unrelated to live code). Run the live suite as a **selected set**
+  of files, not the full directory.
