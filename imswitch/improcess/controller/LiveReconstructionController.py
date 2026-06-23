@@ -17,6 +17,8 @@ class LiveReconstructionController(QtCore.QObject):
     For regular Reconstructor: buffers chunks and runs batch fallback.
     """
 
+    sigFinished = QtCore.Signal()
+
     def __init__(self, comm_channel):
         super().__init__()
         self._commChannel = comm_channel
@@ -252,6 +254,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._commChannel.sigResultProduced.emit(result, "Live Reconstruction")
         if self._is_streaming and self._session is not None and hasattr(self._session, 'close'):
             self._session.close()
+        self.sigFinished.emit()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
