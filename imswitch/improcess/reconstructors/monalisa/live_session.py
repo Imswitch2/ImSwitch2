@@ -192,17 +192,25 @@ class MonalisaLiveSession(StreamingSession):
         if self.processor is None:
             raise RuntimeError("Session not initialized; call begin() first")
 
-        chunk_gpu = cp.array(chunk) if self.use_gpu and CUPY_AVAILABLE else chunk
-        proc_pixels = self.processor.process_chunk(chunk_gpu)
-
-        pixel_indices = self.processor.frame_inds[start:end]
-
+        # start/end are GLOBAL frame indices across timepoints (the lapse source
+        # streams scan0, scan1, ... as one continuous range). frame_inds is
+        # per-stack (length num_frames_in_stack), so derive the timepoint from
+        # the global start and index frame_inds with the LOCAL position within
+        # the stack. A chunk never spans a stack boundary (sources read within
+        # one stack/group), so a single time_index applies to the whole chunk.
         time_index = start // self.num_frames_in_stack
         if time_index >= self.reconstructed.shape[2]:
             self._logger.warning(
                 f"Time index {time_index} exceeds allocated timepoints; skipping chunk"
             )
             return
+
+        local_start = start % self.num_frames_in_stack
+        local_end = local_start + (end - start)
+
+        chunk_gpu = cp.array(chunk) if self.use_gpu and CUPY_AVAILABLE else chunk
+        proc_pixels = self.processor.process_chunk(chunk_gpu)
+        pixel_indices = self.processor.frame_inds[local_start:local_end]
 
         flat_recon = self.reconstructed[0, 0, time_index, 0].reshape(-1)
         flat_recon[pixel_indices.ravel()] = proc_pixels.ravel()

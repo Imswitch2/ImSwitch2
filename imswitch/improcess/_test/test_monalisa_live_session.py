@@ -199,6 +199,32 @@ def test_live_session_push_and_result(synthetic_stack):
     assert not np.all(result.data == 0)
 
 
+def test_live_session_multi_timepoint_global_indices(synthetic_stack):
+    """A second timepoint pushed with GLOBAL frame indices (as the single-file
+    lapse source streams them) must scatter into time_index 1 using LOCAL
+    frame_inds positions — not index the per-stack frame_inds out of range."""
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    fps = nx_s * ny_s  # frames per stack; fixture Rec:LapseTime == 2
+
+    init_obj = StreamInit(
+        name="lapse_stack", dataset_name="detector_0", data=stack, attrs=attrs,
+    )
+    session = MonalisaReconstructor().make_session()
+    plan = session.begin(init_obj, params={"use_gpu": False})
+
+    # begin() already scattered timepoint 0. Push the same stack as timepoint 1
+    # using global indices [fps : 2*fps] — this is what ZarrLapseSource emits.
+    assert plan.out_shape[2] == 2  # two timepoints allocated
+    session.push(stack, fps, 2 * fps)
+
+    result = session.result()
+    tp0 = result.data[0, 0, 0, 0]
+    tp1 = result.data[0, 0, 1, 0]
+    # Both timepoints filled, and identical input -> identical reconstruction.
+    assert not np.all(tp1 == 0)
+    np.testing.assert_array_equal(tp0, tp1)
+
+
 def test_live_session_finish(synthetic_stack):
     """Test StreamingSession finish returns final result."""
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
