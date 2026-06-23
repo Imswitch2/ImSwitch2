@@ -6,7 +6,7 @@ from qtpy import QtCore
 from imswitch.imcommon.model.logging import initLogger
 from imswitch.improcess.live import InMemoryStackWrapper
 from imswitch.improcess.live.workers import LiveProcessWorker, LiveStreamWorker
-from imswitch.improcess.reconstructors.base import Chunk, StreamInit, StreamingReconstructor
+from imswitch.improcess.reconstructors.base import Chunk, StreamInit
 
 
 class LiveReconstructionController(QtCore.QObject):
@@ -30,6 +30,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._process_thread = None
         self._stream_worker = None
         self._process_worker = None
+        self._session = None
 
         self._buffer = []
         self._stack_info = None
@@ -67,11 +68,23 @@ class LiveReconstructionController(QtCore.QObject):
         self._is_streaming = getattr(self._reconstructor, "supports_streaming", False)
 
         if self._is_streaming:
-            self._start_streaming_path()
+            started = self._start_streaming_path()
         else:
-            self._start_batch_fallback_path()
+            started = self._start_batch_fallback_path()
+
+        if not started:
+            self._reset_workers()
+            return
 
         self._running = True
+
+    def _reset_workers(self) -> None:
+        """Drop worker/thread references after a failed or finished startup."""
+        self._stream_thread = None
+        self._process_thread = None
+        self._stream_worker = None
+        self._process_worker = None
+        self._session = None
 
     def stop(self) -> None:
         """Stop live reconstruction and clean up threads."""
@@ -97,30 +110,31 @@ class LiveReconstructionController(QtCore.QObject):
         if self._source:
             self._source.close()
 
-        self._stream_thread = None
-        self._process_thread = None
-        self._stream_worker = None
-        self._process_worker = None
+        self._reset_workers()
         self._buffer = []
 
-    def _start_streaming_path(self) -> None:
-        """Start streaming reconstruction with a StreamingSession."""
+    def _start_streaming_path(self) -> bool:
+        """Start streaming reconstruction with a StreamingSession.
+
+        Returns ``True`` once both worker threads are running, ``False`` if
+        startup bailed out (so the caller can avoid marking itself running).
+        """
         self._logger.debug("Starting streaming reconstruction path")
 
-        session = self._reconstructor.make_session()
+        self._session = self._reconstructor.make_session()
 
         self._stream_thread = QtCore.QThread()
         self._stream_worker = LiveStreamWorker(self._source)
         self._stream_worker.moveToThread(self._stream_thread)
 
         self._process_thread = QtCore.QThread()
-        self._process_worker = LiveProcessWorker(session)
+        self._process_worker = LiveProcessWorker(self._session)
         self._process_worker.moveToThread(self._process_thread)
 
         initial_chunks, init_data = self._collect_initial_chunks()
         if init_data is None:
             self._logger.error("No initial chunk available from source")
-            return
+            return False
 
         init_obj = StreamInit(
             name=getattr(self._source, "name", "live"),
@@ -131,11 +145,11 @@ class LiveReconstructionController(QtCore.QObject):
         )
 
         try:
-            plan = session.begin(init_obj, self._params)
+            plan = self._session.begin(init_obj, self._params)
             self._logger.debug(f"Session initialized with output shape {plan.out_shape}")
         except Exception as e:
             self._logger.error(f"Failed to initialize session: {e}")
-            return
+            return False
 
         self._stream_worker.sigChunkReady.connect(self._process_worker.processChunk)
         self._stream_worker.sigStackComplete.connect(self._process_worker.finalize)
@@ -146,6 +160,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_thread.started.connect(self._stream_worker.run)
         self._stream_thread.start()
         self._process_thread.start()
+        return True
 
     def _collect_initial_chunks(self) -> tuple[list[Chunk], np.ndarray | None]:
         """Poll enough startup frames for session initialization.
@@ -182,7 +197,7 @@ class LiveReconstructionController(QtCore.QObject):
 
         return initial_chunks, np.concatenate([c.data for c in initial_chunks], axis=0)
 
-    def _start_batch_fallback_path(self) -> None:
+    def _start_batch_fallback_path(self) -> bool:
         """Start batch fallback: buffer chunks, run process() on complete stack."""
         self._logger.debug("Starting batch fallback path")
 
@@ -195,6 +210,7 @@ class LiveReconstructionController(QtCore.QObject):
 
         self._stream_thread.started.connect(self._stream_worker.run)
         self._stream_thread.start()
+        return True
 
     @QtCore.Slot(object)
     def _on_chunk_for_buffer(self, chunk: Chunk) -> None:
@@ -234,8 +250,8 @@ class LiveReconstructionController(QtCore.QObject):
     def _on_stack_finished(self, result) -> None:
         """Emit final result to the comm channel."""
         self._commChannel.sigResultProduced.emit(result, "Live Reconstruction")
-        if self._is_streaming and self._process_worker and hasattr(self._process_worker._session, 'close'):
-            self._process_worker._session.close()
+        if self._is_streaming and self._session is not None and hasattr(self._session, 'close'):
+            self._session.close()
 
 
 # Copyright (C) 2020-2026 ImSwitch developers
