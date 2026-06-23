@@ -547,3 +547,46 @@ no-hardware tests: `WidefieldStarss`, `ZStack`, `CWSTARSS`,
 `SerialCWSTARSS`, `MultiWellTiling`. Scripting examples ship under
 `imswitch/_data/user_defaults/scripts/wfs/`. A scripting-cookbook page
 will land alongside Milestone 13.D's hardware revalidation.
+
+---
+
+## Deferred / parked plans
+
+Designs that were evaluated and consciously **deferred** — not abandoned.
+Captured here so the analysis isn't repeated from scratch.
+
+### ChunkBroker / producer-driven acquisition (deferred 2026-06-23)
+
+The `ChunkBroker` subscription API and the producer-driven acquisition
+rewrite (Recording data-flow Phases 1.5 / 2 / 3) are **designed but
+deferred**. Full design + effort/risk breakdown:
+[docs/recording_dataflow_plan.md](docs/recording_dataflow_plan.md).
+
+**Why we looked at it:** it is the prerequisite for a file-less, lowest-latency
+live-reconstruction source (`ChunkBrokerLiveSource`, the "P7" item in
+[docs/design/plans/live-reconstruction-port.md](docs/design/plans/live-reconstruction-port.md)),
+and for removing the acquisition-loop `time.sleep` / raising max throughput.
+
+**Why we deferred it (2026-06-23 review):**
+- **Live reconstruction does not need it.** The file-based live path
+  (Zarr/HDF5, single-file `scan{N}` timelapse, folder discovery) already works.
+  A broker-backed live source would initially publish through the existing
+  polling path, so it gives a file-less plumbing path but **not** lower latency
+  or higher throughput until the full producer-driven migration (Phase 2) lands.
+- **The real standalone value is multi-consumer robustness, not speed:** explicit
+  per-subscriber queues + drop accounting (today a slow registered consumer
+  silently loses its oldest frames, `DetectorManager.MAX_QUEUED_CONSUMER_FRAMES`),
+  recording isolation from slow consumers, and a tested/introspectable fan-out
+  contract. Worth doing **only if** running recording + BeadRec + workflow +
+  live-view simultaneously becomes a real correctness pain — currently it does
+  not justify the cost on its own.
+- **The throughput/no-`sleep` win lives in Phase 2**, which rewrites real device
+  managers (camera pull→push adapters, scan-detector push), cannot be
+  CI-validated (`docs/no-hardware-validation.md`), and is rated ~1–2+ weeks /
+  high risk.
+
+**Revisit when:** there's a concrete throughput/CPU-pinning pain point or a
+demonstrated multi-consumer frame-loss problem, *and* rig time is available to
+validate Phase 2. If revisited, the broker shim (Phase 1.5a) is the bounded,
+no-hardware, agent-friendly first step; the producer migration (Phase 2) is not
+an agent task (hardware-gated concurrency).
