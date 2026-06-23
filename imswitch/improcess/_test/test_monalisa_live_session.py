@@ -2,7 +2,10 @@
 
 import numpy as np
 import pytest
+import zarr
 
+from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
+from imswitch.improcess.live import ZarrLiveSource
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingSession
 from imswitch.improcess.reconstructors.monalisa import MonalisaReconstructor
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import make_gauss_processor
@@ -19,7 +22,8 @@ def synthetic_stack():
     x0, y0, z0 = 0.0, 0.0, 0.0
     x1, y1 = (nx_s - 1) * dx, (ny_s - 1) * dy
 
-    stack = np.random.randint(50, 150, size=(num_frames, num_rows, num_cols), dtype=np.uint16)
+    rng = np.random.default_rng(12345)
+    stack = rng.integers(50, 150, size=(num_frames, num_rows, num_cols), dtype=np.uint16)
 
     xp, yp = 10.0, 10.0
     xo, yo = 5.0, 5.0
@@ -46,6 +50,35 @@ def synthetic_stack():
     }
 
     return stack, attrs, nx_s, ny_s, nx_c, ny_c
+
+
+def _write_monalisa_zarr(path, stack: np.ndarray, attrs: dict, detector_name: str = "CAM"):
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+    det_group = root.create_group(detector_name)
+    array = ZarrStorer._create_array(
+        det_group,
+        "data",
+        data=stack,
+        chunks=(25, *stack.shape[-2:]),
+    )
+    array.attrs["detector_name"] = detector_name
+    array.attrs["writing"] = False
+    array.attrs["axes"] = ["T", "Y", "X"]
+    array.attrs["recording:detector_name"] = detector_name
+    array.attrs["recording:dataset_path"] = f"/{detector_name}/data"
+    array.attrs["recording:source_format"] = "ZARR"
+    array.attrs["recording:expected_frames"] = int(stack.shape[0])
+    array.attrs["recording:frames_per_stack"] = int(stack.shape[0])
+
+    metadata = det_group.create_group("metadata")
+    imswitch_data = attrs["ImswitchData"]
+    scan_stage = metadata.create_group("ScanStage")
+    scan_stage.attrs["axis_startpos"] = imswitch_data["ScanStage:axis_startpos"]
+    scan_stage.attrs["axis_length"] = imswitch_data["ScanStage:axis_length"]
+    scan_stage.attrs["axis_step_size"] = imswitch_data["ScanStage:axis_step_size"]
+    rec = metadata.create_group("Rec")
+    rec.attrs["LapseTime"] = imswitch_data["Rec:LapseTime"]
+    return root
 
 
 def test_monalisa_reconstructor_supports_streaming():
@@ -89,6 +122,49 @@ def test_live_session_begin(synthetic_stack):
     assert "Dataset" in plan.axis_labels
     assert "Base" in plan.axis_labels
     assert "T" in plan.axis_labels
+
+
+def test_live_session_from_zarr_live_source(tmp_path, synthetic_stack):
+    """Drive a real MoNaLISA live session from a structured ZarrLiveSource."""
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    zarr_path = tmp_path / "monalisa-live.zarr"
+    _write_monalisa_zarr(zarr_path, stack, attrs, detector_name="CAM")
+
+    source = ZarrLiveSource(detector_name="CAM", chunk_size=25)
+    stack_info = source.open(zarr_path)
+
+    chunks = []
+    total_frames = 0
+    while total_frames < stack_info.frames_per_stack:
+        new_chunks = source.poll()
+        assert new_chunks
+        chunks.extend(new_chunks)
+        total_frames += sum(chunk.data.shape[0] for chunk in new_chunks)
+
+    init_data = np.concatenate([chunk.data for chunk in chunks], axis=0)
+    assert init_data.shape == stack.shape
+    assert stack_info.attrs["ScanStage:axis_startpos"] == attrs["ImswitchData"]["ScanStage:axis_startpos"]
+    assert stack_info.attrs["Rec:LapseTime"] == attrs["ImswitchData"]["Rec:LapseTime"]
+
+    init_obj = StreamInit(
+        name="monalisa-live",
+        dataset_name=stack_info.detector_name,
+        data=init_data,
+        attrs=stack_info.attrs,
+        stack_info=stack_info,
+    )
+
+    reconstructor = MonalisaReconstructor()
+    session = reconstructor.make_session()
+    plan = session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+    result = session.result()
+
+    assert result.data.shape == plan.out_shape
+    assert result.data.dtype == np.dtype(np.float32)
+    assert np.all(np.isfinite(result.data))
+    assert not np.all(result.data == 0)
+    source.close()
+    session.close()
 
 
 def test_live_session_push_and_result(synthetic_stack):

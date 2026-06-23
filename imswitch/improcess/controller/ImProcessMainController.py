@@ -1,4 +1,7 @@
+from collections.abc import Mapping
 from typing import Any, Dict
+
+import numpy as np
 
 from imswitch.imcommon.controller import MainController
 from imswitch.imcommon.model import initLogger
@@ -238,48 +241,63 @@ class ImProcessMainController(MainController):
 
     def _bridgeResultToImcontrol(self, result, name):
         """Extract displayable image and emit to imcontrol viewer if configured."""
-        # Check config flag (default: OFF)
-        if self.__processingConfig is None:
+        if not self._processingConfigValue('live_display_in_imcontrol', False):
             return
-        
-        config_dict = self.__processingConfig if isinstance(self.__processingConfig, dict) else {}
-        if not config_dict.get('live_display_in_imcontrol', False):
-            return
-        
-        # Check if imcontrol is registered
+
         if not self.__moduleCommChannel.isModuleRegistered('imcontrol'):
             return
-        
-        # Extract displayable 2D image from result
+
         if not hasattr(result, 'data'):
             return
-        
-        import numpy as np
-        data = result.data
-        
-        # Squeeze to last 2 dimensions for display
-        if data.ndim < 2:
+
+        image = self._displayImageForImcontrol(result)
+        if image is None:
             return
-        
-        if data.ndim > 2:
-            # Take the last 2D slice (squeeze out extra dimensions or take current slice)
-            # For multi-dimensional data, show the middle slice of each dimension except last 2
-            indices = []
-            for i in range(data.ndim - 2):
-                mid_idx = data.shape[i] // 2
-                indices.append(mid_idx)
-            image = data[tuple(indices)] if indices else data
-        else:
-            image = data
-        
-        # Extract scale for the last 2 dimensions
+
         scale = None
         if hasattr(result, 'axis_scales') and result.axis_scales:
-            # Get scales for the last 2 dimensions
             scale = result.axis_scales[-2:] if len(result.axis_scales) >= 2 else None
-        
-        # Emit to module channel
+
         self.__moduleCommChannel.sigLiveReconResult.emit(name, image, scale)
+
+    def _processingConfigValue(self, key: str, default: Any = None) -> Any:
+        """Read an ImProcess config value from dict-like or setup-like config."""
+        config = self.__processingConfig
+        if config is None:
+            return default
+
+        if isinstance(config, Mapping):
+            return config.get(key, default)
+
+        if hasattr(config, key):
+            return getattr(config, key)
+
+        catch_all = getattr(config, "_catchAll", None)
+        if isinstance(catch_all, Mapping):
+            processing = catch_all.get("processing", {}) or {}
+            if isinstance(processing, Mapping):
+                return processing.get(key, default)
+
+        return default
+
+    @staticmethod
+    def _displayImageForImcontrol(result):
+        """Return a 2D image slice suitable for ImageWidget.addStaticLayer."""
+        data = np.asarray(result.data)
+        if data.ndim < 2:
+            return None
+        if data.ndim == 2:
+            return data
+
+        axis_labels = list(getattr(result, 'axis_labels', []) or [])
+        indices = []
+        for axis in range(data.ndim - 2):
+            label = str(axis_labels[axis]).lower() if axis < len(axis_labels) else ""
+            if label in {"t", "time", "timepoint", "timepoints"} or "time" in label:
+                indices.append(max(0, data.shape[axis] - 1))
+            else:
+                indices.append(data.shape[axis] // 2)
+        return data[tuple(indices)]
 
     def closeEvent(self):
         # Persist the current dock layout before tearing the controllers down,

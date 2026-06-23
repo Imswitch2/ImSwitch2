@@ -124,12 +124,28 @@ class MemoryLiveController(ImProcessWidgetController):
 
     def _getReconstructorParams(self) -> dict:
         """Get the current reconstructor parameters from the view."""
-        try:
-            if (hasattr(self._mainController, '_widget') and 
-                hasattr(self._mainController._widget, 'parTree')):
-                return self._mainController._widget.parTree.get_param_dict()
-        except Exception:
-            pass
+        widget = getattr(self._mainController, '_widget', None)
+        if widget is None:
+            return {}
+
+        getter = getattr(widget, 'getReconstructionParams', None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception as exc:
+                self._logger.warning(f"Could not read reconstruction params from view: {exc}")
+
+        par_tree = getattr(widget, 'parTree', None)
+        for legacy_getter_name in ('get_values', 'get_param_dict'):
+            legacy_getter = getattr(par_tree, legacy_getter_name, None)
+            if callable(legacy_getter):
+                try:
+                    return legacy_getter()
+                except Exception as exc:
+                    self._logger.warning(
+                        f"Could not read reconstruction params via {legacy_getter_name}: {exc}"
+                    )
+
         return {}
 
 

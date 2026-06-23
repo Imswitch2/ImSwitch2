@@ -69,6 +69,7 @@ class _FakeMainController:
     def __init__(self, reconstructor=None):
         self._activeReconstructor = reconstructor
         self._widget = MagicMock()
+        self._widget.getReconstructionParams.return_value = {"param1": "value1"}
         self._widget.parTree.get_param_dict.return_value = {"param1": "value1"}
 
 

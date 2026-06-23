@@ -117,18 +117,15 @@ class LiveReconstructionController(QtCore.QObject):
         self._process_worker = LiveProcessWorker(session)
         self._process_worker.moveToThread(self._process_thread)
 
-        first_chunk = None
-        chunks = self._source.poll()
-        if chunks:
-            first_chunk = chunks[0]
-        else:
+        initial_chunks, init_data = self._collect_initial_chunks()
+        if init_data is None:
             self._logger.error("No initial chunk available from source")
             return
 
         init_obj = StreamInit(
             name=getattr(self._source, "name", "live"),
             dataset_name=self._stack_info.detector_name or "detector",
-            data=first_chunk.data,
+            data=init_data,
             attrs=self._stack_info.attrs,
             stack_info=self._stack_info,
         )
@@ -149,6 +146,41 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_thread.started.connect(self._stream_worker.run)
         self._stream_thread.start()
         self._process_thread.start()
+
+    def _collect_initial_chunks(self) -> tuple[list[Chunk], np.ndarray | None]:
+        """Poll enough startup frames for session initialization.
+
+        Streaming sessions may need a complete logical stack for geometry or
+        orientation detection. Source cursors advance when polling, so every
+        chunk collected here must either be included in ``StreamInit`` or those
+        frames are lost before the worker loop starts.
+        """
+        initial_chunks: list[Chunk] = []
+        total_frames = 0
+        target_frames = max(1, int(self._stack_info.frames_per_stack or 1))
+
+        while total_frames < target_frames:
+            chunks = self._source.poll()
+            if not chunks:
+                break
+
+            for chunk in chunks:
+                frame_count = int(chunk.data.shape[0])
+                if frame_count <= 0:
+                    continue
+                initial_chunks.append(chunk)
+                total_frames += frame_count
+
+        if not initial_chunks:
+            return [], None
+
+        if total_frames < target_frames:
+            self._logger.warning(
+                f"Only collected {total_frames}/{target_frames} initial frames; "
+                f"proceeding with available data"
+            )
+
+        return initial_chunks, np.concatenate([c.data for c in initial_chunks], axis=0)
 
     def _start_batch_fallback_path(self) -> None:
         """Start batch fallback: buffer chunks, run process() on complete stack."""

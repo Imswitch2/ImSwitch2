@@ -41,7 +41,9 @@ def _create_bridge_stub(config=None, imcontrol_registered=True):
     stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult = Mock()
     stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit = Mock()
     
-    # Bind the method
+    # Bind the bridge and helper methods used by the bridge.
+    stub._processingConfigValue = ImProcessMainController._processingConfigValue.__get__(stub)
+    stub._displayImageForImcontrol = ImProcessMainController._displayImageForImcontrol
     bound_bridge = ImProcessMainController._bridgeResultToImcontrol.__get__(stub)
     return stub, bound_bridge
 
@@ -62,6 +64,28 @@ def test_bridge_enabled_fires_sigLiveReconResult():
     assert name == 'TestResult'
     assert image.shape == (10, 20)
     assert scale == [1.5, 2.0]
+
+
+def test_bridge_enabled_from_setup_like_config():
+    """SetupInfo-like configs can expose the processing block via _catchAll."""
+    config = SimpleNamespace(_catchAll={'processing': {'live_display_in_imcontrol': True}})
+    stub, bridge = _create_bridge_stub(config, imcontrol_registered=True)
+
+    result = _FakeProcessingResult('test-recon', np.ones((10, 20)))
+    bridge(result, 'SetupConfig')
+
+    stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit.assert_called_once()
+
+
+def test_bridge_enabled_from_object_config_attribute():
+    """Object-like configs can expose live_display_in_imcontrol as an attribute."""
+    config = SimpleNamespace(live_display_in_imcontrol=True)
+    stub, bridge = _create_bridge_stub(config, imcontrol_registered=True)
+
+    result = _FakeProcessingResult('test-recon', np.ones((10, 20)))
+    bridge(result, 'ObjectConfig')
+
+    stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit.assert_called_once()
 
 
 def test_bridge_disabled_by_default():
@@ -112,6 +136,26 @@ def test_bridge_extracts_2d_slice_from_3d_data():
     name, image, scale = call_args
     assert image.shape == (10, 20)  # Middle slice: data_3d[2, :, :]
     assert scale == [1.5, 2.0]  # Last 2 scales
+
+
+def test_bridge_extracts_latest_time_slice():
+    """Time-labelled leading axes use the latest frame instead of the middle."""
+    config = {'live_display_in_imcontrol': True}
+    stub, bridge = _create_bridge_stub(config, imcontrol_registered=True)
+
+    data_3d = np.arange(5 * 10 * 20).reshape(5, 10, 20)
+    result = _FakeProcessingResult(
+        'test-time',
+        data_3d,
+        axis_labels=['T', 'Y', 'X'],
+        axis_scales=[1.0, 1.5, 2.0],
+    )
+    bridge(result, 'TestTime')
+
+    call_args = stub._ImProcessMainController__moduleCommChannel.sigLiveReconResult.emit.call_args[0]
+    name, image, scale = call_args
+    np.testing.assert_array_equal(image, data_3d[-1])
+    assert scale == [1.5, 2.0]
 
 
 def test_bridge_extracts_2d_slice_from_4d_data():

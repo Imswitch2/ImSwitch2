@@ -371,19 +371,25 @@ Total: 110 live + recording tests green.
 
 **Open items / cleanup for review (2026-06-23):**
 
-- ⬜ **Full-stack init for orientation**: `begin()` localizes/orients from the
+- ✅ **Full-stack init for orientation**: `begin()` localizes/orients from the
   *first chunk*. Upstream initialized from the first full stack. The controller
   should buffer `frames_per_stack` before `begin()` for robust orientation
-  (degrades gracefully to default orientation today).
-- ⬜ **Real end-to-end with MoNaLISA numerics**: the Qt e2e test uses a stub
+  (implemented by startup buffering in `LiveReconstructionController`, with
+  tests covering multi-chunk startup polls and `frames_per_stack` buffering).
+- ✅ **Real end-to-end with MoNaLISA numerics**: the Qt e2e test uses a stub
   streaming session; no test drives a real `MonalisaLiveSession` from a
-  `ZarrLiveSource` (needs a valid synthetic MoNaLISA recording fixture).
-- ⬜ **Param-fetch path**: `LiveModeController`/`MemoryLiveController`
+  `ZarrLiveSource` (now covered by a deterministic structured synthetic Zarr
+  fixture that flattens scan metadata through `ZarrLiveSource` and initializes
+  `MonalisaLiveSession`).
+- ✅ **Param-fetch path**: `LiveModeController`/`MemoryLiveController`
   `_getReconstructorParams()` guesses `_widget.parTree.get_param_dict()` (try/
-  except → `{}`); confirm or wire to the real active-reconstructor param widget.
-- ⬜ **P6 polish**: `live_display_in_imcontrol` is read assuming
+  except → `{}`); now prefers the view's `getReconstructionParams()` path used
+  by regular reconstruction, with legacy param-widget fallbacks and focused
+  tests.
+- ✅ **P6 polish**: `live_display_in_imcontrol` is read assuming
   `__processingConfig` is a `dict` — verify against the real config type; move
   the in-method `import numpy`; the 2D slice picks the middle index of leading
-  dims (revisit for multi-timepoint live).
+  dims (now supports dict/object/setup-like config, imports NumPy at module
+  scope, and chooses the latest frame for time-labelled axes).
 - ⬜ **P7** (stretch): `ChunkBrokerLiveSource` true frame streaming once M10
   ChunkBroker lands.
