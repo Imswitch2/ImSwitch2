@@ -79,7 +79,13 @@ class MonalisaLiveSession(StreamingSession):
             dx, dy, _ = imswitch_meta["ScanStage:axis_step_size"]
             self.nx_s = int(np.ceil((x1 - x0) / dx)) + 1
             self.ny_s = int(np.ceil((y1 - y0) / dy)) + 1
-            num_time_points = imswitch_meta.get("Rec:LapseTime", 1)
+            
+            # Prefer recording:num_timepoints, fallback to Rec:LapseTime, then 1
+            num_time_points = imswitch_meta.get("recording:num_timepoints")
+            if num_time_points is not None:
+                num_time_points = max(1, int(num_time_points))
+            else:
+                num_time_points = imswitch_meta.get("Rec:LapseTime", 1)
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
 
