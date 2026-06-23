@@ -26,6 +26,7 @@ class LiveReconstructionController(QtCore.QObject):
 
         self._reconstructor = None
         self._source = None
+        self._source_arg = None
         self._params = {}
 
         self._stream_thread = None
@@ -53,10 +54,13 @@ class LiveReconstructionController(QtCore.QObject):
                 ``None`` for sources pre-configured with their target.
 
         Returns:
-            ``True`` if the worker threads were started (a ``sigFinished`` will
-            follow when the stack completes); ``False`` if startup bailed (open
-            failed or no readable frames) — in that case no ``sigFinished`` is
-            emitted, so callers driving a queue must advance themselves.
+            ``True`` if the worker threads were started. For the streaming path
+            this is always ``True`` — the source is opened (with bounded retry)
+            on the worker thread, so a recording discovered before its data
+            array exists is waited on, not skipped; ``sigFinished`` fires when
+            the stack completes (or if startup ultimately fails, so a queue
+            driver still advances). ``False`` only when the batch-fallback path
+            fails to open the source synchronously.
         """
         if self._running:
             self._logger.warning("Live reconstruction already running, stopping first")
@@ -64,20 +68,24 @@ class LiveReconstructionController(QtCore.QObject):
 
         self._reconstructor = reconstructor
         self._source = source
+        self._source_arg = source_arg
         self._params = params or {}
         self._buffer = []
+        self._stack_info = None
 
-        try:
-            self._stack_info = self._source.open(source_arg)
-        except Exception as e:
-            self._logger.error(f"Failed to open source: {e}")
-            return False
-
+        # supports_streaming lives on the reconstructor, so we can branch
+        # without opening the source first — the streaming path opens lazily on
+        # its worker thread.
         self._is_streaming = getattr(self._reconstructor, "supports_streaming", False)
 
         if self._is_streaming:
             started = self._start_streaming_path()
         else:
+            try:
+                self._stack_info = self._source.open(source_arg)
+            except Exception as e:
+                self._logger.error(f"Failed to open source: {e}")
+                return False
             started = self._start_batch_fallback_path()
 
         if not started:
@@ -123,88 +131,84 @@ class LiveReconstructionController(QtCore.QObject):
         self._buffer = []
 
     def _start_streaming_path(self) -> bool:
-        """Start streaming reconstruction with a StreamingSession.
+        """Start the streaming path.
 
-        Returns ``True`` once both worker threads are running, ``False`` if
-        startup bailed out (so the caller can avoid marking itself running).
+        The stream worker opens the source (with bounded retry) and collects the
+        first stack ON ITS THREAD, then emits ``sigInitStackReady``; the session
+        is begun in ``_on_init_stack_ready`` and the worker is resumed to stream
+        the remainder. Always returns ``True`` — startup waiting/failure is
+        handled asynchronously (a ``sigFinished`` still fires on failure so a
+        queue driver advances).
         """
         self._logger.debug("Starting streaming reconstruction path")
 
         self._session = self._reconstructor.make_session()
 
-        self._stream_thread = QtCore.QThread()
-        self._stream_worker = LiveStreamWorker(self._source)
-        self._stream_worker.moveToThread(self._stream_thread)
-
         self._process_thread = QtCore.QThread()
         self._process_worker = LiveProcessWorker(self._session)
         self._process_worker.moveToThread(self._process_thread)
+        self._process_worker.sigResultUpdated.connect(self._on_result_updated)
+        self._process_worker.sigStackFinished.connect(self._on_stack_finished)
 
-        initial_chunks, init_data = self._collect_initial_chunks()
-        if init_data is None:
-            self._logger.error("No initial chunk available from source")
-            return False
+        self._stream_thread = QtCore.QThread()
+        self._stream_worker = LiveStreamWorker(
+            self._source, source_arg=self._source_arg, do_open=True
+        )
+        self._stream_worker.moveToThread(self._stream_thread)
+        self._stream_worker.sigOpened.connect(self._on_opened)
+        self._stream_worker.sigInitStackReady.connect(self._on_init_stack_ready)
+        self._stream_worker.sigFailed.connect(self._on_stream_failed)
 
+        self._process_thread.start()
+        self._stream_thread.started.connect(self._stream_worker.run)
+        self._stream_thread.start()
+        return True
+
+    @QtCore.Slot(object)
+    def _on_opened(self, stack_info) -> None:
+        """Record the stack metadata once the worker has opened the source."""
+        self._stack_info = stack_info
+
+    @QtCore.Slot(object)
+    def _on_init_stack_ready(self, init_data) -> None:
+        """Begin the session with the first stack, then resume streaming.
+
+        Runs on the controller thread (queued from the worker). The expensive
+        WAITING already happened off the UI thread; ``begin()`` itself is a
+        one-time localize/allocate step.
+        """
+        stack_info = self._stack_info
         init_obj = StreamInit(
             name=getattr(self._source, "name", "live"),
-            dataset_name=self._stack_info.detector_name or "detector",
+            dataset_name=(stack_info.detector_name if stack_info else None) or "detector",
             data=init_data,
-            attrs=self._stack_info.attrs,
-            stack_info=self._stack_info,
+            attrs=stack_info.attrs if stack_info else {},
+            stack_info=stack_info,
         )
-
         try:
             plan = self._session.begin(init_obj, self._params)
             self._logger.debug(f"Session initialized with output shape {plan.out_shape}")
         except Exception as e:
             self._logger.error(f"Failed to initialize session: {e}")
-            return False
+            self._finish_without_result()
+            return
 
+        # Wire the remainder only after begin() succeeds, then release the gate.
         self._stream_worker.sigChunkReady.connect(self._process_worker.processChunk)
         self._stream_worker.sigStackComplete.connect(self._process_worker.finalize)
+        self._stream_worker.resume()
 
-        self._process_worker.sigResultUpdated.connect(self._on_result_updated)
-        self._process_worker.sigStackFinished.connect(self._on_stack_finished)
+    @QtCore.Slot(str)
+    def _on_stream_failed(self, message: str) -> None:
+        """Startup ultimately failed (store never became readable)."""
+        self._logger.warning(f"Live stream did not start: {message}")
+        self._finish_without_result()
 
-        self._stream_thread.started.connect(self._stream_worker.run)
-        self._stream_thread.start()
-        self._process_thread.start()
-        return True
-
-    def _collect_initial_chunks(self) -> tuple[list[Chunk], np.ndarray | None]:
-        """Poll enough startup frames for session initialization.
-
-        Streaming sessions may need a complete logical stack for geometry or
-        orientation detection. Source cursors advance when polling, so every
-        chunk collected here must either be included in ``StreamInit`` or those
-        frames are lost before the worker loop starts.
-        """
-        initial_chunks: list[Chunk] = []
-        total_frames = 0
-        target_frames = max(1, int(self._stack_info.frames_per_stack or 1))
-
-        while total_frames < target_frames:
-            chunks = self._source.poll()
-            if not chunks:
-                break
-
-            for chunk in chunks:
-                frame_count = int(chunk.data.shape[0])
-                if frame_count <= 0:
-                    continue
-                initial_chunks.append(chunk)
-                total_frames += frame_count
-
-        if not initial_chunks:
-            return [], None
-
-        if total_frames < target_frames:
-            self._logger.warning(
-                f"Only collected {total_frames}/{target_frames} initial frames; "
-                f"proceeding with available data"
-            )
-
-        return initial_chunks, np.concatenate([c.data for c in initial_chunks], axis=0)
+    def _finish_without_result(self) -> None:
+        """Signal completion without a result so a queue driver advances."""
+        if self._is_streaming and self._session is not None and hasattr(self._session, 'close'):
+            self._session.close()
+        self.sigFinished.emit()
 
     def _start_batch_fallback_path(self) -> bool:
         """Start batch fallback: buffer chunks, run process() on complete stack."""

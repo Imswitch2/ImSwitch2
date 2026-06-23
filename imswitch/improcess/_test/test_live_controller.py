@@ -1,13 +1,12 @@
 """Tests for LiveReconstructionController."""
 
 import numpy as np
-from qtpy import QtCore
 
 from imswitch.improcess.controller.CommunicationChannel import CommunicationChannel
 from imswitch.improcess.controller.LiveReconstructionController import (
     LiveReconstructionController,
 )
-from imswitch.improcess.live import InMemoryStackWrapper, LiveSource
+from imswitch.improcess.live import LiveSource
 from imswitch.improcess.live.workers import LiveProcessWorker, LiveStreamWorker
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.reconstructors.base import (
@@ -194,76 +193,9 @@ def test_controller_double_stop_is_safe():
     assert controller._running is False
 
 
-class _BurstSource(_TestSource):
-    def __init__(self, stack: np.ndarray, chunk_sizes: list[int], frames_per_stack: int):
-        super().__init__(stack, chunk_size=1)
-        self.chunk_sizes = chunk_sizes
-        self.frames_per_stack = frames_per_stack
-        self.poll_count = 0
-
-    def open(self, path_or_handle) -> StackInfo:
-        info = super().open(path_or_handle)
-        return StackInfo(
-            frame_shape=info.frame_shape,
-            dtype=info.dtype,
-            expected_frames=info.expected_frames,
-            frames_per_stack=self.frames_per_stack,
-            detector_name=info.detector_name,
-        )
-
-    def poll(self) -> list[Chunk]:
-        if self.poll_count > 0 or self.cursor >= self.stack.shape[0]:
-            self.poll_count += 1
-            return []
-
-        chunks = []
-        for size in self.chunk_sizes:
-            if self.cursor >= self.stack.shape[0]:
-                break
-            start = self.cursor
-            end = min(start + size, self.stack.shape[0])
-            self.cursor = end
-            chunks.append(Chunk(self.stack[start:end], start, end))
-
-        self.poll_count += 1
-        return chunks
-
-
-def test_collect_initial_chunks_keeps_multiple_chunks_from_first_poll():
-    """Startup polling includes every chunk returned before the worker starts."""
-    stack = np.arange(10 * 4 * 5, dtype=np.float32).reshape(10, 4, 5)
-    source = _BurstSource(stack, chunk_sizes=[2, 3, 5], frames_per_stack=4)
-    controller = LiveReconstructionController(CommunicationChannel())
-    controller._source = source
-    controller._stack_info = source.open(None)
-
-    chunks, init_data = controller._collect_initial_chunks()
-
-    assert [(chunk.start, chunk.end) for chunk in chunks] == [(0, 2), (2, 5), (5, 10)]
-    np.testing.assert_array_equal(init_data, stack)
-    assert source.cursor == stack.shape[0]
-
-
-def test_collect_initial_chunks_buffers_until_frames_per_stack():
-    """Startup polling continues until at least frames_per_stack frames exist."""
-    stack = np.arange(9 * 3 * 3, dtype=np.float32).reshape(9, 3, 3)
-    source = _TestSource(stack, chunk_size=2)
-    controller = LiveReconstructionController(CommunicationChannel())
-    controller._source = source
-    controller._stack_info = source.open(None)
-    controller._stack_info = StackInfo(
-        frame_shape=controller._stack_info.frame_shape,
-        dtype=controller._stack_info.dtype,
-        expected_frames=controller._stack_info.expected_frames,
-        frames_per_stack=5,
-        detector_name=controller._stack_info.detector_name,
-    )
-
-    chunks, init_data = controller._collect_initial_chunks()
-
-    assert [(chunk.start, chunk.end) for chunk in chunks] == [(0, 2), (2, 4), (4, 6)]
-    np.testing.assert_array_equal(init_data, stack[:6])
-    assert source.cursor == 6
+# Startup first-stack collection (open-retry + buffer until frames_per_stack)
+# now lives on the stream-worker thread; see test_live_workers.py
+# (test_stream_worker_startup_*).
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

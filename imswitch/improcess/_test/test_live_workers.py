@@ -1,7 +1,6 @@
 """Tests for LiveStreamWorker and LiveProcessWorker."""
 
 import numpy as np
-from qtpy import QtCore
 
 from imswitch.improcess.live import LiveProcessWorker, LiveSource, LiveStreamWorker
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
@@ -81,7 +80,7 @@ def test_live_stream_worker_logic():
     source = _TestSource(stack, chunk_size=2)
     source.open("test")
 
-    worker = LiveStreamWorker(source, poll_interval_ms=1, max_retries=1)
+    worker = LiveStreamWorker(source, poll_interval_ms=1)
 
     chunks_received = []
     complete_called = [False]
@@ -110,7 +109,7 @@ def test_live_stream_worker_stops_cleanly():
     source = _TestSource(stack, chunk_size=5)
     source.open("test")
 
-    worker = LiveStreamWorker(source, poll_interval_ms=1, max_retries=1)
+    worker = LiveStreamWorker(source, poll_interval_ms=1)
 
     chunks_received = []
 
@@ -193,6 +192,71 @@ def test_live_process_worker_update_cadence():
         worker.processChunk(Chunk(np.zeros((1, 4, 5), dtype=np.float32), i, i + 1))
 
     assert len(updates) == 3
+
+
+class _RetryOpenSource(_TestSource):
+    """Source whose open() fails a few times before succeeding (store created
+    before its data array exists), with a configurable frames_per_stack."""
+
+    def __init__(self, stack, chunk_size, fail_opens=0, frames_per_stack=None):
+        super().__init__(stack, chunk_size)
+        self._fail_opens = fail_opens
+        self._fps = frames_per_stack if frames_per_stack is not None else stack.shape[0]
+        self.open_attempts = 0
+
+    def open(self, path_or_handle) -> StackInfo:
+        self.open_attempts += 1
+        if self.open_attempts <= self._fail_opens:
+            raise RuntimeError("data array not ready yet")
+        return StackInfo(
+            frame_shape=self.stack.shape[-2:],
+            dtype=self.stack.dtype,
+            expected_frames=self.stack.shape[0],
+            frames_per_stack=self._fps,
+        )
+
+
+def test_stream_worker_startup_retries_open_then_collects_first_stack():
+    """do_open startup retries open until the store is readable, collects the
+    first stack, then waits for begin (resume) before streaming the rest."""
+    stack = np.arange(6 * 4 * 5, dtype=np.float32).reshape(6, 4, 5)
+    source = _RetryOpenSource(stack, chunk_size=2, fail_opens=2, frames_per_stack=4)
+    worker = LiveStreamWorker(source, source_arg="x", do_open=True,
+                              poll_interval_ms=1, open_max_attempts=10)
+
+    opened, init_data, chunks = [], [], []
+    worker.sigOpened.connect(lambda si: opened.append(si))
+    worker.sigInitStackReady.connect(lambda d: (init_data.append(d), worker.resume()))
+    worker.sigChunkReady.connect(lambda c: chunks.append(c))
+
+    worker.run()
+
+    assert source.open_attempts == 3  # two failures + one success
+    assert len(opened) == 1 and opened[0].frames_per_stack == 4
+    # First stack == first frames_per_stack frames; the remainder streams after resume.
+    assert init_data[0].shape[0] == 4
+    np.testing.assert_array_equal(init_data[0], stack[:4])
+    streamed = np.concatenate([c.data for c in chunks], axis=0) if chunks else np.empty((0,))
+    np.testing.assert_array_equal(streamed, stack[4:])
+
+
+def test_stream_worker_startup_fails_when_store_never_readable():
+    """If the store never becomes readable, startup gives up after bounded
+    attempts and emits sigFailed (so a queue driver can advance)."""
+    stack = np.zeros((4, 4, 5), dtype=np.float32)
+    source = _RetryOpenSource(stack, chunk_size=2, fail_opens=999)
+    worker = LiveStreamWorker(source, source_arg="x", do_open=True,
+                              poll_interval_ms=1, open_max_attempts=3)
+
+    opened, failed = [], []
+    worker.sigOpened.connect(lambda si: opened.append(si))
+    worker.sigFailed.connect(lambda msg: failed.append(msg))
+
+    worker.run()
+
+    assert source.open_attempts == 3
+    assert opened == []
+    assert len(failed) == 1
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

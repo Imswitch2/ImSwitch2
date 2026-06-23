@@ -1,5 +1,6 @@
 """Generic live-reconstruction workers: stream polling and chunk processing."""
 
+import threading
 import time
 
 import numpy as np
@@ -10,36 +11,120 @@ from imswitch.improcess.reconstructors.base import Chunk, StreamingSession
 
 
 class LiveStreamWorker(QtCore.QObject):
-    """Polls a LiveSource on its thread and emits new chunks."""
+    """Polls a LiveSource on its own thread and emits new chunks.
 
-    sigChunkReady = QtCore.Signal(object)
+    With ``do_open=True`` the worker also runs the startup sequence on this
+    thread, so the UI never blocks and a store discovered before its data
+    array exists is *waited on*, not skipped:
+      1. open the source with bounded retry,
+      2. collect the first logical stack (``frames_per_stack`` frames),
+      3. wait for the controller to ``begin()`` the session (resume gate),
+      4. stream the remaining frames.
+    With ``do_open=False`` it behaves as a plain poll loop over an
+    already-opened source (used by the batch-fallback path).
+    """
+
+    sigOpened = QtCore.Signal(object)          # StackInfo
+    sigInitStackReady = QtCore.Signal(object)  # first-stack ndarray
+    sigChunkReady = QtCore.Signal(object)      # Chunk
     sigStackComplete = QtCore.Signal()
+    sigFailed = QtCore.Signal(str)
 
-    def __init__(self, source, poll_interval_ms: int = 200, max_retries: int = 10):
+    def __init__(self, source, source_arg=None, do_open: bool = False,
+                 poll_interval_ms: int = 200, open_max_attempts: int = 50):
         """
         Args:
-            source: Opened LiveSource instance.
-            poll_interval_ms: Delay between poll attempts.
-            max_retries: Max consecutive empty polls before assuming completion.
+            source: A LiveSource. Opened already when ``do_open`` is False.
+            source_arg: Path/handle forwarded to ``source.open`` when do_open.
+            do_open: Run the open + first-stack + begin-gate startup here.
+            poll_interval_ms: Delay between poll attempts / retries.
+            open_max_attempts: Bounded retries while the store is unreadable.
         """
         super().__init__()
         self._source = source
+        self._source_arg = source_arg
+        self._do_open = do_open
         self._poll_interval_ms = poll_interval_ms
-        self._max_retries = max_retries
+        self._open_max_attempts = open_max_attempts
+        self._frames_per_stack = None
         self._logger = initLogger(self, tryInheritParent=False)
         self._running = False
+        self._resume_event = threading.Event()
+
+    def resume(self) -> None:
+        """Release the post-``begin()`` gate so the remainder starts streaming."""
+        self._resume_event.set()
 
     @QtCore.Slot()
     def run(self) -> None:
-        """Main loop: poll the source until complete or interrupted."""
+        """Run startup (if requested) then the steady poll loop."""
         self._running = True
-        empty_count = 0
+        if self._do_open and not self._run_startup():
+            self._running = False
+            return
+        self._poll_loop()
+        self._running = False
 
-        while self._running:
-            if QtCore.QThread.currentThread().isInterruptionRequested():
-                self._logger.debug("Interruption requested, stopping stream worker")
+    def _interrupted(self) -> bool:
+        return (not self._running
+                or QtCore.QThread.currentThread().isInterruptionRequested())
+
+    def _sleep(self) -> None:
+        time.sleep(self._poll_interval_ms / 1000.0)
+
+    def _run_startup(self) -> bool:
+        """Open (with retry) + collect first stack + wait for begin. Off the UI thread."""
+        # 1. Open — the recorder may create the store before its data array,
+        #    so retry instead of giving up (which would skip the recording).
+        stack_info = None
+        attempts = 0
+        while not self._interrupted():
+            try:
+                stack_info = self._source.open(self._source_arg)
                 break
+            except Exception as e:
+                attempts += 1
+                if attempts >= self._open_max_attempts:
+                    self._logger.error(f"Source did not become readable: {e}")
+                    self.sigFailed.emit(str(e))
+                    return False
+                self._sleep()
+        if stack_info is None:
+            return False
+        self._frames_per_stack = max(1, int(stack_info.frames_per_stack or 1))
+        self.sigOpened.emit(stack_info)
 
+        # 2. Collect the first logical stack (needed whole for localize/orient).
+        buffered = []
+        total = 0
+        while total < self._frames_per_stack and not self._interrupted():
+            chunks = self._source.poll()
+            if chunks:
+                for chunk in chunks:
+                    buffered.append(chunk)
+                    total += int(chunk.data.shape[0])
+            elif self._source.is_complete():
+                break
+            else:
+                self._sleep()
+        if self._interrupted():
+            return False
+        if not buffered:
+            self._logger.error("Source completed without yielding any frames")
+            self.sigFailed.emit("source yielded no frames")
+            return False
+        self.sigInitStackReady.emit(np.concatenate([c.data for c in buffered], axis=0))
+
+        # 3. Wait for the controller to begin() the session before streaming the rest.
+        while not self._resume_event.is_set():
+            if self._interrupted():
+                return False
+            self._resume_event.wait(0.05)
+        return True
+
+    def _poll_loop(self) -> None:
+        """Emit remaining chunks until the source is complete or interrupted."""
+        while not self._interrupted():
             try:
                 chunks = self._source.poll()
             except Exception as e:
@@ -47,30 +132,19 @@ class LiveStreamWorker(QtCore.QObject):
                 break
 
             if chunks:
-                empty_count = 0
                 for chunk in chunks:
                     self.sigChunkReady.emit(chunk)
+            elif self._source.is_complete():
+                self._logger.debug("Source marked complete")
+                self.sigStackComplete.emit()
+                break
             else:
-                empty_count += 1
-                if self._source.is_complete():
-                    self._logger.debug("Source marked complete")
-                    self.sigStackComplete.emit()
-                    break
-
-                if empty_count > self._max_retries:
-                    self._logger.warning(
-                        f"No new chunks after {self._max_retries} polls, assuming complete"
-                    )
-                    self.sigStackComplete.emit()
-                    break
-
-            time.sleep(self._poll_interval_ms / 1000.0)
-
-        self._running = False
+                self._sleep()
 
     def stop(self) -> None:
-        """Request the worker loop to stop."""
+        """Request the worker loop to stop and release any startup gate."""
         self._running = False
+        self._resume_event.set()
 
 
 class LiveProcessWorker(QtCore.QObject):
