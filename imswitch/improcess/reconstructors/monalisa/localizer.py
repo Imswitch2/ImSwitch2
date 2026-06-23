@@ -22,6 +22,43 @@ class LocalizationResult:
     num_rows: int
 
 
+def localization_from_pattern(
+    row_offset: float,
+    col_offset: float,
+    row_period: float,
+    col_period: float,
+    num_rows: int,
+    num_cols: int,
+) -> LocalizationResult:
+    """Build a localization result from widget pattern parameters.
+
+    The legacy MoNaLISA widget stores pattern parameters as
+    ``(row_offset, col_offset, row_period, col_period)``.  The fast-Gauss
+    processor needs the same information as ``(xo, yo, xp, yp)`` plus the
+    derived number of foci. Keeping this conversion here avoids a second
+    hand-rolled mapping in offline code.
+    """
+    yp = float(row_period)
+    xp = float(col_period)
+    if xp <= 0 or yp <= 0:
+        raise ValueError("Pattern periods must be positive")
+    yo = np.mod(float(row_offset), yp)
+    xo = np.mod(float(col_offset), xp)
+
+    nx_c = int(np.ceil((int(num_cols) - xo) / xp))
+    ny_c = int(np.ceil((int(num_rows) - yo) / yp))
+    return LocalizationResult(
+        xp=xp,
+        xo=xo,
+        yp=yp,
+        yo=yo,
+        nx_c=nx_c,
+        ny_c=ny_c,
+        num_cols=int(num_cols),
+        num_rows=int(num_rows),
+    )
+
+
 def _find_best_peak_index(peaks: tuple) -> int:
     """
     Find the index of the peak with the greatest prominence.

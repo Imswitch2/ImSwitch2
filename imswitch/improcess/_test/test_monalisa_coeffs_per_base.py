@@ -167,6 +167,7 @@ def test_monalisa_process_produces_6d_output_with_one_image_per_base(stub_extrac
 
     result = reconstructor.process(data_obj, _params(rows=4, cols=5))
 
+    assert stub_extractor.calls[0]['pattern'] == (5.0, 5.0, 11.0, 11.0)
     # 6D output: (Dataset=1, Base=2, T=1, Z=1, Y, X)
     assert result.data.ndim == 6
     assert result.data.shape[0] == 1            # Dataset

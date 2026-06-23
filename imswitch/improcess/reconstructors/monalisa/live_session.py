@@ -10,7 +10,7 @@ from .gauss_processor import (
     DEFAULT_GAUSSIAN_SIGMA_PX,
     make_gauss_processor,
 )
-from .localizer import localizer
+from .localizer import localization_from_pattern, localizer
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
 
@@ -117,7 +117,7 @@ class MonalisaLiveSession(StreamingSession):
             if self.bleaching_correction else data
         )
 
-        loc_result = localizer(working_data)
+        loc_result = self._resolve_localization(working_data, params)
         self.nx_c = loc_result.nx_c
         self.ny_c = loc_result.ny_c
 
@@ -300,6 +300,27 @@ class MonalisaLiveSession(StreamingSession):
         except (TypeError, ValueError):
             pass
         return DEFAULT_GAUSSIAN_SIGMA_PX
+
+    @staticmethod
+    def _resolve_localization(data: np.ndarray, params: dict):
+        """Use explicit widget pattern params when provided; otherwise localize.
+
+        Live reconstruction intentionally uses automatic localization on the
+        incoming data. Offline fast-Gauss reconstruction sets
+        ``_monalisa_pattern_params`` so it follows the parameter widget in the
+        same way as the full SignalExtractor path.
+        """
+        pattern = params.get("_monalisa_pattern_params")
+        if pattern:
+            return localization_from_pattern(
+                row_offset=pattern["row_offset"],
+                col_offset=pattern["col_offset"],
+                row_period=pattern["row_period"],
+                col_period=pattern["col_period"],
+                num_rows=data.shape[-2],
+                num_cols=data.shape[-1],
+            )
+        return localizer(data)
 
     @staticmethod
     def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:

@@ -471,6 +471,10 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
         "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
         "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
         "bleaching_correction": False,
+        "row_offset": 3.0,
+        "col_offset": 4.0,
+        "row_period": 20.0,
+        "col_period": 25.0,
         "scan_params": {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
             "directions": ["pos", "pos", "pos"],
@@ -485,6 +489,10 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     assert result.name == "offline-fast-gauss"
     assert result.data.ndim == 6
     assert result.data.shape[:4] == (1, 1, 1, 1)
+    assert result.data.shape[-2:] == (
+        int(np.ceil((stack.shape[-2] - 3.0) / 20.0)) * ny_s,
+        int(np.ceil((stack.shape[-1] - 4.0) / 25.0)) * nx_s,
+    )
     assert result.output_pixel_size_nm is not None
     assert result.coeffs is None
     assert np.all(np.isfinite(result.data))

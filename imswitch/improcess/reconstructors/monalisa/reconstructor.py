@@ -275,13 +275,14 @@ class MonalisaReconstructor(StreamingReconstructor):
         session = self.make_session()
         try:
             first_stack = data[:frames_per_stack]
+            session_params = self._fast_gauss_session_params(params)
             init_obj = StreamInit(
                 name=name,
                 dataset_name='offline',
                 data=first_stack,
                 attrs=geometry['attrs'],
             )
-            session.begin(init_obj, params)
+            session.begin(init_obj, session_params)
 
             for time_index in range(1, geometry['num_timepoints']):
                 start = time_index * frames_per_stack
@@ -313,6 +314,17 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
         return result
+
+    @staticmethod
+    def _fast_gauss_session_params(params: dict) -> dict:
+        """Pass widget pattern params into offline fast-Gauss localization."""
+        session_params = dict(params)
+        required = ("row_offset", "col_offset", "row_period", "col_period")
+        if all(key in params for key in required):
+            session_params["_monalisa_pattern_params"] = {
+                key: float(params[key]) for key in required
+            }
+        return session_params
 
     def _fast_gauss_geometry_from_scan_params(self, scan_params: dict) -> dict:
         """Convert MoNaLISA scan params to the attrs expected by MonalisaLiveSession."""

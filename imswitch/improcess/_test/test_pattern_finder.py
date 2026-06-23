@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from scipy.signal import find_peaks
@@ -7,6 +9,22 @@ from imswitch.improcess.reconstructors.monalisa.pattern_finder import PatternFin
 
 class TestPatternFinder:
     """Tests for PatternFinder class, focusing on FFT peak selection logic."""
+
+    def test_findPattern_delegates_to_improved_localizer(self, monkeypatch):
+        """The legacy UI adapter should use the improved localizer internally."""
+        image = np.zeros((8, 9), dtype=np.float32)
+
+        def fake_localizer(input_image):
+            np.testing.assert_array_equal(input_image, image)
+            return SimpleNamespace(yo=1.0, xo=2.0, yp=3.0, xp=4.0)
+
+        monkeypatch.setattr(
+            'imswitch.improcess.reconstructors.monalisa.pattern_finder.localizer',
+            fake_localizer,
+        )
+
+        assert PatternFinder().findPattern(image) == [1.0, 2.0, 3.0, 4.0]
+        assert PatternFinder().find(image) == [1.0, 2.0, 3.0, 4.0]
 
     def test_findBestPeak_similar_heights_returns_leftmost(self):
         """
