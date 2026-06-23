@@ -26,6 +26,69 @@ def _is_zarr_array(obj: Any) -> bool:
     return _ZarrArray is not None and isinstance(obj, _ZarrArray)
 
 
+def _coerce_positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, np.ndarray)):
+        array = np.asarray(value).flatten()
+        if array.size != 1:
+            return None
+        value = array[0]
+    if isinstance(value, (bytes, np.bytes_)):
+        value = value.decode(errors="ignore")
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in {"", "null", "none", "nan", "n/a", "na"}:
+            return None
+        value = text
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number) or number <= 0:
+        return None
+    return max(1, int(number))
+
+
+def _numeric_vector(value: Any, min_len: int) -> np.ndarray | None:
+    try:
+        vector = np.asarray(value, dtype=float).flatten()
+    except (TypeError, ValueError):
+        return None
+    if vector.size < min_len or not np.all(np.isfinite(vector[:min_len])):
+        return None
+    return vector
+
+
+def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
+    """Return frames per MoNaLISA scan stack from recorder metadata.
+
+    ``recording:frames_per_stack`` wins, followed by explicit ``ScanTTL:Nx`` /
+    ``ScanTTL:Ny`` counts. Otherwise derive the X/Y scan counts from
+    ImControl's scan-size convention, where ``axis_length`` is a physical
+    length and the number of positions is ``ceil(length / step_size)``.
+    """
+    explicit = _coerce_positive_int(attrs.get("recording:frames_per_stack"))
+    if explicit is not None:
+        return explicit
+
+    nx_ttl = _coerce_positive_int(attrs.get("ScanTTL:Nx"))
+    ny_ttl = _coerce_positive_int(attrs.get("ScanTTL:Ny"))
+    if nx_ttl is not None and ny_ttl is not None:
+        return nx_ttl * ny_ttl
+
+    lengths = _numeric_vector(attrs.get("ScanStage:axis_length"), 2)
+    step_sizes = _numeric_vector(attrs.get("ScanStage:axis_step_size"), 2)
+    if lengths is None or step_sizes is None:
+        return None
+    if step_sizes[0] == 0 or step_sizes[1] == 0:
+        return None
+
+    nx_s = max(1, int(np.ceil(abs(lengths[0]) / abs(step_sizes[0]))))
+    ny_s = max(1, int(np.ceil(abs(lengths[1]) / abs(step_sizes[1]))))
+    return nx_s * ny_s
+
+
 class LiveSource(ABC):
     """Polls a growing source and yields new raw-frame chunks."""
 
@@ -148,13 +211,14 @@ class ZarrLiveSource(LiveSource):
 
         frame_shape = self._array.shape[-2:]
         self._refresh_state_from_attrs(attrs)
+        frames_per_stack = _derive_scan_frames_per_stack(attrs)
 
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._array.dtype,
             attrs=dict(attrs),
             expected_frames=self._expected_frames,
-            frames_per_stack=self._coerce_int(attrs.get('recording:frames_per_stack')),
+            frames_per_stack=frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
             dataset_path=attrs.get('recording:dataset_path') or self._default_dataset_path(),
             source_format=attrs.get('recording:source_format') or 'ZARR',
@@ -683,13 +747,14 @@ class Hdf5LiveSource(LiveSource):
         frame_shape = self._dataset.shape[-2:]
         all_attrs = {**attrs, **dataset_attrs}
         self._refresh_state_from_attrs(all_attrs)
+        frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
 
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._dataset.dtype,
             attrs=dict(all_attrs),
             expected_frames=self._expected_frames,
-            frames_per_stack=self._coerce_int(all_attrs.get('recording:frames_per_stack')),
+            frames_per_stack=frames_per_stack,
             detector_name=all_attrs.get('recording:detector_name') or detector_name,
             dataset_path=all_attrs.get('recording:dataset_path') or self._dataset_path,
             source_format=all_attrs.get('recording:source_format') or 'HDF5',

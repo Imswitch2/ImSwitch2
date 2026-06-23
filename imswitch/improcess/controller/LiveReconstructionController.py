@@ -39,6 +39,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._stack_info = None
         self._is_streaming = False
         self._running = False
+        self._finishing = False
 
     def start(self, reconstructor, source, params: dict | None = None,
               source_arg=None) -> bool:
@@ -72,6 +73,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._params = params or {}
         self._buffer = []
         self._stack_info = None
+        self._finishing = False
 
         # supports_streaming lives on the reconstructor, so we can branch
         # without opening the source first — the streaming path opens lazily on
@@ -102,6 +104,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._stream_worker = None
         self._process_worker = None
         self._session = None
+        self._finishing = False
 
     def stop(self) -> None:
         """Stop live reconstruction and clean up threads."""
@@ -109,26 +112,61 @@ class LiveReconstructionController(QtCore.QObject):
             return
 
         self._logger.debug("Stopping live reconstruction")
-        self._running = False
+        self._finish_run(emit_finished=False)
 
+    def _shutdown_workers(self) -> None:
+        """Stop live workers, quit Qt thread event loops, and release the source."""
         if self._stream_worker:
             self._stream_worker.stop()
 
-        if self._stream_thread and self._stream_thread.isRunning():
-            self._stream_thread.requestInterruption()
-            if not self._stream_thread.wait(2000):
-                self._logger.warning("Stream thread did not stop in time")
+        current_thread = QtCore.QThread.currentThread()
+        threads = (
+            ("Stream", self._stream_thread),
+            ("Process", self._process_thread),
+        )
+        for _, thread in threads:
+            if thread and thread.isRunning():
+                thread.requestInterruption()
+                thread.quit()
 
-        if self._process_thread and self._process_thread.isRunning():
-            self._process_thread.requestInterruption()
-            if not self._process_thread.wait(2000):
-                self._logger.warning("Process thread did not stop in time")
+        for name, thread in threads:
+            if thread and thread.isRunning() and thread is not current_thread:
+                if not thread.wait(2000):
+                    self._logger.warning(f"{name} thread did not stop in time")
 
         if self._source:
             self._source.close()
 
-        self._reset_workers()
-        self._buffer = []
+    def _finish_run(self, result=None, *, emit_result: bool = False,
+                    emit_finished: bool = True) -> None:
+        """Complete or cancel the current run after all worker threads are stopped."""
+        if self._finishing:
+            return
+
+        self._finishing = True
+
+        try:
+            if emit_result and result is not None:
+                self._commChannel.sigResultProduced.emit(result, "Live Reconstruction")
+
+            if (
+                self._is_streaming
+                and self._session is not None
+                and hasattr(self._session, 'close')
+            ):
+                self._session.close()
+
+            self._shutdown_workers()
+        finally:
+            self._running = False
+            self._buffer = []
+            self._stack_info = None
+            self._source = None
+            self._source_arg = None
+            self._reset_workers()
+
+        if emit_finished:
+            self.sigFinished.emit()
 
     def _start_streaming_path(self) -> bool:
         """Start the streaming path.
@@ -206,9 +244,7 @@ class LiveReconstructionController(QtCore.QObject):
 
     def _finish_without_result(self) -> None:
         """Signal completion without a result so a queue driver advances."""
-        if self._is_streaming and self._session is not None and hasattr(self._session, 'close'):
-            self._session.close()
-        self.sigFinished.emit()
+        self._finish_run()
 
     def _start_batch_fallback_path(self) -> bool:
         """Start batch fallback: buffer chunks, run process() on complete stack."""
@@ -235,6 +271,7 @@ class LiveReconstructionController(QtCore.QObject):
         """Process the buffered stack with the batch reconstructor."""
         if not self._buffer:
             self._logger.warning("Stack complete but no chunks buffered")
+            self._finish_without_result()
             return
 
         self._logger.debug(f"Stack complete, processing {len(self._buffer)} buffered chunks")
@@ -253,6 +290,7 @@ class LiveReconstructionController(QtCore.QObject):
             self._on_stack_finished(result)
         except Exception as e:
             self._logger.error(f"Batch reconstruction failed: {e}")
+            self._finish_without_result()
 
     @QtCore.Slot(object)
     def _on_result_updated(self, result) -> None:
@@ -262,10 +300,7 @@ class LiveReconstructionController(QtCore.QObject):
     @QtCore.Slot(object)
     def _on_stack_finished(self, result) -> None:
         """Emit final result to the comm channel."""
-        self._commChannel.sigResultProduced.emit(result, "Live Reconstruction")
-        if self._is_streaming and self._session is not None and hasattr(self._session, 'close'):
-            self._session.close()
-        self.sigFinished.emit()
+        self._finish_run(result, emit_result=True)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

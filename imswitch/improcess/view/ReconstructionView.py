@@ -211,36 +211,7 @@ class ReconstructionView(QtWidgets.QFrame):
             list(axisLabels), [f"{s:.4g}" for s in axisScales], scaleUnit,
         )
 
-        # --- Fix napari 0.7 ndim-change bug -----------------------------------
-        # VispyBaseLayer._world_to_layer_units_scale is a tuple set ONCE at
-        # layer construction as (1,)*ndim and is NEVER updated when layer.data
-        # ndim changes.  The set_data event fires _on_matrix_change which
-        # indexes _world_to_layer_units_scale with dims_displayed for the NEW
-        # ndim → IndexError when ndim grows (e.g. 2D placeholder → 3D result).
-        #
-        # Fix: reach into the vispy layer and pre-size the tuple to match the
-        # incoming ndim before we touch layer.data so the callback is safe.
-        # Access path confirmed by napari's own test suite:
-        #   viewer.window._qt_viewer.canvas.layer_to_visual[layer]
-        if old_ndim != new_ndim:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    canvas = self.napariViewer.window._qt_viewer.canvas
-                vispy_layer = canvas.layer_to_visual[self.imgLayer]
-                old_wts = vispy_layer._world_to_layer_units_scale
-                vispy_layer._world_to_layer_units_scale = (1,) * new_ndim
-                self._logger.debug(
-                    "setImage: patched vispy _world_to_layer_units_scale  "
-                    "len %d → len %d  (was %s)",
-                    len(old_wts), new_ndim, old_wts,
-                )
-            except Exception as exc:
-                self._logger.warning(
-                    "setImage: could not patch vispy _world_to_layer_units_scale "
-                    "(ndim %d→%d): %s — IndexError may still fire in napari callback",
-                    old_ndim, new_ndim, exc,
-                )
+        self._patchLayerForNdimChange(self.imgLayer, old_ndim, new_ndim, "setImage")
 
         # Set data — fires set_data → _on_matrix_change (safe now)
         self.imgLayer.data = im
@@ -281,8 +252,13 @@ class ReconstructionView(QtWidgets.QFrame):
 
             if index == 0:
                 layer = self.imgLayer
+                old_ndim = layer.data.ndim
+                new_ndim = data.ndim
                 layer.name = spec.name
                 layer.colormap = spec.colormap
+                self._patchLayerForNdimChange(
+                    layer, old_ndim, new_ndim, "setDisplayLayers"
+                )
                 layer.data = data
                 layer.scale = tuple(axisScales)
                 layer.metadata.update(metadata)
@@ -320,6 +296,37 @@ class ReconstructionView(QtWidgets.QFrame):
             self.napariViewer.layers.selection.active = self.imgLayer
         except Exception as exc:
             self._logger.debug("setDisplayLayers: could not select first display layer: %s", exc)
+
+    def _patchLayerForNdimChange(self, layer, old_ndim: int, new_ndim: int, context: str) -> None:
+        """Pre-size napari's vispy units tuple before changing layer dimensionality.
+
+        VispyBaseLayer._world_to_layer_units_scale is created for the layer's
+        original ndim and can lag behind when an existing image layer receives
+        data with a different ndim. The set_data event then indexes that stale
+        tuple with the new displayed dims and can raise IndexError. Patch it
+        before assigning layer.data.
+        """
+        if old_ndim == new_ndim:
+            return
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                canvas = self.napariViewer.window._qt_viewer.canvas
+            vispy_layer = canvas.layer_to_visual[layer]
+            old_wts = vispy_layer._world_to_layer_units_scale
+            vispy_layer._world_to_layer_units_scale = (1,) * new_ndim
+            self._logger.debug(
+                "%s: patched vispy _world_to_layer_units_scale len %d -> len %d "
+                "(was %s)",
+                context, len(old_wts), new_ndim, old_wts,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "%s: could not patch vispy _world_to_layer_units_scale "
+                "(ndim %d->%d): %s - IndexError may still fire in napari callback",
+                context, old_ndim, new_ndim, exc,
+            )
 
     def _clearDisplayLayers(self):
         for layer in list(getattr(self, "_displayLayers", [])):

@@ -191,6 +191,23 @@ class MonalisaProcessingResult(ProcessingResult):
         self.output_pixel_size_nm = output_pixel_size_nm(
             self.scan_params, self.axis_label_map, grid_rows, grid_cols
         )
+        if (
+            self.output_pixel_size_nm is not None
+            and "Y" in self.axis_labels
+            and "X" in self.axis_labels
+        ):
+            y_nm, x_nm = self.output_pixel_size_nm
+            self.axis_scales[self.axis_labels.index("Y")] = float(y_nm)
+            self.axis_scales[self.axis_labels.index("X")] = float(x_nm)
+            try:
+                bf_index = self.scan_params['dimensions'].index(
+                    self.axis_label_map['b_f_text']
+                )
+                z_nm = float(self.scan_params['step_sizes'][bf_index])
+                if "Z" in self.axis_labels:
+                    self.axis_scales[self.axis_labels.index("Z")] = z_nm
+            except (KeyError, ValueError, TypeError):
+                pass
 
     def _base_component_name(self, base_index: int) -> str:
         """Return the semantic name for a base component."""

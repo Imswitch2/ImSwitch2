@@ -6,6 +6,11 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
+from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
+    DEFAULT_FOOTPRINT_NUM_RECTS,
+    DEFAULT_GAUSSIAN_SIGMA_PX,
+    DEFAULT_PINHOLE_RADIUS_SIGMA,
+)
 from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
@@ -908,6 +913,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def setLegacyMonalisaParameterWidget(self):
+        """Restore the legacy MoNaLISA parameter tree in the Parameters dock."""
+        if isinstance(getattr(self, "parTree", None), ReconParTree):
+            return
+        self.setParameterWidget(ReconParTree())
+
     def getReconstructionParams(self):
         if hasattr(self.parTree, "get_values"):
             return self.parTree.get_values()
@@ -1034,6 +1045,14 @@ class ReconParTree(ParameterTree):
         # Parameter tree for the reconstruction
         params = [
             {'name': 'Pixel size', 'type': 'float', 'value': 77, 'suffix': 'nm'},
+            {'name': 'Reconstruction method', 'type': 'list',
+             'value': 'MoNaLISA',
+             'values': ['MoNaLISA', 'Fast Gauss MoNaLISA'],
+             'tip': (
+                 'MoNaLISA runs the full post-acquisition SignalExtractor path. '
+                 'Fast Gauss MoNaLISA uses the low-latency Gaussian reassignment '
+                 'path that live reconstruction always uses.'
+             )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [
                 {'name': 'Row-offset', 'type': 'float', 'value': 9.89, 'limits': (0, 9999)},
@@ -1047,6 +1066,25 @@ class ReconParTree(ParameterTree):
                 {'name': 'BG modelling', 'type': 'list',
                  'values': ['Constant', 'Gaussian', 'No background'], 'children': [
                     {'name': 'BG Gaussian size', 'type': 'float', 'value': 500, 'suffix': 'nm'}]}]},
+            {'name': 'Fast Gauss options', 'type': 'group', 'children': [
+                {'name': 'Footprint mode', 'type': 'list',
+                 'value': 'Rectangular shells',
+                 'values': ['Rectangular shells', 'Circular pinhole'],
+                 'tip': ('Rectangular shells keeps the Mini_Recon footprint. '
+                         'Circular pinhole uses the Pinhole radius value.')},
+                {'name': 'Footprint rectangles', 'type': 'int',
+                 'value': DEFAULT_FOOTPRINT_NUM_RECTS, 'limits': (1, 99),
+                 'tip': ('Concentric rectangular shells sampled around each focus '
+                         '(used in Rectangular shells mode).')},
+                {'name': 'Gaussian sigma', 'type': 'float',
+                 'value': DEFAULT_GAUSSIAN_SIGMA_PX, 'limits': (0.01, 9999),
+                 'suffix': 'px',
+                 'tip': 'Gaussian sigma for the footprint fit, in pixels.'},
+                {'name': 'Pinhole radius', 'type': 'float',
+                 'value': DEFAULT_PINHOLE_RADIUS_SIGMA, 'limits': (0.01, 99),
+                 'suffix': '×σ',
+                 'tip': ('Circular detection pinhole radius as a multiple of the '
+                         'Gaussian sigma. Used only in Circular pinhole mode.')}]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -1056,6 +1094,35 @@ class ReconParTree(ParameterTree):
         self.p = Parameter.create(name='params', type='group', children=params)
         self.setParameters(self.p, showTop=False)
         self._writable = True
+
+    def get_values(self) -> dict:
+        """Return MoNaLISA reconstruction parameters from the legacy tree."""
+        pattern_pars = self.p.param('Pattern')
+        recon_opts = self.p.param('Reconstruction options')
+        bg_modelling = recon_opts.param('BG modelling')
+        fast_gauss_opts = self.p.param('Fast Gauss options')
+
+        return {
+            'pixel_size_nm': self.p.param('Pixel size').value(),
+            'reconstruction_method': self.p.param('Reconstruction method').value(),
+            'device': self.p.param('CPU/GPU').value(),
+            'row_offset': pattern_pars.param('Row-offset').value(),
+            'col_offset': pattern_pars.param('Col-offset').value(),
+            'row_period': pattern_pars.param('Row-period').value(),
+            'col_period': pattern_pars.param('Col-period').value(),
+            'psf_fwhm_nm': recon_opts.param('PSF FWHM').value(),
+            'bg_modelling': bg_modelling.value(),
+            'bg_gaussian_size_nm': bg_modelling.param('BG Gaussian size').value(),
+            'fast_gauss_footprint_mode': fast_gauss_opts.param(
+                'Footprint mode').value(),
+            'fast_gauss_footprint_num_rects': fast_gauss_opts.param(
+                'Footprint rectangles').value(),
+            'fast_gauss_gaussian_sigma_px': fast_gauss_opts.param(
+                'Gaussian sigma').value(),
+            'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
+                'Pinhole radius').value(),
+            'bleaching_correction': self.p.param('Bleaching correction').value(),
+        }
 
 
 class BtnFrame(QtWidgets.QFrame):

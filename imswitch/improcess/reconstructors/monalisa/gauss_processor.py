@@ -6,7 +6,12 @@ import numpy as np
 
 from imswitch.imcommon.model import initLogger
 
-from .scan_geometry import get_1d_indices, get_interp_coords, get_rectangles_coords
+from .scan_geometry import (
+    get_1d_indices,
+    get_interp_coords,
+    get_pinhole_footprint,
+    get_rectangles_coords,
+)
 
 try:
     import cupy as cp
@@ -19,6 +24,81 @@ except ImportError:
 if TYPE_CHECKING:
     if CUPY_AVAILABLE:
         import cupy as cp
+
+
+DEFAULT_FOOTPRINT_NUM_RECTS = 3
+DEFAULT_GAUSSIAN_SIGMA_PX = 2.0
+DEFAULT_PINHOLE_RADIUS_SIGMA = 1.5
+
+
+def validate_gaussian_fit_options(
+    num_rects: int | float | str | None = DEFAULT_FOOTPRINT_NUM_RECTS,
+    gaussian_sigma_px: int | float | str | None = DEFAULT_GAUSSIAN_SIGMA_PX,
+    pinhole_radius_px: int | float | str | None = None,
+) -> tuple[int, float, float | None]:
+    """Validate and normalize fast-Gauss footprint options.
+
+    ``pinhole_radius_px`` is optional: when ``None`` (or non-positive) the
+    legacy ``num_rects`` shell footprint is used; when positive it selects a
+    circular pinhole footprint of that radius (which then governs the
+    footprint instead of ``num_rects``).
+    """
+    if num_rects is None:
+        num_rects = DEFAULT_FOOTPRINT_NUM_RECTS
+    if gaussian_sigma_px is None:
+        gaussian_sigma_px = DEFAULT_GAUSSIAN_SIGMA_PX
+
+    num_rects = int(num_rects)
+    gaussian_sigma_px = float(gaussian_sigma_px)
+    if num_rects < 1:
+        raise ValueError("num_rects must be >= 1")
+    if gaussian_sigma_px <= 0:
+        raise ValueError("gaussian_sigma_px must be > 0")
+
+    if pinhole_radius_px is not None:
+        pinhole_radius_px = float(pinhole_radius_px)
+        if pinhole_radius_px <= 0:
+            pinhole_radius_px = None  # treat non-positive as "no pinhole"
+    return num_rects, gaussian_sigma_px, pinhole_radius_px
+
+
+def calculate_gaussian_lsq_weights(
+    x_offsets: np.ndarray,
+    y_offsets: np.ndarray,
+    gaussian_sigma_px: float,
+    fit_background: bool = True,
+) -> np.ndarray:
+    """
+    Build weights that project footprint samples onto a Gaussian amplitude.
+
+    With ``fit_background`` the fitted model is
+    ``sample = amplitude * gaussian + constant_background`` and the returned
+    vector extracts the amplitude term. With ``fit_background=False`` (or a
+    footprint too small to also fit a background, i.e. < 2 samples) it reduces
+    to a pure Gaussian matched filter ``amplitude = (g·sample)/(g·g)``.
+    """
+    gauss_vec = np.exp(
+        -((x_offsets**2 + y_offsets**2) / (2 * gaussian_sigma_px**2))
+    )
+    rows = [gauss_vec]
+    if fit_background and len(gauss_vec) >= 2:
+        rows.append(np.ones(len(gauss_vec)))
+    design = np.stack(rows)
+    return np.linalg.pinv(design)[:, 0]
+
+
+def _build_footprint(
+    num_rects: int,
+    pinhole_radius_px: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Footprint offsets shared by the interp coords and the fit weights.
+
+    A circular pinhole (``pinhole_radius_px``) takes precedence over the legacy
+    ``num_rects`` shell footprint so both consumers sample the exact same set.
+    """
+    if pinhole_radius_px is not None:
+        return get_pinhole_footprint(pinhole_radius_px)
+    return get_rectangles_coords(num_rects)
 
 
 class GaussProcessorCPU:
@@ -37,6 +117,7 @@ class GaussProcessorCPU:
         num_cols: Total number of columns in the frame.
         num_rows: Total number of rows in the frame.
         num_rects: Number of rectangles used to model the foci.
+        gaussian_sigma_px: Gaussian sigma in footprint pixels.
         scan_ori: Scan orientation string (e.g. "+x+y").
     """
 
@@ -52,38 +133,55 @@ class GaussProcessorCPU:
         ny_s: int,
         num_rows: int,
         num_cols: int,
-        num_rects: int = 3,
+        num_rects: int = DEFAULT_FOOTPRINT_NUM_RECTS,
+        gaussian_sigma_px: float = DEFAULT_GAUSSIAN_SIGMA_PX,
+        pinhole_radius_px: float | None = None,
+        fit_background: bool = True,
         scan_ori: str = "+x+y",
     ):
+        num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
+            num_rects, gaussian_sigma_px, pinhole_radius_px
+        )
         self.num_rows = num_rows
         self.num_cols = num_cols
         self.num_foci = nx_c * ny_c
         self.num_rects = num_rects
+        self.gaussian_sigma_px = gaussian_sigma_px
+        self.pinhole_radius_px = pinhole_radius_px
+        self.fit_background = fit_background
         self.scan_ori = scan_ori
+        footprint = _build_footprint(num_rects, pinhole_radius_px)
         self.x_interp, self.y_interp = get_interp_coords(
-            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects
+            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects, footprint=footprint
         )
-        self.lsq_weights, self.pts_per_focus = self._calculate_weights(num_rects)
+        self.lsq_weights, self.pts_per_focus = self._calculate_weights(
+            footprint, gaussian_sigma_px, fit_background
+        )
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = nx_s * ny_s
 
-    def _calculate_weights(self, num_rects: int) -> tuple[np.ndarray, int]:
+    def _calculate_weights(
+        self,
+        footprint: tuple[np.ndarray, np.ndarray],
+        gaussian_sigma_px: float,
+        fit_background: bool,
+    ) -> tuple[np.ndarray, int]:
         """
         Calculate the least-squares weights based on a Gaussian profile.
 
         Args:
-            num_rects: Number of rectangles used to model the foci.
+            footprint: ``(x_offsets, y_offsets)`` sampled around each focus.
+            gaussian_sigma_px: Gaussian sigma in footprint pixels.
+            fit_background: Whether to also fit a constant background term.
 
         Returns:
             Tuple containing the 1D weight array and the number of points per focus.
         """
-        Xr, Yr = get_rectangles_coords(num_rects)
-        sigma = 2.0
-        gauss_vec = np.exp(-((Xr**2 + Yr**2) / (2 * sigma**2)))
-        bg_vec = np.ones(len(gauss_vec))
-        A_mat = np.stack((gauss_vec, bg_vec))
-        lsq_weights = np.linalg.pinv(A_mat)[:, 0]
-        return np.array(lsq_weights), len(gauss_vec)
+        Xr, Yr = footprint
+        lsq_weights = calculate_gaussian_lsq_weights(
+            Xr, Yr, gaussian_sigma_px, fit_background
+        )
+        return np.array(lsq_weights), len(Xr)
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -179,6 +277,7 @@ class GaussProcessorGPU:
         num_cols: Total number of columns in the frame.
         num_rows: Total number of rows in the frame.
         num_rects: Number of rectangles used to model the foci.
+        gaussian_sigma_px: Gaussian sigma in footprint pixels.
         scan_ori: Scan orientation string (e.g. "+x+y").
     """
 
@@ -194,40 +293,57 @@ class GaussProcessorGPU:
         ny_s: int,
         num_rows: int,
         num_cols: int,
-        num_rects: int = 3,
+        num_rects: int = DEFAULT_FOOTPRINT_NUM_RECTS,
+        gaussian_sigma_px: float = DEFAULT_GAUSSIAN_SIGMA_PX,
+        pinhole_radius_px: float | None = None,
+        fit_background: bool = True,
         scan_ori: str = "+x+y",
     ):
+        num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
+            num_rects, gaussian_sigma_px, pinhole_radius_px
+        )
         self.num_rows = num_rows
         self.num_cols = num_cols
         self.num_foci = nx_c * ny_c
         self.num_rects = num_rects
+        self.gaussian_sigma_px = gaussian_sigma_px
+        self.pinhole_radius_px = pinhole_radius_px
+        self.fit_background = fit_background
         self.scan_ori = scan_ori
+        footprint = _build_footprint(num_rects, pinhole_radius_px)
         x_interp, y_interp = get_interp_coords(
-            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects
+            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects, footprint=footprint
         )
         self.x_interp = cp.array(x_interp)
         self.y_interp = cp.array(y_interp)
-        self.lsq_weights, self.pts_per_focus = self._calculate_weights(num_rects)
+        self.lsq_weights, self.pts_per_focus = self._calculate_weights(
+            footprint, gaussian_sigma_px, fit_background
+        )
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = nx_s * ny_s
 
-    def _calculate_weights(self, num_rects: int) -> tuple:
+    def _calculate_weights(
+        self,
+        footprint: tuple[np.ndarray, np.ndarray],
+        gaussian_sigma_px: float,
+        fit_background: bool,
+    ) -> tuple:
         """
         Calculate the least-squares weights based on a Gaussian profile.
 
         Args:
-            num_rects: Number of rectangles used to model the foci.
+            footprint: ``(x_offsets, y_offsets)`` sampled around each focus.
+            gaussian_sigma_px: Gaussian sigma in footprint pixels.
+            fit_background: Whether to also fit a constant background term.
 
         Returns:
             Tuple containing the 1D weight array (CuPy) and the number of points per focus.
         """
-        Xr, Yr = get_rectangles_coords(num_rects)
-        sigma = 2.0
-        gauss_vec = np.exp(-((Xr**2 + Yr**2) / (2 * sigma**2)))
-        bg_vec = np.ones(len(gauss_vec))
-        A_mat = np.stack((gauss_vec, bg_vec))
-        lsq_weights = np.linalg.pinv(A_mat)[:, 0]
-        return cp.array(lsq_weights), len(gauss_vec)
+        Xr, Yr = footprint
+        lsq_weights = calculate_gaussian_lsq_weights(
+            Xr, Yr, gaussian_sigma_px, fit_background
+        )
+        return cp.array(lsq_weights), len(Xr)
 
     def process_frame(self, frame_gpu: Any) -> np.ndarray:
         """
@@ -316,7 +432,10 @@ def make_gauss_processor(
     ny_s: int,
     num_rows: int,
     num_cols: int,
-    num_rects: int = 3,
+    num_rects: int = DEFAULT_FOOTPRINT_NUM_RECTS,
+    gaussian_sigma_px: float = DEFAULT_GAUSSIAN_SIGMA_PX,
+    pinhole_radius_px: float | None = None,
+    fit_background: bool = True,
     scan_ori: str = "+x+y",
     use_gpu: bool = False,
 ) -> GaussProcessorCPU | GaussProcessorGPU:
@@ -334,7 +453,12 @@ def make_gauss_processor(
         ny_s: Scanner steps along y.
         num_rows: Total number of rows in the frame.
         num_cols: Total number of columns in the frame.
-        num_rects: Number of rectangles used to model the foci.
+        num_rects: Number of rectangular shells (legacy footprint; used when
+            ``pinhole_radius_px`` is None).
+        gaussian_sigma_px: Gaussian sigma in footprint pixels.
+        pinhole_radius_px: Optional circular pinhole radius (px). When > 0 it
+            governs the footprint instead of ``num_rects``.
+        fit_background: Whether to also fit a constant background term.
         scan_ori: Scan orientation string.
         use_gpu: If True, attempt to use GPU; falls back to CPU if unavailable.
 
@@ -342,7 +466,13 @@ def make_gauss_processor(
         A GaussProcessor instance (GPU if requested and available, otherwise CPU).
     """
     logger = initLogger("make_gauss_processor")
-    args = (xp, xo, yp, yo, nx_c, ny_c, nx_s, ny_s, num_rows, num_cols, num_rects, scan_ori)
+    num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
+        num_rects, gaussian_sigma_px, pinhole_radius_px
+    )
+    args = (
+        xp, xo, yp, yo, nx_c, ny_c, nx_s, ny_s, num_rows, num_cols,
+        num_rects, gaussian_sigma_px, pinhole_radius_px, fit_background, scan_ori,
+    )
 
     if use_gpu and CUPY_AVAILABLE:
         logger.info("Creating GPU Gauss processor")

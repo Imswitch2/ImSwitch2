@@ -50,6 +50,7 @@ class LiveStreamWorker(QtCore.QObject):
         self._logger = initLogger(self, tryInheritParent=False)
         self._running = False
         self._resume_event = threading.Event()
+        self._pending_chunks: list[Chunk] = []
 
     def resume(self) -> None:
         """Release the post-``begin()`` gate so the remainder starts streaming."""
@@ -101,8 +102,24 @@ class LiveStreamWorker(QtCore.QObject):
             chunks = self._source.poll()
             if chunks:
                 for chunk in chunks:
-                    buffered.append(chunk)
-                    total += int(chunk.data.shape[0])
+                    remaining = self._frames_per_stack - total
+                    if remaining <= 0:
+                        break
+
+                    frame_count = int(chunk.data.shape[0])
+                    if frame_count <= remaining:
+                        buffered.append(chunk.data)
+                        total += frame_count
+                        continue
+
+                    buffered.append(chunk.data[:remaining])
+                    total += remaining
+                    overflow = Chunk(
+                        data=chunk.data[remaining:],
+                        start=chunk.start + remaining,
+                        end=chunk.end,
+                    )
+                    self._pending_chunks.append(overflow)
             elif self._source.is_complete():
                 break
             else:
@@ -113,7 +130,7 @@ class LiveStreamWorker(QtCore.QObject):
             self._logger.error("Source completed without yielding any frames")
             self.sigFailed.emit("source yielded no frames")
             return False
-        self.sigInitStackReady.emit(np.concatenate([c.data for c in buffered], axis=0))
+        self.sigInitStackReady.emit(np.concatenate(buffered, axis=0))
 
         # 3. Wait for the controller to begin() the session before streaming the rest.
         while not self._resume_event.is_set():
@@ -125,6 +142,13 @@ class LiveStreamWorker(QtCore.QObject):
     def _poll_loop(self) -> None:
         """Emit remaining chunks until the source is complete or interrupted."""
         while not self._interrupted():
+            if self._pending_chunks:
+                chunks = self._pending_chunks
+                self._pending_chunks = []
+                for chunk in chunks:
+                    self.sigChunkReady.emit(chunk)
+                continue
+
             try:
                 chunks = self._source.poll()
             except Exception as e:

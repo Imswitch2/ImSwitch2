@@ -227,6 +227,53 @@ if you list ``["view-only", "widefield-starss"]`` under ``reconstructors``,
 those are the two entries the combo offers.  Plugins not in the list are
 not registered and therefore not pickable.
 
+MoNaLISA fast-Gauss mode
+========================
+
+The public config-editor and setup-file ID for MoNaLISA is still
+``monalisa``. There is no separate ``gauss-monalisa`` plugin ID to list in
+``processing.reconstructors``. The same registered
+:py:class:`~imswitch.improcess.reconstructors.monalisa.reconstructor.MonalisaReconstructor`
+handles both paths:
+
+* *Reconstruct current* uses the parameter widget's ``Reconstruction method``
+  selector. ``MoNaLISA`` is the default full post-acquisition pipeline;
+  ``Fast Gauss MoNaLISA`` runs the same low-latency Gaussian reassignment
+  algorithm on the loaded stack.
+* Live reconstruction always calls ``MonalisaReconstructor.make_session()``
+  and uses the fast-Gauss streaming session under
+  ``imswitch/improcess/reconstructors/monalisa/live_session.py`` regardless
+  of the offline selector.
+
+The MoNaLISA parameter widget's ``Bleaching correction`` checkbox applies to
+the full offline path, the fast-Gauss offline path, and live fast-Gauss. When
+enabled, raw frames are normalized with the same 4th-power frame-energy
+correction, ``(E_0 / E_i) ** 4``, before reconstruction. The option is off by
+default.
+
+Fast-Gauss uses the Mini_Recon-style Gaussian footprint: concentric
+rectangular shells around each localized focus, followed by a least-squares
+fit of Gaussian amplitude plus optional constant background. The parameter
+widget exposes the fit and footprint options that used to be hard-coded:
+``Fast Gauss options -> Footprint rectangles`` defaults to ``3`` shells,
+``Fast Gauss options -> Gaussian sigma`` defaults to ``2.0`` pixels, and
+``Fast Gauss options -> Pinhole radius`` defaults to ``1.5`` times sigma.
+``Fast Gauss options -> Footprint mode`` controls which footprint is active:
+``Rectangular shells`` keeps the Mini_Recon footprint, while
+``Circular pinhole`` replaces it with a circular detection footprint using the
+pinhole radius.
+The shared ``BG modelling`` option controls whether the fast path fits a
+constant background term; ``No background`` uses a pure Gaussian matched
+filter.
+Automatic scan-orientation detection is also used for fast-Gauss by trying
+the eight possible fast/slow-axis and direction combinations and choosing the
+one with the lowest total variation.
+
+The fast-Gauss offline mode intentionally has the same geometry scope as the
+live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
+timepoints. Use the default ``MoNaLISA`` method for the full coefficient-based
+pipeline.
+
 Pass-through reconstructors
 ===========================
 
@@ -436,10 +483,9 @@ the plugins from one of these setup presets:
 .. note::
 
    The reconstructor picker UI is now wired into the Parameters dock and
-   the live reconstruction button dispatches through the registry for every
-   plugin except MoNaLISA, which still uses its legacy direct-call path
-   pending the Phase B.2 Windows + ``GPU_acc_recon.dll`` verification.
-   The ``processing:`` block continues to control which plugins are
+   the live reconstruction button dispatches through the registry. For
+   ``monalisa``, live mode uses the fast-Gauss streaming session described
+   above. The ``processing:`` block continues to control which plugins are
    *registered and offered in the picker*.
 
 These are the recommended setups for users who treat Imswitch2 as a

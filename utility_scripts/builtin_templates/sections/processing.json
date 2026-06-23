@@ -112,7 +112,7 @@
       "default": ["view-only"],
       "req": true,
       "grp": "Plugins",
-      "tip": "Built-in reconstructor plugin IDs to register for this setup.",
+      "tip": "Built-in reconstructor plugin IDs to register for this setup. Select 'monalisa' for MoNaLISA, including the live fast-Gauss path.",
       "opts": ["__improcess_reconstructors__"]
     },
     {

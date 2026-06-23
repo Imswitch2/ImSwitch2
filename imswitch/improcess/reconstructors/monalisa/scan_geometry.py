@@ -35,25 +35,76 @@ def get_center_coords(
 
 def get_rectangles_coords(num_rects: int = 1) -> tuple[np.ndarray, np.ndarray]:
     """
-    Generate X and Y pixel coordinates for concentric rectangles.
+    Generate X and Y pixel offsets for concentric rectangular shells.
 
     Args:
-        num_rects: Number of rectangles.
+        num_rects: Number of rectangular shells.
 
     Returns:
-        X and Y pixel coordinates for the rectangles.
+        X and Y pixel offsets for the shells.
     """
-    num_rects += 1
-    start = 1 - num_rects
-    stop = num_rects
-    steps = 1
+    num_rects = int(num_rects)
+    if num_rects < 1:
+        raise ValueError("num_rects must be >= 1")
 
-    X, Y = np.meshgrid(
-        np.arange(start, stop, steps, dtype=float),
-        np.arange(start, stop, steps, dtype=float),
-    )
+    all_x = []
+    all_y = []
+    for rect_idx in range(num_rects):
+        if rect_idx == 0:
+            # Innermost "shell" is the single central pixel. Emit it once;
+            # the generic perimeter construction below would duplicate it
+            # (top and bottom rows both collapse onto the center), which would
+            # double-weight the center in the Gaussian fit.
+            all_x.append(np.array([0.0]))
+            all_y.append(np.array([0.0]))
+            continue
 
-    return X.flatten(), Y.flatten()
+        width = rect_idx * 2
+        height = rect_idx * 2
+
+        x_left, x_right = -width / 2, width / 2
+        y_bottom, y_top = -height / 2, height / 2
+
+        top_x = np.arange(x_left, x_right + 1, 1, dtype=float)
+        top_y = np.ones(len(top_x), dtype=float) * y_top
+
+        bottom_x = np.arange(x_left, x_right + 1, 1, dtype=float)
+        bottom_y = np.ones(len(bottom_x), dtype=float) * y_bottom
+
+        side_y = np.arange(y_bottom + 1, y_top, 1, dtype=float)
+        right_x = np.ones(len(side_y), dtype=float) * x_right
+        left_x = np.ones(len(side_y), dtype=float) * x_left
+
+        all_x.extend([top_x, bottom_x, left_x, right_x])
+        all_y.extend([top_y, bottom_y, side_y, side_y])
+
+    return np.concatenate(all_x), np.concatenate(all_y)
+
+
+def get_pinhole_footprint(radius_px: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Integer pixel offsets within a circular detection pinhole.
+
+    Returns a filled disc of the given radius (each offset once, center
+    included exactly once), suitable as a physically-sized detection footprint
+    in the spirit of image-scanning-microscopy pinholing. A smaller radius
+    trades signal for resolution; a larger one trades resolution for SNR.
+
+    Args:
+        radius_px: Pinhole radius in footprint pixels (must be > 0).
+
+    Returns:
+        Flattened X and Y pixel offsets inside the pinhole disc.
+    """
+    radius_px = float(radius_px)
+    if radius_px <= 0:
+        raise ValueError("pinhole radius must be > 0")
+
+    half = int(np.ceil(radius_px))
+    coords = np.arange(-half, half + 1, dtype=float)
+    X, Y = np.meshgrid(coords, coords)
+    mask = (X ** 2 + Y ** 2) <= radius_px ** 2
+    return X[mask], Y[mask]
 
 
 def get_interp_coords(
@@ -66,6 +117,7 @@ def get_interp_coords(
     num_rows: int,
     num_cols: int,
     num_rects: int = 3,
+    footprint: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Generate local interpolation coordinates around each grid focus center.
@@ -79,21 +131,29 @@ def get_interp_coords(
         ny_c: Number of foci along y-axis.
         num_rows: Total number of rows in the frame.
         num_cols: Total number of columns in the frame.
-        num_rects: Number of rectangles used to model the foci.
+        num_rects: Number of rectangular shells (used only when ``footprint``
+            is None — the legacy shell footprint).
+        footprint: Optional ``(x_offsets, y_offsets)`` to use directly (e.g. a
+            circular pinhole from :func:`get_pinhole_footprint`). When given it
+            overrides ``num_rects`` so the interpolation and the fit weights can
+            share the exact same footprint.
 
     Returns:
         Flattened X and Y interpolation coordinates clipped to frame boundaries.
     """
     Xc, Yc = get_center_coords(xp, xo, yp, yo, nx_c, ny_c)
-    Xr, Yr = get_rectangles_coords(num_rects)
+    if footprint is not None:
+        Xr, Yr = footprint
+    else:
+        Xr, Yr = get_rectangles_coords(num_rects)
 
     Xi = Xc.reshape((-1, 1)) + Xr
     Yi = Yc.reshape((-1, 1)) + Yr
 
     Xi[Xi < 0] = 0
-    Xi[Xi > num_cols - 1] = 0
+    Xi[Xi > num_cols - 1] = num_cols - 1
     Yi[Yi < 0] = 0
-    Yi[Yi > num_rows - 1] = 0
+    Yi[Yi > num_rows - 1] = num_rows - 1
 
     return Xi.flatten(), Yi.flatten()
 

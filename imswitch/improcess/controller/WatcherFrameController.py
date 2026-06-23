@@ -93,27 +93,64 @@ class WatcherFrameController(ImProcessWidgetController):
             self.watcher.removeFromList(files)
 
     def runNextFile(self):
-        if len(self.toExecute) and not self.execution:
+        while len(self.toExecute) and not self.execution:
             newFile = self.toExecute.pop()
             self.current = os.path.join(self._widget.path, newFile)
             # if os.path.getmtime(self.current) + 1 < time.time():
             self.recPath = os.path.join(
                 self._widget.path, self._saveSubdir, f'{self._savePrefix}{newFile}'
             )
-            datasets = DataObj.getDatasetNames(self.current)
             dataObjs = []
-            for d in datasets:
-                file, _ = DataObj._open(self.current, d)
-                dataObj = DataObj(os.path.basename(self.current), d, path=self.current, file=file)
-                dataObj.checkLock()
-                # dataObj.checkModifTime(minDiffTime=3)
-                dataObjs.append(dataObj)
-                self.attrs = dataObj.attrs
+            try:
+                datasets = DataObj.getDatasetNames(self.current)
+                if not datasets:
+                    raise RuntimeError('File does not contain any datasets')
+
+                for d in datasets:
+                    file, _ = DataObj._open(self.current, d)
+                    dataObj = DataObj(os.path.basename(self.current), d, path=self.current, file=file)
+                    dataObj.checkLock()
+                    # dataObj.checkModifTime(minDiffTime=3)
+                    dataObjs.append(dataObj)
+                    self.attrs = dataObj.attrs
+            except OSError as exc:
+                self._closeDataObjs(dataObjs)
+                self.__logger.warning(
+                    f"File is not ready for reconstruction, will watch again: {self.current}: {exc}"
+                )
+                self._markForRedetection(newFile)
+                continue
+            except Exception as exc:
+                self._closeDataObjs(dataObjs)
+                self.__logger.warning(
+                    f"Skipping file that cannot be reconstructed by the watcher: {self.current}: {exc}"
+                )
+                continue
+
             self.execution = True
             self.t0 = perf_counter()
             self._commChannel.sigReconstruct.emit(dataObjs, True)
+            return
             # else:
             #     raise AssertionError()
+
+    def _markForRedetection(self, fileName):
+        """Remove a not-ready file from FileWatcher history so it is seen again."""
+        watcher = getattr(self, 'watcher', None)
+        if watcher is None:
+            return
+        try:
+            watcher.removeFromList([fileName])
+        except (AttributeError, ValueError):
+            pass
+
+    @staticmethod
+    def _closeDataObjs(dataObjs):
+        for dataObj in dataObjs:
+            try:
+                dataObj.checkAndUnloadData()
+            except Exception:
+                pass
 
     def executionFinished(self, image):
         if self.execution:

@@ -211,14 +211,66 @@ multi-consumer migration:
 ---
 
 ## Phase 1.5 (later) — ChunkBroker / subscription API
-- Introduce a `ChunkBroker` behind `readChunk` with **explicit per-subscriber
-  queues**, defined replay rules, unregister behavior, and a per-consumer
-  overflow policy (block vs drop-with-counter — no silent drop).
-- **Characterization tests first:** lock in today's fan-out behavior
-  (`test_detector_chunk_consumers.py:75`) before changing anything, then refactor
-  to the broker keeping those tests green.
+Quick audit conclusion: this phase is **medium effort / moderate risk** if it
+is scoped as a broker shim behind today's `readChunk`, and **high effort /
+high risk** only if it tries to become the full producer-driven Option E rewrite.
+Treat those as two separate deliverables.
+
+### Phase 1.5a — broker shim behind `readChunk`
+- **Effort:** ~2-4 focused days, or ~3-5 days including review and focused
+  regression tests.
+- Extract today's broker-like fan-out from `DetectorManager.readChunk()` into a
+  formal `ChunkBroker` class, preserving current behavior first:
+  - destructive detector `getChunk()` is still drained by the compatibility
+    wrapper;
+  - every published frame is fanned out to every registered consumer;
+  - interleaved consumers do not steal frames from each other;
+  - `releaseChunkConsumer()` stops retaining frames for that consumer.
+- Required broker API shape:
+  - `subscribe(key, max_frames=MAX_QUEUED_CONSUMER_FRAMES,
+    overflow="drop_oldest")`;
+  - `publish(frames)`;
+  - `read(key) -> list[np.ndarray]`;
+  - `wait_read(key, timeout=None) -> list[np.ndarray]` or an equivalent
+    subscription object with a blocking drain method;
+  - `release(key)`;
+  - stats/introspection for queued frames, dropped frames, last publish time,
+    and active subscribers.
+- Overflow must be explicit and per-consumer. A slow live-view/reconstruction
+  consumer should not silently endanger recording, and one shared bounded queue
+  is still wrong because consumers would steal frames from each other.
+- Keep `DetectorManager.readChunk(consumerKey)` as the compatibility API while
+  migrating callers. It should drain `getChunk()`, call `broker.publish(...)`,
+  and return `broker.read(consumerKey)`.
+- **Characterization tests first:** keep the current fan-out tests
+  (`test_detector_chunk_consumers.py:75`) green, then add direct broker tests for
+  subscribe/read/release, per-consumer overflow counters, and blocking wait
+  timeout/wakeup behavior.
+
+### Phase 1.5b — live-reconstruction consumer
+- **Effort:** +1-2 focused days after the broker exists.
+- Add a `ChunkBrokerLiveSource` (or equivalent live-source adapter) that
+  subscribes to one or more detector brokers and exposes frames to the live
+  reconstruction pipeline.
+- Initial implementation may still rely on the existing `readChunk` compatibility
+  wrapper or recording/detector polling path to publish frames. This is useful
+  for live reconstruction, but it does **not** by itself remove acquisition
+  polling.
+- Acceptance criteria: recording, BeadRec, workflow facade, and live
+  reconstruction can subscribe independently without frame stealing; slow live
+  reconstruction consumption reports drops/stats without breaking recording.
+
+### Phase 1.5c — producer-driven readiness
+- Add the blocking wait/condition plumbing needed for producer-driven detectors,
+  but do not require every detector to use it yet.
+- Document the first migration targets before implementation: one mock detector,
+  one camera manager, and one scan detector. This keeps the next phase bounded
+  and proves both producer models.
+- Do not claim `time.sleep` is removed repo-wide until Phase 2 migrates real
+  producers to `broker.publish(...)`.
 
 ## Phase 2 (later) — producer-driven migration (small surface)
+- **Effort:** ~1-2+ weeks, high risk without hardware validation.
 - Migrate exactly three detectors to producer-driven mode: one **mock**, one
   **camera** (needs a pull→push adapter — no frame-ready signal today), one
   **scan** detector (already emits `sigNewFrame`).
@@ -301,5 +353,25 @@ Lessons for future agent runs: steer agents away from timing-sensitive
 concurrency *integration* tests (they thrash and risk weakening the impl); add
 `pytest-timeout` to CI so a hang fails loudly instead of running for minutes.
 
-**Phase 1.5+:** ChunkBroker characterization tests, then broker refactor —
-the first real parallelization candidate (separate git worktrees per agent).
+**Phase 1.5a — ChunkBroker shim:**
+1. Characterization/contract agent: strengthen
+   `test_detector_chunk_consumers.py` around current fan-out semantics,
+   release behavior, idle-consumer overflow, and recording/workflow coexistence.
+2. Broker implementation agent: extract the queue/fan-out logic into a
+   `ChunkBroker` with `subscribe`, `publish`, `read`, `wait_read`, `release`,
+   and stats, keeping `DetectorManager.readChunk()` as the compatibility
+   wrapper.
+3. Regression agent: run focused detector/recording tests, look for consumers
+   that still call destructive `getChunk()` directly, and verify no frame
+   stealing between recording, BeadRec, and workflow facade.
+
+**Phase 1.5b — live-reconstruction consumer:**
+1. Add a `ChunkBrokerLiveSource` adapter that subscribes to broker queues without
+   changing the detector producer model.
+2. Validate slow-consumer/drop-stat behavior so live reconstruction cannot
+   silently harm recording.
+
+**Phase 2 — producer-driven pilot:** use separate worktrees if available;
+otherwise run OpenHands agents sequentially in the shared checkout. Split the
+mock, camera pull→push adapter, and scan-detector migration into separate
+agents/reviews so hardware-specific risk stays isolated.

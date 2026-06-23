@@ -133,6 +133,32 @@ def test_zarr_live_source_expected_frames(tmp_zarr_path):
     source.close()
 
 
+def test_zarr_live_source_derives_frames_per_stack_from_scan_geometry(tmp_zarr_path):
+    """MoNaLISA live stores can derive startup stack size from scan metadata."""
+    data = np.zeros((18 * 18, 3, 4), dtype=np.uint16)
+
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    det_group = root.create_group("CAM")
+    array = ZarrStorer._create_array(det_group, "data", data=data, chunks=(50, 3, 4))
+    array.attrs["detector_name"] = "CAM"
+    array.attrs["writing"] = False
+
+    metadata = det_group.create_group("metadata")
+    scan_stage = metadata.create_group("ScanStage")
+    scan_stage.attrs["axis_startpos"] = [0.0, 0.0, 0.0]
+    scan_stage.attrs["axis_length"] = [950.0, 950.0, 1.0]
+    scan_stage.attrs["axis_step_size"] = [50.0, 50.0, 1.0]
+    scan_ttl = metadata.create_group("ScanTTL")
+    scan_ttl.attrs["Nx"] = 18
+    scan_ttl.attrs["Ny"] = 18
+
+    source = ZarrLiveSource(detector_name="CAM")
+    info = source.open(tmp_zarr_path)
+
+    assert info.frames_per_stack == 18 * 18
+    source.close()
+
+
 def test_zarr_live_source_writing_false_completes(tmp_zarr_path):
     """Test that writing=False completes when all frames read."""
     data = np.zeros((3, 2, 3), dtype=np.uint16)

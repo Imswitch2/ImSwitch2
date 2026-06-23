@@ -8,6 +8,8 @@ default_save_subdir to the watcher.
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+import importlib
 
 from imswitch.improcess.controller.WatcherFrameController import (
     WatcherFrameController,
@@ -84,3 +86,107 @@ def test_set_save_prefix_accepts_empty_string():
     assert stub._savePrefix == ''
     stub.setSavePrefix(None)
     assert stub._savePrefix == ''
+
+
+# --- watcher queue error handling -----------------------------------------
+
+
+def _make_queue_watcher_stub(tmp_path):
+    stub = SimpleNamespace(
+        _widget=SimpleNamespace(path=str(tmp_path)),
+        _commChannel=SimpleNamespace(sigReconstruct=SimpleNamespace(emit=MagicMock())),
+        _saveSubdir='rec',
+        _savePrefix='rec_',
+        execution=False,
+        toExecute=[],
+        attrs=None,
+        watcher=SimpleNamespace(removeFromList=MagicMock()),
+    )
+    setattr(stub, '_WatcherFrameController__logger', MagicMock())
+    stub.runNextFile = WatcherFrameController.runNextFile.__get__(stub)
+    stub._markForRedetection = WatcherFrameController._markForRedetection.__get__(stub)
+    stub._closeDataObjs = WatcherFrameController._closeDataObjs
+    return stub
+
+
+class _FakeDataObj:
+    def __init__(self, name, dataset_name, *, path=None, file=None):
+        self.name = name
+        self.datasetName = dataset_name
+        self.path = path
+        self.file = file
+        self.attrs = {'writing': False}
+        self.closed = False
+
+    @staticmethod
+    def getDatasetNames(path):
+        if path.endswith('bad.hdf5'):
+            raise ValueError('unsupported layout')
+        if path.endswith('busy.hdf5'):
+            raise OSError('writing in progress')
+        return ['CAM']
+
+    @staticmethod
+    def _open(path, dataset_name):
+        return object(), dataset_name
+
+    def checkLock(self):
+        return None
+
+    def checkAndUnloadData(self):
+        self.closed = True
+
+
+def test_run_next_file_skips_unreadable_file_and_continues(monkeypatch, tmp_path):
+    watcher_module = importlib.import_module(
+        'imswitch.improcess.controller.WatcherFrameController'
+    )
+
+    monkeypatch.setattr(watcher_module, 'DataObj', _FakeDataObj)
+    stub = _make_queue_watcher_stub(tmp_path)
+    # runNextFile pops from the end, so bad is attempted before good.
+    stub.toExecute = ['good.hdf5', 'bad.hdf5']
+
+    stub.runNextFile()
+
+    stub._commChannel.sigReconstruct.emit.assert_called_once()
+    data_objs, consolidate = stub._commChannel.sigReconstruct.emit.call_args.args
+    assert consolidate is True
+    assert len(data_objs) == 1
+    assert data_objs[0].datasetName == 'CAM'
+    assert stub.current.endswith('good.hdf5')
+    assert stub.execution is True
+
+
+def test_run_next_file_marks_not_ready_file_for_redetection(monkeypatch, tmp_path):
+    watcher_module = importlib.import_module(
+        'imswitch.improcess.controller.WatcherFrameController'
+    )
+
+    monkeypatch.setattr(watcher_module, 'DataObj', _FakeDataObj)
+    stub = _make_queue_watcher_stub(tmp_path)
+    stub.toExecute = ['busy.hdf5']
+
+    stub.runNextFile()
+
+    stub._commChannel.sigReconstruct.emit.assert_not_called()
+    stub.watcher.removeFromList.assert_called_once_with(['busy.hdf5'])
+    assert stub.execution is False
+
+
+def test_run_next_file_continues_after_not_ready_file(monkeypatch, tmp_path):
+    watcher_module = importlib.import_module(
+        'imswitch.improcess.controller.WatcherFrameController'
+    )
+
+    monkeypatch.setattr(watcher_module, 'DataObj', _FakeDataObj)
+    stub = _make_queue_watcher_stub(tmp_path)
+    # busy is attempted first, then good should still be reconstructed.
+    stub.toExecute = ['good.hdf5', 'busy.hdf5']
+
+    stub.runNextFile()
+
+    stub.watcher.removeFromList.assert_called_once_with(['busy.hdf5'])
+    stub._commChannel.sigReconstruct.emit.assert_called_once()
+    assert stub.current.endswith('good.hdf5')
+    assert stub.execution is True

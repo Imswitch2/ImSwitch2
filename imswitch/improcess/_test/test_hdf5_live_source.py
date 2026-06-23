@@ -143,6 +143,34 @@ def test_hdf5_live_source_expected_frames(tmp_hdf5_path):
     source.close()
 
 
+def test_hdf5_live_source_derives_frames_per_stack_from_scan_geometry(tmp_hdf5_path):
+    """MoNaLISA live files may omit recording:frames_per_stack."""
+    data = np.zeros((18 * 18, 3, 4), dtype=np.uint16)
+
+    with h5py.File(tmp_hdf5_path, 'w', libver='latest') as f:
+        det_group = f.create_group("CAM")
+        dataset = det_group.create_dataset("data", data=data, chunks=(50, 3, 4))
+        dataset.attrs["detector_name"] = "CAM"
+        dataset.attrs["writing"] = False
+
+        metadata = det_group.create_group("metadata")
+        scan_stage = metadata.create_group("ScanStage")
+        scan_stage.attrs["axis_startpos"] = [0.0, 0.0, 0.0]
+        scan_stage.attrs["axis_length"] = [950.0, 950.0, 1.0]
+        scan_stage.attrs["axis_step_size"] = [50.0, 50.0, 1.0]
+        scan_ttl = metadata.create_group("ScanTTL")
+        scan_ttl.attrs["Nx"] = 18
+        scan_ttl.attrs["Ny"] = 18
+        f.flush()
+        f.swmr_mode = True
+
+    source = Hdf5LiveSource(detector_name="CAM")
+    info = source.open(tmp_hdf5_path)
+
+    assert info.frames_per_stack == 18 * 18
+    source.close()
+
+
 def test_hdf5_live_source_writing_false_completes(tmp_hdf5_path):
     """Test that writing=False completes when all frames read."""
     data = np.zeros((3, 2, 3), dtype=np.uint16)

@@ -1,3 +1,5 @@
+import copy
+
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -125,6 +127,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # tree that differs fundamentally from the standard plugin widget API.
         # This will remain until the scan-params/find-pattern path is migrated.
         if reconstructor.id == "monalisa":
+            try:
+                self._widget.setLegacyMonalisaParameterWidget()
+            except Exception:
+                pass
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
@@ -152,7 +158,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         # NOTE: Special-case by ID retained because MoNaLISA uses a separate legacy
         # reconstruction path (MoNaLISAController) that differs from the generic
         # plugin process() API.
-        if self._main._activeReconstructor is not None and self._main._activeReconstructor.id != "monalisa":
+        if self._main._activeReconstructor is None:
+            return
+        if self._main._activeReconstructor.id != "monalisa":
+            self._reconstruct_with_plugin(dataObjs, consolidate)
+            return
+        params = self._widget.getReconstructionParams()
+        if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
             self._reconstruct_with_plugin(dataObjs, consolidate)
             return
 
@@ -169,6 +181,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
         for dataObj in dataObjs:
             params = self._widget.getReconstructionParams()
+            if self._main._activeReconstructor.id == "monalisa":
+                params = dict(params)
+                params['scan_params'] = copy.deepcopy(
+                    self._main.monalisaController._scanParDict
+                )
             self._logger.info(
                 f"Running {self._main._activeReconstructor.id} reconstruction for {dataObj.name}"
             )

@@ -240,6 +240,27 @@ def test_stream_worker_startup_retries_open_then_collects_first_stack():
     np.testing.assert_array_equal(streamed, stack[4:])
 
 
+def test_stream_worker_startup_splits_oversized_first_chunk():
+    """A source may emit more than one logical stack in its first poll."""
+    stack = np.arange(6 * 4 * 5, dtype=np.float32).reshape(6, 4, 5)
+    source = _RetryOpenSource(stack, chunk_size=6, frames_per_stack=4)
+    worker = LiveStreamWorker(source, source_arg="x", do_open=True,
+                              poll_interval_ms=1, open_max_attempts=10)
+
+    init_data, chunks = [], []
+    worker.sigInitStackReady.connect(lambda d: (init_data.append(d), worker.resume()))
+    worker.sigChunkReady.connect(lambda c: chunks.append(c))
+
+    worker.run()
+
+    assert init_data[0].shape[0] == 4
+    np.testing.assert_array_equal(init_data[0], stack[:4])
+    assert len(chunks) == 1
+    assert chunks[0].start == 4
+    assert chunks[0].end == 6
+    np.testing.assert_array_equal(chunks[0].data, stack[4:])
+
+
 def test_stream_worker_startup_fails_when_store_never_readable():
     """If the store never becomes readable, startup gives up after bounded
     attempts and emits sigFailed (so a queue driver can advance)."""

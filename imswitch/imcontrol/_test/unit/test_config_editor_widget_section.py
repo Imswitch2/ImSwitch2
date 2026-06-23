@@ -137,6 +137,13 @@ def test_microscope_stand_section_uses_loadable_manager_name():
     assert defaults["managerName"] in editor.CAT_MANAGERS.get("stands", [])
 
 
+def test_processing_section_exposes_monalisa_reconstructor():
+    """The config editor exposes the public MoNaLISA plugin id."""
+    reconstructors = editor._section_option_values("processing", "reconstructors")
+
+    assert "monalisa" in reconstructors
+
+
 def test_validation_warning_includes_clickable_link():
     """
     Widget→section validation warnings must include a clickable 'Configure…' link.

@@ -5,7 +5,11 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamingSession, StreamPlan
 
-from .gauss_processor import make_gauss_processor
+from .gauss_processor import (
+    DEFAULT_FOOTPRINT_NUM_RECTS,
+    DEFAULT_GAUSSIAN_SIGMA_PX,
+    make_gauss_processor,
+)
 from .localizer import localizer
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
@@ -37,8 +41,11 @@ class MonalisaLiveSession(StreamingSession):
         self.ny_c = None
         self.num_frames_in_stack = None
         self.use_gpu = False
+        self.bleaching_correction = False
+        self._bleach_reference_energy = None
         self.name = ""
         self.scan_params = {}
+        self.output_pixel_size_nm = None
 
     def begin(self, init_obj, params: dict) -> StreamPlan:
         """
@@ -46,7 +53,7 @@ class MonalisaLiveSession(StreamingSession):
 
         Args:
             init_obj: StreamInit object containing the first chunk and attrs.
-            params: Parameter dict (currently unused for fast-Gauss).
+            params: Parameter dict for the fast-Gauss path.
 
         Returns:
             StreamPlan describing the output shape and metadata.
@@ -55,7 +62,14 @@ class MonalisaLiveSession(StreamingSession):
         data = init_obj.data
         attrs = init_obj.attrs
 
-        self.use_gpu = params.get("use_gpu", False)
+        explicit_use_gpu = params.get("use_gpu")
+        self.use_gpu = (
+            bool(explicit_use_gpu)
+            if explicit_use_gpu is not None
+            else str(params.get("device", "")).lower() == "gpu"
+        )
+        self.bleaching_correction = bool(params.get("bleaching_correction", False))
+        self._bleach_reference_energy = None
 
         self._logger.info(f"Beginning live session for {self.name}")
 
@@ -74,29 +88,36 @@ class MonalisaLiveSession(StreamingSession):
 
         try:
             axis_startpos = np.array(imswitch_meta["ScanStage:axis_startpos"]).flatten()
-            x0, y0, _ = axis_startpos
-            x1, y1, _ = imswitch_meta["ScanStage:axis_length"]
-            dx, dy, _ = imswitch_meta["ScanStage:axis_step_size"]
-            self.nx_s = int(np.ceil((x1 - x0) / dx)) + 1
-            self.ny_s = int(np.ceil((y1 - y0) / dy)) + 1
-            
-            # Prefer recording:num_timepoints, fallback to Rec:LapseTime, then 1
-            num_time_points = imswitch_meta.get("recording:num_timepoints")
-            if num_time_points is not None:
-                num_time_points = max(1, int(num_time_points))
-            else:
-                num_time_points = imswitch_meta.get("Rec:LapseTime", 1)
+            axis_length = np.array(imswitch_meta["ScanStage:axis_length"]).flatten()
+            axis_step_size = np.array(imswitch_meta["ScanStage:axis_step_size"]).flatten()
+            step_x_nm, step_y_nm = self.scan_stage_step_size_nm(
+                imswitch_meta, axis_step_size
+            )
+            self.nx_s, self.ny_s = self._resolve_scan_steps(
+                axis_startpos,
+                axis_length,
+                axis_step_size,
+                imswitch_meta,
+                init_obj.stack_info,
+                data.shape[0],
+            )
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
 
         self.num_frames_in_stack = self.nx_s * self.ny_s
+        num_time_points = self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
 
         self._logger.info(
             f"Scan geometry: nx_s={self.nx_s}, ny_s={self.ny_s}, "
             f"frames_per_stack={self.num_frames_in_stack}, timepoints={num_time_points}"
         )
 
-        loc_result = localizer(data)
+        working_data = (
+            self._apply_bleaching_correction(data)
+            if self.bleaching_correction else data
+        )
+
+        loc_result = localizer(working_data)
         self.nx_c = loc_result.nx_c
         self.ny_c = loc_result.ny_c
 
@@ -106,7 +127,13 @@ class MonalisaLiveSession(StreamingSession):
             f"nx_c={loc_result.nx_c}, ny_c={loc_result.ny_c}"
         )
 
-        num_rects = params.get("num_rects", 4)
+        num_rects = params.get(
+            "fast_gauss_footprint_num_rects",
+            params.get("num_rects", DEFAULT_FOOTPRINT_NUM_RECTS),
+        )
+        gaussian_sigma_px = self._resolve_gaussian_sigma_px(params)
+        pinhole_radius_px = self._resolve_pinhole_radius_px(params, gaussian_sigma_px)
+        fit_background = self._resolve_fit_background(params)
         self.processor = make_gauss_processor(
             loc_result.xp,
             loc_result.xo,
@@ -119,17 +146,20 @@ class MonalisaLiveSession(StreamingSession):
             loc_result.num_rows,
             loc_result.num_cols,
             num_rects=num_rects,
+            gaussian_sigma_px=gaussian_sigma_px,
+            pinhole_radius_px=pinhole_radius_px,
+            fit_background=fit_background,
             use_gpu=self.use_gpu,
         )
 
-        if data.shape[0] < self.num_frames_in_stack:
+        if working_data.shape[0] < self.num_frames_in_stack:
             self._logger.warning(
-                f"First chunk has only {data.shape[0]} frames, need {self.num_frames_in_stack} "
+                f"First chunk has only {working_data.shape[0]} frames, need {self.num_frames_in_stack} "
                 f"for orientation detection; using default orientation '+x+y'"
             )
             orientation = "+x+y"
         else:
-            chunk_for_orientation = data[: self.num_frames_in_stack]
+            chunk_for_orientation = working_data[: self.num_frames_in_stack]
             if self.use_gpu and CUPY_AVAILABLE:
                 chunk_for_orientation = cp.array(chunk_for_orientation)
             proc_pixels = self.processor.process_chunk(chunk_for_orientation)
@@ -144,6 +174,10 @@ class MonalisaLiveSession(StreamingSession):
 
         recon_rows = loc_result.ny_c * self.ny_s
         recon_cols = loc_result.nx_c * self.nx_s
+        self.output_pixel_size_nm = (
+            step_y_nm / loc_result.ny_c if loc_result.ny_c else step_y_nm,
+            step_x_nm / loc_result.nx_c if loc_result.nx_c else step_x_nm,
+        )
 
         self.reconstructed = np.zeros(
             (1, 1, num_time_points, 1, recon_rows, recon_cols), dtype=np.float32
@@ -153,7 +187,7 @@ class MonalisaLiveSession(StreamingSession):
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
             "directions": ["+", "+", "+", "+"],
             "steps": [self.nx_s, self.ny_s, 1, num_time_points],
-            "step_sizes": [float(dx), float(dy), 1.0, 1.0],
+            "step_sizes": [float(step_x_nm), float(step_y_nm), 1.0, 1.0],
             "unidirectional": False,
         }
 
@@ -169,6 +203,7 @@ class MonalisaLiveSession(StreamingSession):
 
         out_shape = self.reconstructed.shape
         axis_labels = ["Dataset", "Base", "T", "Z", "Y", "X"]
+        axis_scales = [1.0, 1.0, 1.0, 1.0, *self.output_pixel_size_nm]
         view_modes = []
         dtype = np.dtype(np.float32)
 
@@ -178,6 +213,7 @@ class MonalisaLiveSession(StreamingSession):
             view_modes=view_modes,
             dtype=dtype,
             scale_unit="nm",
+            axis_scales=axis_scales,
         )
 
     def push(self, chunk: np.ndarray, start: int, end: int) -> None:
@@ -192,6 +228,26 @@ class MonalisaLiveSession(StreamingSession):
         if self.processor is None:
             raise RuntimeError("Session not initialized; call begin() first")
 
+        offset = 0
+        current_start = int(start)
+        while offset < chunk.shape[0] and current_start < end:
+            local_start = current_start % self.num_frames_in_stack
+            frames_left_in_stack = self.num_frames_in_stack - local_start
+            frames_left_in_chunk = chunk.shape[0] - offset
+            segment_length = min(frames_left_in_stack, frames_left_in_chunk)
+            if segment_length <= 0:
+                break
+
+            segment = chunk[offset:offset + segment_length]
+            segment_start = current_start
+            segment_end = segment_start + segment_length
+            self._push_single_stack_chunk(segment, segment_start, segment_end)
+
+            offset += segment_length
+            current_start = segment_end
+
+    def _push_single_stack_chunk(self, chunk: np.ndarray, start: int, end: int) -> None:
+        """Scatter a chunk that is guaranteed not to cross a scan-stack boundary."""
         # start/end are GLOBAL frame indices across timepoints (the lapse source
         # streams scan0, scan1, ... as one continuous range). frame_inds is
         # per-stack (length num_frames_in_stack), so derive the timepoint from
@@ -208,12 +264,314 @@ class MonalisaLiveSession(StreamingSession):
         local_start = start % self.num_frames_in_stack
         local_end = local_start + (end - start)
 
+        if self.bleaching_correction:
+            chunk = self._apply_bleaching_correction(chunk)
+
         chunk_gpu = cp.array(chunk) if self.use_gpu and CUPY_AVAILABLE else chunk
         proc_pixels = self.processor.process_chunk(chunk_gpu)
         pixel_indices = self.processor.frame_inds[local_start:local_end]
 
         flat_recon = self.reconstructed[0, 0, time_index, 0].reshape(-1)
         flat_recon[pixel_indices.ravel()] = proc_pixels.ravel()
+
+    def _resolve_gaussian_sigma_px(self, params: dict) -> float:
+        """Fit-Gaussian sigma in pixels.
+
+        An explicit ``fast_gauss_gaussian_sigma_px``/``gaussian_sigma_px`` > 0
+        wins; otherwise derive it from the optical PSF using the slow-path
+        convention ``sigma_px = PSF_FWHM_nm / (2.355 * pixel_size_nm)`` so the
+        fast and slow paths share one physical parameterization.
+        """
+        explicit = params.get(
+            "fast_gauss_gaussian_sigma_px", params.get("gaussian_sigma_px", 0.0)
+        )
+        try:
+            explicit = float(explicit)
+        except (TypeError, ValueError):
+            explicit = 0.0
+        if explicit > 0:
+            return explicit
+
+        fwhm_nm = params.get("psf_fwhm_nm")
+        pixel_size_nm = params.get("pixel_size_nm")
+        try:
+            if fwhm_nm and pixel_size_nm and float(pixel_size_nm) > 0:
+                return float(fwhm_nm) / (2.355 * float(pixel_size_nm))
+        except (TypeError, ValueError):
+            pass
+        return DEFAULT_GAUSSIAN_SIGMA_PX
+
+    @staticmethod
+    def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:
+        """Circular pinhole radius = k * sigma (k from params; None disables)."""
+        mode = params.get("fast_gauss_footprint_mode")
+        if mode is not None and str(mode).strip().lower() != "circular pinhole":
+            return None
+
+        k = params.get("fast_gauss_pinhole_radius_sigma", 0.0)
+        try:
+            k = float(k)
+        except (TypeError, ValueError):
+            k = 0.0
+        return k * gaussian_sigma_px if k > 0 else None
+
+    @staticmethod
+    def _resolve_fit_background(params: dict) -> bool:
+        """Whether to fit a constant background (False = pure matched filter)."""
+        bg = str(params.get("bg_modelling", "Constant")).strip().lower()
+        return bg not in ("no background", "none")
+
+    def _resolve_num_timepoints(self, metadata: dict, stack_info) -> int:
+        """Resolve a positive timepoint count from recorder metadata.
+
+        Some legacy files store missing lapse metadata as the literal string
+        ``"null"``. Treat those values as absent instead of letting them reach
+        the output-buffer shape.
+        """
+        for key in ("recording:num_timepoints", "Rec:LapseTime"):
+            timepoints = self._coerce_positive_int(metadata.get(key))
+            if timepoints is not None:
+                return timepoints
+
+        expected_frames = self._coerce_positive_int(
+            getattr(stack_info, "expected_frames", None)
+        )
+        if expected_frames is not None and self.num_frames_in_stack:
+            return max(1, int(np.ceil(expected_frames / self.num_frames_in_stack)))
+
+        return 1
+
+    def _resolve_scan_steps(
+        self,
+        axis_startpos: np.ndarray,
+        axis_length: np.ndarray,
+        axis_step_size: np.ndarray,
+        metadata: dict,
+        stack_info,
+        init_frame_count: int,
+    ) -> tuple[int, int]:
+        """Resolve X/Y scan positions, accepting both scan-size conventions.
+
+        Live ImControl metadata stores ``axis_length`` as a physical scan size
+        (positions = length / step). The offline adapter historically writes an
+        endpoint-style length (positions = (length - start) / step + 1). Use
+        the known first-stack frame count to choose the convention that matches
+        the actual data.
+        """
+        if axis_startpos.size < 2 or axis_length.size < 2 or axis_step_size.size < 2:
+            raise ValueError("ScanStage axis metadata must contain at least X and Y")
+
+        stack_frames = self._resolve_frames_per_stack(
+            metadata,
+            stack_info,
+            init_frame_count,
+        )
+        ttl_steps = self._scan_steps_from_ttl(metadata)
+        if ttl_steps is not None:
+            return ttl_steps
+
+        candidates = []
+
+        size_steps = self._scan_steps_from_size(axis_length, axis_step_size)
+        if size_steps is not None:
+            candidates.append(size_steps)
+
+        endpoint_steps = self._scan_steps_from_endpoint(
+            axis_startpos, axis_length, axis_step_size
+        )
+        if endpoint_steps is not None:
+            candidates.append(endpoint_steps)
+
+        unique_candidates = []
+        for candidate in candidates:
+            if candidate not in unique_candidates:
+                unique_candidates.append(candidate)
+
+        if stack_frames is not None:
+            for nx_s, ny_s in unique_candidates:
+                if nx_s * ny_s == stack_frames:
+                    return nx_s, ny_s
+
+        if unique_candidates:
+            return unique_candidates[-1]
+
+        raise ValueError("Could not derive MoNaLISA scan dimensions")
+
+    @staticmethod
+    def _scan_steps_from_ttl(metadata: dict) -> tuple[int, int] | None:
+        nx_s = MonalisaLiveSession._coerce_positive_int(metadata.get("ScanTTL:Nx"))
+        ny_s = MonalisaLiveSession._coerce_positive_int(metadata.get("ScanTTL:Ny"))
+        if nx_s is None or ny_s is None:
+            return None
+        return nx_s, ny_s
+
+    @staticmethod
+    def _scan_steps_from_size(
+        axis_length: np.ndarray, axis_step_size: np.ndarray
+    ) -> tuple[int, int] | None:
+        try:
+            dx, dy = float(axis_step_size[0]), float(axis_step_size[1])
+            if dx == 0 or dy == 0:
+                return None
+            nx_s = max(1, int(np.ceil(abs(float(axis_length[0])) / abs(dx))))
+            ny_s = max(1, int(np.ceil(abs(float(axis_length[1])) / abs(dy))))
+            return nx_s, ny_s
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _scan_steps_from_endpoint(
+        axis_startpos: np.ndarray,
+        axis_length: np.ndarray,
+        axis_step_size: np.ndarray,
+    ) -> tuple[int, int] | None:
+        try:
+            dx, dy = float(axis_step_size[0]), float(axis_step_size[1])
+            if dx == 0 or dy == 0:
+                return None
+            nx_s = max(
+                1,
+                int(np.ceil(abs(float(axis_length[0]) - float(axis_startpos[0])) / abs(dx))) + 1,
+            )
+            ny_s = max(
+                1,
+                int(np.ceil(abs(float(axis_length[1]) - float(axis_startpos[1])) / abs(dy))) + 1,
+            )
+            return nx_s, ny_s
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_frames_per_stack(
+        self,
+        metadata: dict,
+        stack_info,
+        init_frame_count: int,
+    ) -> int | None:
+        for value in (
+            metadata.get("recording:frames_per_stack"),
+            getattr(stack_info, "frames_per_stack", None),
+            init_frame_count,
+        ):
+            frames = self._coerce_positive_int(value)
+            if frames is not None:
+                return frames
+        return None
+
+    @staticmethod
+    def scan_stage_step_size_nm(
+        metadata: dict, axis_step_size: np.ndarray
+    ) -> tuple[float, float]:
+        """Return X/Y ScanStage step sizes in nanometers.
+
+        ImControl scan widgets store ``ScanStage:axis_step_size`` in
+        micrometers. The improcess scan-parameter dialog stores its
+        ``step_sizes`` in nanometers, so callers that adapt dialog values into
+        ScanStage metadata can set ``ScanStage:axis_step_size_unit = "nm"`` to
+        bypass this conversion.
+        """
+        if axis_step_size.size < 2:
+            raise ValueError("ScanStage axis_step_size must contain X and Y")
+
+        return (
+            MonalisaLiveSession._physical_step_to_nm(
+                axis_step_size[0],
+                MonalisaLiveSession._scan_stage_step_unit(metadata, 0),
+            ),
+            MonalisaLiveSession._physical_step_to_nm(
+                axis_step_size[1],
+                MonalisaLiveSession._scan_stage_step_unit(metadata, 1),
+            ),
+        )
+
+    @staticmethod
+    def _scan_stage_step_unit(metadata: dict, axis_index: int) -> str:
+        for key in (
+            "ScanStage:axis_step_size_unit",
+            "ScanStage:axis_step_unit",
+            "ScanStage:unit",
+        ):
+            unit = metadata.get(key)
+            if unit is None:
+                continue
+            if isinstance(unit, (list, tuple, np.ndarray)):
+                values = np.asarray(unit, dtype=object).flatten()
+                if values.size == 0:
+                    continue
+                unit = values[min(axis_index, values.size - 1)]
+            if isinstance(unit, (bytes, np.bytes_)):
+                unit = unit.decode(errors="ignore")
+            text = str(unit).strip()
+            if text:
+                return text
+        return "um"
+
+    @staticmethod
+    def _physical_step_to_nm(value, unit: str) -> float:
+        step = float(value)
+        text = str(unit).strip().lower()
+        text = text.replace("\u00b5", "u").replace("\u03bc", "u")
+        if text in {"nm", "nanometer", "nanometers"} or "nano" in text:
+            return step
+        if (
+            text in {"um", "micrometer", "micrometers", "micron", "microns"}
+            or "micro" in text
+        ):
+            return step * 1000.0
+        return step * 1000.0
+
+    @staticmethod
+    def _coerce_positive_int(value) -> int | None:
+        """Return a positive integer, or None for missing/null-ish metadata."""
+        if value is None:
+            return None
+
+        if isinstance(value, (list, tuple, np.ndarray)):
+            array = np.asarray(value).flatten()
+            if array.size != 1:
+                return None
+            value = array[0]
+
+        if isinstance(value, (bytes, np.bytes_)):
+            value = value.decode(errors="ignore")
+
+        if isinstance(value, str):
+            text = value.strip()
+            if text.lower() in {"", "null", "none", "nan", "n/a", "na"}:
+                return None
+            value = text
+
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        if not np.isfinite(number) or number <= 0:
+            return None
+        return max(1, int(number))
+
+    def _apply_bleaching_correction(self, chunk: np.ndarray) -> np.ndarray:
+        """
+        Apply the MoNaLISA frame-energy bleaching correction to live frames.
+
+        This mirrors the offline reconstructor's 4th-power normalization,
+        ``(E_0 / E_i) ** 4``, while keeping the first frame's raw energy as the
+        reference across later live chunks.
+        """
+        corrected = chunk.astype(np.float32, copy=True)
+        if corrected.shape[0] == 0:
+            return corrected
+
+        energies = np.sum(corrected, axis=(1, 2), dtype=np.float64)
+        if self._bleach_reference_energy is None:
+            self._bleach_reference_energy = float(energies[0])
+
+        reference_energy = self._bleach_reference_energy
+        if reference_energy <= 0:
+            return corrected
+
+        safe_energies = np.where(energies > 0, energies, reference_energy)
+        scale = (reference_energy / safe_energies) ** 4
+        return corrected * scale[:, np.newaxis, np.newaxis].astype(np.float32)
 
     def result(self) -> MonalisaProcessingResult:
         """
@@ -230,6 +588,7 @@ class MonalisaLiveSession(StreamingSession):
             data=self.reconstructed.copy(),
             scan_params=self.scan_params,
             axis_labels=["Dataset", "Base", "T", "Z", "Y", "X"],
+            output_pixel_size_nm=self.output_pixel_size_nm,
         )
 
     def close(self) -> None:

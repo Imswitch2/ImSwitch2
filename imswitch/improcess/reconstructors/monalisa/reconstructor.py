@@ -6,7 +6,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
-from imswitch.improcess.reconstructors.base import StreamingReconstructor
+from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
 from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
@@ -115,6 +115,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             data_obj: DataObj containing raw scan data + metadata
             params: Parameter dict with keys (from MonalisaParamsWidget.get_values()):
                 - pixel_size_nm: float
+                - reconstruction_method: str ('MoNaLISA' or 'Fast Gauss MoNaLISA')
                 - device: str ('CPU' or 'GPU')
                 - row_offset, col_offset, row_period, col_period: float
                 - psf_fwhm_nm: float
@@ -136,6 +137,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         try:
             data_obj.checkAndLoadData()
             data = data_obj.data
+            data_attrs = dict(data_obj.attrs or {})
         finally:
             if not preloaded:
                 data_obj.checkAndUnloadData()
@@ -143,6 +145,11 @@ class MonalisaReconstructor(StreamingReconstructor):
         # Validate data shape
         if data.ndim != 3:
             raise ValueError(f'Expected 3D data (frames, rows, cols), got shape {data.shape}')
+
+        if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
+            return self._process_fast_gauss_offline(
+                data_obj.name, data, params, scan_params, data_attrs
+            )
         
         # Bleaching correction
         if params.get('bleaching_correction', False):
@@ -233,6 +240,263 @@ class MonalisaReconstructor(StreamingReconstructor):
             MonalisaLiveSession instance.
         """
         return MonalisaLiveSession()
+
+    def _process_fast_gauss_offline(
+        self,
+        name: str,
+        data: np.ndarray,
+        params: dict,
+        scan_params: dict,
+        data_attrs: dict | None = None,
+    ) -> MonalisaProcessingResult:
+        """
+        Run the live fast-Gauss MoNaLISA path on a complete offline stack.
+
+        The fast-Gauss implementation is a 2D X/Y reassignment path. It can
+        process multiple timepoints, but not Z stacks or scan orders where X/Y
+        are not the two scan axes.
+        """
+        geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
+        frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+        expected_frames = frames_per_stack * geometry['num_timepoints']
+        if data.shape[0] != expected_frames:
+            metadata_geometry = self._fast_gauss_geometry_from_attrs(
+                data_attrs or {}, data.shape[0]
+            )
+            if metadata_geometry is None:
+                raise ValueError(
+                    'Fast Gauss MoNaLISA expected '
+                    f'{expected_frames} frames ({frames_per_stack} per timepoint x '
+                    f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
+                )
+            geometry = metadata_geometry
+            frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+
+        session = self.make_session()
+        try:
+            first_stack = data[:frames_per_stack]
+            init_obj = StreamInit(
+                name=name,
+                dataset_name='offline',
+                data=first_stack,
+                attrs=geometry['attrs'],
+            )
+            session.begin(init_obj, params)
+
+            for time_index in range(1, geometry['num_timepoints']):
+                start = time_index * frames_per_stack
+                end = start + frames_per_stack
+                session.push(data[start:end], start, end)
+
+            live_result = session.finish()
+            out_px = (
+                geometry['step_y_nm'] / session.ny_c if session.ny_c else geometry['step_y_nm'],
+                geometry['step_x_nm'] / session.nx_c if session.nx_c else geometry['step_x_nm'],
+            )
+        finally:
+            session.close()
+        finite_data = live_result.data[np.isfinite(live_result.data)]
+        display_levels = None
+        if finite_data.size:
+            display_levels = (
+                float(np.percentile(finite_data, 1)),
+                float(np.percentile(finite_data, 99.9)),
+            )
+
+        result = MonalisaProcessingResult(
+            name=name,
+            data=live_result.data,
+            scan_params=geometry.get('scan_params', scan_params),
+            display_levels=display_levels,
+            output_pixel_size_nm=out_px,
+            axis_label_map=self._axis_labels,
+        )
+        self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
+        return result
+
+    def _fast_gauss_geometry_from_scan_params(self, scan_params: dict) -> dict:
+        """Convert MoNaLISA scan params to the attrs expected by MonalisaLiveSession."""
+        dimensions = list(scan_params['dimensions'])
+        steps = [int(v) for v in scan_params['steps']]
+        step_sizes = [float(v) for v in scan_params['step_sizes']]
+
+        rl_label = self._axis_labels['r_l_text']
+        ud_label = self._axis_labels['u_d_text']
+        bf_label = self._axis_labels['b_f_text']
+        time_label = self._axis_labels['timepoints_text']
+        aliases = {
+            rl_label: (rl_label, 'Right/Left', 'RightLeft', 'RL', 'X'),
+            ud_label: (ud_label, 'Up/Down', 'UpDown', 'UD', 'Y'),
+            bf_label: (bf_label, 'Back/Forth', 'Back/Front', 'BackForth', 'BF', 'Z'),
+            time_label: (time_label, 'Time', 'T'),
+        }
+
+        def _label_key(label: object) -> str:
+            return ''.join(ch for ch in str(label).lower() if ch.isalnum())
+
+        def _find_dimension_index(canonical_label: str) -> int:
+            wanted = {_label_key(alias) for alias in aliases[canonical_label]}
+            for index, dimension in enumerate(dimensions):
+                if _label_key(dimension) in wanted:
+                    return index
+            raise ValueError(canonical_label)
+
+        try:
+            x_index = _find_dimension_index(rl_label)
+            y_index = _find_dimension_index(ud_label)
+            z_index = _find_dimension_index(bf_label)
+            time_index = _find_dimension_index(time_label)
+        except ValueError as exc:
+            raise ValueError(
+                'Fast Gauss MoNaLISA requires Right-Left, Up-Down, '
+                'Back-Front and Timepoints scan dimensions; got '
+                f'{dimensions!r}'
+            ) from exc
+
+        if {x_index, y_index} != {0, 1}:
+            raise ValueError(
+                'Fast Gauss MoNaLISA requires Right-Left and Up-Down as the '
+                'first two scan dimensions'
+            )
+        if steps[z_index] != 1:
+            raise ValueError('Fast Gauss MoNaLISA offline mode currently supports one Z slice')
+
+        nx_s = steps[x_index]
+        ny_s = steps[y_index]
+        num_timepoints = steps[time_index]
+        step_x_nm = step_sizes[x_index]
+        step_y_nm = step_sizes[y_index]
+        normalized_dimensions = list(dimensions)
+        normalized_dimensions[x_index] = rl_label
+        normalized_dimensions[y_index] = ud_label
+        normalized_dimensions[z_index] = bf_label
+        normalized_dimensions[time_index] = time_label
+        normalized_scan_params = dict(scan_params)
+        normalized_scan_params['dimensions'] = normalized_dimensions
+        attrs = {
+            'ScanStage:axis_startpos': [0.0, 0.0, 0.0],
+            'ScanStage:axis_length': [
+                (nx_s - 1) * step_x_nm,
+                (ny_s - 1) * step_y_nm,
+                1.0,
+            ],
+            'ScanStage:axis_step_size': [step_x_nm, step_y_nm, 1.0],
+            'ScanStage:axis_step_size_unit': 'nm',
+            'recording:num_timepoints': num_timepoints,
+        }
+        return {
+            'attrs': attrs,
+            'nx_s': nx_s,
+            'ny_s': ny_s,
+            'num_timepoints': num_timepoints,
+            'step_x_nm': step_x_nm,
+            'step_y_nm': step_y_nm,
+            'scan_params': normalized_scan_params,
+        }
+
+    def _fast_gauss_geometry_from_attrs(
+        self, attrs: dict, num_frames: int
+    ) -> dict | None:
+        """Derive fast-Gauss geometry from file metadata when UI params mismatch."""
+        required = (
+            'ScanStage:axis_startpos',
+            'ScanStage:axis_length',
+            'ScanStage:axis_step_size',
+        )
+        if not attrs or any(key not in attrs for key in required):
+            return None
+
+        try:
+            axis_startpos = np.asarray(attrs['ScanStage:axis_startpos'], dtype=float).flatten()
+            axis_length = np.asarray(attrs['ScanStage:axis_length'], dtype=float).flatten()
+            axis_step_size = np.asarray(attrs['ScanStage:axis_step_size'], dtype=float).flatten()
+            if axis_startpos.size < 2 or axis_length.size < 2 or axis_step_size.size < 2:
+                return None
+
+            session = self.make_session()
+            ttl_steps = session._scan_steps_from_ttl(attrs)
+            candidates = []
+            if ttl_steps is not None:
+                candidates.append(ttl_steps)
+
+            size_steps = session._scan_steps_from_size(axis_length, axis_step_size)
+            if size_steps is not None:
+                candidates.append(size_steps)
+
+            endpoint_steps = session._scan_steps_from_endpoint(
+                axis_startpos, axis_length, axis_step_size
+            )
+            if endpoint_steps is not None:
+                candidates.append(endpoint_steps)
+
+            unique_candidates = []
+            for candidate in candidates:
+                if candidate not in unique_candidates:
+                    unique_candidates.append(candidate)
+
+            frame_hint = session._coerce_positive_int(
+                attrs.get('recording:frames_per_stack')
+            )
+            if frame_hint is not None:
+                for nx_s, ny_s in unique_candidates:
+                    if nx_s * ny_s == frame_hint:
+                        return self._fast_gauss_geometry_from_counts(
+                            attrs, nx_s, ny_s, num_frames
+                        )
+
+            for nx_s, ny_s in unique_candidates:
+                frames_per_stack = nx_s * ny_s
+                if frames_per_stack > 0 and num_frames % frames_per_stack == 0:
+                    return self._fast_gauss_geometry_from_counts(
+                        attrs, nx_s, ny_s, num_frames
+                    )
+        except (TypeError, ValueError):
+            return None
+
+        return None
+
+    def _fast_gauss_geometry_from_counts(
+        self,
+        attrs: dict,
+        nx_s: int,
+        ny_s: int,
+        num_frames: int,
+    ) -> dict | None:
+        frames_per_stack = nx_s * ny_s
+        if frames_per_stack <= 0 or num_frames % frames_per_stack != 0:
+            return None
+
+        num_timepoints = max(1, num_frames // frames_per_stack)
+        step_sizes = np.asarray(attrs['ScanStage:axis_step_size'], dtype=float).flatten()
+        step_x_nm, step_y_nm = MonalisaLiveSession.scan_stage_step_size_nm(
+            attrs, step_sizes
+        )
+
+        geometry_attrs = dict(attrs)
+        geometry_attrs['recording:frames_per_stack'] = frames_per_stack
+        geometry_attrs['recording:num_timepoints'] = num_timepoints
+
+        scan_params = {
+            'dimensions': [
+                self._axis_labels['r_l_text'],
+                self._axis_labels['u_d_text'],
+                self._axis_labels['b_f_text'],
+                self._axis_labels['timepoints_text'],
+            ],
+            'directions': ['+', '+', '+', '+'],
+            'steps': [nx_s, ny_s, 1, num_timepoints],
+            'step_sizes': [step_x_nm, step_y_nm, 1.0, 1.0],
+            'unidirectional': False,
+        }
+        return {
+            'attrs': geometry_attrs,
+            'nx_s': nx_s,
+            'ny_s': ny_s,
+            'num_timepoints': num_timepoints,
+            'step_x_nm': step_x_nm,
+            'step_y_nm': step_y_nm,
+            'scan_params': scan_params,
+        }
     
     def _apply_bleaching_correction(self, data: np.ndarray) -> np.ndarray:
         """

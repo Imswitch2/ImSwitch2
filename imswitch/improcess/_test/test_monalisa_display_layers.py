@@ -123,6 +123,39 @@ def test_display_layers_preserves_axis_scales():
     assert layers[0].scale_unit == "nm"  # Default from result
 
 
+def test_update_images_refreshes_axis_scales_from_output_pixel_size():
+    """Scan-param edits must refresh the napari layer scale, not only the data."""
+    coeffs = np.ones((1, 1, 4, 2, 5), dtype=np.float32)
+    scan_params = {
+        'dimensions': ['Right-Left', 'Up-Down', 'Back-Front', 'Timepoints'],
+        'directions': ['pos', 'pos', 'pos'],
+        'steps': ['2', '2', '1', '1'],
+        'step_sizes': ['40', '80', '120', '1'],
+        'unidirectional': True,
+    }
+    result = MonalisaProcessingResult.from_coeffs(
+        name="scale-update",
+        coeffs=coeffs,
+        scan_params=scan_params,
+        axis_label_map={
+            'r_l_text': 'Right-Left',
+            'u_d_text': 'Up-Down',
+            'b_f_text': 'Back-Front',
+            'timepoints_text': 'Timepoints',
+            'p_text': 'pos',
+            'n_text': 'neg',
+        },
+    )
+
+    edited_params = dict(scan_params)
+    edited_params['step_sizes'] = ['100', '200', '300', '1']
+    result.updateScanParams(edited_params)
+    result.updateImages()
+
+    assert result.output_pixel_size_nm == pytest.approx((100.0, 20.0))
+    assert result.axis_scales == pytest.approx([1.0, 1.0, 1.0, 300.0, 100.0, 20.0])
+
+
 def test_display_layers_computes_per_layer_contrast():
     """Each layer should have independent contrast limits from its own data."""
     data = np.zeros((1, 2, 1, 1, 10, 10), dtype=np.float32)
