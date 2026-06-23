@@ -60,7 +60,10 @@ class _FakeLiveReconstructionController(QtCore.QObject):
         self._commChannel = comm_channel
         self.start_calls = []
         self.stop_calls = []
-    
+        # Mirrors the real controller: True once worker threads are running (a
+        # sigFinished will follow); False if startup bailed (no readable frames).
+        self.start_return = True
+
     def start(self, reconstructor, source, params, source_arg=None):
         """Record start call."""
         self.start_calls.append({
@@ -69,6 +72,7 @@ class _FakeLiveReconstructionController(QtCore.QObject):
             'params': params,
             'source_arg': source_arg
         })
+        return self.start_return
     
     def stop(self):
         """Record stop call."""
@@ -346,3 +350,46 @@ def test_reconstructor_params_passed_to_start(mock_make_source, mock_file_watche
         # Verify params were passed
         assert len(fake_live_controller.start_calls) == 1
         assert fake_live_controller.start_calls[0]['params'] == {'param1': 'value1', 'param2': 42}
+
+
+@patch('imswitch.improcess.controller.LiveModeController.FileWatcher')
+@patch('imswitch.improcess.controller.LiveModeController.make_live_source')
+def test_start_failure_advances_queue(mock_make_source, mock_file_watcher_class):
+    """A store whose start() returns False (no readable frames yet) must not
+    stall the queue — the next store is attempted without a sigFinished."""
+    controller = _make_controller(folder_path='/tmp/test')
+
+    mock_watcher = MagicMock()
+    mock_watcher.filesInDirectory.return_value = ['empty.zarr', 'good.zarr']
+    mock_file_watcher_class.return_value = mock_watcher
+    mock_make_source.return_value = MagicMock()
+
+    fake_live_controller = _FakeLiveReconstructionController(controller._commChannel)
+    # First start() bails (empty store), second succeeds.
+    fake_live_controller.start_return = False
+    controller._liveController = fake_live_controller
+
+    with patch('os.path.exists', return_value=True), \
+         patch('os.path.isdir', return_value=True), \
+         patch('os.path.join', side_effect=lambda *args: '/'.join(args)):
+
+        # Flip start_return to True right after the first (failing) start so the
+        # second store is the one that "takes".
+        original_start = fake_live_controller.start
+
+        def _start(*args, **kwargs):
+            result = original_start(*args, **kwargs)
+            fake_live_controller.start_return = True
+            return result
+
+        fake_live_controller.start = _start
+
+        controller._startLive()
+
+        # Both stores were attempted (no stall on the empty one); processing the
+        # second one is now in progress.
+        assert [c['source_arg'] for c in fake_live_controller.start_calls] == [
+            '/tmp/test/empty.zarr',
+            '/tmp/test/good.zarr',
+        ]
+        assert controller._currentlyProcessing is True

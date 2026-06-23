@@ -159,11 +159,19 @@ class LiveModeController(ImProcessWidgetController):
             return
         
         params = self._getReconstructorParams()
-        
+
         try:
-            self._liveController.start(reconstructor, source, params, source_arg=store_path)
+            started = self._liveController.start(
+                reconstructor, source, params, source_arg=store_path
+            )
         except Exception as e:
             self._logger.error(f"Failed to start reconstruction for {store_path}: {e}")
+            started = False
+
+        # start() returns False when the store had no readable frames yet (or
+        # failed to open) — no sigFinished will arrive, so advance the queue
+        # here to avoid a permanent stall.
+        if not started:
             self._currentlyProcessing = False
             self._processNextStore()
 

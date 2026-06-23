@@ -40,7 +40,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._running = False
 
     def start(self, reconstructor, source, params: dict | None = None,
-              source_arg=None) -> None:
+              source_arg=None) -> bool:
         """
         Start live reconstruction with the given reconstructor and source.
 
@@ -51,6 +51,12 @@ class LiveReconstructionController(QtCore.QObject):
             source_arg: Path or handle passed to ``source.open(...)`` — e.g. the
                 Zarr/HDF5 recording path for ZarrLiveSource/Hdf5LiveSource.
                 ``None`` for sources pre-configured with their target.
+
+        Returns:
+            ``True`` if the worker threads were started (a ``sigFinished`` will
+            follow when the stack completes); ``False`` if startup bailed (open
+            failed or no readable frames) — in that case no ``sigFinished`` is
+            emitted, so callers driving a queue must advance themselves.
         """
         if self._running:
             self._logger.warning("Live reconstruction already running, stopping first")
@@ -65,7 +71,7 @@ class LiveReconstructionController(QtCore.QObject):
             self._stack_info = self._source.open(source_arg)
         except Exception as e:
             self._logger.error(f"Failed to open source: {e}")
-            return
+            return False
 
         self._is_streaming = getattr(self._reconstructor, "supports_streaming", False)
 
@@ -76,9 +82,10 @@ class LiveReconstructionController(QtCore.QObject):
 
         if not started:
             self._reset_workers()
-            return
+            return False
 
         self._running = True
+        return True
 
     def _reset_workers(self) -> None:
         """Drop worker/thread references after a failed or finished startup."""
