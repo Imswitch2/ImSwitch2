@@ -55,7 +55,7 @@ class ViewerToolsController(ImConWidgetController):
 
         elif tool == 'grid':
             self._toolManager.set_mode('pan')
-            H, W = self._largest_image_shape()
+            H, W = self._largest_image_extent_world()
             self._toolManager.draw_grid(H, W)
 
         elif tool in ('rectangle', 'line'):
@@ -65,18 +65,34 @@ class ViewerToolsController(ImConWidgetController):
             self._toolManager.set_mode('pan')
 
     # ------------------------------------------------------------------
-    def _largest_image_shape(self):
-        """Return (H, W) of the largest visible image layer, or (512, 512) fallback."""
-        best = (512, 512)
+    def _largest_image_extent_world(self):
+        """Return (H, W) world-space extent of the largest visible image layer.
+
+        The grid is drawn in the shared Shapes layer, which has unit scale, so
+        its coordinates are world coordinates. Image layers may carry a physical
+        scale (e.g. nm/px for reconstructions), so the grid must span the image's
+        *world* extent (pixels x scale) — otherwise it is drawn in raw pixel
+        units and shrinks into the corner of a scaled image. Falls back to
+        (512, 512) when no image layer is present.
+        """
+        best_h, best_w = 512.0, 512.0
+        best_area = -1.0
         if self._viewer is None:
-            return best
+            return best_h, best_w
         for layer in self._viewer.layers:
             if (hasattr(layer, 'data') and layer.visible
                     and isinstance(layer.data, np.ndarray) and layer.data.ndim >= 2):
-                h, w = int(layer.data.shape[-2]), int(layer.data.shape[-1])
-                if h * w > best[0] * best[1]:
-                    best = (h, w)
-        return best
+                h_px, w_px = int(layer.data.shape[-2]), int(layer.data.shape[-1])
+                try:
+                    scale = tuple(float(v) for v in layer.scale)
+                    sr, sc = (scale[-2], scale[-1]) if len(scale) >= 2 else (1.0, 1.0)
+                except Exception:
+                    sr, sc = 1.0, 1.0
+                h_world, w_world = h_px * sr, w_px * sc
+                if h_world * w_world > best_area:
+                    best_area = h_world * w_world
+                    best_h, best_w = h_world, w_world
+        return best_h, best_w
 
     # ------------------------------------------------------------------
     def _activate_crosshair_click(self):

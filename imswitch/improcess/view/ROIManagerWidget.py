@@ -266,11 +266,32 @@ class ROIManagerWidget(QtWidgets.QWidget):
             shapes = self._toolManager.get_shapes_data()
             if index >= len(shapes):
                 break
+            # Shape vertices come from the Shapes layer in world coordinates;
+            # divide by the image scale so the ROI bounds are stored in image
+            # row/col (pixel) coordinates, as ROIRecord expects. No-op at scale
+            # 1, but required for scaled reconstructions.
+            row_scale, col_scale = self._visible_pixel_scales()
+            vertices = np.asarray(shapes[index], dtype=np.float64).copy()
+            vertices[:, 0] /= row_scale
+            vertices[:, 1] /= col_scale
             return rectangle_roi_from_vertices(
-                np.asarray(shapes[index]),
+                vertices,
                 name=self._model.unique_name("ROI"),
             )
         raise ValueError("Draw a rectangle first.")
+
+    def _visible_pixel_scales(self) -> tuple[float, float]:
+        """Return the active image layer's (row, col) scale (1.0 fallback)."""
+        layer = self._active_image_layer()
+        if layer is None:
+            return 1.0, 1.0
+        try:
+            scale = tuple(float(v) for v in layer.scale)
+        except Exception:
+            return 1.0, 1.0
+        if len(scale) < 2:
+            return 1.0, 1.0
+        return scale[-2], scale[-1]
 
     def _selected_roi(self) -> ROIRecord | None:
         row = self.table.currentRow()

@@ -1504,7 +1504,12 @@ class ViewerToolManager(QtCore.QObject):
             self._processing_data_change = False
 
     def draw_grid(self, H, W):
-        """Draw a reference grid for an H×W image in the Shapes layer."""
+        """Draw a reference grid spanning an H×W region in the Shapes layer.
+
+        H and W are in the Shapes layer's coordinates (world units), so callers
+        must pass the image's *world* extent (pixels x scale), not its raw pixel
+        shape — otherwise the grid is misplaced over a scaled image layer.
+        """
         self._ensure_shapes_layer()
         s = self._CROSSHAIR_SPAN
         lines = []

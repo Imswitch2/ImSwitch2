@@ -161,14 +161,21 @@ class ProfileWidget(QtWidgets.QWidget):
             self.fitSummary.setText("No image layer selected.")
             return
 
-        (r0, c0), (r1, c1) = endpoints
+        (wr0, wc0), (wr1, wc1) = endpoints
+        # ROI vertices come from the Shapes layer in world coordinates, while the
+        # image layer carries the physical scale (e.g. nm/px). Divide by the
+        # scale to get pixel indices for sampling — otherwise, once the recon
+        # scale stops being ~1, the endpoints land outside the array and the
+        # profile reads all zeros ("no signal").
+        row_scale, col_scale = self._visiblePixelScales()
+        r0, c0 = wr0 / row_scale, wc0 / col_scale
+        r1, c1 = wr1 / row_scale, wc1 / col_scale
         profile = self._computeLineProfile(image, r0, c0, r1, c1, self.widthSpinBox.value())
         if profile is None:
             self.fitSummary.setText("")
             return
 
         length_px = float(np.hypot(r1 - r0, c1 - c0))
-        row_scale, col_scale = self._visiblePixelScales()
         length_scaled = float(np.hypot((r1 - r0) * row_scale, (c1 - c0) * col_scale))
         x = np.linspace(0.0, length_scaled, profile.size)
         self.plot.plot(x, profile, pen=pg.mkPen("r", width=2), name="line")
@@ -196,6 +203,11 @@ class ProfileWidget(QtWidgets.QWidget):
             return
 
         r0, c0, r1, c1 = bounds
+        # Bounds are world coordinates from the Shapes layer; convert to pixel
+        # indices via the image scale before cropping (see _plotLineProfile).
+        row_scale, col_scale = self._visiblePixelScales()
+        r0, r1 = r0 / row_scale, r1 / row_scale
+        c0, c1 = c0 / col_scale, c1 / col_scale
         rlo, rhi = sorted((int(round(r0)), int(round(r1))))
         clo, chi = sorted((int(round(c0)), int(round(c1))))
         h, w = image.shape
@@ -208,7 +220,6 @@ class ProfileWidget(QtWidgets.QWidget):
         roi = np.asarray(image[rlo:rhi, clo:chi], dtype=float)
         x_profile = roi.mean(axis=0)
         y_profile = roi.mean(axis=1)
-        row_scale, col_scale = self._visiblePixelScales()
         x = np.arange(x_profile.size) * col_scale
         y = np.arange(y_profile.size) * row_scale
         self.plot.plot(x, x_profile, pen=pg.mkPen("r", width=2), name="x")

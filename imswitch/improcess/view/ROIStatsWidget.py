@@ -121,8 +121,27 @@ class ROIStatsWidget(QtWidgets.QWidget):
         for index, shape_type in enumerate(self._toolManager.get_shape_types()):
             if shape_type == "rectangle":
                 r0, c0, r1, c1 = self._toolManager.get_rectangle_bounds(index)
+                # Bounds come from the Shapes layer in world coordinates; convert
+                # to pixel indices via the image scale before cropping (no-op
+                # when scale == 1, but required for scaled reconstructions).
+                row_scale, col_scale = self._visible_pixel_scales()
+                r0, r1 = r0 / row_scale, r1 / row_scale
+                c0, c1 = c0 / col_scale, c1 / col_scale
                 return int(round(r0)), int(round(r1)), int(round(c0)), int(round(c1))
         return None
+
+    def _visible_pixel_scales(self) -> tuple[float, float]:
+        """Return the active image layer's (row, col) scale (1.0 fallback)."""
+        layer = self._active_image_layer()
+        if layer is None:
+            return 1.0, 1.0
+        try:
+            scale = tuple(float(v) for v in layer.scale)
+        except Exception:
+            return 1.0, 1.0
+        if len(scale) < 2:
+            return 1.0, 1.0
+        return scale[-2], scale[-1]
 
     def _current_image_2d(self):
         layer = self._active_image_layer()
