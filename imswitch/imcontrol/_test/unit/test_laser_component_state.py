@@ -19,6 +19,14 @@ from imswitch.imcontrol.controller.controllers.LaserController import LaserContr
 from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
 
 
+class _SingleLaserManager:
+    def __init__(self, laser):
+        self.laser = laser
+
+    def __getitem__(self, name):
+        return self.laser
+
+
 @pytest.fixture
 def mock_laser_manager():
     """Mock lasersManager with two lasers: 488nm (analog) and UV (binary)."""
@@ -208,6 +216,57 @@ def test_get_component_state(laser_controller, mock_widget):
     assert state['modulation']['488nm']['dutyCycle'] == 50
 
 
+def test_set_laser_value_zero_forces_non_binary_laser_off():
+    laser = Mock()
+    laser.isBinary = False
+    laser.setValue = Mock()
+    laser.setEnabled = Mock()
+
+    widget = Mock()
+    widget.setValue = Mock()
+    widget.setLaserActive = Mock()
+
+    controller = LaserController.__new__(LaserController)
+    controller._master = Mock(lasersManager=_SingleLaserManager(laser))
+    controller._widget = widget
+    controller._commChannel = SimpleNamespace(sharedAttrs={})
+    controller.settingAttr = False
+
+    LaserController._setLaserValue(controller, '488nm', 0)
+
+    laser.setValue.assert_called_once_with(0)
+    laser.setEnabled.assert_called_once_with(False)
+    widget.setValue.assert_called_once_with('488nm', 0, emitSignal=False)
+    widget.setLaserActive.assert_called_once_with(
+        '488nm', False, emitSignal=False
+    )
+    assert controller._commChannel.sharedAttrs[('Laser', '488nm', 'Value')] == 0
+    assert controller._commChannel.sharedAttrs[('Laser', '488nm', 'Enabled')] is False
+
+
+def test_set_laser_value_nonzero_does_not_force_laser_off():
+    laser = Mock()
+    laser.isBinary = False
+    laser.setValue = Mock()
+    laser.setEnabled = Mock()
+
+    widget = Mock()
+    widget.setValue = Mock()
+    widget.setLaserActive = Mock()
+
+    controller = LaserController.__new__(LaserController)
+    controller._master = Mock(lasersManager=_SingleLaserManager(laser))
+    controller._widget = widget
+    controller._commChannel = SimpleNamespace(sharedAttrs={})
+    controller.settingAttr = False
+
+    LaserController._setLaserValue(controller, '488nm', 1)
+
+    laser.setValue.assert_called_once_with(1)
+    laser.setEnabled.assert_not_called()
+    widget.setLaserActive.assert_not_called()
+
+
 def test_apply_component_state_startup_restore_no_enable(laser_controller, mock_widget):
     """Test STARTUP_RESTORE mode does NOT enable lasers."""
     state = {
@@ -253,6 +312,26 @@ def test_apply_component_state_setup_mode_does_enable(laser_controller, mock_wid
     laser_controller.setLaserActive.assert_any_call('UV', False)
     
     # No warnings expected for valid state
+    assert warnings == []
+
+
+def test_apply_component_state_setup_mode_zero_value_overrides_enabled(laser_controller):
+    """A saved non-binary laser at value 0 must not be re-enabled."""
+    state = {
+        'lasers': {
+            '488nm': {'enabled': True, 'value': 0.0, 'isBinary': False, 'valueUnits': 'mW'},
+        },
+        'laserOrder': ['488nm'],
+        'currentPreset': None,
+        'modulation': {}
+    }
+
+    warnings = laser_controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY
+    )
+
+    laser_controller.setLaserValue.assert_called_with('488nm', 0.0)
+    laser_controller.setLaserActive.assert_called_once_with('488nm', False)
     assert warnings == []
 
 

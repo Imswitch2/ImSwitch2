@@ -430,6 +430,15 @@ class Cobolt0601NewLaserManager(LaserManager):
             # _modulation_power_mw here would emit light the user explicitly
             # set to zero; that default is only for the idle safe state.
             self._enter_modulation_mode(self._setpoint_mw)
+            if self._setpoint_mw <= 0:
+                # A zero GUI setpoint is an explicit off command. Keep the
+                # master/resume state off even though the scan includes this
+                # laser, so TTL pulses cannot produce emission.
+                if self._pause_mode:
+                    self._cmd('las:paus 1')
+                else:
+                    self._cmd('l0')
+                return
             if self._pause_mode:
                 # Laser is already started; just un-pause. The digital gate
                 # (las:pm:dig:ena 1, set by _enter_modulation_mode) keeps the

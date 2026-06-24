@@ -19,6 +19,10 @@ class Cobolt0601LaserManager(LantzLaserManager):
                          driver='cobolt.cobolt0601.Cobolt0601_f2', **_lowLevelManagers)
 
         self._digitalMod = False
+        # GUI/API setpoint in mW. Do not infer scan power from the hardware APC
+        # setpoint: setting the GUI to 0 switches the laser to ACC/current-zero
+        # mode and can otherwise leave a stale APC setpoint behind.
+        self._setpoint_mw = 0.0
         # Tracks the GUI on/off state so we can restore it when a scan ends.
         # During a scan the master switch (l1) is forced on so the TTL gate
         # can pulse light; on scan exit we must return the master switch to
@@ -38,6 +42,7 @@ class Cobolt0601LaserManager(LantzLaserManager):
 
     def setValue(self, power, enabled=True, for_scanning=False):
         power = float(power)
+        self._setpoint_mw = power
         if self._digitalMod:
             self._setModPower(power)
         else:
@@ -45,17 +50,25 @@ class Cobolt0601LaserManager(LantzLaserManager):
 
     def setScanModeActive(self, active):
         if active:
-            powerQ = self._laser.power_sp * self._numLasers
             self._laser.enter_mod_mode()   # em — enter modulation mode
             self._laser.digital_mod = True # sdmes 1 — enable TTL gate
-            self._setModPower(powerQ)      # slmp X — power when TTL is HIGH
+            self._setModPower(self._setpoint_mw)  # slmp X — power when TTL is HIGH
+            if self._setpoint_mw <= 0:
+                # A zero GUI setpoint is an explicit off command. Keep the
+                # master switch off even though the scan includes this laser.
+                self._laser.enabled = False
+                self.__logger.debug(
+                    'scan mode ON requested at 0 mW: digital-mod set to 0, '
+                    'master kept OFF')
+                self._digitalMod = active
+                return
             # Master switch ON so the TTL gate can produce light. This is
             # safe in digital-modulation mode: with sdmes 1 the beam stays
             # dark until the scanner drives this laser's TTL line HIGH.
             self._laser.enabled = True
             self.__logger.debug(
                 'scan mode ON: digital-mod armed, master ON, '
-                'P=%.1f mW (TTL-gated)', powerQ)
+                'P=%.1f mW (TTL-gated)', self._setpoint_mw)
         else:
             # SAFETY ORDER: drop the master switch BEFORE disabling the TTL
             # gate or changing modes. The master was forced ON during arming
@@ -82,7 +95,8 @@ class Cobolt0601LaserManager(LantzLaserManager):
         self._digitalMod = active
 
     def _setBasicPower(self, power):
-        if power == 0:
+        if power <= 0:
+            self._laser.power_sp = 0
             self._laser.mode = 'ACC'
             self._laser.query('ci')
             self._laser.query('slc {:.1f}'.format(0))

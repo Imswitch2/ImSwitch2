@@ -325,6 +325,18 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._master.lasersManager[laserName].setValue(value)
         self._widget.setValue(laserName, value, emitSignal=False)
         self.setSharedAttr(laserName, _valueAttr, value)
+        try:
+            numericValue = float(value)
+        except (TypeError, ValueError):
+            numericValue = None
+        if (
+            numericValue is not None
+            and numericValue <= 0
+            and not self._master.lasersManager[laserName].isBinary
+        ):
+            self._master.lasersManager[laserName].setEnabled(False)
+            self._widget.setLaserActive(laserName, False, emitSignal=False)
+            self.setSharedAttr(laserName, _enabledAttr, False)
 
     @APIExport()
     def getLaserNames(self) -> List[str]:
@@ -491,6 +503,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 if lName not in known_lasers:
                     continue
                 enabled = laserState.get('enabled', False)
+                if enabled and not laserState.get('isBinary', False):
+                    value = self._asFloat(laserState.get('value'))
+                    if value is not None and value <= 0:
+                        enabled = False
                 try:
                     self.setLaserActive(lName, enabled)
                 except Exception as e:

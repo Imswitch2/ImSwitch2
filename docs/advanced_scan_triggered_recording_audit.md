@@ -4,8 +4,9 @@ Date: 2026-06-24 (revised 2026-06-24 after source verification)
 
 Scope: recording-widget behavior when using Advanced Scan with an externally
 triggered camera, with focus on the `ThorCamTSIManager` path. This note
-records which behaviors are confirmed bugs (with `file:line` evidence), which
-are intentional, and a fix plan structured for sequential OpenHands runs.
+records which behaviors are confirmed bugs or design risks (with `file:line`
+evidence), which are intentional, and a fix plan structured for sequential
+OpenHands runs.
 
 ## Current conclusion
 
@@ -29,13 +30,16 @@ standalone scan controllers. Not a bug.
 ### What changed in this revision
 
 - **Finding 2 is the critical issue and is *not* triggered-specific.** The
-  `getChunk()` shape violation corrupts *every* `ThorCamTSIManager` recording
-  in *every* mode (SpecFrames, SpecTime, ScanOnce, ScanLapse), with software
-  *or* hardware trigger. The previous draft scoped it to triggered mode only.
+  `getChunk()` shape violation affects `ThorCamTSIManager` recording in every
+  mode (SpecFrames, SpecTime, ScanOnce, ScanLapse), with software *or* hardware
+  trigger. Frame-targeted modes can complete almost instantly with mangled data;
+  SpecTime also gets corrupted frame accounting and batching. The previous
+  draft scoped this too narrowly to triggered mode.
 - **Finding 1 (no-op `startAcquisition`) is downgraded** to a latent
   robustness issue. The camera is armed in `__init__` and re-armed on every
   ROI/crop change, so in the common path it is armed when recording starts.
-- Every finding now carries a `file:line` reference and a confirmed mechanism.
+- Every finding now carries a `file:line` reference and either a confirmed
+  mechanism or an explicit design-risk classification.
 
 ## Confirmed mechanism: how a 2D chunk corrupts recording
 
@@ -62,17 +66,23 @@ This is the chain that makes Finding 2 catastrophic. Trace it once:
    (`writeFrames` promotes 2D -> `(1, Y, X)`,
    e.g. [RecordingManager.py:426](../imswitch/imcontrol/model/managers/RecordingManager.py:426)).
 
-Net result: the recording "completes" almost instantly, the saved file
-contains one mangled image (the first `remaining` rows of a single frame), and
-the frame counter reports success. Every other camera manager avoids this by
-returning 3D `(n, H, W)` arrays or a list of frames — see
-`TISManager`/`BaslerManager`/`JetsonCamManager`
-(`np.expand_dims(..., 0)`), `HamamatsuManager.getChunk` (`getFrames()[0]`,
-a list), and the scan detectors `APD`/`PMT`/`Swabian` (3D when ready, empty
-`np.empty((0, 0))`/`(0, 0, 0)` otherwise). `ThorCamTSIManager` is the **only**
-manager returning a bare 2D frame.
+Net result for frame-targeted modes: the recording can "complete" almost
+instantly, the saved file can contain one mangled image (the first `remaining`
+rows of a single frame), and the frame counter reports success. `SpecTime` does
+not have the same target-frame clipping, but it still gets corrupted frame
+accounting and batching because rows are treated as frames.
 
-## Findings (severity-ranked, all confirmed)
+Several known managers avoid this by returning 3D `(n, H, W)` arrays or a list
+of frames — see `TISManager`/`BaslerManager`/`JetsonCamManager`
+(`np.expand_dims(..., 0)`), `HamamatsuManager.getChunk` (`getFrames()[0]`, a
+list), and `PMTManager` (3D when ready, empty otherwise). `APDManager` and
+`SwabianTimeTaggerManager` also appear intended to return `(1, Ny, Nx)` when
+ready, but their idle return shapes are looser. Some camera managers delegate
+to SDK wrapper methods such as `getLastChunk()`, so their actual runtime shapes
+should be audited separately. `ThorCamTSIManager` is the confirmed bare-2D
+offender in this audit.
+
+## Findings (severity-ranked)
 
 ### 1 (CRITICAL). `getChunk()` returns a 2D frame, violating the chunk contract
 
@@ -83,8 +93,10 @@ recordings with this camera, independent of trigger mode. This is the root
 cause to fix first.
 
 Expected: `getChunk()` must return a 3D `(n, H, W)` chunk of *real* acquired
-frames, or an empty chunk (`np.empty((0, 0, 0))`) when none are pending —
-matching every other camera manager.
+frames, or an empty chunk when none are pending. Prefer an empty chunk shaped
+`(0, H, W)` with the detector dtype when the spatial shape is known; use
+`(0, 0, 0)` only as a fallback. The important contract is `len(chunk) == 0`
+for no frame and `chunk.ndim == 3` for real frames.
 
 ### 2 (CRITICAL). No-frame path fabricates a black frame for recording
 
@@ -131,9 +143,10 @@ armed (arm if not armed), rather than assuming it.
 `nextLapse` does the same
 ([RecordingController.py:269-272](../imswitch/imcontrol/controller/controllers/RecordingController.py:269)).
 There is no confirmation that externally triggered detectors are armed before
-scan TTL output begins. This is a timing race that can present differently per
-camera manager and per machine — a plausible explanation for "works only with
-live view" and for inconsistent behavior across setups.
+scan TTL output begins. This is a confirmed design risk rather than a confirmed
+root cause. It may present differently per camera manager and per machine, and
+after Findings 1 and 2 are fixed it should be hardware-validated to decide how
+urgent the handshake is.
 
 Fix direction: replace the fixed sleep with a readiness signal — the worker
 starts detector acquisition and reports ready (or error/timeout); the
@@ -190,10 +203,14 @@ Run each phase as its own headless task: `openhands -f <taskfile> --headless`,
 review the diff and run the suite between phases, then proceed. Phases are
 ordered so each builds on a green tree.
 
-Test command for every phase:
-`python -m pytest imswitch/imcontrol/_test/unit/test_recording.py
+Baseline test command for every phase:
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest imswitch/imcontrol/_test/unit/test_recording.py
 imswitch/imcontrol/_test/unit/test_detector_chunk_consumers.py
 imswitch/imcontrol/_test/unit/test_scan_once_recording_sources.py -q`
+
+After Phase 0, add the new ThorCam/triggered-recording contract test module to
+that command so later phases cannot pass without exercising the new regression
+coverage.
 
 ### Phase 0 — Pin current behavior with a triggered fake (tests first)
 
@@ -211,7 +228,9 @@ imswitch/imcontrol/_test/unit/test_scan_once_recording_sources.py -q`
 ### Phase 1 — Fix `getChunk()` chunk semantics (Findings 1 & 2)
 
 - `getChunk()` polls for *real* pending frames and returns a 3D `(n, H, W)`
-  stack, or `np.empty((0, 0, 0))` when none are pending. Never fabricate.
+  stack, or an empty chunk when none are pending. Prefer `(0, H, W)` with the
+  detector dtype when the ROI shape is known; use `(0, 0, 0)` only as a fallback.
+  Never fabricate.
 - Keep `getLatestFrame()` as the display path (its zero-fill fallback stays for
   live view only).
 - Confirm `len(chunk) == 0` is the agreed empty signal end-to-end through
