@@ -280,6 +280,53 @@ def test_stream_worker_startup_fails_when_store_never_readable():
     assert len(failed) == 1
 
 
+
+def test_stream_worker_retries_transient_poll_errors():
+    """A transient poll error (e.g. recorder still holds the store) is retried,
+    not fatal — the stream recovers and finishes."""
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+
+    class _FlakySource(_TestSource):
+        def __init__(self, stack, chunk_size, fail_polls):
+            super().__init__(stack, chunk_size)
+            self._fail_polls = fail_polls
+            self.poll_calls = 0
+
+        def poll(self):
+            self.poll_calls += 1
+            if self.poll_calls <= self._fail_polls:
+                raise PermissionError("store locked by recorder")
+            return super().poll()
+
+    source = _FlakySource(stack, chunk_size=2, fail_polls=2)
+    source.open("x")
+    worker = LiveStreamWorker(source, poll_interval_ms=1, max_poll_error_retries=10)
+
+    chunks, complete = [], [False]
+    worker.sigChunkReady.connect(lambda c: chunks.append(c))
+    worker.sigStackComplete.connect(lambda: complete.__setitem__(0, True))
+    worker.run()
+
+    assert source.poll_calls > 2  # retried past the failures
+    assert sum(c.data.shape[0] for c in chunks) == 4  # all frames streamed
+    assert complete[0] is True
+
+
+def test_stream_worker_gives_up_after_persistent_poll_errors():
+    """A persistently unreadable source stops the stream (bounded) via sigFailed."""
+    class _DeadSource(_TestSource):
+        def poll(self):
+            raise OSError("gone")
+
+    source = _DeadSource(np.zeros((2, 2, 2), dtype=np.float32), chunk_size=1)
+    source.open("x")
+    worker = LiveStreamWorker(source, poll_interval_ms=1, max_poll_error_retries=3)
+    failed = []
+    worker.sigFailed.connect(lambda msg: failed.append(msg))
+    worker.run()
+    assert len(failed) == 1
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #

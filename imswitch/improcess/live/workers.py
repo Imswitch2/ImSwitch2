@@ -31,7 +31,8 @@ class LiveStreamWorker(QtCore.QObject):
     sigFailed = QtCore.Signal(str)
 
     def __init__(self, source, source_arg=None, do_open: bool = False,
-                 poll_interval_ms: int = 200, open_max_attempts: int = 50):
+                 poll_interval_ms: int = 200, open_max_attempts: int = 50,
+                 max_poll_error_retries: int = 50):
         """
         Args:
             source: A LiveSource. Opened already when ``do_open`` is False.
@@ -39,6 +40,10 @@ class LiveStreamWorker(QtCore.QObject):
             do_open: Run the open + first-stack + begin-gate startup here.
             poll_interval_ms: Delay between poll attempts / retries.
             open_max_attempts: Bounded retries while the store is unreadable.
+            max_poll_error_retries: Consecutive transient poll errors (e.g. a
+                PermissionError while the recorder still holds a live store)
+                tolerated before giving up, rather than killing the stream on
+                the first error.
         """
         super().__init__()
         self._source = source
@@ -46,6 +51,7 @@ class LiveStreamWorker(QtCore.QObject):
         self._do_open = do_open
         self._poll_interval_ms = poll_interval_ms
         self._open_max_attempts = open_max_attempts
+        self._max_poll_error_retries = max_poll_error_retries
         self._frames_per_stack = None
         self._logger = initLogger(self, tryInheritParent=False)
         self._running = False
@@ -140,7 +146,15 @@ class LiveStreamWorker(QtCore.QObject):
         return True
 
     def _poll_loop(self) -> None:
-        """Emit remaining chunks until the source is complete or interrupted."""
+        """Emit remaining chunks until the source is complete or interrupted.
+
+        Transient source errors (e.g. a PermissionError/OSError while the
+        recorder still holds a live Zarr/HDF5 store mid-write) are retried with
+        backoff instead of killing the stream — matching the upstream live
+        watcher's lock-retry behaviour. Only a persistent failure (more than
+        ``max_poll_error_retries`` consecutive errors) stops the stream.
+        """
+        consecutive_errors = 0
         while not self._interrupted():
             if self._pending_chunks:
                 chunks = self._pending_chunks
@@ -151,9 +165,20 @@ class LiveStreamWorker(QtCore.QObject):
 
             try:
                 chunks = self._source.poll()
+                consecutive_errors = 0
             except Exception as e:
-                self._logger.error(f"Error polling source: {e}")
-                break
+                consecutive_errors += 1
+                if consecutive_errors == 1:
+                    self._logger.warning(f"Transient source poll error, retrying: {e}")
+                if consecutive_errors > self._max_poll_error_retries:
+                    self._logger.error(
+                        f"Source unreadable after {self._max_poll_error_retries} "
+                        f"retries; stopping stream: {e}"
+                    )
+                    self.sigFailed.emit(str(e))
+                    break
+                self._sleep()
+                continue
 
             if chunks:
                 for chunk in chunks:
