@@ -1,12 +1,15 @@
 """Controller for live reconstruction mode in the watcher UI."""
 
 import os
+import re
 from collections import deque
+
+import h5py
 
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
-from imswitch.improcess.live import ZarrMultiFileLapseSource, make_live_source
+from imswitch.improcess.live import Hdf5MultiFileLapseSource, ZarrMultiFileLapseSource, make_live_source
 from imswitch.improcess.live.sources import _lapse_index_template
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
@@ -163,12 +166,68 @@ class LiveModeController(ImProcessWidgetController):
 
         A per-file lapse member maps to an index-independent key so all its
         timepoint files dedup to one job; other stores key on their own path.
+        
+        A store is a per-file lapse member if EITHER:
+        - Its name has a strippable trailing integer run (lenient heuristic)
+        - Its metadata confirms it's a multi-file lapse (recording:single_lapse_file=False
+          with recording:num_timepoints>1)
         """
+        # First try filename-based heuristic
         template = _lapse_index_template(store_path)
-        if template is None:
-            return store_path, False
-        folder, prefix, width, suffix, _ = template
-        return (folder, prefix, suffix), True
+        if template is not None:
+            folder, prefix, width, suffix, _ = template
+            return (folder, prefix, suffix), True
+        
+        # Fallback: check for trailing integer run (more lenient than 'scan' only)
+        folder = os.path.dirname(store_path)
+        name = os.path.basename(store_path)
+        # Match any trailing digits preceded by separator
+        match = re.search(r'[_\-.](\d+)(\.[a-zA-Z0-9]+)?$', name)
+        if match:
+            # Strip the integer run to create the dedup key
+            start_idx = match.start(1)
+            prefix = name[:start_idx]
+            suffix = name[match.end(1):]
+            return (folder, prefix, suffix), True
+        
+        # Metadata-based check: try to read store attributes
+        is_multifile_lapse = self._is_multifile_lapse_from_metadata(store_path)
+        if is_multifile_lapse:
+            # No integer pattern but metadata confirms multi-file lapse
+            # Use the full name as prefix (each file will be unique but this flags it as lapse)
+            return (folder, name, ''), True
+        
+        return store_path, False
+
+    def _is_multifile_lapse_from_metadata(self, store_path: str) -> bool:
+        """Check if metadata confirms this is a multi-file lapse member."""
+        try:
+            suffix = os.path.splitext(store_path)[1].lower()
+            
+            if suffix == '.zarr':
+                import zarr
+                root = zarr.open(store_path, mode='r')
+                single_lapse = root.attrs.get('recording:single_lapse_file')
+                num_tp = root.attrs.get('recording:num_timepoints')
+                
+                # Multi-file if explicitly marked as not single-file AND has multiple timepoints
+                if single_lapse is False and num_tp and int(num_tp) > 1:
+                    return True
+            
+            elif suffix in {'.h5', '.hdf5', '.hdf'}:
+                with h5py.File(store_path, 'r') as f:
+                    single_lapse = f.attrs.get('recording:single_lapse_file')
+                    num_tp = f.attrs.get('recording:num_timepoints')
+                    
+                    # Multi-file if explicitly marked as not single-file AND has multiple timepoints
+                    if single_lapse is False and num_tp and int(num_tp) > 1:
+                        return True
+        
+        except (OSError, PermissionError, Exception):
+            # If we can't read the file (e.g., being written), fall back to filename
+            pass
+        
+        return False
 
     def _processNextStore(self) -> None:
         """Process the next store in the queue if not currently processing."""
@@ -196,7 +255,14 @@ class LiveModeController(ImProcessWidgetController):
         # source (single growing array, single-file scan{N} lapse, HDF5, ...).
         try:
             if is_lapse:
-                source = ZarrMultiFileLapseSource(store_path, detector_name=None)
+                # Select multi-file source based on extension
+                suffix = os.path.splitext(store_path)[1].lower()
+                if suffix == '.zarr':
+                    source = ZarrMultiFileLapseSource(store_path, detector_name=None)
+                elif suffix in {'.h5', '.hdf5', '.hdf'}:
+                    source = Hdf5MultiFileLapseSource(store_path, detector_name=None)
+                else:
+                    raise ValueError(f"Unsupported lapse format: {suffix}")
             else:
                 source = make_live_source(store_path, detector_name=None)
         except (NotImplementedError, ValueError) as exc:

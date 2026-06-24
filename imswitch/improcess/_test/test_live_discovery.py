@@ -87,6 +87,13 @@ def _make_zarr(path):
     open(os.path.join(path, '.zgroup'), 'w').close()
 
 
+def _make_hdf5(path):
+    """Create a minimal HDF5 file."""
+    import h5py
+    with h5py.File(path, 'w') as f:
+        f.attrs['dummy'] = 'test'
+
+
 # --- Recursive discovery (fail a: select the parent folder) -------------------
 
 def test_recursive_discovery_finds_stores_in_measurement_subfolders(tmp_path):
@@ -234,6 +241,103 @@ def test_start_failure_advances_queue(tmp_path):
 
     assert len(fake.start_calls) == 2
     assert controller._currentlyProcessing is True
+
+
+# --- Robust grouping tests ----------------------------------------------------
+
+def test_hdf5_lapse_groups_into_one_job(tmp_path):
+    """HDF5 per-file lapse files dedup into a single lapse job."""
+    for i in range(3):
+        _make_hdf5(str(tmp_path / f'rec_scan__0{i}__CAM.h5'))
+
+    controller = _make_controller(folder_path=str(tmp_path), extension='h5')
+    controller._currentlyProcessing = True  # don't auto-pop the queue
+    controller._scanForStores()
+
+    assert len(controller._storeQueue) == 1
+    store_path, is_lapse = controller._storeQueue[0]
+    assert is_lapse is True
+    assert os.path.basename(store_path) == 'rec_scan__00__CAM.h5'  # lowest index seeds
+
+
+def test_hdf5_lapse_job_builds_hdf5_multifile_source(tmp_path):
+    """An HDF5 lapse job uses Hdf5MultiFileLapseSource."""
+    seed = str(tmp_path / 'rec_scan__00__CAM.h5')
+    _make_hdf5(seed)
+    controller = _make_controller(folder_path=str(tmp_path), extension='h5')
+    controller._storeQueue.append((seed, True))
+
+    with patch(
+        'imswitch.improcess.controller.LiveModeController.Hdf5MultiFileLapseSource'
+    ) as mock_lapse:
+        controller._processNextStore()
+
+    mock_lapse.assert_called_once()
+    assert mock_lapse.call_args.args[0] == seed
+
+
+def test_lenient_trailing_integer_grouping(tmp_path):
+    """Files with trailing integers (not just 'scan') group as lapse."""
+    for i in range(3):
+        _make_zarr(str(tmp_path / f'timelapse_0{i}.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._currentlyProcessing = True
+    controller._scanForStores()
+
+    # Should group into one lapse job
+    assert len(controller._storeQueue) == 1
+    _, is_lapse = controller._storeQueue[0]
+    assert is_lapse is True
+
+
+def test_metadata_based_grouping_for_multifile_lapse(tmp_path):
+    """Files marked as multi-file lapse via metadata group correctly."""
+    import h5py
+    
+    # Create files with metadata indicating multi-file lapse but no scan pattern
+    for i in range(2):
+        path = tmp_path / f'recording_{i}.h5'
+        with h5py.File(path, 'w') as f:
+            f.attrs['recording:single_lapse_file'] = False
+            f.attrs['recording:num_timepoints'] = 2
+
+    controller = _make_controller(folder_path=str(tmp_path), extension='h5')
+    controller._currentlyProcessing = True
+    controller._scanForStores()
+
+    # Should detect as lapse based on metadata
+    assert len(controller._storeQueue) >= 1
+    # At least one should be marked as lapse
+    has_lapse = any(is_lapse for _, is_lapse in controller._storeQueue)
+    assert has_lapse
+
+
+def test_mixed_zarr_and_hdf5_lapse_detection(tmp_path):
+    """Verify both Zarr and HDF5 lapse files are detected correctly."""
+    # Create Zarr lapse
+    for i in range(2):
+        _make_zarr(str(tmp_path / f'zarr_scan_0{i}.zarr'))
+    
+    # Create HDF5 lapse
+    for i in range(2):
+        _make_hdf5(str(tmp_path / f'hdf5_scan_0{i}.h5'))
+
+    controller_zarr = _make_controller(folder_path=str(tmp_path), extension='zarr')
+    controller_zarr._currentlyProcessing = True
+    controller_zarr._scanForStores()
+    
+    # Should find 1 Zarr lapse group (ignores .h5 files)
+    zarr_lapses = [item for item in controller_zarr._storeQueue if item[1]]
+    assert len(zarr_lapses) >= 1
+
+    controller_hdf5 = _make_controller(folder_path=str(tmp_path), extension='h5')
+    controller_hdf5._currentlyProcessing = True
+    controller_hdf5._scanForStores()
+    
+    # Should find 1 HDF5 lapse group (ignores .zarr files)
+    hdf5_lapses = [item for item in controller_hdf5._storeQueue if item[1]]
+    assert len(hdf5_lapses) >= 1
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

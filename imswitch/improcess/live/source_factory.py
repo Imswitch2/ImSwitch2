@@ -3,9 +3,10 @@
 from pathlib import Path
 from typing import Any
 
+import h5py
 import zarr
 
-from .sources import Hdf5LiveSource, LiveSource, ZarrLapseSource, ZarrLiveSource
+from .sources import Hdf5LapseSource, Hdf5LiveSource, LiveSource, ZarrLapseSource, ZarrLiveSource
 
 
 def make_live_source(
@@ -60,7 +61,11 @@ def make_live_source(
         else:
             return ZarrLiveSource(detector_name=detector_name, chunk_size=chunk_size)
     elif fmt_lower in {'hdf5', 'h5'}:
-        return Hdf5LiveSource(detector_name=detector_name, chunk_size=chunk_size)
+        # Check if this is a single-file HDF5 lapse store with scan{N} groups
+        if _is_hdf5_single_file_lapse_store(path_obj):
+            return Hdf5LapseSource(detector_name=detector_name, chunk_size=chunk_size)
+        else:
+            return Hdf5LiveSource(detector_name=detector_name, chunk_size=chunk_size)
     else:
         raise ValueError(
             f"Unsupported format '{fmt}'. Supported formats: 'zarr', 'hdf5', 'h5'."
@@ -87,4 +92,26 @@ def _is_single_file_lapse_store(path: Path) -> bool:
         
         return False
     except Exception:
+        return False
+
+
+def _is_hdf5_single_file_lapse_store(path: Path) -> bool:
+    """Check if an HDF5 file contains scan{N} groups (single-file lapse layout)."""
+    try:
+        with h5py.File(str(path), 'r') as f:
+            # Check for scan{N} groups
+            has_scan_groups = any(
+                key.startswith('scan') and key[4:].isdigit()
+                for key in f.keys()
+            )
+            
+            if has_scan_groups:
+                return True
+            
+            # Also check for explicit marker attribute
+            if f.attrs.get('recording:single_lapse_file'):
+                return True
+            
+            return False
+    except (OSError, PermissionError, Exception):
         return False

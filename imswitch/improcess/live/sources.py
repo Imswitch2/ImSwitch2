@@ -1103,3 +1103,401 @@ class Hdf5LiveSource(LiveSource):
         if isinstance(value, str):
             return value.strip().lower() not in {'0', 'false', 'no', 'off'}
         return bool(value)
+
+
+class Hdf5MultiFileLapseSource(LiveSource):
+    """Stream a per-file HDF5 timelapse (one ``.h5`` per timepoint) as one stream.
+
+    Each ``<base>_scan<NN>_<...>.h5`` file holds a single stack (one
+    timepoint). Files are streamed in index order and frames are emitted with
+    GLOBAL indices (``position * frames_per_stack + local``) so a streaming
+    session's ``time_index = start // frames_per_stack`` routes each file into
+    its own timepoint, accumulating one multi-timepoint result. Later timepoint
+    files (live recording) are picked up by re-deriving the next index path.
+    """
+
+    def __init__(self, first_path, detector_name=None, chunk_size=None,
+                 num_timepoints=None):
+        self._first_path = str(first_path)
+        self._detector_name = detector_name
+        self._chunk_size = chunk_size
+        self._num_timepoints = num_timepoints
+        self._inner: Hdf5LiveSource | None = None
+        self._template = None
+        self._first_index = 0
+        self._position = 0  # 0-based timepoint position
+        self._frames_per_stack = 1
+
+    def open(self, path_or_handle: Any) -> StackInfo:
+        first = str(path_or_handle) if path_or_handle is not None else self._first_path
+        self._first_path = first
+        self._template = _lapse_index_template(first)
+        self._first_index = self._template[4] if self._template else 0
+        self._position = 0
+
+        self._inner = Hdf5LiveSource(self._detector_name, self._chunk_size)
+        info = self._inner.open(first)
+        self._frames_per_stack = int(info.frames_per_stack or info.expected_frames or 1)
+
+        num_tp = (
+            self._num_timepoints
+            or _coerce_positive_int(_meta_lookup(info.attrs, "recording:num_timepoints"))
+            or _coerce_positive_int(_meta_lookup(info.attrs, "Rec:LapseTime"))
+            or self._count_present_timepoints()
+        )
+        self._num_timepoints = max(1, int(num_tp or 1))
+        expected_total = self._frames_per_stack * self._num_timepoints
+
+        return StackInfo(
+            frame_shape=info.frame_shape,
+            dtype=info.dtype,
+            attrs=dict(info.attrs),
+            expected_frames=expected_total,
+            frames_per_stack=self._frames_per_stack,
+            detector_name=info.detector_name,
+            dataset_path=info.dataset_path,
+            source_format=info.source_format or "HDF5",
+        )
+
+    def poll(self) -> list[Chunk]:
+        if self._inner is None:
+            return []
+
+        offset = self._position * self._frames_per_stack
+        chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
+
+        # Current timepoint fully read: advance to the next file if it exists.
+        if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
+            next_path = self._build_path(self._position + 1)
+            if next_path is not None and os.path.exists(next_path):
+                self._inner.close()
+                self._position += 1
+                self._inner = Hdf5LiveSource(self._detector_name, self._chunk_size)
+                self._inner.open(next_path)
+        return chunks
+
+    def is_complete(self) -> bool:
+        if self._inner is None:
+            return True
+        if not self._inner.is_complete():
+            return False
+        # On the last expected timepoint with its file fully read -> done.
+        if self._position + 1 >= self._num_timepoints:
+            return True
+        # Otherwise wait for the next timepoint file (live). If it isn't going
+        # to appear, the user stops live mode; we don't guess completion here.
+        return False
+
+    def close(self) -> None:
+        if self._inner is not None:
+            self._inner.close()
+        self._inner = None
+
+    def _build_path(self, position: int) -> str | None:
+        if self._template is None:
+            return None
+        folder, prefix, width, suffix, _ = self._template
+        index = self._first_index + position
+        return os.path.join(folder, f"{prefix}{index:0{width}d}{suffix}")
+
+    def _count_present_timepoints(self) -> int:
+        count = 1
+        while True:
+            path = self._build_path(count)
+            if path is None or not os.path.exists(path):
+                break
+            count += 1
+        return count
+
+
+class Hdf5LapseSource(LiveSource):
+    """Polls a single-file scan{N} timelapse HDF5 as one continuous global frame stream."""
+
+    def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
+        """
+        Args:
+            detector_name: Detector name inside scan groups. If None, auto-detect.
+            chunk_size: Override chunk size for polling. If None, use dataset.chunks[0].
+        """
+        self._detector_name = detector_name
+        self._chunk_size_override = chunk_size
+        self._path: str | None = None
+        self._file = None
+        self._scan_groups: list[str] = []
+        self._current_group_index = 0
+        self._global_cursor = 0
+        self._local_cursor = 0
+        self._chunk_size = 1
+        self._frames_per_stack: int | None = None
+        self._num_timepoints: int | None = None
+        self._current_dataset = None
+        self._current_dataset_path: str | None = None
+        self._resolved_detector_name: str | None = None
+        self._writing = True
+        self._owns_file = False
+
+    def open(self, path_or_handle: Any) -> StackInfo:
+        """Open the HDF5 file in SWMR mode and return stack metadata."""
+        self._global_cursor = 0
+        self._local_cursor = 0
+        self._current_group_index = 0
+        
+        if isinstance(path_or_handle, h5py.File):
+            self._file = path_or_handle
+            self._path = None
+            self._owns_file = False
+        else:
+            path = Path(path_or_handle)
+            self._path = str(path)
+            self._file = h5py.File(self._path, 'r', libver='latest', swmr=True)
+            self._owns_file = True
+        
+        # Enumerate scan{N} groups
+        self._scan_groups = sorted(
+            [key for key in self._file.keys() if key.startswith('scan') and key[4:].isdigit()],
+            key=lambda x: int(x[4:])
+        )
+        
+        if not self._scan_groups:
+            raise ValueError("No scan{N} groups found in HDF5 file")
+        
+        # Open scan0 to detect detector and read metadata
+        scan0 = self._file[self._scan_groups[0]]
+        self._resolved_detector_name = self._detector_name or self._auto_detect_detector(scan0)
+        
+        # Open the detector dataset in scan0
+        self._current_dataset, attrs = self._open_detector_dataset(scan0, self._resolved_detector_name)
+        self._current_dataset_path = f'/{self._scan_groups[0]}/{self._resolved_detector_name}/data'
+        
+        if self._current_dataset.ndim != 3:
+            raise ValueError(f"Expected 3D dataset (T, Y, X), got shape {self._current_dataset.shape}")
+        
+        # Determine chunk size
+        if self._chunk_size_override is not None:
+            self._chunk_size = max(1, int(self._chunk_size_override))
+        elif self._current_dataset.chunks is not None and len(self._current_dataset.chunks) > 0:
+            self._chunk_size = max(1, int(self._current_dataset.chunks[0]))
+        else:
+            self._chunk_size = 1
+        
+        # Extract frames_per_stack and num_timepoints
+        self._frames_per_stack = self._coerce_int(attrs.get('recording:frames_per_stack'))
+        if self._frames_per_stack is None:
+            self._frames_per_stack = self._current_dataset.shape[0]
+        
+        self._num_timepoints = self._coerce_int(attrs.get('recording:num_timepoints'))
+        self._refresh_state_from_attrs(attrs)
+        
+        # Calculate expected_frames
+        expected_frames = None
+        if self._num_timepoints is not None and self._frames_per_stack is not None:
+            expected_frames = self._num_timepoints * self._frames_per_stack
+        
+        frame_shape = self._current_dataset.shape[-2:]
+        
+        return StackInfo(
+            frame_shape=frame_shape,
+            dtype=self._current_dataset.dtype,
+            attrs=dict(attrs),
+            expected_frames=expected_frames,
+            frames_per_stack=self._frames_per_stack,
+            detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
+            dataset_path=attrs.get('recording:dataset_path'),
+            source_format=attrs.get('recording:source_format') or 'HDF5',
+        )
+
+    def poll(self) -> list[Chunk]:
+        """Return newly available chunks with GLOBAL indices across all scan groups."""
+        if self._current_dataset is None:
+            return []
+        
+        chunks = []
+        
+        while True:
+            # Refresh current dataset and re-enumerate scan groups to detect new ones
+            self._refresh_current_dataset()
+            self._refresh_scan_groups()
+            
+            # Read current group's attributes
+            current_group = self._file[self._scan_groups[self._current_group_index]]
+            _, attrs = self._open_detector_dataset(current_group, self._resolved_detector_name)
+            self._refresh_state_from_attrs(attrs)
+            
+            # Determine how many frames we can read from current group
+            readable_length = min(self._current_dataset.shape[0], self._frames_per_stack or self._current_dataset.shape[0])
+            
+            if self._local_cursor >= readable_length:
+                # Current group is fully read, try to advance to next
+                if self._current_group_index + 1 < len(self._scan_groups):
+                    # Check if next group exists
+                    next_group_name = self._scan_groups[self._current_group_index + 1]
+                    if next_group_name in self._file:
+                        # Advance to next group
+                        self._current_group_index += 1
+                        self._local_cursor = 0
+                        next_group = self._file[next_group_name]
+                        self._current_dataset, _ = self._open_detector_dataset(next_group, self._resolved_detector_name)
+                        self._current_dataset_path = f'/{next_group_name}/{self._resolved_detector_name}/data'
+                        continue
+                    else:
+                        # Next group doesn't exist yet, wait
+                        break
+                else:
+                    # No more groups expected
+                    break
+            
+            # Read chunks from current group
+            start_local = self._local_cursor
+            end_local = min(start_local + self._chunk_size, readable_length)
+            
+            if start_local >= end_local:
+                break
+            
+            # Calculate GLOBAL indices
+            start_global = self._current_group_index * (self._frames_per_stack or 0) + start_local
+            end_global = self._current_group_index * (self._frames_per_stack or 0) + end_local
+            
+            data = self._current_dataset[start_local:end_local]
+            chunks.append(Chunk(data=data, start=start_global, end=end_global))
+            
+            self._local_cursor = end_local
+            self._global_cursor = end_global
+            
+            # If we haven't filled a full chunk, stop polling (wait for more data)
+            if end_local - start_local < self._chunk_size and end_local < readable_length:
+                break
+        
+        return chunks
+
+    def is_complete(self) -> bool:
+        """Return whether all timepoints have been fully consumed."""
+        if self._current_dataset is None:
+            return True
+        
+        # If we know the total expected frames, check against global cursor
+        if self._num_timepoints is not None and self._frames_per_stack is not None:
+            expected_total = self._num_timepoints * self._frames_per_stack
+            if self._global_cursor >= expected_total:
+                return True
+        
+        # Check if we're on the last expected group
+        if self._num_timepoints is not None:
+            if self._current_group_index >= self._num_timepoints - 1:
+                # We're on or past the last expected group
+                self._refresh_current_dataset()
+                current_group = self._file[self._scan_groups[self._current_group_index]]
+                _, attrs = self._open_detector_dataset(current_group, self._resolved_detector_name)
+                self._refresh_state_from_attrs(attrs)
+                
+                readable_length = min(self._current_dataset.shape[0], self._frames_per_stack or self._current_dataset.shape[0])
+                
+                if not self._writing and self._local_cursor >= readable_length:
+                    return True
+        
+        return False
+
+    def close(self) -> None:
+        """Release source resources."""
+        if self._owns_file and self._file is not None:
+            self._file.close()
+        self._path = None
+        self._file = None
+        self._current_dataset = None
+        self._current_dataset_path = None
+        self._scan_groups = []
+
+    def _auto_detect_detector(self, scan_group: h5py.Group) -> str:
+        """Auto-detect detector name from scan group contents."""
+        for key in scan_group.keys():
+            item = scan_group[key]
+            if isinstance(item, h5py.Group) and 'data' in item:
+                return key
+        
+        raise ValueError("No detector group with 'data' dataset found in scan group")
+
+    def _open_detector_dataset(self, scan_group: h5py.Group, detector_name: str) -> tuple[h5py.Dataset, dict[str, Any]]:
+        """Open detector dataset and collect flattened attributes."""
+        if detector_name not in scan_group:
+            raise ValueError(f"Detector '{detector_name}' not found in scan group")
+        
+        det_group = scan_group[detector_name]
+        if not isinstance(det_group, h5py.Group):
+            raise ValueError(f"'{detector_name}' is not a group")
+        
+        if 'data' not in det_group:
+            raise ValueError(f"Detector group '{detector_name}' has no 'data' dataset")
+        
+        dataset = det_group['data']
+        
+        # Flatten attributes from root, detector group, and metadata
+        attrs: dict[str, Any] = {}
+        
+        # Root attrs
+        attrs.update(dict(self._file.attrs))
+        
+        # Dataset attrs
+        attrs.update(dict(dataset.attrs))
+        
+        # Metadata group
+        if 'metadata' in det_group:
+            self._flatten_metadata(det_group['metadata'], attrs, prefix='')
+        
+        return dataset, attrs
+
+    def _flatten_metadata(self, group: h5py.Group, attrs: dict[str, Any], prefix: str) -> None:
+        """Recursively flatten metadata group into attrs dict with category prefixes."""
+        for key in group.attrs.keys():
+            flat_key = f"{prefix}{key}" if prefix else key
+            attrs[flat_key] = group.attrs[key]
+        
+        for subgroup_name in group.keys():
+            subgroup = group[subgroup_name]
+            if isinstance(subgroup, h5py.Group):
+                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
+                self._flatten_metadata(subgroup, attrs, new_prefix)
+
+    def _refresh_current_dataset(self) -> None:
+        """Re-open current dataset to see new frames."""
+        if self._path is None or self._current_dataset is None:
+            return
+        
+        # Close and re-open file to refresh SWMR
+        if self._owns_file and self._file is not None:
+            self._file.close()
+            self._file = h5py.File(self._path, 'r', libver='latest', swmr=True)
+        
+        current_group = self._file[self._scan_groups[self._current_group_index]]
+        det_group = current_group[self._resolved_detector_name]
+        self._current_dataset = det_group['data']
+        self._current_dataset.refresh()
+
+    def _refresh_scan_groups(self) -> None:
+        """Re-enumerate scan groups to detect newly added ones."""
+        if self._path is None:
+            return
+        
+        self._scan_groups = sorted(
+            [key for key in self._file.keys() if key.startswith('scan') and key[4:].isdigit()],
+            key=lambda x: int(x[4:])
+        )
+
+    def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
+        """Update internal state from attributes."""
+        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_bool(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {'0', 'false', 'no', 'off'}
+        return bool(value)
