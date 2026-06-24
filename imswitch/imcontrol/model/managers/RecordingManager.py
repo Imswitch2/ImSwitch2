@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
+RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before starting a scan
 
 # Off-thread writer constants
 WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
@@ -1040,6 +1041,7 @@ class RecordingManager(SignalInterface):
         self.__detectorsManager = detectorsManager
         self.__record = False
         self.__abort = False
+        self.__acqStartedEvent = threading.Event()
         self.__recordingWorker = RecordingWorker(self)
         self.__thread = Thread()
         self.__recordingWorker.moveToThread(self.__thread)
@@ -1086,6 +1088,7 @@ class RecordingManager(SignalInterface):
         self.__logger.info('Starting recording')
         self.__record = True
         self.__abort = False
+        self.__acqStartedEvent.clear()
         self.__recordingWorker.detectorNames = detectorNames
         self.__recordingWorker.recMode = recMode
         self.__recordingWorker.savename = savename
@@ -1144,6 +1147,22 @@ class RecordingManager(SignalInterface):
             self.sigRecordingEnded.emit()
         if wait:
             self.__thread.wait()
+
+    def _signalAcquisitionStarted(self):
+        """Called by the worker once detector acquisition has started (armed)."""
+        self.__acqStartedEvent.set()
+
+    def waitForAcquisitionStarted(self, timeout=None):
+        """Block until the recording worker has started detector acquisition
+        (i.e. all acquisition detectors are armed), or until timeout.
+
+        Returns True if acquisition started within the timeout, False otherwise.
+        Used by scan-driven recordings to gate scan TTL output on detector
+        readiness instead of a fixed sleep. Safe to call from the GUI thread:
+        waits on a threading.Event set directly by the worker thread, so it does
+        not depend on the Qt event loop.
+        """
+        return self.__acqStartedEvent.wait(timeout)
 
     def snap(self, detectorNames, savename, saveMode, saveFormat, attrs):
         """ Saves an image with the specified detectors to a file
@@ -1438,6 +1457,7 @@ class RecordingWorker(Worker):
 
     def run(self):
         acqHandle = self.__recordingManager.detectorsManager.startAcquisition()
+        self.__recordingManager._signalAcquisitionStarted()
         try:
             self._record()
 

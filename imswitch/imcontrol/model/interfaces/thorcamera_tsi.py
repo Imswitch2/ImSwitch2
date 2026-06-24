@@ -75,6 +75,11 @@ class ThorTSICamera:
         return self._camera.model
     
     @property
+    def is_armed(self):
+        """Whether the camera is currently armed for acquisition."""
+        return bool(getattr(self._camera, 'is_armed', False))
+    
+    @property
     def sensor_width_pixels(self):
         """Full sensor width in pixels."""
         return self._camera.sensor_width_pixels
@@ -258,6 +263,10 @@ class MockThorTSICamera:
         self._armed = False
         self._frame_count = 0
         
+        # Trigger-gated frame production (Phase 0a)
+        self._pending_software_triggers = 0
+        self._pending_hardware_triggers = 0
+        
         logger.info(f"Initialized mock Thorlabs TSI camera: {self._serial}")
     
     @property
@@ -267,6 +276,11 @@ class MockThorTSICamera:
     @property
     def model(self):
         return self._model
+    
+    @property
+    def is_armed(self):
+        """Whether the camera is currently armed for acquisition."""
+        return self._armed
     
     @property
     def sensor_width_pixels(self):
@@ -337,12 +351,32 @@ class MockThorTSICamera:
         logger.debug("Mock: Disarmed")
     
     def issue_software_trigger(self):
+        self._pending_software_triggers += 1
         logger.debug("Mock: Software trigger issued")
     
+    def simulate_hardware_trigger(self, n: int = 1):
+        """Test helper: queue n hardware triggers."""
+        self._pending_hardware_triggers += n
+        logger.debug(f"Mock: Simulated {n} hardware trigger(s)")
+    
     def get_pending_frame(self):
-        """Return a synthetic uint16 frame (gradient pattern)."""
+        """Return a synthetic uint16 frame if a trigger is pending, else None.
+        
+        In software mode: consume a pending software trigger.
+        In hardware/bulb mode: consume a pending hardware trigger.
+        """
         if not self._armed:
             return None
+        
+        # Check trigger availability based on mode
+        if self._trigger_mode == 0:  # software
+            if self._pending_software_triggers <= 0:
+                return None
+            self._pending_software_triggers -= 1
+        else:  # hardware (1) or bulb (2)
+            if self._pending_hardware_triggers <= 0:
+                return None
+            self._pending_hardware_triggers -= 1
         
         h = self.image_height_pixels
         w = self.image_width_pixels

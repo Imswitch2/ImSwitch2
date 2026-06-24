@@ -242,8 +242,57 @@ class ThorCamTSIManager(DetectorManager):
         self._frameStart = (x0, y0)
     
     def getChunk(self):
-        """Get a chunk of frames (single frame for this camera)."""
-        return self.getLatestFrame()
+        """Get a chunk of frames for recording.
+        
+        Returns a 3-D (numFrames, height, width) array as per the
+        DetectorManager.getChunk() contract (used by readChunk() for
+        multi-consumer recording distribution). NEVER delegates to
+        getLatestFrame() because that method fabricates zero frames for
+        live-view display, which would corrupt recordings.
+        
+        - Software mode: issue one software trigger, poll briefly, return (1, H, W)
+          or empty chunk if frame doesn't arrive.
+        - Hardware/Bulb modes: drain all pending frames, return (n, H, W) or empty
+          chunk. Do NOT issue triggers or fabricate.
+        
+        See DetectorManager.readChunk() implementation (list.extend requires 3-D).
+        """
+        import numpy as np
+        import time
+        
+        mode = self.parameters['Operation Mode'].value
+        h = self._camera.image_height_pixels
+        w = self._camera.image_width_pixels
+        dtype = np.uint16
+        
+        if mode == 'Software':
+            # Issue one software trigger and poll for the resulting frame
+            self._camera.issue_software_trigger()
+            
+            for _ in range(10):  # Max 10 retries (~10ms)
+                frame = self._camera.get_pending_frame()
+                if frame is not None:
+                    # Return as (1, H, W)
+                    return frame[np.newaxis, :, :]
+                time.sleep(0.001)
+            
+            # No frame arrived, return empty chunk (never fabricate)
+            return np.empty((0, h, w), dtype=dtype)
+        
+        else:  # Hardware or Bulb mode
+            # Drain all currently pending frames (do NOT issue trigger)
+            frames = []
+            while True:
+                frame = self._camera.get_pending_frame()
+                if frame is None:
+                    break
+                frames.append(frame)
+            
+            if len(frames) == 0:
+                return np.empty((0, h, w), dtype=dtype)
+            else:
+                # Stack to (n, H, W)
+                return np.stack(frames, axis=0)
     
     def flushBuffers(self):
         """Flush internal buffers by polling all pending frames."""
@@ -280,8 +329,15 @@ class ThorCamTSIManager(DetectorManager):
         self._updateROI()
     
     def startAcquisition(self):
-        """Start acquisition (camera is already armed in __init__)."""
-        pass  # Camera armed continuously
+        """Ensure the camera is armed for acquisition.
+
+        Idempotent: arms only if not already armed, so recording can recover if the
+        camera was disarmed after __init__ (SDK error, external disarm, mode change).
+        Other camera managers actively (re)start acquisition here; this one keeps the
+        camera continuously armed but must not silently no-op when it is disarmed.
+        """
+        if not self._camera.is_armed:
+            self._camera.arm(buffer_size=4)
     
     def stopAcquisition(self):
         """Stop acquisition (no-op, camera stays armed)."""

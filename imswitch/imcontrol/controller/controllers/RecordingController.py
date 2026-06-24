@@ -6,6 +6,7 @@ import numpy as np
 from imswitch.imcommon.framework import Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
+from imswitch.imcontrol.model.managers.RecordingManager import RECORDING_ARM_TIMEOUT
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
 
@@ -198,7 +199,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.recordingArgs['recFrames'] = self._commChannel.getNumScanPositions()
                 self.recordingArgs['numCamTTL'] = self._commChannel.getNumCamTTL()
                 self._master.recordingManager.startRecording(**self.recordingArgs)
-                time.sleep(0.3)
+                armed = self._master.recordingManager.waitForAcquisitionStarted(RECORDING_ARM_TIMEOUT)
+                if not armed:
+                    self.__logger.error(
+                        'Detectors did not report armed within %.1fs; starting scan anyway '
+                        '(check camera arming/triggering).', RECORDING_ARM_TIMEOUT
+                    )
                 if self._commChannel.hasScanWidget():
                     self._commChannel.scanWorkflow.run_scan(True, False)
                 else:
@@ -267,8 +273,27 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self.recordingArgs['recLapseIndex'] = self.lapseCurrent
 
         self._master.recordingManager.startRecording(**self.recordingArgs)
-        time.sleep(0.3)
+        armed = self._master.recordingManager.waitForAcquisitionStarted(RECORDING_ARM_TIMEOUT)
+        if not armed:
+            self.__logger.error(
+                'Detectors did not report armed within %.1fs; starting scan anyway '
+                '(check camera arming/triggering).', RECORDING_ARM_TIMEOUT
+            )
 
+        # NOTE: unlike ScanOnce (toggleREC), this run_scan is UNCONDITIONAL - it is
+        # not guarded behind hasScanWidget(). With a generic 'Scan' widget this is
+        # safe and fully automated: the broadcast targets the single Scan
+        # controller every lapse, with no manual restart. The only risky setup is
+        # NO 'Scan' widget + MULTIPLE standalone scan controllers, where the
+        # sigRunScan broadcast would start them all - but mirroring the ScanOnce
+        # arm-only guard here would force the user to manually restart the scan on
+        # EVERY lapse, breaking timelapse automation. A clean fix (deferred, needs
+        # hardware validation) would capture the active scan source at scan-start
+        # (it is cleared in ScanControllerAdvanced.scanDone -> isRunning=False
+        # BEFORE the next nextLapse fires, so it cannot be read here) and re-run
+        # only that source via runScanExternal on continuation. Until then this
+        # stays unconditional. See docs/advanced_scan_triggered_recording_audit.md
+        # (Finding 5 / Phase 4).
         self._commChannel.scanWorkflow.run_scan(isFirstLapse, not isFinalLapse)
 
     def recordingStarted(self):

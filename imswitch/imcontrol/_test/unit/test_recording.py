@@ -1340,6 +1340,98 @@ def test_lapse_metadata_end_to_end(qtbot):
     file.close()
 
 
+def test_waitForAcquisitionStarted_blocks_until_armed(qtbot):
+    """Verify that waitForAcquisitionStarted blocks until arming completes."""
+    import threading
+    from unittest.mock import patch
+    
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    
+    block_event = threading.Event()
+    original_startAcquisition = detectorsManager.startAcquisition
+    
+    def blocking_startAcquisition():
+        block_event.wait()
+        return original_startAcquisition()
+    
+    try:
+        with patch.object(detectorsManager, 'startAcquisition', side_effect=blocking_startAcquisition):
+            recordingManager.startRecording(
+                detectorNames=list(detectorInfosBasic.keys()),
+                recMode=RecMode.SpecFrames,
+                savename='test_arming_block',
+                saveMode=SaveMode.RAM,
+                attrs={name: {} for name in detectorInfosBasic.keys()},
+                recFrames=5
+            )
+            
+            armed = recordingManager.waitForAcquisitionStarted(timeout=0.2)
+            assert armed is False, "Should timeout while detector is blocked"
+            
+            block_event.set()
+            
+            armed = recordingManager.waitForAcquisitionStarted(timeout=2.0)
+            assert armed is True, "Should return True after detector is unblocked"
+    finally:
+        block_event.set()
+        recordingManager.abortRecording(emitSignal=False, wait=True)
+
+
+def test_waitForAcquisitionStarted_fast_arming(qtbot):
+    """Verify that waitForAcquisitionStarted returns True in normal fast-arming path."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    
+    try:
+        recordingManager.startRecording(
+            detectorNames=list(detectorInfosBasic.keys()),
+            recMode=RecMode.SpecFrames,
+            savename='test_arming_fast',
+            saveMode=SaveMode.RAM,
+            attrs={name: {} for name in detectorInfosBasic.keys()},
+            recFrames=5
+        )
+        
+        armed = recordingManager.waitForAcquisitionStarted(timeout=2.0)
+        assert armed is True, "Should return True for fast-arming detector"
+    finally:
+        recordingManager.abortRecording(emitSignal=False, wait=True)
+
+
+def test_waitForAcquisitionStarted_timeout(qtbot):
+    """Verify that waitForAcquisitionStarted returns False on timeout."""
+    import threading
+    from unittest.mock import patch
+    
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    
+    block_event = threading.Event()
+    original_startAcquisition = detectorsManager.startAcquisition
+    
+    def never_finishing_startAcquisition():
+        block_event.wait()
+        return original_startAcquisition()
+    
+    try:
+        with patch.object(detectorsManager, 'startAcquisition', side_effect=never_finishing_startAcquisition):
+            recordingManager.startRecording(
+                detectorNames=list(detectorInfosBasic.keys()),
+                recMode=RecMode.SpecFrames,
+                savename='test_arming_timeout',
+                saveMode=SaveMode.RAM,
+                attrs={name: {} for name in detectorInfosBasic.keys()},
+                recFrames=5
+            )
+            
+            armed = recordingManager.waitForAcquisitionStarted(timeout=0.1)
+            assert armed is False, "Should return False on timeout"
+    finally:
+        block_event.set()
+        recordingManager.abortRecording(emitSignal=False, wait=True)
+
+
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.
 #

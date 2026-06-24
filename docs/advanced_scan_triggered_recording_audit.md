@@ -163,10 +163,33 @@ bypassing the safety rule deliberately added for `ScanOnce`. On a setup with
 multiple standalone scan controllers listening to `sigRunScan`, a lapse
 recording could start all of them at once.
 
-Fix direction: decide whether `ScanLapse` should mirror `ScanOnce` (guard on
-`hasScanWidget()`, otherwise arm-only) or adopt an explicit active-scan-source
-selection. Verify against standalone scan controllers first; may be a no-op for
-the intended setups.
+**Decision (2026-06-24): left unconditional, marked for future.** Investigation
+showed a clean drop-in does not exist:
+
+- The common setup is already correct and automated: with a generic `Scan`
+  widget, the unconditional broadcast targets that single controller every
+  lapse — no manual restart, no broadcast problem.
+- The only risky setup is *no* `Scan` widget **and** multiple standalone scan
+  controllers **and** `ScanLapse`. Mirroring the `ScanOnce` arm-only guard there
+  would force the user to manually restart the scan on **every** lapse,
+  breaking timelapse automation (the audit's own concern).
+- The active scan source cannot be read at continuation time:
+  `ScanControllerAdvanced.scanDone()` sets `isRunning = False` (which clears
+  `_activeScanSource` via `clearActiveScanSource`,
+  [basecontrollers.py:224](../imswitch/imcontrol/controller/basecontrollers.py:224))
+  **before** emitting `sigScanDone`, and `nextLapse` for the next timepoint
+  fires later still (via a `Timer` in `recordingCycleEnded`,
+  [RecordingController.py:288-295](../imswitch/imcontrol/controller/controllers/RecordingController.py:288)).
+
+Deferred clean solution (needs hardware validation against standalone scan
+controllers): capture the active scan source at **scan-start** (e.g. via
+`sigScanStarting`/`sigScanStarted`, where `_activeScanSource` is still set —
+`isRunning=True` happens before `sigScanStarting` in
+`runScanAdvanced`), store it for the lapse series, and on continuation re-run
+**only** that source via `runScanExternal(recalc, nonFinal)` instead of
+broadcasting `sigRunScan`; clear it when the lapse series ends. This makes the
+no-`Scan`-widget multi-standalone case both safe and automated. A code comment
+in `nextLapse` records this rationale.
 
 ### 6 (LOW). Missing TTL configuration is masked by a default of 1
 
@@ -257,12 +280,15 @@ coverage.
   `RecordingController.py:200-203` and `:269-272`.
 - Larger, cross-cutting change — keep it isolated in its own phase.
 
-### Phase 4 — `ScanLapse` scan-source guard (Finding 5)
+### Phase 4 — `ScanLapse` scan-source guard (Finding 5) — DONE (deferred)
 
-- Decide and implement: mirror `ScanOnce`'s `hasScanWidget()` guard in
-  `nextLapse()`, or document why lapse intentionally differs.
-- Verify against standalone scan controllers (TriggerScope family) that listen
-  to `sigRunScan`. File: `RecordingController.py:272`.
+- Decision: keep `nextLapse()`'s `run_scan` unconditional; a guarded version
+  would break timelapse automation on standalone-scan setups, and the active
+  scan source is already cleared before continuation (see Finding 5 for the
+  full rationale and the deferred clean-solution design).
+- Implemented: a code comment in `nextLapse()` recording the rationale; no
+  behavior change. The clean solution (capture source at scan-start, re-run it
+  directly on continuation) is marked for a future, hardware-validated effort.
 
 ### Phase 5 (optional) — Surface missing TTL config (Finding 6)
 
