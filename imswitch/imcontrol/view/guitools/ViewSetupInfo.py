@@ -71,9 +71,6 @@ class ViewSetupInfo(SetupInfo):
     """ Laser presets available to select (map preset name -> laser name ->
     LaserPresetInfo). """
 
-    defaultLaserPresetForScan: Optional[str] = field(default_factory=lambda: None)
-    """ Default laser preset for scanning. """
-
     widgetLayout: Optional['WidgetLayoutInfo'] = field(default_factory=lambda: None)
     """ Optional dock layout override.  When ``null`` or absent, the built-in
     default layout is used (matches current hard-coded behaviour).  See
@@ -139,14 +136,8 @@ class ViewSetupInfo(SetupInfo):
         """ :meta private: """
         try:
             del self.laserPresets[name]
-            if self.defaultLaserPresetForScan == name:
-                self.setDefaultLaserPresetForScan(None)
         except KeyError:
             pass
-
-    def setDefaultLaserPresetForScan(self, presetNameOrNone):
-        """ :meta private: """
-        self.defaultLaserPresetForScan = presetNameOrNone
 
     def hasWidget(self, widget):
         """ :meta private: """

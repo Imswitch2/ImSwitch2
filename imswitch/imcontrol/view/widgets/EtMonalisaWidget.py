@@ -119,7 +119,6 @@ class EtMonalisaWidget(Widget):
 
         self.endlessScanCheck = QtWidgets.QCheckBox('Endless')
         self.fastaxisshiftCheck = QtWidgets.QCheckBox('Fast scan axis shift')
-        self.useScanLaserPresetCheck = QtWidgets.QCheckBox('Use laser preset for triggered scan')
 
         self.bin_thresh_label = QtWidgets.QLabel('Bin. threshold (int.)')
         self.bin_thresh_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
@@ -189,7 +188,6 @@ class EtMonalisaWidget(Widget):
 
         self.grid.addWidget(self.fastImgLasersPar_label, currentRow, 2)
         self.grid.addWidget(self.fastImgLasersPar, currentRow, 3)
-        self.grid.addWidget(self.useScanLaserPresetCheck, currentRow, 4)
 
         currentRow +=1
 
@@ -349,4 +347,3 @@ class CoordTransformWidget(Widget):
         currentRow += 1
         self.grid.addWidget(self.saveCalibButton, currentRow, 0)
         self.grid.addWidget(self.resetCoordsButton, currentRow, 1)
-

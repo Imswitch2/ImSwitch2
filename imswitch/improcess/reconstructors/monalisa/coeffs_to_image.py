@@ -165,15 +165,18 @@ def reconstruct_images_from_coeffs(
 def output_pixel_size_nm(
     scan_params: dict,
     axis_labels: dict[str, str],
-    grid_rows: int,
-    grid_cols: int,
 ) -> tuple[float, float] | None:
     """Compute the reconstructed ``(y_nm, x_nm)`` pixel pitch.
 
-    The output Y dimension covers ``sqRows * gridRows`` pixels over a physical
-    extent of ``sqRows * step_size_Y``, so the recon pixel pitch is
-    ``step_size_Y / gridRows`` (and likewise for X). Returns ``None`` if the
-    scan params don't carry the needed step sizes.
+    The reconstructed pitch *is* the scan step size. :func:`coeffs_to_image`
+    lays the output out as ``(sqRows * gridRows, sqCols * gridCols)`` pixels,
+    interleaving each scan position's ``gridRows x gridCols`` focus block at a
+    stride equal to the scan-step count (``im[r::pr, c::pc] = coeffs[i]`` with
+    ``pr = sqRows``). Walking one pixel along an axis therefore advances the
+    scan position by exactly one step, and the ``gridRows`` foci tile adjacent
+    illumination periods (period = ``sqRows * step_size``) seamlessly — so the
+    physical pitch is ``step_size`` everywhere, independent of the focus count.
+    Returns ``None`` if the scan params don't carry the needed step sizes.
     """
     try:
         ud_index = scan_params['dimensions'].index(axis_labels['u_d_text'])
@@ -182,10 +185,7 @@ def output_pixel_size_nm(
         step_x_nm = float(scan_params['step_sizes'][rl_index])
     except (KeyError, ValueError, TypeError, IndexError):
         return None
-    return (
-        step_y_nm / grid_rows if grid_rows else step_y_nm,
-        step_x_nm / grid_cols if grid_cols else step_x_nm,
-    )
+    return (step_y_nm, step_x_nm)
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

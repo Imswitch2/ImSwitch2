@@ -64,8 +64,11 @@ class LaserWidget(Widget):
         self.moreButton = QtWidgets.QToolButton()
         self.moreButton.setText('More…')
         self.moreButton.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.clearPresetAction = QtWidgets.QAction('Clear selection')
+        self.clearPresetAction.triggered.connect(lambda: self.setCurrentPreset(None))
         self.deletePresetAction = QtWidgets.QAction('Delete selected')
         self.deletePresetAction.triggered.connect(self.sigDeletePresetClicked)
+        self.moreButton.addAction(self.clearPresetAction)
         self.moreButton.addAction(self.deletePresetAction)
 
         self.setCurrentPreset(None)
@@ -152,10 +155,10 @@ class LaserWidget(Widget):
         user. """
         self.laserModules[laserName].setEditable(editable)
 
-    def setValue(self, laserName, value):
+    def setValue(self, laserName, value, emitSignal=True):
         """ Sets the value of the specified laser, in the units that the laser
         uses. """
-        self.laserModules[laserName].setValue(value)
+        self.laserModules[laserName].setValue(value, emitSignal=emitSignal)
     
     def setModulationFrequency(self, laserName, value):
         """ Sets the modulation frequency of the specified laser. """
@@ -172,17 +175,21 @@ class LaserWidget(Widget):
     def setCurrentPreset(self, name):
         """ Sets the selected preset in the preset list. Pass None to unselect
         all presets. """
-        anyPresetSelected = True if name else False
+        anyPresetSelected = False
 
-        if anyPresetSelected:
+        if name:
             nameIndex = self.presetsList.findData(name)
             if nameIndex > -1:
                 self.presetsList.setCurrentIndex(nameIndex)
+                anyPresetSelected = True
+            else:
+                self.presetsList.setCurrentIndex(-1)
         else:
             self.presetsList.setCurrentIndex(-1)
 
         self.loadPresetButton.setEnabled(anyPresetSelected)
         self.savePresetButton.setEnabled(anyPresetSelected)
+        self.clearPresetAction.setEnabled(anyPresetSelected)
         self.deletePresetAction.setEnabled(anyPresetSelected)
 
     def addPreset(self, name):
@@ -192,9 +199,12 @@ class LaserWidget(Widget):
 
     def removePreset(self, name):
         """ Removes a preset from the preset list. """
+        wasSelected = self.getCurrentPreset() == name
         nameIndex = self.presetsList.findData(name)
         if nameIndex > -1:
             self.presetsList.removeItem(nameIndex)
+        if wasSelected:
+            self.setCurrentPreset(None)
 
     def eventFilter(self, source, event):
         if source is self.lasersGridContainer and event.type() == QtCore.QEvent.Resize:
@@ -398,10 +408,19 @@ class LaserModule(QtWidgets.QWidget):
         self.slider.setEnabled(editable)
         self.enableButton.setEnabled(editable)
 
-    def setValue(self, value):
+    def setValue(self, value, emitSignal=True):
         """ Sets the value of the laser, in the units that the laser uses. """
-        self.setPointEdit.setText(f'%.{self.valueDecimals}f' % value)
-        self.slider.setValue(value)
+        if emitSignal:
+            self.setPointEdit.setText(f'%.{self.valueDecimals}f' % value)
+            self.slider.setValue(value)
+            return
+
+        self.slider.blockSignals(True)
+        try:
+            self.setPointEdit.setText(f'%.{self.valueDecimals}f' % value)
+            self.slider.setValue(value)
+        finally:
+            self.slider.blockSignals(False)
     
     def setModulationFrequency(self, value):
         """ Sets the laser modulation frequency. """

@@ -174,10 +174,12 @@ class MonalisaLiveSession(StreamingSession):
 
         recon_rows = loc_result.ny_c * self.ny_s
         recon_cols = loc_result.nx_c * self.nx_s
-        self.output_pixel_size_nm = (
-            step_y_nm / loc_result.ny_c if loc_result.ny_c else step_y_nm,
-            step_x_nm / loc_result.nx_c if loc_result.nx_c else step_x_nm,
-        )
+        # The reconstructed pixel pitch is the scan step size: the recon buffer
+        # is (ny_c*ny_s, nx_c*nx_s), with the ny_c/nx_c foci tiling adjacent
+        # illumination periods and the ny_s/nx_s scan steps filling within each
+        # period — so one output pixel == one scan step. (Dividing by the focus
+        # count made the napari scale ~ny_c/nx_c too small.)
+        self.output_pixel_size_nm = (step_y_nm, step_x_nm)
 
         self.reconstructed = np.zeros(
             (1, 1, num_time_points, 1, recon_rows, recon_cols), dtype=np.float32

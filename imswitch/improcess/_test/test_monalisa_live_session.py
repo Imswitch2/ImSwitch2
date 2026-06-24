@@ -203,7 +203,8 @@ def test_live_session_converts_scan_stage_micrometer_steps_to_result_scale(synth
     plan = session.begin(init_obj, params={"use_gpu": False})
     result = session.result()
 
-    expected_px = (50.0 / session.ny_c, 50.0 / session.nx_c)
+    # Reconstructed pitch == scan step size (50 nm here), not step/focus-count.
+    expected_px = (50.0, 50.0)
     assert plan.axis_scales[-2:] == pytest.approx(expected_px)
     assert result.output_pixel_size_nm == pytest.approx(expected_px)
     assert result.axis_scales[-2:] == pytest.approx(expected_px)
@@ -538,9 +539,8 @@ def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthet
     assert result.data.shape[2] == 2
     assert result.scan_params["steps"] == [nx_s, ny_s, 1, 2]
     assert result.scan_params["step_sizes"][:2] == pytest.approx([50.0, 50.0])
-    assert result.output_pixel_size_nm == pytest.approx(
-        (50.0 / (result.data.shape[-2] // ny_s), 50.0 / (result.data.shape[-1] // nx_s))
-    )
+    # Reconstructed pitch == scan step size (50 nm), not step/focus-count.
+    assert result.output_pixel_size_nm == pytest.approx((50.0, 50.0))
     assert np.all(np.isfinite(result.data))
     assert not np.all(result.data == 0)
 

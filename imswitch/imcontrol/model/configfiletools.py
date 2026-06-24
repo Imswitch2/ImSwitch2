@@ -8,6 +8,9 @@ from imswitch.imcommon.model import dirtools
 from .Options import Options
 
 
+_LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
+
+
 def getSetupList():
     return [Path(file).name for file in glob.glob(os.path.join(_setupFilesDir, '*.json'))]
 
@@ -29,6 +32,14 @@ def pruneDefaultSetupInfoFields(setupInfo) -> dict:
     default sections for hardware the setup does not have.
     """
     data = setupInfo.to_dict()
+    for key in _LEGACY_SETUP_INFO_KEYS:
+        data.pop(key, None)
+    catchAll = data.get('_catchAll')
+    if isinstance(catchAll, dict):
+        for key in _LEGACY_SETUP_INFO_KEYS:
+            catchAll.pop(key, None)
+        if not catchAll:
+            data.pop('_catchAll', None)
     for fieldInfo in dataclasses.fields(type(setupInfo)):
         name = fieldInfo.name
         if name not in data:

@@ -290,10 +290,9 @@ class MonalisaReconstructor(StreamingReconstructor):
                 session.push(data[start:end], start, end)
 
             live_result = session.finish()
-            out_px = (
-                geometry['step_y_nm'] / session.ny_c if session.ny_c else geometry['step_y_nm'],
-                geometry['step_x_nm'] / session.nx_c if session.nx_c else geometry['step_x_nm'],
-            )
+            # Reconstructed pitch == scan step size (the ny_c/nx_c foci tile
+            # whole illumination periods; they do not subdivide a scan step).
+            out_px = (geometry['step_y_nm'], geometry['step_x_nm'])
         finally:
             session.close()
         finite_data = live_result.data[np.isfinite(live_result.data)]

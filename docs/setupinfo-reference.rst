@@ -425,7 +425,7 @@ documented below with full field lists and examples:
 * `teensyPulse`_
 * `pyroServerInfo`_
 * `rois`_
-* `laserPresets and defaultLaserPresetForScan`_
+* `laserPresets`_
 
 **Legacy / deprecated sections**:
 
@@ -744,13 +744,12 @@ Key fields (per ROI):
 **See also**: :class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.ROIInfo`
 
 
-laserPresets and defaultLaserPresetForScan
-------------------------------------------
+laserPresets
+------------
 
-Optional laser power/modulation preset system.
+Optional laser power preset system.
 
 * ``laserPresets`` (dict): Map of preset names to ``{laserName: LaserPresetInfo}`` nested dicts
-* ``defaultLaserPresetForScan`` (str or null): Name of preset to auto-load when scanning starts
 
 **LaserPresetInfo fields** (per laser, per preset):
 
@@ -777,8 +776,7 @@ Optional laser power/modulation preset system.
                "value": 30.0
            }
        }
-   },
-   "defaultLaserPresetForScan": "HighPower"
+   }
 
 **See also**: :class:`~imswitch.imcontrol.view.guitools.ViewSetupInfo.LaserPresetInfo`
 

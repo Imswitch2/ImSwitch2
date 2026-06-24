@@ -56,10 +56,9 @@ def test_laser_scan_uses_current_setpoints_not_scan_default_presets():
     assert 'default for scanning' not in widget_source
     assert 'presetBeforeScan' not in controller_source
     assert 'defaultLaserPresetForScan' not in controller_source
-    assert (
-        'def changeScanPower(self, laserName, laserValue):\n'
-        '        self.setLaserValue(laserName, laserValue)'
-    ) in controller_source
+    assert 'scanDefaultPreset' not in controller_source
+    assert 'def changeScanPower(self, laserName, laserValue):' in controller_source
+    assert 'self.setLaserValue(laserName, laserValue)' in controller_source
 
 
 def test_recording_widget_uses_internal_scroll_area():

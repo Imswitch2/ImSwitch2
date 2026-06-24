@@ -42,6 +42,8 @@ class ImConMainController(MainController):
 
         # Init communication channel and master controller
         self.__commChannel = CommunicationChannel(self, self.__setupInfo)
+        self.__masterController = None
+        self.__factory = None
         self.__masterController = MasterController(self.__setupInfo, self.__commChannel,
                                                    self._moduleCommChannel)
 
@@ -401,8 +403,10 @@ class ImConMainController(MainController):
             except Exception as e:
                 self.__logger.warning(f'Error stopping server thread: {e}')
         
-        self.__factory.closeAllCreatedControllers()
-        self.__masterController.closeEvent()
+        if self.__factory is not None:
+            self.__factory.closeAllCreatedControllers()
+        if self.__masterController is not None:
+            self.__masterController.closeEvent()
 
     def _shouldSaveWidgetStateOnClose(self):
         result = QtWidgets.QMessageBox.question(

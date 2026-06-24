@@ -123,7 +123,6 @@ class EtSTEDWidget(Widget):
 
         self.endlessScanCheck = QtWidgets.QCheckBox('Endless')
         self.fastaxisshiftCheck = QtWidgets.QCheckBox('Fast scan axis shift')
-        self.useScanLaserPresetCheck = QtWidgets.QCheckBox('Use laser preset for triggered scan')
 
         self.bin_thresh_label = QtWidgets.QLabel('Bin. threshold (int.)')
         self.bin_thresh_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
@@ -225,7 +224,6 @@ class EtSTEDWidget(Widget):
 
         self.grid.addWidget(self.fastImgLasersPar_label, currentRow, 2)
         self.grid.addWidget(self.fastImgLasersPar, currentRow, 3)
-        self.grid.addWidget(self.useScanLaserPresetCheck, currentRow, 4)
 
         currentRow += 1
 
@@ -327,7 +325,6 @@ class EtSTEDWidget(Widget):
             self.bin_thresh_edit,
             self.bin_smooth_edit,
             self.fastaxisshiftCheck,
-            self.useScanLaserPresetCheck,
         ]
         for control in controls:
             control.setEnabled(not armed)

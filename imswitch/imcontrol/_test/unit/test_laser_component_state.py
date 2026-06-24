@@ -12,6 +12,7 @@ Tests the StatefulComponentMixin implementation on LaserController:
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, patch, call
 
 from imswitch.imcontrol.controller.controllers.LaserController import LaserController
@@ -269,6 +270,45 @@ def test_apply_component_state_missing_laser_warning(laser_controller):
     warnings = laser_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
     
     assert any('NonExistent' in w and 'not present' in w for w in warnings)
+
+
+def test_apply_preset_skips_unavailable_and_binary_lasers(mock_laser_manager, mock_widget):
+    """Preset loading should only apply power values for present non-binary lasers."""
+    controller = Mock(spec=LaserController)
+    controller._master = Mock(lasersManager=mock_laser_manager)
+    controller._widget = mock_widget
+    controller._logger = Mock()
+    controller.setLaserValue = Mock()
+
+    preset = {
+        '488nm': SimpleNamespace(value=12.5),
+        'UV': SimpleNamespace(value=1.0),
+        'MissingLaser': SimpleNamespace(value=42.0),
+    }
+
+    LaserController.applyPreset(controller, preset)
+
+    controller.setLaserValue.assert_called_once_with('488nm', 12.5)
+    assert controller._logger.warning.call_count == 2
+
+
+def test_set_laser_value_writes_manager_and_updates_widget_silently(
+    mock_laser_manager, mock_widget
+):
+    """Programmatic value changes should not depend on widget signals."""
+    controller = Mock(spec=LaserController)
+    controller._master = Mock(lasersManager=mock_laser_manager)
+    controller._widget = mock_widget
+    controller.setSharedAttr = Mock()
+    controller._setLaserValue = lambda laserName, value: LaserController._setLaserValue(
+        controller, laserName, value
+    )
+
+    LaserController.setLaserValue(controller, '488nm', 37.5)
+
+    mock_laser_manager['488nm'].setValue.assert_called_with(37.5)
+    mock_widget.setValue.assert_called_with('488nm', 37.5, emitSignal=False)
+    controller.setSharedAttr.assert_called_with('488nm', 'Value', 37.5)
 
 
 def test_describe_component_state(laser_controller):

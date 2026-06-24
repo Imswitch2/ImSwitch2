@@ -145,9 +145,7 @@ class MonalisaProcessingResult(ProcessingResult):
                 99.9th percentile when omitted.
         """
         data = reconstruct_images_from_coeffs(coeffs, scan_params, axis_label_map)
-        grid_rows = int(coeffs.shape[3])
-        grid_cols = int(coeffs.shape[4])
-        out_px = output_pixel_size_nm(scan_params, axis_label_map, grid_rows, grid_cols)
+        out_px = output_pixel_size_nm(scan_params, axis_label_map)
         if display_levels is None:
             display_levels = (
                 float(np.percentile(data, 1)),
@@ -186,10 +184,8 @@ class MonalisaProcessingResult(ProcessingResult):
         self.data = reconstruct_images_from_coeffs(
             self.coeffs, self.scan_params, self.axis_label_map
         )
-        grid_rows = int(self.coeffs.shape[3])
-        grid_cols = int(self.coeffs.shape[4])
         self.output_pixel_size_nm = output_pixel_size_nm(
-            self.scan_params, self.axis_label_map, grid_rows, grid_cols
+            self.scan_params, self.axis_label_map
         )
         if (
             self.output_pixel_size_nm is not None

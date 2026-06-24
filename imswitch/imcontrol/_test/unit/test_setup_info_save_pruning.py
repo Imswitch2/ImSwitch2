@@ -85,3 +85,14 @@ def test_smart_microscopy_mode_switching_flag_round_trips():
     assert setupInfo.smartMicroscopyModeSwitchingEnabled == {'EtSnouty': True}
     assert pruned['smartMicroscopyModeSwitchingEnabled'] == {'EtSnouty': True}
     assert reloaded.smartMicroscopyModeSwitchingEnabled == {'EtSnouty': True}
+
+
+def test_legacy_laser_scan_default_key_is_pruned():
+    setup = json.loads(MINIMAL_TRIGGERSCOPE_SETUP)
+    setup['defaultLaserPresetForScan'] = 'HighPower'
+
+    setupInfo = SetupInfo.from_json(json.dumps(setup), infer_missing=True)
+    pruned = pruneDefaultSetupInfoFields(setupInfo)
+
+    assert 'defaultLaserPresetForScan' not in pruned
+    assert 'defaultLaserPresetForScan' not in pruned.get('_catchAll', {})

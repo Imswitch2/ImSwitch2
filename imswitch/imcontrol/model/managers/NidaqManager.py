@@ -10,6 +10,48 @@ try:
 except ImportError:
     _NIDAQMX_AVAILABLE = False
 
+    class _UnavailableNidaqError(Exception):
+        pass
+
+    class _UnavailableNidaqLib:
+        DaqNotFoundError = _UnavailableNidaqError
+        DaqFunctionNotSupportedError = _UnavailableNidaqError
+
+    class _UnavailableNidaqConstants:
+        class AcquisitionType:
+            FINITE = "finite"
+
+        class CountDirection:
+            COUNT_UP = "count_up"
+
+        class DataTransferActiveTransferMode:
+            DMA = "dma"
+
+        class Edge:
+            RISING = "rising"
+
+        class FrequencyUnits:
+            HZ = "hz"
+
+        class TriggerType:
+            DIGITAL_EDGE = "digital_edge"
+
+        WAIT_INFINITELY = -1
+
+    class _UnavailableNidaqmx:
+        _lib = _UnavailableNidaqLib
+        constants = _UnavailableNidaqConstants
+        DaqError = _UnavailableNidaqError
+
+        @staticmethod
+        def Task(*_args, **_kwargs):
+            raise ImportError(
+                'nidaqmx is required for NI-DAQ hardware. '
+                'Install it with: pip install "imswitch[hardware]"'
+            )
+
+    nidaqmx = _UnavailableNidaqmx()
+
 import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
@@ -28,18 +70,24 @@ class NidaqManager(SignalInterface):
     def __init__(self, setupInfo):
         super().__init__()
         self.__logger = initLogger(self)
+        self.__simulating = bool(setupInfo.nidaq.simulation)
 
         if not _NIDAQMX_AVAILABLE:
             hasNidaqDevices = any(
                 info.getAnalogChannel() is not None or info.getDigitalLine() is not None
                 for info in setupInfo.getAllDevices().values()
             )
-            if hasNidaqDevices:
+            if hasNidaqDevices and not self.__simulating:
                 raise ImportError(
                     'nidaqmx is required for NI-DAQ hardware in this setup. '
                     'Install it with: pip install "imswitch[hardware]"'
                 )
-            self.__logger.warning('nidaqmx not installed; NI-DAQ operations disabled.')
+            if hasNidaqDevices:
+                self.__logger.warning(
+                    'nidaqmx not installed; running NI-DAQ devices in simulation mode.'
+                )
+            else:
+                self.__logger.warning('nidaqmx not installed; NI-DAQ operations disabled.')
 
         self.__setupInfo = setupInfo
         self.tasks = {}
@@ -48,12 +96,15 @@ class NidaqManager(SignalInterface):
         self.timerTaskWaiter = None
         self.busy = False
         self.signalSent = False
-        self.__simulating = setupInfo.nidaq.simulation
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
 
     def __del__(self):
-        for taskWaiter in [self.doTaskWaiter, self.aoTaskWaiter, self.timerTaskWaiter]:
+        for taskWaiter in [
+            getattr(self, 'doTaskWaiter', None),
+            getattr(self, 'aoTaskWaiter', None),
+            getattr(self, 'timerTaskWaiter', None),
+        ]:
             if taskWaiter is not None:
                 taskWaiter.quit()
                 taskWaiter.wait()

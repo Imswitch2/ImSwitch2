@@ -103,10 +103,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def valueChanged(self, laserName, magnitude):
         """ Change magnitude. """
-        enabled = self._widget.isLaserActive(laserName)
-        self._master.lasersManager[laserName].setValue(magnitude)# , enabled, self.is_scanning) #TODO find out why this fails
-        self._widget.setValue(laserName, magnitude)
-        self.setSharedAttr(laserName, _valueAttr, magnitude)
+        self._setLaserValue(laserName, magnitude)
     
     def toggleModulation(self, laserName, enabled):
         """ Enable or disable laser modulation (on/off). """
@@ -215,7 +212,23 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def applyPreset(self, laserPreset):
         """ Loads a preset object into the current values. """
+        knownLasers = {lName for lName, _ in self._master.lasersManager}
         for laserName, laserPresetInfo in laserPreset.items():
+            if laserName not in knownLasers:
+                self._logger.warning(
+                    f'Laser preset references unavailable laser "{laserName}"; skipped.'
+                )
+                continue
+            if self._master.lasersManager[laserName].isBinary:
+                self._logger.warning(
+                    f'Laser preset references binary laser "{laserName}"; skipped.'
+                )
+                continue
+            if not hasattr(laserPresetInfo, 'value'):
+                self._logger.warning(
+                    f'Laser preset entry for "{laserName}" has no value; skipped.'
+                )
+                continue
             self.setLaserValue(laserName, laserPresetInfo.value)
 
     def scanChanged(self, isScanning):
@@ -308,6 +321,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         finally:
             self.settingAttr = False
 
+    def _setLaserValue(self, laserName, value):
+        self._master.lasersManager[laserName].setValue(value)
+        self._widget.setValue(laserName, value, emitSignal=False)
+        self.setSharedAttr(laserName, _valueAttr, value)
+
     @APIExport()
     def getLaserNames(self) -> List[str]:
         """ Returns the device names of all lasers. These device names can be
@@ -323,7 +341,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
     def setLaserValue(self, laserName: str, value: Union[int, float]) -> None:
         """ Sets the value of the specified laser, in the units that the laser
         uses. """
-        self._widget.setValue(laserName, value)
+        self._setLaserValue(laserName, value)
 
     @APIExport()
     def changeScanPower(self, laserName, laserValue):
@@ -379,9 +397,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 }
             }
         
-        Note: scanDefaultPreset is NOT included because LaserController does
-        not expose such a concept. The summarizer already guards this with
-        `if state.get("scanDefaultPreset") is not None`.
         """
         state = {
             'lasers': {},
@@ -507,9 +522,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         
         if state.get("currentPreset") is not None:
             summaries.append(f"  preset: {self._fmt(state.get('currentPreset'))}")
-        if state.get("scanDefaultPreset") is not None:
-            summaries.append(f"  scan preset: {self._fmt(state.get('scanDefaultPreset'))}")
-        
+
         lasers = state.get("lasers") or {}
         if lasers:
             summaries.append("  states:")

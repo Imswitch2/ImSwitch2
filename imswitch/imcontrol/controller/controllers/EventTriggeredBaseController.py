@@ -670,8 +670,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self.continueFastModality()
             return
 
-        if not self._widget.useScanLaserPresetCheck.isChecked():
-            self._commChannel.scanWorkflow.notify_scan_starting()
+        self._commChannel.scanWorkflow.notify_scan_starting()
 
         self._set_status('scanning')
         if not self.runSlowScan():

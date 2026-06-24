@@ -152,8 +152,10 @@ def test_update_images_refreshes_axis_scales_from_output_pixel_size():
     result.updateScanParams(edited_params)
     result.updateImages()
 
-    assert result.output_pixel_size_nm == pytest.approx((100.0, 20.0))
-    assert result.axis_scales == pytest.approx([1.0, 1.0, 1.0, 300.0, 100.0, 20.0])
+    # Reconstructed pitch == scan step size (Y=Up-Down=200, X=Right-Left=100),
+    # independent of the coeffs focus grid (2x5 here).
+    assert result.output_pixel_size_nm == pytest.approx((200.0, 100.0))
+    assert result.axis_scales == pytest.approx([1.0, 1.0, 1.0, 300.0, 200.0, 100.0])
 
 
 def test_display_layers_computes_per_layer_contrast():
