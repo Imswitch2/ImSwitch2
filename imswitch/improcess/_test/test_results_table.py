@@ -7,9 +7,45 @@ from pathlib import Path
 _view_path = Path(__file__).parent.parent / "view"
 sys.path.insert(0, str(_view_path))
 try:
-    from ResultsTableWidget import merge_columns, format_table_value, records_to_csv
+    from ResultsTableWidget import (
+        merge_columns,
+        format_table_value,
+        records_to_csv,
+        records_from_csv,
+        _coerce_cell,
+    )
 finally:
     sys.path.pop(0)
+
+
+def test_coerce_cell_types():
+    assert _coerce_cell("") is None
+    assert _coerce_cell("5") == 5 and isinstance(_coerce_cell("5"), int)
+    assert _coerce_cell("2.5") == 2.5 and isinstance(_coerce_cell("2.5"), float)
+    assert _coerce_cell("cell_01_h") == "cell_01_h"
+
+
+def test_records_from_csv_inverts_records_to_csv():
+    columns = ["sample_id", "area", "ecc"]
+    records = [
+        {"sample_id": "a", "area": 10, "ecc": 0.1},
+        {"sample_id": "b", "area": 20, "ecc": 0.25},
+    ]
+    text = records_to_csv(columns, records)
+    out_columns, out_records = records_from_csv(text)
+    assert out_columns == columns
+    assert out_records == records
+
+
+def test_records_from_csv_blank_cells_become_none():
+    text = "a,b\n1,\n,2\n"
+    columns, records = records_from_csv(text)
+    assert columns == ["a", "b"]
+    assert records == [{"a": 1, "b": None}, {"a": None, "b": 2}]
+
+
+def test_records_from_csv_empty_text():
+    assert records_from_csv("") == ([], [])
 
 
 def test_merge_columns_preserves_order_and_deduplicates():

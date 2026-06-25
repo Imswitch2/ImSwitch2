@@ -100,6 +100,10 @@ class GraphWidget(QtWidgets.QWidget):
         pen = series.style.get("pen", pg.intColor(index))
         symbol = series.style.get("symbol", "o")
 
+        if series.kind == "image":
+            self._renderImage(series)
+            return
+
         if series.kind == "histogram":
             bins = int(series.style.get("bins", min(50, max(10, int(np.sqrt(max(y.size, 1)))))))
             finite = y[np.isfinite(y)]
@@ -128,6 +132,28 @@ class GraphWidget(QtWidgets.QWidget):
         else:
             self.plot.plot(x, y, pen=pen, name=series.name)
             self._renderErrorBars(series, x, y, index)
+
+    def _renderImage(self, series: PlotSeries) -> None:
+        """Render a 2D-histogram-style ``image`` series as a heatmap.
+
+        ``series.y`` is the ``(n_x, n_y)`` count grid (col-major: y[i, j] is x-bin
+        i, y-bin j). Bin edges in ``series.style`` map the grid into world
+        coordinates so the heatmap lines up with the axes.
+        """
+        grid = np.asarray(series.y, dtype=float)
+        if grid.ndim != 2 or grid.size == 0:
+            return
+        item = pg.ImageItem(grid)
+        x_edges = np.asarray(series.style.get("x_edges", [0, grid.shape[0]]), dtype=float)
+        y_edges = np.asarray(series.style.get("y_edges", [0, grid.shape[1]]), dtype=float)
+        x0, x1 = float(x_edges[0]), float(x_edges[-1])
+        y0, y1 = float(y_edges[0]), float(y_edges[-1])
+        item.setRect(QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
+        try:
+            item.setColorMap(pg.colormap.get("viridis"))
+        except Exception:
+            pass
+        self.plot.addItem(item)
 
     def _renderErrorBars(self, series: PlotSeries, x: np.ndarray, y: np.ndarray, index: int) -> None:
         y_err = series.style.get("y_err")

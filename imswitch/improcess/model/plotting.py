@@ -6,7 +6,7 @@ from typing import Any, Literal
 import numpy as np
 
 
-PlotKind = Literal["line", "scatter", "histogram"]
+PlotKind = Literal["line", "scatter", "histogram", "image"]
 
 
 @dataclass(frozen=True)

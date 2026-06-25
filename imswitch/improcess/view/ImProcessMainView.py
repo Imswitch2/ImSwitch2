@@ -210,7 +210,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showMulticolorPanel
             else None
         )
-        self.resultsTableWidget = ResultsTableWidget(show_filter=True, show_csv=True)
+        self.resultsTableWidget = ResultsTableWidget(
+            show_filter=True, show_csv=True, show_plot=self.graphWidget is not None
+        )
+        if self.graphWidget is not None:
+            self.resultsTableWidget.sigPlotRequested.connect(self._onTablePlotRequested)
 
         self.parTree = ReconParTree()
         self.showPatBool = self.parTree.p.param('Show pattern')
@@ -510,6 +514,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def _onResultPushed(self, columns, records):
         self.resultsTableWidget.append_records(list(columns), list(records))
         dock = getattr(self, "resultsDock", None)
+        if dock is not None:
+            self._safeRaiseDock(dock)
+
+    def _onTablePlotRequested(self, spec):
+        """Render a results-table plot request into the shared Graph panel."""
+        if self.graphWidget is None:
+            return
+        try:
+            from imswitch.improcess.model.table_plots import build_plot_payloads
+
+            payloads = build_plot_payloads(
+                self.resultsTableWidget.get_columns(),
+                self.resultsTableWidget.get_records(),
+                dict(spec),
+            )
+        except Exception as exc:
+            self._showStatusMessage(f"Could not plot: {exc}")
+            return
+        self.graphWidget.setPlotPayloads(list(payloads))
+        dock = self.docks.get("Graph")
         if dock is not None:
             self._safeRaiseDock(dock)
 

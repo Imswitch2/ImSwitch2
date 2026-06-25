@@ -142,6 +142,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 widget.sigCancelBatchRequested.connect(self._main.wfsBatchController.cancelBatch)
                 if hasattr(widget, "sigPlotMetricRequested"):
                     widget.sigPlotMetricRequested.connect(self._main.wfsBatchController.plotMetric)
+                if hasattr(widget, "sigTablePlotRequested"):
+                    widget.sigTablePlotRequested.connect(self._main.wfsBatchController.plotTable)
             except Exception:
                 pass
 

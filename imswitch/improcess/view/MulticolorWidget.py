@@ -250,13 +250,19 @@ class MulticolorWidget(QtWidgets.QWidget):
             )
             self._alignment = alignment
             preview = apply_alignment(volume, alignment)
+            preview_labels = ["C", "Z", "Y", "X"]
+            preview_scale = self._output_scale(
+                layer, self._axis_labels(layer, np.asarray(layer.data)), preview_labels
+            )
+            preview_kwargs = {} if preview_scale is None else {"scale": preview_scale}
             self._viewer.add_image(
                 preview,
                 name=f"{getattr(layer, 'name', 'image')} multicolor registration",
                 metadata={
-                    "axis_labels": ["C", "Z", "Y", "X"],
+                    "axis_labels": preview_labels,
                     "multicolor_alignment": alignment_summary(alignment),
                 },
+                **preview_kwargs,
             )
             path = self.alignmentPathEdit.text().strip()
             if path:
@@ -280,6 +286,8 @@ class MulticolorWidget(QtWidgets.QWidget):
             labels = self._axis_labels(layer, data)
             aligned = apply_alignment_to_result_data(data, labels, alignment)
             out_labels = output_axis_labels(labels)
+            aligned_scale = self._output_scale(layer, labels, out_labels)
+            aligned_kwargs = {} if aligned_scale is None else {"scale": aligned_scale}
             self._viewer.add_image(
                 aligned,
                 name=f"{getattr(layer, 'name', 'image')} multicolor aligned",
@@ -287,6 +295,7 @@ class MulticolorWidget(QtWidgets.QWidget):
                     "axis_labels": out_labels,
                     "multicolor_alignment": alignment_summary(alignment),
                 },
+                **aligned_kwargs,
             )
             self.summaryLabel.setText(
                 f"Applied {alignment_summary(alignment)}: {data.shape} -> {aligned.shape}"
@@ -388,6 +397,7 @@ class MulticolorWidget(QtWidgets.QWidget):
                 face_color="transparent",
                 edge_width=2,
                 opacity=0.9,
+                scale=self._overlay_scale(2),
             )
             self.summaryLabel.setText(
                 f"Split preview: {n_slices} slice(s) along {axis}, "
@@ -413,6 +423,7 @@ class MulticolorWidget(QtWidgets.QWidget):
             size=max(4, 2 * int(min_dist)),
             face_color="transparent",
             opacity=0.9,
+            scale=self._overlay_scale(3),
         )
         try:
             self._viewer.add_points(
@@ -499,6 +510,45 @@ class MulticolorWidget(QtWidgets.QWidget):
             if self._is_image_layer(layer):
                 return layer
         return None
+
+    @staticmethod
+    def _layer_scale(layer) -> tuple[float, ...]:
+        """Per-axis scale of ``layer`` (empty tuple on any failure)."""
+        try:
+            return tuple(float(v) for v in layer.scale)
+        except Exception:
+            return ()
+
+    def _overlay_scale(self, ndim: int) -> list[float]:
+        """Trailing-``ndim`` slice of the active image layer's scale.
+
+        Bead points and split rectangles are built in image pixel-index space,
+        but napari places overlay layers in world coordinates. Without a
+        matching ``scale`` the overlays land in the wrong spot once the image
+        carries a physical scale (e.g. nm/px on a reconstruction). Falls back to
+        ``1.0`` so unscaled images are unaffected.
+        """
+        scale = self._layer_scale(self._active_image_layer())
+        if len(scale) >= ndim:
+            return list(scale[-ndim:])
+        return [1.0] * ndim
+
+    def _output_scale(self, layer, source_labels, out_labels) -> list[float] | None:
+        """Map a source layer's per-axis scale onto ``out_labels`` by axis name.
+
+        Keeps derived registration/aligned images physically consistent with
+        the source. Returns ``None`` when the source has no usable scale so the
+        caller can omit ``scale`` entirely (napari then defaults to 1.0).
+        """
+        scale = self._layer_scale(layer)
+        if not scale or all(s == 1.0 for s in scale):
+            return None
+        label_scale = {
+            str(label): scale[index]
+            for index, label in enumerate(source_labels)
+            if index < len(scale)
+        }
+        return [float(label_scale.get(str(label), 1.0)) for label in out_labels]
 
     @staticmethod
     def _is_image_layer(layer) -> bool:

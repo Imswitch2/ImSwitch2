@@ -293,6 +293,18 @@ class WidefieldStarssBatchController(ImProcessWidgetController):
         else:
             self._set_wfs_batch_status("No accumulated WFS results to plot.")
 
+    def plotTable(self, columns, records, spec) -> None:
+        """Render a generic results-table plot from the full accumulated WFS
+        records into the shared graph panel (reuses ``model.table_plots``)."""
+        try:
+            from imswitch.improcess.model.table_plots import build_plot_payloads
+
+            payloads = build_plot_payloads(list(columns), list(records), dict(spec))
+        except Exception as exc:
+            self._set_wfs_batch_status(f"Could not plot table: {exc}")
+            return
+        self._set_wfs_batch_graphs(list(payloads))
+
     def _set_wfs_batch_graphs(self, plot_payloads) -> None:
         graph_widget = getattr(self._widget, "graphWidget", None)
         setter = getattr(graph_widget, "setPlotPayloads", None)

@@ -43,6 +43,9 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
     sigRunBatchRequested = QtCore.Signal()
     sigCancelBatchRequested = QtCore.Signal()
     sigPlotMetricRequested = QtCore.Signal()
+    #: (columns, records, spec) for a generic table plot request; carries the
+    #: full accumulated records (not the truncated table preview).
+    sigTablePlotRequested = QtCore.Signal(object, object, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -130,8 +133,22 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
         self.batchResultsTabs = QtWidgets.QTabWidget()
         self.batchResultsTabs.setMinimumHeight(180)
         from imswitch.improcess.view.ResultsTableWidget import ResultsTableWidget
-        self.batchSummaryTable = ResultsTableWidget(show_filter=False, show_csv=True)
-        self.batchRegionsTable = ResultsTableWidget(show_filter=False, show_csv=True)
+        self.batchSummaryTable = ResultsTableWidget(
+            show_filter=False, show_csv=True, show_plot=True
+        )
+        self.batchRegionsTable = ResultsTableWidget(
+            show_filter=False, show_csv=True, show_plot=True
+        )
+        self.batchSummaryTable.sigPlotRequested.connect(
+            lambda spec: self.sigTablePlotRequested.emit(
+                list(self._summary_columns), list(self._summary_records), spec
+            )
+        )
+        self.batchRegionsTable.sigPlotRequested.connect(
+            lambda spec: self.sigTablePlotRequested.emit(
+                list(self._region_columns), list(self._region_records), spec
+            )
+        )
         self.batchUnmatchedList = QtWidgets.QListWidget()
         self.batchResultsTabs.addTab(self.batchSummaryTable, "Summary")
         self.batchResultsTabs.addTab(self.batchRegionsTable, "Regions")
