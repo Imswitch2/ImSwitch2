@@ -3,14 +3,20 @@
 import os
 import re
 from collections import deque
+from typing import Any
 
 import h5py
+import zarr
 
 from qtpy import QtCore
 
 from imswitch.imcommon.model.logging import initLogger
 from imswitch.improcess.live import Hdf5MultiFileLapseSource, ZarrMultiFileLapseSource, make_live_source
-from imswitch.improcess.live.sources import _lapse_index_template
+from imswitch.improcess.live.sources import (
+    _is_zarr_array,
+    _is_zarr_group,
+    _lapse_index_template,
+)
 from .basecontrollers import ImProcessWidgetController
 from .LiveReconstructionController import LiveReconstructionController
 
@@ -141,8 +147,9 @@ class LiveModeController(ImProcessWidgetController):
                 f"Discovered {'timelapse' if is_lapse else 'store'}: {store_path}"
             )
 
-        if new_jobs:
-            self._processNextStore()
+        # Always check the queue (even if no new jobs) to re-evaluate pending
+        # stores that may have become complete since the last tick.
+        self._processNextStore()
 
     def _discoverStores(self, root: str) -> list:
         """Return sorted recording-store paths under ``root`` (depth-limited)."""
@@ -168,35 +175,35 @@ class LiveModeController(ImProcessWidgetController):
         timepoint files dedup to one job; other stores key on their own path.
         
         A store is a per-file lapse member if EITHER:
-        - Its name has a strippable trailing integer run (lenient heuristic)
-        - Its metadata confirms it's a multi-file lapse (recording:single_lapse_file=False
-          with recording:num_timepoints>1)
+        - Its name carries an explicit ``scan<NN>`` index (ImSwitch2 ``_scanNN_``
+          or legacy ``_scan__NN__``), or
+        - Its own metadata confirms a multi-file lapse
+          (``recording:single_lapse_file=False`` with
+          ``recording:num_timepoints>1``).
+
+        A bare trailing integer is NOT treated as a lapse on its own: a single
+        recording whose name merely ends in a number (e.g. ``..._rec_1.zarr``)
+        must not be mis-grouped into a timelapse job (Finding 4 in
+        docs/live_reconstruction_audit.md).
         """
-        # First try filename-based heuristic
+        # 1. Explicit scan<NN> index template.
         template = _lapse_index_template(store_path)
         if template is not None:
             folder, prefix, width, suffix, _ = template
             return (folder, prefix, suffix), True
-        
-        # Fallback: check for trailing integer run (more lenient than 'scan' only)
-        folder = os.path.dirname(store_path)
-        name = os.path.basename(store_path)
-        # Match any trailing digits preceded by separator
-        match = re.search(r'[_\-.](\d+)(\.[a-zA-Z0-9]+)?$', name)
-        if match:
-            # Strip the integer run to create the dedup key
-            start_idx = match.start(1)
-            prefix = name[:start_idx]
-            suffix = name[match.end(1):]
-            return (folder, prefix, suffix), True
-        
-        # Metadata-based check: try to read store attributes
-        is_multifile_lapse = self._is_multifile_lapse_from_metadata(store_path)
-        if is_multifile_lapse:
-            # No integer pattern but metadata confirms multi-file lapse
-            # Use the full name as prefix (each file will be unique but this flags it as lapse)
+
+        # 2. Metadata-confirmed multi-file lapse. Only here do we trust a
+        #    trailing-integer run to group siblings, because the store's own
+        #    metadata vouches that it is a per-file lapse member.
+        if self._is_multifile_lapse_from_metadata(store_path):
+            folder = os.path.dirname(store_path)
+            name = os.path.basename(store_path)
+            match = re.search(r'[_\-.](\d+)(\.[a-zA-Z0-9]+)?$', name)
+            if match:
+                return (folder, name[:match.start(1)], name[match.end(1):]), True
             return (folder, name, ''), True
-        
+
+        # 3. Not a per-file lapse: key the single store on its own path.
         return store_path, False
 
     def _is_multifile_lapse_from_metadata(self, store_path: str) -> bool:
@@ -210,8 +217,12 @@ class LiveModeController(ImProcessWidgetController):
                 single_lapse = root.attrs.get('recording:single_lapse_file')
                 num_tp = root.attrs.get('recording:num_timepoints')
                 
-                # Multi-file if explicitly marked as not single-file AND has multiple timepoints
-                if single_lapse is False and num_tp and int(num_tp) > 1:
+                # Multi-file if explicitly marked as not single-file AND has
+                # multiple timepoints. Use a falsy check (not ``is False``): h5py
+                # and zarr read the attribute back as numpy.bool_/int, so the
+                # identity test was always False and this path was dead.
+                if (single_lapse is not None and not bool(single_lapse)
+                        and num_tp and int(num_tp) > 1):
                     return True
             
             elif suffix in {'.h5', '.hdf5', '.hdf'}:
@@ -219,8 +230,9 @@ class LiveModeController(ImProcessWidgetController):
                     single_lapse = f.attrs.get('recording:single_lapse_file')
                     num_tp = f.attrs.get('recording:num_timepoints')
                     
-                    # Multi-file if explicitly marked as not single-file AND has multiple timepoints
-                    if single_lapse is False and num_tp and int(num_tp) > 1:
+                    # Falsy check (not ``is False``) — see the Zarr branch.
+                    if (single_lapse is not None and not bool(single_lapse)
+                            and num_tp and int(num_tp) > 1):
                         return True
         
         except (OSError, PermissionError, Exception):
@@ -229,8 +241,167 @@ class LiveModeController(ImProcessWidgetController):
         
         return False
 
+    @staticmethod
+    def _coerce_bool(value: Any, *, default: bool) -> bool:
+        """Coerce a value to bool, matching the logic used by LiveSources."""
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {'0', 'false', 'no', 'off'}
+        return bool(value)
+
+    def _is_store_complete(self, store_path: str, is_lapse: bool) -> bool:
+        """Check if a recording store is complete (ready for reconstruction).
+        
+        A store is complete when its 'writing' attribute is absent or False.
+        For multi-file lapses, all timepoint files must exist and the last one
+        must be complete.
+        
+        Returns False on any error (store still being created/written).
+        """
+        if is_lapse:
+            return self._is_lapse_complete(store_path)
+        return self._is_single_file_complete(store_path)
+
+    def _writing_attr_complete(self, writing: Any) -> bool:
+        """Interpret a dataset ``writing`` attribute as a completeness flag.
+
+        Absent ⇒ complete (legacy/external store, matching upstream
+        ``DataObj.checkLock``); otherwise complete iff the flag is falsy.
+        """
+        if writing is None:
+            return True
+        return not self._coerce_bool(writing, default=True)
+
+    def _is_single_file_complete(self, store_path: str) -> bool:
+        """Check if a single-file store is complete."""
+        suffix = os.path.splitext(store_path)[1].lower()
+        if suffix == '.zarr':
+            return self._check_zarr_complete(store_path)
+        if suffix in {'.h5', '.hdf5', '.hdf'}:
+            return self._check_hdf5_complete(store_path)
+        return False
+
+    def _check_zarr_complete(self, store_path: str) -> bool:
+        """Check if a Zarr store is complete.
+
+        Uses the version-tolerant ``_is_zarr_array``/``_is_zarr_group`` helpers
+        (not direct ``zarr.Array``/``zarr.Group``) so a zarr build that does not
+        expose those types at the top level cannot make every store look
+        forever-incomplete.
+        """
+        try:
+            root = zarr.open(store_path, mode='r')
+
+            if _is_zarr_array(root):
+                return self._writing_attr_complete(root.attrs.get('writing'))
+
+            # Structured layout: the first detector's ``data`` array (or a bare
+            # detector array) carries the ``writing`` flag.
+            for key in root.keys():
+                child = root[key]
+                if _is_zarr_group(child):
+                    if 'data' in child and _is_zarr_array(child['data']):
+                        return self._writing_attr_complete(child['data'].attrs.get('writing'))
+                elif _is_zarr_array(child):
+                    return self._writing_attr_complete(child.attrs.get('writing'))
+
+            return False  # no dataset created yet
+        except Exception as e:
+            # Lenient by design (retry next tick), but log so a real failure
+            # — e.g. an unexpected zarr API change — is not silently invisible.
+            self._logger.debug(f"Zarr completeness check failed for {store_path}: {e}")
+            return False
+
+    def _check_hdf5_complete(self, store_path: str) -> bool:
+        """Check if an HDF5 store is complete."""
+        try:
+            with h5py.File(store_path, 'r') as f:
+                for key in f.keys():
+                    item = f[key]
+                    if isinstance(item, h5py.Group):
+                        if 'data' in item:
+                            return self._writing_attr_complete(item['data'].attrs.get('writing'))
+                    elif isinstance(item, h5py.Dataset):
+                        return self._writing_attr_complete(item.attrs.get('writing'))
+                return False  # no dataset created yet
+        except Exception as e:
+            self._logger.debug(f"HDF5 completeness check failed for {store_path}: {e}")
+            return False
+
+    def _is_lapse_complete(self, store_path: str) -> bool:
+        """Check if a multi-file lapse is complete."""
+        template = _lapse_index_template(store_path)
+        if template is None:
+            # No index template, fall back to single-file check
+            return self._is_single_file_complete(store_path)
+        
+        folder, prefix, width, suffix, first_index = template
+        
+        # Try to read num_timepoints from the seed file's metadata
+        num_timepoints = self._read_num_timepoints(store_path)
+        
+        if num_timepoints is not None and num_timepoints >= 1:
+            # Known number of timepoints: all files must exist and last must be complete
+            last_index = first_index + num_timepoints - 1
+            for i in range(num_timepoints):
+                index = first_index + i
+                tp_path = os.path.join(folder, prefix + str(index).zfill(width) + suffix)
+                if not os.path.exists(tp_path):
+                    return False
+            
+            # Check if the last file is complete
+            last_path = os.path.join(folder, prefix + str(last_index).zfill(width) + suffix)
+            return self._is_single_file_complete(last_path)
+        
+        # Unknown number of timepoints: find highest contiguous index
+        # and check if it's complete (conservative approach)
+        index = first_index
+        highest_complete_index = None
+        
+        while True:
+            tp_path = os.path.join(folder, prefix + str(index).zfill(width) + suffix)
+            if not os.path.exists(tp_path):
+                break
+            
+            if self._is_single_file_complete(tp_path):
+                highest_complete_index = index
+            else:
+                # This file is not complete yet, so the lapse is not complete
+                return False
+            
+            index += 1
+        
+        # At least one complete file was found
+        return highest_complete_index is not None
+
+    def _read_num_timepoints(self, store_path: str) -> int | None:
+        """Read recording:num_timepoints from store metadata."""
+        suffix = os.path.splitext(store_path)[1].lower()
+        
+        try:
+            if suffix == '.zarr':
+                root = zarr.open(store_path, mode='r')
+                num_tp = root.attrs.get('recording:num_timepoints')
+                if num_tp is not None:
+                    return int(num_tp)
+            elif suffix in {'.h5', '.hdf5', '.hdf'}:
+                with h5py.File(store_path, 'r') as f:
+                    num_tp = f.attrs.get('recording:num_timepoints')
+                    if num_tp is not None:
+                        return int(num_tp)
+        except Exception as e:
+            self._logger.debug(f"Could not read num_timepoints from {store_path}: {e}")
+
+        return None
+
     def _processNextStore(self) -> None:
-        """Process the next store in the queue if not currently processing."""
+        """Process the next complete store in the queue if not currently processing.
+        
+        Iterates the queue to find the FIRST complete store, enabling later
+        already-complete stores to bypass earlier still-recording ones (no
+        head-of-line blocking).
+        """
         if self._currentlyProcessing:
             return
         
@@ -238,7 +409,25 @@ class LiveModeController(ImProcessWidgetController):
             self._logger.debug("No stores in queue to process")
             return
         
-        store_path, is_lapse = self._storeQueue.popleft()
+        # Find the first complete store in the queue
+        store_path = None
+        is_lapse = False
+        queue_index = None
+        
+        for idx, (path, lapse) in enumerate(self._storeQueue):
+            if self._is_store_complete(path, lapse):
+                store_path = path
+                is_lapse = lapse
+                queue_index = idx
+                break
+        
+        # No complete store found yet, will retry on next tick
+        if store_path is None:
+            self._logger.debug("No complete stores in queue yet, waiting...")
+            return
+        
+        # Remove the complete store from the queue
+        del self._storeQueue[queue_index]
         self._currentlyProcessing = True
 
         self._logger.info(f"Processing {'timelapse' if is_lapse else 'store'}: {store_path}")

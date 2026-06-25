@@ -151,6 +151,21 @@ def test_non_lapse_stores_queued_individually(tmp_path):
     assert all(is_lapse is False for _, is_lapse in controller._storeQueue)
 
 
+def test_numbered_single_stores_not_grouped_as_lapse(tmp_path):
+    """Single recordings ending in a number (no scan index, no lapse metadata)
+    must NOT be grouped into a timelapse job (Finding 4: over-eager grouping)."""
+    _make_zarr(str(tmp_path / 'sample_rec_1.zarr'))
+    _make_zarr(str(tmp_path / 'sample_rec_2.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._currentlyProcessing = True  # don't auto-pop the queue
+    controller._scanForStores()
+
+    # Each is its own non-lapse job, not collapsed into one lapse.
+    assert len(controller._storeQueue) == 2
+    assert all(is_lapse is False for _, is_lapse in controller._storeQueue)
+
+
 def test_rescan_does_not_requeue_seen_stores(tmp_path):
     """A second scan does not re-enqueue already-seen stores/lapses."""
     _make_zarr(str(tmp_path / 'rec_scan__00__CAM.zarr'))
@@ -173,7 +188,9 @@ def test_lapse_job_builds_multifile_source(tmp_path):
 
     with patch(
         'imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource'
-    ) as mock_lapse:
+    ) as mock_lapse, patch.object(
+        controller, '_is_store_complete', return_value=True
+    ):
         controller._processNextStore()
 
     mock_lapse.assert_called_once()
@@ -188,7 +205,9 @@ def test_non_lapse_job_uses_make_live_source(tmp_path):
 
     with patch(
         'imswitch.improcess.controller.LiveModeController.make_live_source'
-    ) as mock_make:
+    ) as mock_make, patch.object(
+        controller, '_is_store_complete', return_value=True
+    ):
         controller._processNextStore()
 
     mock_make.assert_called_once()
@@ -205,7 +224,9 @@ def test_sequential_processing_one_at_a_time(tmp_path):
     ])
 
     with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
-               return_value=MagicMock()):
+               return_value=MagicMock()), patch.object(
+        controller, '_is_store_complete', return_value=True
+    ):
         controller._processNextStore()
         assert len(fake.start_calls) == 1  # second waits
         controller._onStoreFinished()
@@ -226,7 +247,9 @@ def test_start_failure_advances_queue(tmp_path):
         return fake.start_return
 
     with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
-               return_value=MagicMock()):
+               return_value=MagicMock()), patch.object(
+        controller, '_is_store_complete', return_value=True
+    ):
         fake.start_return = False  # first store not ready -> must advance
         # flip to True after the first call so the second store "takes"
         original = fake.start
@@ -269,15 +292,22 @@ def test_hdf5_lapse_job_builds_hdf5_multifile_source(tmp_path):
 
     with patch(
         'imswitch.improcess.controller.LiveModeController.Hdf5MultiFileLapseSource'
-    ) as mock_lapse:
+    ) as mock_lapse, patch.object(
+        controller, '_is_store_complete', return_value=True
+    ):
         controller._processNextStore()
 
     mock_lapse.assert_called_once()
     assert mock_lapse.call_args.args[0] == seed
 
 
-def test_lenient_trailing_integer_grouping(tmp_path):
-    """Files with trailing integers (not just 'scan') group as lapse."""
+def test_trailing_integer_without_scan_or_metadata_is_not_grouped(tmp_path):
+    """Trailing integers alone no longer imply a lapse (Finding 4): without a
+    ``scan<NN>`` index or lapse metadata, numbered files stay individual jobs.
+
+    Real ImSwitch2 timelapses carry the ``scan`` index and/or
+    ``recording:single_lapse_file``/``num_timepoints`` metadata, so they are
+    still grouped (see the scan-template and metadata tests)."""
     for i in range(3):
         _make_zarr(str(tmp_path / f'timelapse_0{i}.zarr'))
 
@@ -285,10 +315,9 @@ def test_lenient_trailing_integer_grouping(tmp_path):
     controller._currentlyProcessing = True
     controller._scanForStores()
 
-    # Should group into one lapse job
-    assert len(controller._storeQueue) == 1
-    _, is_lapse = controller._storeQueue[0]
-    assert is_lapse is True
+    # Not collapsed into one lapse: three independent non-lapse jobs.
+    assert len(controller._storeQueue) == 3
+    assert all(is_lapse is False for _, is_lapse in controller._storeQueue)
 
 
 def test_metadata_based_grouping_for_multifile_lapse(tmp_path):
