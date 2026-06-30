@@ -21,6 +21,7 @@ import logging
 
 import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
+from imswitch.imcontrol.model.managers import recording_metadata as _ome
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,10 @@ class Storer(abc.ABC):
     def __init__(self, filepath, detectorManager):
         self.filepath = filepath
         self.detectorManager: DetectorsManager = detectorManager
+        # Per-detector OmeImageMeta, set by RecordingManager before snap()/openStream().
+        # None for legacy/fallback paths; storers that understand it (TiffStorer)
+        # use it to write standard OME metadata.
+        self.omeMeta: Dict[str, Any] = {}
 
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Store snapshot images with metadata.
@@ -191,7 +196,7 @@ class ZarrStorer(Storer):
     @staticmethod
     def _create_array(root: Any, name: str, *, data: Any = None,
                       shape: tuple | None = None, chunks: tuple | None = None,
-                      dtype: Any = None) -> Any:
+                      dtype: Any = None, dimension_names: tuple | None = None) -> Any:
         if hasattr(root, 'create_dataset'):
             kwargs = {'chunks': chunks}
             if data is not None:
@@ -202,13 +207,24 @@ class ZarrStorer(Storer):
                 kwargs['dtype'] = dtype
             return root.create_dataset(name, **kwargs)
 
-        kwargs = {'chunks': chunks}
+        # Zarr v3: flat v2-style chunk keys ("0.0.0") instead of the v3 default
+        # nested folders ("c/0/0/0"), so a recording is far fewer on-disk dirs.
+        kwargs = {'chunks': chunks,
+                  'chunk_key_encoding': {'name': 'v2', 'configuration': {'separator': '.'}}}
+        if dimension_names is not None:
+            kwargs['dimension_names'] = tuple(dimension_names)
         if data is not None:
             kwargs['data'] = data
         else:
             kwargs['shape'] = shape
             kwargs['dtype'] = dtype
-        return root.create_array(name, **kwargs)
+        try:
+            return root.create_array(name, **kwargs)
+        except TypeError:
+            # Older zarr builds do not expose dimension_names yet. The NGFF
+            # multiscales block remains authoritative in that case.
+            kwargs.pop('dimension_names', None)
+            return root.create_array(name, **kwargs)
 
     @staticmethod
     def _require_group(parent: Any, name: str) -> Any:
@@ -238,6 +254,44 @@ class ZarrStorer(Storer):
             except Exception as e:
                 logger.debug(f'Could not save Zarr metadata {context}/{key}={value}: {e}')
 
+    def _dimension_names(self, detectorName: str, ndim: int) -> tuple[str, ...]:
+        meta = (self.omeMeta or {}).get(detectorName)
+        if meta is not None:
+            return tuple(axis.name for axis in meta.padded_to(ndim).axes)
+        fallback = ('t', 'y', 'x')
+        return fallback[-int(ndim):]
+
+    def _register_root_series(self, root: Any, path: str) -> None:
+        """Add a lightweight NGFF discovery index for detector image groups."""
+        try:
+            ome = dict(root.attrs.get('ome', {}) or {})
+            series = list(ome.get('series', []))
+            if not any(isinstance(item, dict) and item.get('path') == path
+                       for item in series):
+                series.append({'path': path})
+            ome['version'] = '0.5'
+            ome['series'] = series
+            root.attrs['ome'] = ome
+        except Exception as e:
+            logger.debug(f'Could not update root OME-Zarr series metadata: {e}')
+
+    def _set_ngff_attrs(self, det_group: Any, detectorName: str, dataset: Any) -> None:
+        """Write OME-NGFF 0.5 ``multiscales`` metadata onto the detector group.
+
+        Spec-compliant standard layout: ``datasets[].path`` points at the existing
+        ``data`` array (a relative path is allowed), so standard OME-Zarr readers
+        resolve axes/pixel-size while ImSwitch's own readers (which still open
+        ``data``) are unaffected. ImSwitch extras stay in ``metadata/`` and the
+        legacy array attrs, never under ``ome``.
+        """
+        meta = (self.omeMeta or {}).get(detectorName)
+        if meta is None:
+            return
+        try:
+            det_group.attrs['ome'] = meta.ngff_ome_metadata(path='data', ndim=dataset.ndim)
+        except Exception as e:
+            logger.debug(f'Could not write OME-NGFF metadata for {detectorName}: {e}')
+
     def _createDetectorGroup(self, root: Any, detectorName: str, dtype: Any,
                              attrs: Dict[str, Any], *, data: Any = None,
                              groupPath: str | None = None, writing: bool = False) -> Any:
@@ -262,6 +316,7 @@ class ZarrStorer(Storer):
                 data=data,
                 chunks=chunks,
                 dtype=dtype,
+                dimension_names=self._dimension_names(detectorName, data.ndim),
             )
         else:
             spatialShape = None
@@ -274,7 +329,8 @@ class ZarrStorer(Storer):
         dataset.attrs['element_size_um'] = self._zarr_attr_value(
             self.detectorManager[detectorName].pixelSizeUm
         )
-        dataset.attrs['axes'] = ['T', 'Y', 'X']
+        dataset.attrs['axes'] = [name.upper()
+                                 for name in self._dimension_names(detectorName, dataset.ndim)]
         dataset.attrs['writing'] = writing
 
         grouped = self._group_metadata_by_category(attrs)
@@ -287,6 +343,9 @@ class ZarrStorer(Storer):
                 else:
                     self._set_attrs(meta_group, cat_attrs, 'metadata')
 
+        self._set_ngff_attrs(det_group, detectorName, dataset)
+        imagePath = f'{groupPath}/{detectorName}' if groupPath else detectorName
+        self._register_root_series(root, imagePath)
         return dataset
 
     def _createStreamingDetectorGroup(self, root: Any, detectorName: str,
@@ -308,12 +367,14 @@ class ZarrStorer(Storer):
             shape=(0, *spatialShape),
             dtype=dtype,
             chunks=(chunk_frames, *spatialShape),
+            dimension_names=self._dimension_names(detectorName, 3),
         )
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._zarr_attr_value(
             self.detectorManager[detectorName].pixelSizeUm
         )
-        dataset.attrs['axes'] = ['T', 'Y', 'X']
+        dataset.attrs['axes'] = [name.upper()
+                                 for name in self._dimension_names(detectorName, dataset.ndim)]
         dataset.attrs['writing'] = True
 
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
@@ -338,6 +399,9 @@ class ZarrStorer(Storer):
                 else:
                     self._set_attrs(meta_group, cat_attrs, 'metadata')
 
+        self._set_ngff_attrs(det_group, detectorName, dataset)
+        imagePath = f'{groupPath}/{detectorName}' if groupPath else detectorName
+        self._register_root_series(root, imagePath)
         return dataset
 
     @staticmethod
@@ -631,7 +695,26 @@ class HDF5Storer(Storer):
                         except Exception as e:
                             logger.debug(f'Could not save metadata {key}={value}: {e}')
 
+        # Snapshot: shape is known now, so embed OME-XML. Streaming (maxshape)
+        # defers to finalizeStream (frame count unknown here, and SWMR forbids
+        # adding attrs once enabled).
+        if data is not None:
+            self._embed_ome_xml(det_group, detectorName, dataset.shape)
+
         return dataset
+
+    def _embed_ome_xml(self, group, detectorName, shape) -> None:
+        """Embed the shared OME model as OME-XML (``ome_xml`` group attr) for
+        logical metadata parity with OME-TIFF/OME-NGFF. HDF5 has no OME container
+        standard, so this is a best-effort payload alongside Fiji ``element_size_um``;
+        no reader auto-detects it."""
+        meta = (self.omeMeta or {}).get(detectorName)
+        if meta is None:
+            return
+        try:
+            group.attrs['ome_xml'] = _ome.build_ome_xml(meta.padded_to(len(shape)), shape)
+        except Exception as e:
+            logger.debug(f'Could not embed OME-XML for {detectorName}: {e}')
 
     @staticmethod
     def _split_recording_attrs(attrs: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -783,6 +866,7 @@ class HDF5Storer(Storer):
         """Close HDF5 files and emit signals."""
         # Track unique files to avoid duplicate close (singleMultiDetectorFile mode)
         processed_files = set()
+        pending_memory_signals = []
         
         # Track dataset paths for updating writing attribute after SWMR close
         dataset_paths = {}
@@ -796,13 +880,16 @@ class HDF5Storer(Storer):
             if dataset is not None and currentFrames[detectorName] < 1:
                 dataset.resize(0, axis=0)
             
-            # Emit signal for each detector (even in singleMultiDetectorFile mode)
+            # Emit signal for each detector (even in singleMultiDetectorFile mode).
+            # RAM-backed BytesIO recordings are announced after their HDF5 file
+            # handle is closed below, so consumers never see a half-finalized
+            # in-memory file.
             if saveMode == SaveMode.RAM or saveMode == SaveMode.DiskAndRAM:
                 filePath = filePaths[detectorName]
                 name = os.path.basename(filePath)
                 if saveMode == SaveMode.RAM:
-                    recordingManager.sigMemoryRecordingAvailable.emit(
-                        name, self._fileDests[detectorName], filePath, False
+                    pending_memory_signals.append(
+                        (name, self._fileDests[detectorName], filePath, False)
                     )
                 else:  # DiskAndRAM
                     recordingManager.sigMemoryRecordingAvailable.emit(
@@ -816,14 +903,19 @@ class HDF5Storer(Storer):
             processed_files.add(file_id)
             
             if saveMode == SaveMode.RAM:
-                # For RAM mode, we can directly modify the writing attribute
+                # For RAM mode, we can directly modify attributes (no SWMR)
                 if dataset is not None:
                     dataset.attrs['writing'] = False
+                    if currentFrames.get(detectorName, 0) >= 1:
+                        self._embed_ome_xml(dataset.parent, detectorName, dataset.shape)
                 file.close()
             elif saveMode == SaveMode.DiskAndRAM:
                 file.flush()
             elif saveMode == SaveMode.Disk:
                 file.close()
+
+        for signalArgs in pending_memory_signals:
+            recordingManager.sigMemoryRecordingAvailable.emit(*signalArgs)
         
         # For disk-based SWMR recordings, reopen files to set writing=False
         # (cannot modify attributes while in SWMR mode)
@@ -835,10 +927,14 @@ class HDF5Storer(Storer):
                     continue
                 processed_paths.add(filePath)
                 
-                # Reopen file in read/write mode (not SWMR) to update writing attribute
+                # Reopen file in read/write mode (not SWMR) to update writing
+                # attribute and embed OME-XML (both forbidden under SWMR).
                 with h5py.File(filePath, 'r+') as f:
                     if dataset_path in f:
                         f[dataset_path].attrs['writing'] = False
+                        if currentFrames.get(detectorName, 0) >= 1:
+                            self._embed_ome_xml(
+                                f[dataset_path].parent, detectorName, f[dataset_path].shape)
 
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close HDF5 files and remove the partial on-disk file(s)."""
@@ -861,71 +957,64 @@ class HDF5Storer(Storer):
 
 
 class TiffStorer(Storer):
-    """Storer for TIFF format with ImageJ-compatible metadata."""
-    
+    """Storer for OME-TIFF.
+
+    Snap writes a native OME-TIFF in one shot. Streaming writes a plain BigTIFF
+    (per-frame contiguous appends -- no 4 GB limit) and embeds the OME-XML at
+    finalize, once the frame count is known: tifffile's OME mode needs the full
+    dimensional shape up front, which a stream doesn't have. The shared
+    :class:`OmeImageMeta` (``self.omeMeta``) provides the axes/pixel-size; a
+    minimal detector-derived meta is used as a fallback.
+    """
+
+    def _meta_for(self, detectorName, image=None, n_frames=None):
+        meta = (self.omeMeta or {}).get(detectorName)
+        if meta is not None:
+            return meta
+        det = self.detectorManager[detectorName]
+        if image is not None:
+            n_frames = 1 if np.asarray(image).ndim == 2 else int(np.asarray(image).shape[0])
+        mode = _ome.MODE_SNAP if (n_frames or 1) <= 1 else _ome.MODE_TIMELAPSE
+        pix = list(det.pixelSizeUm)
+        py = pix[1] if len(pix) > 1 else 1.0
+        px = pix[2] if len(pix) > 2 else py
+        return _ome.build_ome_image_meta(
+            detectorName, mode, n_frames or 1,
+            pixel_size_yx_um=(py, px), dtype=det.dtype)
+
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
-        """Save snapshot as TIFF with ImageJ metadata.
-        
-        Uses tifffile's ImageJ mode for multi-frame compatibility.
-        Metadata is embedded as ImageJ metadata and custom TIFF tags.
-        """
-        attrs = attrs or {}
-        
+        """Save snapshot as a native OME-TIFF (one shot, shape known)."""
         for channel, image in images.items():
-            with AsTemporaryFile(f'{self.filepath}_{channel}.tiff') as path:
-                # Prepare metadata for ImageJ
-                channel_attrs = attrs.get(channel, {})
-                pixel_size_um = self.detectorManager[channel].pixelSizeUm[0]  # Assume square pixels
-                
-                # Build ImageJ-compatible metadata dict
-                metadata = {
-                    'axes': 'TYX' if image.ndim == 3 else 'YX',
-                    'unit': 'um',
-                    'spacing': pixel_size_um,
-                }
-                
-                # Add custom attrs as ImageJ metadata (will appear in ImageJ info window)
-                info_lines = [f'detector_name={channel}']
-                for key, value in channel_attrs.items():
-                    # Flatten ':'-separated keys for ImageJ display
-                    info_lines.append(f'{key}={value}')
-                metadata['Info'] = '\n'.join(info_lines)
-                
-                # Write TIFF with ImageJ metadata
-                tiff.imwrite(
-                    path,
-                    image,
-                    imagej=True,
-                    resolution=(1.0/pixel_size_um, 1.0/pixel_size_um),  # pixels per micron
-                    metadata=metadata
-                )
-                logger.info(f"Saved snapshot to {path} with ImageJ metadata")
+            image = np.asarray(image)
+            with AsTemporaryFile(f'{self.filepath}_{channel}.ome.tiff') as path:
+                meta = self._meta_for(channel, image=image)
+                tiff.imwrite(path, image, ome=True, bigtiff=True,
+                             metadata=meta.tiff_metadata())
+                logger.info(f"Saved OME-TIFF snapshot to {path}")
     
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
                    singleMultiDetectorFile, singleLapseFile, saveMode):
-        """Initialize TIFF streaming session."""
-        self._filenames = {}
-        self._basePaths = {}
-        self._partNumbers = {}
-        self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
-
-        # Determine output file paths
+        """Open one plain BigTIFF per detector; OME-XML is embedded at finalize."""
+        self._writers = {}
+        self._paths = {}
+        self._spatial = {}            # detectorName -> (Y, X) from the first frame
+        self._dtypeWarned = set()
         for detectorName in detectorNames:
-            # TIFF files are created per-detector (no singleMultiDetectorFile support)
-            basePath = fileDests[detectorName]
-            self._basePaths[detectorName] = basePath
-            self._filenames[detectorName] = basePath
-            self._partNumbers[detectorName] = 1
+            path = fileDests[detectorName]
+            self._paths[detectorName] = path
+            # ome=False + plain BigTIFF: appended frame-by-frame with no size
+            # cap. OME mode is deferred to finalize (it needs the full shape).
+            self._writers[detectorName] = tiff.TiffWriter(path, ome=False, bigtiff=True)
 
     def writeFrames(self, detectorName, frames):
-        """Write frames to TIFF file (append mode) with automatic >4GB rollover."""
+        """Append frames (2D contiguous) to the detector's BigTIFF."""
         if len(frames) == 0:
             return
+        frames = np.asarray(frames)
+        if frames.ndim == 2:
+            frames = frames[np.newaxis, ...]
 
-        # Read the authoritative dtype from the detector (the contract's single source of truth)
         declared = self.detectorManager[detectorName].dtype
-        
-        # Warn-once on dtype mismatch (loud alert, not silent)
         if frames.dtype != declared and detectorName not in self._dtypeWarned:
             logger.warning(
                 f"TiffStorer dtype mismatch for '{detectorName}': "
@@ -934,62 +1023,51 @@ class TiffStorer(Storer):
                 f"This warning is shown once per detector per recording."
             )
             self._dtypeWarned.add(detectorName)
-        
-        # Cast to declared dtype if needed (now logged, not silent)
         if frames.dtype != declared:
             frames = frames.astype(declared)
 
-        filePath = self._filenames[detectorName]
-        try:
-            tiff.imwrite(filePath, frames, append=True)
-        except ValueError as e:
-            # TIFF file exceeded 4GB limit - rollover to next part
-            logger.warning(f"TIFF file exceeded 4GB limit: {filePath}. Rolling over to next part.")
+        self._spatial[detectorName] = tuple(int(s) for s in frames.shape[-2:])
+        tw = self._writers[detectorName]
+        # One contiguous (N,Y,X) series: write each 2D plane appended in place.
+        for frame in frames:
+            tw.write(frame, contiguous=True)
 
-            # Generate next part filename
-            basePath = self._basePaths[detectorName]
-            self._partNumbers[detectorName] += 1
-            partNum = self._partNumbers[detectorName]
-
-            # Insert _part{N} before extension
-            if basePath.endswith('.tiff'):
-                newPath = basePath[:-5] + f'_part{partNum}.tiff'
-            elif basePath.endswith('.tif'):
-                newPath = basePath[:-4] + f'_part{partNum}.tif'
-            else:
-                newPath = basePath + f'_part{partNum}.tiff'
-
-            self._filenames[detectorName] = newPath
-            logger.info(f"Continuing recording to: {newPath}")
-
-            # Write frames to new file (create mode, not append)
-            try:
-                tiff.imwrite(newPath, frames, append=False)
-            except Exception as write_error:
-                logger.error(f"Failed to write to rollover file {newPath}: {write_error}")
-    
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
-        """TIFF files are automatically closed by tifffile. Nothing to finalize."""
-        # TIFF writes are direct to disk - no RAM mode or special cleanup needed
-        pass
+        """Close writers, then embed OME-XML now that the frame count is known."""
+        for detectorName, tw in getattr(self, '_writers', {}).items():
+            try:
+                tw.close()
+            except Exception as e:
+                logger.warning(f'TIFF finalize: failed to close writer for {detectorName}: {e}')
+        for detectorName, path in getattr(self, '_paths', {}).items():
+            n = int(currentFrames.get(detectorName, 0))
+            if n <= 0 or detectorName not in self._spatial:
+                continue
+            ny, nx = self._spatial[detectorName]
+            meta = self._meta_for(detectorName, n_frames=n)
+            if n == 1 and len(meta.axes) == 2:
+                stored_meta = meta
+                shape = (ny, nx)
+            else:
+                # The streamed data is physically (N, Y, X). If a caller hands
+                # us richer logical metadata, keep the TIFF valid by reducing it
+                # to the stored rank instead of writing mismatched OME-XML.
+                stored_meta = meta.padded_to(3)
+                shape = (n, ny, nx)
+            try:
+                tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
+            except Exception as e:
+                logger.warning(f'Failed to embed OME-XML in {path}; left as plain TIFF: {e}')
 
     def abortStream(self, filePaths, fileDests, saveMode):
-        """Remove the partial TIFF file(s), including any >4GB rollover parts."""
+        """Close any open writers and delete the partial file(s)."""
+        for tw in getattr(self, '_writers', {}).values():
+            try:
+                tw.close()
+            except Exception:
+                pass
         candidates = set(filePaths.values())
-        candidates.update(getattr(self, '_filenames', {}).values())
-        # Reconstruct rollover part names (basePath -> basePath_part{N}) so no
-        # part is left behind when a recording rolled over before the abort.
-        basePaths = getattr(self, '_basePaths', {})
-        partNumbers = getattr(self, '_partNumbers', {})
-        for detectorName, basePath in basePaths.items():
-            candidates.add(basePath)
-            for part in range(2, partNumbers.get(detectorName, 1) + 1):
-                if basePath.endswith('.tiff'):
-                    candidates.add(basePath[:-5] + f'_part{part}.tiff')
-                elif basePath.endswith('.tif'):
-                    candidates.add(basePath[:-4] + f'_part{part}.tif')
-                else:
-                    candidates.add(basePath + f'_part{part}.tiff')
+        candidates.update(getattr(self, '_paths', {}).values())
         for path in candidates:
             try:
                 if isinstance(path, str) and os.path.exists(path):
@@ -1042,15 +1120,23 @@ class RecordingManager(SignalInterface):
         self.__record = False
         self.__abort = False
         self.__acqStartedEvent = threading.Event()
-        self.__recordingWorker = RecordingWorker(self)
-        self.__thread = Thread()
-        self.__recordingWorker.moveToThread(self.__thread)
-        self.__thread.started.connect(self.__recordingWorker.run)
+        self.__recordingWorker = None
+        self.__thread = None
+        self.__prepareRecordingThread()
 
     def __del__(self):
         self.endRecording(emitSignal=False, wait=True)
         if hasattr(super(), '__del__'):
             super().__del__()
+
+    def __prepareRecordingThread(self):
+        if self.__thread is not None:
+            self.__thread.quit()
+            self.__thread.wait()
+        self.__recordingWorker = RecordingWorker(self)
+        self.__thread = Thread()
+        self.__recordingWorker.moveToThread(self.__thread)
+        self.__thread.started.connect(self.__recordingWorker.run)
 
     @property
     def record(self):
@@ -1070,7 +1156,8 @@ class RecordingManager(SignalInterface):
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
                        recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
-                       recLapseTotal=1, recLapseIndex=0):
+                       recLapseTotal=1, recLapseIndex=0, scanDims=None,
+                       scanStepSizes=None):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
@@ -1086,6 +1173,9 @@ class RecordingManager(SignalInterface):
         """
 
         self.__logger.info('Starting recording')
+        if self.__record:
+            raise RuntimeError('Cannot start a new recording while one is active')
+        self.__prepareRecordingThread()
         self.__record = True
         self.__abort = False
         self.__acqStartedEvent.clear()
@@ -1102,6 +1192,8 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.singleLapseFile = singleLapseFile
         self.__recordingWorker.recLapseTotal = recLapseTotal
         self.__recordingWorker.recLapseIndex = recLapseIndex
+        self.__recordingWorker.scanDims = scanDims
+        self.__recordingWorker.scanStepSizes = scanStepSizes
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
         self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
                                           condition=lambda c: c.forAcquisition)
@@ -1118,10 +1210,11 @@ class RecordingManager(SignalInterface):
         if self.__record:
             self.__logger.info('Stopping recording')
         self.__record = False
-        self.__thread.quit()
+        if self.__thread is not None:
+            self.__thread.quit()
         if emitSignal:
             self.sigRecordingEnded.emit()
-        if wait:
+        if wait and self.__thread is not None:
             self.__thread.wait()
 
     def abortRecording(self, emitSignal=True, wait=True):
@@ -1142,10 +1235,13 @@ class RecordingManager(SignalInterface):
             self.__logger.info('Aborting recording')
         self.__abort = True
         self.__record = False
-        self.__thread.quit()
+        if self.__recordingWorker is not None:
+            self.__recordingWorker.requestWriterAbort()
+        if self.__thread is not None:
+            self.__thread.quit()
         if emitSignal:
             self.sigRecordingEnded.emit()
-        if wait:
+        if wait and self.__thread is not None:
             self.__thread.wait()
 
     def _signalAcquisitionStarted(self):
@@ -1153,14 +1249,15 @@ class RecordingManager(SignalInterface):
         self.__acqStartedEvent.set()
 
     def waitForAcquisitionStarted(self, timeout=None):
-        """Block until the recording worker has started detector acquisition
-        (i.e. all acquisition detectors are armed), or until timeout.
+        """Block until the recording worker is ready for incoming frames, or
+        until timeout.
 
-        Returns True if acquisition started within the timeout, False otherwise.
-        Used by scan-driven recordings to gate scan TTL output on detector
-        readiness instead of a fixed sleep. Safe to call from the GUI thread:
-        waits on a threading.Event set directly by the worker thread, so it does
-        not depend on the Qt event loop.
+        Returns True once acquisition detectors are armed and the recording
+        stream/chunk consumer is ready. Scan-driven recordings use this to gate
+        scan TTL output on actual recording readiness instead of a fixed sleep.
+        Safe to call from the GUI thread: waits on a threading.Event set
+        directly by the worker thread, so it does not depend on the Qt event
+        loop.
         """
         return self.__acqStartedEvent.wait(timeout)
 
@@ -1184,6 +1281,12 @@ class RecordingManager(SignalInterface):
                 if saveMode == SaveMode.Disk or saveMode == SaveMode.DiskAndRAM:
                     # Save images to disk
                     store = storer(savename, self.__detectorsManager)
+                    store.omeMeta = {
+                        det: self.buildOmeMeta(
+                            det, _ome.MODE_SNAP,
+                            1 if np.asarray(img).ndim == 2 else int(np.asarray(img).shape[0]))
+                        for det, img in images.items()
+                    }
                     store.snap(images, attrs)
 
                 if saveMode == SaveMode.RAM or saveMode == SaveMode.DiskAndRAM:
@@ -1215,7 +1318,66 @@ class RecordingManager(SignalInterface):
 
         # Wrap single detector in dict for storer interface
         images = {detectorName: image}
+        nf = 1 if np.asarray(image).ndim == 2 else int(np.asarray(image).shape[0])
+        store.omeMeta = {detectorName: self.buildOmeMeta(detectorName, _ome.MODE_SNAP, nf)}
         store.snap(images, attrs)
+
+    @staticmethod
+    def _parameter_seconds(param) -> Optional[float]:
+        try:
+            value = float(getattr(param, 'value'))
+        except Exception:
+            return None
+        unit = str(getattr(param, 'valueUnits', '') or '').strip().lower()
+        if unit in ('s', 'sec', 'second', 'seconds'):
+            return value
+        if unit in ('ms', 'millisecond', 'milliseconds'):
+            return value / 1000.0
+        if unit in ('us', 'µs', 'μs', 'microsecond', 'microseconds'):
+            return value / 1_000_000.0
+        return None
+
+    def _detectorFrameIntervalSeconds(self, det) -> float:
+        params = getattr(det, 'parameters', {}) or {}
+        for key in ('Internal frame interval', 'Frame interval', 'Real exposure time',
+                    'Set exposure time', 'Exposure', 'exposure'):
+            if key in params:
+                seconds = self._parameter_seconds(params[key])
+                if seconds is not None and seconds > 0:
+                    return seconds
+        try:
+            if hasattr(det, 'getExposureTime'):
+                value = float(det.getExposureTime())
+                if value > 0:
+                    return value
+        except Exception:
+            pass
+        return 1.0
+
+    def buildOmeMeta(self, detectorName, mode, nFrames, scanDims=None,
+                     scanStepSizes=None, frameIntervalS=None, annotations=None):
+        """Build the shared :class:`OmeImageMeta` for a detector from recording
+        context. ``mode`` is a normalized recording mode (see recording_metadata),
+        ``scanDims`` is ``(Nx, Ny, Nz)`` from the scan controller (for z-stack
+        axis labeling), or None for non-scan recordings."""
+        det = self.__detectorsManager[detectorName]
+        pix = list(det.pixelSizeUm)
+        py = pix[1] if len(pix) > 1 else 1.0
+        px = pix[2] if len(pix) > 2 else py
+        z_step = pix[0] if (pix and pix[0]) else 1.0
+        if scanStepSizes is not None and len(scanStepSizes) >= 3:
+            try:
+                if float(scanStepSizes[2]) != 0:
+                    z_step = abs(float(scanStepSizes[2]))
+            except Exception:
+                pass
+        t_interval = (float(frameIntervalS) if frameIntervalS is not None
+                      else self._detectorFrameIntervalSeconds(det))
+        return _ome.build_ome_image_meta(
+            detectorName, mode, nFrames,
+            pixel_size_yx_um=(py, px), scan_dims=scanDims,
+            z_step_um=z_step, t_interval_s=t_interval,
+            dtype=det.dtype, annotations=annotations or {})
 
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
@@ -1274,6 +1436,8 @@ class WriterThread(threading.Thread):
         # Set by abort(): queued frames are discarded and the partial output is
         # deleted (abortStream) instead of being flushed and finalized.
         self._abort_event = threading.Event()
+        self._stop_requested = threading.Event()
+        self._stop_lock = threading.Lock()
 
     def run(self):
         """Writer thread main loop."""
@@ -1401,24 +1565,7 @@ class WriterThread(threading.Thread):
         Uses a timeout to avoid deadlock if queue is full. The writer thread
         will drain the queue, making space for the sentinel.
         """
-        # Enqueue sentinel (None means "no more frames")
-        # Use timeout to avoid deadlock - writer thread drains queue
-        while True:
-            try:
-                self._queue.put(None, timeout=0.1)
-                break
-            except queue.Full:
-                # Queue still full, writer is draining - retry
-                if not self.is_alive():
-                    # Writer thread died unexpectedly, don't wait forever
-                    logger.error("WriterThread died before sentinel could be enqueued")
-                    return
-                continue
-        
-        # Wait for writer thread to finish (finalizeStream must complete)
-        self.join(timeout=30.0)
-        if self.is_alive():
-            logger.error("WriterThread did not finish within timeout")
+        self._request_stop(abort=False)
 
     def abort(self):
         """Abort: discard queued frames and partial output, then stop the writer.
@@ -1428,24 +1575,37 @@ class WriterThread(threading.Thread):
         so the sentinel is deliverable even under full-queue backpressure (the
         discarded frames are not needed).
         """
-        self._abort_event.set()
-        while True:
-            try:
-                self._queue.put(None, timeout=0.1)
-                break
-            except queue.Full:
-                if not self.is_alive():
-                    logger.error("WriterThread died before abort sentinel could be enqueued")
-                    return
-                # Discard a queued item to make room for the sentinel.
-                try:
-                    self._queue.get_nowait()
-                except queue.Empty:
-                    pass
+        self._request_stop(abort=True)
 
+    def _request_stop(self, abort):
+        if abort:
+            self._abort_event.set()
+        with self._stop_lock:
+            if not self._stop_requested.is_set():
+                self._stop_requested.set()
+                while True:
+                    try:
+                        self._queue.put(None, timeout=0.1)
+                        break
+                    except queue.Full:
+                        if not self.is_alive():
+                            logger.error(
+                                "WriterThread died before stop sentinel could be enqueued"
+                            )
+                            return
+                        if abort:
+                            # Discard a queued item to make room for the
+                            # sentinel; abort mode deliberately does not
+                            # preserve partial output.
+                            try:
+                                self._queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                        # finish() keeps waiting for the writer to drain so all
+                        # queued frames are finalized.
         self.join(timeout=30.0)
         if self.is_alive():
-            logger.error("WriterThread did not finish (abort) within timeout")
+            logger.error("WriterThread did not finish within timeout")
 
 
 class RecordingWorker(Worker):
@@ -1454,10 +1614,15 @@ class RecordingWorker(Worker):
         self.__logger = initLogger(self)
         self.__recordingManager = recordingManager
         self.__logger = initLogger(self)
+        self._writerThread = None
+
+    def requestWriterAbort(self):
+        writerThread = self._writerThread
+        if writerThread is not None:
+            writerThread.abort()
 
     def run(self):
         acqHandle = self.__recordingManager.detectorsManager.startAcquisition()
-        self.__recordingManager._signalAcquisitionStarted()
         try:
             self._record()
 
@@ -1473,7 +1638,7 @@ class RecordingWorker(Worker):
         filePaths = {}
         
         if self.saveFormat == SaveFormat.TIFF:
-            extension = 'tiff'
+            extension = 'ome.tiff'
         elif self.saveFormat == SaveFormat.HDF5:
             extension = 'hdf5'
         elif self.saveFormat == SaveFormat.ZARR:
@@ -1615,7 +1780,23 @@ class RecordingWorker(Worker):
             self.attrs,
             expected_frames,
         )
-        
+
+        # Shared OME metadata for the storer (axes from recording mode + scan
+        # geometry). A streaming stack is always (N, Y, X), so build with a
+        # >=2 frame count to force the leading axis; the actual count is filled
+        # in at finalize from the real frames written.
+        mode = _ome.normalize_mode(self.recMode.name)
+        scanDims = getattr(self, 'scanDims', None)
+        scanStepSizes = getattr(self, 'scanStepSizes', None)
+        storer.omeMeta = {
+            detectorName: self.__recordingManager.buildOmeMeta(
+                detectorName, mode,
+                max(2, int((expected_frames or {}).get(detectorName, 2))),
+                scanDims=scanDims,
+                scanStepSizes=scanStepSizes)
+            for detectorName in self.detectorNames
+        }
+
         # Start writer thread and wait for openStream handshake
         writerThread = WriterThread(
             storer=storer,
@@ -1629,6 +1810,7 @@ class RecordingWorker(Worker):
             filePaths=filePaths,
             recordingManager=self.__recordingManager
         )
+        self._writerThread = writerThread
         writerThread.start()
         
         # Wait for openStream to complete (blocks until success or raises on error)
@@ -1666,6 +1848,7 @@ class RecordingWorker(Worker):
             self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
                 _RECORDING_CHUNK_CONSUMER
             )
+        self.__recordingManager._signalAcquisitionStarted()
         self.__recordingManager.sigRecordingStarted.emit()
         shouldStopNext = False
         try:
@@ -1756,6 +1939,7 @@ class RecordingWorker(Worker):
                 writerThread.abort()
             else:
                 writerThread.finish()
+            self._writerThread = None
 
             # End recording. When aborting, abortRecording() already emitted
             # sigRecordingEnded, so suppress it here to avoid a double emit.

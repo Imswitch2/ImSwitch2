@@ -8,7 +8,43 @@ import zarr
 
 from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
 from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
+from imswitch.imcontrol.model.managers.recording_metadata import MODE_SCAN, MODE_TIMELAPSE
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
+
+
+class _Param:
+    def __init__(self, value, valueUnits):
+        self.value = value
+        self.valueUnits = valueUnits
+
+
+class _OmeMetaDetector:
+    dtype = np.dtype(np.uint16)
+    pixelSizeUm = [9.9, 0.2, 0.1]
+    parameters = {
+        'Internal frame interval': _Param(25, 'ms'),
+    }
+
+
+class _OmeMetaDetectors:
+    def __getitem__(self, name):
+        return _OmeMetaDetector()
+
+    def execOnAll(self, func, *, condition=None):
+        return {}
+
+
+def test_build_ome_meta_uses_scan_step_and_parameter_units():
+    manager = RecordingManager(_OmeMetaDetectors())
+
+    scan_meta = manager.buildOmeMeta(
+        'Cam', MODE_SCAN, 5, scanDims=(32, 32, 5), scanStepSizes=(0.1, 0.2, 0.75))
+    assert scan_meta.axes_string == 'ZYX'
+    assert scan_meta.scale == [0.75, 0.2, 0.1]
+
+    time_meta = manager.buildOmeMeta('Cam', MODE_TIMELAPSE, 4)
+    assert time_meta.axes_string == 'TYX'
+    assert time_meta.scale[0] == 0.025
 
 
 def record(qtbot, detectorInfos, *args, **kwargs):
@@ -1376,6 +1412,140 @@ def test_waitForAcquisitionStarted_blocks_until_armed(qtbot):
     finally:
         block_event.set()
         recordingManager.abortRecording(emitSignal=False, wait=True)
+
+
+def test_waitForAcquisitionStarted_waits_for_stream_open():
+    """Scan gating must wait until the writer stream and chunk consumer exist."""
+    import threading
+
+    open_started = threading.Event()
+    release_open = threading.Event()
+
+    class BlockingStorer:
+        def __init__(self, filepath, detectorManager):
+            self.filepath = filepath
+            self.detectorManager = detectorManager
+
+        def openStream(self, *args, **kwargs):
+            open_started.set()
+            release_open.wait()
+
+        def writeFrames(self, detectorName, frames):
+            pass
+
+        def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+            pass
+
+        def abortStream(self, filePaths, fileDests, saveMode):
+            pass
+
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(
+        detectorsManager,
+        storerMap={SaveFormat.HDF5: BlockingStorer},
+    )
+
+    try:
+        recordingManager.startRecording(
+            detectorNames=list(detectorInfosBasic.keys()),
+            recMode=RecMode.SpecFrames,
+            savename='test_stream_ready_block',
+            saveMode=SaveMode.RAM,
+            attrs={name: {} for name in detectorInfosBasic.keys()},
+            recFrames=1,
+        )
+
+        assert open_started.wait(2.0)
+        assert recordingManager.waitForAcquisitionStarted(timeout=0.1) is False
+
+        release_open.set()
+        assert recordingManager.waitForAcquisitionStarted(timeout=2.0) is True
+    finally:
+        release_open.set()
+        recordingManager.abortRecording(emitSignal=False, wait=True)
+
+
+def test_abortRecording_releases_open_writer_without_frames():
+    """Abort cleanup must wake a writer waiting on an empty frame queue."""
+    import numpy as np
+
+    class EmptyDetector:
+        forAcquisition = True
+        shape = (4, 4)
+        dtype = np.dtype(np.uint16)
+        pixelSizeUm = [1, 1, 1]
+
+        def startAcquisition(self):
+            pass
+
+        def stopAcquisition(self):
+            pass
+
+        def flushBuffers(self):
+            pass
+
+        def releaseChunkConsumer(self, consumerKey):
+            pass
+
+        def readChunk(self, consumerKey):
+            return []
+
+    class EmptyDetectorsManager:
+        def __init__(self):
+            self.detector = EmptyDetector()
+
+        def __getitem__(self, detectorName):
+            return self.detector
+
+        def execOnAll(self, func, *, condition=None):
+            condition = condition or (lambda detector: True)
+            if condition(self.detector):
+                return {"Empty": func(self.detector)}
+            return {}
+
+        def startAcquisition(self, liveView=False):
+            self.detector.startAcquisition()
+            return object()
+
+        def stopAcquisition(self, handle, liveView=False):
+            self.detector.stopAcquisition()
+
+    class NoopStorer:
+        def __init__(self, filepath, detectorManager):
+            self.filepath = filepath
+            self.detectorManager = detectorManager
+
+        def openStream(self, *args, **kwargs):
+            pass
+
+        def writeFrames(self, detectorName, frames):
+            pass
+
+        def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
+            pass
+
+        def abortStream(self, filePaths, fileDests, saveMode):
+            pass
+
+    recordingManager = RecordingManager(
+        EmptyDetectorsManager(),
+        storerMap={SaveFormat.HDF5: NoopStorer},
+    )
+
+    recordingManager.startRecording(
+        detectorNames=["Empty"],
+        recMode=RecMode.SpecFrames,
+        savename="test_abort_open_writer",
+        saveMode=SaveMode.RAM,
+        attrs={"Empty": {}},
+        recFrames=1,
+        stallTimeout=5.0,
+    )
+    assert recordingManager.waitForAcquisitionStarted(timeout=2.0) is True
+
+    recordingManager.abortRecording(emitSignal=False, wait=True)
+
+    assert recordingManager.record is False
 
 
 def test_waitForAcquisitionStarted_fast_arming(qtbot):

@@ -33,6 +33,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self.recording = False
         self.doneScan = False
         self.endedRecording = False
+        # Guards the programmatic REC-button reset in recordingCycleEnded() from
+        # re-entering toggleREC() as if the user had pressed stop (which would
+        # end a scan recording still draining toward its frame target).
+        self._finalizingRecCycle = False
         self.lapseCurrent = -1
         self.specLapseCurrent = -1
         self.lapseTotal = 0
@@ -156,6 +160,12 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
     def toggleREC(self, checked):
         """ Start or end recording. """
+        if self._finalizingRecCycle:
+            # Programmatic REC-button reset during scan/lapse cycle finalization
+            # (recordingCycleEnded), not a user stop. Re-entering here would call
+            # endRecording() and truncate a scan recording that is still draining
+            # toward its frame target (the worker ends itself via should_stop).
+            return
         if checked and not self.recording:
             self.stopRequested = False
             self.updateRecAttrs(isSnapping=False)
@@ -198,6 +208,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             elif self.recMode == RecMode.ScanOnce:
                 self.recordingArgs['recFrames'] = self._commChannel.getNumScanPositions()
                 self.recordingArgs['numCamTTL'] = self._commChannel.getNumCamTTL()
+                self.recordingArgs['scanDims'] = self._scanDimsForRecording()
+                self.recordingArgs['scanStepSizes'] = self._scanStepSizesForRecording()
                 self._master.recordingManager.startRecording(**self.recordingArgs)
                 armed = self._master.recordingManager.waitForAcquisitionStarted(RECORDING_ARM_TIMEOUT)
                 if not armed:
@@ -267,6 +279,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             }
             self.recordingArgs['recFrames'] = self._commChannel.getNumScanPositions()  # Update
             self.recordingArgs['numCamTTL'] = self._commChannel.getNumCamTTL()
+            self.recordingArgs['scanDims'] = self._scanDimsForRecording()
+            self.recordingArgs['scanStepSizes'] = self._scanStepSizesForRecording()
 
         # Set lapse metadata for this timepoint
         self.recordingArgs['recLapseTotal'] = self.lapseTotal
@@ -296,6 +310,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         # (Finding 5 / Phase 4).
         self._commChannel.scanWorkflow.run_scan(isFirstLapse, not isFinalLapse)
 
+    def _scanDimsForRecording(self):
+        """(Nx, Ny, Nz) scan pixel counts for OME axis labeling (None if no scan)."""
+        try:
+            return tuple(int(d) for d in self._commChannel.getDimsScan())
+        except Exception:
+            return None
+
+    def _scanStepSizesForRecording(self):
+        """Scan step sizes matching getDimsScan(), used for OME PhysicalSizeZ."""
+        try:
+            return tuple(float(s) for s in self._commChannel.getScanStepSizes())
+        except Exception:
+            return None
+
     def recordingStarted(self):
         self._widget.setFieldsEnabled(False)
 
@@ -318,7 +346,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._widget.updateRecFrameNum(0)
             self._widget.updateRecTime(0)
             self._widget.updateRecLapseNum(0)
-            self._widget.setRecButtonChecked(False)
+            self._finalizingRecCycle = True
+            try:
+                self._widget.setRecButtonChecked(False)
+            finally:
+                self._finalizingRecCycle = False
             self._widget.setFieldsEnabled(True)
             if emitRecordingEnded:
                 # emit signal manually only if soft stop of timelapse, 
