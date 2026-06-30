@@ -14,6 +14,9 @@ def main():
     parser = argparse.ArgumentParser(prog='imswitch', description='ImSwitch launcher')
     parser.add_argument('--debug', action='store_true',
                         help='Enable DEBUG-level log output from all managers.')
+    parser.add_argument('--scale', type=float, default=None, metavar='FACTOR',
+                        help='Scale the entire UI by this factor (e.g. 0.8 for 80%%). '
+                             'Overrides the IMSWITCH_UI_SCALE environment variable.')
     args, _unused = parser.parse_known_args()
     if args.debug:
         setLogLevel('DEBUG')
@@ -21,7 +24,7 @@ def main():
     logger = initLogger('main')
     logger.info(f'Starting ImSwitch {imswitch.__version__}')
 
-    app = prepareApp()
+    app = prepareApp(scale=args.scale)
 
     enabledModuleIds = modulesconfigtools.getEnabledModuleIds()
     if 'imscripting' in enabledModuleIds:

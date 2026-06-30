@@ -9,14 +9,36 @@ from .model import dirtools, pythontools, initLogger
 from .view.guitools import getBaseStyleSheet
 
 
-def prepareApp():
-    """ This function must be called before any views are created. """
+def prepareApp(scale=None):
+    """ This function must be called before any views are created.
+
+    Args:
+        scale: Optional factor to scale the entire UI by (e.g. 0.8 for 80%).
+            If None, the ``IMSWITCH_UI_SCALE`` environment variable is used
+            instead; if that is also unset, an explicitly-set ``QT_SCALE_FACTOR``
+            is left untouched and the UI renders at its native size.
+    """
 
     # Initialize exception handling
     pythontools.installExceptHook()
 
     # Set logging levels
     logging.getLogger('pyvisa').setLevel(logging.WARNING)
+
+    # Apply UI scaling before the QApplication is created (must precede it to take effect).
+    # Precedence: explicit `scale` arg > IMSWITCH_UI_SCALE env var > existing QT_SCALE_FACTOR.
+    if scale is None:
+        scale = os.environ.get('IMSWITCH_UI_SCALE')
+    if scale is not None:
+        try:
+            scaleFactor = float(scale)
+        except (TypeError, ValueError):
+            initLogger('prepareApp').warning(f'Ignoring invalid UI scale {scale!r}')
+        else:
+            if scaleFactor > 0:
+                os.environ['QT_SCALE_FACTOR'] = repr(scaleFactor)
+            else:
+                initLogger('prepareApp').warning(f'Ignoring non-positive UI scale {scaleFactor}')
 
     # Create app
     os.environ['IMSWITCH_FULL_APP'] = '1'  # Indicator that non-plugin version of ImSwitch is used
