@@ -56,6 +56,7 @@ import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread
 from imswitch.imcommon.model import initLogger
+from .mockscan import ScanSimulationCoordinator
 
 
 class NidaqManager(SignalInterface):
@@ -64,6 +65,10 @@ class NidaqManager(SignalInterface):
     sigScanBuilt = Signal(object, object, object)  # (scanInfoDict, signalDict, deviceList)
     sigScanStarted = Signal()
     sigScanDone = Signal()
+
+    # Simulation only: requests that a trigger-driven mock detector produce
+    # frames (detectorName, nFrames), standing in for the hardware camera TTL.
+    sigSimScanFrameTrigger = Signal(str, int)
 
     sigScanBuildFailed = Signal()
 
@@ -98,8 +103,16 @@ class NidaqManager(SignalInterface):
         self.signalSent = False
         self.__timerCounterChannel = setupInfo.nidaq.getTimerCounterChannel()
         self.__startTrigger = setupInfo.nidaq.startTrigger
+        self.__scanSimulator = None
+        if self.__simulating:
+            self.__scanSimulator = ScanSimulationCoordinator(setupInfo)
+            self.__scanSimulator.sigFrameTrigger.connect(self.sigSimScanFrameTrigger)
+            self.__scanSimulator.sigDone.connect(self.scanDone)
 
     def __del__(self):
+        scanSimulator = getattr(self, '_NidaqManager__scanSimulator', None)
+        if scanSimulator is not None:
+            scanSimulator.stop(wait=True)
         for taskWaiter in [
             getattr(self, 'doTaskWaiter', None),
             getattr(self, 'aoTaskWaiter', None),
@@ -110,6 +123,23 @@ class NidaqManager(SignalInterface):
                 taskWaiter.wait()
         if hasattr(super(), '__del__'):
             super().__del__()
+
+    @property
+    def isSimulated(self):
+        """Whether this NI-DAQ runs in simulation (no hardware) mode."""
+        return self.__simulating
+
+    def registerExternalScanDriver(self):
+        """Legacy compatibility hook.
+
+        Simulated scan timing and completion are now owned per scan by
+        :class:`ScanSimulationCoordinator`; detector mocks must not suppress
+        camera trigger generation globally.
+        """
+        pass
+
+    def unregisterExternalScanDriver(self):
+        pass
 
     def __makeSortedTargets(self, sortingKey):
         targetPairs = []
@@ -365,64 +395,64 @@ class NidaqManager(SignalInterface):
                     DOsignals.append(ttlDic['frame_end_clock'])
                     DOlines.append(self.__setupInfo.scan.frameEndClockLine)
 
-                if len(AOsignals) < 1 and len(DOsignals) < 1:
+                hasOutputSignals = len(AOsignals) > 0 or len(DOsignals) > 0
+                if not hasOutputSignals and not self.__simulating:
                     raise NidaqManagerError('No signals to send')
 
                 # create task waiters and change constants for beginning scan
                 self.aoTaskWaiter = WaitThread()
                 self.doTaskWaiter = WaitThread()
-                if self.__timerCounterChannel is not None:
-                    self.timerTaskWaiter = WaitThread()
-                    # create timer counter output task, to control the acquisition timing (1 MHz)
-                    detSampsInScan = int(
-                        len(AOsignals[0] if len(AOsignals) > 0 else DOsignals[0]) * (1e6/100e3)
-                    )
-                    #self.__logger.debug(f'Total detection samples in scan: {detSampsInScan}')
-                    self.timerTask = self.__createChanCOTask(
-                        'TimerTask', channel=self.__timerCounterChannel, rate=1e6,
-                        sampsInScan=detSampsInScan, starttrig=self.__startTrigger,
-                        reference_trigger='ao/StartTrigger'
-                    )
-                    self.timerTaskWaiter.connect(self.timerTask)
-                    self.timerTaskWaiter.sigWaitDone.connect(
-                        lambda: self.taskDone('timer', self.timerTaskWaiter)
-                    )
-                    self.tasks['timer'] = self.timerTask
-                acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
-                scanclock = r'100kHzTimebase'
-                clockDO = scanclock
-                if len(AOsignals) > 0:
-                    scanSampsInScan = len(AOsignals[0])
-                    self.__logger.debug(f'Total scan samples in scan: {scanSampsInScan}')
-                    self.__logger.debug(f'Total scan time: {scanSampsInScan / 0.1e6} s')
-                    self.aoTask = self.__createChanAOTask('ScanAOTask', AOchannels,
-                                                          acquisitionTypeFinite, scanclock,
-                                                          100000, min_val=-10, max_val=10,
-                                                          sampsInScan=scanSampsInScan,
-                                                          starttrig=False)
-                    self.tasks['ao'] = self.aoTask
+                if not self.__simulating:
+                    if self.__timerCounterChannel is not None:
+                        self.timerTaskWaiter = WaitThread()
+                        # create timer counter output task, to control the acquisition timing (1 MHz)
+                        detSampsInScan = int(
+                            len(AOsignals[0] if len(AOsignals) > 0 else DOsignals[0]) * (1e6/100e3)
+                        )
+                        #self.__logger.debug(f'Total detection samples in scan: {detSampsInScan}')
+                        self.timerTask = self.__createChanCOTask(
+                            'TimerTask', channel=self.__timerCounterChannel, rate=1e6,
+                            sampsInScan=detSampsInScan, starttrig=self.__startTrigger,
+                            reference_trigger='ao/StartTrigger'
+                        )
+                        self.timerTaskWaiter.connect(self.timerTask)
+                        self.timerTaskWaiter.sigWaitDone.connect(
+                            lambda: self.taskDone('timer', self.timerTaskWaiter)
+                        )
+                        self.tasks['timer'] = self.timerTask
+                    acquisitionTypeFinite = nidaqmx.constants.AcquisitionType.FINITE
+                    scanclock = r'100kHzTimebase'
+                    clockDO = scanclock
+                    if len(AOsignals) > 0:
+                        scanSampsInScan = len(AOsignals[0])
+                        self.__logger.debug(f'Total scan samples in scan: {scanSampsInScan}')
+                        self.__logger.debug(f'Total scan time: {scanSampsInScan / 0.1e6} s')
+                        self.aoTask = self.__createChanAOTask('ScanAOTask', AOchannels,
+                                                              acquisitionTypeFinite, scanclock,
+                                                              100000, min_val=-10, max_val=10,
+                                                              sampsInScan=scanSampsInScan,
+                                                              starttrig=False)
+                        self.tasks['ao'] = self.aoTask
 
-                    # Important to squeeze the array, otherwise we might get
-                    # an "invalid number of channels" error
-                    if not self.__simulating:
+                        # Important to squeeze the array, otherwise we might get
+                        # an "invalid number of channels" error
                         self.aoTask.write(np.array(AOsignals).squeeze(), auto_start=False)
                         self.aoTaskWaiter.connect(self.aoTask)
                         self.aoTaskWaiter.sigWaitDone.connect(
                             lambda: self.taskDone('ao', self.aoTaskWaiter)
                         )
-                    clockDO = r'ao/SampleClock'
-                if len(DOsignals) > 0:
-                    scanSampsInScan = len(DOsignals[0])
-                    self.doTask = self.__createLineDOTask('ScanDOTask', DOlines,
-                                                          acquisitionTypeFinite, clockDO,
-                                                          100000, sampsInScan=scanSampsInScan,
-                                                          starttrig=self.__startTrigger,
-                                                          reference_trigger='ao/StartTrigger')
-                    self.tasks['do'] = self.doTask
+                        clockDO = r'ao/SampleClock'
+                    if len(DOsignals) > 0:
+                        scanSampsInScan = len(DOsignals[0])
+                        self.doTask = self.__createLineDOTask('ScanDOTask', DOlines,
+                                                              acquisitionTypeFinite, clockDO,
+                                                              100000, sampsInScan=scanSampsInScan,
+                                                              starttrig=self.__startTrigger,
+                                                              reference_trigger='ao/StartTrigger')
+                        self.tasks['do'] = self.doTask
 
-                    # Important to squeeze the array, otherwise we might get
-                    # an "invalid number of channels" error
-                    if not self.__simulating:
+                        # Important to squeeze the array, otherwise we might get
+                        # an "invalid number of channels" error
                         self.doTask.write(np.array(DOsignals).squeeze(), auto_start=False)
                         self.doTaskWaiter.connect(self.doTask)
                         self.doTaskWaiter.sigWaitDone.connect(
@@ -449,6 +479,8 @@ class NidaqManager(SignalInterface):
                         self.aoTaskWaiter.start()
                 self.sigScanStarted.emit()
                 self.__logger.debug('Nidaq scan started!')
+                if self.__simulating and self.__scanSimulator is not None:
+                    self.__scanSimulator.start(signalDic, scanInfoDict)
 
     def stopTask(self, taskName):
         self.tasks[taskName].stop()
@@ -468,19 +500,32 @@ class NidaqManager(SignalInterface):
                 self.scanDone()
 
     def scanDone(self):
+        # Idempotent within a scan (signalSent is reset to False in runScan):
+        # the simulated driver, taskDone and finishExternalMock can all reach
+        # here, but the scan must only be reported done once.
+        if self.signalSent:
+            return
         self.signalSent = True
         self.busy = False
+        if self.__scanSimulator is not None:
+            self.__scanSimulator.stop()
         self.__logger.debug('Nidaq scan finished!')
         self.sigScanDone.emit()
 
     def finishExternalMock(self):
+        if (self.__simulating and self.__scanSimulator is not None
+                and self.__scanSimulator.isActive):
+            self.__logger.debug(
+                'Ignoring external mock completion; simulated scan '
+                'coordinator owns scan completion.'
+            )
+            return
         for taskName in self.tasks.copy():
             del self.tasks[taskName]
         self.scanDone()
 
     def runContinuous(self, digital_targets, digital_signals):
         pass
-
 
 class WaitThread(Thread):
     sigWaitDone = Signal()

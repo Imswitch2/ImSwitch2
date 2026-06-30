@@ -210,7 +210,12 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
                 )
             samples_per_pixel = n_scan_samples_dx[1] // n_pixels_fast
 
-        has_d3 = len(n_scan_samples_dx) > 2
+        # Dimensionality comes from the physical axes (img_dims), not from the
+        # length of scan_samples: per ScanInfoContract scan_samples is
+        # [per_pixel, per_line, per_frame, ...] (len = num_axes + 1), so a 2D
+        # scan already has len 3. Keying off scan_samples length would wrongly
+        # flag every 2D scan as 3D.
+        has_d3 = len(n_steps_dx) > 2
 
         for dev in targets:
             enable_vec_raw = list(map(bool, p["linestep_enable"].get(dev, [False] * S)))
@@ -470,7 +475,9 @@ class AdvancedScanTTLCycleDesigner(TTLCycleDesigner):
         Returns dict with keys 'line_clock', 'frame_start_clock', 'frame_end_clock'.
         """
         line_len = n_scan_samples_dx[1]
-        has_d3 = len(n_scan_samples_dx) > 2
+        # Dimensionality from physical axes, not scan_samples length (see
+        # _make_full_scan): scan_samples is [per_pixel, per_line, per_frame, ...].
+        has_d3 = len(n_steps_dx) > 2
 
         clocks = {}
         for key, line, frame_start, frame_end in [

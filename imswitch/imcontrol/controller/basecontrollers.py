@@ -375,12 +375,26 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def getNextAxial(self):
         return None
 
+    @staticmethod
+    def _countRisingEdges(ttl):
+        count = 0
+        previous = 0
+        for value in ttl:
+            current = 1 if value else 0
+            if current == 1 and previous == 0:
+                count += 1
+            previous = current
+        return count
+
     def getNumCamTTL(self):
         numCamTTL = {}
+        ttlSignals = self._master.scanManager.getTTLCycleSignalsDict(
+            self._digitalParameterDict
+        )
         for detector in self._setupInfo.detectors.keys():
-            if self._master.scanManager.getTTLCycleSignalsDict(self._digitalParameterDict).get(detector,None) is not None:
-                ttl=self._master.scanManager.getTTLCycleSignalsDict(self._digitalParameterDict).get(detector).tolist()
-                numCamTTL[detector] = len([i for i in range(len(ttl)-1) if ttl[i+1]-ttl[i] == 1])
+            ttl = ttlSignals.get(detector, None)
+            if ttl is not None:
+                numCamTTL[detector] = self._countRisingEdges(ttl)
         return numCamTTL
 
     def getNumScanPositions(self):

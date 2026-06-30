@@ -1,0 +1,108 @@
+{
+    "__comment__": "Hardware-free mixed detector scan setup. Uses MockHamamatsu in external frame-trigger mode and APDManager synthetic scan data with nidaq.simulation = true. The APD ctrInputLine/terminal values are fake simulated input identifiers used only to satisfy manager configuration; no physical input task is opened in simulation mode.",
+    "detectors": {
+        "Camera": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "HamamatsuManager",
+            "managerProperties": {
+                "cameraListIndex": "mock",
+                "hamamatsu": {
+                    "exposure_time": 0.01,
+                    "trigger_source": 2,
+                    "subarray_hpos": 0,
+                    "subarray_vpos": 0,
+                    "subarray_hsize": 512,
+                    "subarray_vsize": 512,
+                    "image_width": 512,
+                    "image_height": 512
+                }
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        },
+        "APD": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "APDManager",
+            "managerProperties": {
+                "ctrInputLine": "Dev1/ctr0",
+                "terminal": "PFI0",
+                "mockPhotonCountMean": 800,
+                "mockPhotonCountMax": 5000
+            },
+            "forAcquisition": true,
+            "forFocusLock": false
+        }
+    },
+    "lasers": {},
+    "positioners": {
+        "X": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["X"],
+            "forScanning": true,
+            "forPositioning": true,
+            "resetOnClose": false
+        },
+        "Y": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["Y"],
+            "forScanning": true,
+            "forPositioning": true,
+            "resetOnClose": false
+        },
+        "Z": {
+            "analogChannel": null,
+            "digitalLine": null,
+            "managerName": "MockPositionerManager",
+            "managerProperties": {},
+            "axes": ["Z"],
+            "forScanning": true,
+            "forPositioning": true,
+            "resetOnClose": false
+        }
+    },
+    "scan": {
+        "scanWidgetType": "Base",
+        "scanDesigner": "BetaScanDesigner",
+        "scanDesignerParams": {
+            "return_time": 0.01
+        },
+        "TTLCycleDesigner": "BetaTTLCycleDesigner",
+        "TTLCycleDesignerParams": {},
+        "sampleRate": 100000,
+        "maxScanTimeMin": 1,
+        "lineClockLine": null,
+        "frameStartClockLine": null,
+        "frameEndClockLine": null
+    },
+    "nidaq": {
+        "timerCounterChannel": null,
+        "startTrigger": false,
+        "simulation": true
+    },
+    "availableWidgets": [
+        "Settings",
+        "View",
+        "Recording",
+        "Image",
+        "Positioner",
+        "Scan"
+    ],
+    "widgetLayout": {
+        "right": [],
+        "left": [
+            ["Settings"],
+            ["View"],
+            ["Positioner"],
+            ["Recording"],
+            ["Scan"]
+        ]
+    }
+}

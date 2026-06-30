@@ -15,6 +15,8 @@ Pins the fixes for the June 2026 Snouty bug set:
 
 from pathlib import Path
 
+from imswitch.imcontrol.controller.basecontrollers import SuperScanController
+
 
 ROOT = Path(__file__).resolve().parents[4]
 CONTROLLERS = ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers'
@@ -55,6 +57,11 @@ def test_raster_controller_provides_recording_accessors():
     assert 'self.getBeadRecScanDims()' in _method_body(source, 'getNumScanPositions')
     # Camera TTL map only contains TTL-included detectors
     assert 'self._setupInfo.detectors' in _method_body(source, 'getNumCamTTL')
+
+
+def test_camera_ttl_count_includes_sample_zero_high():
+    assert SuperScanController._countRisingEdges([1, 1, 0, 1, 0, 1]) == 3
+    assert SuperScanController._countRisingEdges([0, 1, 1, 0, 1, 0]) == 2
 
 
 def test_recording_controller_does_not_broadcast_run_scan_without_scan_widget():

@@ -160,6 +160,34 @@ Location: `imswitch/_data/user_defaults/imcontrol_setups/example_no_hardware.jso
 }
 ```
 
+### Mock Scan Profiles
+
+Additional scan-focused hardware-free setup files are available in
+`imswitch/_data/user_defaults/imcontrol_setups/`:
+
+- `mock_scan_setup.json`: pure software MoNaLISA/live-reconstruction setup with
+  an `AVManager` mock camera, mock positioners, no physical AO/DO channels, and
+  `nidaq.simulation = true`.
+- `hamamatsu_mock_scan_setup.json`: pure software scan setup with a
+  `HamamatsuManager` mock camera in external frame-trigger mode. The simulated
+  NI-DAQ scan coordinator generates virtual camera triggers; all device
+  `analogChannel` and `digitalLine` fields are `null`.
+- `mixed_hamamatsu_apd_mock_scan_setup.json`: mixed mock detector setup with a
+  trigger-gated mock Hamamatsu camera and synthetic APD scan data. The APD
+  `ctrInputLine` and `terminal` entries are fake simulated input identifiers
+  required by `APDManager`; no NI-DAQ input task is opened while
+  `nidaq.simulation = true`. Optional APD mock properties such as
+  `mockPhotonCountMean` and `mockPhotonCountMax` tune the synthetic integer
+  count range.
+
+APD mock detector data is modeled as cumulative counter input that reconstructs
+to non-negative integer photon counts. PMT mock detector data is modeled as
+`float32` voltage samples in a configurable range, defaulting to `-5.0..5.0` V.
+
+Treat these as distinct modes: null AO/DO channels mean no physical scan output
+is built, while fake `Dev1/...` detector input names are only manager
+configuration placeholders for synthetic detector data.
+
 ---
 
 ## Adding New No-Hardware Tests

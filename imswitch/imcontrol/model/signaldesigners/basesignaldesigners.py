@@ -6,6 +6,97 @@ from imswitch.imcommon.model import pythontools, initLogger
 from ..errors import InvalidChildClassError
 
 
+def validate_scan_info_contract(scanInfoDict: dict) -> bool:
+    """Validate the shared ScanInfoContract dictionary invariants."""
+    required = [
+        "img_dims",
+        "img_axes_phys",
+        "pixel_sizes",
+        "scan_samples",
+        "scan_samples_total",
+        "scan_samples_d2_period",
+        "n_pixels_fast",
+        "samples_per_pixel",
+        "dwell_time",
+        "scan_time_step",
+        "n_linesteps",
+    ]
+    missing = [key for key in required if key not in scanInfoDict]
+    if missing:
+        raise ValueError(f"ScanInfoContract missing required field(s): {missing}")
+
+    img_dims = list(scanInfoDict["img_dims"])
+    img_axes_phys = list(scanInfoDict["img_axes_phys"])
+    pixel_sizes = list(scanInfoDict["pixel_sizes"])
+    scan_samples = list(scanInfoDict["scan_samples"])
+
+    if not img_dims:
+        raise ValueError("ScanInfoContract img_dims must contain at least one physical axis")
+
+    if len(img_axes_phys) != len(img_dims):
+        raise ValueError(
+            "ScanInfoContract img_axes_phys length must match img_dims length"
+        )
+
+    if len(pixel_sizes) != len(img_dims):
+        raise ValueError(
+            "ScanInfoContract pixel_sizes length must match img_dims length"
+        )
+
+    expected_sample_levels = len(img_dims) + 1
+    if len(scan_samples) != expected_sample_levels:
+        raise ValueError(
+            "ScanInfoContract scan_samples length must be len(img_dims) + 1 "
+            f"({expected_sample_levels}), got {len(scan_samples)}"
+        )
+
+    if any(int(dim) <= 0 for dim in img_dims):
+        raise ValueError("ScanInfoContract img_dims values must be positive")
+
+    if any(int(samples) <= 0 for samples in scan_samples):
+        raise ValueError("ScanInfoContract scan_samples values must be positive")
+
+    if int(scanInfoDict["scan_samples_total"]) <= 0:
+        raise ValueError("ScanInfoContract scan_samples_total must be positive")
+
+    if int(scanInfoDict["scan_samples_d2_period"]) <= 0:
+        raise ValueError("ScanInfoContract scan_samples_d2_period must be positive")
+
+    if int(scanInfoDict["n_pixels_fast"]) != int(img_dims[0]):
+        raise ValueError(
+            "ScanInfoContract n_pixels_fast must match the first physical img_dim"
+        )
+
+    if int(scanInfoDict["samples_per_pixel"]) != int(scan_samples[0]):
+        raise ValueError(
+            "ScanInfoContract samples_per_pixel must match scan_samples[0]"
+        )
+
+    if float(scanInfoDict["dwell_time"]) <= 0:
+        raise ValueError("ScanInfoContract dwell_time must be positive")
+
+    if float(scanInfoDict["scan_time_step"]) <= 0:
+        raise ValueError("ScanInfoContract scan_time_step must be positive")
+
+    n_linesteps = int(scanInfoDict["n_linesteps"])
+    if n_linesteps < 1:
+        raise ValueError("ScanInfoContract n_linesteps must be >= 1")
+
+    expected_axes_with_linesteps = img_axes_phys + (
+        ["linestep"] if n_linesteps > 1 else []
+    )
+    axes_with_linesteps = list(
+        scanInfoDict.get("img_axes_with_linesteps") or expected_axes_with_linesteps
+    )
+    if axes_with_linesteps != expected_axes_with_linesteps:
+        raise ValueError(
+            "ScanInfoContract img_axes_with_linesteps must equal physical axes "
+            "plus a trailing linestep axis when n_linesteps > 1"
+        )
+
+    return True
+
+
 class SignalDesigner(ABC):
     """Parent class for any type of SignalDesigner. Any child should define
     self._expected_parameters and its own make_signal method."""
@@ -163,6 +254,7 @@ class ScanInfoContract:
         # Ensure smooth_axes covers all physical axes
         while len(self.smooth_axes) < len(self.img_dims):
             self.smooth_axes = list(self.smooth_axes) + [False]
+        validate_scan_info_contract(self.to_dict())
 
     def to_dict(self) -> dict:
         """Convert to a plain dict for backward compatibility with all consumers."""

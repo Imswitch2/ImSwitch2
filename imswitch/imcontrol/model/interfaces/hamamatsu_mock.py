@@ -1,5 +1,6 @@
 import ctypes
 import ctypes.util
+import threading
 import time
 
 import numpy as np
@@ -16,7 +17,10 @@ class HMockCamData:
     # @param size The size of the data object in bytes.
     #
     def __init__(self, size, max_value):
-        self.np_array = np.random.randint(1, max_value, int(size))
+        # uint16 to match a real Hamamatsu (12/16-bit) frame: the recording
+        # declares uint16, so int64/float frames here trip a dtype-mismatch
+        # warning and force a per-frame cast.
+        self.np_array = np.random.randint(1, max_value, int(size), dtype=np.uint16)
         self.size = size
 
     # __getitem__
@@ -69,9 +73,18 @@ class MockHamamatsu:
         self.number_image_buffers = 0
         self.hcam_data = []
 
-        self.mock_data_max_value = np.random.randint(65536)
+        # Brightness ceiling for generated frames; kept within uint16 and >=2
+        # so np.random.randint(1, max_value, ...) is always valid.
+        self.mock_data_max_value = int(np.random.randint(1000, 60000))
         self.mock_acquisiton_running = False
         self.mock_start_time = time.time_ns()
+
+        # External-trigger simulation: frames queued by mockTrigger() (e.g. from
+        # a simulated NIDAQ scan) and drained by getFrames() when the camera is
+        # in an external trigger mode. Guarded by a lock because triggers are
+        # queued from one thread and drained from the recording thread.
+        self._mock_trigger_lock = threading.Lock()
+        self._mock_pending_frames = 0
 
         self.s = 1.0  # time unit placeholder (seconds)
 
@@ -134,11 +147,20 @@ class MockHamamatsu:
         frames = []
         frame_x, frame_y = self.frame_x, self.frame_y
 
-        cur_frame_number = int(
-            (time.time_ns() - self.mock_start_time) / 10e8 * self.properties['internal_frame_rate']
-        )
-        num_frames = cur_frame_number - self.last_frame_number
-        self.last_frame_number = cur_frame_number
+        if int(self.properties.get('trigger_source', 1)) != 1:
+            # External trigger mode: return exactly the frames triggered (e.g.
+            # by a simulated NIDAQ scan via mockTrigger) since the last call,
+            # mirroring a hardware camera that exposes one frame per TTL edge.
+            with self._mock_trigger_lock:
+                num_frames = self._mock_pending_frames
+                self._mock_pending_frames = 0
+        else:
+            # Internal trigger mode: free-run at the internal frame rate.
+            cur_frame_number = int(
+                (time.time_ns() - self.mock_start_time) / 10e8 * self.properties['internal_frame_rate']
+            )
+            num_frames = cur_frame_number - self.last_frame_number
+            self.last_frame_number = cur_frame_number
 
         for i in range(num_frames):
             # Create storage
@@ -151,6 +173,16 @@ class MockHamamatsu:
         frame_x, frame_y = self.frame_x, self.frame_y
         hc_data = HMockCamData(frame_x * frame_y, self.mock_data_max_value)
         return np.reshape(hc_data.getData(), (frame_y, frame_x))
+
+    def mockTrigger(self, n=1):
+        """Queue ``n`` externally-triggered frames (software stand-in for a
+        hardware frame trigger). Only consumed by getFrames() while the camera
+        is in an external trigger mode (``trigger_source != 1``)."""
+        n = int(n)
+        if n <= 0:
+            return
+        with self._mock_trigger_lock:
+            self._mock_pending_frames += n
 
     def getModelInfo(self):
         ''' Returns the model of the camera
@@ -464,6 +496,8 @@ class MockHamamatsu:
     def updateIndices(self):
         self.mock_start_time = time.time_ns()
         self.last_frame_number = 0
+        with self._mock_trigger_lock:
+            self._mock_pending_frames = 0
 
     # shutdown
     #

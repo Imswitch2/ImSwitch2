@@ -22,9 +22,19 @@ class HamamatsuManager(DetectorManager):
 
     def __init__(self, detectorInfo, name, **_lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
+        self.__name = name
 
         self._camera = self._getCameraObj(detectorInfo.managerProperties['cameraListIndex'])
         self._binning = 1
+
+        # Let a simulated NIDAQ scan trigger frames on a mock camera the way the
+        # hardware camera TTL would, so scan-once/scan-lapse recordings get the
+        # expected number of frames with no real hardware. No-op for real
+        # cameras (no mockTrigger) or a real NIDAQ (signal never fires).
+        nidaqManager = _lowLevelManagers.get('nidaqManager')
+        if (nidaqManager is not None and getattr(nidaqManager, 'isSimulated', False)
+                and hasattr(self._camera, 'mockTrigger')):
+            nidaqManager.sigSimScanFrameTrigger.connect(self.__onSimScanFrameTrigger)
 
         for propertyName, propertyValue in detectorInfo.managerProperties['hamamatsu'].items():
             self._camera.setPropertyValue(propertyName, propertyValue)
@@ -91,6 +101,25 @@ class HamamatsuManager(DetectorManager):
 
     def flushBuffers(self):
         self._camera.updateIndices()
+
+    def mockTrigger(self, n=1):
+        if hasattr(self._camera, 'mockTrigger'):
+            self._camera.mockTrigger(n)
+
+    def mockStartScan(self, scanInfoDict, signalDict):
+        self.flushBuffers()
+
+    def mockStopScan(self):
+        self.flushBuffers()
+
+    def mockScanDone(self):
+        return True
+
+    def __onSimScanFrameTrigger(self, detectorName, nFrames):
+        """Simulation only: forward a simulated NIDAQ scan's frame triggers to
+        this detector's mock camera."""
+        if detectorName == self.__name:
+            self.mockTrigger(nFrames)
 
     def crop(self, hpos, vpos, hsize, vsize):
         """Method to crop the frame read out by the camera. """

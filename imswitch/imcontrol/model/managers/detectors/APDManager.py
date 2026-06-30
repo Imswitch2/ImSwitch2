@@ -33,11 +33,32 @@ class APDManager(DetectorManager):
         self._image = np.zeros(fullShape, dtype=np.uint16)
         self._detection_samplerate = float(1e6)
         self._nidaq_clock_source = r'ctr2InternalOutput'  # counter output task generating a 1 MHz frequency digitial pulse train
-        self._channel = detectorInfo.managerProperties["ctrInputLine"]
-        device_name = detectorInfo.managerProperties.get("deviceName", "Dev1")
+        manager_props = detectorInfo.managerProperties
+        self._channel = manager_props["ctrInputLine"]
+        device_name = manager_props.get("deviceName", "Dev1")
         if isinstance(self._channel, int):
             self._channel = f'{device_name}/ctr{self._channel}'  # for backwards compatibility
-        self._terminal = detectorInfo.managerProperties["terminal"]
+        self._terminal = manager_props["terminal"]
+        self._mock_photon_count_mean = float(
+            manager_props.get(
+                "mockPhotonCountMean",
+                manager_props.get("mock_photon_count_mean", 800.0),
+            )
+        )
+        self._mock_photon_count_max = max(
+            1,
+            int(
+                manager_props.get(
+                    "mockPhotonCountMax",
+                    manager_props.get("mock_photon_count_max", 5000),
+                )
+            ),
+        )
+        self._mock_random_seed = manager_props.get(
+            "mockRandomSeed",
+            manager_props.get("mock_random_seed", None),
+        )
+        self._warned_mock_count_clip = False
 
         self._frameCount = 0
         self._scanWorker = None
@@ -46,13 +67,21 @@ class APDManager(DetectorManager):
         self._ttlmultiplying = False
         self.acquisition = True
         self._debug_mode = False  # run mode for plotting detected samples
-        self._simulation_mode = False  # run mode for generating detected samples
+        # Generate detected samples instead of reading the NI-DAQ counter input.
+        # Forced on whenever the NI-DAQ itself is simulating: with no hardware
+        # the counter-input task is None, so reading it would crash
+        # (startInputTask -> None.start()). An explicit config flag can also turn
+        # it on against a real NI-DAQ for bench testing.
+        self._simulation_mode = bool(
+            manager_props.get("simulation_mode", False)
+            or getattr(nidaqManager, 'isSimulated', False)
+        )
 
         # Prepare detector manager parameters and signal connections
         parameters = {}
         self._nidaqManager = nidaqManager
         self._nidaqManager.sigScanBuilt.connect(
-            lambda scanInfoDict, signalDict, _: self.initiateScan(scanInfoDict, signalDict)
+            self._onScanBuilt
         )
         self._nidaqManager.sigScanStarted.connect(self.startScan)
         self.__shape = fullShape
@@ -82,8 +111,36 @@ class APDManager(DetectorManager):
                 plt.figure(1)
             self._linestep = getattr(self._scanWorker, "_linestep", 1)
 
+    def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
+        if self._simulation_mode:
+            self.mockStartScan(scanInfoDict, signalDict)
+        else:
+            self.initiateScan(scanInfoDict, signalDict)
+
+    def mockStartScan(self, scanInfoDict, signalDict):
+        self.initiateScan(scanInfoDict, signalDict)
+
+    def mockStopScan(self):
+        worker = self._scanWorker
+        thread = self._scanThread
+        if worker is not None:
+            worker.scanning = False
+        if thread is not None:
+            thread.quit()
+            thread.wait()
+        if worker is not None:
+            worker.close()
+        self._scanWorker = None
+        self._scanThread = None
+
+    def mockScanDone(self):
+        return self._scanWorker is None or not getattr(
+            self._scanWorker, "scanning", False
+        )
+
     def startScan(self):
-        if self.acquisition:
+        if (self.acquisition and self._scanThread is not None
+                and not self._scanThread.isRunning()):
             self._scanThread.start()
 
     def startAcquisition(self):
@@ -92,10 +149,19 @@ class APDManager(DetectorManager):
 
     def stopAcquisition(self):
         try:
-            self._scanWorker.scanning = False
-            self._scanThread.quit()
-            self._scanThread.wait()
-            self._scanWorker.close()
+            worker = self._scanWorker
+            thread = self._scanThread
+            if worker is None and thread is None:
+                return
+            if worker is not None:
+                worker.scanning = False
+            if thread is not None:
+                thread.quit()
+                thread.wait()
+            if worker is not None:
+                worker.close()
+            self._scanWorker = None
+            self._scanThread = None
             self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
             # NOTE: do NOT set __newFrameReady=True here. _onFrameBoundary
             # (driven by d3Step) has already flagged the final real frame and
@@ -106,10 +172,19 @@ class APDManager(DetectorManager):
 
     def stopAcquisitionLocal(self):
         try:
-            self._scanWorker.scanning = False
-            self._scanThread.quit()
-            self._scanThread.wait()
-            self._scanWorker.close()
+            worker = self._scanWorker
+            thread = self._scanThread
+            if worker is None and thread is None:
+                return
+            if worker is not None:
+                worker.scanning = False
+            if thread is not None:
+                thread.quit()
+                thread.wait()
+            if worker is not None:
+                worker.close()
+            self._scanWorker = None
+            self._scanThread = None
             if self._ttlmultiplying:
                 self._renewImage()
             self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
@@ -134,6 +209,29 @@ class APDManager(DetectorManager):
         for axis in ax_rem:
             px_sizes.pop(axis)
         self.setPixelSize(px_sizes[::-1])
+
+    def _convertPixelsForImage(self, pixels):
+        pixels = np.asarray(pixels)
+        if np.issubdtype(self._image.dtype, np.integer):
+            info = np.iinfo(self._image.dtype)
+            rounded = np.rint(
+                np.nan_to_num(
+                    pixels,
+                    nan=0.0,
+                    posinf=float(info.max),
+                    neginf=float(info.min),
+                )
+            )
+            clipped = np.clip(rounded, info.min, info.max)
+            if (not self._warned_mock_count_clip
+                    and np.any(clipped != rounded)):
+                self.__logger.warning(
+                    f'Clipped APD pixels to {info.min}..{info.max} '
+                    f'before writing {self._image.dtype} image buffer.'
+                )
+                self._warned_mock_count_clip = True
+            return clipped.astype(self._image.dtype, copy=False)
+        return pixels.astype(self._image.dtype, copy=False)
 
     def updateImage(self, pixels, pos: tuple):
         """
@@ -167,16 +265,12 @@ class APDManager(DetectorManager):
             Ny = self._image.shape[-2]
             if y >= Ny:
                 return
-            # Explicit dtype cast to match buffer (uint16 non-TTL, float32 TTL).
-            # uint16: 0..65535 photon-count range is a deliberate contract choice.
-            # Integer dest: round (not truncate) float counts before narrowing.
-            # Float dest: preserve NaN no-data markers from TTL masking.
-            if np.issubdtype(self._image.dtype, np.integer):
-                converted = np.rint(pixels[:n]).astype(self._image.dtype, copy=False)
-            else:
-                converted = pixels[:n].astype(self._image.dtype, copy=False)
-            self._image[y, :n] = converted
-            # TODO(phase): uint16 photon-count overflow guard
+            converted = self._convertPixelsForImage(pixels[:n])
+            # Index the last two axes (..., y, x): the buffer is (Ny, Nx) for a
+            # true 2D scan but (1, Ny, Nx) for a single-plane 3D scan (e.g. Nz=1),
+            # which squeezes to ndim 2 above. Plain [y, :n] would index the
+            # leading singleton axis and raise IndexError for y >= 1.
+            self._image[..., y, :n] = converted
             self.__currSlice = (y_expanded,)
             if np.random.rand()<np.min((500/np.sum(self._image.shape), UpdateRateInPixels)): # update oa every Xth pixel, less for big datasets
                 self.sigImageUpdated.emit(self._image, True, self.scale)
@@ -193,13 +287,8 @@ class APDManager(DetectorManager):
                 idx = (s,) + outer + (y, slice(0, n))
             else:
                 idx = outer + (y, slice(0, n))
-            # Explicit dtype cast (same logic as 2D case above).
-            if np.issubdtype(self._image.dtype, np.integer):
-                converted = np.rint(pixels[:n]).astype(self._image.dtype, copy=False)
-            else:
-                converted = pixels[:n].astype(self._image.dtype, copy=False)
+            converted = self._convertPixelsForImage(pixels[:n])
             self._image[idx] = converted
-            # TODO(phase): uint16 photon-count overflow guard
             self.__currSlice = outer + (y,)
             return
 
@@ -242,9 +331,9 @@ class APDManager(DetectorManager):
 
     def getChunk(self):
         if not self.__newFrameReady:
-            return np.empty((0, 0))
+            return np.empty((0, 0, 0), dtype=self.dtype)
         self.__newFrameReady = False
-        return self._image_display.copy()  # already shape (1,Ny,Nx)
+        return np.expand_dims(self._image_display, axis=0).copy()
 
     def flushBuffers(self):
         pass
@@ -351,10 +440,17 @@ class ScanWorker(Worker):
 
         # ratio between detection sampling time and pixel dwell time (has nothing to do with
         # sampling of scanning line)
-        self._frac_det_dwell = round(self._scan_dwell_time * self._manager._detection_samplerate)
+        self._frac_det_dwell = max(
+            1,
+            int(round(self._scan_dwell_time * self._manager._detection_samplerate)),
+        )
 
         # ratio between detection sample rate and scanning sample rate
-        self._frac_scan_det_rate = round(self._manager._detection_samplerate * scanInfoDict['scan_time_step'])
+        self._frac_scan_det_rate = max(
+            1,
+            int(round(self._manager._detection_samplerate * scanInfoDict['scan_time_step'])),
+        )
+        self._rng = np.random.default_rng(self._manager._mock_random_seed)
 
         # extract APD signals from signalDict
         self._seq_signal = None  # set only if ttlmultiplying AND this device found in signalDict
@@ -461,7 +557,10 @@ class ScanWorker(Worker):
         if n != len(line_samples):
             # optional: logger warning
             line_samples = line_samples[:n]
-        return np.asarray(line_samples).reshape(-1, frac).sum(axis=1)
+        pixels = np.asarray(line_samples).reshape(-1, frac).sum(axis=1)
+        if not self._manager._ttlmultiplying:
+            pixels = np.clip(pixels, 0, self._manager._mock_photon_count_max)
+        return pixels
 
     def __plot_curves(self, plot, xvals, signal, style='k-'):
         """ Plot read and thrown samples, for debugging. """
@@ -492,9 +591,15 @@ class ScanWorker(Worker):
             self.throwdata(self._throw_init_smooth)
         # loop through all dimensions to record data, starting with the outermost dimension
         self.run_loop_dx(dim=len(self._loop_dims))
-        if self._manager._simulation_mode:
-            # call mock acquisition done in nidaqmanager
+        if (self._manager._simulation_mode
+                and not getattr(self._manager._nidaqManager, 'isSimulated', False)):
+            # Legacy explicit detector simulation against a real NI-DAQ manager.
+            # In NI-DAQ simulation mode, ScanSimulationCoordinator owns scan
+            # completion and detector workers must not race it.
             self._manager._nidaqManager.finishExternalMock()
+        self.scanning = False
+        if self._manager._scanThread is not None:
+            self._manager._scanThread.quit()
         # emit acquisition done signal
         self.acqDoneSignal.emit()
 
@@ -572,11 +677,20 @@ class ScanWorker(Worker):
             self.close()
 
     def close(self):
-        pass
-        self._manager._nidaqManager.inputTaskDone(self._name)
+        if not self._manager._simulation_mode:
+            self._manager._nidaqManager.inputTaskDone(self._name)
 
     def randomInput(self, datalen):
-        return np.random.randint(100, size=datalen)
+        datalen = int(datalen)
+        if datalen <= 0:
+            return np.empty((0,), dtype=np.int64)
+
+        frac = max(1, int(self._frac_det_dwell))
+        mean_per_sample = max(0.0, self._manager._mock_photon_count_mean / frac)
+        max_per_sample = max(1, int(np.ceil(self._manager._mock_photon_count_max / frac)))
+        increments = self._rng.poisson(mean_per_sample, size=datalen).astype(np.int64)
+        increments = np.clip(increments, 0, max_per_sample)
+        return np.cumsum(increments, dtype=np.int64) + int(self._last_value)
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

@@ -26,18 +26,54 @@ class PMTManager(DetectorManager):
         self._detection_samplerate = float(1e6)
         self._nidaq_clock_source = r"ctr2InternalOutput"
 
-        self._channel = detectorInfo.managerProperties.get("analogInputLine", None)
-        device_name = detectorInfo.managerProperties.get("deviceName", "Dev1")
+        manager_props = detectorInfo.managerProperties
+        self._channel = manager_props.get("analogInputLine", None)
+        device_name = manager_props.get("deviceName", "Dev1")
         if isinstance(self._channel, int):
             self._channel = f"{device_name}/ai{self._channel}"
 
-        self._offset_v = float(detectorInfo.managerProperties.get("offset_v", 0.0))
+        self._offset_v = float(manager_props.get("offset_v", 0.0))
+        self._mock_voltage_min = float(
+            manager_props.get("mockVoltageMin", manager_props.get("mock_voltage_min", -5.0))
+        )
+        self._mock_voltage_max = float(
+            manager_props.get("mockVoltageMax", manager_props.get("mock_voltage_max", 5.0))
+        )
+        if self._mock_voltage_min > self._mock_voltage_max:
+            self._mock_voltage_min, self._mock_voltage_max = (
+                self._mock_voltage_max,
+                self._mock_voltage_min,
+            )
+        self._mock_voltage_mean = float(
+            manager_props.get("mockVoltageMean", manager_props.get("mock_voltage_mean", 0.0))
+        )
+        self._mock_voltage_noise_std = max(
+            0.0,
+            float(
+                manager_props.get(
+                    "mockVoltageNoiseStd",
+                    manager_props.get("mock_voltage_noise_std", 0.5),
+                )
+            ),
+        )
+        self._mock_random_seed = manager_props.get(
+            "mockRandomSeed",
+            manager_props.get("mock_random_seed", None),
+        )
 
         self._scanWorker = None
         self._scanThread = None
 
         self._ttlmultiplying = False
-        self._simulation_mode = False
+        # Generate detected samples instead of reading the NI-DAQ analog input.
+        # Forced on whenever the NI-DAQ itself is simulating: with no hardware
+        # the input task is None, so reading it would crash
+        # (startInputTask -> None.start()). An explicit config flag can also turn
+        # it on against a real NI-DAQ for bench testing.
+        self._simulation_mode = bool(
+            manager_props.get("simulation_mode", False)
+            or getattr(nidaqManager, 'isSimulated', False)
+        )
         self._debug_mode = False
 
         # linestep settings (kept for manager-side display logic)
@@ -50,7 +86,7 @@ class PMTManager(DetectorManager):
         parameters = {}
         self._nidaqManager = nidaqManager
         self._nidaqManager.sigScanBuilt.connect(
-            lambda scanInfoDict, signalDict, _: self.initiateScan(scanInfoDict, signalDict)
+            self._onScanBuilt
         )
         self._nidaqManager.sigScanStarted.connect(self.startScan)
 
@@ -116,8 +152,36 @@ class PMTManager(DetectorManager):
         if self._debug_mode:
             plt.figure(1)
 
+    def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
+        if self._simulation_mode:
+            self.mockStartScan(scanInfoDict, signalDict)
+        else:
+            self.initiateScan(scanInfoDict, signalDict)
+
+    def mockStartScan(self, scanInfoDict, signalDict):
+        self.initiateScan(scanInfoDict, signalDict)
+
+    def mockStopScan(self):
+        worker = self._scanWorker
+        thread = self._scanThread
+        if worker is not None:
+            worker.scanning = False
+        if thread is not None:
+            thread.quit()
+            thread.wait()
+        if worker is not None:
+            worker.close()
+        self._scanWorker = None
+        self._scanThread = None
+
+    def mockScanDone(self):
+        return self._scanWorker is None or not getattr(
+            self._scanWorker, "scanning", False
+        )
+
     def startScan(self):
-        if self.acquisition and self._scanThread is not None:
+        if (self.acquisition and self._scanThread is not None
+                and not self._scanThread.isRunning()):
             self._scanThread.start()
 
     def startAcquisition(self):
@@ -129,15 +193,22 @@ class PMTManager(DetectorManager):
 
     def stopAcquisitionLocal(self):
         try:
-            if self._scanWorker is not None:
-                self._scanWorker.scanning = False
+            worker = self._scanWorker
+            thread = self._scanThread
+            if worker is None and thread is None:
+                return
 
-            if self._scanThread is not None:
-                self._scanThread.quit()
-                self._scanThread.wait()
+            if worker is not None:
+                worker.scanning = False
 
-            if self._scanWorker is not None:
-                self._scanWorker.close()
+            if thread is not None:
+                thread.quit()
+                thread.wait()
+
+            if worker is not None:
+                worker.close()
+            self._scanWorker = None
+            self._scanThread = None
 
             if self._ttlmultiplying:
                 self._renewImage()
@@ -218,7 +289,11 @@ class PMTManager(DetectorManager):
             Ny = self._image.shape[-2]
             if y >= Ny:
                 return
-            self._image[y, :n] = pixels[:n]
+            # Index the last two axes (..., y, x): the buffer is (Ny, Nx) for a
+            # true 2D scan but (1, Ny, Nx) for a single-plane 3D scan (Nz=1),
+            # which squeezes to ndim 2 above. Plain [y, :n] would index the
+            # leading singleton axis and raise IndexError for y >= 1.
+            self._image[..., y, :n] = pixels[:n]
             self.__currSlice = (y_expanded,)
             if np.random.rand()<np.min((500/np.sum(self._image.shape), UpdateRateInPixels)): # update oa every Xth pixel, less for big datasets
                 self.sigImageUpdated.emit(self._image, True, self.scale)
@@ -302,9 +377,9 @@ class PMTManager(DetectorManager):
 
     def getChunk(self):
         if not self.__newFrameReady:
-            return np.empty((0, 0, 0))
+            return np.empty((0, 0, 0), dtype=self.dtype)
         self.__newFrameReady = False
-        return self._image_display.copy()  # always (1, Ny, Nx)
+        return np.expand_dims(self._image_display, axis=0).copy()
 
     def flushBuffers(self):
         self.__newFrameReady = False
@@ -335,8 +410,15 @@ class ScanWorker(Worker):
         self._channel = self._manager._channel
 
         self._scan_dwell_time = scanInfoDict["dwell_time"]
-        self._frac_det_dwell = round(self._scan_dwell_time * self._manager._detection_samplerate)
-        self._frac_scan_det_rate = round(self._manager._detection_samplerate * scanInfoDict["scan_time_step"])
+        self._frac_det_dwell = max(
+            1,
+            int(round(self._scan_dwell_time * self._manager._detection_samplerate)),
+        )
+        self._frac_scan_det_rate = max(
+            1,
+            int(round(self._manager._detection_samplerate * scanInfoDict["scan_time_step"])),
+        )
+        self._rng = np.random.default_rng(self._manager._mock_random_seed)
 
         # img_dims contains physical scan axes only (no linestep); n_linesteps is separate.
         scan_dims = list(scanInfoDict["img_dims"])
@@ -426,7 +508,7 @@ class ScanWorker(Worker):
             arr = np.pad(arr, (0, expected - arr.size), mode="constant", constant_values=0)
         elif arr.size > expected:
             arr = arr[:expected]
-        return arr.reshape(int(self._Nx), int(self._frac_det_dwell)).sum(axis=1)
+        return arr.reshape(int(self._Nx), int(self._frac_det_dwell)).mean(axis=1)
 
     def run(self):
         self._pos = np.zeros(len(self._loop_dims), dtype="uint16")
@@ -444,9 +526,16 @@ class ScanWorker(Worker):
 
         self.run_loop_dx(dim=len(self._loop_dims))
 
-        if self._manager._simulation_mode:
+        if (self._manager._simulation_mode
+                and not getattr(self._manager._nidaqManager, 'isSimulated', False)):
+            # Legacy explicit detector simulation against a real NI-DAQ manager.
+            # In NI-DAQ simulation mode, ScanSimulationCoordinator owns scan
+            # completion and detector workers must not race it.
             self._manager._nidaqManager.finishExternalMock()
 
+        self.scanning = False
+        if self._manager._scanThread is not None:
+            self._manager._scanThread.quit()
         self.acqDoneSignal.emit()
 
     def run_loop_dx(self, dim):
@@ -525,10 +614,25 @@ class ScanWorker(Worker):
             self.d3Step.emit()
 
     def close(self):
-        try:
-            self._manager._nidaqManager.inputTaskDone(self._name)
-        except Exception as e:
-            self.__logger.warning(f'Failed to close input task: {e}')
+        if not self._manager._simulation_mode:
+            try:
+                self._manager._nidaqManager.inputTaskDone(self._name)
+            except Exception as e:
+                self.__logger.warning(f'Failed to close input task: {e}')
 
     def randomInput(self, datalen):
-        return np.random.randint(100, size=datalen)
+        datalen = int(datalen)
+        if datalen <= 0:
+            return np.empty((0,), dtype=np.float32)
+
+        signal = self._rng.normal(
+            loc=self._manager._mock_voltage_mean,
+            scale=self._manager._mock_voltage_noise_std,
+            size=datalen,
+        )
+        signal = np.clip(
+            signal,
+            self._manager._mock_voltage_min,
+            self._manager._mock_voltage_max,
+        )
+        return (signal + self._manager._offset_v).astype(np.float32, copy=False)

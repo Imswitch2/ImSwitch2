@@ -65,6 +65,20 @@ class TestAPDManagerExplicitCasts:
         np.testing.assert_array_equal(apd._image[0, :5], expected,
                                       err_msg="Float pixels not correctly rounded to uint16")
 
+    def test_updateImage_2D_uint16_clips_out_of_range_values(self, apd_detector_info, mock_nidaq_manager):
+        """Verify non-TTL APD writes clip instead of wrapping uint16 overflows."""
+        apd = APDManager(apd_detector_info, 'APD', mock_nidaq_manager)
+
+        apd._image = np.zeros((100, 100), dtype=np.uint16)
+        apd._APDManager__shape = (100, 100)
+        apd._linestep = 1
+
+        pixels = np.array([-4.0, 1.3, 65534.6, 70000.0], dtype=np.float64)
+        apd.updateImage(pixels, pos=(0,))
+
+        expected = np.array([0, 1, 65535, 65535], dtype=np.uint16)
+        np.testing.assert_array_equal(apd._image[0, :4], expected)
+
     def test_updateImage_2D_float32_preserves_nan(self, apd_detector_info, mock_nidaq_manager):
         """Verify TTL (float32) path preserves NaN markers."""
         apd = APDManager(apd_detector_info, 'APD', mock_nidaq_manager)
