@@ -15,7 +15,7 @@ def getMainViewAndController(moduleCommChannel, *_args,
         import dataclasses
         import sys
         from qtpy import QtWidgets
-        from imswitch.imcontrol.view import PickSetupDialog
+        from imswitch.imcontrol.view.PickSetupDialog import PickSetupDialog
 
         # Let user pick the setup to use
         pickSetupDialog = PickSetupDialog()
