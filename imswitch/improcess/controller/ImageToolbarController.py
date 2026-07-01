@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
+from imswitch.improcess.processors.projection.processor import ProjectionProcessor
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 
 
@@ -23,11 +25,19 @@ class ImageToolbarController:
         mainView.sigImageResetContrastRequested.connect(self.resetContrast)
         mainView.sigImageContrastDialogRequested.connect(self.openContrastDialog)
         mainView.sigImageResetViewRequested.connect(self.resetView)
+        mainView.sigImageDuplicateRequested.connect(self.duplicateResult)
+        mainView.sigImageMaxProjectionRequested.connect(self.maxProjection)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
         self.currentResultChanged(reconstructionController.getActiveResult())
 
     def currentResultChanged(self, result) -> None:
-        self._view.setImageActionsEnabled(self._resultHasImage(result))
+        has_image = self._resultHasImage(result)
+        self._view.setImageActionsEnabled(has_image)
+        if hasattr(self._view, "setImageActionEnabled"):
+            self._view.setImageActionEnabled(
+                "max-projection",
+                has_image and getattr(getattr(result, "data", None), "ndim", 0) > 2,
+            )
 
     def autoContrast(self, saturated_percent: float = 0.35) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -74,6 +84,29 @@ class ImageToolbarController:
             self._view.reconstructionWidget.resetView()
         except Exception:
             self._logger.exception("Could not reset reconstruction view")
+
+    def duplicateResult(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
+            return
+        try:
+            duplicate = ArrayProcessingResult.duplicate(result)
+        except Exception:
+            self._logger.exception("Could not duplicate active result")
+            return
+        self._publishResult(duplicate)
+
+    def maxProjection(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
+            return
+        processor = ProjectionProcessor()
+        try:
+            output = processor.apply(result, {"axis": "Auto", "mode": "max"})
+        except Exception:
+            self._logger.exception("Could not create max projection for active result")
+            return
+        self._publishResult(output)
 
     def _autoFromDialog(self, saturated_percent: float) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -133,6 +166,11 @@ class ImageToolbarController:
 
     def _clearContrastDialog(self) -> None:
         self._contrastDialog = None
+
+    def _publishResult(self, result) -> None:
+        display_name = getattr(result, "name", "") or "Image result"
+        self._commChannel.sigResultProduced.emit(result, display_name)
+        self._commChannel.sigCurrentResultChanged.emit(result)
 
     @staticmethod
     def _resultHasImage(result) -> bool:

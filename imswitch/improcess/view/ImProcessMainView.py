@@ -62,6 +62,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageResetContrastRequested = QtCore.Signal()
     sigImageContrastDialogRequested = QtCore.Signal()
     sigImageResetViewRequested = QtCore.Signal()
+    sigImageDuplicateRequested = QtCore.Signal()
+    sigImageMaxProjectionRequested = QtCore.Signal()
 
     sigClosing = QtCore.Signal()
 
@@ -544,6 +546,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()
         self._addImageAction(
+            'duplicate',
+            'Duplicate',
+            'Duplicate the active result',
+            style.standardIcon(QtWidgets.QStyle.SP_FileDialogNewFolder),
+            self.sigImageDuplicateRequested,
+        )
+        self._addImageAction(
+            'max-projection',
+            'Max projection',
+            'Create a max projection of the active result along the default stack axis',
+            style.standardIcon(QtWidgets.QStyle.SP_ArrowDown),
+            self.sigImageMaxProjectionRequested,
+        )
+        self._imageToolbar.addSeparator()
+        self._imageMenu.addSeparator()
+        self._addImageAction(
             'reset-view',
             'Reset view',
             'Reset the reconstruction viewer camera',
@@ -574,6 +592,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def setImageActionsEnabled(self, enabled: bool) -> None:
         for action in self._imageActions.values():
+            action.setEnabled(bool(enabled))
+
+    def setImageActionEnabled(self, action_id: str, enabled: bool) -> None:
+        action = self._imageActions.get(action_id)
+        if action is not None:
             action.setEnabled(bool(enabled))
 
     def imageAction(self, action_id: str) -> QtWidgets.QAction | None:

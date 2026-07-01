@@ -96,13 +96,17 @@ the active reconstructor.  The first implemented tools are:
   and maximum controls, sliders, saturated-pixel auto contrast and whole-stack
   versus current-view histogram scope.
 * *Reset contrast* — reset the active layer to the finite data range.
+* *Duplicate* — create a new array-backed result from the active result.
+* *Max projection* — create a max projection using the projection processor's
+  default stack-axis choice.
 * *Reset view* — restore the reconstruction viewer camera.
 
-These operations are display-only: they update the Napari image layer and the
-active :py:class:`~imswitch.improcess.model.result.ProcessingResult` display
-levels, but do not alter pixel data.  Data-changing Fiji-like commands such as
-duplicate, split stack, split channels, make composite and make RGB are planned
-as processor-backed toolbar actions.
+The contrast operations are display-only: they update the Napari image layer
+and the active :py:class:`~imswitch.improcess.model.result.ProcessingResult`
+display levels, but do not alter pixel data.  Duplicate and max projection
+publish new ``ProcessingResult`` objects into the reconstruction list. More
+Fiji-like data-changing commands such as split stack, split channels, make
+composite and make RGB are planned as processor-backed toolbar actions.
 
 Built-in plugins
 ----------------

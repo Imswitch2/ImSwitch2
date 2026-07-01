@@ -1,5 +1,6 @@
 from .DataObj import DataObj
 from .Denoiser import Denoiser
+from .array_result import ArrayProcessingResult
 from .result import (
     DisplayLayerProcessingResult,
     DisplayLayerSpec,

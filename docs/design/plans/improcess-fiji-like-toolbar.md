@@ -1,7 +1,7 @@
 # ImProcess Fiji-like Image Toolbar
 
-**Status:** Implementation in progress — toolbar shell and display-only
-brightness/contrast first slice landed
+**Status:** Implementation in progress — toolbar shell, brightness/contrast,
+duplicate and max-projection slices landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -314,7 +314,8 @@ Regression tests:
 3. Persist display levels through `ProcessingResult.display_levels` and verify
    reconstruction-list switching. **Implemented for the active image layer.**
 4. Add projection and duplicate actions by reusing existing result/processor
-   contracts.
+   contracts. **Implemented for whole-result duplicate and one-click max
+   projection.**
 5. Add stack subset/split processors and wire toolbar dialogs.
 6. Add channel split/merge/composite/RGB processors.
 7. Promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
@@ -346,12 +347,14 @@ Current scope:
 - display-only Auto contrast;
 - display-only Reset contrast;
 - modeless Brightness/Contrast dialog;
+- Duplicate active result;
+- one-click Max projection using the existing projection processor's default
+  stack-axis selection;
 - Reset view action;
 - action enablement from the active result.
 
 Next implementation slice:
 
-- add `duplicate` and `projection` toolbar actions;
 - introduce the processor output shape for commands that naturally emit several
   results, starting with `stack-split` and `channel-split`;
 - add channel/LUT state that persists per display layer instead of only the
