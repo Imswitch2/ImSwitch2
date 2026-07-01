@@ -10,6 +10,11 @@ from imswitch.imcontrol.model.managers.RecordingManager import RECORDING_ARM_TIM
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
 
+# Poll interval used to wait out a still-finalizing recording before starting
+# the next timelapse timepoint (see nextLapse). Small so a Freq=0 lapse advances
+# as soon as the previous recording clears, without busy-spinning the GUI thread.
+_LAPSE_RECORDING_DRAIN_RETRY_MS = 25
+
 
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to RecordingWidget. """
@@ -259,6 +264,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
     def nextLapse(self):
         if self.stopRequested or not self._widget.isRecButtonChecked():
             self.recordingCycleEnded()
+            return
+
+        # ScanLapse advances the cycle off sigScanDone (it suppresses
+        # sigRecordingEnded), and sigScanDone can arrive before the recording
+        # worker drains and clears the recording flag. Starting the next
+        # timepoint's recording now would hit RecordingManager's "Cannot start a
+        # new recording while one is active" guard, whose exception escapes this
+        # timer callback and wedges the widget. With Freq=0 the lapse timer fires
+        # immediately, so this is the common case, not an edge one. Wait out the
+        # previous recording with a short retry instead of a fixed frequency gap.
+        if self._master.recordingManager.record:
+            self.timer = Timer(singleShot=True)
+            self.timer.timeout.connect(self.nextLapse)
+            self.timer.start(_LAPSE_RECORDING_DRAIN_RETRY_MS)
             return
 
         self.endedRecording = False

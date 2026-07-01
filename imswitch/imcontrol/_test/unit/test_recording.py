@@ -178,6 +178,84 @@ def test_recording_emits_recording_ended(qtbot, recMode, kwargs):
     assert not recordingManager.record, "Recording should have stopped on its own"
 
 
+def test_next_lapse_defers_start_while_previous_recording_active(monkeypatch):
+    """A ScanLapse timepoint must not startRecording while the previous one is
+    still finalizing.
+
+    Regression: ScanLapse drives its cycle off sigScanDone and suppresses
+    sigRecordingEnded, so sigScanDone can advance the lapse before the recording
+    worker clears the record flag. With Freq=0 the lapse timer fires
+    immediately, startRecording hits its "a recording is already active" guard,
+    and the raised error escaped the timer callback and wedged the widget.
+    nextLapse must instead re-arm a short retry until the recording drains.
+    """
+    import types
+
+    import imswitch.imcontrol.controller.controllers.RecordingController as rc_mod
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+        _LAPSE_RECORDING_DRAIN_RETRY_MS,
+    )
+
+    class _FakeSignal:
+        def __init__(self):
+            self.cb = None
+
+        def connect(self, cb):
+            self.cb = cb
+
+    class _FakeTimer:
+        created = []
+
+        def __init__(self, singleShot=False):
+            self.singleShot = singleShot
+            self.timeout = _FakeSignal()
+            self.started_ms = None
+            _FakeTimer.created.append(self)
+
+        def start(self, ms):
+            self.started_ms = ms
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(rc_mod, "Timer", _FakeTimer)
+
+    class _FakeRecMgr:
+        def __init__(self):
+            self._record = True
+            self.start_calls = 0
+
+        @property
+        def record(self):
+            return self._record
+
+        def startRecording(self, **kwargs):
+            self.start_calls += 1
+
+    # RecordingController is a QObject subclass, so it can't be built with
+    # object.__new__; nextLapse's deferral path only reads a few attributes, so
+    # drive it via a duck-typed self with the method bound onto it (it re-arms
+    # the retry timer onto self.nextLapse).
+    recMgr = _FakeRecMgr()
+    ctrl = types.SimpleNamespace(
+        stopRequested=False,
+        timer=None,
+        _widget=type("W", (), {"isRecButtonChecked": lambda self: True})(),
+        _master=type("M", (), {"recordingManager": recMgr})(),
+    )
+    ctrl.nextLapse = types.MethodType(RecordingController.nextLapse, ctrl)
+
+    ctrl.nextLapse()
+
+    # Deferred: no recording started, a retry timer re-armed onto nextLapse.
+    assert recMgr.start_calls == 0
+    assert len(_FakeTimer.created) == 1
+    timer = _FakeTimer.created[0]
+    assert timer.started_ms == _LAPSE_RECORDING_DRAIN_RETRY_MS
+    assert timer.timeout.cb == ctrl.nextLapse
+
+
 def test_recording_dtype_preservation(qtbot):
     """HDF5 datasets must derive their dtype from the detector frames.
 
