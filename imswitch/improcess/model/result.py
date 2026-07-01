@@ -32,6 +32,7 @@ class DisplayLayerSpec:
     axis_scales: list[float] | None = None
     scale_unit: str = "px"
     colormap: str = "grayclip"
+    rgb: bool = False
     metadata: dict[str, Any] | None = None
 
 

@@ -170,6 +170,10 @@ class ReconstructionView(QtWidgets.QFrame):
             item = self.reconList.item(i)
             yield item.text(), item.data(1)
 
+    def getSelectedItemDatas(self):
+        for item in self.reconList.selectedItems():
+            yield item.text(), item.data(1)
+
     def getViewName(self):
         return self.chooseViewGroup.checkedButton().viewName
 
@@ -257,6 +261,10 @@ class ReconstructionView(QtWidgets.QFrame):
                 new_ndim = data.ndim
                 layer.name = spec.name
                 layer.colormap = spec.colormap
+                try:
+                    layer.rgb = bool(spec.rgb)
+                except Exception:
+                    pass
                 self._patchLayerForNdimChange(
                     layer, old_ndim, new_ndim, "setDisplayLayers"
                 )
@@ -267,7 +275,7 @@ class ReconstructionView(QtWidgets.QFrame):
             else:
                 layer = self.napariViewer.add_image(
                     data,
-                    rgb=False,
+                    rgb=bool(spec.rgb),
                     name=spec.name,
                     colormap=spec.colormap,
                     scale=tuple(axisScales),

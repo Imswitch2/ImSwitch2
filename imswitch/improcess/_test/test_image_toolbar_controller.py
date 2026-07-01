@@ -43,7 +43,9 @@ class _View:
         self.sigImageMaxProjectionRequested = _Signal()
         self.sigImageSplitStackRequested = _Signal()
         self.sigImageSplitChannelsRequested = _Signal()
+        self.sigImageMergeChannelsRequested = _Signal()
         self.sigImageMakeCompositeRequested = _Signal()
+        self.sigImageMakeRgbRequested = _Signal()
         self.enabled_states = []
         self.action_enabled = {}
         self.lut_enabled = []
@@ -87,12 +89,19 @@ class _Result:
 class _ReconstructionController:
     def __init__(self, data):
         self.result = _Result(data) if data is not None else None
+        self.selected_results = [self.result] if self.result is not None else []
         self.levels = None
         self.level_range = None
         self.colormap = "grayclip"
 
     def getActiveResult(self):
         return self.result
+
+    def getSelectedResults(self):
+        return [
+            (getattr(result, "name", f"result_{index}"), result)
+            for index, result in enumerate(self.selected_results)
+        ]
 
     def getActiveImage(self):
         return self.result.data
@@ -152,7 +161,9 @@ def test_projection_action_disabled_for_2d_images():
     assert view_3d.action_enabled["crop-substack"] is True
     assert view_3d.action_enabled["split-stack"] is True
     assert view_3d.action_enabled["split-channels"] is False
+    assert view_3d.action_enabled["merge-channels"] is False
     assert view_3d.action_enabled["make-composite"] is False
+    assert view_3d.action_enabled["make-rgb"] is False
 
 
 def test_auto_contrast_sets_display_levels_and_result_metadata():
@@ -318,3 +329,39 @@ def test_make_composite_enabled_and_publishes_composite_result():
     layers = composite.display_layers()
     assert composite.name == "source (composite)"
     assert [layer.colormap for layer in layers] == ["red", "green", "blue"]
+
+
+def test_make_rgb_enabled_and_publishes_rgb_result():
+    data = np.arange(3 * 2 * 2, dtype=np.float32).reshape(3, 2, 2)
+    controller, view, recon = _controller(data)
+    recon.result.axis_labels = ["C", "Y", "X"]
+    controller.currentResultChanged(recon.result)
+
+    assert view.action_enabled["make-rgb"] is True
+    controller.makeRgb()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 1
+    rgb = produced[0][0]
+    assert rgb.name == "source (RGB)"
+    assert rgb.data.shape == (2, 2, 3)
+    assert rgb.display_layers()[0].rgb is True
+
+
+def test_merge_channels_enabled_for_selected_compatible_results_and_publishes_stack():
+    data = np.arange(2 * 2, dtype=np.float32).reshape(2, 2)
+    controller, view, recon = _controller(data)
+    second = _Result(data + 10)
+    second.name = "second"
+    recon.selected_results = [recon.result, second]
+    controller.currentResultChanged(recon.result)
+
+    assert view.action_enabled["merge-channels"] is True
+    controller.mergeChannels()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 1
+    merged = produced[0][0]
+    assert merged.name == "Merged channels"
+    assert merged.axis_labels == ["C", "Y", "X"]
+    np.testing.assert_array_equal(merged.data[1], second.data)

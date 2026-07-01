@@ -110,19 +110,21 @@ the active reconstructor.  The first implemented tools are:
   selected stack axis.
 * *Split channels* — split a ``C``, ``Channel`` or ``Base`` axis into one
   result per channel.
+* *Merge channels* — merge selected compatible grayscale results into a new
+  ``C``-axis channel stack.
 * *Make composite* — create a composite result that renders a channel-like axis
   as independently-scaled colored display layers.
+* *Make RGB* — bake a channel-like axis into a channel-last RGB visualization
+  result for display/export.
 * *Reset view* — restore the reconstruction viewer camera.
 
 The contrast and LUT operations are display-only: they update the Napari image layer
 and the active :py:class:`~imswitch.improcess.model.result.ProcessingResult`
 display settings, including per-display-layer settings for composite outputs,
-but do not alter pixel data.  Duplicate, crop/substack, max projection and make
-composite publish new ``ProcessingResult`` objects into the reconstruction list.
-Split stack and split channels publish multiple ``ProcessingResult`` objects
-and make the final split result current. More Fiji-like data-changing commands
-such as make RGB and channel merge are planned as processor-backed toolbar
-actions.
+but do not alter pixel data.  Duplicate, crop/substack, max projection, merge
+channels, make composite and make RGB publish new ``ProcessingResult`` objects
+into the reconstruction list. Split stack and split channels publish multiple
+``ProcessingResult`` objects and make the final split result current.
 
 Built-in plugins
 ----------------
@@ -140,7 +142,9 @@ projection              Processor      Generic max/mean/sum/median/std axis proj
 stack-subset            Processor      Crop/substack by labeled axis ranges
 stack-split             Processor      Split a stack axis into one result per plane
 channel-split           Processor      Split a channel-like C/Channel/Base axis into one result per channel
+channel-merge           Processor      Merge compatible grayscale results into a C-axis channel stack
 make-composite          Processor      Render a channel-like axis as colored display layers
+make-rgb                Processor      Bake a channel-like axis into channel-last RGB visualization data
 segmentation            Processor      Threshold + connected-component labels and ROI export
 psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
@@ -557,9 +561,10 @@ Done:
   checkerboard / odd-even splitting, 1/7 threshold and resolution estimates
 * ``projection`` processor and optional projection panel: max, mean, sum,
   median and standard-deviation projections along selected axes
-* ``stack-subset``, ``stack-split``, ``channel-split`` and ``make-composite``
-  processors plus image-toolbar actions: one source result can emit cropped
-  substacks, multiple per-plane/per-channel results, or composite display-layer
+* ``stack-subset``, ``stack-split``, ``channel-split``, ``channel-merge``,
+  ``make-composite`` and ``make-rgb`` processors plus image-toolbar actions:
+  one source result can emit cropped substacks, multiple per-plane/per-channel
+  results, composite display-layer results, or explicit RGB visualization
   results through the shared processor contracts
 * ``segmentation`` processor and optional segmentation panel: manual/Otsu
   thresholding, connected components, label-layer display and ROI Manager

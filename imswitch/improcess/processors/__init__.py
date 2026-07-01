@@ -6,12 +6,14 @@ in the global registry alongside reconstructors.
 """
 
 from .base import Processor
+from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
 from .colocalization import ColocalizationProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
 from .frc import FRCProcessor
 from .make_composite import MakeCompositeProcessor
+from .make_rgb import MakeRGBProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
@@ -22,11 +24,13 @@ from .stack_subset import StackSubsetProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
+    'channel-merge': ChannelMergeProcessor,
     'channel-split': ChannelSplitProcessor,
     'colocalization': ColocalizationProcessor,
     'drift-correct': DriftCorrectProcessor,
     'frc': FRCProcessor,
     'make-composite': MakeCompositeProcessor,
+    'make-rgb': MakeRGBProcessor,
     'multicolor-apply': MulticolorApplyProcessor,
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
@@ -89,11 +93,13 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 
 __all__ = [
     "Processor",
+    "ChannelMergeProcessor",
     "ChannelSplitProcessor",
     "ColocalizationProcessor",
     "DriftCorrectProcessor",
     "FRCProcessor",
     "MakeCompositeProcessor",
+    "MakeRGBProcessor",
     "MulticolorApplyProcessor",
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",

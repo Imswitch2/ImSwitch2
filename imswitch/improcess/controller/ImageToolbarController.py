@@ -8,8 +8,13 @@ from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
 from imswitch.improcess.processors.base import normalize_processor_output
+from imswitch.improcess.processors.channel_merge import (
+    ChannelMergeProcessor,
+    can_merge_results,
+)
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.make_composite import MakeCompositeProcessor
+from imswitch.improcess.processors.make_rgb import MakeRGBProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
 from imswitch.improcess.processors.stack_split import StackSplitProcessor
 from imswitch.improcess.processors.stack_subset import StackSubsetProcessor
@@ -37,7 +42,9 @@ class ImageToolbarController:
         mainView.sigImageMaxProjectionRequested.connect(self.maxProjection)
         mainView.sigImageSplitStackRequested.connect(self.splitStack)
         mainView.sigImageSplitChannelsRequested.connect(self.splitChannels)
+        mainView.sigImageMergeChannelsRequested.connect(self.mergeChannels)
         mainView.sigImageMakeCompositeRequested.connect(self.makeComposite)
+        mainView.sigImageMakeRgbRequested.connect(self.makeRgb)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
         self.currentResultChanged(reconstructionController.getActiveResult())
 
@@ -62,8 +69,16 @@ class ImageToolbarController:
                 has_image and ChannelSplitProcessor().applies_to(result),
             )
             self._view.setImageActionEnabled(
+                "merge-channels",
+                has_image and self._canMergeSelectedResults(),
+            )
+            self._view.setImageActionEnabled(
                 "make-composite",
                 has_image and MakeCompositeProcessor().applies_to(result),
+            )
+            self._view.setImageActionEnabled(
+                "make-rgb",
+                has_image and MakeRGBProcessor().applies_to(result),
             )
         if hasattr(self._view, "setImageLutEnabled"):
             self._view.setImageLutEnabled(has_image)
@@ -171,11 +186,32 @@ class ImageToolbarController:
             return
         self._runProcessor(ChannelSplitProcessor(), result, {"axis": "Auto"})
 
+    def mergeChannels(self) -> None:
+        selected = self._selectedProcessingResults()
+        if len(selected) < 2:
+            return
+        try:
+            output = ChannelMergeProcessor().apply(
+                selected[0],
+                {"results": selected, "name": "Merged channels"},
+            )
+            results = normalize_processor_output(output)
+        except Exception:
+            self._logger.exception("Could not merge selected channel results")
+            return
+        self._publishResults(results)
+
     def makeComposite(self) -> None:
         result = self._reconstructionController.getActiveResult()
         if not self._resultHasImage(result):
             return
         self._runProcessor(MakeCompositeProcessor(), result, {"axis": "Auto"})
+
+    def makeRgb(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
+            return
+        self._runProcessor(MakeRGBProcessor(), result, {"axis": "Auto"})
 
     def _runProcessor(self, processor, result, params: dict) -> None:
         try:
@@ -264,6 +300,20 @@ class ImageToolbarController:
     def _resultHasImage(result) -> bool:
         data = getattr(result, "data", None)
         return data is not None and getattr(data, "ndim", 0) >= 2
+
+    def _selectedProcessingResults(self):
+        if hasattr(self._reconstructionController, "getSelectedResults"):
+            selected = [
+                result for _name, result in self._reconstructionController.getSelectedResults()
+                if self._resultHasImage(result)
+            ]
+            if selected:
+                return selected
+        active = self._reconstructionController.getActiveResult()
+        return [active] if self._resultHasImage(active) else []
+
+    def _canMergeSelectedResults(self) -> bool:
+        return can_merge_results(self._selectedProcessingResults())
 
 
 __all__ = ["ImageToolbarController"]

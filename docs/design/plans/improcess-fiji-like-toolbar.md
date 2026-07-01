@@ -2,7 +2,7 @@
 
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
 duplicate, crop/substack, max-projection, split-stack and split-channel slices
-landed; LUT persistence and make-composite landed
+landed; LUT persistence, channel-merge, make-composite and make-RGB landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -319,8 +319,7 @@ Regression tests:
    projection.**
 5. Add stack subset/split processors and wire toolbar dialogs. **Implemented
    for crop/substack range selection and one-click split stack.**
-6. Add channel split/merge/composite/RGB processors. **Implemented for
-   channel split and make composite; merge/RGB remain pending.**
+6. Add channel split/merge/composite/RGB processors. **Implemented.**
 7. Promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
    PSF, colocalization, and multicolor.
 8. Add menus mirroring the toolbar categories so keyboard users can discover
@@ -350,6 +349,9 @@ Implemented files:
 - `ProcessingResult` display settings and `processors/make_composite` —
   persistent LUT/contrast settings for display layers and composite channel
   rendering.
+- `processors/channel_merge` and `processors/make_rgb` — merge selected
+  compatible grayscale results into channel stacks and bake channel-like axes
+  into RGB visualization/export results.
 - `ImProcessMainView` — persistent Image menu and image toolbar.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
@@ -367,13 +369,17 @@ Current scope:
 - one-click Split stack using `stack-split`, publishing one result per plane;
 - one-click Split channels using `channel-split`, publishing one result per
   C/Channel/Base plane;
+- Merge channels using `channel-merge`, publishing one C-axis stack from
+  selected compatible results;
 - Make composite using `make-composite`, rendering channel-like axes as colored
   display layers without baking an RGB image;
+- Make RGB using `make-rgb`, publishing a channel-last RGB visualization result;
 - Reset view action;
 - action enablement from the active result.
 
 Next implementation slice:
 
-- add channel merge and make RGB processors and toolbar actions;
 - add richer channel selector controls for composite layers, including channel
   visibility and per-channel LUT presets.
+- promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
+  PSF, colocalization and multicolor.

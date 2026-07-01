@@ -82,7 +82,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageMaxProjectionRequested = QtCore.Signal()
     sigImageSplitStackRequested = QtCore.Signal()
     sigImageSplitChannelsRequested = QtCore.Signal()
+    sigImageMergeChannelsRequested = QtCore.Signal()
     sigImageMakeCompositeRequested = QtCore.Signal()
+    sigImageMakeRgbRequested = QtCore.Signal()
 
     sigClosing = QtCore.Signal()
 
@@ -602,11 +604,25 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.sigImageSplitChannelsRequested,
         )
         self._addImageAction(
+            'merge-channels',
+            'Merge channels',
+            'Merge selected compatible results into a C-axis channel stack',
+            style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton),
+            self.sigImageMergeChannelsRequested,
+        )
+        self._addImageAction(
             'make-composite',
             'Make composite',
             'Render a C, Channel or Base axis as colored display layers',
             style.standardIcon(QtWidgets.QStyle.SP_FileDialogContentsView),
             self.sigImageMakeCompositeRequested,
+        )
+        self._addImageAction(
+            'make-rgb',
+            'Make RGB',
+            'Bake a C, Channel or Base axis into an RGB visualization result',
+            style.standardIcon(QtWidgets.QStyle.SP_DriveHDIcon),
+            self.sigImageMakeRgbRequested,
         )
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()

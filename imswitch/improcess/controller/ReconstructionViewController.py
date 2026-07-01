@@ -33,6 +33,14 @@ class ReconstructionViewController(ImProcessWidgetController):
     def getAllResults(self):
         return self._widget.getAllItemDatas()
 
+    def getSelectedResults(self):
+        if hasattr(self._widget, "getSelectedItemDatas"):
+            return list(self._widget.getSelectedItemDatas())
+        current = self.getActiveResult()
+        if current is None:
+            return []
+        return [(getattr(current, "name", "result"), current)]
+
     def listItemChanged(self):
         if self._currItemInd is not None:
             prevItem = self._widget.getDataAtIndex(self._currItemInd)
