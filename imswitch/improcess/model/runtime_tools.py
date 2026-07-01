@@ -1,0 +1,122 @@
+"""Runtime analysis tool descriptors for ImProcess."""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RuntimeAnalysisToolSpec:
+    """UI/runtime descriptor for a loadable analysis tool."""
+
+    id: str
+    title: str
+    attribute: str
+    widget_kind: str
+    processor_id: str | None = None
+
+
+_PROCESSOR_WIDGET_SPECS = {
+    "drift-correct": (
+        "Drift correction",
+        "driftCorrectProcessorWidget",
+        "result-processor",
+    ),
+    "denoise": ("Denoise", "denoiseProcessorWidget", "result-processor"),
+    "projection": ("Projection", "projectionWidget", "projection"),
+    "segmentation": ("Segmentation", "segmentationWidget", "segmentation"),
+    "psf-resolution": ("PSF resolution", "psfResolutionWidget", "psf-resolution"),
+    "colocalization": ("Colocalization", "colocalizationWidget", "colocalization"),
+    "frc": ("FRC", "frcWidget", "frc"),
+    "multicolor-registration": ("Multicolor", "multicolorWidget", "multicolor"),
+    "multicolor-apply": ("Multicolor", "multicolorWidget", "multicolor"),
+}
+
+_NON_PROCESSOR_TOOL_SPECS = {
+    "roi-manager": RuntimeAnalysisToolSpec(
+        id="roi-manager",
+        title="ROI manager",
+        attribute="roiManagerWidget",
+        widget_kind="roi-manager",
+        processor_id=None,
+    ),
+}
+
+
+def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
+    """Return all built-in runtime-loadable analysis tool descriptors."""
+    from imswitch.improcess.processors import available_processor_choices
+
+    specs: dict[str, RuntimeAnalysisToolSpec] = {}
+    for processor_id, processor_name in available_processor_choices():
+        title, attribute, widget_kind = _PROCESSOR_WIDGET_SPECS.get(
+            processor_id,
+            (
+                str(processor_name or processor_id),
+                _generic_processor_attribute(processor_id),
+                "result-processor",
+            ),
+        )
+        specs[processor_id] = RuntimeAnalysisToolSpec(
+            id=processor_id,
+            title=title,
+            attribute=attribute,
+            widget_kind=widget_kind,
+            processor_id=processor_id,
+        )
+    specs.update(_NON_PROCESSOR_TOOL_SPECS)
+    return specs
+
+
+def runtime_analysis_tool_choices() -> list[tuple[str, str]]:
+    """Return ``(tool_id, title)`` choices for the runtime-loader combo."""
+    return [
+        (spec.id, spec.title)
+        for spec in sorted(
+            runtime_analysis_tool_specs().values(),
+            key=lambda item: item.id,
+        )
+    ]
+
+
+def runtime_result_processor_ids() -> list[str]:
+    """Return runtime tool ids backed by the generic ResultProcessorWidget."""
+    return [
+        spec.id
+        for spec in sorted(
+            runtime_analysis_tool_specs().values(),
+            key=lambda item: item.id,
+        )
+        if spec.widget_kind == "result-processor" and spec.processor_id is not None
+    ]
+
+
+def _generic_processor_attribute(processor_id: str) -> str:
+    normalized = "".join(
+        char if char.isalnum() else "_"
+        for char in processor_id
+    )
+    return f"runtimeProcessorWidget_{normalized}"
+
+
+__all__ = [
+    "RuntimeAnalysisToolSpec",
+    "runtime_analysis_tool_choices",
+    "runtime_analysis_tool_specs",
+    "runtime_result_processor_ids",
+]
+
+
+# Copyright (C) 2020-2026 ImSwitch developers
+# This file is part of ImSwitch.
+#
+# ImSwitch is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ImSwitch is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

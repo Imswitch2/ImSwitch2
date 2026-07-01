@@ -14,7 +14,14 @@ from imswitch.improcess.model.result import ProcessingResult
 class SegmentationResult(ProcessingResult):
     """Result wrapper for segmentation label images."""
 
-    def __init__(self, name: str, analysis: SegmentationAnalysis, params: dict | None = None):
+    def __init__(
+        self,
+        name: str,
+        analysis: SegmentationAnalysis,
+        params: dict | None = None,
+        axis_scales: list[float] | None = None,
+        scale_unit: str = "px",
+    ):
         self.analysis = analysis
         self.params = params or {}
         super().__init__(
@@ -22,6 +29,8 @@ class SegmentationResult(ProcessingResult):
             data=analysis.labels.astype(np.int32),
             axis_labels=["Y", "X"],
             display_levels=(0.0, float(max(1, len(analysis.regions)))),
+            axis_scales=axis_scales,
+            scale_unit=scale_unit,
         )
 
     def save(self, path: Path, fmt: str = "hdf5") -> None:
@@ -65,6 +74,8 @@ class SegmentationResult(ProcessingResult):
                 )
                 h5.attrs["threshold"] = self.analysis.threshold
                 h5.attrs["region_count"] = len(self.analysis.regions)
+                h5.attrs["axis_scales"] = np.asarray(self.axis_scales, dtype=float)
+                h5.attrs["scale_unit"] = self.scale_unit
                 for key, value in self.analysis.metadata.items():
                     if isinstance(value, (str, int, float, bool)):
                         h5.attrs[key] = value

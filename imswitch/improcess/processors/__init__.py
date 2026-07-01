@@ -65,10 +65,15 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
     if filter_ids is None:
         to_register = _AVAILABLE_PROCESSOR_CLASSES.items()
     else:
+        unknown = [pid for pid in filter_ids if pid not in _AVAILABLE_PROCESSOR_CLASSES]
+        if unknown:
+            raise KeyError(
+                f"Unknown built-in processor id(s): {unknown}. "
+                f"Available processors: {available_processor_ids()}"
+            )
         to_register = [
-            (pid, cls)
-            for pid, cls in _AVAILABLE_PROCESSOR_CLASSES.items()
-            if pid in filter_ids
+            (pid, _AVAILABLE_PROCESSOR_CLASSES[pid])
+            for pid in filter_ids
         ]
     for _pid, plugin_cls in to_register:
         registry.register_processor(plugin_cls())

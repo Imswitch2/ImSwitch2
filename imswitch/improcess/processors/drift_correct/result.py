@@ -43,7 +43,11 @@ class DriftCorrectedResult(ProcessingResult):
                 self.data.astype(np.float32),
                 imagej=True,
                 resolution=(1, 1),
-                metadata={'spacing': 1, 'unit': 'px', 'axes': ''.join(self.axis_labels)}
+                metadata={
+                    'spacing': 1,
+                    'unit': self.scale_unit,
+                    'axes': ''.join(self.axis_labels),
+                },
             )
             
             # Save drift vectors to companion file
@@ -56,6 +60,8 @@ class DriftCorrectedResult(ProcessingResult):
                 f.create_dataset('data', data=self.data)
                 f.create_dataset('drift_xy', data=self.drift_xy)
                 f.attrs['axis_labels'] = ','.join(self.axis_labels)
+                f.attrs['axis_scales'] = np.asarray(self.axis_scales, dtype=float)
+                f.attrs['scale_unit'] = self.scale_unit
                 f.attrs['name'] = self.name
         
         elif fmt.lower() == 'zarr':
@@ -64,6 +70,8 @@ class DriftCorrectedResult(ProcessingResult):
             root.create_dataset('data', data=self.data)
             root.create_dataset('drift_xy', data=self.drift_xy)
             root.attrs['axis_labels'] = ','.join(self.axis_labels)
+            root.attrs['axis_scales'] = np.asarray(self.axis_scales, dtype=float).tolist()
+            root.attrs['scale_unit'] = self.scale_unit
             root.attrs['name'] = self.name
         
         else:

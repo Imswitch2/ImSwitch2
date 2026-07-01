@@ -6,6 +6,7 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
+from imswitch.improcess.model.runtime_tools import RuntimeAnalysisToolSpec
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
     DEFAULT_FOOTPRINT_NUM_RECTS,
     DEFAULT_GAUSSIAN_SIGMA_PX,
@@ -431,17 +432,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 f'No runtime analysis widget registered for id {processor_id!r}'
             )
             return None
-        title, factory = spec
+        title = spec.title
         dock = self.docks.get(title)
         if dock is not None:
             dock.show()
             self._safeRaiseDock(dock)
-            if processor_id == 'roi-manager':
+            if spec.widget_kind == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
             return title
 
         try:
+            factory = self._runtimeAnalysisToolFactory(spec)
             widget = factory()
         except Exception:
             self._logger.exception(
@@ -467,9 +469,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             # never go through this path and therefore stay out of the
             # persisted set.
             self._runtimeAnalysisToolIds.add(processor_id)
-            attr_name = self._runtimeAnalysisToolAttributes()[processor_id]
-            setattr(self, attr_name, widget)
-            if processor_id == 'roi-manager':
+            setattr(self, spec.attribute, widget)
+            if spec.widget_kind == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
             self._addDockVisibilityAction(title, dock)
             dock.show()
@@ -561,69 +562,48 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         spec = self._runtimeAnalysisToolSpecs().get(tool_id)
         if spec is None:
             return True
-        title, _factory = spec
-        return title in self.docks
+        return spec.title in self.docks
 
     def _runtimeAnalysisToolSpecs(self):
-        return {
-            'drift-correct': (
-                'Drift correction',
-                lambda: self._makeResultProcessorWidget('drift-correct'),
-            ),
-            'denoise': (
-                'Denoise',
-                lambda: self._makeResultProcessorWidget('denoise'),
-            ),
-            'projection': ('Projection', lambda: ProjectionWidget(self.reconstructionWidget.napariViewer)),
-            'segmentation': (
-                'Segmentation',
-                lambda: SegmentationWidget(
-                    self.reconstructionWidget.napariViewer,
-                    roiManagerWidget=self.roiManagerWidget,
-                ),
-            ),
-            'psf-resolution': (
-                'PSF resolution',
-                lambda: PSFResolutionWidget(
-                    self.reconstructionWidget.napariViewer,
-                    roiManagerWidget=self.roiManagerWidget,
-                ),
-            ),
-            'colocalization': (
-                'Colocalization',
-                lambda: ColocalizationWidget(
-                    self.reconstructionWidget.napariViewer,
-                    roiManagerWidget=self.roiManagerWidget,
-                ),
-            ),
-            'frc': ('FRC', lambda: FRCWidget(self.reconstructionWidget.napariViewer)),
-            'multicolor-registration': (
-                'Multicolor',
-                lambda: MulticolorWidget(self.reconstructionWidget.napariViewer),
-            ),
-            'multicolor-apply': (
-                'Multicolor',
-                lambda: MulticolorWidget(self.reconstructionWidget.napariViewer),
-            ),
-            'roi-manager': (
-                'ROI manager',
-                lambda: ROIManagerWidget(self.reconstructionWidget.napariViewer),
-            ),
-        }
+        from imswitch.improcess.model.runtime_tools import runtime_analysis_tool_specs
+
+        return runtime_analysis_tool_specs()
 
     def _runtimeAnalysisToolAttributes(self):
         return {
-            'drift-correct': 'driftCorrectProcessorWidget',
-            'denoise': 'denoiseProcessorWidget',
-            'projection': 'projectionWidget',
-            'segmentation': 'segmentationWidget',
-            'psf-resolution': 'psfResolutionWidget',
-            'colocalization': 'colocalizationWidget',
-            'frc': 'frcWidget',
-            'multicolor-registration': 'multicolorWidget',
-            'multicolor-apply': 'multicolorWidget',
-            'roi-manager': 'roiManagerWidget',
+            tool_id: spec.attribute
+            for tool_id, spec in self._runtimeAnalysisToolSpecs().items()
         }
+
+    def _runtimeAnalysisToolFactory(self, spec: RuntimeAnalysisToolSpec):
+        viewer = self.reconstructionWidget.napariViewer
+        factories = {
+            'result-processor': lambda: self._makeResultProcessorWidget(
+                spec.processor_id or spec.id
+            ),
+            'projection': lambda: ProjectionWidget(viewer),
+            'segmentation': lambda: SegmentationWidget(
+                viewer,
+                roiManagerWidget=self.roiManagerWidget,
+            ),
+            'psf-resolution': lambda: PSFResolutionWidget(
+                viewer,
+                roiManagerWidget=self.roiManagerWidget,
+            ),
+            'colocalization': lambda: ColocalizationWidget(
+                viewer,
+                roiManagerWidget=self.roiManagerWidget,
+            ),
+            'frc': lambda: FRCWidget(viewer),
+            'multicolor': lambda: MulticolorWidget(viewer),
+            'roi-manager': lambda: ROIManagerWidget(viewer),
+        }
+        try:
+            return factories[spec.widget_kind]
+        except KeyError as exc:
+            raise KeyError(
+                f"Unknown runtime analysis widget kind: {spec.widget_kind!r}"
+            ) from exc
 
     def _makeResultProcessorWidget(self, processor_id: str):
         from imswitch.improcess.reconstructors.registry import get_registry
@@ -845,7 +825,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         return sorted(
             tool_id
             for tool_id in self._runtimeAnalysisToolIds
-            if tool_id in specs and specs[tool_id][0] in self.docks
+            if tool_id in specs and specs[tool_id].title in self.docks
         )
 
     def resetLayout(self) -> None:

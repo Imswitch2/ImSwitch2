@@ -187,6 +187,7 @@ class LiveReconstructionController(QtCore.QObject):
         self._process_worker.moveToThread(self._process_thread)
         self._process_worker.sigResultUpdated.connect(self._on_result_updated)
         self._process_worker.sigStackFinished.connect(self._on_stack_finished)
+        self._process_worker.sigFailed.connect(self._on_process_failed)
 
         self._stream_thread = QtCore.QThread()
         self._stream_worker = LiveStreamWorker(
@@ -240,6 +241,12 @@ class LiveReconstructionController(QtCore.QObject):
     def _on_stream_failed(self, message: str) -> None:
         """Startup ultimately failed (store never became readable)."""
         self._logger.warning(f"Live stream did not start: {message}")
+        self._finish_without_result()
+
+    @QtCore.Slot(str)
+    def _on_process_failed(self, message: str) -> None:
+        """Streaming session processing/finalization failed."""
+        self._logger.warning(f"Live stream processing failed: {message}")
         self._finish_without_result()
 
     def _finish_without_result(self) -> None:

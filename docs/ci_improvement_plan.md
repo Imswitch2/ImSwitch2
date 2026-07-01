@@ -1,6 +1,6 @@
 # CI Improvement Plan
 
-**Status:** Tier A implemented (2026-06-30, uncommitted) · Tier B/C pending — see §5
+**Status:** Tier A + B2 implemented (uncommitted) · B1/B3/C pending — see §5
 **Scope:** `.github/workflows/` + pytest config + test marker hygiene
 
 ---
@@ -108,6 +108,17 @@ Verification (local, mirroring the CI invocation):
 - Ran the full `imcontrol/_test/unit` lane (122 files) under `-n auto`: **no parallel-safety regression**. The 2 failures (`test_stores::test_tiff_storer`, `test_workflow_provenance` recording-metadata) reproduce identically in serial mode (pre-existing in the working tree), and the 27 collection errors are a local numpy-2 → matplotlib-stub artifact absent in CI.
 - Static scan for parallel-unsafe shared state (hardcoded `/tmp` paths, fixed ports, module-relative writes): only mock attributes / params that already passed under `-n auto`. No real cross-worker collisions; improcess has none.
 
-Not yet validated in real CI (needs a push/PR): cache hit-rate and wall-clock delta, and the improcess lane under `-n auto` (segfaults locally for an unrelated env reason, so it could only be checked statically).
+improcess lane under `-n auto` now validated locally too (once the env skew below was fixed): no segfault, 472 passed, the 1 failure (`test_widefield_starss_table_plot`) reproduces serially → not xdist-induced. Still needs a real CI run to confirm cache hit-rate and wall-clock delta.
 
-### Tier B / Tier C — not started.
+**Local env note (not a CI issue):** clean local runs require the env to match what CI installs fresh — `matplotlib>=3.8` and `napari>=0.7` (both were stale in the base conda env under numpy 2, producing MagicMock-matplotlib and pydantic-v1 `root_validator` collection errors respectively). After upgrading both, the no-hardware suite collects cleanly; the only residual failures (`test_tiff_storer`, `test_workflow_provenance`, `test_widefield_starss_table_plot`) are pre-existing code/test issues in the working tree, unrelated to CI.
+
+### Tier B2 — DONE (2026-07-01, uncommitted)
+File: `.github/workflows/ci.yml`.
+
+- Split the single `test` job into a **path-scoped matrix** of two concurrent lanes (`unit`, `improcess`), `fail-fast: false`, each running `-n auto`. Failures localize per lane; the slow lane no longer gates feedback from the fast one.
+- **Collection parity proven** (`--collect-only`, clean local env): `unit` 1297 + `improcess` 473 = **1770 = the old combined job**. The split is a pure partition — no test added, dropped, or duplicated.
+- `imcontrol/_test/ui` still excluded from every lane (deferred to B3); the `test_snouty.py` ignore is now carried only on the `improcess` lane's `extra`.
+
+Note: an *enforced* CI parity guard (union of lanes == whole-tree no-hardware collection) is deferred to B1/C, where markers make "whole-tree no-hardware" expressible. A guard comparing hardcoded-combined vs hardcoded-lanes would be tautological, so it was intentionally not added here.
+
+### Tier B1 (markers) / B3 (UI lane) / Tier C — not started.

@@ -17,15 +17,17 @@ flow that connects them.
 
 ---
 
-## 1. The three core contracts
+## 1. The core contracts
 
-Everything in ImProcess is built on three abstractions:
+Everything in ImProcess is built on three abstractions, plus an optional
+fourth one a reconstructor can implement to support live/streaming mode:
 
 | Contract | Input → Output | Source |
 |---|---|---|
 | `Reconstructor` | raw `DataObj` → `ProcessingResult` | [`reconstructors/base.py`](reconstructors/base.py) |
 | `Processor` | `ProcessingResult` → `ProcessingResult` (stackable) | [`processors/base.py`](processors/base.py) |
 | `ProcessingResult` | the N-D payload that travels between them | [`model/result.py`](model/result.py) |
+| `StreamingReconstructor` / `StreamingSession` *(optional)* | growing raw frames → incremental `ProcessingResult` | [`reconstructors/base.py`](reconstructors/base.py) |
 
 ```
    DataObj ──Reconstructor.process()──► ProcessingResult ──Processor.apply()──► ProcessingResult ──►(...)
@@ -148,6 +150,59 @@ Optional extension points:
 Concrete subclasses (e.g. `ViewOnlyResult`, `MonalisaProcessingResult`,
 `ProjectionResult`) only have to implement `save()`.
 
+### 1.4 `StreamingReconstructor` / `StreamingSession` (optional)
+
+A reconstructor can additionally support **live mode**: incremental
+reconstruction of a recording while it is still being written, instead of
+waiting for the file to close and running `process()` once. This is opt-in —
+plain `Reconstructor`s work exactly as before and are driven through a
+batch-fallback path (see §3.4).
+
+```python
+class StreamingReconstructor(Reconstructor):
+    supports_streaming: bool = True
+
+    @abstractmethod
+    def make_session(self) -> "StreamingSession": ...
+        # fresh, stateful session for one live stack or recording
+
+
+class StreamingSession(ABC):
+    @abstractmethod
+    def begin(self, init_obj: StreamInit, params: dict) -> StreamPlan: ...
+        # inspect the first logical stack, allocate output buffers,
+        # return the output shape/labels/view_modes up front
+
+    @abstractmethod
+    def push(self, chunk: np.ndarray, start: int, end: int) -> None: ...
+        # scatter one more contiguous frame range [start:end) into the buffer
+
+    @abstractmethod
+    def result(self) -> ProcessingResult: ...
+        # cheap snapshot of the buffer so far, for periodic display refresh
+
+    def finish(self) -> ProcessingResult: ...   # default: return self.result()
+    def close(self) -> None: ...                 # default: no-op; free GPU etc.
+```
+
+Supporting dataclasses (all in [`reconstructors/base.py`](reconstructors/base.py)):
+`StackInfo` (frame shape/dtype/`frames_per_stack`/detector name, returned by
+`LiveSource.open()`), `Chunk` (one `(data, start, end)` frame range),
+`StreamInit` (first logical stack + attrs, handed to `begin()`), `StreamPlan`
+(the `out_shape`/`axis_labels`/`view_modes`/`axis_scales` a session commits to
+after inspecting the first stack).
+
+`MonalisaReconstructor` is the only implementation today
+([`reconstructors/monalisa/reconstructor.py`](reconstructors/monalisa/reconstructor.py),
+session in [`reconstructors/monalisa/live_session.py`](reconstructors/monalisa/live_session.py)):
+`begin()` localizes the SIM pattern and allocates the full `(Dataset, Base, T,
+Z, Y, X)` output once, `push()` scatters each incoming chunk's pixels into it
+by pattern-derived indices, `result()`/`finish()` return a copy of the buffer
+so far.
+
+See §3.4 for how a session is driven; §4.3 for how to add streaming support to
+your own reconstructor.
+
 ---
 
 ## 2. Plugin registry & registration
@@ -216,6 +271,12 @@ Beyond startup, processors can also be **runtime-loaded** on demand: the main
 controller calls `register_processor_by_id(registry, id)` when the user adds an
 analysis tool from the UI, and `_restore_runtime_processor` re-registers any
 processor that was loaded in a previous session (persisted layout state).
+Runtime tool metadata lives in
+[`model/runtime_tools.py`](model/runtime_tools.py): processor-backed tools point
+at their processor id and widget kind, while panel-only tools such as
+`roi-manager` have no processor id. New processors default to the generic
+`ResultProcessorWidget`; add a descriptor only when they need a specialized
+Napari-side widget.
 
 ---
 
@@ -247,12 +308,16 @@ two result signals are the backbone:
 
 Other notable signals: `sigReconstruct(dataObjs, applyOnCurrent)` (triggers a
 reconstruction run), `sigCurrentDataChanged(dataObj)`,
-`sigScanParamsUpdated(scanParDict, applyOnCurrentRecon)`.
+`sigScanParamsUpdated(scanParDict, applyOnCurrentRecon)`,
+`sigLiveResultUpdated(result)` (a live/streaming session has a new partial
+`ProcessingResult` — see §3.4; distinct from `sigResultProduced`, which only
+fires once the whole recording is done).
 
 ### 3.2 Interactive path
 
 ```
-DataObj (model/DataObj.py — lazy h5py/tiff/zarr loader)
+DataObj (model/DataObj.py — format-aware h5py/tiff/zarr loader;
+         currently materializes image arrays)
    │   Reconstructor.process(data_obj, params)         params = make_param_widget().get_values()
    ▼
 ProcessingResult
@@ -279,6 +344,59 @@ For batch/headless reconstruction,
 watches a directory and emits `sigReconstruct(dataObjs, True)`. This runs the
 same reconstruction path and writes each output under
 `{watched_dir}/{reconstructor.default_save_subdir}/` via the result's `save()`.
+
+### 3.4 Live streaming path
+
+For a recording that is still being written, ImProcess can reconstruct it
+incrementally instead of waiting for it to close. Two drivers feed the same
+streaming machinery:
+
+- **`LiveModeController`** ([`controller/LiveModeController.py`](controller/LiveModeController.py))
+  — polls a watched folder tree for new recording stores (Zarr/HDF5, including
+  per-file timelapses), queues them, and processes one store at a time once it
+  is complete enough to open (see `_is_store_complete` / `_lapse_key` for the
+  completeness and timelapse-grouping rules).
+- **`MemoryLiveController`** ([`controller/MemoryLiveController.py`](controller/MemoryLiveController.py))
+  — routes in-RAM HDF5 recordings handed off directly from imcontrol (no disk
+  polling); currently runs them through the plain batch `process()` path.
+
+Both hand a `LiveSource` + the active reconstructor to the shared
+**`LiveReconstructionController`** ([`controller/LiveReconstructionController.py`](controller/LiveReconstructionController.py)),
+which branches on `reconstructor.supports_streaming`:
+
+```
+LiveSource.open(path)  ──►  StackInfo
+   │  poll() yields Chunks as the file grows
+   ▼
+supports_streaming?
+   │                                                  │
+   │ yes (StreamingReconstructor)                     │ no (plain Reconstructor)
+   ▼                                                  ▼
+LiveStreamWorker (own QThread)                    LiveStreamWorker buffers all
+   │ first stack ──► session.begin() (StreamPlan)     Chunks until is_complete()
+   │ resume() gate releases remaining chunks              │
+   ▼                                                       ▼
+LiveProcessWorker (own QThread)                   reconstructor.process(buffered_data)
+   │ session.push(chunk) each Chunk                        │
+   │ session.result() every N chunks                        │
+   │   ──► emit sigLiveResultUpdated(result)                │
+   │ source complete ──► session.finish()                   │
+   └── emit sigResultProduced(result, "Live Reconstruction") ┘
+            └─► ReconstructionViewController.liveResultUpdated / resultProduced
+                 (refreshes the current list item in place, or adds one)
+```
+
+`LiveSource` ([`live/sources.py`](live/sources.py)) is the format-agnostic
+polling contract — `open(path_or_handle) -> StackInfo`, `poll() -> list[Chunk]`,
+`is_complete() -> bool`. Built-in sources: `ZarrLiveSource`/`Hdf5LiveSource`
+(single growing store) and `Zarr/Hdf5{MultiFileLapseSource,LapseSource}` (a
+per-file timelapse streamed as one continuous frame range across files).
+`live/source_factory.make_live_source(path)` picks one by suffix.
+
+Failure semantics: startup/source failures and `session.finish()` exceptions are
+routed to `_finish_without_result()`, so `LiveReconstructionController.sigFinished`
+still fires without a final `sigResultProduced` payload. This keeps
+`LiveModeController`'s queue moving even when one live reconstruction fails.
 
 ---
 
@@ -332,6 +450,42 @@ wraps `data_obj.data`, and `_DEFAULT_AXIS_LABELS[-ndim:]` for labels.
 See [`processors/projection/processor.py`](processors/projection/processor.py)
 for a compact, fully N-D example.
 
+### 4.3 Add live/streaming support to a reconstructor (optional)
+
+Only worth doing if your modality benefits from an incrementally-updating
+display while the recording is still being written; otherwise skip this and
+your `Reconstructor` gets streamed via the batch-fallback path automatically
+(§3.4) — the whole recording is buffered and passed through your existing
+`process()` once it completes.
+
+1. Subclass `StreamingReconstructor` instead of `Reconstructor` and set
+   `supports_streaming = True` (the default).
+2. Implement `make_session() -> StreamingSession` returning a fresh, stateful
+   session per live stack/recording (no shared state between sessions).
+3. In your `StreamingSession`:
+   - `begin(init_obj, params)` — inspect `init_obj.data` (the first logical
+     stack) and `init_obj.attrs`/`init_obj.stack_info`, allocate your output
+     buffer once, and return a `StreamPlan` with the final `out_shape` /
+     `axis_labels` / `view_modes` / `axis_scales`. This is also the natural
+     place to consume `init_obj.data` itself via your own `push()` (see the
+     MoNaLISA session) so the caller only streams the remainder.
+   - `push(chunk, start, end)` — scatter one more `[start:end)` frame range
+     into the buffer. Must tolerate being called with ranges that cross your
+     internal "logical stack" boundaries if your modality has them (MoNaLISA's
+     `push()` splits an incoming chunk at `num_frames_in_stack` boundaries
+     itself, since the source streams multiple timepoints as one continuous
+     global range).
+   - `result()` — return a cheap snapshot (e.g. `buffer.copy()`) for periodic
+     display refresh; keep this fast, it runs on every `update_cadence`-th
+     chunk (default every 5).
+   - Optionally override `finish()` (default calls `result()`) and `close()`
+     (default no-op) to release GPU buffers etc.
+4. Keep `finish()` robust and idempotent where possible. If it does raise,
+   the live controller treats that recording as failed, emits `sigFinished`
+   without a final result, and advances the queue (§3.4).
+5. Register/enable it exactly as in §4.1 — streaming is a capability of the
+   reconstructor, not a separate registry entry.
+
 ---
 
 ## 5. Setup-JSON `processing` block schema
@@ -374,7 +528,9 @@ Rules:
   processor `["drift-correct"]`. If at least one of the two keys is present,
   ImProcess is in **config-driven mode**; a missing companion key defaults to
   `["monalisa"]` (reconstructors) / `["drift-correct"]` (processors). Ids not in
-  the corresponding `_AVAILABLE_*` dict are silently skipped at registration.
+  the corresponding `_AVAILABLE_*` dict raise a startup `KeyError` that lists
+  the unknown IDs and available built-ins. Explicit list order is preserved, so
+  the first configured reconstructor is the initial active reconstructor.
 - **Panel flags.** Each `is_*_panel_enabled()` getter reads its boolean key and
   defaults to `false`, so omitted panels stay hidden. Panels are independent of
   the processor that backs them: a panel flag toggles UI visibility, while the
@@ -395,5 +551,6 @@ Rules:
   the class into a controller.
 - **Carry scales through**: propagate `axis_scales` / `scale_unit` so the viewer
   shows physical units.
-</content>
-</invoke>
+- **Streaming sessions should keep `finish()` robust**: if `finish()` raises,
+  the live controller fails that recording without a result and advances the
+  queue (§3.4).

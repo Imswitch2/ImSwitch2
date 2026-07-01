@@ -121,6 +121,35 @@ def test_all_builtin_reconstructors_resolve():
         assert plugin.id == reconstructor_id
 
 
+def test_register_default_reconstructors_preserves_requested_order():
+    """Explicit setup order controls the active/default reconstructor order."""
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+    from imswitch.improcess.reconstructors import register_default_reconstructors
+
+    registry = PluginRegistry()
+    register_default_reconstructors(registry, ["widefield-starss", "view-only"])
+
+    assert [plugin.id for plugin in registry.reconstructors()] == [
+        "widefield-starss",
+        "view-only",
+    ]
+
+
+def test_register_default_reconstructors_unknown_id_raises():
+    """Explicit reconstructor config should fail loudly on stale/typo IDs."""
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+    from imswitch.improcess.reconstructors import register_default_reconstructors
+
+    registry = PluginRegistry()
+    with pytest.raises(KeyError) as exc_info:
+        register_default_reconstructors(registry, ["view-only", "typo"])
+
+    error_msg = str(exc_info.value)
+    assert "typo" in error_msg
+    assert "Available reconstructors:" in error_msg
+    assert registry.reconstructors() == []
+
+
 def test_all_builtin_processors_resolve():
     """All built-in processor IDs can be successfully retrieved."""
     from imswitch.improcess.reconstructors.registry import PluginRegistry
@@ -137,6 +166,35 @@ def test_all_builtin_processors_resolve():
         plugin = registry.get_processor(processor_id)
         assert plugin is not None
         assert plugin.id == processor_id
+
+
+def test_register_default_processors_preserves_requested_order():
+    """Explicit setup order controls processor registration order."""
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+    from imswitch.improcess.processors import register_default_processors
+
+    registry = PluginRegistry()
+    register_default_processors(registry, ["projection", "drift-correct"])
+
+    assert [plugin.id for plugin in registry.processors()] == [
+        "projection",
+        "drift-correct",
+    ]
+
+
+def test_register_default_processors_unknown_id_raises():
+    """Explicit processor config should fail loudly on stale/typo IDs."""
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+    from imswitch.improcess.processors import register_default_processors
+
+    registry = PluginRegistry()
+    with pytest.raises(KeyError) as exc_info:
+        register_default_processors(registry, ["projection", "typo"])
+
+    error_msg = str(exc_info.value)
+    assert "typo" in error_msg
+    assert "Available processors:" in error_msg
+    assert registry.processors() == []
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

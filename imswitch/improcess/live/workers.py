@@ -201,6 +201,7 @@ class LiveProcessWorker(QtCore.QObject):
 
     sigResultUpdated = QtCore.Signal(object)
     sigStackFinished = QtCore.Signal(object)
+    sigFailed = QtCore.Signal(str)
 
     def __init__(self, session: StreamingSession, update_cadence: int = 5):
         """
@@ -239,6 +240,7 @@ class LiveProcessWorker(QtCore.QObject):
             self.sigStackFinished.emit(final_result)
         except Exception as e:
             self._logger.error(f"Error finalizing session: {e}")
+            self.sigFailed.emit(str(e))
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

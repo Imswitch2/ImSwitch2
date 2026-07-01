@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from imswitch.improcess.reconstructors import available_reconstructor_ids
 from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.model.processing_config import (
     is_colocalization_panel_enabled,
@@ -144,6 +145,27 @@ def test_improcess_setup_presets_use_known_processor_ids():
         config = json.loads(setup_file.read_text(encoding="utf-8"))
         processors = set(config["processing"].get("processors", []))
         assert not (processors - known_processors), setup_file.name
+
+
+def test_improcess_setup_presets_use_known_reconstructor_ids():
+    setup_dir = (
+        Path(__file__).resolve().parents[2]
+        / "_data"
+        / "user_defaults"
+        / "imcontrol_setups"
+    )
+    setup_files = [
+        setup_dir / "snouty_processor.json",
+        setup_dir / "general_image_processing.json",
+        setup_dir / "monalisa_processor.json",
+        setup_dir / "widefieldstarss_processor.json",
+    ]
+    known_reconstructors = set(available_reconstructor_ids())
+
+    for setup_file in setup_files:
+        config = json.loads(setup_file.read_text(encoding="utf-8"))
+        reconstructors = set(config["processing"].get("reconstructors", []))
+        assert not (reconstructors - known_reconstructors), setup_file.name
 
 
 def test_snouty_setup_enables_multicolor_workflow():

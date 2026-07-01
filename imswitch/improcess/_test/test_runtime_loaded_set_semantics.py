@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from imswitch.improcess.model.runtime_tools import RuntimeAnalysisToolSpec
 from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
 
 
@@ -21,7 +22,12 @@ def _stub_view(specs_keys=('segmentation', 'frc', 'roi-manager')):
     """Build a fake `self` that exposes only what runtimeAnalysisToolIdsLoaded
     and ensureRuntimeAnalysisWidget logic care about."""
     specs = {
-        tid: (tid.replace('-', ' ').title(), lambda: SimpleNamespace())
+        tid: RuntimeAnalysisToolSpec(
+            id=tid,
+            title=tid.replace('-', ' ').title(),
+            attribute=f"{tid.replace('-', '_')}Widget",
+            widget_kind=tid,
+        )
         for tid in specs_keys
     }
     stub = SimpleNamespace(

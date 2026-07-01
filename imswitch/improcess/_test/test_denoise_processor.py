@@ -117,7 +117,13 @@ def test_denoise_apply_runs_with_stub_denoiser(monkeypatch):
     monkeypatch.setattr(improcess_model, 'Denoiser', lambda: _StubDenoiser(), raising=False)
 
     data = np.arange(2 * 4 * 4, dtype=np.float32).reshape(2, 4, 4)
-    result = _Result(name='stack', data=data, axis_labels=['T', 'Y', 'X'])
+    result = _Result(
+        name='stack',
+        data=data,
+        axis_labels=['T', 'Y', 'X'],
+        axis_scales=[1.0, 0.2, 0.3],
+        scale_unit='um',
+    )
     processor = DenoiseProcessor()
 
     denoised = processor.apply(
@@ -127,6 +133,8 @@ def test_denoise_apply_runs_with_stub_denoiser(monkeypatch):
 
     assert isinstance(denoised, DenoisedResult)
     assert denoised.axis_labels == ['T', 'Y', 'X']
+    assert denoised.axis_scales == [1.0, 0.2, 0.3]
+    assert denoised.scale_unit == 'um'
     assert denoised.data.shape == data.shape
     assert denoised.model_type == 'UNetRCAN'  # auto from 'RCAN' substring
     assert denoised.name == 'stack_denoise'

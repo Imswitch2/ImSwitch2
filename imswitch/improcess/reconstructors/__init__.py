@@ -47,16 +47,18 @@ def register_default_reconstructors(
         registry: The plugin registry to populate
         filter_ids: Optional list of plugin IDs to register. If None, all are registered.
     """
-    # Register requested plugins
     if filter_ids is None:
-        # Register all
         to_register = _AVAILABLE_RECONSTRUCTOR_CLASSES.items()
     else:
-        # Register only the filtered ones
+        unknown = [pid for pid in filter_ids if pid not in _AVAILABLE_RECONSTRUCTOR_CLASSES]
+        if unknown:
+            raise KeyError(
+                f"Unknown built-in reconstructor id(s): {unknown}. "
+                f"Available reconstructors: {available_reconstructor_ids()}"
+            )
         to_register = [
-            (pid, cls)
-            for pid, cls in _AVAILABLE_RECONSTRUCTOR_CLASSES.items()
-            if pid in filter_ids
+            (pid, _AVAILABLE_RECONSTRUCTOR_CLASSES[pid])
+            for pid in filter_ids
         ]
     
     for plugin_id, plugin_class in to_register:

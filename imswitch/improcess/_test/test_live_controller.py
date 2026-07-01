@@ -66,6 +66,16 @@ class _StreamingRecon(StreamingReconstructor):
         return _StreamingSession()
 
 
+class _FinishFailsSession(_StreamingSession):
+    def finish(self) -> ProcessingResult:
+        raise RuntimeError("finish failed")
+
+
+class _FinishFailsStreamingRecon(_StreamingRecon):
+    def make_session(self) -> StreamingSession:
+        return _FinishFailsSession()
+
+
 class _BatchRecon(Reconstructor):
     name = "Test Batch"
     id = "test-batch"
@@ -327,6 +337,27 @@ def test_controller_processes_two_streaming_sources_sequentially():
         assert controller._process_thread is None
 
     assert len(results) == 2
+
+
+def test_controller_clears_streaming_run_when_session_finish_fails():
+    """A finish() exception should advance the live queue without a result."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    source = _TestSource(stack, chunk_size=4)
+    comm_channel = CommunicationChannel()
+    controller = LiveReconstructionController(comm_channel)
+    results = []
+    comm_channel.sigResultProduced.connect(lambda result, _title: results.append(result))
+
+    assert controller.start(_FinishFailsStreamingRecon(), source, {}, source_arg="synthetic")
+    assert _wait_for_finished(controller)
+
+    assert results == []
+    assert controller._running is False
+    assert controller._stream_thread is None
+    assert controller._process_thread is None
+    assert controller._source is None
 
 
 # Startup first-stack collection (open-retry + buffer until frames_per_stack)

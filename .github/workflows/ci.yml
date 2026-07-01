@@ -29,8 +29,32 @@ jobs:
         run: ruff check imswitch/
 
   test:
-    name: No-Hardware Tests
+    # Path-scoped lanes running concurrently, so a failure localizes to its area
+    # and the slow lane doesn't gate feedback from the fast one. The lanes are a
+    # clean partition of the old single-job path list (parity proven by
+    # --collect-only: unit 1297 + improcess 473 == combined 1770); the union
+    # collects exactly the same tests, just split across two runners.
+    # Still excluded from every lane (run in the manual `imswitch-test` workflow,
+    # which has a real display via xvfb): imswitch/imcontrol/_test/ui (napari GUI
+    # tests) — a dedicated `ui` lane with a proven offscreen/xvfb strategy is the
+    # next step (Tier B3).
+    name: No-Hardware Tests (${{ matrix.lane }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: unit
+            paths: >-
+              imswitch/test_no_hardware_profile.py
+              imswitch/imcontrol/_test/unit
+              imswitch/imcontrol/controller/_test
+            extra: ""
+          - lane: improcess
+            paths: imswitch/improcess/_test
+            # TODO: drop this ignore once the SNOUTY CPU deskew all-zero-output
+            # failure is fixed (pre-existing failure on main).
+            extra: "--ignore=imswitch/improcess/_test/test_snouty.py"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,31 +71,21 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -e ".[test]"
-      - name: Run no-hardware test suite
+      - name: Run no-hardware test lane
         env:
           QT_QPA_PLATFORM: offscreen
           # Force the non-interactive matplotlib backend so nothing tries to
           # load an interactive Qt backend on the headless runner.
           MPLBACKEND: Agg
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
-        # Covers the full non-GUI suite: no-hardware profile, imcontrol unit +
-        # controller tests, and the improcess processing/analysis tests.
         # --timeout aborts any hung test instead of stalling the runner.
-        # -n auto shards the suite across all runner cores; because plugin
+        # -n auto shards the lane across all runner cores; because plugin
         # autoload is disabled above, xdist must be loaded explicitly via
         # -p xdist.plugin (same as pytestqt / pytest_timeout). The -p flags
         # propagate to the xdist workers.
-        # Excluded here (run in the manual `imswitch-test` workflow, which has a
-        # real display via xvfb): imswitch/imcontrol/_test/ui (napari GUI tests).
-        # TODO: re-include improcess/_test/test_snouty.py once the SNOUTY CPU
-        # deskew all-zero-output failure is fixed (pre-existing failure on main).
         run: |
           pytest -p xdist.plugin -p pytestqt.plugin -p pytest_timeout \
-            imswitch/test_no_hardware_profile.py \
-            imswitch/imcontrol/_test/unit \
-            imswitch/imcontrol/controller/_test \
-            imswitch/improcess/_test \
-            --ignore=imswitch/improcess/_test/test_snouty.py \
+            ${{ matrix.paths }} ${{ matrix.extra }} \
             -n auto \
             --timeout=180 \
             -v

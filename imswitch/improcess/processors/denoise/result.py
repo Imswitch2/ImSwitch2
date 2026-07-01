@@ -40,7 +40,7 @@ class DenoisedResult(ProcessingResult):
                 resolution=(1, 1),
                 metadata={
                     'spacing': 1,
-                    'unit': 'px',
+                    'unit': self.scale_unit,
                     'axes': ''.join(self.axis_labels),
                     'denoise_model_name': self.model_name,
                     'denoise_model_type': self.model_type,
@@ -56,6 +56,8 @@ class DenoisedResult(ProcessingResult):
                     compression='gzip',
                 )
                 f.attrs['axis_labels'] = ''.join(self.axis_labels)
+                f.attrs['axis_scales'] = np.asarray(self.axis_scales, dtype=float)
+                f.attrs['scale_unit'] = self.scale_unit
                 f.attrs['denoise_model_name'] = self.model_name
                 f.attrs['denoise_model_type'] = self.model_type
                 f.attrs['denoise_crop_size'] = self.crop_size

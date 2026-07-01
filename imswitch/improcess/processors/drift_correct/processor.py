@@ -147,7 +147,9 @@ class DriftCorrectProcessor(Processor):
             axis_labels=result.axis_labels,
             drift_xy=shifts,
             view_modes=result.view_modes,
-            display_levels=result.display_levels
+            display_levels=result.display_levels,
+            axis_scales=list(result.axis_scales),
+            scale_unit=result.scale_unit,
         )
     
     def _compute_shifts(

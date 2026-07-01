@@ -125,24 +125,24 @@ class ImProcessMainController(MainController):
 
     def _refresh_runtime_processor_choices(self):
         from imswitch.improcess.reconstructors.registry import get_registry
-        from imswitch.improcess.processors import (
-            available_processor_choices,
-            available_processor_ids,
+        from imswitch.improcess.model.runtime_tools import (
+            runtime_analysis_tool_specs,
         )
 
         registry = get_registry()
         loaded_processors = registry.processors()
         loaded = {processor.id for processor in loaded_processors}
-        processor_ids = set(available_processor_ids())
-        tool_choices = dict(available_processor_choices())
-        tool_choices["roi-manager"] = "ROI manager"
+        tool_specs = runtime_analysis_tool_specs()
         choices = []
-        for tool_id, tool_name in sorted(tool_choices.items()):
-            processor_loaded = tool_id not in processor_ids or tool_id in loaded
+        for tool_id, spec in sorted(tool_specs.items()):
+            processor_loaded = (
+                spec.processor_id is None
+                or spec.processor_id in loaded
+            )
             widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
             if processor_loaded and widget_loaded:
                 continue
-            choices.append((tool_id, tool_name))
+            choices.append((tool_id, spec.title))
         self.__mainView.setAvailableRuntimeProcessors(choices)
         self.__mainView.setLoadedRuntimeProcessors(
             [(processor.id, processor.name) for processor in loaded_processors]
@@ -152,23 +152,25 @@ class ImProcessMainController(MainController):
         """Re-register a processor that was runtime-loaded last session.
 
         Called from the persistence adapter before the view recreates the
-        matching widget dock. Unknown ids and processor-less tools (like
-        ``roi-manager``) are silently skipped — the widget restore handles
+        matching widget dock. Unknown ids and processor-less tools are skipped
+        silently — the widget restore handles
         them on the view side.
         """
+        from imswitch.improcess.model.runtime_tools import runtime_analysis_tool_specs
         from imswitch.improcess.reconstructors.registry import get_registry
-        from imswitch.improcess.processors import (
-            available_processor_ids,
-            register_processor_by_id,
-        )
+        from imswitch.improcess.processors import register_processor_by_id
 
-        if processor_id not in set(available_processor_ids()):
+        spec = runtime_analysis_tool_specs().get(processor_id)
+        if spec is None or spec.processor_id is None:
             return
         registry = get_registry()
-        if registry.get_processor(processor_id, raise_on_missing=False) is not None:
+        if (
+            registry.get_processor(spec.processor_id, raise_on_missing=False)
+            is not None
+        ):
             return
         try:
-            plugin = register_processor_by_id(registry, processor_id)
+            plugin = register_processor_by_id(registry, spec.processor_id)
         except Exception:
             self.__logger.exception(
                 f"Failed to restore runtime processor {processor_id!r} from "
@@ -180,29 +182,36 @@ class ImProcessMainController(MainController):
         )
 
     def _load_runtime_processor(self, processor_id: str):
+        from imswitch.improcess.model.runtime_tools import runtime_analysis_tool_specs
         from imswitch.improcess.reconstructors.registry import get_registry
-        from imswitch.improcess.processors import (
-            available_processor_ids,
-            register_processor_by_id,
-        )
+        from imswitch.improcess.processors import register_processor_by_id
 
+        spec = runtime_analysis_tool_specs().get(processor_id)
+        if spec is None:
+            self.__logger.warning(f"Unknown runtime analysis tool: {processor_id}")
+            self._refresh_runtime_processor_choices()
+            return
         registry = get_registry()
-        is_processor = processor_id in set(available_processor_ids())
-        plugin = registry.get_processor(processor_id, raise_on_missing=False) if is_processor else None
+        is_processor = spec.processor_id is not None
+        plugin = (
+            registry.get_processor(spec.processor_id, raise_on_missing=False)
+            if is_processor
+            else None
+        )
         if plugin is not None:
-            self.__logger.info(f"Processor already loaded: {processor_id}")
+            self.__logger.info(f"Processor already loaded: {spec.processor_id}")
         elif is_processor:
             # Wrap register_processor_by_id: a processor whose import or
             # __init__ raises must not crash the load handler — log the
             # traceback so the user can see *why* nothing showed up.
             try:
-                plugin = register_processor_by_id(registry, processor_id)
+                plugin = register_processor_by_id(registry, spec.processor_id)
                 self.__logger.info(
                     f"Runtime-loaded processor: {plugin.id} ({plugin.name})"
                 )
             except Exception:
                 self.__logger.exception(
-                    f"Failed to register processor {processor_id!r}"
+                    f"Failed to register processor {spec.processor_id!r}"
                 )
                 self._refresh_runtime_processor_choices()
                 return
@@ -210,8 +219,6 @@ class ImProcessMainController(MainController):
         if dock_title is not None:
             self.__logger.info(f"Runtime-opened analysis tool: {dock_title}")
             self._wire_runtime_result_processor(processor_id)
-        elif not is_processor:
-            self.__logger.warning(f"Unknown runtime analysis tool: {processor_id}")
         self._refresh_runtime_processor_choices()
 
     def _wire_runtime_result_processor(self, processor_id: str) -> None:

@@ -186,7 +186,13 @@ def test_segmentation_processor_registered_and_generates_payload():
     data = np.zeros((2, 10, 10), dtype=np.float32)
     data[0, 2:7, 3:8] = 4.0
     data[1] = 100.0
-    result = MinimalResult(name="stack", data=data, axis_labels=["T", "Y", "X"])
+    result = MinimalResult(
+        name="stack",
+        data=data,
+        axis_labels=["T", "Y", "X"],
+        axis_scales=[1.0, 0.2, 0.3],
+        scale_unit="um",
+    )
     processor = SegmentationProcessor()
 
     segmented = processor.apply(
@@ -209,6 +215,8 @@ def test_segmentation_processor_registered_and_generates_payload():
     assert "segmentation" in available_processor_ids()
     assert isinstance(segmented, SegmentationResult)
     assert segmented.data.shape == (10, 10)
+    assert segmented.axis_scales == [0.2, 0.3]
+    assert segmented.scale_unit == "um"
     assert segmented.data.max() == 1
     assert segmented.analysis.regions[0].area_pixels == 25
     payloads = segmented.plot_payloads()
@@ -308,7 +316,13 @@ def test_segmentation_result_saves_hdf5(tmp_path):
         threshold_value=1.0,
         min_area=3,
     )
-    result = SegmentationResult("segmentation", analysis, params={"min_area": 3})
+    result = SegmentationResult(
+        "segmentation",
+        analysis,
+        params={"min_area": 3},
+        axis_scales=[0.4, 0.5],
+        scale_unit="um",
+    )
     out_path = tmp_path / "segmentation.h5"
 
     result.save(out_path, "hdf5")
@@ -321,3 +335,5 @@ def test_segmentation_result_saves_hdf5(tmp_path):
         assert tuple(h5["regions"]["bounds"][0]) == (1, 5, 2, 6)
         assert h5.attrs["region_count"] == 1
         assert h5.attrs["threshold"] == 1.0
+        np.testing.assert_allclose(h5.attrs["axis_scales"], [0.4, 0.5])
+        assert h5.attrs["scale_unit"] == "um"

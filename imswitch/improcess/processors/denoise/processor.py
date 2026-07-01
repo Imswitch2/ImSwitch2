@@ -132,15 +132,32 @@ class DenoiseProcessor(Processor):
         denoised = self._embed_prediction(
             np.asarray(result.data), prediction, leading_indexer, spatial_shape, pad
         )
+        axis_labels, axis_scales = self._output_axes(
+            result,
+            denoised,
+            leading_indexer,
+        )
+
+        source_data = np.asarray(result.data)
+        output_data = np.asarray(denoised)
+        view_modes = (
+            result.view_modes
+            if output_data.ndim == source_data.ndim
+            else None
+        )
 
         return DenoisedResult(
             name=f"{result.name}_denoise",
             data=denoised,
-            axis_labels=list(result.axis_labels),
+            axis_labels=axis_labels,
             model_name=model_name,
             model_type=model_type,
             crop_size=crop_size,
             pad=pad,
+            view_modes=view_modes,
+            display_levels=result.display_levels,
+            axis_scales=axis_scales,
+            scale_unit=result.scale_unit,
         )
 
     # ----- helpers --------------------------------------------------------
@@ -211,6 +228,50 @@ class DenoiseProcessor(Processor):
             return prediction
         out[leading_indexer] = prediction
         return out
+
+    @staticmethod
+    def _output_axes(
+        result: ProcessingResult,
+        output: np.ndarray,
+        leading_indexer: tuple,
+    ) -> tuple[list[str], list[float] | None]:
+        """Return labels/scales that match the denoised output dimensionality."""
+        source = np.asarray(result.data)
+        out_ndim = np.asarray(output).ndim
+        labels = list(getattr(result, "axis_labels", []) or [])
+        scales = list(getattr(result, "axis_scales", []) or [])
+
+        if len(labels) != source.ndim:
+            labels = DenoiseProcessor._default_axis_labels(source.ndim)
+        if len(scales) != source.ndim:
+            scales = [1.0] * source.ndim
+
+        if out_ndim == len(labels):
+            return labels, scales
+
+        if leading_indexer:
+            kept_axes = [
+                axis
+                for axis, index in enumerate(leading_indexer)
+                if isinstance(index, slice)
+            ]
+            if len(kept_axes) == out_ndim:
+                return (
+                    [labels[axis] for axis in kept_axes],
+                    [scales[axis] for axis in kept_axes],
+                )
+
+        if out_ndim <= len(labels):
+            return labels[-out_ndim:], scales[-out_ndim:]
+        return DenoiseProcessor._default_axis_labels(out_ndim), [1.0] * out_ndim
+
+    @staticmethod
+    def _default_axis_labels(ndim: int) -> list[str]:
+        labels = ["T", "Z", "C", "Y", "X"]
+        if ndim <= len(labels):
+            return labels[-ndim:]
+        extra_count = ndim - len(labels)
+        return [f"D{i}" for i in range(extra_count)] + labels
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

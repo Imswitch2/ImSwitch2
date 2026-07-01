@@ -128,6 +128,7 @@ class SegmentationProcessor(Processor):
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
         image, plane_indices = self._extract_2d(result, params)
+        axis_scales = self._spatial_axis_scales(result)
         threshold_method = params.get("threshold_method", "otsu")
         analysis = segment_image(
             image,
@@ -152,6 +153,8 @@ class SegmentationProcessor(Processor):
             name=f"{result.name} (segmentation)",
             analysis=analysis,
             params=dict(params),
+            axis_scales=axis_scales,
+            scale_unit=result.scale_unit,
         )
 
     @staticmethod
@@ -192,6 +195,14 @@ class SegmentationProcessor(Processor):
         if image.ndim != 2:
             raise ValueError(f"Could not extract a 2D segmentation image from shape {data.shape}")
         return image, plane_indices
+
+    @staticmethod
+    def _spatial_axis_scales(result: ProcessingResult) -> list[float] | None:
+        data = np.asarray(result.data)
+        axis_scales = list(getattr(result, "axis_scales", []) or [])
+        if len(axis_scales) != data.ndim or data.ndim < 2:
+            return None
+        return [float(axis_scales[-2]), float(axis_scales[-1])]
 
 
 def _requested_plane_indices(params: dict, explicit_indices: dict[str, int]) -> dict[str, int]:

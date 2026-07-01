@@ -169,6 +169,34 @@ def test_live_process_worker_pushes_chunks_to_session():
     np.testing.assert_array_equal(final_result[0].data[4:6], 2.0)
 
 
+def test_live_process_worker_finalize_failure_emits_failed_signal():
+    """A finish() exception must notify the controller instead of wedging."""
+
+    class _FinishFailsSession(_TestSession):
+        def finish(self) -> ProcessingResult:
+            raise RuntimeError("finish failed")
+
+    session = _FinishFailsSession()
+    init_obj = StreamInit(
+        name="test",
+        dataset_name="CAM",
+        data=np.zeros((1, 4, 5), dtype=np.float32),
+        stack_info=StackInfo(frame_shape=(4, 5), dtype=np.dtype(np.float32), expected_frames=1),
+    )
+    session.begin(init_obj, {})
+    worker = LiveProcessWorker(session)
+
+    failed = []
+    finished = []
+    worker.sigFailed.connect(lambda message: failed.append(message))
+    worker.sigStackFinished.connect(lambda result: finished.append(result))
+
+    worker.finalize()
+
+    assert finished == []
+    assert failed == ["finish failed"]
+
+
 def test_live_process_worker_update_cadence():
     """LiveProcessWorker emits updates at the specified cadence."""
     session = _TestSession()
