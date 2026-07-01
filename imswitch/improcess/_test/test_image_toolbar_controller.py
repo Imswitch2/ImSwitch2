@@ -1,6 +1,7 @@
 """Tests for the ImProcess image toolbar first slice."""
 
 import os
+import importlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +14,7 @@ from qtpy import QtWidgets
 from imswitch.improcess.controller.ImageToolbarController import ImageToolbarController
 from imswitch.improcess.model.result import ViewMode
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
+from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
 
 class _Signal:
@@ -36,6 +38,7 @@ class _View:
         self.sigImageContrastDialogRequested = _Signal()
         self.sigImageResetViewRequested = _Signal()
         self.sigImageDuplicateRequested = _Signal()
+        self.sigImageCropSubstackRequested = _Signal()
         self.sigImageMaxProjectionRequested = _Signal()
         self.sigImageSplitStackRequested = _Signal()
         self.sigImageSplitChannelsRequested = _Signal()
@@ -119,7 +122,9 @@ def test_projection_action_disabled_for_2d_images():
     _controller_3d, view_3d, _recon_3d = _controller(np.zeros((2, 3, 4), dtype=np.float32))
 
     assert view_2d.action_enabled["max-projection"] is False
+    assert view_2d.action_enabled["crop-substack"] is True
     assert view_3d.action_enabled["max-projection"] is True
+    assert view_3d.action_enabled["crop-substack"] is True
     assert view_3d.action_enabled["split-stack"] is True
     assert view_3d.action_enabled["split-channels"] is False
 
@@ -183,6 +188,52 @@ def test_max_projection_publishes_projection_result():
     assert result.name == "source (max Z-projection)"
     assert result.axis_labels == ["Y", "X"]
     np.testing.assert_array_equal(result.data, data.max(axis=0))
+
+
+def test_crop_substack_dialog_converts_first_last_to_processor_ranges(qapp):
+    result = _Result(np.zeros((3, 4, 5), dtype=np.float32))
+    dialog = StackSubsetDialog(result)
+    dialog._rows[0].firstSpin.setValue(2)
+    dialog._rows[0].lastSpin.setValue(3)
+    dialog._rows[2].stepSpin.setValue(2)
+
+    assert dialog.selected_params() == {
+        "ranges": [
+            {"axis": 0, "start": 1, "stop": 3, "step": 1},
+            {"axis": 2, "start": 0, "stop": 5, "step": 2},
+        ],
+        "copy": False,
+    }
+
+
+def test_crop_substack_publishes_subset_result(monkeypatch):
+    data = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    toolbar_module = importlib.import_module(
+        "imswitch.improcess.controller.ImageToolbarController"
+    )
+    monkeypatch.setattr(
+        toolbar_module.StackSubsetDialog,
+        "get_params",
+        staticmethod(
+            lambda _result, parent=None: {
+                "ranges": [{"axis": "Z", "start": 1, "stop": 3}],
+                "copy": False,
+            }
+        ),
+    )
+    controller, _view, _recon = _controller(data)
+
+    controller.cropSubstack()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    current = controller._commChannel.sigCurrentResultChanged.emitted
+    assert len(produced) == 1
+    subset = produced[0][0]
+    assert subset.name == "source (subset)"
+    assert subset.axis_labels == ["Z", "Y", "X"]
+    assert subset.data.shape == (2, 4, 5)
+    np.testing.assert_array_equal(subset.data, data[1:3])
+    assert current[0][0] is subset
 
 
 def test_split_stack_publishes_each_plane():

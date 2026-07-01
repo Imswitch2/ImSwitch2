@@ -7,11 +7,13 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
-from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.base import normalize_processor_output
+from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
 from imswitch.improcess.processors.stack_split import StackSplitProcessor
+from imswitch.improcess.processors.stack_subset import StackSubsetProcessor
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
+from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
 
 class ImageToolbarController:
@@ -29,6 +31,7 @@ class ImageToolbarController:
         mainView.sigImageContrastDialogRequested.connect(self.openContrastDialog)
         mainView.sigImageResetViewRequested.connect(self.resetView)
         mainView.sigImageDuplicateRequested.connect(self.duplicateResult)
+        mainView.sigImageCropSubstackRequested.connect(self.cropSubstack)
         mainView.sigImageMaxProjectionRequested.connect(self.maxProjection)
         mainView.sigImageSplitStackRequested.connect(self.splitStack)
         mainView.sigImageSplitChannelsRequested.connect(self.splitChannels)
@@ -42,6 +45,10 @@ class ImageToolbarController:
             self._view.setImageActionEnabled(
                 "max-projection",
                 has_image and getattr(getattr(result, "data", None), "ndim", 0) > 2,
+            )
+            self._view.setImageActionEnabled(
+                "crop-substack",
+                has_image and StackSubsetProcessor().applies_to(result),
             )
             self._view.setImageActionEnabled(
                 "split-stack",
@@ -108,6 +115,19 @@ class ImageToolbarController:
             self._logger.exception("Could not duplicate active result")
             return
         self._publishResult(duplicate)
+
+    def cropSubstack(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
+            return
+        try:
+            params = StackSubsetDialog.get_params(result, parent=self._view)
+        except Exception:
+            self._logger.exception("Could not collect crop/substack parameters")
+            return
+        if params is None:
+            return
+        self._runProcessor(StackSubsetProcessor(), result, params)
 
     def maxProjection(self) -> None:
         result = self._reconstructionController.getActiveResult()

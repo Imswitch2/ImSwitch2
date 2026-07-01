@@ -17,6 +17,7 @@ from .projection import ProjectionProcessor
 from .psf_resolution import PSFResolutionProcessor
 from .segmentation import SegmentationProcessor
 from .stack_split import StackSplitProcessor
+from .stack_subset import StackSubsetProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
@@ -31,6 +32,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'psf-resolution': PSFResolutionProcessor,
     'segmentation': SegmentationProcessor,
     'stack-split': StackSplitProcessor,
+    'stack-subset': StackSubsetProcessor,
 }
 
 
@@ -96,6 +98,7 @@ __all__ = [
     "PSFResolutionProcessor",
     "SegmentationProcessor",
     "StackSplitProcessor",
+    "StackSubsetProcessor",
     "available_processor_choices",
     "available_processor_ids",
     "register_processor_by_id",

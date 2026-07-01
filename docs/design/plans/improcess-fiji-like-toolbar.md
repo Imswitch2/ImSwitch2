@@ -1,7 +1,8 @@
 # ImProcess Fiji-like Image Toolbar
 
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
-duplicate, max-projection, split-stack and split-channel slices landed
+duplicate, crop/substack, max-projection, split-stack and split-channel slices
+landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -317,7 +318,7 @@ Regression tests:
    contracts. **Implemented for whole-result duplicate and one-click max
    projection.**
 5. Add stack subset/split processors and wire toolbar dialogs. **Implemented
-   for one-click split stack; crop/substack range dialogs remain pending.**
+   for crop/substack range selection and one-click split stack.**
 6. Add channel split/merge/composite/RGB processors. **Implemented for
    channel split; merge/composite/RGB remain pending.**
 7. Promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
@@ -344,6 +345,8 @@ Implemented files:
   processor commands that emit multiple results.
 - `processors/stack_split` and `processors/channel_split` — Fiji-like stack and
   channel split processors.
+- `processors/stack_subset` and `view/StackSubsetDialog.py` — Fiji-like
+  crop/substack range selection with per-axis first/last/step controls.
 - `ImProcessMainView` — persistent Image menu and image toolbar.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
@@ -354,6 +357,7 @@ Current scope:
 - display-only Reset contrast;
 - modeless Brightness/Contrast dialog;
 - Duplicate active result;
+- Crop/Substack dialog using `stack-subset`, preserving rank and axis metadata;
 - one-click Max projection using the existing projection processor's default
   stack-axis selection;
 - one-click Split stack using `stack-split`, publishing one result per plane;
@@ -364,8 +368,6 @@ Current scope:
 
 Next implementation slice:
 
-- add crop/substack range selection for labeled axes without materializing lazy
-  backing arrays unless a copy is explicitly requested;
 - add channel/LUT state that persists per display layer, then use it for
   composite and RGB creation;
 - add channel merge / make composite / make RGB processors and toolbar actions.

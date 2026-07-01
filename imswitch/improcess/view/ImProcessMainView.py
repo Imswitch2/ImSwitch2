@@ -63,6 +63,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageContrastDialogRequested = QtCore.Signal()
     sigImageResetViewRequested = QtCore.Signal()
     sigImageDuplicateRequested = QtCore.Signal()
+    sigImageCropSubstackRequested = QtCore.Signal()
     sigImageMaxProjectionRequested = QtCore.Signal()
     sigImageSplitStackRequested = QtCore.Signal()
     sigImageSplitChannelsRequested = QtCore.Signal()
@@ -553,6 +554,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Duplicate the active result',
             style.standardIcon(QtWidgets.QStyle.SP_FileDialogNewFolder),
             self.sigImageDuplicateRequested,
+        )
+        self._addImageAction(
+            'crop-substack',
+            'Crop/Substack...',
+            'Create a cropped or ranged substack from the active result',
+            style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton),
+            self.sigImageCropSubstackRequested,
         )
         self._addImageAction(
             'max-projection',

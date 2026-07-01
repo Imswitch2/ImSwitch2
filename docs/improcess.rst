@@ -100,6 +100,8 @@ the active reconstructor.  The first implemented tools are:
   versus current-view histogram scope.
 * *Reset contrast* — reset the active layer to the finite data range.
 * *Duplicate* — create a new array-backed result from the active result.
+* *Crop/Substack...* — create a ranged subset with first/last/step controls for
+  every result axis.
 * *Max projection* — create a max projection using the projection processor's
   default stack-axis choice.
 * *Split stack* — split the active stack into one result per plane along the
@@ -110,12 +112,12 @@ the active reconstructor.  The first implemented tools are:
 
 The contrast operations are display-only: they update the Napari image layer
 and the active :py:class:`~imswitch.improcess.model.result.ProcessingResult`
-display levels, but do not alter pixel data.  Duplicate and max projection
-publish new ``ProcessingResult`` objects into the reconstruction list. Split
-stack and split channels publish multiple ``ProcessingResult`` objects and make
-the final split result current. More Fiji-like data-changing commands such as
-make composite, make RGB and channel merge are planned as processor-backed
-toolbar actions.
+display levels, but do not alter pixel data.  Duplicate, crop/substack and max
+projection publish new ``ProcessingResult`` objects into the reconstruction
+list. Split stack and split channels publish multiple ``ProcessingResult``
+objects and make the final split result current. More Fiji-like data-changing
+commands such as make composite, make RGB and channel merge are planned as
+processor-backed toolbar actions.
 
 Built-in plugins
 ----------------
@@ -130,6 +132,7 @@ snouty                  Reconstructor  SNOUTY / OPM / MS-RESOLFT lightsheet desk
 snouty-projections      Reconstructor  Fast SNOUTY projection-preview stack
 drift-correct           Processor      FFT cross-correlation drift correction with drift trace plots
 projection              Processor      Generic max/mean/sum/median/std axis projections
+stack-subset            Processor      Crop/substack by labeled axis ranges
 stack-split             Processor      Split a stack axis into one result per plane
 channel-split           Processor      Split a channel-like C/Channel/Base axis into one result per channel
 segmentation            Processor      Threshold + connected-component labels and ROI export
@@ -548,9 +551,9 @@ Done:
   checkerboard / odd-even splitting, 1/7 threshold and resolution estimates
 * ``projection`` processor and optional projection panel: max, mean, sum,
   median and standard-deviation projections along selected axes
-* ``stack-split`` and ``channel-split`` processors plus image-toolbar actions:
-  one source result can emit multiple per-plane or per-channel results through
-  the shared ``ProcessorOutput`` contract
+* ``stack-subset``, ``stack-split`` and ``channel-split`` processors plus
+  image-toolbar actions: one source result can emit cropped substacks or
+  multiple per-plane/per-channel results through the shared processor contracts
 * ``segmentation`` processor and optional segmentation panel: manual/Otsu
   thresholding, connected components, label-layer display and ROI Manager
   mask export, plus region-table export
