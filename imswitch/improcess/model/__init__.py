@@ -8,4 +8,5 @@ from .result import (
     ViewMode,
 )
 from .plotting import PlotPayload, PlotSeries
+from .virtual_image import VirtualImageSource
 # PatternFinder and SignalExtractor moved to reconstructors/monalisa/.

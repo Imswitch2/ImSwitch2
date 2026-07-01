@@ -317,7 +317,7 @@ fires once the whole recording is done).
 
 ```
 DataObj (model/DataObj.py — format-aware h5py/tiff/zarr loader;
-         currently materializes image arrays)
+         data_handle is lazy, data materializes as NumPy)
    │   Reconstructor.process(data_obj, params)         params = make_param_widget().get_values()
    ▼
 ProcessingResult

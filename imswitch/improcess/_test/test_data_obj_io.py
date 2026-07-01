@@ -31,6 +31,60 @@ def test_data_obj_reads_legacy_hdf5_dataset(tmp_path) -> None:
     data_obj.checkAndUnloadData()
 
 
+def test_data_obj_hdf5_lazy_handle_does_not_materialize(tmp_path) -> None:
+    path = tmp_path / "lazy.h5"
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+
+    with h5py.File(path, "w") as file:
+        dataset = file.create_dataset("CAM", data=data, chunks=(1, 4, 5))
+        dataset.attrs["detector_name"] = "CAM"
+
+    data_obj = DataObj("lazy.h5", "CAM", path=str(path))
+
+    assert not data_obj.sourceLoaded
+    assert not data_obj.dataLoaded
+    assert data_obj.attrs["detector_name"] == "CAM"
+    assert data_obj.sourceLoaded
+    assert not data_obj.dataMaterialized
+    assert data_obj.numFrames == 3
+    assert data_obj.sourceLoaded
+    assert not data_obj.dataMaterialized
+
+    handle = data_obj.data_handle
+    assert handle.shape == data.shape
+    assert handle.dtype == data.dtype
+    assert handle.chunks == (1, 4, 5)
+    np.testing.assert_array_equal(handle[1], data[1])
+    assert not data_obj.dataMaterialized
+
+    np.testing.assert_array_equal(data_obj.data, data)
+    assert data_obj.dataLoaded
+    assert data_obj.dataMaterialized
+
+    data_obj.checkAndUnloadData()
+    assert not data_obj.sourceLoaded
+    assert not data_obj.dataLoaded
+
+
+def test_data_obj_mean_uses_lazy_handle_without_materializing(tmp_path) -> None:
+    path = tmp_path / "lazy-mean.h5"
+    data = np.arange(4 * 3 * 2, dtype=np.uint16).reshape(4, 3, 2)
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data, chunks=(1, 3, 2))
+
+    data_obj = DataObj("lazy-mean.h5", "CAM", path=str(path))
+
+    mean = data_obj.getMeanData()
+
+    np.testing.assert_allclose(mean, np.mean(data, axis=0).astype(np.float32))
+    assert data_obj.sourceLoaded
+    assert not data_obj.dataMaterialized
+    assert not data_obj.dataLoaded
+
+    data_obj.checkAndUnloadData()
+
+
 def test_data_obj_accepts_legacy_path_as_name_constructor(tmp_path) -> None:
     path = tmp_path / "path_as_name.h5"
     data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
@@ -113,6 +167,30 @@ def test_data_obj_reads_ome_tiff_series_axes_and_scale(tmp_path) -> None:
     data_obj.checkAndUnloadData()
 
 
+def test_data_obj_ome_tiff_lazy_handle_slices_without_data_cache(tmp_path) -> None:
+    path = tmp_path / "lazy-ome.ome.tif"
+    data = np.arange(2 * 3 * 4 * 5, dtype=np.uint16).reshape(2, 3, 4, 5)
+    tiff.imwrite(path, data, ome=True, metadata={"axes": "TCYX"})
+
+    data_obj = DataObj("lazy-ome.ome.tif", None, path=str(path))
+    data_obj.checkAndOpenData()
+
+    assert data_obj.datasetName == "Image0"
+    assert data_obj.sourceLoaded
+    assert not data_obj.dataMaterialized
+    handle = data_obj.data_handle
+    assert handle.backend == "tiff"
+    assert handle.shape == data.shape
+    assert handle.dtype == data.dtype
+    np.testing.assert_array_equal(handle[1, 2], data[1, 2])
+    assert not data_obj.dataMaterialized
+
+    np.testing.assert_array_equal(data_obj.data, data)
+    assert data_obj.dataMaterialized
+
+    data_obj.checkAndUnloadData()
+
+
 def test_data_obj_selects_named_ome_tiff_series(tmp_path) -> None:
     path = tmp_path / "multi-series.ome.tif"
     first = np.zeros((3, 4), dtype=np.uint16)
@@ -153,6 +231,31 @@ def test_data_obj_reads_legacy_zarr_array(tmp_path) -> None:
     np.testing.assert_array_equal(data_obj.data, data)
     assert data_obj.attrs["detector_name"] == "CAM"
     assert data_obj.attrs["writing"] is False
+
+    data_obj.checkAndUnloadData()
+
+
+def test_data_obj_zarr_lazy_handle_does_not_materialize(tmp_path) -> None:
+    path = tmp_path / "lazy.zarr"
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+    ZarrStorer._create_array(root, "CAM", data=data, chunks=(1, 4, 5))
+
+    data_obj = DataObj("lazy.zarr", "CAM", path=str(path))
+    data_obj.checkAndOpenData()
+
+    assert data_obj.sourceLoaded
+    assert not data_obj.dataLoaded
+    handle = data_obj.data_handle
+    assert handle.backend == "zarr"
+    assert handle.shape == data.shape
+    assert handle.dtype == data.dtype
+    assert handle.chunks == (1, 4, 5)
+    np.testing.assert_array_equal(handle[2], data[2])
+    assert not data_obj.dataMaterialized
+
+    np.testing.assert_array_equal(data_obj.data, data)
+    assert data_obj.dataMaterialized
 
     data_obj.checkAndUnloadData()
 

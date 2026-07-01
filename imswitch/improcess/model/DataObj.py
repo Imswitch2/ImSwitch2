@@ -19,6 +19,7 @@ from imswitch.improcess.model.image_sources import (
     is_zarr_group as _is_zarr_group,
     resolve_image,
 )
+from imswitch.improcess.model.virtual_image import virtual_source_from_resolved_image
 
 
 class DataObj:
@@ -38,6 +39,7 @@ class DataObj:
         self._meanData = None
         self._file = file
         self._data = None
+        self._dataSource = None
         self._datasetName = datasetName
         self._attrs = None
         self._resolvedImage = None
@@ -52,18 +54,33 @@ class DataObj:
         if self._data is not None:
             return self._data
 
-        if isinstance(self._file, h5py.File):
-            self._data = np.array(self._resolveImage().array[:])
-        elif isinstance(self._file, tiff.TiffFile):
-            self._data = np.array(self._resolveImage().array.asarray())
-        elif _is_zarr_group(self._file):
-            self._data = np.array(self._resolveImage().array)
+        source = self.data_source
+        if source is None:
+            return None
+        self._data = source.array.asarray()
         return self._data
+
+    @property
+    def data_source(self):
+        if self._dataSource is None:
+            self.checkAndOpenData()
+        return self._dataSource
+
+    @property
+    def data_handle(self):
+        source = self.data_source
+        return source.array if source is not None else None
 
     @property
     def attrs(self):
         if self._attrs is not None:
             return self._attrs
+
+        if self._file is None and self.dataPath is not None:
+            try:
+                self.checkAndOpenData()
+            except Exception:
+                return self._attrs
 
         if isinstance(self._file, h5py.File):
             attrs = dict(self._file.attrs)
@@ -99,7 +116,15 @@ class DataObj:
 
     @property
     def dataLoaded(self):
-        return self.data is not None
+        return self._data is not None
+
+    @property
+    def dataMaterialized(self):
+        return self._data is not None
+
+    @property
+    def sourceLoaded(self):
+        return self._dataSource is not None
 
     @property
     def datasetName(self):
@@ -107,21 +132,41 @@ class DataObj:
 
     @property
     def numFrames(self):
-        return np.shape(self.data)[0] if self.data is not None else None
+        if self._data is not None:
+            shape = np.shape(self._data)
+        else:
+            source = self.data_source
+            shape = source.array.shape if source is not None else ()
+        return shape[0] if shape else None
 
     def checkAndLoadData(self):
         if not self.dataLoaded:
             try:
-                self._file, self._datasetName = DataObj._open(self.dataPath, self._datasetName)
+                self.checkAndOpenData()
                 if self.data is not None:
                     self.__logger.debug('Data loaded')
             except Exception:
                 pass
 
+    def checkAndOpenData(self):
+        if self._dataSource is not None:
+            return
+        if self._file is None:
+            if self.dataPath is None:
+                return
+            self._file, self._datasetName = DataObj._open(self.dataPath, self._datasetName)
+        self._resolveImage()
+
     def checkAndLoadDarkFrame(self):
         pass
 
     def checkAndUnloadData(self):
+        if self._dataSource is not None:
+            try:
+                self._dataSource.close()
+            except Exception:
+                self.__logger.error('Error closing data source')
+
         if self._file is not None:
             try:
                 self._file.close()
@@ -130,19 +175,38 @@ class DataObj:
 
         self._file = None
         self._data = None
+        self._dataSource = None
         self._attrs = None
         self._resolvedImage = None
         self._meanData = None
 
     def getMeanData(self):
         if self._meanData is None:
-            self._meanData = np.array(np.mean(self.data, 0), dtype=np.float32)
+            handle = self.data_handle
+            if handle is not None and handle.ndim > 0 and not self.dataMaterialized:
+                frame_count = int(handle.shape[0])
+                if frame_count > 0:
+                    accumulator = None
+                    for frame_index in range(frame_count):
+                        frame = np.asarray(handle[frame_index], dtype=np.float64)
+                        if accumulator is None:
+                            accumulator = np.zeros_like(frame, dtype=np.float64)
+                        accumulator += frame
+                    self._meanData = np.asarray(
+                        accumulator / frame_count,
+                        dtype=np.float32,
+                    )
+                else:
+                    self._meanData = np.array(np.mean(self.data, 0), dtype=np.float32)
+            else:
+                self._meanData = np.array(np.mean(self.data, 0), dtype=np.float32)
 
         return self._meanData
 
     def _resolveImage(self):
         if self._resolvedImage is None:
             self._resolvedImage = resolve_image(self._file, self._datasetName)
+            self._dataSource = virtual_source_from_resolved_image(self._resolvedImage)
             self._applyResolvedImageMetadata(self._resolvedImage)
         return self._resolvedImage
 
@@ -162,6 +226,16 @@ class DataObj:
     def _ensureMetadata(self):
         if self._axis_labels is not None:
             return
+
+        if self._dataSource is not None:
+            return
+
+        if self._file is None and self.dataPath is not None:
+            try:
+                self.checkAndOpenData()
+                return
+            except Exception:
+                pass
 
         if (
             isinstance(self._file, h5py.File)
