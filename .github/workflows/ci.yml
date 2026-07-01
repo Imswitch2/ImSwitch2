@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same ref so rapid pushes don't pile up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint (critical errors)
@@ -15,6 +20,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            setup.cfg
+            pyproject.toml
       - run: pip install ruff
       - name: Check for critical errors only
         run: ruff check imswitch/
@@ -27,10 +36,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            setup.cfg
+            pyproject.toml
       - name: Install dependencies
         # Single source of truth: the `test` extra pulls install_requires +
-        # pytest / pytest-qt / pytest-cov / pytest-timeout. No hand-maintained
-        # dependency list to drift out of sync.
+        # pytest / pytest-qt / pytest-cov / pytest-timeout / pytest-xdist. No
+        # hand-maintained dependency list to drift out of sync.
         run: |
           pip install --upgrade pip
           pip install -e ".[test]"
@@ -44,17 +57,22 @@ jobs:
         # Covers the full non-GUI suite: no-hardware profile, imcontrol unit +
         # controller tests, and the improcess processing/analysis tests.
         # --timeout aborts any hung test instead of stalling the runner.
+        # -n auto shards the suite across all runner cores; because plugin
+        # autoload is disabled above, xdist must be loaded explicitly via
+        # -p xdist.plugin (same as pytestqt / pytest_timeout). The -p flags
+        # propagate to the xdist workers.
         # Excluded here (run in the manual `imswitch-test` workflow, which has a
         # real display via xvfb): imswitch/imcontrol/_test/ui (napari GUI tests).
         # TODO: re-include improcess/_test/test_snouty.py once the SNOUTY CPU
         # deskew all-zero-output failure is fixed (pre-existing failure on main).
         run: |
-          pytest -p pytestqt.plugin -p pytest_timeout \
+          pytest -p xdist.plugin -p pytestqt.plugin -p pytest_timeout \
             imswitch/test_no_hardware_profile.py \
             imswitch/imcontrol/_test/unit \
             imswitch/imcontrol/controller/_test \
             imswitch/improcess/_test \
             --ignore=imswitch/improcess/_test/test_snouty.py \
+            -n auto \
             --timeout=180 \
             -v
 
@@ -66,6 +84,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            setup.cfg
+            pyproject.toml
       - run: pip install build
       - name: Build package
         run: python -m build --no-isolation 2>/dev/null || python -m build
