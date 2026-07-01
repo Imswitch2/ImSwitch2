@@ -1,5 +1,4 @@
 import os
-from typing import Any
 
 import h5py
 import numpy as np
@@ -7,20 +6,19 @@ import tifffile as tiff
 import zarr
 import time
 
-# zarr v2 placed the Group class under _ZarrGroup; v3 lifted it
-# to the top level. Use a single name (`_ZarrGroup`) for isinstance checks
-# regardless of which version is installed.
-_ZarrGroup = getattr(zarr, "Group", None) or getattr(getattr(zarr, "hierarchy", None), "Group", None)
-_ZarrArray = getattr(zarr, "Array", None) or getattr(getattr(zarr, "core", None), "Array", None)
 from imswitch.imcommon.model import initLogger
-
-
-def _is_zarr_group(obj: Any) -> bool:
-    return _ZarrGroup is not None and isinstance(obj, _ZarrGroup)
-
-
-def _is_zarr_array(obj: Any) -> bool:
-    return _ZarrArray is not None and isinstance(obj, _ZarrArray)
+from imswitch.improcess.model.dataset_sources import resolve_dataset_source
+from imswitch.improcess.model.image_sources import (
+    axis_scales_from_element_size,
+    default_axis_labels,
+    dataset_names,
+    flatten_metadata_attrs,
+    is_array_node,
+    is_structured_detector_group,
+    is_zarr_array as _is_zarr_array,
+    is_zarr_group as _is_zarr_group,
+    resolve_image,
+)
 
 
 class DataObj:
@@ -28,13 +26,25 @@ class DataObj:
         self.__logger = initLogger(self, instanceName=f'{name}/{datasetName}')
 
         self.name = name
-        self.dataPath = path or (name if isinstance(name, str) and os.path.exists(name) else None)
+        raw_path = path or (name if isinstance(name, str) and os.path.exists(name) else None)
+        if raw_path is not None:
+            try:
+                self.dataPath = str(resolve_dataset_source(raw_path).path)
+            except Exception:
+                self.dataPath = raw_path
+        else:
+            self.dataPath = None
         self.darkFrame = None
         self._meanData = None
         self._file = file
         self._data = None
         self._datasetName = datasetName
         self._attrs = None
+        self._resolvedImage = None
+        self._axis_labels = None
+        self._axis_scales = None
+        self._scale_unit = None
+        self._source_info = None
         self.__logger = initLogger(self, tryInheritParent=False)
 
     @property
@@ -43,11 +53,11 @@ class DataObj:
             return self._data
 
         if isinstance(self._file, h5py.File):
-            self._data = np.array(DataObj._resolve_dataset(self._file, self._datasetName)[:])
+            self._data = np.array(self._resolveImage().array[:])
         elif isinstance(self._file, tiff.TiffFile):
-            self._data = self._file.asarray()
+            self._data = np.array(self._resolveImage().array.asarray())
         elif _is_zarr_group(self._file):
-            self._data = np.array(DataObj._resolve_dataset(self._file, self._datasetName))
+            self._data = np.array(self._resolveImage().array)
         return self._data
 
     @property
@@ -57,13 +67,35 @@ class DataObj:
 
         if isinstance(self._file, h5py.File):
             attrs = dict(self._file.attrs)
-            attrs.update(DataObj._read_dataset_attrs(self._file, self.datasetName))
+            attrs.update(self._resolveImage().attrs)
             self._attrs = attrs
         if _is_zarr_group(self._file):
             attrs = dict(self._file.attrs)
-            attrs.update(DataObj._read_dataset_attrs(self._file, self.datasetName))
+            attrs.update(self._resolveImage().attrs)
             self._attrs = attrs
+        if isinstance(self._file, tiff.TiffFile):
+            self._attrs = dict(self._resolveImage().attrs)
         return self._attrs
+
+    @property
+    def axis_labels(self):
+        self._ensureMetadata()
+        return self._axis_labels
+
+    @property
+    def axis_scales(self):
+        self._ensureMetadata()
+        return self._axis_scales
+
+    @property
+    def scale_unit(self):
+        self._ensureMetadata()
+        return self._scale_unit
+
+    @property
+    def source_info(self):
+        self._ensureMetadata()
+        return self._source_info
 
     @property
     def dataLoaded(self):
@@ -99,6 +131,7 @@ class DataObj:
         self._file = None
         self._data = None
         self._attrs = None
+        self._resolvedImage = None
         self._meanData = None
 
     def getMeanData(self):
@@ -107,26 +140,70 @@ class DataObj:
 
         return self._meanData
 
+    def _resolveImage(self):
+        if self._resolvedImage is None:
+            self._resolvedImage = resolve_image(self._file, self._datasetName)
+            self._applyResolvedImageMetadata(self._resolvedImage)
+        return self._resolvedImage
+
+    def _applyResolvedImageMetadata(self, image):
+        ndim = len(image.array.shape)
+        fallback_scales, fallback_unit = axis_scales_from_element_size(image.attrs, ndim)
+
+        self._axis_labels = image.axis_labels or default_axis_labels(ndim)
+        self._axis_scales = image.axis_scales or fallback_scales or [1.0] * ndim
+        self._scale_unit = image.scale_unit or fallback_unit or "px"
+        self._source_info = {
+            "dataset_name": image.name,
+            "dataset_path": image.array_path,
+            "source_format": image.source_format,
+        }
+
+    def _ensureMetadata(self):
+        if self._axis_labels is not None:
+            return
+
+        if (
+            isinstance(self._file, h5py.File)
+            or _is_zarr_group(self._file)
+            or isinstance(self._file, tiff.TiffFile)
+        ):
+            self._resolveImage()
+            return
+
+        data = self._data
+        if data is not None:
+            ndim = np.ndim(data)
+            self._axis_labels = default_axis_labels(ndim)
+            self._axis_scales = [1.0] * ndim
+            self._scale_unit = "px"
+            self._source_info = {
+                "dataset_name": self._datasetName,
+                "dataset_path": None,
+                "source_format": type(self._file).__name__ if self._file is not None else None,
+            }
+
     @staticmethod
     def getDatasetNames(path):
         file, _ = DataObj._open(path, allowMultipleDatasets=True)
         try:
             if isinstance(file, h5py.File) or _is_zarr_group(file):
-                return DataObj._dataset_names(file)
+                return dataset_names(file)
             elif isinstance(file, tiff.TiffFile):
-                return ['default']
+                return dataset_names(file)
             else:
                 raise ValueError(f'Unsupported file type "{type(file).__name__}"')
         finally:
-            if isinstance(file, h5py.File):
+            if isinstance(file, h5py.File) or isinstance(file, tiff.TiffFile):
                 file.close()
 
     @staticmethod
     def _open(path, datasetName=None, allowMultipleDatasets=False):
-        ext = os.path.splitext(path)[1]
-        if ext in ['.hdf5', '.hdf', '.h5']:
+        source = resolve_dataset_source(path)
+        path = str(source.path)
+        if source.format_id == 'hdf5':
             file = h5py.File(path, 'r')
-            datasetNames = DataObj._dataset_names(file)
+            datasetNames = dataset_names(file)
             if len(datasetNames) < 1:
                 raise RuntimeError('File does not contain any datasets')
             elif len(datasetNames) > 1 and datasetName is None and not allowMultipleDatasets:
@@ -138,11 +215,23 @@ class DataObj:
                 datasetName = datasetNames[0]
 
             return file, datasetName
-        elif ext in ['.tiff', '.tif']:
-            return tiff.TiffFile(path), None
-        elif ext in ['.zarr']:
+        elif source.format_id == 'tiff':
+            file = tiff.TiffFile(path)
+            datasetNames = dataset_names(file)
+            if len(datasetNames) < 1:
+                raise RuntimeError('File does not contain any datasets')
+            elif len(datasetNames) > 1 and datasetName is None and not allowMultipleDatasets:
+                raise RuntimeError('File contains multiple datasets')
+
+            if datasetName is None and not allowMultipleDatasets:
+                datasetName = datasetNames[0]
+            elif datasetName not in datasetNames and len(datasetNames) == 1 and not allowMultipleDatasets:
+                datasetName = datasetNames[0]
+
+            return file, datasetName
+        elif source.format_id == 'zarr':
             file = zarr.open(path, mode='r')
-            datasetNames = DataObj._dataset_names(file)
+            datasetNames = dataset_names(file)
             if len(datasetNames) < 1:
                 raise RuntimeError('File does not contain any datasets')
             elif len(datasetNames) > 1 and datasetName is None and not allowMultipleDatasets:
@@ -155,68 +244,31 @@ class DataObj:
 
             return file, datasetName
         else:
-            raise ValueError(f'Unsupported file extension "{ext}"')
+            raise ValueError(f'Unsupported file extension "{os.path.splitext(path)[1]}"')
 
     @staticmethod
     def _is_structured_detector_group(node):
-        if isinstance(node, h5py.Group):
-            return 'data' in node and isinstance(node['data'], h5py.Dataset)
-        if _is_zarr_group(node):
-            return 'data' in node and _is_zarr_array(node['data'])
-        return False
+        return is_structured_detector_group(node)
 
     @staticmethod
     def _is_array_node(node):
-        return isinstance(node, h5py.Dataset) or _is_zarr_array(node)
+        return is_array_node(node)
 
     @staticmethod
     def _dataset_names(file):
-        names = []
-        for name in file.keys():
-            node = file[name]
-            if DataObj._is_array_node(node) or DataObj._is_structured_detector_group(node):
-                names.append(name)
-        return names
+        return dataset_names(file)
 
     @staticmethod
     def _resolve_dataset(file, datasetName):
-        if datasetName is None:
-            raise ValueError('datasetName is required')
-
-        node = file[datasetName]
-        if DataObj._is_structured_detector_group(node):
-            return node['data']
-        if DataObj._is_array_node(node):
-            return node
-        raise ValueError(f'Dataset "{datasetName}" is not an array or structured detector group')
+        return resolve_image(file, datasetName).array
 
     @staticmethod
     def _read_dataset_attrs(file, datasetName):
-        node = file[datasetName]
-        if DataObj._is_structured_detector_group(node):
-            attrs = dict(node['data'].attrs)
-            metadata = node.get('metadata')
-            if metadata is not None:
-                attrs.update(DataObj._flatten_metadata_attrs(metadata))
-            return attrs
-        if DataObj._is_array_node(node):
-            return dict(node.attrs)
-        return {}
+        return resolve_image(file, datasetName).attrs
 
     @staticmethod
     def _flatten_metadata_attrs(metadata_group, prefix=None):
-        prefix = [] if prefix is None else prefix
-        attrs = {}
-
-        for key, value in dict(metadata_group.attrs).items():
-            attrs[':'.join([*prefix, key])] = value
-
-        for name in metadata_group.keys():
-            child = metadata_group[name]
-            if isinstance(child, h5py.Group) or _is_zarr_group(child):
-                attrs.update(DataObj._flatten_metadata_attrs(child, [*prefix, name]))
-
-        return attrs
+        return flatten_metadata_attrs(metadata_group, prefix)
 
     def describesSameAs(self, other):  # Don't use __eq__, that makes the class unhashable
         try:

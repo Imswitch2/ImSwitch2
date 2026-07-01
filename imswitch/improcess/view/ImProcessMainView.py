@@ -1027,6 +1027,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def dropEvent(self, event):
         """Process dropped files and emit sigFilesDropped signal."""
         from pathlib import Path
+        from imswitch.improcess.model.dataset_sources import has_zarr_ancestor
         
         urls = event.mimeData().urls()
         paths = []
@@ -1042,7 +1043,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 continue
             
             # Check file extension
-            if path.suffix.lower() in supported_exts:
+            if path.suffix.lower() in supported_exts or has_zarr_ancestor(path):
                 paths.append(path)
             else:
                 rejected.append(path.name)

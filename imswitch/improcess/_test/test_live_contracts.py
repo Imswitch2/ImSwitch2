@@ -138,6 +138,43 @@ def test_in_memory_stack_wrapper_supports_batch_fallback():
     np.testing.assert_array_equal(result.data, stack)
 
 
+def test_in_memory_stack_wrapper_exposes_dataobj_metadata_contract():
+    # The live batch-fallback path wraps the buffered stack in
+    # InMemoryStackWrapper and calls reconstructor.process() on it. Pass-through
+    # reconstructors (View-only) read axis_labels/axis_scales/scale_unit off the
+    # data object, so the wrapper must expose the same contract as DataObj or
+    # process() raises AttributeError and the live result is silently dropped.
+    stack = np.zeros((3, 4, 5), dtype=np.uint16)
+
+    plain = InMemoryStackWrapper("ram", "CAM", stack, attrs={})
+    assert plain.axis_labels == ["C", "Y", "X"]
+    assert plain.axis_scales == [1.0, 1.0, 1.0]
+    assert plain.scale_unit == "px"
+    assert plain.source_info["dataset_name"] == "CAM"
+
+    calibrated = InMemoryStackWrapper(
+        "ram", "CAM", stack, attrs={"element_size_um": [1.0, 0.1, 0.1]}
+    )
+    assert calibrated.axis_scales == [1.0, 0.1, 0.1]
+    assert calibrated.scale_unit == "um"
+
+
+def test_view_only_reconstructs_from_in_memory_wrapper():
+    from imswitch.improcess.reconstructors.view_only.reconstructor import (
+        ViewOnlyReconstructor,
+    )
+
+    stack = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    wrapper = InMemoryStackWrapper(
+        "ram", "CAM", stack, attrs={"element_size_um": [1.0, 0.2, 0.2]}
+    )
+
+    result = ViewOnlyReconstructor().process(wrapper, {})
+    np.testing.assert_array_equal(result.data, stack)
+    assert result.axis_scales == [1.0, 0.2, 0.2]
+    assert result.scale_unit == "um"
+
+
 def test_live_source_contract_yields_chunk_ranges():
     stack = np.zeros((5, 2, 3), dtype=np.float32)
     source = _Source(stack, chunk_size=2)

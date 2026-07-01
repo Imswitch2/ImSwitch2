@@ -87,6 +87,88 @@ def test_zarr_live_source_legacy_layout(tmp_zarr_path):
     source.close()
 
 
+def test_zarr_live_source_reads_root_ngff_full_resolution_array(tmp_zarr_path):
+    data = np.arange(4 * 3 * 5, dtype=np.uint16).reshape(4, 3, 5)
+
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    array = ZarrStorer._create_array(root, "0", data=data, chunks=(2, 3, 5))
+    array.attrs["writing"] = False
+    root.attrs["multiscales"] = [
+        {
+            "axes": [
+                {"name": "t", "type": "time"},
+                {"name": "y", "type": "space", "unit": "micrometer"},
+                {"name": "x", "type": "space", "unit": "micrometer"},
+            ],
+            "datasets": [{"path": "0"}],
+        }
+    ]
+
+    source = ZarrLiveSource(chunk_size=2)
+    info = source.open(tmp_zarr_path)
+
+    assert info.frame_shape == (3, 5)
+    assert info.dataset_path == "/0"
+    assert info.attrs["ngff:axes"][1]["name"] == "y"
+
+    chunks = []
+    while not source.is_complete():
+        chunks.extend(source.poll())
+
+    reconstructed = np.concatenate([chunk.data for chunk in chunks], axis=0)
+    np.testing.assert_array_equal(reconstructed, data)
+
+    source.close()
+
+
+def test_zarr_live_source_reads_detector_group_ngff_and_polls(tmp_zarr_path):
+    """Detector group carrying OME-NGFF ``multiscales`` (recording output).
+
+    RecordingManager writes ``ome.multiscales`` onto the *detector group* with
+    ``datasets[].path = "data"`` (a group-relative path). The image resolver
+    must rebase that to the store-relative ``CAM/data`` so the live source's
+    per-poll re-traversal from the root actually reaches the array — otherwise
+    poll() raises KeyError('data') and Zarr live reconstruction silently dies.
+    """
+    data = np.arange(6 * 4 * 5, dtype=np.uint16).reshape(6, 4, 5)
+
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    det_group = root.create_group("CAM")
+    array = ZarrStorer._create_array(det_group, "data", data=data, chunks=(2, 4, 5))
+    array.attrs["detector_name"] = "CAM"
+    array.attrs["writing"] = False
+    det_group.attrs["ome"] = {
+        "version": "0.5",
+        "multiscales": [
+            {
+                "name": "CAM",
+                "axes": [
+                    {"name": "t", "type": "time"},
+                    {"name": "y", "type": "space", "unit": "micrometer"},
+                    {"name": "x", "type": "space", "unit": "micrometer"},
+                ],
+                "datasets": [{"path": "data"}],
+            }
+        ],
+    }
+    root.attrs["ome"] = {"version": "0.5", "series": [{"path": "CAM"}]}
+
+    source = ZarrLiveSource(chunk_size=2)
+    info = source.open(tmp_zarr_path)
+
+    assert info.frame_shape == (4, 5)
+    assert info.detector_name == "CAM"
+
+    chunks = []
+    while not source.is_complete():
+        chunks.extend(source.poll())
+
+    reconstructed = np.concatenate([c.data for c in chunks], axis=0)
+    np.testing.assert_array_equal(reconstructed, data)
+
+    source.close()
+
+
 def test_zarr_live_source_auto_detect_detector(tmp_zarr_path):
     """Test auto-detection of detector name."""
     data = np.zeros((3, 2, 4), dtype=np.uint16)

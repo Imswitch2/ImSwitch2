@@ -121,8 +121,9 @@ def _make_controller_stub():
         warning=lambda *_: None,
         error=lambda *_: None,
     )
-    ctl._main = SimpleNamespace(_currentDataObj=None)
+    ctl._main = SimpleNamespace(_currentDataObj=None, _activeReconstructor=None)
     ctl._commChannel = _CommChannel()
+    ctl._dataFolder = None
     ctl.multiDataFrameController = _RecordingMultiData()
     ctl.pickDatasetsController = _RecordingPickController()
     ctl._widget = _FakeWidget()
@@ -130,6 +131,8 @@ def _make_controller_stub():
     # exercised verbatim.
     ctl._loadFromPath = FileIOController._loadFromPath.__get__(ctl)
     ctl._loadAsCurrent = FileIOController._loadAsCurrent.__get__(ctl)
+    ctl._activeSourceSpecs = FileIOController._activeSourceSpecs.__get__(ctl)
+    ctl.quickLoadData = FileIOController.quickLoadData.__get__(ctl)
     return ctl
 
 
@@ -146,6 +149,39 @@ def test_single_dataset_default_goes_to_multidata(monkeypatch):
     assert ctl.multiDataFrameController.added == [('file.h5', 'frame', '/x/file.h5')]
     assert ctl._main._currentDataObj is None
     assert not ctl._widget.dialog_shown
+
+
+def test_zarr_child_path_is_normalized_before_routing(monkeypatch):
+    _FakeDataObj.install(monkeypatch, {'/x/store.zarr': ['APD']})
+    ctl = _make_controller_stub()
+
+    outcome = ctl._loadFromPath('/x/store.zarr/APD/data/0.0.0')
+
+    assert outcome == 'multidata'
+    assert ctl.multiDataFrameController.added == [('store.zarr', 'APD', '/x/store.zarr')]
+
+
+def test_quick_load_uses_folder_dialog_for_active_zarr_format(monkeypatch):
+    _FakeDataObj.install(monkeypatch, {'/picked/store.zarr': ['APD']})
+    ctl = _make_controller_stub()
+    ctl._main._activeReconstructor = SimpleNamespace(file_extensions=['hdf5', 'zarr'])
+    ctl._widget.extension = SimpleNamespace(value=lambda: 'zarr')
+
+    monkeypatch.setattr(
+        'imswitch.improcess.controller.FileIOController.guitools.askForFolderPath',
+        lambda *args, **kwargs: '/picked/store.zarr',
+    )
+    monkeypatch.setattr(
+        'imswitch.improcess.controller.FileIOController.guitools.askForFilePath',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('file dialog used')),
+    )
+
+    ctl.quickLoadData()
+
+    assert ctl._main._currentDataObj.datasetName == 'APD'
+    assert ctl._main._currentDataObj.path == '/picked/store.zarr'
+    assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
+    assert ctl.multiDataFrameController.added == []
 
 
 def test_single_dataset_prefer_current_routes_to_current(monkeypatch):

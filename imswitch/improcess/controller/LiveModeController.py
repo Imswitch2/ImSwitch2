@@ -26,6 +26,12 @@ from .LiveReconstructionController import LiveReconstructionController
 _DISCOVERY_MAX_DEPTH = 2
 # Output subdirectories (reconstructions/logs) that must never be ingested.
 _DISCOVERY_EXCLUDE_DIRS = {"rec", "deskew", "Mini_Recon_Results", "__pycache__"}
+_LIVE_EXTENSION_SUFFIXES = {
+    "zarr": {".zarr"},
+    "hdf5": {".hdf5", ".h5", ".hdf"},
+    "h5": {".hdf5", ".h5", ".hdf"},
+    "hdf": {".hdf5", ".h5", ".hdf"},
+}
 
 
 class LiveModeController(ImProcessWidgetController):
@@ -103,7 +109,8 @@ class LiveModeController(ImProcessWidgetController):
         self._scanTimer.start()
 
         self._logger.info(
-            f"Live mode started: watching {folder_path} (recursively) for .{self._extension} stores"
+            f"Live mode started: watching {folder_path} (recursively) for "
+            f"{self._format_suffixes_for_log(self._active_live_suffixes())} stores"
         )
         self._scanForStores()
 
@@ -153,7 +160,7 @@ class LiveModeController(ImProcessWidgetController):
 
     def _discoverStores(self, root: str) -> list:
         """Return sorted recording-store paths under ``root`` (depth-limited)."""
-        suffix = f".{self._extension}".lower()
+        suffixes = self._active_live_suffixes()
         found = []
         root = os.path.abspath(root)
         for dirpath, dirnames, filenames in os.walk(root):
@@ -164,9 +171,45 @@ class LiveModeController(ImProcessWidgetController):
                 dirnames[:] = []
             # Zarr stores are directories; HDF5 are files. Check both.
             for name in list(dirnames) + filenames:
-                if name.lower().endswith(suffix):
+                if self._matches_live_suffix(name, suffixes):
                     found.append(os.path.join(dirpath, name))
         return sorted(found)
+
+    def _active_live_suffixes(self) -> set[str]:
+        """Return file suffixes the live watcher should ingest."""
+        reconstructor = self._getActiveReconstructor()
+        if reconstructor is not None:
+            suffixes = self._live_suffixes_for_reconstructor(reconstructor)
+            if suffixes:
+                return suffixes
+        return self._live_suffixes_for_extension(self._extension)
+
+    @staticmethod
+    def _live_suffixes_for_reconstructor(reconstructor) -> set[str]:
+        suffixes: set[str] = set()
+        for extension in getattr(reconstructor, "file_extensions", []) or []:
+            extension = (extension or "").lower().strip().lstrip(".")
+            if extension in _LIVE_EXTENSION_SUFFIXES:
+                suffixes.update(_LIVE_EXTENSION_SUFFIXES[extension])
+        return suffixes
+
+    @staticmethod
+    def _live_suffixes_for_extension(extension: str | None) -> set[str]:
+        extension = (extension or "").lower().strip().lstrip(".")
+        if not extension:
+            return {".zarr"}
+        if extension in _LIVE_EXTENSION_SUFFIXES:
+            return set(_LIVE_EXTENSION_SUFFIXES[extension])
+        return {f".{extension}"}
+
+    @staticmethod
+    def _matches_live_suffix(name: str, suffixes: set[str]) -> bool:
+        lowered = name.lower()
+        return any(lowered.endswith(suffix) for suffix in suffixes)
+
+    @staticmethod
+    def _format_suffixes_for_log(suffixes: set[str]) -> str:
+        return "/".join(sorted(suffixes))
 
     def _lapse_key(self, store_path: str):
         """Return ``(dedup_key, is_lapse)`` for a discovered store.

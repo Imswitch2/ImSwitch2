@@ -5,9 +5,16 @@ from pathlib import Path
 import numpy as np
 import tifffile as tiff
 
-import imswitch.improcess.view.guitools as guitools
+import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
 from imswitch.improcess.model import DataObj
+from imswitch.improcess.model.dataset_sources import (
+    LOCATOR_DIRECTORY,
+    file_dialog_filter,
+    preferred_source_spec,
+    resolve_dataset_source,
+    specs_for_reconstructor,
+)
 from .MultiDataFrameController import MultiDataFrameController
 from .basecontrollers import ImProcessWidgetController
 
@@ -39,17 +46,31 @@ class FileIOController(ImProcessWidgetController):
         )
 
     def quickLoadData(self):
-        extension = self._widget.extension.value() if self._widget.extension is not None else 'hdf5'
-        if extension == 'zarr':
-            dataPath = guitools.askForFolderPath(self._widget, defaultFolder=self._dataFolder)
-        elif extension == 'hdf5':
-            dataPath = guitools.askForFilePath(self._widget, defaultFolder=self._dataFolder)
+        specs = self._activeSourceSpecs()
+        extension = self._widget.extension.value() if self._widget.extension is not None else None
+        sourceSpec = preferred_source_spec(specs, extension)
+        if sourceSpec.locator == LOCATOR_DIRECTORY:
+            dataPath = guitools.askForFolderPath(
+                self._widget,
+                caption=f'Open {sourceSpec.label}',
+                defaultFolder=self._dataFolder,
+            )
         else:
-            dataPath = guitools.askForFilePath(self._widget, defaultFolder=self._dataFolder)
+            dataPath = guitools.askForFilePath(
+                self._widget,
+                caption=f'Open {sourceSpec.label}',
+                defaultFolder=self._dataFolder,
+                nameFilter=file_dialog_filter(specs),
+            )
 
         if dataPath:
             self._logger.debug(f'Loading data at: {dataPath}')
             self._loadFromPath(dataPath, prefer_as_current=True)
+
+    def _activeSourceSpecs(self):
+        active = getattr(self._main, '_activeReconstructor', None)
+        specs = specs_for_reconstructor(active) if active is not None else []
+        return specs or None
 
     def handleDroppedFiles(self, paths):
         """Process files dropped onto the main view via drag-and-drop.
@@ -100,6 +121,8 @@ class FileIOController(ImProcessWidgetController):
             ``'empty'``       — no datasets in the file or none selected.
         """
         try:
+            source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
+            dataPath = str(source.path)
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")

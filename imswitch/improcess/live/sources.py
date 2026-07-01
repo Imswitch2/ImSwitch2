@@ -10,22 +10,15 @@ import h5py
 import numpy as np
 import zarr
 
-from imswitch.improcess.reconstructors.base import Chunk, StackInfo
-
-_ZarrGroup = getattr(zarr, "Group", None) or getattr(
-    getattr(zarr, "hierarchy", None),
-    "Group",
-    None,
+from imswitch.improcess.model.image_sources import (
+    axis_scales_from_element_size,
+    dataset_names,
+    default_axis_labels,
+    is_zarr_array as _is_zarr_array,
+    is_zarr_group as _is_zarr_group,
+    resolve_image,
 )
-_ZarrArray = getattr(zarr, "Array", None) or getattr(getattr(zarr, "core", None), "Array", None)
-
-
-def _is_zarr_group(obj: Any) -> bool:
-    return _ZarrGroup is not None and isinstance(obj, _ZarrGroup)
-
-
-def _is_zarr_array(obj: Any) -> bool:
-    return _ZarrArray is not None and isinstance(obj, _ZarrArray)
+from imswitch.improcess.reconstructors.base import Chunk, StackInfo
 
 
 def _coerce_positive_int(value: Any) -> int | None:
@@ -148,9 +141,40 @@ class InMemoryStackWrapper:
         self.dataPath = None
         self._meanData = None
 
+        # Mirror the DataObj axis/scale metadata contract so pass-through
+        # reconstructors (e.g. View-only) get the same labels/calibration on the
+        # live batch-fallback path as on a batch load. Without these, their
+        # process() raises AttributeError on the in-memory wrapper.
+        ndim = self._data.ndim
+        fallback_scales, fallback_unit = axis_scales_from_element_size(self._attrs, ndim)
+        self._axis_labels = default_axis_labels(ndim)
+        self._axis_scales = fallback_scales or [1.0] * ndim
+        self._scale_unit = fallback_unit or "px"
+        self._source_info = {
+            "dataset_name": dataset_name,
+            "dataset_path": self._attrs.get("recording:dataset_path"),
+            "source_format": self._attrs.get("recording:source_format"),
+        }
+
     @property
     def datasetName(self) -> str:
         return self._datasetName
+
+    @property
+    def axis_labels(self) -> list[str]:
+        return self._axis_labels
+
+    @property
+    def axis_scales(self) -> list[float]:
+        return self._axis_scales
+
+    @property
+    def scale_unit(self) -> str:
+        return self._scale_unit
+
+    @property
+    def source_info(self) -> dict[str, Any]:
+        return self._source_info
 
     @property
     def data(self) -> np.ndarray:
@@ -315,13 +339,9 @@ class ZarrLiveSource(LiveSource):
         if self._root is None or _is_zarr_array(self._root):
             raise ValueError("Root not opened")
 
-        for key in self._root.keys():
-            item = self._root[key]
-            if _is_zarr_group(item):
-                if 'data' in item:
-                    return key
-            elif _is_zarr_array(item):
-                return key
+        names = dataset_names(self._root)
+        if names:
+            return names[0]
 
         raise ValueError("No detector array found in Zarr store")
 
@@ -330,26 +350,18 @@ class ZarrLiveSource(LiveSource):
         if self._root is None or _is_zarr_array(self._root):
             raise ValueError("Root not opened")
 
-        if detector_name in self._root:
-            item = self._root[detector_name]
-
-            if _is_zarr_group(item):
-                if 'data' not in item:
-                    raise ValueError(f"Detector group '{detector_name}' has no 'data' array")
-                array = item['data']
-                self._array_path = (detector_name, 'data')
-
-            elif _is_zarr_array(item):
-                array = item
-                self._array_path = (detector_name,)
-
-            else:
-                raise ValueError(f"'{detector_name}' is neither a group nor an array")
-        else:
+        names = dataset_names(self._root)
+        if detector_name not in names:
+            if detector_name in self._root and _is_zarr_group(self._root[detector_name]):
+                raise ValueError(f"Detector group '{detector_name}' has no 'data' array")
             raise ValueError(f"Detector '{detector_name}' not found in Zarr store")
 
-        self._array = array
-        return array, self._read_attrs()
+        image = resolve_image(self._root, detector_name)
+        self._array = image.array
+        self._array_path = tuple(image.array_path.split('/')) if image.array_path else ()
+        attrs = self._read_attrs()
+        attrs.update(image.attrs)
+        return image.array, attrs
 
     def _flatten_metadata(self, group: Any, attrs: dict[str, Any], prefix: str) -> None:
         """Recursively flatten metadata group into attrs dict with category prefixes."""

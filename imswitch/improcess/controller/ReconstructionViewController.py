@@ -127,8 +127,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             return 5
         else:
             # Custom view mode from ProcessingResult.view_modes (e.g. "XY", "XZ", "YZ").
-            # Return the name itself — getViewId() is only compared for equality in fullUpdate.
-            self._logger.debug("getViewId: custom view mode %r → using name as ID", viewName)
+            # Return the name itself; getViewId() is only compared for equality in fullUpdate.
             return viewName
 
     def _baseAxisIndex(self):

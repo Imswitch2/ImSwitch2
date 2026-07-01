@@ -110,6 +110,35 @@ def test_recursive_discovery_finds_stores_in_measurement_subfolders(tmp_path):
     assert names == {'rec_scan__00__CAM.zarr', 'rec_scan__01__CAM.zarr', 'top_level.zarr'}
 
 
+def test_hdf5_extension_discovers_all_hdf5_suffixes(tmp_path):
+    """The hdf5 selector covers the HDF5 suffix variants live sources support."""
+    _make_hdf5(str(tmp_path / 'a.hdf5'))
+    _make_hdf5(str(tmp_path / 'b.h5'))
+    _make_hdf5(str(tmp_path / 'c.hdf'))
+    _make_zarr(str(tmp_path / 'd.zarr'))
+
+    controller = _make_controller(folder_path=str(tmp_path), extension='hdf5')
+    found = controller._discoverStores(str(tmp_path))
+
+    names = {os.path.basename(p) for p in found}
+    assert names == {'a.hdf5', 'b.h5', 'c.hdf'}
+
+
+def test_reconstructor_extensions_discover_hdf5_and_zarr_live_formats(tmp_path):
+    """MoNaLISA-style HDF5+Zarr reconstructors are not limited by the UI selector."""
+    _make_hdf5(str(tmp_path / 'a.hdf5'))
+    _make_hdf5(str(tmp_path / 'b.h5'))
+    _make_zarr(str(tmp_path / 'c.zarr'))
+    (tmp_path / 'ignored.tiff').write_bytes(b'not a live source')
+
+    controller = _make_controller(folder_path=str(tmp_path), extension='hdf5')
+    controller._mainController._activeReconstructor.file_extensions = ['hdf5', 'zarr', 'tiff']
+    found = controller._discoverStores(str(tmp_path))
+
+    names = {os.path.basename(p) for p in found}
+    assert names == {'a.hdf5', 'b.h5', 'c.zarr'}
+
+
 def test_discovery_excludes_output_dirs(tmp_path):
     """Reconstruction-output subdirs (e.g. rec/) are not ingested."""
     _make_zarr(str(tmp_path / 'data.zarr'))

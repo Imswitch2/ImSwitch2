@@ -80,19 +80,28 @@ class ViewOnlyReconstructor(Reconstructor):
         try:
             data_obj.checkAndLoadData()
             data = np.asarray(data_obj.data)
+            source_axis_labels = data_obj.axis_labels
+            source_axis_scales = data_obj.axis_scales
+            source_scale_unit = data_obj.scale_unit
         finally:
             if not preloaded:
                 data_obj.checkAndUnloadData()
 
-        # Infer axis labels from ndim — last 2 dims are always Y, X.
         ndim = data.ndim
-        if ndim <= len(_DEFAULT_AXIS_LABELS):
+        if source_axis_labels and len(source_axis_labels) == ndim:
+            axis_labels = list(source_axis_labels)
+        elif ndim <= len(_DEFAULT_AXIS_LABELS):
             axis_labels = _DEFAULT_AXIS_LABELS[-ndim:]
         else:
             # More dims than we have default labels for — pad the front.
             extra = ndim - len(_DEFAULT_AXIS_LABELS)
             axis_labels = [f"D{i}" for i in range(extra)] + _DEFAULT_AXIS_LABELS
 
+        axis_scales = (
+            list(source_axis_scales)
+            if source_axis_scales and len(source_axis_scales) == ndim
+            else None
+        )
         view_modes = [ViewMode("Standard", tuple(range(ndim)))]
 
         return ViewOnlyResult(
@@ -101,4 +110,6 @@ class ViewOnlyReconstructor(Reconstructor):
             axis_labels=axis_labels,
             view_modes=view_modes,
             display_levels=None,
+            axis_scales=axis_scales,
+            scale_unit=source_scale_unit or "px",
         )
