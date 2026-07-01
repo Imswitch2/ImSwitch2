@@ -83,6 +83,27 @@ Both shapes are registered with a :py:class:`PluginRegistry`.  The
 registry is populated at startup, either from a config block or from
 standalone defaults.
 
+Image toolbar and display levels
+================================
+
+The main window includes an always-visible *Image* toolbar and matching
+*Image* menu for viewer-level operations that should be available regardless of
+the active reconstructor.  The first implemented tools are:
+
+* *Auto contrast* — percentile-based display-level stretch on the active image
+  layer.
+* *Brightness/Contrast...* — a modeless histogram dialog with numeric minimum
+  and maximum controls, sliders, saturated-pixel auto contrast and whole-stack
+  versus current-view histogram scope.
+* *Reset contrast* — reset the active layer to the finite data range.
+* *Reset view* — restore the reconstruction viewer camera.
+
+These operations are display-only: they update the Napari image layer and the
+active :py:class:`~imswitch.improcess.model.result.ProcessingResult` display
+levels, but do not alter pixel data.  Data-changing Fiji-like commands such as
+duplicate, split stack, split channels, make composite and make RGB are planned
+as processor-backed toolbar actions.
+
 Built-in plugins
 ----------------
 

@@ -10,6 +10,7 @@ from importlib import import_module
 _EXPORTS = {
     "ImProcessMainController": ("ImProcessMainController", "ImProcessMainController"),
     "GraphController": ("GraphController", "GraphController"),
+    "ImageToolbarController": ("ImageToolbarController", "ImageToolbarController"),
     "ResultProcessorController": ("ResultProcessorController", "ResultProcessorController"),
 }
 

@@ -10,6 +10,7 @@ from imswitch.improcess.model.processing_config import (
     plugin_ids_from_config,
 )
 from .CommunicationChannel import CommunicationChannel
+from .ImageToolbarController import ImageToolbarController
 from .ImProcessMainViewController import ImProcessMainViewController
 from .ResultProcessorController import ResultProcessorController
 from .basecontrollers import ImProcessWidgetControllerFactory
@@ -50,6 +51,11 @@ class ImProcessMainController(MainController):
 
         self.mainViewController = self.__factory.createController(
             ImProcessMainViewController, self.__mainView
+        )
+        self.imageToolbarController = ImageToolbarController(
+            self.__commChannel,
+            self.__mainView,
+            self.mainViewController.reconstructionController,
         )
         self._resultProcessorControllers = {}
 

@@ -350,6 +350,39 @@ class ReconstructionView(QtWidgets.QFrame):
     def setImageDisplayLevelsRange(self, minimum, maximum):
         self.imgLayer.contrast_limits_range = (minimum, maximum)
 
+    def getActiveImageLayer(self):
+        """Return the active image-like Napari layer, falling back to imgLayer."""
+        layer = None
+        try:
+            layer = self.napariViewer.layers.selection.active
+        except Exception:
+            layer = None
+        if (
+            layer is not None
+            and hasattr(layer, "data")
+            and hasattr(layer, "contrast_limits")
+        ):
+            return layer
+        return self.imgLayer
+
+    def getActiveImage(self):
+        return self.getActiveImageLayer().data
+
+    def getActiveImageDisplayLevels(self):
+        return self.getActiveImageLayer().contrast_limits
+
+    def setActiveImageDisplayLevels(self, minimum, maximum):
+        self.getActiveImageLayer().contrast_limits = (minimum, maximum)
+
+    def getActiveImageDisplayLevelsRange(self):
+        layer = self.getActiveImageLayer()
+        return getattr(layer, "contrast_limits_range", None)
+
+    def setActiveImageDisplayLevelsRange(self, minimum, maximum):
+        layer = self.getActiveImageLayer()
+        if hasattr(layer, "contrast_limits_range"):
+            layer.contrast_limits_range = (minimum, maximum)
+
     def removeRecon(self):
         numSelected = len(self.reconList.selectedIndexes())
         while not numSelected == 0:

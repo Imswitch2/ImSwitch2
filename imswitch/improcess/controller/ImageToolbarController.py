@@ -1,0 +1,143 @@
+"""Controller for the always-present ImProcess image toolbar."""
+
+from __future__ import annotations
+
+import numpy as np
+
+from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
+from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
+
+
+class ImageToolbarController:
+    """Wire image toolbar actions to the active reconstruction viewer state."""
+
+    def __init__(self, commChannel, mainView, reconstructionController):
+        self._commChannel = commChannel
+        self._view = mainView
+        self._reconstructionController = reconstructionController
+        self._logger = initLogger(self, tryInheritParent=False)
+        self._contrastDialog = None
+
+        mainView.sigImageAutoContrastRequested.connect(self.autoContrast)
+        mainView.sigImageResetContrastRequested.connect(self.resetContrast)
+        mainView.sigImageContrastDialogRequested.connect(self.openContrastDialog)
+        mainView.sigImageResetViewRequested.connect(self.resetView)
+        commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
+        self.currentResultChanged(reconstructionController.getActiveResult())
+
+    def currentResultChanged(self, result) -> None:
+        self._view.setImageActionsEnabled(self._resultHasImage(result))
+
+    def autoContrast(self, saturated_percent: float = 0.35) -> None:
+        data = self._activeImageForScope(self._dialogScope())
+        if data is None:
+            return
+        levels = auto_levels(data, saturated_percent=saturated_percent)
+        self._setLevels(levels)
+
+    def resetContrast(self) -> None:
+        data = self._activeImageForScope(self._dialogScope())
+        if data is None:
+            return
+        levels = finite_range(data)
+        self._reconstructionController.setActiveImageDisplayLevelsRange(*levels)
+        self._setLevels(levels)
+
+    def openContrastDialog(self) -> None:
+        if not self._resultHasImage(self._reconstructionController.getActiveResult()):
+            return
+
+        dialog = self._contrastDialog
+        if dialog is None:
+            dialog = ContrastBrightnessDialog(self._view)
+            dialog.sigLevelsChanged.connect(
+                lambda minimum, maximum: self._setLevels(
+                    (minimum, maximum), update_dialog=False
+                )
+            )
+            dialog.sigAutoRequested.connect(self._autoFromDialog)
+            dialog.sigResetRequested.connect(self.resetContrast)
+            dialog.scopeCombo.currentTextChanged.connect(
+                lambda _text: self._refreshContrastDialog(update_levels=False)
+            )
+            dialog.finished.connect(lambda _result: self._clearContrastDialog())
+            self._contrastDialog = dialog
+
+        self._refreshContrastDialog(update_levels=True)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def resetView(self) -> None:
+        try:
+            self._view.reconstructionWidget.resetView()
+        except Exception:
+            self._logger.exception("Could not reset reconstruction view")
+
+    def _autoFromDialog(self, saturated_percent: float) -> None:
+        data = self._activeImageForScope(self._dialogScope())
+        if data is None:
+            return
+        levels = auto_levels(data, saturated_percent=saturated_percent)
+        self._setLevels(levels)
+
+    def _setLevels(self, levels: tuple[float, float], *, update_dialog: bool = True) -> None:
+        minimum, maximum = float(levels[0]), float(levels[1])
+        self._reconstructionController.setActiveImageDisplayLevels(minimum, maximum)
+        if update_dialog:
+            dialog = self._contrastDialog
+            if dialog is not None:
+                dialog.setLevels(minimum, maximum)
+
+    def _refreshContrastDialog(self, *, update_levels: bool) -> None:
+        dialog = self._contrastDialog
+        if dialog is None:
+            return
+        data = self._activeImageForScope(dialog.histogramScope())
+        if data is None:
+            return
+        data_range = finite_range(data)
+        counts, edges = histogram(data, value_range=data_range)
+        dialog.setDataRange(*data_range)
+        dialog.setHistogram(counts, edges)
+        if update_levels:
+            levels = self._currentLevels(data_range)
+            dialog.setLevels(*levels)
+
+    def _currentLevels(self, fallback: tuple[float, float]) -> tuple[float, float]:
+        try:
+            levels = self._reconstructionController.getActiveImageDisplayLevels()
+        except Exception:
+            return fallback
+        if levels is None or len(levels) != 2:
+            return fallback
+        if not np.isfinite(levels[0]) or not np.isfinite(levels[1]):
+            return fallback
+        return float(levels[0]), float(levels[1])
+
+    def _dialogScope(self) -> str:
+        dialog = self._contrastDialog
+        if dialog is None:
+            return "stack"
+        return dialog.histogramScope()
+
+    def _activeImageForScope(self, scope: str):
+        try:
+            if scope == "view":
+                return self._reconstructionController.getActiveImageCurrentView()
+            return self._reconstructionController.getActiveImage()
+        except Exception:
+            self._logger.exception("Could not read active image for toolbar action")
+            return None
+
+    def _clearContrastDialog(self) -> None:
+        self._contrastDialog = None
+
+    @staticmethod
+    def _resultHasImage(result) -> bool:
+        data = getattr(result, "data", None)
+        return data is not None and getattr(data, "ndim", 0) >= 2
+
+
+__all__ = ["ImageToolbarController"]

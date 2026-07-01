@@ -188,6 +188,43 @@ class ReconstructionViewController(ImProcessWidgetController):
     def getImage(self):
         return self._widget.getImage()
 
+    def getActiveImage(self):
+        if hasattr(self._widget, "getActiveImage"):
+            return self._widget.getActiveImage()
+        return self._widget.getImage()
+
+    def getActiveImageCurrentView(self):
+        image = self.getActiveImage()
+        if getattr(image, "ndim", 0) <= 2:
+            return image
+        index = []
+        for axis in range(image.ndim - 2):
+            step = self._axisStep[axis] if axis < len(self._axisStep) else 0
+            index.append(max(0, min(int(step), image.shape[axis] - 1)))
+        index.extend([slice(None), slice(None)])
+        return image[tuple(index)]
+
+    def getActiveImageDisplayLevels(self):
+        if hasattr(self._widget, "getActiveImageDisplayLevels"):
+            return self._widget.getActiveImageDisplayLevels()
+        return self._widget.getImageDisplayLevels()
+
+    def setActiveImageDisplayLevels(self, minimum, maximum):
+        if hasattr(self._widget, "setActiveImageDisplayLevels"):
+            self._widget.setActiveImageDisplayLevels(minimum, maximum)
+        else:
+            self._widget.setImageDisplayLevels(minimum, maximum)
+
+        result = self.getActiveResult()
+        if result is not None and hasattr(result, "setDispLevels"):
+            result.setDispLevels((minimum, maximum))
+
+    def setActiveImageDisplayLevelsRange(self, minimum, maximum):
+        if hasattr(self._widget, "setActiveImageDisplayLevelsRange"):
+            self._widget.setActiveImageDisplayLevelsRange(minimum, maximum)
+        else:
+            self._widget.setImageDisplayLevelsRange(minimum, maximum)
+
     def resultProduced(self, result, displayName):
         """Add a freshly-produced result to the reconstruction list.
 

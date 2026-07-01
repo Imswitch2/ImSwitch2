@@ -1,6 +1,7 @@
 # ImProcess Fiji-like Image Toolbar
 
-**Status:** Plan
+**Status:** Implementation in progress — toolbar shell and display-only
+brightness/contrast first slice landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -307,10 +308,11 @@ Regression tests:
 ## 10. Implementation Sequence
 
 1. Add `ImageToolbarController` and a minimal toolbar shell with disabled
-   actions when no result is selected.
+   actions when no result is selected. **Implemented.**
 2. Implement `Auto`, `Reset`, and `Brightness/Contrast...` display-only paths.
+   **Implemented.**
 3. Persist display levels through `ProcessingResult.display_levels` and verify
-   reconstruction-list switching.
+   reconstruction-list switching. **Implemented for the active image layer.**
 4. Add projection and duplicate actions by reusing existing result/processor
    contracts.
 5. Add stack subset/split processors and wire toolbar dialogs.
@@ -323,3 +325,34 @@ Regression tests:
 The first shippable slice should be steps 1-3. That gives users a Fiji-like
 brightness/contrast workflow immediately and creates the controller/action
 backbone for the remaining operations.
+
+---
+
+## 11. First Slice Notes
+
+Implemented files:
+
+- `model/contrast.py` — finite range, percentile auto-levels and histogram
+  helpers.
+- `view/ContrastBrightnessDialog.py` — modeless histogram/min/max dialog.
+- `controller/ImageToolbarController.py` — action enablement and display-level
+  execution.
+- `ImProcessMainView` — persistent Image menu and image toolbar.
+- `ReconstructionView` / `ReconstructionViewController` — active-layer display
+  accessors and display-level persistence.
+
+Current scope:
+
+- display-only Auto contrast;
+- display-only Reset contrast;
+- modeless Brightness/Contrast dialog;
+- Reset view action;
+- action enablement from the active result.
+
+Next implementation slice:
+
+- add `duplicate` and `projection` toolbar actions;
+- introduce the processor output shape for commands that naturally emit several
+  results, starting with `stack-split` and `channel-split`;
+- add channel/LUT state that persists per display layer instead of only the
+  whole active result.

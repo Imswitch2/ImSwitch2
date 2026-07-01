@@ -58,6 +58,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigActiveReconstructorChanged = QtCore.Signal(str)
     sigLoadProcessorRequested = QtCore.Signal(str)
 
+    sigImageAutoContrastRequested = QtCore.Signal()
+    sigImageResetContrastRequested = QtCore.Signal()
+    sigImageContrastDialogRequested = QtCore.Signal()
+    sigImageResetViewRequested = QtCore.Signal()
+
     sigClosing = QtCore.Signal()
 
     def __init__(
@@ -125,6 +130,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         setSaveFolder = QtWidgets.QAction('Set default save folder…', self)
         setSaveFolder.triggered.connect(self.sigSetSaveFolder)
         file.addAction(setSaveFolder)
+
+        self._imageActions: dict[str, QtWidgets.QAction] = {}
+        self._imageMenu = menuBar.addMenu('&Image')
+        self._imageToolbar = self.addToolBar('Image tools')
+        self._imageToolbar.setObjectName('ImProcessImageToolsToolbar')
+        self._imageToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self._buildImageToolbar()
+        self.setImageActionsEnabled(False)
 
         self._processorToolbar = self.addToolBar('Analysis tools')
         self._processorToolbar.setObjectName('ImProcessAnalysisToolsToolbar')
@@ -503,6 +516,68 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.statusBar().showMessage(message, timeout_ms)
         except Exception:
             pass
+
+    def _buildImageToolbar(self) -> None:
+        style = self.style()
+        self._addImageAction(
+            'auto-contrast',
+            'Auto contrast',
+            'Automatically stretch display levels for the active image',
+            style.standardIcon(QtWidgets.QStyle.SP_DialogApplyButton),
+            self.sigImageAutoContrastRequested,
+        )
+        self._addImageAction(
+            'brightness-contrast',
+            'Brightness/Contrast...',
+            'Open the brightness and contrast min/max dialog',
+            style.standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView),
+            self.sigImageContrastDialogRequested,
+            shortcut='Ctrl+Shift+C',
+        )
+        self._addImageAction(
+            'reset-contrast',
+            'Reset contrast',
+            'Reset display levels to the finite data range',
+            style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+            self.sigImageResetContrastRequested,
+        )
+        self._imageToolbar.addSeparator()
+        self._imageMenu.addSeparator()
+        self._addImageAction(
+            'reset-view',
+            'Reset view',
+            'Reset the reconstruction viewer camera',
+            style.standardIcon(QtWidgets.QStyle.SP_ComputerIcon),
+            self.sigImageResetViewRequested,
+        )
+
+    def _addImageAction(
+        self,
+        action_id: str,
+        text: str,
+        tooltip: str,
+        icon,
+        signal,
+        *,
+        shortcut: str | None = None,
+    ) -> QtWidgets.QAction:
+        action = QtWidgets.QAction(icon, text, self)
+        action.setToolTip(tooltip)
+        action.setStatusTip(tooltip)
+        if shortcut:
+            action.setShortcut(shortcut)
+        action.triggered.connect(lambda _checked=False, sig=signal: sig.emit())
+        self._imageToolbar.addAction(action)
+        self._imageMenu.addAction(action)
+        self._imageActions[action_id] = action
+        return action
+
+    def setImageActionsEnabled(self, enabled: bool) -> None:
+        for action in self._imageActions.values():
+            action.setEnabled(bool(enabled))
+
+    def imageAction(self, action_id: str) -> QtWidgets.QAction | None:
+        return self._imageActions.get(action_id)
 
     def _connectResultPusher(self, widget):
         if widget is None:
