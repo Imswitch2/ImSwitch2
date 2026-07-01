@@ -1,5 +1,6 @@
 """Tests for SNOUTY deskew reconstructor plugin."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import h5py
 import numpy as np
 import pytest
 import tifffile
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.reconstructors.snouty import SnoutyReconstructor
@@ -101,10 +104,13 @@ class TestRestackInterleaved:
 
 @pytest.fixture
 def synthetic_3d_stack():
-    """Create small synthetic 3D stack for testing."""
+    """Create small synthetic raw 3D stack for testing."""
     rng = np.random.RandomState(42)
     # (planes, cam_y, cam_x)
-    stack = rng.rand(8, 16, 16).astype(np.float32) * 100.0
+    signal = rng.rand(8, 16, 16).astype(np.float32) * 100.0
+    # SNOUTY subtracts camera_offset before clipping, so raw test data must
+    # include the detector baseline or the reconstructed signal is all zero.
+    stack = signal + DEFAULT_PARAMS["camera_offset"] + 1.0
     return stack
 
 
@@ -118,6 +124,15 @@ def data_obj_3d(synthetic_3d_stack, tmp_path):
     
     data_obj = DataObj(str(h5_path), "test_3d")
     return data_obj
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    """Ensure Qt widgets are constructed under an offscreen QApplication."""
+    from qtpy import QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    yield app
 
 
 class TestSnoutyReconstructor:
@@ -196,7 +211,7 @@ class TestSnoutyReconstructor:
         
         # Check reasonable intensity range
         assert np.max(result.data) > 0
-        assert np.max(result.data) < 1000  # ~10x input max
+        assert np.max(result.data) < 1000  # ~10x background-corrected signal
     
     def test_process_multi_timepoint(self, data_obj_3d):
         """Test multi-timepoint timelapse deskew."""
@@ -334,6 +349,7 @@ class TestSnoutyReconstructor:
                 assert np.allclose(reloaded_tp, result.data[t], rtol=1e-5)
 
 
+@pytest.mark.usefixtures("qapp")
 class TestSnoutyParamsWidget:
     """Test SNOUTY parameter widget."""
     

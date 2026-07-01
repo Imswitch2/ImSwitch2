@@ -308,11 +308,22 @@ class WidefieldStarssParamsWidget(QtWidgets.QWidget):
 
         ``pair_index`` values are offset by the number of already-accumulated
         summary rows so every accumulated run keeps a unique file index.
+        Summary records only receive the offset when they already carry an
+        explicit ``pair_index``; region records always get one because metric
+        plots group regions by file.
         """
         offset = len(self._summary_records)
         summary_records = [dict(record) for record in payload.get("summary_records", [])]
         region_records = [dict(record) for record in payload.get("region_records", [])]
-        for record in summary_records + region_records:
+        for record in summary_records:
+            if "pair_index" not in record:
+                continue
+            try:
+                record["pair_index"] = int(record.get("pair_index", 0) or 0) + offset
+            except (TypeError, ValueError):
+                record["pair_index"] = offset
+
+        for record in region_records:
             try:
                 record["pair_index"] = int(record.get("pair_index", 0) or 0) + offset
             except (TypeError, ValueError):

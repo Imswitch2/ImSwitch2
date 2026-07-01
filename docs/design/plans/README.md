@@ -14,6 +14,7 @@ the rationale behind the current code stays discoverable.
 | [time-resolved-detector-workflows.md](time-resolved-detector-workflows.md) | Implementation in progress — software foundation complete, hardware validation pending | Photon-arrival cubes, gated-STED, and tau-STED workflows |
 | [improcess-graph-and-wfs-analysis.md](improcess-graph-and-wfs-analysis.md) | Active — graph/WFS first slice shipped; FRC + ROI panels added | General ImProcess plotting surface, WidefieldSTARSS analysis, and generic analysis widgets |
 | [improcess-analysis-widgets.md](improcess-analysis-widgets.md) | Active — Phases 1-5 generic analysis widgets implemented | ImProcess projections, ROI manager, segmentation, PSF/bead resolution, and colocalization |
+| [improcess-fiji-like-toolbar.md](improcess-fiji-like-toolbar.md) | Proposed | Fiji-like persistent image toolbar, brightness/contrast dialog, stack and channel operations |
 | [beadrec-2.0.md](beadrec-2.0.md) | Active — Phase 1 started 2026-05-25 | Bead reconstruction controller/widget rewrite |
 | [etsted-2-0.md](etsted-2-0.md) | Active | EtSTED scan controller rewrite |
 | [etmonalisa-2-0.md](etmonalisa-2-0.md) | Active | EtMonalisa rewrite |
