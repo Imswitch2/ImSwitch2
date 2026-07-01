@@ -196,9 +196,10 @@ class ReconstructionView(QtWidgets.QFrame):
     def getImage(self):
         return self.imgLayer.data
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px"):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip"):
         self._clearDisplayLayers()
         self.imgLayer.name = 'Reconstruction'
+        self.imgLayer.colormap = colormap
         im = np.asarray(im)
         old_ndim = self.imgLayer.data.ndim
         new_ndim = im.ndim
@@ -368,11 +369,24 @@ class ReconstructionView(QtWidgets.QFrame):
     def getActiveImage(self):
         return self.getActiveImageLayer().data
 
+    def getActiveImageLayerMetadata(self):
+        metadata = getattr(self.getActiveImageLayer(), "metadata", None)
+        return dict(metadata or {})
+
+    def getActiveImageLayerName(self) -> str:
+        return str(getattr(self.getActiveImageLayer(), "name", ""))
+
     def getActiveImageDisplayLevels(self):
         return self.getActiveImageLayer().contrast_limits
 
     def setActiveImageDisplayLevels(self, minimum, maximum):
         self.getActiveImageLayer().contrast_limits = (minimum, maximum)
+
+    def getActiveImageColormap(self) -> str:
+        return self._colormapName(self.getActiveImageLayer())
+
+    def setActiveImageColormap(self, colormap: str) -> None:
+        self.getActiveImageLayer().colormap = str(colormap)
 
     def getActiveImageDisplayLevelsRange(self):
         layer = self.getActiveImageLayer()
@@ -397,6 +411,11 @@ class ReconstructionView(QtWidgets.QFrame):
 
     def resetView(self):
         self.napariViewer.reset_view()
+
+    @staticmethod
+    def _colormapName(layer) -> str:
+        colormap = getattr(layer, "colormap", "grayclip")
+        return str(getattr(colormap, "name", colormap))
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

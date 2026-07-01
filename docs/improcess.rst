@@ -99,6 +99,8 @@ the active reconstructor.  The first implemented tools are:
   and maximum controls, sliders, saturated-pixel auto contrast and whole-stack
   versus current-view histogram scope.
 * *Reset contrast* — reset the active layer to the finite data range.
+* *LUT* — set the colormap for the active image layer and persist it on the
+  active result or display-layer component.
 * *Duplicate* — create a new array-backed result from the active result.
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
   every result axis.
@@ -108,16 +110,19 @@ the active reconstructor.  The first implemented tools are:
   selected stack axis.
 * *Split channels* — split a ``C``, ``Channel`` or ``Base`` axis into one
   result per channel.
+* *Make composite* — create a composite result that renders a channel-like axis
+  as independently-scaled colored display layers.
 * *Reset view* — restore the reconstruction viewer camera.
 
-The contrast operations are display-only: they update the Napari image layer
+The contrast and LUT operations are display-only: they update the Napari image layer
 and the active :py:class:`~imswitch.improcess.model.result.ProcessingResult`
-display levels, but do not alter pixel data.  Duplicate, crop/substack and max
-projection publish new ``ProcessingResult`` objects into the reconstruction
-list. Split stack and split channels publish multiple ``ProcessingResult``
-objects and make the final split result current. More Fiji-like data-changing
-commands such as make composite, make RGB and channel merge are planned as
-processor-backed toolbar actions.
+display settings, including per-display-layer settings for composite outputs,
+but do not alter pixel data.  Duplicate, crop/substack, max projection and make
+composite publish new ``ProcessingResult`` objects into the reconstruction list.
+Split stack and split channels publish multiple ``ProcessingResult`` objects
+and make the final split result current. More Fiji-like data-changing commands
+such as make RGB and channel merge are planned as processor-backed toolbar
+actions.
 
 Built-in plugins
 ----------------
@@ -135,6 +140,7 @@ projection              Processor      Generic max/mean/sum/median/std axis proj
 stack-subset            Processor      Crop/substack by labeled axis ranges
 stack-split             Processor      Split a stack axis into one result per plane
 channel-split           Processor      Split a channel-like C/Channel/Base axis into one result per channel
+make-composite          Processor      Render a channel-like axis as colored display layers
 segmentation            Processor      Threshold + connected-component labels and ROI export
 psf-resolution          Processor      2D Gaussian bead/PSF FWHM and sigma measurements
 colocalization          Processor      Pearson, Manders and overlap channel colocalization metrics
@@ -551,9 +557,10 @@ Done:
   checkerboard / odd-even splitting, 1/7 threshold and resolution estimates
 * ``projection`` processor and optional projection panel: max, mean, sum,
   median and standard-deviation projections along selected axes
-* ``stack-subset``, ``stack-split`` and ``channel-split`` processors plus
-  image-toolbar actions: one source result can emit cropped substacks or
-  multiple per-plane/per-channel results through the shared processor contracts
+* ``stack-subset``, ``stack-split``, ``channel-split`` and ``make-composite``
+  processors plus image-toolbar actions: one source result can emit cropped
+  substacks, multiple per-plane/per-channel results, or composite display-layer
+  results through the shared processor contracts
 * ``segmentation`` processor and optional segmentation panel: manual/Otsu
   thresholding, connected components, label-layer display and ROI Manager
   mask export, plus region-table export

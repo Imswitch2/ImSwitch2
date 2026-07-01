@@ -1,7 +1,7 @@
 """Processing result abstractions for ImProcess reconstructors and processors."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +78,8 @@ class ProcessingResult(ABC):
         self.data = data
         self.axis_labels = axis_labels
         self.display_levels = display_levels
+        self.display_colormap = "grayclip"
+        self._display_layer_settings: dict[str, dict[str, Any]] = {}
         self.axis_scales = (
             axis_scales
             if axis_scales is not None
@@ -98,6 +100,37 @@ class ProcessingResult(ABC):
     def getDispLevels(self):
         """Compatibility hook for the legacy ReconstructionViewController."""
         return self.display_levels
+
+    def setDisplayColormap(self, colormap: str) -> None:
+        """Persist the preferred colormap for the primary image layer."""
+        self.display_colormap = str(colormap)
+
+    def getDisplayColormap(self) -> str:
+        """Return the preferred colormap for the primary image layer."""
+        return self.display_colormap
+
+    def setDisplayLayerLevels(self, layer_id: str, levels) -> None:
+        settings = self._display_layer_settings.setdefault(str(layer_id), {})
+        settings["display_levels"] = tuple(float(value) for value in levels)
+
+    def getDisplayLayerLevels(self, layer_id: str):
+        settings = self._display_layer_settings.get(str(layer_id), {})
+        return settings.get("display_levels")
+
+    def setDisplayLayerColormap(self, layer_id: str, colormap: str) -> None:
+        settings = self._display_layer_settings.setdefault(str(layer_id), {})
+        settings["colormap"] = str(colormap)
+
+    def getDisplayLayerColormap(self, layer_id: str, default: str = "grayclip") -> str:
+        settings = self._display_layer_settings.get(str(layer_id), {})
+        return str(settings.get("colormap", default))
+
+    def displayLayerSettings(self) -> dict[str, dict[str, Any]]:
+        """Return a copy of persisted display-layer overrides."""
+        return {
+            layer_id: dict(settings)
+            for layer_id, settings in self._display_layer_settings.items()
+        }
     
     @abstractmethod
     def save(self, path: Path, fmt: str) -> None:
@@ -125,6 +158,24 @@ class ProcessingResult(ABC):
         contains heterogeneous components that should be inspected separately.
         """
         return []
+
+    def applyDisplayLayerSettings(
+        self,
+        layers: list[DisplayLayerSpec],
+    ) -> list[DisplayLayerSpec]:
+        """Apply persisted per-layer display overrides to layer specs."""
+        adjusted = []
+        for layer in layers:
+            layer_id = _display_layer_component_id(layer)
+            settings = self._display_layer_settings.get(layer_id, {})
+            adjusted.append(
+                replace(
+                    layer,
+                    display_levels=settings.get("display_levels", layer.display_levels),
+                    colormap=settings.get("colormap", layer.colormap),
+                )
+            )
+        return adjusted
 
     def processor_input_choices(self) -> list[ProcessorInputChoice]:
         """Return explicit input choices for result-based processors.

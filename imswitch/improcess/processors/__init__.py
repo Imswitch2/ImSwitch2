@@ -11,6 +11,7 @@ from .colocalization import ColocalizationProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
 from .frc import FRCProcessor
+from .make_composite import MakeCompositeProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
@@ -25,6 +26,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'colocalization': ColocalizationProcessor,
     'drift-correct': DriftCorrectProcessor,
     'frc': FRCProcessor,
+    'make-composite': MakeCompositeProcessor,
     'multicolor-apply': MulticolorApplyProcessor,
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
@@ -91,6 +93,7 @@ __all__ = [
     "ColocalizationProcessor",
     "DriftCorrectProcessor",
     "FRCProcessor",
+    "MakeCompositeProcessor",
     "MulticolorApplyProcessor",
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",

@@ -32,6 +32,20 @@ from .SegmentationWidget import SegmentationWidget
 from .guitools import BetterPushButton
 
 
+IMAGE_LUTS = (
+    ("grayclip", "Gray"),
+    ("gray", "Gray ramp"),
+    ("red", "Red"),
+    ("green", "Green"),
+    ("blue", "Blue"),
+    ("cyan", "Cyan"),
+    ("magenta", "Magenta"),
+    ("yellow", "Yellow"),
+    ("viridis", "Viridis"),
+    ("magma", "Magma"),
+)
+
+
 class ImProcessMainView(QtWidgets.QMainWindow):
     sigSaveReconstruction = QtCore.Signal()
     sigSaveReconstructionAll = QtCore.Signal()
@@ -61,12 +75,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
     sigImageContrastDialogRequested = QtCore.Signal()
+    sigImageLutChanged = QtCore.Signal(str)
     sigImageResetViewRequested = QtCore.Signal()
     sigImageDuplicateRequested = QtCore.Signal()
     sigImageCropSubstackRequested = QtCore.Signal()
     sigImageMaxProjectionRequested = QtCore.Signal()
     sigImageSplitStackRequested = QtCore.Signal()
     sigImageSplitChannelsRequested = QtCore.Signal()
+    sigImageMakeCompositeRequested = QtCore.Signal()
 
     sigClosing = QtCore.Signal()
 
@@ -137,6 +153,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         file.addAction(setSaveFolder)
 
         self._imageActions: dict[str, QtWidgets.QAction] = {}
+        self._imageLutActions: dict[str, QtWidgets.QAction] = {}
         self._imageMenu = menuBar.addMenu('&Image')
         self._imageToolbar = self.addToolBar('Image tools')
         self._imageToolbar.setObjectName('ImProcessImageToolsToolbar')
@@ -546,6 +563,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
             self.sigImageResetContrastRequested,
         )
+        self._addImageLutSelector()
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()
         self._addImageAction(
@@ -583,6 +601,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             style.standardIcon(QtWidgets.QStyle.SP_DirIcon),
             self.sigImageSplitChannelsRequested,
         )
+        self._addImageAction(
+            'make-composite',
+            'Make composite',
+            'Render a C, Channel or Base axis as colored display layers',
+            style.standardIcon(QtWidgets.QStyle.SP_FileDialogContentsView),
+            self.sigImageMakeCompositeRequested,
+        )
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()
         self._addImageAction(
@@ -614,9 +639,42 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._imageActions[action_id] = action
         return action
 
+    def _addImageLutSelector(self) -> None:
+        self._imageToolbar.addSeparator()
+        self._imageToolbar.addWidget(QtWidgets.QLabel('LUT: '))
+        self._imageLutCombo = QtWidgets.QComboBox()
+        self._imageLutCombo.setToolTip('Colormap for the active image layer')
+        for lut_id, label in IMAGE_LUTS:
+            self._imageLutCombo.addItem(label, lut_id)
+        self._imageLutCombo.activated.connect(self._onImageLutActivated)
+        self._imageToolbar.addWidget(self._imageLutCombo)
+
+        menu = self._imageMenu.addMenu('LUT')
+        group = QtWidgets.QActionGroup(self)
+        group.setExclusive(True)
+        for lut_id, label in IMAGE_LUTS:
+            action = QtWidgets.QAction(label, self)
+            action.setCheckable(True)
+            action.setData(lut_id)
+            action.triggered.connect(
+                lambda _checked=False, value=lut_id: self._setImageLutFromUser(value)
+            )
+            group.addAction(action)
+            menu.addAction(action)
+            self._imageLutActions[lut_id] = action
+        self.setImageLutValue("grayclip")
+
+    def _onImageLutActivated(self, _index: int) -> None:
+        self._setImageLutFromUser(str(self._imageLutCombo.currentData()))
+
+    def _setImageLutFromUser(self, lut_id: str) -> None:
+        self.setImageLutValue(lut_id)
+        self.sigImageLutChanged.emit(str(lut_id))
+
     def setImageActionsEnabled(self, enabled: bool) -> None:
         for action in self._imageActions.values():
             action.setEnabled(bool(enabled))
+        self.setImageLutEnabled(enabled)
 
     def setImageActionEnabled(self, action_id: str, enabled: bool) -> None:
         action = self._imageActions.get(action_id)
@@ -625,6 +683,30 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def imageAction(self, action_id: str) -> QtWidgets.QAction | None:
         return self._imageActions.get(action_id)
+
+    def setImageLutEnabled(self, enabled: bool) -> None:
+        if hasattr(self, "_imageLutCombo"):
+            self._imageLutCombo.setEnabled(bool(enabled))
+        for action in getattr(self, "_imageLutActions", {}).values():
+            action.setEnabled(bool(enabled))
+
+    def setImageLutValue(self, lut_id: str) -> None:
+        lut_id = str(lut_id or "grayclip")
+        if hasattr(self, "_imageLutCombo"):
+            index = self._imageLutCombo.findData(lut_id)
+            if index < 0:
+                index = self._imageLutCombo.findData("grayclip")
+            blocked = self._imageLutCombo.blockSignals(True)
+            try:
+                self._imageLutCombo.setCurrentIndex(max(0, index))
+            finally:
+                self._imageLutCombo.blockSignals(blocked)
+        for action_lut, action in getattr(self, "_imageLutActions", {}).items():
+            blocked = action.blockSignals(True)
+            try:
+                action.setChecked(action_lut == lut_id)
+            finally:
+                action.blockSignals(blocked)
 
     def _connectResultPusher(self, widget):
         if widget is None:

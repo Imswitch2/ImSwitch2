@@ -9,6 +9,7 @@ from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
 from imswitch.improcess.processors.base import normalize_processor_output
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
+from imswitch.improcess.processors.make_composite import MakeCompositeProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
 from imswitch.improcess.processors.stack_split import StackSplitProcessor
 from imswitch.improcess.processors.stack_subset import StackSubsetProcessor
@@ -29,12 +30,14 @@ class ImageToolbarController:
         mainView.sigImageAutoContrastRequested.connect(self.autoContrast)
         mainView.sigImageResetContrastRequested.connect(self.resetContrast)
         mainView.sigImageContrastDialogRequested.connect(self.openContrastDialog)
+        mainView.sigImageLutChanged.connect(self.setLut)
         mainView.sigImageResetViewRequested.connect(self.resetView)
         mainView.sigImageDuplicateRequested.connect(self.duplicateResult)
         mainView.sigImageCropSubstackRequested.connect(self.cropSubstack)
         mainView.sigImageMaxProjectionRequested.connect(self.maxProjection)
         mainView.sigImageSplitStackRequested.connect(self.splitStack)
         mainView.sigImageSplitChannelsRequested.connect(self.splitChannels)
+        mainView.sigImageMakeCompositeRequested.connect(self.makeComposite)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
         self.currentResultChanged(reconstructionController.getActiveResult())
 
@@ -58,6 +61,19 @@ class ImageToolbarController:
                 "split-channels",
                 has_image and ChannelSplitProcessor().applies_to(result),
             )
+            self._view.setImageActionEnabled(
+                "make-composite",
+                has_image and MakeCompositeProcessor().applies_to(result),
+            )
+        if hasattr(self._view, "setImageLutEnabled"):
+            self._view.setImageLutEnabled(has_image)
+        if has_image and hasattr(self._view, "setImageLutValue"):
+            try:
+                self._view.setImageLutValue(
+                    self._reconstructionController.getActiveImageColormap()
+                )
+            except Exception:
+                self._logger.debug("Could not sync image LUT selector", exc_info=True)
 
     def autoContrast(self, saturated_percent: float = 0.35) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -105,6 +121,14 @@ class ImageToolbarController:
         except Exception:
             self._logger.exception("Could not reset reconstruction view")
 
+    def setLut(self, colormap: str) -> None:
+        if not self._resultHasImage(self._reconstructionController.getActiveResult()):
+            return
+        try:
+            self._reconstructionController.setActiveImageColormap(str(colormap))
+        except Exception:
+            self._logger.exception("Could not set active image LUT")
+
     def duplicateResult(self) -> None:
         result = self._reconstructionController.getActiveResult()
         if not self._resultHasImage(result):
@@ -146,6 +170,12 @@ class ImageToolbarController:
         if not self._resultHasImage(result):
             return
         self._runProcessor(ChannelSplitProcessor(), result, {"axis": "Auto"})
+
+    def makeComposite(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
+            return
+        self._runProcessor(MakeCompositeProcessor(), result, {"axis": "Auto"})
 
     def _runProcessor(self, processor, result, params: dict) -> None:
         try:

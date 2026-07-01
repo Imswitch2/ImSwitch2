@@ -41,7 +41,7 @@ class ArrayProcessingResult(ProcessingResult):
     @classmethod
     def duplicate(cls, source: ProcessingResult, *, copy_data: bool = True) -> "ArrayProcessingResult":
         data = np.array(source.data, copy=copy_data)
-        return cls(
+        duplicate = cls(
             name=f"{source.name} (duplicate)",
             data=data,
             axis_labels=list(source.axis_labels),
@@ -51,6 +51,9 @@ class ArrayProcessingResult(ProcessingResult):
             scale_unit=source.scale_unit,
             metadata={"source_result": source.name, "operation": "duplicate"},
         )
+        if hasattr(source, "getDisplayColormap"):
+            duplicate.setDisplayColormap(source.getDisplayColormap())
+        return duplicate
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
         path = Path(path)

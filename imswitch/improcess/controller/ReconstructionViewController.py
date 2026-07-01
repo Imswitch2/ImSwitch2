@@ -35,9 +35,8 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def listItemChanged(self):
         if self._currItemInd is not None:
-            currHistLevels = self._widget.getImageDisplayLevels()
             prevItem = self._widget.getDataAtIndex(self._currItemInd)
-            prevItem.setDispLevels(currHistLevels)
+            self._persistActiveViewerSettings(prevItem)
 
             currItem = self._widget.getCurrentItemData()
             self._syncViewModes(currItem)
@@ -73,6 +72,8 @@ class ReconstructionViewController(ImProcessWidgetController):
     def _setProcessingResultSlice(self, result, autoLevels=False, levels=None):
         display_layers = result.display_layers() if hasattr(result, "display_layers") else []
         if display_layers:
+            if hasattr(result, "applyDisplayLayerSettings"):
+                display_layers = result.applyDisplayLayerSettings(display_layers)
             self._transposeOrder = list(range(np.asarray(display_layers[0].data).ndim))
             # Display layers carry their own per-layer contrast and have no
             # shared sliced axis, so there is no "Base" axis to rescale against.
@@ -96,7 +97,18 @@ class ReconstructionViewController(ImProcessWidgetController):
             list(axisLabels), [f"{s:.4g}" for s in axisScales], result.scale_unit,
         )
 
-        self._widget.setImage(im, axisLabels, axisScales, result.scale_unit)
+        colormap = (
+            result.getDisplayColormap()
+            if hasattr(result, "getDisplayColormap")
+            else "grayclip"
+        )
+        self._widget.setImage(
+            im,
+            axisLabels,
+            axisScales,
+            result.scale_unit,
+            colormap=colormap,
+        )
         if levels is not None:
             self._widget.setImageDisplayLevels(*levels)
         elif autoLevels:
@@ -216,14 +228,75 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.setImageDisplayLevels(minimum, maximum)
 
         result = self.getActiveResult()
-        if result is not None and hasattr(result, "setDispLevels"):
-            result.setDispLevels((minimum, maximum))
+        self._storeActiveDisplayLevels(result, (minimum, maximum))
+
+    def getActiveImageColormap(self) -> str:
+        if hasattr(self._widget, "getActiveImageColormap"):
+            return self._widget.getActiveImageColormap()
+        result = self.getActiveResult()
+        if result is not None and hasattr(result, "getDisplayColormap"):
+            return result.getDisplayColormap()
+        return "grayclip"
+
+    def setActiveImageColormap(self, colormap: str):
+        if hasattr(self._widget, "setActiveImageColormap"):
+            self._widget.setActiveImageColormap(colormap)
+
+        result = self.getActiveResult()
+        self._storeActiveColormap(result, colormap)
 
     def setActiveImageDisplayLevelsRange(self, minimum, maximum):
         if hasattr(self._widget, "setActiveImageDisplayLevelsRange"):
             self._widget.setActiveImageDisplayLevelsRange(minimum, maximum)
         else:
             self._widget.setImageDisplayLevelsRange(minimum, maximum)
+
+    def _persistActiveViewerSettings(self, result) -> None:
+        if result is None:
+            return
+        try:
+            levels = self.getActiveImageDisplayLevels()
+        except Exception:
+            levels = None
+        if levels is not None:
+            self._storeActiveDisplayLevels(result, levels)
+        try:
+            colormap = self.getActiveImageColormap()
+        except Exception:
+            colormap = None
+        if colormap:
+            self._storeActiveColormap(result, colormap)
+
+    def _storeActiveDisplayLevels(self, result, levels) -> None:
+        if result is None:
+            return
+        layer_id = self._activeDisplayLayerId(result)
+        if layer_id is not None and hasattr(result, "setDisplayLayerLevels"):
+            result.setDisplayLayerLevels(layer_id, levels)
+        elif hasattr(result, "setDispLevels"):
+            result.setDispLevels(levels)
+
+    def _storeActiveColormap(self, result, colormap: str) -> None:
+        if result is None:
+            return
+        layer_id = self._activeDisplayLayerId(result)
+        if layer_id is not None and hasattr(result, "setDisplayLayerColormap"):
+            result.setDisplayLayerColormap(layer_id, colormap)
+        elif hasattr(result, "setDisplayColormap"):
+            result.setDisplayColormap(colormap)
+
+    def _activeDisplayLayerId(self, result):
+        if result is None:
+            return None
+        metadata = {}
+        if hasattr(self._widget, "getActiveImageLayerMetadata"):
+            metadata = self._widget.getActiveImageLayerMetadata()
+        if metadata.get("source_result") not in (None, getattr(result, "name", None)):
+            return None
+        component = metadata.get("component")
+        if component:
+            return str(component)
+        return None
 
     def resultProduced(self, result, displayName):
         """Add a freshly-produced result to the reconstruction list.

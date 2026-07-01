@@ -2,7 +2,7 @@
 
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
 duplicate, crop/substack, max-projection, split-stack and split-channel slices
-landed
+landed; LUT persistence and make-composite landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -320,7 +320,7 @@ Regression tests:
 5. Add stack subset/split processors and wire toolbar dialogs. **Implemented
    for crop/substack range selection and one-click split stack.**
 6. Add channel split/merge/composite/RGB processors. **Implemented for
-   channel split; merge/composite/RGB remain pending.**
+   channel split and make composite; merge/RGB remain pending.**
 7. Promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
    PSF, colocalization, and multicolor.
 8. Add menus mirroring the toolbar categories so keyboard users can discover
@@ -347,6 +347,9 @@ Implemented files:
   channel split processors.
 - `processors/stack_subset` and `view/StackSubsetDialog.py` — Fiji-like
   crop/substack range selection with per-axis first/last/step controls.
+- `ProcessingResult` display settings and `processors/make_composite` —
+  persistent LUT/contrast settings for display layers and composite channel
+  rendering.
 - `ImProcessMainView` — persistent Image menu and image toolbar.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
@@ -355,6 +358,7 @@ Current scope:
 
 - display-only Auto contrast;
 - display-only Reset contrast;
+- display-only LUT selection with per-result and per-display-layer persistence;
 - modeless Brightness/Contrast dialog;
 - Duplicate active result;
 - Crop/Substack dialog using `stack-subset`, preserving rank and axis metadata;
@@ -363,11 +367,13 @@ Current scope:
 - one-click Split stack using `stack-split`, publishing one result per plane;
 - one-click Split channels using `channel-split`, publishing one result per
   C/Channel/Base plane;
+- Make composite using `make-composite`, rendering channel-like axes as colored
+  display layers without baking an RGB image;
 - Reset view action;
 - action enablement from the active result.
 
 Next implementation slice:
 
-- add channel/LUT state that persists per display layer, then use it for
-  composite and RGB creation;
-- add channel merge / make composite / make RGB processors and toolbar actions.
+- add channel merge and make RGB processors and toolbar actions;
+- add richer channel selector controls for composite layers, including channel
+  visibility and per-channel LUT presets.

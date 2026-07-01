@@ -36,14 +36,18 @@ class _View:
         self.sigImageAutoContrastRequested = _Signal()
         self.sigImageResetContrastRequested = _Signal()
         self.sigImageContrastDialogRequested = _Signal()
+        self.sigImageLutChanged = _Signal()
         self.sigImageResetViewRequested = _Signal()
         self.sigImageDuplicateRequested = _Signal()
         self.sigImageCropSubstackRequested = _Signal()
         self.sigImageMaxProjectionRequested = _Signal()
         self.sigImageSplitStackRequested = _Signal()
         self.sigImageSplitChannelsRequested = _Signal()
+        self.sigImageMakeCompositeRequested = _Signal()
         self.enabled_states = []
         self.action_enabled = {}
+        self.lut_enabled = []
+        self.lut_values = []
         self.reconstructionWidget = SimpleNamespace(resetView=lambda: None)
 
     def setImageActionsEnabled(self, enabled):
@@ -51,6 +55,12 @@ class _View:
 
     def setImageActionEnabled(self, action_id, enabled):
         self.action_enabled[action_id] = bool(enabled)
+
+    def setImageLutEnabled(self, enabled):
+        self.lut_enabled.append(bool(enabled))
+
+    def setImageLutValue(self, lut_id):
+        self.lut_values.append(lut_id)
 
 
 class _Result:
@@ -62,9 +72,16 @@ class _Result:
         self.scale_unit = "px"
         self.view_modes = [ViewMode("Standard", tuple(range(data.ndim)))]
         self.display_levels = None
+        self.display_colormap = "grayclip"
 
     def setDispLevels(self, levels):
         self.display_levels = levels
+
+    def setDisplayColormap(self, colormap):
+        self.display_colormap = str(colormap)
+
+    def getDisplayColormap(self):
+        return self.display_colormap
 
 
 class _ReconstructionController:
@@ -72,6 +89,7 @@ class _ReconstructionController:
         self.result = _Result(data) if data is not None else None
         self.levels = None
         self.level_range = None
+        self.colormap = "grayclip"
 
     def getActiveResult(self):
         return self.result
@@ -91,6 +109,13 @@ class _ReconstructionController:
 
     def setActiveImageDisplayLevelsRange(self, minimum, maximum):
         self.level_range = (minimum, maximum)
+
+    def getActiveImageColormap(self):
+        return self.colormap
+
+    def setActiveImageColormap(self, colormap):
+        self.colormap = str(colormap)
+        self.result.setDisplayColormap(colormap)
 
 
 @pytest.fixture(scope="module")
@@ -127,6 +152,7 @@ def test_projection_action_disabled_for_2d_images():
     assert view_3d.action_enabled["crop-substack"] is True
     assert view_3d.action_enabled["split-stack"] is True
     assert view_3d.action_enabled["split-channels"] is False
+    assert view_3d.action_enabled["make-composite"] is False
 
 
 def test_auto_contrast_sets_display_levels_and_result_metadata():
@@ -136,6 +162,16 @@ def test_auto_contrast_sets_display_levels_and_result_metadata():
 
     assert recon.levels == (0.0, 99.0)
     assert recon.result.display_levels == (0.0, 99.0)
+
+
+def test_lut_change_updates_active_result_colormap():
+    controller, view, recon = _controller(np.zeros((3, 4), dtype=np.float32))
+
+    controller.setLut("green")
+
+    assert recon.colormap == "green"
+    assert recon.result.display_colormap == "green"
+    assert view.lut_values[-1] == "grayclip"
 
 
 def test_reset_contrast_sets_range_and_levels():
@@ -265,3 +301,20 @@ def test_split_channels_enabled_and_publishes_channels():
         "source (C 2)",
     ]
     np.testing.assert_array_equal(produced[2][0].data, data[2])
+
+
+def test_make_composite_enabled_and_publishes_composite_result():
+    data = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
+    controller, view, recon = _controller(data)
+    recon.result.axis_labels = ["C", "Y", "X"]
+    controller.currentResultChanged(recon.result)
+
+    assert view.action_enabled["make-composite"] is True
+    controller.makeComposite()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 1
+    composite = produced[0][0]
+    layers = composite.display_layers()
+    assert composite.name == "source (composite)"
+    assert [layer.colormap for layer in layers] == ["red", "green", "blue"]
