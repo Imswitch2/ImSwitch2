@@ -1,11 +1,41 @@
 """Base contract for ImProcess processor plugins."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Callable
 
 from qtpy import QtWidgets
 
 from imswitch.improcess.model.result import ProcessingResult
+
+
+@dataclass(frozen=True)
+class ProcessorOutput:
+    """One or more ProcessingResults returned by a processor."""
+
+    results: tuple[ProcessingResult, ...]
+
+    def __init__(self, results):
+        normalized = tuple(results)
+        if not all(isinstance(result, ProcessingResult) for result in normalized):
+            raise TypeError("ProcessorOutput results must be ProcessingResult objects")
+        object.__setattr__(self, "results", normalized)
+
+
+def normalize_processor_output(output) -> tuple[ProcessingResult, ...]:
+    """Normalize a processor return value to a tuple of results."""
+    if isinstance(output, ProcessorOutput):
+        return output.results
+    if isinstance(output, ProcessingResult):
+        return (output,)
+    if isinstance(output, (list, tuple)):
+        results = tuple(output)
+        if all(isinstance(result, ProcessingResult) for result in results):
+            return results
+    raise TypeError(
+        "Processor output must be a ProcessingResult, ProcessorOutput, "
+        "or a sequence of ProcessingResult objects"
+    )
 
 
 class Processor(ABC):
@@ -49,12 +79,12 @@ class Processor(ABC):
         ...
     
     @abstractmethod
-    def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
+    def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult | ProcessorOutput:
         """
         Apply the processing step.
         
         Pure function: no side effects, no GUI updates.
-        Returns a new ProcessingResult (may reuse the input data array or copy).
+        Returns one or more ProcessingResults (may reuse the input data array or copy).
         
         Args:
             result: Input result from a reconstructor or previous processor

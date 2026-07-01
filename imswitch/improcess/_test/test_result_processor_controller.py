@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
+import numpy as np
+
 from imswitch.improcess.controller.ResultProcessorController import ResultProcessorController
+from imswitch.improcess.model.array_result import ArrayProcessingResult
+from imswitch.improcess.processors.base import ProcessorOutput
 
 
 class _Signal:
@@ -36,7 +40,11 @@ class _Processor:
     id = "fake"
 
     def apply(self, input_result, params):
-        return SimpleNamespace(name=f"{input_result.name}_processed")
+        return ArrayProcessingResult(
+            name=f"{input_result.name}_processed",
+            data=np.array([[1]], dtype=np.float32),
+            axis_labels=["Y", "X"],
+        )
 
 
 class _FailingProcessor:
@@ -44,6 +52,26 @@ class _FailingProcessor:
 
     def apply(self, input_result, params):
         raise RuntimeError("boom")
+
+
+class _MultiOutputProcessor:
+    id = "many"
+
+    def apply(self, input_result, params):
+        return ProcessorOutput(
+            [
+                ArrayProcessingResult(
+                    name=f"{input_result.name}_a",
+                    data=np.array([[1]], dtype=np.float32),
+                    axis_labels=["Y", "X"],
+                ),
+                ArrayProcessingResult(
+                    name=f"{input_result.name}_b",
+                    data=np.array([[2]], dtype=np.float32),
+                    axis_labels=["Y", "X"],
+                ),
+            ]
+        )
 
 
 def _bound_controller(processor):
@@ -84,3 +112,16 @@ def test_result_processor_controller_reports_processor_failure():
     assert controller._commChannel.sigCurrentResultChanged.emitted == []
     assert controller._widget.status == ["boom"]
     assert controller._logger.exceptions
+
+
+def test_result_processor_controller_publishes_multi_output():
+    run_processor, controller = _bound_controller(_MultiOutputProcessor())
+
+    run_processor(SimpleNamespace(name="source"), {})
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    current = controller._commChannel.sigCurrentResultChanged.emitted
+    assert [args[1] for args in produced] == ["source_a", "source_b"]
+    assert current[0][0].name == "source_b"
+    assert controller._widget.current_results[0].name == "source_b"
+    assert controller._widget.status == ["Created 2 results."]

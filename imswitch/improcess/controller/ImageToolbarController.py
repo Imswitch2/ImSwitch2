@@ -7,7 +7,10 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
+from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
+from imswitch.improcess.processors.base import normalize_processor_output
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
+from imswitch.improcess.processors.stack_split import StackSplitProcessor
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 
 
@@ -27,6 +30,8 @@ class ImageToolbarController:
         mainView.sigImageResetViewRequested.connect(self.resetView)
         mainView.sigImageDuplicateRequested.connect(self.duplicateResult)
         mainView.sigImageMaxProjectionRequested.connect(self.maxProjection)
+        mainView.sigImageSplitStackRequested.connect(self.splitStack)
+        mainView.sigImageSplitChannelsRequested.connect(self.splitChannels)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
         self.currentResultChanged(reconstructionController.getActiveResult())
 
@@ -37,6 +42,14 @@ class ImageToolbarController:
             self._view.setImageActionEnabled(
                 "max-projection",
                 has_image and getattr(getattr(result, "data", None), "ndim", 0) > 2,
+            )
+            self._view.setImageActionEnabled(
+                "split-stack",
+                has_image and StackSplitProcessor().applies_to(result),
+            )
+            self._view.setImageActionEnabled(
+                "split-channels",
+                has_image and ChannelSplitProcessor().applies_to(result),
             )
 
     def autoContrast(self, saturated_percent: float = 0.35) -> None:
@@ -100,13 +113,31 @@ class ImageToolbarController:
         result = self._reconstructionController.getActiveResult()
         if not self._resultHasImage(result):
             return
-        processor = ProjectionProcessor()
-        try:
-            output = processor.apply(result, {"axis": "Auto", "mode": "max"})
-        except Exception:
-            self._logger.exception("Could not create max projection for active result")
+        self._runProcessor(ProjectionProcessor(), result, {"axis": "Auto", "mode": "max"})
+
+    def splitStack(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
             return
-        self._publishResult(output)
+        self._runProcessor(StackSplitProcessor(), result, {"axis": "Auto"})
+
+    def splitChannels(self) -> None:
+        result = self._reconstructionController.getActiveResult()
+        if not self._resultHasImage(result):
+            return
+        self._runProcessor(ChannelSplitProcessor(), result, {"axis": "Auto"})
+
+    def _runProcessor(self, processor, result, params: dict) -> None:
+        try:
+            output = processor.apply(result, params)
+            results = normalize_processor_output(output)
+        except Exception:
+            self._logger.exception(
+                "Could not run image toolbar processor %s",
+                getattr(processor, "id", type(processor).__name__),
+            )
+            return
+        self._publishResults(results)
 
     def _autoFromDialog(self, saturated_percent: float) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -168,9 +199,16 @@ class ImageToolbarController:
         self._contrastDialog = None
 
     def _publishResult(self, result) -> None:
-        display_name = getattr(result, "name", "") or "Image result"
-        self._commChannel.sigResultProduced.emit(result, display_name)
-        self._commChannel.sigCurrentResultChanged.emit(result)
+        self._publishResults((result,))
+
+    def _publishResults(self, results) -> None:
+        last_result = None
+        for result in results:
+            display_name = getattr(result, "name", "") or "Image result"
+            self._commChannel.sigResultProduced.emit(result, display_name)
+            last_result = result
+        if last_result is not None:
+            self._commChannel.sigCurrentResultChanged.emit(last_result)
 
     @staticmethod
     def _resultHasImage(result) -> bool:

@@ -1,6 +1,7 @@
 """Controller for generic result-based processor panels."""
 
 from .basecontrollers import ImProcessWidgetController
+from imswitch.improcess.processors.base import normalize_processor_output
 
 
 class ResultProcessorController(ImProcessWidgetController):
@@ -15,6 +16,7 @@ class ResultProcessorController(ImProcessWidgetController):
         processor = self._widget.processor
         try:
             output = processor.apply(input_result, params)
+            results = normalize_processor_output(output)
         except Exception as exc:
             self._logger.exception(
                 "Failed to run processor %s on %s",
@@ -24,8 +26,19 @@ class ResultProcessorController(ImProcessWidgetController):
             self._widget.setStatusText(str(exc))
             return
 
-        display_name = getattr(output, "name", "") or f"{input_result.name}_{processor.id}"
-        self._commChannel.sigResultProduced.emit(output, display_name)
-        self._commChannel.sigCurrentResultChanged.emit(output)
-        self._widget.setCurrentResult(output)
-        self._widget.setStatusText(f"Created {display_name}.")
+        last_result = None
+        for index, result in enumerate(results):
+            display_name = (
+                getattr(result, "name", "")
+                or f"{input_result.name}_{processor.id}_{index}"
+            )
+            self._commChannel.sigResultProduced.emit(result, display_name)
+            last_result = result
+
+        if last_result is not None:
+            self._commChannel.sigCurrentResultChanged.emit(last_result)
+            self._widget.setCurrentResult(last_result)
+        if len(results) == 1:
+            self._widget.setStatusText(f"Created {getattr(results[0], 'name', 'result')}.")
+        else:
+            self._widget.setStatusText(f"Created {len(results)} results.")

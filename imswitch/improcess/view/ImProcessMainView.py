@@ -64,6 +64,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageResetViewRequested = QtCore.Signal()
     sigImageDuplicateRequested = QtCore.Signal()
     sigImageMaxProjectionRequested = QtCore.Signal()
+    sigImageSplitStackRequested = QtCore.Signal()
+    sigImageSplitChannelsRequested = QtCore.Signal()
 
     sigClosing = QtCore.Signal()
 
@@ -558,6 +560,20 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Create a max projection of the active result along the default stack axis',
             style.standardIcon(QtWidgets.QStyle.SP_ArrowDown),
             self.sigImageMaxProjectionRequested,
+        )
+        self._addImageAction(
+            'split-stack',
+            'Split stack',
+            'Split the active stack into one result per plane',
+            style.standardIcon(QtWidgets.QStyle.SP_FileDialogListView),
+            self.sigImageSplitStackRequested,
+        )
+        self._addImageAction(
+            'split-channels',
+            'Split channels',
+            'Split a C, Channel or Base axis into one result per channel',
+            style.standardIcon(QtWidgets.QStyle.SP_DirIcon),
+            self.sigImageSplitChannelsRequested,
         )
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()

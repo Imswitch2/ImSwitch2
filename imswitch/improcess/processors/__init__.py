@@ -6,6 +6,7 @@ in the global registry alongside reconstructors.
 """
 
 from .base import Processor
+from .channel_split import ChannelSplitProcessor
 from .colocalization import ColocalizationProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
@@ -15,9 +16,11 @@ from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
 from .psf_resolution import PSFResolutionProcessor
 from .segmentation import SegmentationProcessor
+from .stack_split import StackSplitProcessor
 
 
 _AVAILABLE_PROCESSOR_CLASSES = {
+    'channel-split': ChannelSplitProcessor,
     'colocalization': ColocalizationProcessor,
     'drift-correct': DriftCorrectProcessor,
     'frc': FRCProcessor,
@@ -27,6 +30,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'projection': ProjectionProcessor,
     'psf-resolution': PSFResolutionProcessor,
     'segmentation': SegmentationProcessor,
+    'stack-split': StackSplitProcessor,
 }
 
 
@@ -81,6 +85,7 @@ def register_default_processors(registry, filter_ids: list[str] | None = None) -
 
 __all__ = [
     "Processor",
+    "ChannelSplitProcessor",
     "ColocalizationProcessor",
     "DriftCorrectProcessor",
     "FRCProcessor",
@@ -90,6 +95,7 @@ __all__ = [
     "ProjectionProcessor",
     "PSFResolutionProcessor",
     "SegmentationProcessor",
+    "StackSplitProcessor",
     "available_processor_choices",
     "available_processor_ids",
     "register_processor_by_id",

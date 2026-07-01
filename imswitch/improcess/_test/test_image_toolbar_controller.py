@@ -37,6 +37,8 @@ class _View:
         self.sigImageResetViewRequested = _Signal()
         self.sigImageDuplicateRequested = _Signal()
         self.sigImageMaxProjectionRequested = _Signal()
+        self.sigImageSplitStackRequested = _Signal()
+        self.sigImageSplitChannelsRequested = _Signal()
         self.enabled_states = []
         self.action_enabled = {}
         self.reconstructionWidget = SimpleNamespace(resetView=lambda: None)
@@ -118,6 +120,8 @@ def test_projection_action_disabled_for_2d_images():
 
     assert view_2d.action_enabled["max-projection"] is False
     assert view_3d.action_enabled["max-projection"] is True
+    assert view_3d.action_enabled["split-stack"] is True
+    assert view_3d.action_enabled["split-channels"] is False
 
 
 def test_auto_contrast_sets_display_levels_and_result_metadata():
@@ -179,3 +183,34 @@ def test_max_projection_publishes_projection_result():
     assert result.name == "source (max Z-projection)"
     assert result.axis_labels == ["Y", "X"]
     np.testing.assert_array_equal(result.data, data.max(axis=0))
+
+
+def test_split_stack_publishes_each_plane():
+    data = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    controller, _view, _recon = _controller(data)
+
+    controller.splitStack()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    current = controller._commChannel.sigCurrentResultChanged.emitted
+    assert [args[0].name for args in produced] == ["source (Z 0)", "source (Z 1)"]
+    np.testing.assert_array_equal(produced[1][0].data, data[1])
+    assert current[0][0] is produced[-1][0]
+
+
+def test_split_channels_enabled_and_publishes_channels():
+    data = np.arange(12, dtype=np.float32).reshape(3, 2, 2)
+    controller, view, recon = _controller(data)
+    recon.result.axis_labels = ["C", "Y", "X"]
+    controller.currentResultChanged(recon.result)
+
+    assert view.action_enabled["split-channels"] is True
+    controller.splitChannels()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert [args[0].name for args in produced] == [
+        "source (C 0)",
+        "source (C 1)",
+        "source (C 2)",
+    ]
+    np.testing.assert_array_equal(produced[2][0].data, data[2])

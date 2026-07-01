@@ -1,7 +1,7 @@
 # ImProcess Fiji-like Image Toolbar
 
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
-duplicate and max-projection slices landed
+duplicate, max-projection, split-stack and split-channel slices landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -240,10 +240,10 @@ from batch/chain workflows:
 Toolbar result actions can call these processors directly, then emit their
 outputs through `sigResultProduced`.
 
-One open API question: `Processor.apply(...)` currently returns a single
-`ProcessingResult`. `stack-split` naturally returns many. Either add an optional
-`apply_many(...)` method or introduce a small `ProcessorOutput` wrapper that can
-carry one or more results.
+`Processor.apply(...)` now supports both single-result returns and
+`ProcessorOutput` multi-result returns. Controllers normalize both shapes and
+emit every produced `ProcessingResult` through `sigResultProduced`, with the
+last produced result becoming current.
 
 ---
 
@@ -316,8 +316,10 @@ Regression tests:
 4. Add projection and duplicate actions by reusing existing result/processor
    contracts. **Implemented for whole-result duplicate and one-click max
    projection.**
-5. Add stack subset/split processors and wire toolbar dialogs.
-6. Add channel split/merge/composite/RGB processors.
+5. Add stack subset/split processors and wire toolbar dialogs. **Implemented
+   for one-click split stack; crop/substack range dialogs remain pending.**
+6. Add channel split/merge/composite/RGB processors. **Implemented for
+   channel split; merge/composite/RGB remain pending.**
 7. Promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
    PSF, colocalization, and multicolor.
 8. Add menus mirroring the toolbar categories so keyboard users can discover
@@ -338,6 +340,10 @@ Implemented files:
 - `view/ContrastBrightnessDialog.py` — modeless histogram/min/max dialog.
 - `controller/ImageToolbarController.py` — action enablement and display-level
   execution.
+- `processors/base.py` — `ProcessorOutput` and output normalization for
+  processor commands that emit multiple results.
+- `processors/stack_split` and `processors/channel_split` — Fiji-like stack and
+  channel split processors.
 - `ImProcessMainView` — persistent Image menu and image toolbar.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
@@ -350,12 +356,16 @@ Current scope:
 - Duplicate active result;
 - one-click Max projection using the existing projection processor's default
   stack-axis selection;
+- one-click Split stack using `stack-split`, publishing one result per plane;
+- one-click Split channels using `channel-split`, publishing one result per
+  C/Channel/Base plane;
 - Reset view action;
 - action enablement from the active result.
 
 Next implementation slice:
 
-- introduce the processor output shape for commands that naturally emit several
-  results, starting with `stack-split` and `channel-split`;
-- add channel/LUT state that persists per display layer instead of only the
-  whole active result.
+- add crop/substack range selection for labeled axes without materializing lazy
+  backing arrays unless a copy is explicitly requested;
+- add channel/LUT state that persists per display layer, then use it for
+  composite and RGB creation;
+- add channel merge / make composite / make RGB processors and toolbar actions.
