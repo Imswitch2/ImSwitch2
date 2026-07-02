@@ -12,7 +12,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qtpy import QtWidgets
 
 from imswitch.improcess.controller.ImageToolbarController import ImageToolbarController
+from imswitch.improcess.model.luts import IMAGE_LUTS
 from imswitch.improcess.model.result import ViewMode
+from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
@@ -36,6 +38,7 @@ class _View:
         self.sigImageAutoContrastRequested = _Signal()
         self.sigImageResetContrastRequested = _Signal()
         self.sigImageContrastDialogRequested = _Signal()
+        self.sigImageChannelControlsRequested = _Signal()
         self.sigImageLutChanged = _Signal()
         self.sigImageResetViewRequested = _Signal()
         self.sigImageDuplicateRequested = _Signal()
@@ -90,6 +93,9 @@ class _ReconstructionController:
     def __init__(self, data):
         self.result = _Result(data) if data is not None else None
         self.selected_results = [self.result] if self.result is not None else []
+        self.layer_states = []
+        self.layer_visibility = {}
+        self.layer_luts = {}
         self.levels = None
         self.level_range = None
         self.colormap = "grayclip"
@@ -126,6 +132,15 @@ class _ReconstructionController:
         self.colormap = str(colormap)
         self.result.setDisplayColormap(colormap)
 
+    def getDisplayLayerStates(self):
+        return list(self.layer_states)
+
+    def setDisplayLayerVisible(self, layer_id, visible):
+        self.layer_visibility[layer_id] = bool(visible)
+
+    def setDisplayLayerColormap(self, layer_id, colormap):
+        self.layer_luts[layer_id] = str(colormap)
+
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -151,6 +166,10 @@ def test_toolbar_actions_enable_only_for_image_results():
     assert view.enabled_states[-1] is False
 
 
+def test_lut_choices_include_hot():
+    assert ("hot", "Hot") in IMAGE_LUTS
+
+
 def test_projection_action_disabled_for_2d_images():
     _controller_2d, view_2d, _recon_2d = _controller(np.zeros((3, 4), dtype=np.float32))
     _controller_3d, view_3d, _recon_3d = _controller(np.zeros((2, 3, 4), dtype=np.float32))
@@ -158,6 +177,7 @@ def test_projection_action_disabled_for_2d_images():
     assert view_2d.action_enabled["max-projection"] is False
     assert view_2d.action_enabled["crop-substack"] is True
     assert view_3d.action_enabled["max-projection"] is True
+    assert view_3d.action_enabled["channels"] is False
     assert view_3d.action_enabled["crop-substack"] is True
     assert view_3d.action_enabled["split-stack"] is True
     assert view_3d.action_enabled["split-channels"] is False
@@ -183,6 +203,58 @@ def test_lut_change_updates_active_result_colormap():
     assert recon.colormap == "green"
     assert recon.result.display_colormap == "green"
     assert view.lut_values[-1] == "grayclip"
+
+
+def test_channel_controls_dialog_emits_visibility_and_lut(qapp):
+    dialog = ChannelControlsDialog(lut_choices=IMAGE_LUTS)
+    visible = []
+    luts = []
+    dialog.sigLayerVisibilityChanged.connect(
+        lambda layer_id, state: visible.append((layer_id, state))
+    )
+    dialog.sigLayerLutChanged.connect(
+        lambda layer_id, lut_id: luts.append((layer_id, lut_id))
+    )
+    dialog.setLayerStates(
+        [
+            {
+                "id": "C_0",
+                "name": "Channel 0",
+                "visible": True,
+                "colormap": "grayclip",
+                "metadata": {"component": "C_0"},
+            }
+        ]
+    )
+
+    dialog.table.cellWidget(0, 0).setChecked(False)
+    lut_combo = dialog.table.cellWidget(0, 2)
+    lut_combo.setCurrentIndex(lut_combo.findData("hot"))
+    lut_combo.activated.emit(lut_combo.currentIndex())
+
+    assert visible == [("C_0", False)]
+    assert luts == [("C_0", "hot")]
+
+
+def test_channel_controls_enabled_and_updates_reconstruction_controller():
+    controller, view, recon = _controller(np.zeros((3, 4), dtype=np.float32))
+    recon.layer_states = [
+        {
+            "id": "C_0",
+            "name": "Channel 0",
+            "visible": True,
+            "colormap": "grayclip",
+            "metadata": {"component": "C_0"},
+        }
+    ]
+
+    controller.currentResultChanged(recon.result)
+    controller.setChannelLayerVisible("C_0", False)
+    controller.setChannelLayerLut("C_0", "hot")
+
+    assert view.action_enabled["channels"] is True
+    assert recon.layer_visibility == {"C_0": False}
+    assert recon.layer_luts == {"C_0": "hot"}
 
 
 def test_reset_contrast_sets_range_and_levels():

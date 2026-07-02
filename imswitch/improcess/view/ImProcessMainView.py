@@ -7,6 +7,7 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
 from imswitch.improcess.model.runtime_tools import RuntimeAnalysisToolSpec
+from imswitch.improcess.model.luts import IMAGE_LUTS
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
     DEFAULT_FOOTPRINT_NUM_RECTS,
     DEFAULT_GAUSSIAN_SIGMA_PX,
@@ -30,20 +31,6 @@ from .ResultsTableWidget import ResultsTableWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .SegmentationWidget import SegmentationWidget
 from .guitools import BetterPushButton
-
-
-IMAGE_LUTS = (
-    ("grayclip", "Gray"),
-    ("gray", "Gray ramp"),
-    ("red", "Red"),
-    ("green", "Green"),
-    ("blue", "Blue"),
-    ("cyan", "Cyan"),
-    ("magenta", "Magenta"),
-    ("yellow", "Yellow"),
-    ("viridis", "Viridis"),
-    ("magma", "Magma"),
-)
 
 
 class ImProcessMainView(QtWidgets.QMainWindow):
@@ -75,6 +62,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
     sigImageContrastDialogRequested = QtCore.Signal()
+    sigImageChannelControlsRequested = QtCore.Signal()
     sigImageLutChanged = QtCore.Signal(str)
     sigImageResetViewRequested = QtCore.Signal()
     sigImageDuplicateRequested = QtCore.Signal()
@@ -566,6 +554,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.sigImageResetContrastRequested,
         )
         self._addImageLutSelector()
+        self._addImageAction(
+            'channels',
+            'Channels...',
+            'Show per-channel visibility and LUT controls',
+            style.standardIcon(QtWidgets.QStyle.SP_FileDialogInfoView),
+            self.sigImageChannelControlsRequested,
+        )
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()
         self._addImageAction(

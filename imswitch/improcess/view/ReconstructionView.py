@@ -271,7 +271,7 @@ class ReconstructionView(QtWidgets.QFrame):
                 layer.data = data
                 layer.scale = tuple(axisScales)
                 layer.metadata.update(metadata)
-                layer.visible = True
+                layer.visible = bool(spec.visible)
             else:
                 layer = self.napariViewer.add_image(
                     data,
@@ -280,6 +280,7 @@ class ReconstructionView(QtWidgets.QFrame):
                     colormap=spec.colormap,
                     scale=tuple(axisScales),
                     metadata=metadata,
+                    visible=bool(spec.visible),
                 )
                 self._displayLayers.append(layer)
 
@@ -384,6 +385,23 @@ class ReconstructionView(QtWidgets.QFrame):
     def getActiveImageLayerName(self) -> str:
         return str(getattr(self.getActiveImageLayer(), "name", ""))
 
+    def getImageLayerStates(self) -> list[dict]:
+        states = []
+        for layer in self._imageLayers():
+            layer_id = self._imageLayerId(layer)
+            if layer_id is None:
+                continue
+            states.append(
+                {
+                    "id": layer_id,
+                    "name": str(getattr(layer, "name", layer_id)),
+                    "visible": bool(getattr(layer, "visible", True)),
+                    "colormap": self._colormapName(layer),
+                    "metadata": dict(getattr(layer, "metadata", {}) or {}),
+                }
+            )
+        return states
+
     def getActiveImageDisplayLevels(self):
         return self.getActiveImageLayer().contrast_limits
 
@@ -395,6 +413,16 @@ class ReconstructionView(QtWidgets.QFrame):
 
     def setActiveImageColormap(self, colormap: str) -> None:
         self.getActiveImageLayer().colormap = str(colormap)
+
+    def setImageLayerVisible(self, layer_id: str, visible: bool) -> None:
+        layer = self._imageLayerById(layer_id)
+        if layer is not None:
+            layer.visible = bool(visible)
+
+    def setImageLayerColormap(self, layer_id: str, colormap: str) -> None:
+        layer = self._imageLayerById(layer_id)
+        if layer is not None:
+            layer.colormap = str(colormap)
 
     def getActiveImageDisplayLevelsRange(self):
         layer = self.getActiveImageLayer()
@@ -424,6 +452,25 @@ class ReconstructionView(QtWidgets.QFrame):
     def _colormapName(layer) -> str:
         colormap = getattr(layer, "colormap", "grayclip")
         return str(getattr(colormap, "name", colormap))
+
+    def _imageLayers(self) -> list:
+        return [self.imgLayer, *list(getattr(self, "_displayLayers", []))]
+
+    def _imageLayerById(self, layer_id: str):
+        requested = str(layer_id)
+        for layer in self._imageLayers():
+            if self._imageLayerId(layer) == requested:
+                return layer
+        return None
+
+    @staticmethod
+    def _imageLayerId(layer):
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        component = metadata.get("component")
+        if component:
+            return str(component)
+        name = getattr(layer, "name", None)
+        return str(name) if name else None
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -33,6 +33,7 @@ class DisplayLayerSpec:
     scale_unit: str = "px"
     colormap: str = "grayclip"
     rgb: bool = False
+    visible: bool = True
     metadata: dict[str, Any] | None = None
 
 
@@ -126,6 +127,14 @@ class ProcessingResult(ABC):
         settings = self._display_layer_settings.get(str(layer_id), {})
         return str(settings.get("colormap", default))
 
+    def setDisplayLayerVisible(self, layer_id: str, visible: bool) -> None:
+        settings = self._display_layer_settings.setdefault(str(layer_id), {})
+        settings["visible"] = bool(visible)
+
+    def getDisplayLayerVisible(self, layer_id: str, default: bool = True) -> bool:
+        settings = self._display_layer_settings.get(str(layer_id), {})
+        return bool(settings.get("visible", default))
+
     def displayLayerSettings(self) -> dict[str, dict[str, Any]]:
         """Return a copy of persisted display-layer overrides."""
         return {
@@ -174,6 +183,7 @@ class ProcessingResult(ABC):
                     layer,
                     display_levels=settings.get("display_levels", layer.display_levels),
                     colormap=settings.get("colormap", layer.colormap),
+                    visible=settings.get("visible", layer.visible),
                 )
             )
         return adjusted

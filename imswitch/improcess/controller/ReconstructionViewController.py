@@ -253,6 +253,25 @@ class ReconstructionViewController(ImProcessWidgetController):
         result = self.getActiveResult()
         self._storeActiveColormap(result, colormap)
 
+    def getDisplayLayerStates(self) -> list[dict]:
+        if hasattr(self._widget, "getImageLayerStates"):
+            return self._widget.getImageLayerStates()
+        return []
+
+    def setDisplayLayerVisible(self, layer_id: str, visible: bool) -> None:
+        if hasattr(self._widget, "setImageLayerVisible"):
+            self._widget.setImageLayerVisible(layer_id, visible)
+        result = self.getActiveResult()
+        if result is not None and hasattr(result, "setDisplayLayerVisible"):
+            result.setDisplayLayerVisible(layer_id, visible)
+
+    def setDisplayLayerColormap(self, layer_id: str, colormap: str) -> None:
+        if hasattr(self._widget, "setImageLayerColormap"):
+            self._widget.setImageLayerColormap(layer_id, colormap)
+        result = self.getActiveResult()
+        if result is not None and hasattr(result, "setDisplayLayerColormap"):
+            result.setDisplayLayerColormap(layer_id, colormap)
+
     def setActiveImageDisplayLevelsRange(self, minimum, maximum):
         if hasattr(self._widget, "setActiveImageDisplayLevelsRange"):
             self._widget.setActiveImageDisplayLevelsRange(minimum, maximum)
@@ -274,6 +293,9 @@ class ReconstructionViewController(ImProcessWidgetController):
             colormap = None
         if colormap:
             self._storeActiveColormap(result, colormap)
+        if hasattr(self._widget, "getImageLayerStates"):
+            for state in self._widget.getImageLayerStates():
+                self._storeDisplayLayerState(result, state)
 
     def _storeActiveDisplayLevels(self, result, levels) -> None:
         if result is None:
@@ -292,6 +314,20 @@ class ReconstructionViewController(ImProcessWidgetController):
             result.setDisplayLayerColormap(layer_id, colormap)
         elif hasattr(result, "setDisplayColormap"):
             result.setDisplayColormap(colormap)
+
+    def _storeDisplayLayerState(self, result, state: dict) -> None:
+        if result is None:
+            return
+        metadata = dict(state.get("metadata", {}) or {})
+        if metadata.get("source_result") not in (None, getattr(result, "name", None)):
+            return
+        layer_id = state.get("id")
+        if not layer_id:
+            return
+        if hasattr(result, "setDisplayLayerVisible"):
+            result.setDisplayLayerVisible(layer_id, bool(state.get("visible", True)))
+        if state.get("colormap") and hasattr(result, "setDisplayLayerColormap"):
+            result.setDisplayLayerColormap(layer_id, str(state["colormap"]))
 
     def _activeDisplayLayerId(self, result):
         if result is None:

@@ -99,8 +99,10 @@ the active reconstructor.  The first implemented tools are:
   and maximum controls, sliders, saturated-pixel auto contrast and whole-stack
   versus current-view histogram scope.
 * *Reset contrast* — reset the active layer to the finite data range.
-* *LUT* — set the colormap for the active image layer and persist it on the
-  active result or display-layer component.
+* *LUT* — set the colormap, including ``hot``, for the active image layer and
+  persist it on the active result or display-layer component.
+* *Channels...* — show display-layer channel controls with per-layer
+  visibility and LUT settings.
 * *Duplicate* — create a new array-backed result from the active result.
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
   every result axis.
@@ -118,12 +120,13 @@ the active reconstructor.  The first implemented tools are:
   result for display/export.
 * *Reset view* — restore the reconstruction viewer camera.
 
-The contrast and LUT operations are display-only: they update the Napari image layer
-and the active :py:class:`~imswitch.improcess.model.result.ProcessingResult`
-display settings, including per-display-layer settings for composite outputs,
-but do not alter pixel data.  Duplicate, crop/substack, max projection, merge
-channels, make composite and make RGB publish new ``ProcessingResult`` objects
-into the reconstruction list. Split stack and split channels publish multiple
+The contrast, LUT and channel-visibility operations are display-only: they
+update the Napari image layer and the active
+:py:class:`~imswitch.improcess.model.result.ProcessingResult` display settings,
+including per-display-layer settings for composite outputs, but do not alter
+pixel data.  Duplicate, crop/substack, max projection, merge channels, make
+composite and make RGB publish new ``ProcessingResult`` objects into the
+reconstruction list. Split stack and split channels publish multiple
 ``ProcessingResult`` objects and make the final split result current.
 
 Built-in plugins

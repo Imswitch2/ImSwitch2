@@ -19,6 +19,7 @@ from imswitch.improcess.processors.projection.processor import ProjectionProcess
 from imswitch.improcess.processors.stack_split import StackSplitProcessor
 from imswitch.improcess.processors.stack_subset import StackSubsetProcessor
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
+from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
 
@@ -31,10 +32,12 @@ class ImageToolbarController:
         self._reconstructionController = reconstructionController
         self._logger = initLogger(self, tryInheritParent=False)
         self._contrastDialog = None
+        self._channelDialog = None
 
         mainView.sigImageAutoContrastRequested.connect(self.autoContrast)
         mainView.sigImageResetContrastRequested.connect(self.resetContrast)
         mainView.sigImageContrastDialogRequested.connect(self.openContrastDialog)
+        mainView.sigImageChannelControlsRequested.connect(self.openChannelControls)
         mainView.sigImageLutChanged.connect(self.setLut)
         mainView.sigImageResetViewRequested.connect(self.resetView)
         mainView.sigImageDuplicateRequested.connect(self.duplicateResult)
@@ -52,6 +55,10 @@ class ImageToolbarController:
         has_image = self._resultHasImage(result)
         self._view.setImageActionsEnabled(has_image)
         if hasattr(self._view, "setImageActionEnabled"):
+            self._view.setImageActionEnabled(
+                "channels",
+                has_image and bool(self._displayLayerStates()),
+            )
             self._view.setImageActionEnabled(
                 "max-projection",
                 has_image and getattr(getattr(result, "data", None), "ndim", 0) > 2,
@@ -89,6 +96,7 @@ class ImageToolbarController:
                 )
             except Exception:
                 self._logger.debug("Could not sync image LUT selector", exc_info=True)
+        self._refreshChannelDialog()
 
     def autoContrast(self, saturated_percent: float = 0.35) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -129,6 +137,36 @@ class ImageToolbarController:
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def openChannelControls(self) -> None:
+        states = self._displayLayerStates()
+        if not states:
+            return
+
+        dialog = self._channelDialog
+        if dialog is None:
+            dialog = ChannelControlsDialog(self._view)
+            dialog.sigLayerVisibilityChanged.connect(self.setChannelLayerVisible)
+            dialog.sigLayerLutChanged.connect(self.setChannelLayerLut)
+            dialog.finished.connect(lambda _result: self._clearChannelDialog())
+            self._channelDialog = dialog
+
+        dialog.setLayerStates(states)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def setChannelLayerVisible(self, layer_id: str, visible: bool) -> None:
+        try:
+            self._reconstructionController.setDisplayLayerVisible(layer_id, visible)
+        except Exception:
+            self._logger.exception("Could not set channel layer visibility")
+
+    def setChannelLayerLut(self, layer_id: str, colormap: str) -> None:
+        try:
+            self._reconstructionController.setDisplayLayerColormap(layer_id, colormap)
+        except Exception:
+            self._logger.exception("Could not set channel layer LUT")
 
     def resetView(self) -> None:
         try:
@@ -283,6 +321,19 @@ class ImageToolbarController:
 
     def _clearContrastDialog(self) -> None:
         self._contrastDialog = None
+
+    def _clearChannelDialog(self) -> None:
+        self._channelDialog = None
+
+    def _refreshChannelDialog(self) -> None:
+        dialog = self._channelDialog
+        if dialog is not None:
+            dialog.setLayerStates(self._displayLayerStates())
+
+    def _displayLayerStates(self) -> list[dict]:
+        if hasattr(self._reconstructionController, "getDisplayLayerStates"):
+            return list(self._reconstructionController.getDisplayLayerStates())
+        return []
 
     def _publishResult(self, result) -> None:
         self._publishResults((result,))

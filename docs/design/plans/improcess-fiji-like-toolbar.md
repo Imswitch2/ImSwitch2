@@ -2,7 +2,7 @@
 
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
 duplicate, crop/substack, max-projection, split-stack and split-channel slices
-landed; LUT persistence, channel-merge, make-composite and make-RGB landed
+landed; LUT/channel controls, channel-merge, make-composite and make-RGB landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -349,6 +349,8 @@ Implemented files:
 - `ProcessingResult` display settings and `processors/make_composite` —
   persistent LUT/contrast settings for display layers and composite channel
   rendering.
+- `view/ChannelControlsDialog.py` — per-display-layer visibility and LUT
+  controls, including the `hot` LUT.
 - `processors/channel_merge` and `processors/make_rgb` — merge selected
   compatible grayscale results into channel stacks and bake channel-like axes
   into RGB visualization/export results.
@@ -361,6 +363,7 @@ Current scope:
 - display-only Auto contrast;
 - display-only Reset contrast;
 - display-only LUT selection with per-result and per-display-layer persistence;
+- display-only Channels dialog with per-layer visibility and LUT persistence;
 - modeless Brightness/Contrast dialog;
 - Duplicate active result;
 - Crop/Substack dialog using `stack-subset`, preserving rank and axis metadata;
@@ -379,7 +382,5 @@ Current scope:
 
 Next implementation slice:
 
-- add richer channel selector controls for composite layers, including channel
-  visibility and per-channel LUT presets.
 - promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
   PSF, colocalization and multicolor.

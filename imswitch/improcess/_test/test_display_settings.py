@@ -94,8 +94,10 @@ def test_display_layer_lut_and_levels_persist_by_component():
 
     controller.setActiveImageColormap("green")
     controller.setActiveImageDisplayLevels(3.0, 9.0)
+    controller.setDisplayLayerVisible("signal", False)
 
     adjusted = result.applyDisplayLayerSettings(result.display_layers())
     assert adjusted[0].colormap == "green"
     assert adjusted[0].display_levels == (3.0, 9.0)
+    assert adjusted[0].visible is False
     assert result.getDispLevels() is None
