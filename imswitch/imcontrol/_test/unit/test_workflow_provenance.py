@@ -245,8 +245,15 @@ class TestRecordingManagerMetadata:
         mock_detectors_manager.__getitem__ = MagicMock(return_value=mock_detector)
         mock_recording_manager.detectorsManager = mock_detectors_manager
 
-        # Create a RecordingWorker instance
+        # Create a RecordingWorker instance. saveFormat and the lapse fields
+        # are normally set by RecordingManager.startRecording before the
+        # worker runs; _augment_attrs_with_recording_metadata reads them.
+        from imswitch.imcontrol.model import SaveFormat
         worker = RecordingWorker(mock_recording_manager)
+        worker.saveFormat = SaveFormat.HDF5
+        worker.recLapseTotal = 1
+        worker.recLapseIndex = 0
+        worker.singleLapseFile = False
 
         # Test the augment method
         original_attrs = {

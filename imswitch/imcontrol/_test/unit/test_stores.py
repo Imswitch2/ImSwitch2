@@ -11,6 +11,7 @@ import zarr
 class MockDetectorsManager():
     shape: tuple
     pixelSizeUm: list
+    dtype: object = np.uint16
     
 
 @pytest.fixture()
@@ -41,7 +42,7 @@ def test_tiff_storer(tmpdir, fake_manager):
         {"test_channel": np.zeros((100,100), dtype=np.uint16)},
         {"test_channel": {"test": "value"}}
     )
-    assert os.path.exists(path + "_test_channel.tiff"), "path does not exist"
+    assert os.path.exists(path + "_test_channel.ome.tiff"), "path does not exist"
 
 
 def test_hdf5_storer(tmpdir, fake_manager):
