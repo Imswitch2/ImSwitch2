@@ -129,6 +129,13 @@ composite and make RGB publish new ``ProcessingResult`` objects into the
 reconstruction list. Split stack and split channels publish multiple
 ``ProcessingResult`` objects and make the final split result current.
 
+The *Analysis tools* toolbar also keeps Fiji-like panel shortcuts visible for
+common workflows: ROI manager, Projection, Segmentation, FRC, PSF,
+Colocalization and Multicolor.  These buttons use the same runtime loading path
+as the *Load tool* combo, so opening a panel registers its processor when
+needed, raises an existing dock when it already exists and preserves the
+runtime-loaded panel in the dock-layout state.
+
 Built-in plugins
 ----------------
 

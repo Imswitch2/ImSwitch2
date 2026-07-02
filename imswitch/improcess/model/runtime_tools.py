@@ -14,6 +14,15 @@ class RuntimeAnalysisToolSpec:
     processor_id: str | None = None
 
 
+@dataclass(frozen=True)
+class RuntimeAnalysisPanelShortcut:
+    """Always-visible shortcut for opening an interactive analysis panel."""
+
+    id: str
+    title: str
+    tooltip: str
+
+
 _PROCESSOR_WIDGET_SPECS = {
     "drift-correct": (
         "Drift correction",
@@ -39,6 +48,44 @@ _NON_PROCESSOR_TOOL_SPECS = {
         processor_id=None,
     ),
 }
+
+_PANEL_SHORTCUTS = (
+    RuntimeAnalysisPanelShortcut(
+        id="roi-manager",
+        title="ROI manager",
+        tooltip="Open the ROI manager panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="projection",
+        title="Projection",
+        tooltip="Open the projection panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="segmentation",
+        title="Segmentation",
+        tooltip="Open the segmentation panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="frc",
+        title="FRC",
+        tooltip="Open the Fourier ring correlation panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="psf-resolution",
+        title="PSF",
+        tooltip="Open the PSF resolution panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="colocalization",
+        title="Colocalization",
+        tooltip="Open the colocalization panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="multicolor-registration",
+        title="Multicolor",
+        tooltip="Open the multicolor registration and alignment panel",
+    ),
+)
 
 
 def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
@@ -77,6 +124,12 @@ def runtime_analysis_tool_choices() -> list[tuple[str, str]]:
     ]
 
 
+def runtime_analysis_panel_shortcuts() -> list[RuntimeAnalysisPanelShortcut]:
+    """Return the Fiji-like panel shortcuts available in this build."""
+    specs = runtime_analysis_tool_specs()
+    return [shortcut for shortcut in _PANEL_SHORTCUTS if shortcut.id in specs]
+
+
 def runtime_result_processor_ids() -> list[str]:
     """Return runtime tool ids backed by the generic ResultProcessorWidget."""
     return [
@@ -98,7 +151,9 @@ def _generic_processor_attribute(processor_id: str) -> str:
 
 
 __all__ = [
+    "RuntimeAnalysisPanelShortcut",
     "RuntimeAnalysisToolSpec",
+    "runtime_analysis_panel_shortcuts",
     "runtime_analysis_tool_choices",
     "runtime_analysis_tool_specs",
     "runtime_result_processor_ids",

@@ -6,7 +6,10 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
-from imswitch.improcess.model.runtime_tools import RuntimeAnalysisToolSpec
+from imswitch.improcess.model.runtime_tools import (
+    RuntimeAnalysisToolSpec,
+    runtime_analysis_panel_shortcuts,
+)
 from imswitch.improcess.model.luts import IMAGE_LUTS
 from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
     DEFAULT_FOOTPRINT_NUM_RECTS,
@@ -145,14 +148,17 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._imageActions: dict[str, QtWidgets.QAction] = {}
         self._imageLutActions: dict[str, QtWidgets.QAction] = {}
         self._imageMenu = menuBar.addMenu('&Image')
+        self._analysisMenu = menuBar.addMenu('&Analyze')
         self._imageToolbar = self.addToolBar('Image tools')
         self._imageToolbar.setObjectName('ImProcessImageToolsToolbar')
         self._imageToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self._buildImageToolbar()
         self.setImageActionsEnabled(False)
 
+        self._analysisToolActions: dict[str, QtWidgets.QAction] = {}
         self._processorToolbar = self.addToolBar('Analysis tools')
         self._processorToolbar.setObjectName('ImProcessAnalysisToolsToolbar')
+        self._processorToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self._loadProcessorCombo = QtWidgets.QComboBox()
         self._loadProcessorCombo.setMinimumContentsLength(18)
         self._loadProcessorCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
@@ -167,6 +173,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Loaded processors: '))
         self._processorToolbar.addWidget(self._loadedProcessorCombo)
+        self._processorToolbar.addSeparator()
+        self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
+        self._buildAnalysisToolShortcuts()
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
@@ -434,6 +443,46 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
+    def _buildAnalysisToolShortcuts(self) -> None:
+        style = self.style()
+        icon_ids = {
+            'roi-manager': QtWidgets.QStyle.SP_FileDialogListView,
+            'projection': QtWidgets.QStyle.SP_ArrowDown,
+            'segmentation': QtWidgets.QStyle.SP_DialogApplyButton,
+            'frc': QtWidgets.QStyle.SP_BrowserReload,
+            'psf-resolution': QtWidgets.QStyle.SP_DialogHelpButton,
+            'colocalization': QtWidgets.QStyle.SP_DirLinkIcon,
+            'multicolor-registration': QtWidgets.QStyle.SP_DriveNetIcon,
+        }
+        for shortcut in runtime_analysis_panel_shortcuts():
+            icon_id = icon_ids.get(shortcut.id, QtWidgets.QStyle.SP_FileIcon)
+            self._addAnalysisToolAction(
+                shortcut.id,
+                shortcut.title,
+                shortcut.tooltip,
+                style.standardIcon(icon_id),
+            )
+
+    def _addAnalysisToolAction(
+        self,
+        tool_id: str,
+        text: str,
+        tooltip: str,
+        icon,
+    ) -> QtWidgets.QAction:
+        action = QtWidgets.QAction(icon, text, self)
+        action.setToolTip(tooltip)
+        action.setStatusTip(tooltip)
+        action.triggered.connect(
+            lambda _checked=False, current_id=str(tool_id): (
+                self.sigLoadProcessorRequested.emit(current_id)
+            )
+        )
+        self._processorToolbar.addAction(action)
+        self._analysisMenu.addAction(action)
+        self._analysisToolActions[str(tool_id)] = action
+        return action
+
     def _on_load_processor_combo_activated(self, index: int) -> None:
         combo = self._loadProcessorCombo
         processor_id = combo.itemData(index) if 0 <= index < combo.count() else None
@@ -694,6 +743,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def imageAction(self, action_id: str) -> QtWidgets.QAction | None:
         return self._imageActions.get(action_id)
+
+    def analysisToolAction(self, tool_id: str) -> QtWidgets.QAction | None:
+        return self._analysisToolActions.get(tool_id)
 
     def setImageLutEnabled(self, enabled: bool) -> None:
         if hasattr(self, "_imageLutCombo"):

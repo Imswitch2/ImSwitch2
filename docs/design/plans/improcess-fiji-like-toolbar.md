@@ -2,7 +2,8 @@
 
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
 duplicate, crop/substack, max-projection, split-stack and split-channel slices
-landed; LUT/channel controls, channel-merge, make-composite and make-RGB landed
+landed; LUT/channel controls, channel-merge, make-composite, make-RGB and
+panel shortcuts landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -354,6 +355,8 @@ Implemented files:
 - `processors/channel_merge` and `processors/make_rgb` — merge selected
   compatible grayscale results into channel stacks and bake channel-like axes
   into RGB visualization/export results.
+- `model/runtime_tools.py` — Fiji-like panel shortcut descriptors for ROI
+  manager, projection, segmentation, FRC, PSF, colocalization and multicolor.
 - `ImProcessMainView` — persistent Image menu and image toolbar.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
@@ -377,10 +380,12 @@ Current scope:
 - Make composite using `make-composite`, rendering channel-like axes as colored
   display layers without baking an RGB image;
 - Make RGB using `make-rgb`, publishing a channel-last RGB visualization result;
+- Analysis toolbar panel shortcuts for ROI manager, projection, segmentation,
+  FRC, PSF, colocalization and multicolor;
 - Reset view action;
 - action enablement from the active result.
 
 Next implementation slice:
 
-- promote panel-open shortcuts for ROI manager, projection, segmentation, FRC,
-  PSF, colocalization and multicolor.
+- add keyboard shortcuts and final GUI polish for the always-present toolbar
+  actions.
