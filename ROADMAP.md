@@ -303,6 +303,68 @@ dependency).
 
 ---
 
+## Milestone 15: Single-Molecule Localization Microscopy (SMLM) 🔄
+
+**Goal:** Make ImSwitch2 a first-class SMLM platform end to end — acquire a
+blinking image stack, localize single emitters into a coordinate table with
+properties, process that table (drift correction, grouping, filtering), and
+render it in-house — while treating the external
+[napari-storm](https://github.com/super-resolution/napari-storm) plugin as the
+premium GPU point-cloud renderer via a clean data handoff, not a dependency.
+
+**Detailed plan:**
+[docs/design/plans/smlm-localization-port.md](docs/design/plans/smlm-localization-port.md)
+— phased, first phases spelled out. **Scope for now: localization + in-house
+rendering only.** COMET drift correction (GPU-optional), grouping, and
+advanced filtering are named as future phases but deliberately out of the
+initial scope.
+
+**Why this fits ImProcess (M12) rather than being a rewrite:**
+
+- **Acquisition (ImControl) is already there** — camera + laser(s) + optional
+  filter flipper cover a STORM/PALM/DNA-PAINT rig with no new hardware work.
+- **The localization *compute* plugs into the existing reconstructor
+  registry.** A `Localizer` reconstructor implementing the
+  `StreamingReconstructor`/`StreamingSession` contract localizes frames as
+  they arrive — the streaming/`LiveSource`/`frames_committed` machinery from
+  Milestone 10 is directly reusable, so live localization during acquisition
+  comes almost for free.
+- **The one true gap is the *result type*.** `ProcessingResult` today is
+  image/array-centric (N-d array → napari image layer). SMLM's native output
+  is a **coordinate table** (`frame, x/y/z, sigma_x/y/z, photons`). M15 adds a
+  `LocalizationResult` around that recarray; the existing results-table and
+  processor-chain infrastructure then hosts filter/group/drift as table
+  processors.
+- **In-house 3D rendering reuses the image viewer, no points layer needed.**
+  Following [pyMINFLUX](https://github.com/bsse-scf/pyMINFLUX)'s approach,
+  "render" is a pure-numpy step that turns the coordinate table back into an
+  image — 2D/3D **histogram binning** or **fixed-Gaussian splatting**. The
+  rendered volume is a normal image `ProcessingResult` the embedded napari
+  viewer already displays (3D via the dims slider). napari-storm stays the
+  separate, cutting-edge GPU particle renderer, fed the same recarray.
+
+**Surface-level plan (refined in the plan doc):**
+
+- ⬜ **`LocalizationResult` + canonical schema.** A table-backed
+  `ProcessingResult` around the `(frame, x/y/z, sigma_x/y/z, photons)`
+  recarray, with pixel-size/units metadata and a stable column contract
+  shared with napari-storm.
+- ⬜ **`Localizer` reconstructor (batch first, then streaming).** Port the
+  Picasso-style net-gradient `detect_spots` + centroid/MLE `fit_spot` from
+  napari-storm as a pure-function core behind a `Reconstructor`, then a
+  `StreamingSession` that localizes per chunk.
+- ⬜ **In-house renderer.** Pure-numpy `render_xy`/`render_xyz`
+  (histogram + fixed-Gaussian) → image `ProcessingResult`; wire a render
+  processor + params widget into the existing viewer.
+- ⬜ **napari-storm handoff.** Export the `LocalizationResult` recarray in the
+  format napari-storm's reader consumes, so the premium renderer is one
+  export away without a runtime dependency.
+- ⬜ **Future phases (out of initial scope):** COMET drift correction
+  (GPU-optional), grouping/linking, advanced filtering, 3D (astigmatism/PSF)
+  fitting, throughput-oriented (vectorized/GPU) localization.
+
+---
+
 ## Final Milestone 13: Real-World Setup Validation
 
 **Goal:** Validate ImSwitch2 end-to-end against the five physical setups
