@@ -136,6 +136,11 @@ as the *Load tool* combo, so opening a panel registers its processor when
 needed, raises an existing dock when it already exists and preserves the
 runtime-loaded panel in the dock-layout state.
 
+Toolbar icons are selected through ImProcess semantic action IDs and rendered
+with QtAwesome Material Design Icons when available, with Qt standard icons as
+a fallback.  This keeps icon choices consistent while allowing each action to
+retain its existing text, tooltip and menu entry.
+
 Built-in plugins
 ----------------
 

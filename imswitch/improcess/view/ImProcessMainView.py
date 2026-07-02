@@ -34,6 +34,7 @@ from .ResultsTableWidget import ResultsTableWidget
 from .ScanParamsDialog import ScanParamsDialog
 from .SegmentationWidget import SegmentationWidget
 from .guitools import BetterPushButton
+from .icons import improcessIcon
 
 
 class ImProcessMainView(QtWidgets.QMainWindow):
@@ -444,23 +445,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.blockSignals(False)
 
     def _buildAnalysisToolShortcuts(self) -> None:
-        style = self.style()
-        icon_ids = {
-            'roi-manager': QtWidgets.QStyle.SP_FileDialogListView,
-            'projection': QtWidgets.QStyle.SP_ArrowDown,
-            'segmentation': QtWidgets.QStyle.SP_DialogApplyButton,
-            'frc': QtWidgets.QStyle.SP_BrowserReload,
-            'psf-resolution': QtWidgets.QStyle.SP_DialogHelpButton,
-            'colocalization': QtWidgets.QStyle.SP_DirLinkIcon,
-            'multicolor-registration': QtWidgets.QStyle.SP_DriveNetIcon,
-        }
         for shortcut in runtime_analysis_panel_shortcuts():
-            icon_id = icon_ids.get(shortcut.id, QtWidgets.QStyle.SP_FileIcon)
             self._addAnalysisToolAction(
                 shortcut.id,
                 shortcut.title,
                 shortcut.tooltip,
-                style.standardIcon(icon_id),
+                improcessIcon(shortcut.id, self),
             )
 
     def _addAnalysisToolAction(
@@ -579,19 +569,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             pass
 
     def _buildImageToolbar(self) -> None:
-        style = self.style()
         self._addImageAction(
             'auto-contrast',
             'Auto contrast',
             'Automatically stretch display levels for the active image',
-            style.standardIcon(QtWidgets.QStyle.SP_DialogApplyButton),
+            improcessIcon('auto-contrast', self),
             self.sigImageAutoContrastRequested,
         )
         self._addImageAction(
             'brightness-contrast',
             'Brightness/Contrast...',
             'Open the brightness and contrast min/max dialog',
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView),
+            improcessIcon('brightness-contrast', self),
             self.sigImageContrastDialogRequested,
             shortcut='Ctrl+Shift+C',
         )
@@ -599,7 +588,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'reset-contrast',
             'Reset contrast',
             'Reset display levels to the finite data range',
-            style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+            improcessIcon('reset-contrast', self),
             self.sigImageResetContrastRequested,
         )
         self._addImageLutSelector()
@@ -607,7 +596,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'channels',
             'Channels...',
             'Show per-channel visibility and LUT controls',
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogInfoView),
+            improcessIcon('channels', self),
             self.sigImageChannelControlsRequested,
         )
         self._imageToolbar.addSeparator()
@@ -616,56 +605,56 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'duplicate',
             'Duplicate',
             'Duplicate the active result',
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogNewFolder),
+            improcessIcon('duplicate', self),
             self.sigImageDuplicateRequested,
         )
         self._addImageAction(
             'crop-substack',
             'Crop/Substack...',
             'Create a cropped or ranged substack from the active result',
-            style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton),
+            improcessIcon('crop-substack', self),
             self.sigImageCropSubstackRequested,
         )
         self._addImageAction(
             'max-projection',
             'Max projection',
             'Create a max projection of the active result along the default stack axis',
-            style.standardIcon(QtWidgets.QStyle.SP_ArrowDown),
+            improcessIcon('max-projection', self),
             self.sigImageMaxProjectionRequested,
         )
         self._addImageAction(
             'split-stack',
             'Split stack',
             'Split the active stack into one result per plane',
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogListView),
+            improcessIcon('split-stack', self),
             self.sigImageSplitStackRequested,
         )
         self._addImageAction(
             'split-channels',
             'Split channels',
             'Split a C, Channel or Base axis into one result per channel',
-            style.standardIcon(QtWidgets.QStyle.SP_DirIcon),
+            improcessIcon('split-channels', self),
             self.sigImageSplitChannelsRequested,
         )
         self._addImageAction(
             'merge-channels',
             'Merge channels',
             'Merge selected compatible results into a C-axis channel stack',
-            style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton),
+            improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
         )
         self._addImageAction(
             'make-composite',
             'Make composite',
             'Render a C, Channel or Base axis as colored display layers',
-            style.standardIcon(QtWidgets.QStyle.SP_FileDialogContentsView),
+            improcessIcon('make-composite', self),
             self.sigImageMakeCompositeRequested,
         )
         self._addImageAction(
             'make-rgb',
             'Make RGB',
             'Bake a C, Channel or Base axis into an RGB visualization result',
-            style.standardIcon(QtWidgets.QStyle.SP_DriveHDIcon),
+            improcessIcon('make-rgb', self),
             self.sigImageMakeRgbRequested,
         )
         self._imageToolbar.addSeparator()
@@ -674,7 +663,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'reset-view',
             'Reset view',
             'Reset the reconstruction viewer camera',
-            style.standardIcon(QtWidgets.QStyle.SP_ComputerIcon),
+            improcessIcon('reset-view', self),
             self.sigImageResetViewRequested,
         )
 

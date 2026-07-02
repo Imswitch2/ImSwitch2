@@ -3,7 +3,7 @@
 **Status:** Implementation in progress — toolbar shell, brightness/contrast,
 duplicate, crop/substack, max-projection, split-stack and split-channel slices
 landed; LUT/channel controls, channel-merge, make-composite, make-RGB and
-panel shortcuts landed
+panel shortcuts landed; semantic QtAwesome icon mapping landed
 **Date:** 2026-07-01
 **Scope:** Add a persistent image-operation toolbar to ImProcess with
 Fiji/ImageJ-like stack, channel, LUT, and brightness/contrast workflows.
@@ -357,6 +357,8 @@ Implemented files:
   into RGB visualization/export results.
 - `model/runtime_tools.py` — Fiji-like panel shortcut descriptors for ROI
   manager, projection, segmentation, FRC, PSF, colocalization and multicolor.
+- `view/icons.py` — semantic QtAwesome-backed toolbar icons with Qt fallback
+  icons for environments that have not installed the new dependency yet.
 - `ImProcessMainView` — persistent Image menu and image toolbar.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
@@ -382,10 +384,10 @@ Current scope:
 - Make RGB using `make-rgb`, publishing a channel-last RGB visualization result;
 - Analysis toolbar panel shortcuts for ROI manager, projection, segmentation,
   FRC, PSF, colocalization and multicolor;
+- semantic icon mapping for all always-present image and analysis actions;
 - Reset view action;
 - action enablement from the active result.
 
 Next implementation slice:
 
-- add keyboard shortcuts and final GUI polish for the always-present toolbar
-  actions.
+- add keyboard shortcuts for the most common always-present toolbar actions.
