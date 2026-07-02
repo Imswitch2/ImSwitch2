@@ -422,7 +422,14 @@ class LiveModeController(ImProcessWidgetController):
             return False
 
     def _check_hdf5_complete(self, store_path: str) -> bool:
-        """Check if an HDF5 store is complete."""
+        """Check if an HDF5 store is complete.
+
+        Complete when writing=False/absent OR the stream_complete marker is
+        set: the recorder writes the marker while its SWMR handle is still
+        open, and the post-close writing=False attr rewrite can fail when a
+        live reader holds the file - the marker is then the only completion
+        evidence in the file.
+        """
         try:
             with h5py.File(store_path, 'r') as f:
                 # Single-file timelapse layout: scan{N}/{detector}/data.
@@ -439,7 +446,10 @@ class LiveModeController(ImProcessWidgetController):
                     item = f[key]
                     if isinstance(item, h5py.Group):
                         if 'data' in item:
-                            return self._writing_attr_complete(item['data'].attrs.get('writing'))
+                            if self._writing_attr_complete(item['data'].attrs.get('writing')):
+                                return True
+                            marker = item.get('stream_complete')
+                            return marker is not None and bool(marker[0])
                     elif isinstance(item, h5py.Dataset):
                         return self._writing_attr_complete(item.attrs.get('writing'))
                 return False  # no dataset created yet
@@ -471,17 +481,29 @@ class LiveModeController(ImProcessWidgetController):
             if not is_group(scan_group):
                 return False
             dataset = None
+            owner_group = None
             for det_key in scan_group.keys():
                 det_group = scan_group[det_key]
                 if is_group(det_group) and 'data' in det_group and is_dataset(det_group['data']):
                     dataset = det_group['data']
+                    owner_group = det_group
                     if num_timepoints is None:
                         num_timepoints = self._nested_num_timepoints(det_group, dataset)
                     break
             if dataset is None:
                 return False  # timepoint group without data yet
             if not self._writing_attr_complete(dataset.attrs.get('writing')):
-                return False
+                # The writing=False rewrite happens through a post-close r+
+                # reopen that can fail while a live reader holds the file;
+                # the stream_complete marker (written pre-close) then carries
+                # the completion evidence.
+                marker = None
+                try:
+                    marker = owner_group.get('stream_complete')
+                except Exception:
+                    marker = None
+                if marker is None or not bool(marker[0]):
+                    return False
 
         if num_timepoints is None:
             self._logger.debug(

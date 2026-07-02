@@ -313,13 +313,12 @@ Roughly in priority order:
    in :doc:`adding-device-support` and :doc:`devices/plugins` so new
    in-tree and plugin managers pick a single pattern instead of inventing
    another one.
-5. **Give the live-reconstruction debug loop a synthetic sample.** Instead
-   of bounded noise, generate a simple simulated scene (e.g. a few
-   Gaussian/bead-like blobs moved by the mock stage, or the existing BeadRec
-   test fixtures reused as a frame source) so mock recordings are also
-   useful for testing reconstruction and analysis widgets, not only
-   frame-count/timing contracts. Ties into the live-reconstruction port
-   work.
+5. *(dropped by decision, 2026-07-02)* ~~Give the live-reconstruction debug
+   loop a synthetic sample.~~ Judged overkill: replaying *real* legacy
+   recordings through the real storers/live sources (local harness in
+   ``Mini_Recon/live_replay/``, not in-repo) validates the streaming
+   pipeline end-to-end with data whose reconstruction can actually be
+   judged, which covers the need better than a simulated scene would.
 6. **Add SLM/rotator optical-effect stubs** where cheap (e.g. rotator mock
    angle affecting a reported polarization value) so downstream logic that
    reacts to those readings has something non-trivial to see in no-hardware

@@ -982,12 +982,26 @@ class HDF5Storer(Storer):
                 
                 # Reopen file in read/write mode (not SWMR) to update writing
                 # attribute and embed OME-XML (both forbidden under SWMR).
-                with h5py.File(filePath, 'r+') as f:
-                    if dataset_path in f:
-                        f[dataset_path].attrs['writing'] = False
-                        if currentFrames.get(detectorName, 0) >= 1:
-                            self._embed_ome_xml(
-                                f[dataset_path].parent, detectorName, f[dataset_path].shape)
+                # This reopen can fail while a live reader holds a SWMR handle
+                # on the file (e.g. improcess live reconstruction following
+                # the recording) - HDF5 refuses attribute writes then. That
+                # must not crash the recording teardown: live readers
+                # terminate via the stream_complete marker written above, and
+                # the completion gate accepts the marker as well.
+                try:
+                    with h5py.File(filePath, 'r+') as f:
+                        if dataset_path in f:
+                            f[dataset_path].attrs['writing'] = False
+                            if currentFrames.get(detectorName, 0) >= 1:
+                                self._embed_ome_xml(
+                                    f[dataset_path].parent, detectorName, f[dataset_path].shape)
+                except OSError as e:
+                    logger.warning(
+                        f'HDF5 finalize: could not rewrite writing=False / embed '
+                        f'OME-XML in {filePath} (a live reader may hold the file '
+                        f'open): {e}. The stream_complete marker still marks the '
+                        f'recording as finished.'
+                    )
 
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close HDF5 files and remove the partial on-disk file(s)."""
