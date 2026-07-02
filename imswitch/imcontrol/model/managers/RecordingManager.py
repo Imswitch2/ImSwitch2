@@ -376,6 +376,11 @@ class ZarrStorer(Storer):
         dataset.attrs['axes'] = [name.upper()
                                  for name in self._dimension_names(detectorName, dataset.ndim)]
         dataset.attrs['writing'] = True
+        # Committed-frames barrier for live readers: Zarr resizes the array
+        # BEFORE writing frame data, so array.shape runs ahead of the data on
+        # disk. This attr is updated AFTER each batch write, so a reader that
+        # honours it never reads uninitialised chunks.
+        dataset.attrs['recording:frames_committed'] = 0
 
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
         recording_attrs['detector_name'] = detectorName
@@ -525,7 +530,10 @@ class ZarrStorer(Storer):
         newSize = it + len(frames)
         dataset.resize((newSize, *dataset.shape[-2:]))
         dataset[it:newSize, :, :] = frames
-        
+        # Barrier AFTER the data: a reader seeing frames_committed=N is
+        # guaranteed frames [0, N) are on disk, even though shape resized early.
+        dataset.attrs['recording:frames_committed'] = newSize
+
         self._currentFrames[detectorName] += len(frames)
     
     def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
@@ -535,6 +543,9 @@ class ZarrStorer(Storer):
             dataset.attrs['writing'] = False
             if currentFrames[detectorName] < 1:
                 dataset.resize((0, *dataset.shape[-2:]))
+            dataset.attrs['recording:frames_committed'] = int(
+                max(0, currentFrames.get(detectorName, 0))
+            )
 
         if saveMode == SaveMode.DiskAndRAM:
             for detectorName in self._datasets:
@@ -764,6 +775,12 @@ class HDF5Storer(Storer):
         self._saveMode = saveMode
         self._dtypeWarned = set()  # Track detectors for which dtype mismatch was warned
         self._swmr_enabled = set()  # Track files for which SWMR mode was enabled
+        # Committed-frames barrier + completion marker for live SWMR readers.
+        # SWMR forbids attribute writes after swmr_mode=True, but dataset
+        # writes are allowed - so these live as 1-element datasets next to
+        # 'data' instead of attrs (see writeFrames/finalizeStream).
+        self._committedDatasets = {}
+        self._completeDatasets = {}
 
         # Temporarily disable compression for RAM mode (BytesIO) due to h5py instability
         self._streamCompression = None if saveMode == SaveMode.RAM else self.compression
@@ -832,6 +849,21 @@ class HDF5Storer(Storer):
             dataset.attrs['writing'] = True
             self._datasets[detectorName] = dataset
 
+            # Live-reader barrier: frames_committed is updated AFTER each data
+            # write+flush, so a SWMR reader that honours it never reads ahead
+            # of the data actually on disk. stream_complete is set at finalize
+            # WHILE the SWMR handle is still open - unlike the writing attr,
+            # which is rewritten via a post-close r+ reopen that a live SWMR
+            # reader can never see. Both must exist before SWMR is enabled
+            # (no new objects afterwards).
+            det_group = dataset.parent
+            self._committedDatasets[detectorName] = det_group.create_dataset(
+                'frames_committed', shape=(1,), dtype=np.int64
+            )
+            self._completeDatasets[detectorName] = det_group.create_dataset(
+                'stream_complete', shape=(1,), dtype=np.uint8
+            )
+
             # Enable SWMR mode after creating datasets and metadata
             # (SWMR forbids creating objects after swmr_mode=True)
             file_id = id(file)
@@ -861,6 +893,14 @@ class HDF5Storer(Storer):
         if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
             file = self._files[detectorName]
             file.flush()
+
+        # Barrier AFTER the data is flushed: a reader seeing
+        # frames_committed=N is guaranteed frames [0, N) are visible.
+        committed = self._committedDatasets.get(detectorName)
+        if committed is not None:
+            committed[0] = newSize
+            if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+                self._files[detectorName].flush()
     
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close HDF5 files and emit signals."""
@@ -879,6 +919,19 @@ class HDF5Storer(Storer):
             dataset = self._datasets.get(detectorName)
             if dataset is not None and currentFrames[detectorName] < 1:
                 dataset.resize(0, axis=0)
+
+            # Final barrier + completion marker, written while the SWMR handle
+            # is still open so a live SWMR reader (which never sees the
+            # writing=False attr rewritten after close) can terminate.
+            committed = self._committedDatasets.get(detectorName)
+            if committed is not None:
+                committed[0] = int(max(0, currentFrames.get(detectorName, 0)))
+            complete = self._completeDatasets.get(detectorName)
+            if complete is not None:
+                complete[0] = 1
+            if (committed is not None or complete is not None) and \
+                    saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
+                file.flush()
             
             # Emit signal for each detector (even in singleMultiDetectorFile mode).
             # RAM-backed BytesIO recordings are announced after their HDF5 file

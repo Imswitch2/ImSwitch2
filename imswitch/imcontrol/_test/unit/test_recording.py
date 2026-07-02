@@ -7,7 +7,7 @@ import numpy as np
 import zarr
 
 from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
-from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
+from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer
 from imswitch.imcontrol.model.managers.recording_metadata import MODE_SCAN, MODE_TIMELAPSE
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
 
@@ -837,6 +837,93 @@ def test_zarr_streaming_per_detector_files(tmp_path) -> None:
         root = zarr.open(fileDests[name], mode='r')
         assert list(root.keys()) == [name]
         np.testing.assert_array_equal(root[name]['data'][:], frames[name])
+
+
+def test_zarr_streaming_frames_committed_barrier(tmp_path) -> None:
+    """ZarrStorer maintains the recording:frames_committed live-reader barrier.
+
+    Zarr resizes the array BEFORE writing frame data, so a live reader that
+    trusts array.shape reads uninitialised chunks. frames_committed is updated
+    AFTER each batch write so readers that honour it never run ahead of the
+    data on disk (docs/live_reconstruction_audit.md).
+    """
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    store_path = str(tmp_path / 'committed.zarr')
+
+    storer = ZarrStorer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests={detectorName: store_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: (4, 5)},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+
+    storer.writeFrames(detectorName, np.ones((3, 4, 5), dtype=np.uint16))
+    dataset = zarr.open(store_path, mode='r')[detectorName]['data']
+    assert int(dataset.attrs['recording:frames_committed']) == 3
+    assert bool(dataset.attrs['writing']) is True
+
+    storer.writeFrames(detectorName, np.ones((2, 4, 5), dtype=np.uint16))
+    dataset = zarr.open(store_path, mode='r')[detectorName]['data']
+    assert int(dataset.attrs['recording:frames_committed']) == 5
+
+    storer.finalizeStream(
+        currentFrames={detectorName: 5}, filePaths={detectorName: store_path},
+        recordingManager=None, saveMode=SaveMode.Disk,
+    )
+    dataset = zarr.open(store_path, mode='r')[detectorName]['data']
+    assert int(dataset.attrs['recording:frames_committed']) == 5
+    assert bool(dataset.attrs['writing']) is False
+
+
+def test_hdf5_streaming_frames_committed_and_complete_marker(tmp_path) -> None:
+    """HDF5Storer maintains frames_committed / stream_complete side datasets.
+
+    SWMR forbids attribute writes after swmr_mode=True, so the barrier and
+    the completion marker live as 1-element datasets next to 'data'. The
+    marker is written while the SWMR handle is still open — unlike the
+    writing=False attr (rewritten via post-close r+ reopen), a live SWMR
+    reader can actually see it, which is what lets SpecTime/UntilStop live
+    reconstructions terminate.
+    """
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    file_path = str(tmp_path / 'committed.hdf5')
+
+    storer = HDF5Storer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests={detectorName: file_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: (4, 5)},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+
+    storer.writeFrames(detectorName, np.ones((3, 4, 5), dtype=np.uint16))
+    with h5py.File(file_path, 'r', libver='latest', swmr=True) as f:
+        group = f[detectorName]
+        assert int(group['frames_committed'][0]) == 3
+        assert int(group['stream_complete'][0]) == 0
+
+    storer.writeFrames(detectorName, np.ones((2, 4, 5), dtype=np.uint16))
+    with h5py.File(file_path, 'r', libver='latest', swmr=True) as f:
+        assert int(f[detectorName]['frames_committed'][0]) == 5
+
+    storer.finalizeStream(
+        currentFrames={detectorName: 5}, filePaths={detectorName: file_path},
+        recordingManager=None, saveMode=SaveMode.Disk,
+    )
+    with h5py.File(file_path, 'r') as f:
+        group = f[detectorName]
+        assert int(group['frames_committed'][0]) == 5
+        assert int(group['stream_complete'][0]) == 1
+        assert not bool(group['data'].attrs['writing'])
 
 
 def test_zarr_streaming_single_lapse_adds_scan_groups(tmp_path) -> None:

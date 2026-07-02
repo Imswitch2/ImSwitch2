@@ -403,3 +403,46 @@ def test_zarr_live_source_poll_after_close(tmp_zarr_path):
     
     assert source.poll() == []
     assert source.is_complete() is True
+
+
+def test_zarr_live_source_caps_reads_at_frames_committed(tmp_zarr_path):
+    """The reader must never run ahead of the frames_committed barrier.
+
+    Deterministic reproduction of audit root cause 1: ZarrStorer resizes the
+    array BEFORE writing frame data, so array.shape lies ahead of the data on
+    disk mid-batch. A reader trusting shape would read uninitialised (zero)
+    frames and permanently advance its cursor past them; honouring the
+    barrier caps reads at the flushed data.
+    """
+    root = zarr.group(store=ZarrStorer._make_store(str(tmp_zarr_path)), overwrite=True)
+    group = root.require_group("CAM")
+    array = group.zeros(name="data", shape=(4, 2, 3), dtype="u2", chunks=(1, 2, 3))
+    array[:] = 7  # 4 real frames on disk
+    array.attrs["detector_name"] = "CAM"
+    array.attrs["writing"] = True
+    array.attrs["recording:frames_committed"] = 4
+    # Racer mid-batch: shape resized ahead of the committed data.
+    array.resize((10, 2, 3))
+
+    source = ZarrLiveSource(detector_name="CAM")
+    source.open(tmp_zarr_path)
+
+    chunks = source.poll()
+    frames = np.concatenate([c.data for c in chunks], axis=0)
+    assert frames.shape[0] == 4  # capped at the barrier, not shape (10)
+    assert np.all(frames == 7)  # real data only, no uninitialised zeros
+    assert source.poll() == []  # cursor holds at the barrier
+    assert source.is_complete() is False
+
+    # Recorder commits the rest and finalizes.
+    root = zarr.open(str(tmp_zarr_path), mode="a")
+    root["CAM"]["data"][4:10] = 9
+    root["CAM"]["data"].attrs["recording:frames_committed"] = 10
+    root["CAM"]["data"].attrs["writing"] = False
+
+    chunks = source.poll()
+    frames = np.concatenate([c.data for c in chunks], axis=0)
+    assert frames.shape[0] == 6
+    assert np.all(frames == 9)
+    assert source.is_complete() is True
+    source.close()

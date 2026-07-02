@@ -208,3 +208,41 @@ multi-file lapses are now deliberate behavior rather than an accident:
 Still open from the primary recommendation: `frames_committed` for sub-stack
 liveness within a running (single) scan, and the SpecTime/UntilStop stall
 fallback.
+
+## Status update (2026-07-02, later): frames_committed barrier IMPLEMENTED
+
+The primary recommendation is now in place on top of the completion gate:
+
+- **Storers** (`RecordingManager.py`): `ZarrStorer` writes a
+  `recording:frames_committed` array attr after each batch write (init 0 at
+  creation, final value at finalize). `HDF5Storer` cannot use attrs (SWMR
+  forbids attribute writes after `swmr_mode=True`) so the barrier lives as
+  1-element side datasets next to `data`: `frames_committed` (int64, updated
+  after each data write+flush, then flushed again) and `stream_complete`
+  (uint8, set to 1 at finalize WHILE the SWMR handle is still open — unlike
+  the `writing=False` attr, which is rewritten via a post-close r+ reopen a
+  live SWMR reader can never see).
+- **Sources**: `ZarrLiveSource`/`Hdf5LiveSource._readable_length()` cap at
+  the barrier when present, so readers never run ahead of flushed data —
+  root cause 1 (Zarr resize-before-write) is closed for mid-write reads.
+  `Hdf5LiveSource.is_complete()` also honours `stream_complete`, closing
+  root cause 2: SpecTime/UntilStop recordings (no
+  `recording:expected_frames`) now terminate on a live SWMR handle.
+  Barrier-less legacy/external stores keep the old shape-trusting behavior
+  and remain admitted only once complete.
+- **Gate** (`LiveModeController._is_store_ready`): a still-writing store is
+  admitted when it carries the barrier (≥ 1 committed frame) AND the active
+  reconstructor supports streaming — reconstruction now runs DURING a
+  recording, updating per stack as batches land. Batch reconstructors and
+  single-file `scan{N}` lapses (recorder append-reopen race) still require
+  a complete store. `ZarrMultiFileLapseSource` advance is likewise relaxed
+  to "complete OR carries barrier".
+
+Honest scope note: for MoNaLISA the atomic reconstruction unit is one full
+scan stack, so "liveness within a recording" means per-stack updates during
+multi-stack recordings (SpecTime/UntilStop/multi-frame), not partial-stack
+reconstructions — those are algorithmically impossible.
+
+Still open: the stall fallback for crashed writers (a store left with
+`writing=True` and a stale barrier never completes; today the user stops
+live mode manually — same as upstream).

@@ -142,3 +142,54 @@ def test_multifile_lapse_does_not_advance_onto_writing_store(tmp_path):
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def test_multifile_lapse_advances_onto_midwrite_store_with_barrier(tmp_path):
+    """A next timepoint carrying frames_committed can be followed mid-write.
+
+    With the barrier the inner reader caps reads at the flushed data, so
+    advancing before writing=False is safe and restores per-frame liveness
+    for later timepoints. Barrier-less stores keep the complete-only gate
+    (see test_multifile_lapse_does_not_advance_onto_writing_store).
+    """
+    fps = 9
+    n_tp = 2
+    _write_lapse_file(tmp_path / "rec_scan__00__CAM.zarr",
+                      np.full((fps, 4, 5), 1, dtype=np.int16), n_tp)
+    # Timepoint 1: still writing, but with the committed barrier — 4 of 9
+    # frames flushed so far.
+    tp1 = tmp_path / "rec_scan__01__CAM.zarr"
+    _write_lapse_file(tp1, np.full((fps, 4, 5), 2, dtype=np.int16), n_tp,
+                      writing=True)
+    root = zarr.open(str(tp1), mode="a")
+    root["chunks"].attrs["recording:frames_committed"] = 4
+
+    seed = str(tmp_path / "rec_scan__00__CAM.zarr")
+    src = ZarrMultiFileLapseSource(seed)
+    src.open(seed)
+
+    chunks = []
+    for _ in range(10):
+        chunks.extend(src.poll())
+
+    # Advanced onto tp1 and read exactly its committed frames — no more.
+    assert max(c.end for c in chunks) == fps + 4
+    tp1_frames = np.concatenate(
+        [c.data for c in chunks if c.start >= fps], axis=0)
+    assert np.all(tp1_frames == 2)  # committed data, not uninitialised zeros
+    assert src.is_complete() is False
+
+    # Recorder finishes tp1.
+    root = zarr.open(str(tp1), mode="a")
+    root["chunks"].attrs["recording:frames_committed"] = fps
+    root["chunks"].attrs["writing"] = False
+
+    chunks2 = []
+    guard = 0
+    while not src.is_complete() and guard < 10_000:
+        chunks2.extend(src.poll())
+        guard += 1
+    src.close()
+
+    assert chunks2[-1].end == fps * n_tp
+    assert np.all(np.concatenate([c.data for c in chunks2], axis=0) == 2)

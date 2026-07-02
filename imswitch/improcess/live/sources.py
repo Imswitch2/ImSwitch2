@@ -103,6 +103,30 @@ def _zarr_store_write_complete(path: Any) -> bool:
         return False
 
 
+def _zarr_store_streamable(path: Any) -> bool:
+    """True iff a Zarr store can be safely opened by a live reader NOW.
+
+    Either the store is write-complete, or it carries the
+    ``recording:frames_committed`` barrier — with the barrier,
+    ``ZarrLiveSource._readable_length`` never reads past the flushed data,
+    so mid-write following is safe. Legacy stores (no barrier) must wait for
+    completion.
+    """
+    if _zarr_store_write_complete(path):
+        return True
+    try:
+        root = zarr.open(str(path), mode='r')
+        if _is_zarr_array(root):
+            return root.attrs.get('recording:frames_committed') is not None
+        names = dataset_names(root)
+        if not names:
+            return False
+        image = resolve_image(root, names[0])
+        return image.array.attrs.get('recording:frames_committed') is not None
+    except Exception:
+        return False
+
+
 def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     """Return frames per MoNaLISA scan stack from recorder metadata.
 
@@ -255,6 +279,7 @@ class ZarrLiveSource(LiveSource):
         self._cursor = 0
         self._chunk_size = 1
         self._expected_frames: int | None = None
+        self._frames_committed: int | None = None
         self._writing = True
 
     def open(self, path_or_handle: Any) -> StackInfo:
@@ -450,13 +475,25 @@ class ZarrLiveSource(LiveSource):
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
+        committed = self._coerce_int(attrs.get('recording:frames_committed'))
+        if committed is not None:
+            self._frames_committed = committed
+
         self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
 
     def _readable_length(self) -> int:
         if self._array is None:
             return 0
 
+        # frames_committed is the write barrier: ZarrStorer resizes the array
+        # BEFORE writing frame data, so shape alone runs ahead of the data on
+        # disk and a shape-trusting reader bakes zero frames into the stream
+        # (root cause 1 in docs/live_reconstruction_audit.md). Stores without
+        # the barrier (legacy/external) keep the shape behavior - they are
+        # only opened once complete, so no writer is racing them.
         current_length = int(self._array.shape[0])
+        if self._frames_committed is not None:
+            current_length = min(current_length, self._frames_committed)
         if self._expected_frames is None:
             return current_length
         return min(current_length, self._expected_frames)
@@ -564,15 +601,18 @@ class ZarrMultiFileLapseSource(LiveSource):
         chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
 
         # Current timepoint fully read: advance to the next file once it is
-        # COMPLETE (writing done), not merely present. Zarr resizes the array
-        # before writing data, so opening a mid-write store reads uninitialised
-        # (zero) frames that get baked into the stream permanently — the HDF5
-        # sibling can advance on existence because SWMR flush ordering makes
-        # shape-visible imply data-visible, but Zarr cannot.
+        # safely readable — write-complete, or mid-write WITH the
+        # frames_committed barrier (the inner reader then never runs ahead of
+        # flushed data). Plain existence is not enough: Zarr resizes the array
+        # before writing data, so opening a barrier-less mid-write store reads
+        # uninitialised (zero) frames that get baked into the stream
+        # permanently — the HDF5 sibling can advance on existence because SWMR
+        # flush ordering makes shape-visible imply data-visible, but Zarr
+        # cannot.
         if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
             next_path = self._build_path(self._position + 1)
             if (next_path is not None and os.path.exists(next_path)
-                    and _zarr_store_write_complete(next_path)):
+                    and _zarr_store_streamable(next_path)):
                 self._inner.close()
                 self._position += 1
                 self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)
@@ -921,6 +961,10 @@ class Hdf5LiveSource(LiveSource):
         self._cursor = 0
         self._chunk_size = 1
         self._expected_frames: int | None = None
+        self._frames_committed: int | None = None
+        self._stream_complete = False
+        self._committed_ds = None
+        self._complete_ds = None
         self._writing = True
         self._owns_file = False
 
@@ -949,6 +993,17 @@ class Hdf5LiveSource(LiveSource):
         if self._dataset.ndim != 3:
             raise ValueError(f"Expected 3D dataset (T, Y, X), got shape {self._dataset.shape}")
 
+        # Committed-frames barrier + live completion marker: 1-element side
+        # datasets next to 'data' (SWMR forbids attr writes, so the recorder
+        # cannot use attrs for these; and the final writing=False attr is
+        # rewritten only AFTER close, invisible to this live SWMR handle).
+        # Absent on legacy/external files -> both stay None.
+        parent = self._dataset.parent
+        self._committed_ds = parent.get('frames_committed') \
+            if isinstance(parent, h5py.Group) else None
+        self._complete_ds = parent.get('stream_complete') \
+            if isinstance(parent, h5py.Group) else None
+
         if self._chunk_size_override is not None:
             self._chunk_size = max(1, int(self._chunk_size_override))
         elif self._dataset.chunks is not None and len(self._dataset.chunks) > 0:
@@ -959,6 +1014,7 @@ class Hdf5LiveSource(LiveSource):
         frame_shape = self._dataset.shape[-2:]
         all_attrs = {**attrs, **dataset_attrs}
         self._refresh_state_from_attrs(all_attrs)
+        self._refresh_barrier_state()
         frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
 
         return StackInfo(
@@ -979,6 +1035,7 @@ class Hdf5LiveSource(LiveSource):
 
         self._dataset.refresh()
         self._refresh_state_from_attrs(self._read_dataset_attrs())
+        self._refresh_barrier_state()
         readable_length = self._readable_length()
 
         if self._cursor >= readable_length:
@@ -1003,16 +1060,45 @@ class Hdf5LiveSource(LiveSource):
 
         self._dataset.refresh()
         self._refresh_state_from_attrs(self._read_dataset_attrs())
+        self._refresh_barrier_state()
         current_length = self._dataset.shape[0]
 
         if self._expected_frames is not None:
             if self._cursor >= self._expected_frames:
                 return True
 
+        # Live completion: the recorder sets the stream_complete marker while
+        # its SWMR handle is still open, so a live reader terminates even for
+        # recordings with no expected_frames (SpecTime/UntilStop). The
+        # writing-attr path below only works for readers that (re)opened the
+        # file after the recorder closed it.
+        if self._stream_complete and self._cursor >= self._readable_length():
+            return True
+
         if not self._writing and self._cursor >= current_length:
             return True
 
         return False
+
+    def _refresh_barrier_state(self) -> None:
+        """Re-read the frames_committed / stream_complete side datasets."""
+        try:
+            if self._committed_ds is not None:
+                self._committed_ds.refresh()
+                self._frames_committed = int(self._committed_ds[0])
+            if self._complete_ds is not None:
+                self._complete_ds.refresh()
+                self._stream_complete = bool(self._complete_ds[0])
+        except Exception:
+            # RAM/BytesIO handles have no SWMR refresh; fall back to a plain
+            # read (values are in-process there anyway).
+            try:
+                if self._committed_ds is not None:
+                    self._frames_committed = int(self._committed_ds[0])
+                if self._complete_ds is not None:
+                    self._stream_complete = bool(self._complete_ds[0])
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Release source resources."""
@@ -1022,6 +1108,8 @@ class Hdf5LiveSource(LiveSource):
         self._file = None
         self._dataset = None
         self._dataset_path = None
+        self._committed_ds = None
+        self._complete_ds = None
 
     def _auto_detect_detector(self) -> str:
         """Auto-detect detector name from file contents."""
@@ -1129,11 +1217,17 @@ class Hdf5LiveSource(LiveSource):
         self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
 
     def _readable_length(self) -> int:
-        """Return the number of frames that can be read."""
+        """Return the number of frames that can be read.
+
+        Capped by the frames_committed barrier when present, so a live reader
+        never runs ahead of the data the recorder has actually flushed.
+        """
         if self._dataset is None:
             return 0
 
         current_length = int(self._dataset.shape[0])
+        if self._frames_committed is not None:
+            current_length = min(current_length, self._frames_committed)
         if self._expected_frames is None:
             return current_length
         return min(current_length, self._expected_frames)

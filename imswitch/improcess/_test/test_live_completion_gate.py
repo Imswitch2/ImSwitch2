@@ -438,6 +438,97 @@ def test_single_file_lapse_unknown_num_timepoints_stays_incomplete(tmp_path):
     assert controller._is_single_file_complete(path) is False
 
 
+# --- Mid-write admission via the frames_committed barrier ----------------------
+
+def _make_midwrite_zarr_store_with_barrier(path, committed=4):
+    """A store the recorder is still writing, carrying the committed barrier."""
+    root = zarr.open(path, mode='w')
+    detector = root.create_group('CAM')
+    data = detector.create_array('data', shape=(committed, 8, 8), dtype='uint16',
+                                 chunks=(1, 8, 8))
+    data[:] = 7
+    data.attrs['writing'] = True
+    data.attrs['recording:frames_committed'] = committed
+    return path
+
+
+def test_midwrite_store_with_barrier_admitted_for_streaming_reconstructor(tmp_path):
+    """A still-writing store with the barrier is processed when streaming.
+
+    With frames_committed the live sources never read past flushed data, so a
+    streaming reconstructor can follow the recording as it grows — this is
+    what makes reconstruction live DURING a recording instead of after it.
+    """
+    store_path = str(tmp_path / 'rec.zarr')
+    _make_midwrite_zarr_store_with_barrier(store_path)
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._mainController._activeReconstructor.supports_streaming = True
+    controller._storeQueue.append((store_path, False))
+
+    with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
+               return_value=MagicMock()):
+        controller._processNextStore()
+
+    assert len(controller._liveController.start_calls) == 1
+
+
+def test_midwrite_store_with_barrier_not_admitted_for_batch_reconstructor(tmp_path):
+    """Batch reconstructors read a store once — they need it complete."""
+    store_path = str(tmp_path / 'rec.zarr')
+    _make_midwrite_zarr_store_with_barrier(store_path)
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._mainController._activeReconstructor.supports_streaming = False
+    controller._storeQueue.append((store_path, False))
+
+    with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
+               return_value=MagicMock()):
+        controller._processNextStore()
+
+    assert len(controller._liveController.start_calls) == 0
+
+
+def test_midwrite_store_without_barrier_not_admitted(tmp_path):
+    """A legacy mid-write store (no barrier) must wait for completion.
+
+    Without frames_committed a reader would trust array.shape, which Zarr
+    resizes before writing the data (audit root cause 1).
+    """
+    store_path = str(tmp_path / 'rec.zarr')
+    _make_structured_zarr_store(store_path, writing=True)
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._mainController._activeReconstructor.supports_streaming = True
+    controller._storeQueue.append((store_path, False))
+
+    with patch('imswitch.improcess.controller.LiveModeController.make_live_source',
+               return_value=MagicMock()):
+        controller._processNextStore()
+
+    assert len(controller._liveController.start_calls) == 0
+
+
+def test_midwrite_single_file_lapse_never_barrier_admitted(tmp_path):
+    """scan{N} single-file lapses are excluded from barrier admission.
+
+    The recorder reopens the file in append mode for every next timepoint;
+    a reader holding it open would race the recording, so these are only
+    processed once the whole lapse is complete — streaming or not.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer
+
+    path = str(tmp_path / 'lapse.hdf5')
+    storer = _run_single_file_lapse_cycle(HDF5Storer, path, 0, 2)
+    _finish_cycle(storer, path)  # between cycles: 1 of 2 timepoints present
+
+    controller = _make_controller(folder_path=str(tmp_path), extension='hdf5')
+    controller._mainController._activeReconstructor.supports_streaming = True
+
+    assert controller._has_streaming_barrier(path) is False
+    assert controller._is_store_ready(path, False) is False
+
+
 # --- No head-of-line blocking -------------------------------------------------
 
 def test_no_head_of_line_blocking_complete_bypasses_incomplete(tmp_path):

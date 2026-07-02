@@ -375,3 +375,98 @@ def test_hdf5_live_source_poll_after_close(tmp_hdf5_path):
     
     assert source.poll() == []
     assert source.is_complete() is True
+
+
+def _hdf5_streaming_recorder(path, n_frames_first_batch=3):
+    """Drive a real HDF5Storer streaming session (no expected_frames attrs).
+
+    Mirrors a SpecTime/UntilStop recording: the reader cannot rely on
+    recording:expected_frames and must terminate via the stream_complete
+    marker instead.
+    """
+    from unittest.mock import MagicMock
+
+    from imswitch.imcontrol.model.managers.RecordingManager import (
+        HDF5Storer,
+        SaveMode,
+    )
+
+    det = MagicMock()
+    det.dtype = np.uint16
+    det.pixelSizeUm = [1, 0.1, 0.1]
+    det_mgr = MagicMock()
+    det_mgr.__getitem__ = MagicMock(return_value=det)
+
+    storer = HDF5Storer(str(path), det_mgr)
+    storer.omeMeta = {}
+    storer.openStream(
+        fileDests={"CAM": str(path)}, detectorNames=["CAM"],
+        shapes={"CAM": (2, 3)}, attrs={"CAM": {}},
+        singleMultiDetectorFile=False, singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames("CAM", np.full((n_frames_first_batch, 2, 3), 1, np.uint16))
+    return storer
+
+
+def test_hdf5_live_source_streams_and_completes_via_stream_complete_marker(tmp_hdf5_path):
+    """A live SWMR reader terminates via the stream_complete marker.
+
+    The final writing=False attr is rewritten through a post-close r+ reopen
+    that a live SWMR handle can never see, and with no
+    recording:expected_frames (SpecTime/UntilStop) the reader previously had
+    no way to complete at all (audit root cause 2). The marker dataset is
+    written while the recorder's SWMR handle is still open, so the live
+    reader sees it.
+    """
+    from unittest.mock import MagicMock
+
+    from imswitch.imcontrol.model.managers.RecordingManager import SaveMode
+
+    storer = _hdf5_streaming_recorder(tmp_hdf5_path, n_frames_first_batch=3)
+
+    source = Hdf5LiveSource(detector_name="CAM")
+    source.open(tmp_hdf5_path)
+
+    chunks = source.poll()
+    assert sum(len(c.data) for c in chunks) == 3
+    assert source.is_complete() is False
+
+    storer.writeFrames("CAM", np.full((2, 2, 3), 2, np.uint16))
+    chunks = source.poll()
+    frames = np.concatenate([c.data for c in chunks], axis=0)
+    assert frames.shape[0] == 2
+    assert np.all(frames == 2)
+    assert source.is_complete() is False  # recorder still writing
+
+    storer.finalizeStream(
+        currentFrames={"CAM": 5}, filePaths={"CAM": str(tmp_hdf5_path)},
+        recordingManager=MagicMock(), saveMode=SaveMode.Disk,
+    )
+    # No expected_frames and the writing=False rewrite is invisible to this
+    # held SWMR handle - completion must come from the marker.
+    assert source.is_complete() is True
+    source.close()
+
+
+def test_hdf5_live_source_caps_reads_at_frames_committed(tmp_hdf5_path):
+    """Reads are capped by the frames_committed barrier when it lags shape."""
+    with h5py.File(tmp_hdf5_path, "w", libver="latest") as f:
+        group = f.create_group("CAM")
+        data = group.create_dataset(
+            "data", shape=(6, 2, 3), maxshape=(None, 2, 3), dtype=np.uint16
+        )
+        data[:] = 5
+        data.attrs["writing"] = True
+        committed = group.create_dataset("frames_committed", shape=(1,), dtype=np.int64)
+        committed[0] = 4  # two frames not yet committed
+        group.create_dataset("stream_complete", shape=(1,), dtype=np.uint8)
+
+    source = Hdf5LiveSource(detector_name="CAM")
+    source.open(tmp_hdf5_path)
+
+    chunks = source.poll()
+    assert sum(len(c.data) for c in chunks) == 4  # not shape (6)
+    assert source.poll() == []
+    assert source.is_complete() is False
+    source.close()

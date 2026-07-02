@@ -293,18 +293,70 @@ class LiveModeController(ImProcessWidgetController):
             return value.strip().lower() not in {'0', 'false', 'no', 'off'}
         return bool(value)
 
+    def _is_store_ready(self, store_path: str, is_lapse: bool) -> bool:
+        """Whether a store can be handed to the reconstruction pipeline now.
+
+        Ready means complete (writing done) OR still being written but
+        carrying the recording:frames_committed barrier — with the barrier the
+        live sources only ever read flushed data, so a streaming reconstructor
+        can follow the recording as it grows. Batch reconstructors read a
+        store exactly once, so for them only a complete store is ready.
+        """
+        if self._is_store_complete(store_path, is_lapse):
+            return True
+
+        reconstructor = self._getActiveReconstructor()
+        if not getattr(reconstructor, 'supports_streaming', False):
+            return False
+        return self._has_streaming_barrier(store_path)
+
     def _is_store_complete(self, store_path: str, is_lapse: bool) -> bool:
         """Check if a recording store is complete (ready for reconstruction).
-        
+
         A store is complete when its 'writing' attribute is absent or False.
         For multi-file lapses, all timepoint files must exist and the last one
         must be complete.
-        
+
         Returns False on any error (store still being created/written).
         """
         if is_lapse:
             return self._is_lapse_complete(store_path)
         return self._is_single_file_complete(store_path)
+
+    def _has_streaming_barrier(self, store_path: str) -> bool:
+        """Whether a (possibly mid-write) store carries the committed barrier.
+
+        True once at least one frame batch is committed. Single-file lapse
+        stores (scan{N} layout) are never barrier-admitted: the recorder
+        reopens that file in append mode for every next timepoint, so a
+        reader holding it open would race the recording.
+        """
+        suffix = os.path.splitext(store_path)[1].lower()
+        try:
+            if suffix == '.zarr':
+                root = zarr.open(store_path, mode='r')
+                if self._scan_group_names(root.keys()):
+                    return False
+                for key in root.keys():
+                    child = root[key]
+                    if _is_zarr_group(child) and 'data' in child and _is_zarr_array(child['data']):
+                        committed = child['data'].attrs.get('recording:frames_committed')
+                        return committed is not None and int(committed) >= 1
+                return False
+            if suffix in {'.h5', '.hdf5', '.hdf'}:
+                with h5py.File(store_path, 'r', libver='latest', swmr=True) as f:
+                    if self._scan_group_names(f.keys()):
+                        return False
+                    for key in f.keys():
+                        item = f[key]
+                        if isinstance(item, h5py.Group) and 'data' in item:
+                            committed = item.get('frames_committed')
+                            return committed is not None and int(committed[0]) >= 1
+                return False
+        except Exception as e:
+            # Mid-creation (e.g. HDF5 before SWMR is enabled) -> retry next tick.
+            self._logger.debug(f"Barrier check failed for {store_path}: {e}")
+        return False
 
     def _writing_attr_complete(self, writing: Any) -> bool:
         """Interpret a dataset ``writing`` attribute as a completeness flag.
@@ -488,21 +540,21 @@ class LiveModeController(ImProcessWidgetController):
             self._logger.debug("No stores in queue to process")
             return
         
-        # Find the first complete store in the queue
+        # Find the first ready store in the queue
         store_path = None
         is_lapse = False
         queue_index = None
-        
+
         for idx, (path, lapse) in enumerate(self._storeQueue):
-            if self._is_store_complete(path, lapse):
+            if self._is_store_ready(path, lapse):
                 store_path = path
                 is_lapse = lapse
                 queue_index = idx
                 break
-        
-        # No complete store found yet, will retry on next tick
+
+        # No ready store found yet, will retry on next tick
         if store_path is None:
-            self._logger.debug("No complete stores in queue yet, waiting...")
+            self._logger.debug("No ready stores in queue yet, waiting...")
             return
         
         # Remove the complete store from the queue
