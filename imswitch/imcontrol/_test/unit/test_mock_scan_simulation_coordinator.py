@@ -166,6 +166,39 @@ def test_simulated_scan_plan_counts_ttl_edges_and_fallback_frames():
     }
 
 
+def test_simulated_scan_worker_stop_aborts_before_duration_cap():
+    """stop() must cut the tick loop short instead of running out the
+    duration cap, and must suppress sigDone when aborted mid-run.
+
+    Regression for a stale claim in docs/mock-infrastructure.rst that
+    aborting a simulated scan blocks until SimulatedScanWorker._MAX_DURATION
+    (5s) elapses - verified false against current code: stop() sets a flag
+    checked once per ~30ms tick, so an external stop() aborts within one
+    tick, not the duration cap.
+    """
+    from imswitch.imcontrol.model.managers.mockscan.ScanSimulationCoordinator import (
+        SimulatedScanWorker,
+    )
+
+    plan = SimulatedScanPlan(
+        frameCounts={'Camera': 1000}, duration=10.0, nPositions=1000, samplesTotal=1000,
+    )
+    worker = SimulatedScanWorker(plan)
+    doneEmitted = []
+    worker.sigDone.connect(lambda: doneEmitted.append(True))
+    worker.start()
+
+    _wait_for(lambda: worker.isRunning(), timeout=1.0)
+    worker.stop()
+
+    stoppedPromptly = _wait_for(lambda: not worker.isRunning(), timeout=1.0)
+    assert stoppedPromptly, (
+        'worker did not stop well within its 5s duration cap; abort is no '
+        'longer prompt'
+    )
+    assert doneEmitted == []  # aborted mid-run: no natural-completion signal
+
+
 def test_nidaq_simulated_scan_allows_no_physical_outputs():
     setup_info = _setup_from_user_default('mock_scan_setup.json')
     manager = NidaqManager(setup_info)

@@ -161,6 +161,27 @@ Progress log:
   range and average dwell samples. Tightened APD/PMT worker teardown so scan
   completion no longer depends on a later UI event to clear a finished scan
   thread. Expanded targeted suite -> 38 passed.
+- 2026-07-01: Diagnosed the ScanLapse pytest-abort report as a real
+  `threading.Thread` (`WriterThread`) join/teardown interaction with pytest's
+  Qt event loop, not a cycling-logic bug: `RecordingWorker._record()`'s
+  `finally` block already joins the writer thread (`WriterThread.finish()`)
+  and clears `RecordingManager.record` *before* `RecordingController`
+  advances the lapse, and `nextLapse()` already re-arms a drain-retry timer
+  while `record` is still true (see the 2026-06-26 `nextLapse` fix above), so
+  the two-completion-path race between `sigScanDone` and worker frame-count
+  completion was already closed at the logic level. Added
+  `test_scanlapse_two_cycle_drain_and_progression` in `test_recording.py`: a
+  controller-level regression driving two full lapse cycles
+  (`nextLapse`/`scanDone`/`recordingCycleEnded`) against a fake
+  `RecordingManager`, with no real `QThread`/`WriterThread` involved, so it
+  cannot hit the documented teardown abort. This gives the previously-bare
+  multi-cycle cycling contract (lapse progression, per-cycle savename/
+  `recLapseIndex`, drain-retry, final-cycle reset) real regression coverage.
+  Did not attempt another real-`RecordingManager`+`WriterThread` two-cycle
+  test - every prior attempt at that exact shape reproduced standalone and
+  aborted under pytest, and no new hypothesis for *why* pytest's Qt event
+  loop and the plain-Python writer thread deadlock/abort during teardown was
+  found this session. That diagnosis is the remaining `[todo]` in Phase 6.
 
 ## Target Architecture
 
@@ -306,7 +327,13 @@ Add tests that prove ScanOnce/ScanLapse behavior, not only low-level signals:
 - [partial] linestep trigger counts match the simulator/controller TTL edge
   contract, including sample-zero high TTLs,
 - [done] scan completion is emitted once at manager level.
-- [todo] ScanLapse mock recording completes without stalling.
+- [partial] ScanLapse mock recording completes without stalling. Controller-
+  level two-cycle regression added (`test_scanlapse_two_cycle_drain_and_progression`
+  in `test_recording.py`) covering the cycling state machine against a fake
+  RecordingManager. Still `[todo]`: a real `RecordingManager`/`WriterThread`
+  two-cycle regression - every attempt at that (including this one)
+  reproduces standalone but aborts under pytest during writer thread
+  teardown; see the 2026-07-01 progress log entry below.
 
 ### Phase 7: Setup Templates
 

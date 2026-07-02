@@ -256,6 +256,229 @@ def test_next_lapse_defers_start_while_previous_recording_active(monkeypatch):
     assert timer.timeout.cb == ctrl.nextLapse
 
 
+def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
+    """Two full ScanLapse timepoints through the controller's cycling state
+    machine (nextLapse / scanDone / recordingCycleEnded), each hitting the
+    sigScanDone-before-worker-drained race that
+    test_next_lapse_defers_start_while_previous_recording_active covers for a
+    single re-entry.
+
+    This is deliberately a controller-level regression: it drives the real
+    lapse-cycling contract (lapseCurrent progression, per-cycle savename/
+    recLapseIndex, drain-retry, final-cycle teardown) against a fake
+    RecordingManager, with no real QThread/WriterThread involved. Prior
+    attempts at a full RecordingManager+WriterThread two-cycle regression
+    reproduced standalone but reliably aborted under pytest during writer
+    thread teardown (see docs/mock_scanning_mocker_improvement_plan.md) - a
+    Qt/pytest-harness lifecycle issue, not a cycling-logic bug. That deeper
+    issue remains open and undiagnosed; this test locks down the logic that
+    previously only had single-cycle coverage.
+    """
+    import types
+
+    import imswitch.imcontrol.controller.controllers.RecordingController as rc_mod
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+        _LAPSE_RECORDING_DRAIN_RETRY_MS,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class _FakeSignal:
+        def __init__(self):
+            self.cb = None
+            self.emit_calls = 0
+
+        def connect(self, cb):
+            self.cb = cb
+
+        def emit(self, *args, **kwargs):
+            self.emit_calls += 1
+
+    class _FakeTimer:
+        created = []
+
+        def __init__(self, singleShot=False):
+            self.singleShot = singleShot
+            self.timeout = _FakeSignal()
+            self.started_ms = None
+            self.stopped = False
+            _FakeTimer.created.append(self)
+
+        def start(self, ms):
+            self.started_ms = ms
+
+        def stop(self):
+            self.stopped = True
+
+        def isActive(self):
+            return self.started_ms is not None and not self.stopped
+
+    monkeypatch.setattr(rc_mod, "Timer", _FakeTimer)
+
+    class _FakeRecMgr:
+        def __init__(self):
+            self._record = False
+            self.start_calls = 0
+            self.calls = []
+
+        @property
+        def record(self):
+            return self._record
+
+        def startRecording(self, **kwargs):
+            self.start_calls += 1
+            self.calls.append(dict(kwargs))
+            self._record = True
+
+        def waitForAcquisitionStarted(self, timeout=None):
+            return True
+
+    class _FakeScanWorkflow:
+        def __init__(self):
+            self.run_scan_calls = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, isFirst, keepGoing):
+            self.run_scan_calls.append((isFirst, keepGoing))
+
+    class _FakeSharedAttrs:
+        def getHDF5Attributes(self):
+            return {}
+
+    class _FakeCommChannel:
+        def __init__(self):
+            self.scanWorkflow = _FakeScanWorkflow()
+            self.sharedAttrs = _FakeSharedAttrs()
+            self.sigRecordingEnded = _FakeSignal()
+
+        def getNumScanPositions(self):
+            return 10
+
+        def getNumCamTTL(self):
+            return {'det': 1}
+
+        def getDimsScan(self):
+            return (10,)
+
+        def getScanStepSizes(self):
+            return (1.0,)
+
+    class _FakeWidget:
+        def __init__(self):
+            self._checked = True
+            self.lapseNumUpdates = []
+            self.recButtonSets = []
+            self.fieldsEnabledCalls = []
+
+        def isRecButtonChecked(self):
+            return self._checked
+
+        def setRecButtonChecked(self, value):
+            self._checked = value
+            self.recButtonSets.append(value)
+
+        def updateRecLapseNum(self, n):
+            self.lapseNumUpdates.append(n)
+
+        def updateRecFrameNum(self, n):
+            pass
+
+        def updateRecTime(self, n):
+            pass
+
+        def setFieldsEnabled(self, enabled):
+            self.fieldsEnabledCalls.append(enabled)
+
+        def getTimelapseFreq(self):
+            return 0  # Freq=0: the documented common case, not an edge one.
+
+    recMgr = _FakeRecMgr()
+    widget = _FakeWidget()
+    commChannel = _FakeCommChannel()
+
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanLapse,
+        recording=True,
+        doneScan=False,
+        endedRecording=False,
+        stopRequested=False,
+        lapseCurrent=0,
+        lapseTotal=2,
+        timer=None,
+        _finalizingRecCycle=False,
+        savename='/tmp/rec/test_rec',
+        recordingArgs={
+            'detectorNames': ['det'],
+            'recMode': RecMode.ScanLapse,
+            'savename': '/tmp/rec/test_rec',
+            'saveMode': None,
+            'saveFormat': None,
+            'attrs': {'det': {}},
+            'singleMultiDetectorFile': False,
+            'singleLapseFile': False,
+        },
+        _widget=widget,
+        _commChannel=commChannel,
+        _master=type("M", (), {"recordingManager": recMgr})(),
+    )
+    for name in ('nextLapse', 'recordingCycleEnded', 'scanDone',
+                 '_scanDimsForRecording', '_scanStepSizesForRecording'):
+        setattr(ctrl, name, types.MethodType(getattr(RecordingController, name), ctrl))
+
+    # --- Cycle 0 (first lapse timepoint) ---
+    ctrl.nextLapse()
+    assert recMgr.start_calls == 1
+    assert recMgr.calls[0]['recLapseIndex'] == 0
+    assert recMgr.calls[0]['recLapseTotal'] == 2
+    assert recMgr.calls[0]['savename'] == '/tmp/rec/test_rec_scan0'
+    assert commChannel.scanWorkflow.run_scan_calls[-1] == (True, True)
+
+    # Scan hardware reports done while the worker is still draining/writing
+    # (record flag not yet cleared) - the exact race this test targets.
+    ctrl.scanDone()
+    assert ctrl.lapseCurrent == 1
+    assert widget.lapseNumUpdates == [1]
+    assert len(_FakeTimer.created) == 1
+    cadenceTimer = _FakeTimer.created[-1]
+    assert cadenceTimer.started_ms == 0  # getTimelapseFreq() * 1000
+
+    # Timer fires; worker for cycle 0 still hasn't cleared `record` yet, so
+    # nextLapse must defer instead of starting cycle 1 early.
+    cadenceTimer.timeout.cb()
+    assert recMgr.start_calls == 1
+    assert len(_FakeTimer.created) == 2
+    retryTimer = _FakeTimer.created[-1]
+    assert retryTimer.started_ms == _LAPSE_RECORDING_DRAIN_RETRY_MS
+
+    # Worker finishes draining cycle 0; the retry fires and cycle 1 starts.
+    recMgr._record = False
+    retryTimer.timeout.cb()
+    assert recMgr.start_calls == 2
+    assert recMgr.calls[1]['recLapseIndex'] == 1
+    assert recMgr.calls[1]['recLapseTotal'] == 2
+    assert recMgr.calls[1]['savename'] == '/tmp/rec/test_rec_scan1'
+    assert commChannel.scanWorkflow.run_scan_calls[-1] == (False, False)
+
+    # --- Cycle 1 (final lapse timepoint) ---
+    recMgr._record = False
+    ctrl.doneScan = False
+    ctrl.scanDone()
+
+    # Final cycle: no further lapse scheduled, controller resets to idle.
+    assert ctrl.recording is False
+    assert ctrl.lapseCurrent == -1
+    assert ctrl.timer is None
+    assert widget.recButtonSets[-1] is False
+    assert widget.fieldsEnabledCalls[-1] is True
+    assert recMgr.start_calls == 2  # no third cycle
+    # Natural completion (not a soft stop): the manual sigRecordingEnded emit
+    # is soft-stop-only, matching RecordingManager suppressing it for
+    # ScanOnce/ScanLapse (see RecordingWorker._record's finally block).
+    assert commChannel.sigRecordingEnded.emit_calls == 0
+
+
 def test_recording_dtype_preservation(qtbot):
     """HDF5 datasets must derive their dtype from the detector frames.
 
