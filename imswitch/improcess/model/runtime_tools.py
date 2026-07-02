@@ -65,26 +65,6 @@ _PANEL_SHORTCUTS = (
         title="Segmentation",
         tooltip="Open the segmentation panel",
     ),
-    RuntimeAnalysisPanelShortcut(
-        id="frc",
-        title="FRC",
-        tooltip="Open the Fourier ring correlation panel",
-    ),
-    RuntimeAnalysisPanelShortcut(
-        id="psf-resolution",
-        title="PSF",
-        tooltip="Open the PSF resolution panel",
-    ),
-    RuntimeAnalysisPanelShortcut(
-        id="colocalization",
-        title="Colocalization",
-        tooltip="Open the colocalization panel",
-    ),
-    RuntimeAnalysisPanelShortcut(
-        id="multicolor-registration",
-        title="Multicolor",
-        tooltip="Open the multicolor registration and alignment panel",
-    ),
 )
 
 

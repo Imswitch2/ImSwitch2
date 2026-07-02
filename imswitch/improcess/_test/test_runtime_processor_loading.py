@@ -69,10 +69,6 @@ def test_runtime_analysis_panel_shortcuts_cover_fiji_like_panels():
         "roi-manager",
         "projection",
         "segmentation",
-        "frc",
-        "psf-resolution",
-        "colocalization",
-        "multicolor-registration",
     ]
     assert len({shortcut.id for shortcut in shortcuts}) == len(shortcuts)
     specs = runtime_analysis_tool_specs()
@@ -111,10 +107,14 @@ def test_build_analysis_panel_shortcuts_adds_all_actions(qapp):
     view._addAnalysisToolAction = (
         lambda *args: ImProcessMainView._addAnalysisToolAction(view, *args)
     )
+    view._addAnalysisDockAction = (
+        lambda *args: ImProcessMainView._addAnalysisDockAction(view, *args)
+    )
 
     ImProcessMainView._buildAnalysisToolShortcuts(view)
 
     expected_ids = [shortcut.id for shortcut in runtime_analysis_panel_shortcuts()]
+    expected_ids.append("results-table")
     assert list(view._analysisToolActions) == expected_ids
     assert len(view._processorToolbar.actions()) == len(expected_ids)
     assert len(view._analysisMenu.actions()) == len(expected_ids)
@@ -122,6 +122,44 @@ def test_build_analysis_panel_shortcuts_adds_all_actions(qapp):
         view._analysisToolActions[tool_id].toolTip()
         for tool_id in expected_ids
     )
+
+
+def test_analysis_results_shortcut_raises_results_dock(qapp):
+    class _Dock:
+        def __init__(self):
+            self.shown = False
+
+        def show(self):
+            self.shown = True
+
+    view = QtWidgets.QMainWindow()
+    view._processorToolbar = QtWidgets.QToolBar()
+    view._analysisMenu = QtWidgets.QMenu()
+    view._analysisToolActions = {}
+    dock = _Dock()
+    view.docks = {"Results": dock}
+    view._safeRaiseDock = lambda current_dock: setattr(
+        view,
+        "raisedDock",
+        current_dock,
+    )
+    view._syncDockVisibilityActions = lambda: setattr(view, "synced", True)
+    view.raiseDockByTitle = (
+        lambda title: ImProcessMainView.raiseDockByTitle(view, title)
+    )
+
+    action = ImProcessMainView._addAnalysisDockAction(
+        view,
+        "results-table",
+        "Results",
+        "Open the results table panel",
+        "Results",
+    )
+    action.trigger()
+
+    assert dock.shown is True
+    assert view.raisedDock is dock
+    assert view.synced is True
 
 
 def test_register_processor_by_id_adds_builtin_processor():

@@ -86,12 +86,15 @@ Both shapes are registered with a :py:class:`PluginRegistry`.  The
 registry is populated at startup, either from a config block or from
 standalone defaults.
 
-Image toolbar and display levels
-================================
+File and image toolbars
+=======================
 
-The main window includes an always-visible *Image* toolbar and matching
-*Image* menu for viewer-level operations that should be available regardless of
-the active reconstructor.  The first implemented tools are:
+The main window includes always-visible *File*, *Image* and *Analysis tools*
+toolbars for common operations that should be available regardless of the
+active reconstructor.  The *File* toolbar exposes quick data loading and saving
+the active reconstruction.
+
+The *Image* toolbar and matching *Image* menu provide viewer-level operations:
 
 * *Auto contrast* — percentile-based display-level stretch on the active image
   layer.
@@ -129,17 +132,17 @@ composite and make RGB publish new ``ProcessingResult`` objects into the
 reconstruction list. Split stack and split channels publish multiple
 ``ProcessingResult`` objects and make the final split result current.
 
-The *Analysis tools* toolbar also keeps Fiji-like panel shortcuts visible for
-common workflows: ROI manager, Projection, Segmentation, FRC, PSF,
-Colocalization and Multicolor.  These buttons use the same runtime loading path
-as the *Load tool* combo, so opening a panel registers its processor when
-needed, raises an existing dock when it already exists and preserves the
-runtime-loaded panel in the dock-layout state.
+The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for ROI
+manager, Projection, Segmentation and Results.  Runtime-backed buttons use the
+same loading path as the *Load tool* combo, so opening a panel registers its
+processor when needed, raises an existing dock when it already exists and
+preserves the runtime-loaded panel in the dock-layout state.  The Results
+button raises the built-in results-table dock directly.
 
 Toolbar icons are selected through ImProcess semantic action IDs and rendered
-with QtAwesome Material Design Icons when available, with Qt standard icons as
-a fallback.  This keeps icon choices consistent while allowing each action to
-retain its existing text, tooltip and menu entry.
+with QtAwesome when available, with Qt standard icons as a fallback.  This
+keeps icon choices centralized while allowing each action to retain its
+existing text, tooltip and menu entry.
 
 Built-in plugins
 ----------------

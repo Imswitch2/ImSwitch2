@@ -24,17 +24,26 @@ IMAGE_TOOL_ACTION_IDS = (
     "reset-view",
 )
 
+FILE_TOOL_ACTION_IDS = (
+    "quick-load-data",
+    "save-reconstruction",
+)
+
 
 def test_improcess_icon_mapping_covers_toolbar_actions():
-    expected = set(IMAGE_TOOL_ACTION_IDS)
+    expected = set(FILE_TOOL_ACTION_IDS)
+    expected.update(IMAGE_TOOL_ACTION_IDS)
     expected.update(shortcut.id for shortcut in runtime_analysis_panel_shortcuts())
+    expected.add("results-table")
 
     assert expected.issubset(IMPROCESS_ICON_NAMES)
 
 
-def test_improcess_icon_mapping_uses_one_qtawesome_family():
+def test_improcess_icon_mapping_uses_supported_qtawesome_families():
+    supported = ("mdi.", "mdi6.", "fa5s.", "fa6s.", "ph.")
+
     assert all(
-        icon_name.startswith("mdi6.")
+        icon_name.startswith(supported)
         for icon_name in IMPROCESS_ICON_NAMES.values()
     )
 
@@ -43,7 +52,9 @@ def test_improcess_icon_returns_qicon(qtbot):
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)
 
-    for action_id in IMAGE_TOOL_ACTION_IDS:
+    action_ids = [*FILE_TOOL_ACTION_IDS, *IMAGE_TOOL_ACTION_IDS, "results-table"]
+    action_ids.extend(shortcut.id for shortcut in runtime_analysis_panel_shortcuts())
+    for action_id in action_ids:
         assert isinstance(improcessIcon(action_id, widget), QtGui.QIcon)
 
 

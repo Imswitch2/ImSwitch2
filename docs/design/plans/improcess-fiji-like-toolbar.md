@@ -355,11 +355,12 @@ Implemented files:
 - `processors/channel_merge` and `processors/make_rgb` — merge selected
   compatible grayscale results into channel stacks and bake channel-like axes
   into RGB visualization/export results.
-- `model/runtime_tools.py` — Fiji-like panel shortcut descriptors for ROI
-  manager, projection, segmentation, FRC, PSF, colocalization and multicolor.
+- `model/runtime_tools.py` — Fiji-like runtime panel shortcut descriptors for
+  ROI manager, projection and segmentation.
 - `view/icons.py` — semantic QtAwesome-backed toolbar icons with Qt fallback
   icons for environments that have not installed the new dependency yet.
-- `ImProcessMainView` — persistent Image menu and image toolbar.
+- `ImProcessMainView` — persistent File/Image/Analyze menus and toolbar
+  shortcuts.
 - `ReconstructionView` / `ReconstructionViewController` — active-layer display
   accessors and display-level persistence.
 
@@ -382,9 +383,11 @@ Current scope:
 - Make composite using `make-composite`, rendering channel-like axes as colored
   display layers without baking an RGB image;
 - Make RGB using `make-rgb`, publishing a channel-last RGB visualization result;
-- Analysis toolbar panel shortcuts for ROI manager, projection, segmentation,
-  FRC, PSF, colocalization and multicolor;
-- semantic icon mapping for all always-present image and analysis actions;
+- File toolbar shortcuts for quick load and save reconstruction;
+- Analysis toolbar panel shortcuts for ROI manager, projection, segmentation
+  and Results;
+- semantic icon mapping for all always-present file, image and analysis
+  actions;
 - Reset view action;
 - action enablement from the active result.
 

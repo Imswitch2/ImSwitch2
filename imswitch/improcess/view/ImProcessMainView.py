@@ -112,17 +112,32 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         menuBar = self.menuBar()
         file = menuBar.addMenu('&File')
 
-        quickLoadAction = QtWidgets.QAction('Quick load data…', self)
+        self._fileActions: dict[str, QtWidgets.QAction] = {}
+        self._fileToolbar = self.addToolBar('File tools')
+        self._fileToolbar.setObjectName('ImProcessFileToolsToolbar')
+        self._fileToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+
+        quickLoadAction = QtWidgets.QAction(
+            improcessIcon('quick-load-data', self),
+            'Quick load data…',
+            self,
+        )
         quickLoadAction.setShortcut('Ctrl+T')
         quickLoadAction.triggered.connect(self.sigQuickLoadData)
         file.addAction(quickLoadAction)
+        self._addFileToolAction('quick-load-data', quickLoadAction)
 
         file.addSeparator()
 
-        saveReconAction = QtWidgets.QAction('Save reconstruction…', self)
+        saveReconAction = QtWidgets.QAction(
+            improcessIcon('save-reconstruction', self),
+            'Save reconstruction…',
+            self,
+        )
         saveReconAction.setShortcut('Ctrl+D')
         saveReconAction.triggered.connect(self.sigSaveReconstruction)
         file.addAction(saveReconAction)
+        self._addFileToolAction('save-reconstruction', saveReconAction)
         saveReconAllAction = QtWidgets.QAction('Save all reconstructions…', self)
         saveReconAllAction.setShortcut('Ctrl+Shift+D')
         saveReconAllAction.triggered.connect(self.sigSaveReconstructionAll)
@@ -444,6 +459,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
+    def _addFileToolAction(
+        self,
+        action_id: str,
+        action: QtWidgets.QAction,
+    ) -> QtWidgets.QAction:
+        self._fileToolbar.addAction(action)
+        self._fileActions[str(action_id)] = action
+        return action
+
     def _buildAnalysisToolShortcuts(self) -> None:
         for shortcut in runtime_analysis_panel_shortcuts():
             self._addAnalysisToolAction(
@@ -452,6 +476,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 shortcut.tooltip,
                 improcessIcon(shortcut.id, self),
             )
+        self._addAnalysisDockAction(
+            'results-table',
+            'Results',
+            'Open the results table panel',
+            'Results',
+        )
 
     def _addAnalysisToolAction(
         self,
@@ -471,6 +501,24 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addAction(action)
         self._analysisMenu.addAction(action)
         self._analysisToolActions[str(tool_id)] = action
+        return action
+
+    def _addAnalysisDockAction(
+        self,
+        action_id: str,
+        text: str,
+        tooltip: str,
+        dock_title: str,
+    ) -> QtWidgets.QAction:
+        action = QtWidgets.QAction(improcessIcon(action_id, self), text, self)
+        action.setToolTip(tooltip)
+        action.setStatusTip(tooltip)
+        action.triggered.connect(
+            lambda _checked=False, title=str(dock_title): self.raiseDockByTitle(title)
+        )
+        self._processorToolbar.addAction(action)
+        self._analysisMenu.addAction(action)
+        self._analysisToolActions[str(action_id)] = action
         return action
 
     def _on_load_processor_combo_activated(self, index: int) -> None:
@@ -733,6 +781,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def imageAction(self, action_id: str) -> QtWidgets.QAction | None:
         return self._imageActions.get(action_id)
 
+    def fileAction(self, action_id: str) -> QtWidgets.QAction | None:
+        return self._fileActions.get(action_id)
+
     def analysisToolAction(self, tool_id: str) -> QtWidgets.QAction | None:
         return self._analysisToolActions.get(tool_id)
 
@@ -793,6 +844,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         dock = self.docks.get("Graph")
         if dock is not None:
             self._safeRaiseDock(dock)
+
+    def raiseDockByTitle(self, title: str) -> bool:
+        dock = self.docks.get(str(title))
+        if dock is None:
+            return False
+        dock.show()
+        self._safeRaiseDock(dock)
+        self._syncDockVisibilityActions()
+        return True
 
     def _safeRaiseDock(self, dock) -> None:
         """Bring a dock to the front without crashing on non-tab containers.
