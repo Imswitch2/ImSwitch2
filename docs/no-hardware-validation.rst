@@ -78,4 +78,6 @@ When adding new no-hardware tests:
 * add explicit assertions that no physical channel or hardware action is used.
 
 The detailed Markdown guide lives at ``docs/no-hardware-validation.md`` for
-agent-facing workflows and examples.
+agent-facing workflows and examples. For an inventory of the mock
+managers/classes themselves (what exists per device family, and their known
+limitations), see :doc:`mock-infrastructure`.
