@@ -339,6 +339,19 @@ class LiveModeController(ImProcessWidgetController):
             if _is_zarr_array(root):
                 return self._writing_attr_complete(root.attrs.get('writing'))
 
+            # Single-file timelapse layout: scan{N}/{detector}/data groups
+            # appended one per timepoint. Complete only when the full lapse is
+            # in the file — see _scan_groups_complete for why partial reads
+            # are not safe here.
+            scan_groups = self._scan_group_names(root.keys())
+            if scan_groups:
+                return self._scan_groups_complete(
+                    root, scan_groups,
+                    is_group=_is_zarr_group,
+                    is_dataset=_is_zarr_array,
+                    store_path=store_path,
+                )
+
             # Structured layout: the first detector's ``data`` array (or a bare
             # detector array) carries the ``writing`` flag.
             for key in root.keys():
@@ -360,6 +373,16 @@ class LiveModeController(ImProcessWidgetController):
         """Check if an HDF5 store is complete."""
         try:
             with h5py.File(store_path, 'r') as f:
+                # Single-file timelapse layout: scan{N}/{detector}/data.
+                scan_groups = self._scan_group_names(f.keys())
+                if scan_groups:
+                    return self._scan_groups_complete(
+                        f, scan_groups,
+                        is_group=lambda item: isinstance(item, h5py.Group),
+                        is_dataset=lambda item: isinstance(item, h5py.Dataset),
+                        store_path=store_path,
+                    )
+
                 for key in f.keys():
                     item = f[key]
                     if isinstance(item, h5py.Group):
@@ -372,71 +395,84 @@ class LiveModeController(ImProcessWidgetController):
             self._logger.debug(f"HDF5 completeness check failed for {store_path}: {e}")
             return False
 
-    def _is_lapse_complete(self, store_path: str) -> bool:
-        """Check if a multi-file lapse is complete."""
-        template = _lapse_index_template(store_path)
-        if template is None:
-            # No index template, fall back to single-file check
-            return self._is_single_file_complete(store_path)
-        
-        folder, prefix, width, suffix, first_index = template
-        
-        # Try to read num_timepoints from the seed file's metadata
-        num_timepoints = self._read_num_timepoints(store_path)
-        
-        if num_timepoints is not None and num_timepoints >= 1:
-            # Known number of timepoints: all files must exist and last must be complete
-            last_index = first_index + num_timepoints - 1
-            for i in range(num_timepoints):
-                index = first_index + i
-                tp_path = os.path.join(folder, prefix + str(index).zfill(width) + suffix)
-                if not os.path.exists(tp_path):
-                    return False
-            
-            # Check if the last file is complete
-            last_path = os.path.join(folder, prefix + str(last_index).zfill(width) + suffix)
-            return self._is_single_file_complete(last_path)
-        
-        # Unknown number of timepoints: find highest contiguous index
-        # and check if it's complete (conservative approach)
-        index = first_index
-        highest_complete_index = None
-        
-        while True:
-            tp_path = os.path.join(folder, prefix + str(index).zfill(width) + suffix)
-            if not os.path.exists(tp_path):
-                break
-            
-            if self._is_single_file_complete(tp_path):
-                highest_complete_index = index
-            else:
-                # This file is not complete yet, so the lapse is not complete
+    @staticmethod
+    def _scan_group_names(keys) -> list:
+        """Return the scan{N} group names of a single-file lapse, else []."""
+        return [key for key in keys if re.fullmatch(r'scan\d+', key)]
+
+    def _scan_groups_complete(self, root, scan_groups, *, is_group, is_dataset,
+                              store_path: str) -> bool:
+        """Completeness of a single-file timelapse (scan{N}/{detector}/data).
+
+        Complete only when ALL expected timepoints are in the file: every
+        present scan group's data must be write-complete AND the group count
+        must reach recording:num_timepoints (read from the detector metadata,
+        where the recorder actually writes it). Between lapse cycles every
+        PRESENT group is momentarily complete, so without the expected count
+        we cannot tell "between cycles" from "done" — and opening the file
+        early would race the recorder, which reopens it in append mode for
+        each next timepoint. Unknown count => conservatively incomplete.
+        """
+        num_timepoints = None
+        for group_name in scan_groups:
+            scan_group = root[group_name]
+            if not is_group(scan_group):
                 return False
-            
-            index += 1
-        
-        # At least one complete file was found
-        return highest_complete_index is not None
+            dataset = None
+            for det_key in scan_group.keys():
+                det_group = scan_group[det_key]
+                if is_group(det_group) and 'data' in det_group and is_dataset(det_group['data']):
+                    dataset = det_group['data']
+                    if num_timepoints is None:
+                        num_timepoints = self._nested_num_timepoints(det_group, dataset)
+                    break
+            if dataset is None:
+                return False  # timepoint group without data yet
+            if not self._writing_attr_complete(dataset.attrs.get('writing')):
+                return False
 
-    def _read_num_timepoints(self, store_path: str) -> int | None:
-        """Read recording:num_timepoints from store metadata."""
-        suffix = os.path.splitext(store_path)[1].lower()
-        
+        if num_timepoints is None:
+            self._logger.debug(
+                f"Single-file lapse {store_path}: recording:num_timepoints not "
+                f"found in detector metadata; cannot tell whether the lapse is "
+                f"finished, treating as incomplete."
+            )
+            return False
+        return len(scan_groups) >= int(num_timepoints)
+
+    @staticmethod
+    def _nested_num_timepoints(det_group, dataset) -> int | None:
+        """Read recording:num_timepoints from a detector group.
+
+        The streaming HDF5/Zarr storers write ``recording:*`` attrs directly on
+        the data dataset; the snapshot Zarr path groups them under
+        ``metadata/recording`` instead, so check both.
+        """
         try:
-            if suffix == '.zarr':
-                root = zarr.open(store_path, mode='r')
-                num_tp = root.attrs.get('recording:num_timepoints')
-                if num_tp is not None:
-                    return int(num_tp)
-            elif suffix in {'.h5', '.hdf5', '.hdf'}:
-                with h5py.File(store_path, 'r') as f:
-                    num_tp = f.attrs.get('recording:num_timepoints')
-                    if num_tp is not None:
-                        return int(num_tp)
-        except Exception as e:
-            self._logger.debug(f"Could not read num_timepoints from {store_path}: {e}")
-
+            value = dataset.attrs.get('recording:num_timepoints')
+            if value is not None:
+                return int(value)
+            metadata = det_group['metadata'] if 'metadata' in det_group else None
+            if metadata is not None and 'recording' in metadata:
+                value = metadata['recording'].attrs.get('num_timepoints')
+                if value is not None:
+                    return int(value)
+        except Exception:
+            pass
         return None
+
+    def _is_lapse_complete(self, store_path: str) -> bool:
+        """A multi-file lapse job is ready to START when its seed file is done.
+
+        Do NOT wait for all timepoint files: the multi-file sources are
+        designed to tail-follow — they stream each timepoint as its file
+        lands (Zarr advances only onto write-complete stores; HDF5 can follow
+        a mid-write file safely via SWMR flush ordering) and their
+        ``is_complete()`` decides when the whole lapse is done. Gating the job
+        on the full file set would delay the first reconstruction until the
+        lapse ends, showing nothing for its entire duration.
+        """
+        return self._is_single_file_complete(store_path)
 
     def _processNextStore(self) -> None:
         """Process the next complete store in the queue if not currently processing.

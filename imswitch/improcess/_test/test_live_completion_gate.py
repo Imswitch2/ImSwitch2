@@ -239,9 +239,14 @@ def test_legacy_hdf5_store_no_writing_attr_is_complete(tmp_path):
 
 # --- Multi-file lapse tests ---------------------------------------------------
 
-def test_incomplete_lapse_not_all_files_present(tmp_path):
-    """A lapse with only 2 of 3 files present is not processed."""
-    # Create first timepoint with num_timepoints=3
+def test_lapse_seed_complete_starts_even_with_later_files_missing(tmp_path):
+    """A multi-file lapse job starts as soon as its seed file is complete.
+
+    Later timepoint files need not exist yet: the multi-file sources
+    tail-follow them as they land, which is what gives per-timepoint live
+    updates during a running lapse. Waiting for all files would show nothing
+    until the lapse ends.
+    """
     tp0_path = str(tmp_path / 'rec_scan__00__CAM.zarr')
     root = zarr.open(tp0_path, mode='w')
     root.attrs['recording:num_timepoints'] = 3
@@ -249,26 +254,41 @@ def test_incomplete_lapse_not_all_files_present(tmp_path):
     data = detector.create_array('data', shape=(10, 256, 256), dtype='uint16', chunks=(1, 256, 256))
     data[:] = np.random.randint(0, 1000, size=(10, 256, 256), dtype='uint16')
     data.attrs['writing'] = False
-    
-    # Create second timepoint
-    tp1_path = str(tmp_path / 'rec_scan__01__CAM.zarr')
-    _make_structured_zarr_store(tp1_path, writing=False)
-    
-    # Third file is missing
-    
+
+    # Timepoints 1 and 2 do not exist yet (lapse still running).
+
     controller = _make_controller(folder_path=str(tmp_path))
     controller._storeQueue.append((tp0_path, True))
-    
+
     with patch('imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource',
                return_value=MagicMock()):
         controller._processNextStore()
-    
-    # Should not have been processed (incomplete lapse)
+
+    assert len(controller._liveController.start_calls) == 1
+
+
+def test_lapse_seed_still_writing_not_processed(tmp_path):
+    """A multi-file lapse whose seed file is still being written must wait."""
+    tp0_path = str(tmp_path / 'rec_scan__00__CAM.zarr')
+    root = zarr.open(tp0_path, mode='w')
+    root.attrs['recording:num_timepoints'] = 3
+    detector = root.create_group('CAM')
+    data = detector.create_array('data', shape=(10, 256, 256), dtype='uint16', chunks=(1, 256, 256))
+    data[:] = np.random.randint(0, 1000, size=(10, 256, 256), dtype='uint16')
+    data.attrs['writing'] = True
+
+    controller = _make_controller(folder_path=str(tmp_path))
+    controller._storeQueue.append((tp0_path, True))
+
+    with patch('imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource',
+               return_value=MagicMock()):
+        controller._processNextStore()
+
     assert len(controller._liveController.start_calls) == 0
 
 
 def test_complete_lapse_all_files_present_and_last_complete(tmp_path):
-    """A lapse with all 3 files present and last complete is processed."""
+    """A finished lapse (all files complete) is processed."""
     # Create all timepoints
     for i in range(3):
         tp_path = str(tmp_path / f'rec_scan__0{i}__CAM.zarr')
@@ -279,43 +299,17 @@ def test_complete_lapse_all_files_present_and_last_complete(tmp_path):
         data = detector.create_array('data', shape=(10, 256, 256), dtype='uint16', chunks=(1, 256, 256))
         data[:] = np.random.randint(0, 1000, size=(10, 256, 256), dtype='uint16')
         data.attrs['writing'] = False
-    
+
     tp0_path = str(tmp_path / 'rec_scan__00__CAM.zarr')
     controller = _make_controller(folder_path=str(tmp_path))
     controller._storeQueue.append((tp0_path, True))
-    
+
     with patch('imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource',
                return_value=MagicMock()):
         controller._processNextStore()
-    
+
     # Should have been processed
     assert len(controller._liveController.start_calls) == 1
-
-
-def test_lapse_last_file_still_writing_not_processed(tmp_path):
-    """A lapse with all files present but last still writing is not processed."""
-    # Create all timepoints
-    for i in range(3):
-        tp_path = str(tmp_path / f'rec_scan__0{i}__CAM.zarr')
-        root = zarr.open(tp_path, mode='w')
-        if i == 0:
-            root.attrs['recording:num_timepoints'] = 3
-        detector = root.create_group('CAM')
-        data = detector.create_array('data', shape=(10, 256, 256), dtype='uint16', chunks=(1, 256, 256))
-        data[:] = np.random.randint(0, 1000, size=(10, 256, 256), dtype='uint16')
-        # Last file is still writing
-        data.attrs['writing'] = True if i == 2 else False
-    
-    tp0_path = str(tmp_path / 'rec_scan__00__CAM.zarr')
-    controller = _make_controller(folder_path=str(tmp_path))
-    controller._storeQueue.append((tp0_path, True))
-    
-    with patch('imswitch.improcess.controller.LiveModeController.ZarrMultiFileLapseSource',
-               return_value=MagicMock()):
-        controller._processNextStore()
-    
-    # Should not have been processed
-    assert len(controller._liveController.start_calls) == 0
 
 
 def test_lapse_hdf5_complete_is_processed(tmp_path):
@@ -341,6 +335,107 @@ def test_lapse_hdf5_complete_is_processed(tmp_path):
     
     # Should have been processed
     assert len(controller._liveController.start_calls) == 1
+
+
+# --- Single-file (scan{N}) timelapse stores ------------------------------------
+
+def _run_single_file_lapse_cycle(storer_cls, path, lapse_index, num_timepoints):
+    """Drive one real storer recording cycle of a single-file lapse.
+
+    Uses the actual HDF5Storer/ZarrStorer streaming path (openStream +
+    writeFrames with singleLapseFile=True) so the on-disk layout — scan{N}
+    groups, dataset-level recording:* attrs, writing flags — is exactly what
+    the recorder produces. Returns the storer; call finalizeStream on it to
+    finish the cycle.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import SaveMode
+
+    det = MagicMock()
+    det.dtype = np.uint16
+    det.pixelSizeUm = [1, 0.1, 0.1]
+    detMgr = MagicMock()
+    detMgr.__getitem__ = MagicMock(return_value=det)
+
+    storer = storer_cls(path, detMgr)
+    storer.omeMeta = {}
+    attrs = {'CAM': {
+        'recording:num_timepoints': num_timepoints,
+        'recording:lapse_index': lapse_index,
+        'recording:single_lapse_file': True,
+        'recording:expected_frames': 4,
+    }}
+    storer.openStream(fileDests={'CAM': path}, detectorNames=['CAM'],
+                      shapes={'CAM': (8, 8)}, attrs=attrs,
+                      singleMultiDetectorFile=False, singleLapseFile=True,
+                      saveMode=SaveMode.Disk)
+    storer.writeFrames('CAM', np.ones((4, 8, 8), dtype=np.uint16))
+    return storer
+
+
+def _finish_cycle(storer, path):
+    from imswitch.imcontrol.model.managers.RecordingManager import SaveMode
+    storer.finalizeStream({'CAM': 4}, {'CAM': path}, MagicMock(), SaveMode.Disk)
+
+
+def test_single_file_hdf5_lapse_completes_only_when_all_timepoints_present(tmp_path):
+    """A single-file HDF5 lapse (scan{N} groups) is complete only at the end.
+
+    Mid-cycle (writing=True) and between cycles (all present groups complete
+    but fewer than recording:num_timepoints) must both stay incomplete —
+    the recorder reopens the file in append mode for each next timepoint, so
+    processing it early would race the recording.
+    """
+    from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer
+
+    path = str(tmp_path / 'lapse.hdf5')
+    controller = _make_controller(folder_path=str(tmp_path), extension='hdf5')
+
+    storer = _run_single_file_lapse_cycle(HDF5Storer, path, 0, 2)
+    assert controller._is_single_file_complete(path) is False  # mid cycle 0
+    _finish_cycle(storer, path)
+    assert controller._is_single_file_complete(path) is False  # between cycles
+
+    storer = _run_single_file_lapse_cycle(HDF5Storer, path, 1, 2)
+    assert controller._is_single_file_complete(path) is False  # mid cycle 1
+    _finish_cycle(storer, path)
+    assert controller._is_single_file_complete(path) is True   # lapse finished
+
+
+def test_single_file_zarr_lapse_completes_only_when_all_timepoints_present(tmp_path):
+    """Zarr twin of the single-file lapse completion progression."""
+    from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
+
+    path = str(tmp_path / 'lapse.zarr')
+    controller = _make_controller(folder_path=str(tmp_path))
+
+    storer = _run_single_file_lapse_cycle(ZarrStorer, path, 0, 2)
+    assert controller._is_single_file_complete(path) is False  # mid cycle 0
+    _finish_cycle(storer, path)
+    assert controller._is_single_file_complete(path) is False  # between cycles
+
+    storer = _run_single_file_lapse_cycle(ZarrStorer, path, 1, 2)
+    assert controller._is_single_file_complete(path) is False  # mid cycle 1
+    _finish_cycle(storer, path)
+    assert controller._is_single_file_complete(path) is True   # lapse finished
+
+
+def test_single_file_lapse_unknown_num_timepoints_stays_incomplete(tmp_path):
+    """Without recording:num_timepoints a scan{N} file cannot prove it is done.
+
+    Between lapse cycles every present scan group is momentarily complete, so
+    the expected count is the only way to distinguish "between cycles" from
+    "finished" — unknown count must be treated as incomplete rather than
+    risking a read that races the recorder's append reopen.
+    """
+    path = str(tmp_path / 'lapse.hdf5')
+    with h5py.File(path, 'w') as f:
+        for n in range(2):
+            group = f.create_group(f'scan{n}/CAM')
+            data = group.create_dataset('data', data=np.zeros((4, 8, 8), dtype=np.uint16))
+            data.attrs['writing'] = False  # no recording:num_timepoints anywhere
+
+    controller = _make_controller(folder_path=str(tmp_path), extension='hdf5')
+    assert controller._is_single_file_complete(path) is False
 
 
 # --- No head-of-line blocking -------------------------------------------------

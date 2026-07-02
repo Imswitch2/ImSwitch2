@@ -70,6 +70,39 @@ def _meta_lookup(attrs: dict[str, Any], key: str) -> Any:
     return None
 
 
+def _writing_flag_complete(value: Any) -> bool:
+    """Interpret a ``writing`` attribute: absent => complete (legacy/external)."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {'0', 'false', 'no', 'off'}
+    return not bool(value)
+
+
+def _zarr_store_write_complete(path: Any) -> bool:
+    """True iff a Zarr store's first detector data array is done being written.
+
+    Used to gate advancing onto the NEXT timepoint file of a per-file
+    timelapse: ZarrStorer resizes the array BEFORE writing the frame data, so
+    a reader that opens a mid-write store trusts a shape that is ahead of the
+    committed data and permanently bakes zero frames into the stream (root
+    cause 1 in docs/live_reconstruction_audit.md). A store with no dataset yet
+    is not complete. Absent ``writing`` attr means complete (legacy/external
+    stores never carry it).
+    """
+    try:
+        root = zarr.open(str(path), mode='r')
+        if _is_zarr_array(root):
+            return _writing_flag_complete(root.attrs.get('writing'))
+        names = dataset_names(root)
+        if not names:
+            return False
+        image = resolve_image(root, names[0])
+        return _writing_flag_complete(image.array.attrs.get('writing'))
+    except Exception:
+        return False
+
+
 def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     """Return frames per MoNaLISA scan stack from recorder metadata.
 
@@ -530,10 +563,16 @@ class ZarrMultiFileLapseSource(LiveSource):
         offset = self._position * self._frames_per_stack
         chunks = [Chunk(c.data, c.start + offset, c.end + offset) for c in self._inner.poll()]
 
-        # Current timepoint fully read: advance to the next file if it exists.
+        # Current timepoint fully read: advance to the next file once it is
+        # COMPLETE (writing done), not merely present. Zarr resizes the array
+        # before writing data, so opening a mid-write store reads uninitialised
+        # (zero) frames that get baked into the stream permanently — the HDF5
+        # sibling can advance on existence because SWMR flush ordering makes
+        # shape-visible imply data-visible, but Zarr cannot.
         if self._inner.is_complete() and self._position + 1 < self._num_timepoints:
             next_path = self._build_path(self._position + 1)
-            if next_path is not None and os.path.exists(next_path):
+            if (next_path is not None and os.path.exists(next_path)
+                    and _zarr_store_write_complete(next_path)):
                 self._inner.close()
                 self._position += 1
                 self._inner = ZarrLiveSource(self._detector_name, self._chunk_size)

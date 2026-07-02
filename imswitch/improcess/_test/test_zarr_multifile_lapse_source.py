@@ -7,14 +7,14 @@ from imswitch.imcontrol.model.managers.RecordingManager import ZarrStorer
 from imswitch.improcess.live import ZarrMultiFileLapseSource
 
 
-def _write_lapse_file(path, frames, lapse_time):
+def _write_lapse_file(path, frames, lapse_time, writing=False):
     """Write a legacy-style single-array lapse store (array named 'chunks')."""
     root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
     arr = ZarrStorer._create_array(
         root, "chunks", data=frames, chunks=(1, *frames.shape[-2:])
     )
     arr.attrs["detector_name"] = "CAM"
-    arr.attrs["writing"] = False
+    arr.attrs["writing"] = writing
     arr.attrs["ImswitchData"] = {
         "ScanStage:axis_startpos": [[0], [0], [0]],
         "ScanStage:axis_length": [0.2, 0.2, 0.0],
@@ -78,6 +78,53 @@ def test_multifile_lapse_waits_for_missing_later_timepoint(tmp_path):
     # Timepoint 1 file doesn't exist yet -> not complete (live: keep waiting).
     assert src.is_complete() is False
     src.close()
+
+
+def test_multifile_lapse_does_not_advance_onto_writing_store(tmp_path):
+    """The source must not open the next timepoint store until it is complete.
+
+    ZarrStorer resizes the array BEFORE writing frame data, so a mid-write
+    store's shape is ahead of its committed data; opening it early reads
+    uninitialised (zero) frames that get permanently baked into the stream
+    (root cause 1 in docs/live_reconstruction_audit.md). Advance must be
+    gated on writing=False, not on file existence.
+    """
+    fps = 9
+    n_tp = 2
+    _write_lapse_file(tmp_path / "rec_scan__00__CAM.zarr",
+                      np.full((fps, 4, 5), 1, dtype=np.int16), n_tp)
+    # Timepoint 1 exists but is still being written.
+    tp1 = tmp_path / "rec_scan__01__CAM.zarr"
+    _write_lapse_file(tp1, np.full((fps, 4, 5), 2, dtype=np.int16), n_tp,
+                      writing=True)
+
+    seed = str(tmp_path / "rec_scan__00__CAM.zarr")
+    src = ZarrMultiFileLapseSource(seed)
+    src.open(seed)
+
+    # Drain timepoint 0 and poll a few extra times: the writing tp1 store
+    # must not be entered, so no chunk may carry a global index >= fps.
+    chunks = []
+    for _ in range(10):
+        chunks.extend(src.poll())
+    assert chunks and max(c.end for c in chunks) == fps
+    assert src.is_complete() is False  # waiting on tp1, not finished early
+
+    # Recorder finishes timepoint 1 -> now the source advances and reads it.
+    root = zarr.open(str(tp1), mode="a")
+    root["chunks"].attrs["writing"] = False
+
+    chunks2 = []
+    guard = 0
+    while not src.is_complete() and guard < 10_000:
+        chunks2.extend(src.poll())
+        guard += 1
+    src.close()
+
+    data = np.concatenate([c.data for c in chunks2], axis=0)
+    assert chunks2[0].start == fps
+    assert chunks2[-1].end == fps * n_tp
+    assert np.all(data == 2)  # real frames, not zeros from a mid-write read
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

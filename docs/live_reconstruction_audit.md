@@ -172,3 +172,39 @@ accumulation; it only gives up sub-stack live preview.
 4. Tighten lapse grouping.
 5. Streaming race/■completion regression tests with a fake recorder that resizes
    before committing, to pin the contract deterministically.
+
+## Status update (2026-07-02): per-timepoint progressive lapse updates
+
+The "Alternative (max robustness, less live)" completion gate landed first
+(commit `ba44cd38`). On top of it, per-timepoint progressive updates for
+multi-file lapses are now deliberate behavior rather than an accident:
+
+- **Multi-file lapse jobs start on seed-file completion**
+  (`LiveModeController._is_lapse_complete`), not on the full file set. The
+  multi-file sources tail-follow later timepoint files and their
+  `is_complete()` ends the job, so each timepoint reconstructs as it lands.
+  Previously this liveness only happened because `_read_num_timepoints` read
+  file-ROOT attrs that neither storer writes (`recording:*` lives on the
+  dataset), which forced the lenient unknown-count branch — HDF5 multi-file
+  lapses were progressively live by accident, and would have silently lost
+  that liveness had the root attrs ever been added.
+- **`ZarrMultiFileLapseSource` advance is completion-gated**: it only opens
+  the next timepoint store once its `writing` flag clears. Advancing on file
+  existence re-triggered root cause 1 (resize-before-write) on every
+  timepoint after the first. The HDF5 sibling still advances on existence —
+  SWMR flush ordering makes shape-visible imply data-visible, which also
+  preserves its (safe) sub-stack streaming within later timepoints.
+- **Single-file (`scan{N}` in one file) lapse completion was broken, now
+  fixed**: `_check_hdf5_complete`/`_check_zarr_complete` did not understand
+  the `scan{N}/{detector}/data` layout and returned False forever, so
+  single-file lapse recordings were NEVER reconstructed. They now complete
+  when all `recording:num_timepoints` scan groups are present and
+  write-complete. Deliberately NOT progressive: between cycles every present
+  group is momentarily complete and the recorder reopens the file in append
+  mode for the next timepoint, so an early reader would race the recording.
+  Progressive single-file lapse updates require the `frames_committed`
+  barrier design above (still open).
+
+Still open from the primary recommendation: `frames_committed` for sub-stack
+liveness within a running (single) scan, and the SpecTime/UntilStop stall
+fallback.
