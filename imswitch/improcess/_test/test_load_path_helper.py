@@ -71,11 +71,24 @@ class _FakeDataObj:
                 name=name,
                 datasetName=datasetName,
                 path=path,
-                dataLoaded=True,
+                dataLoaded=False,
+                sourceLoaded=False,
                 attrs={},
-                checkAndLoadData=lambda: None,
+                load_calls=0,
+                open_calls=0,
                 checkAndUnloadData=lambda: None,
             )
+
+            def check_and_load():
+                obj.load_calls += 1
+                obj.dataLoaded = True
+
+            def check_and_open():
+                obj.open_calls += 1
+                obj.sourceLoaded = True
+
+            obj.checkAndLoadData = check_and_load
+            obj.checkAndOpenData = check_and_open
             cls.last = obj
             return obj
 
@@ -132,7 +145,9 @@ def _make_controller_stub():
     ctl._loadFromPath = FileIOController._loadFromPath.__get__(ctl)
     ctl._loadAsCurrent = FileIOController._loadAsCurrent.__get__(ctl)
     ctl._activeSourceSpecs = FileIOController._activeSourceSpecs.__get__(ctl)
+    ctl._requestLoadPath = FileIOController._requestLoadPath.__get__(ctl)
     ctl.quickLoadData = FileIOController.quickLoadData.__get__(ctl)
+    ctl.quickLoadVirtualData = FileIOController.quickLoadVirtualData.__get__(ctl)
     return ctl
 
 
@@ -196,6 +211,28 @@ def test_single_dataset_prefer_current_routes_to_current(monkeypatch):
     assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
     assert ctl._widget.raised_current
     assert ctl.multiDataFrameController.added == []
+    assert ctl._main._currentDataObj.load_calls == 1
+    assert ctl._main._currentDataObj.open_calls == 0
+
+
+def test_single_dataset_virtual_current_opens_source_without_loading(monkeypatch):
+    _FakeDataObj.install(monkeypatch, {'/x/file.h5': ['frame']})
+    ctl = _make_controller_stub()
+
+    outcome = ctl._loadFromPath(
+        '/x/file.h5',
+        prefer_as_current=True,
+        virtual_current=True,
+    )
+
+    assert outcome == 'current'
+    assert ctl._main._currentDataObj.datasetName == 'frame'
+    assert ctl._main._currentDataObj.sourceLoaded is True
+    assert ctl._main._currentDataObj.dataLoaded is False
+    assert ctl._main._currentDataObj.open_calls == 1
+    assert ctl._main._currentDataObj.load_calls == 0
+    assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
+    assert ctl._widget.raised_current
 
 
 # --- multi-dataset picker --------------------------------------------------

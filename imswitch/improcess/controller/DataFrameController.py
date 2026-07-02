@@ -42,7 +42,8 @@ class DataFrameController(ImProcessWidgetController):
         self._widget.setShowPattern(showPattern)
 
     def setImgSlice(self, frame):
-        self._widget.setImage(self._dataObj.data[frame], autoLevels=False)
+        data = self._currentDataArray()
+        self._widget.setImage(data[frame], autoLevels=False)
 
     def unloadData(self):
         self._dataObj = None
@@ -64,7 +65,8 @@ class DataFrameController(ImProcessWidgetController):
 
     def currentDataChanged(self, inDataObj):
         self._dataObj = inDataObj
-        self._logger.debug(f'Data shape: {self._dataObj.data.shape}')
+        data = self._currentDataArray()
+        self._logger.debug(f'Data shape: {data.shape}')
         self.showMean()
         self._widget.setNumFrames(self._dataObj.numFrames)
         self._widget.setDataName(self._dataObj.name)
@@ -75,8 +77,9 @@ class DataFrameController(ImProcessWidgetController):
         offset is calculated from the upper left corner (0, 0), while the
         scatter plot plots from lower left corner, so a flip has to be made
         in rows."""
-        numCols = np.size(self._dataObj.data, 1)
-        numRows = np.size(self._dataObj.data, 2)
+        shape = self._currentDataArray().shape
+        numCols = shape[1]
+        numRows = shape[2]
         numPointsCol = int(1 + np.floor(((numCols - 1) - self._pattern[1]) / self._pattern[3]))
         numPointsRow = int(1 + np.floor(((numRows - 1) - self._pattern[0]) / self._pattern[2]))
         colCoords = np.linspace(self._pattern[1],
@@ -93,6 +96,12 @@ class DataFrameController(ImProcessWidgetController):
 
         self._patternGridMade = True
         self._logger.debug('Made new pattern grid')
+
+    def _currentDataArray(self):
+        handle = getattr(self._dataObj, "data_handle", None)
+        if handle is not None and not getattr(self._dataObj, "dataMaterialized", False):
+            return handle
+        return self._dataObj.data
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

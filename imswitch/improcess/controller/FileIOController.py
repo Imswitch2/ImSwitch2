@@ -46,26 +46,37 @@ class FileIOController(ImProcessWidgetController):
         )
 
     def quickLoadData(self):
+        dataPath = self._requestLoadPath()
+        if dataPath:
+            self._logger.debug(f'Loading data at: {dataPath}')
+            self._loadFromPath(dataPath, prefer_as_current=True)
+
+    def quickLoadVirtualData(self):
+        dataPath = self._requestLoadPath(caption_prefix='Open virtual')
+        if dataPath:
+            self._logger.debug(f'Opening virtual data at: {dataPath}')
+            self._loadFromPath(
+                dataPath,
+                prefer_as_current=True,
+                virtual_current=True,
+            )
+
+    def _requestLoadPath(self, *, caption_prefix: str = 'Open'):
         specs = self._activeSourceSpecs()
         extension = self._widget.extension.value() if self._widget.extension is not None else None
         sourceSpec = preferred_source_spec(specs, extension)
         if sourceSpec.locator == LOCATOR_DIRECTORY:
-            dataPath = guitools.askForFolderPath(
+            return guitools.askForFolderPath(
                 self._widget,
-                caption=f'Open {sourceSpec.label}',
+                caption=f'{caption_prefix} {sourceSpec.label}',
                 defaultFolder=self._dataFolder,
             )
-        else:
-            dataPath = guitools.askForFilePath(
-                self._widget,
-                caption=f'Open {sourceSpec.label}',
-                defaultFolder=self._dataFolder,
-                nameFilter=file_dialog_filter(specs),
-            )
-
-        if dataPath:
-            self._logger.debug(f'Loading data at: {dataPath}')
-            self._loadFromPath(dataPath, prefer_as_current=True)
+        return guitools.askForFilePath(
+            self._widget,
+            caption=f'{caption_prefix} {sourceSpec.label}',
+            defaultFolder=self._dataFolder,
+            nameFilter=file_dialog_filter(specs),
+        )
 
     def _activeSourceSpecs(self):
         active = getattr(self._main, '_activeReconstructor', None)
@@ -101,7 +112,13 @@ class FileIOController(ImProcessWidgetController):
         if not any_routed_to_current and any_routed_to_multidata:
             self._widget.raiseMultiDataDock()
 
-    def _loadFromPath(self, dataPath, *, prefer_as_current: bool = False) -> str:
+    def _loadFromPath(
+        self,
+        dataPath,
+        *,
+        prefer_as_current: bool = False,
+        virtual_current: bool = False,
+    ) -> str:
         """Unified loader for one file path.
 
         Handles dataset enumeration, the multi-dataset picker dialog and the
@@ -113,6 +130,8 @@ class FileIOController(ImProcessWidgetController):
             prefer_as_current: When True, a single (or single-picked) dataset
                 is promoted to the current DataObj. When False, every dataset
                 is added to the multi-data list.
+            virtual_current: When promoting a single dataset, open only the
+                lazy source handle instead of materializing the full data array.
 
         Returns:
             ``'current'``     — routed to the current DataObj (and raised),
@@ -144,7 +163,12 @@ class FileIOController(ImProcessWidgetController):
 
         if prefer_as_current and len(datasetsToRoute) == 1:
             try:
-                self._loadAsCurrent(name, datasetsToRoute[0], dataPath)
+                self._loadAsCurrent(
+                    name,
+                    datasetsToRoute[0],
+                    dataPath,
+                    virtual=virtual_current,
+                )
                 return 'current'
             except Exception as exc:
                 self._logger.error(
@@ -159,7 +183,7 @@ class FileIOController(ImProcessWidgetController):
             )
         return 'multidata'
 
-    def _loadAsCurrent(self, name, datasetName, dataPath):
+    def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
 
         Extracted so ``_loadFromPath`` (used by drag-drop and quickLoadData)
@@ -168,8 +192,13 @@ class FileIOController(ImProcessWidgetController):
         if self._main._currentDataObj is not None:
             self._main._currentDataObj.checkAndUnloadData()
         self._main._currentDataObj = DataObj(name, datasetName, path=dataPath)
-        self._main._currentDataObj.checkAndLoadData()
-        if self._main._currentDataObj.dataLoaded:
+        if virtual:
+            self._main._currentDataObj.checkAndOpenData()
+            ready = self._main._currentDataObj.sourceLoaded
+        else:
+            self._main._currentDataObj.checkAndLoadData()
+            ready = self._main._currentDataObj.dataLoaded
+        if ready:
             self._commChannel.sigCurrentDataChanged.emit(self._main._currentDataObj)
             self._widget.raiseCurrentDataDock()
 

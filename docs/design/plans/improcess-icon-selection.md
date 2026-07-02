@@ -20,6 +20,7 @@ Valid QtAwesome prefixes include `mdi.*`, `mdi6.*`, `fa5s.*`, `fa6s.*`,
 | Action ID | UI label | Meaning | Current icon | Selected icon | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `quick-load-data` | Quick load data... | Open the quick data loader. | `fa5s.file-upload` |  |  |
+| `quick-load-virtual-data` | Virtual load data... | Open data as a lazy virtual stack. | `mdi6.file-eye` |  |  |
 | `save-reconstruction` | Save reconstruction... | Save the active reconstruction. | `fa5s.file-download` |  |  |
 
 ## Image Toolbar

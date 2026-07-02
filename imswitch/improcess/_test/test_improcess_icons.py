@@ -26,6 +26,7 @@ IMAGE_TOOL_ACTION_IDS = (
 
 FILE_TOOL_ACTION_IDS = (
     "quick-load-data",
+    "quick-load-virtual-data",
     "save-reconstruction",
 )
 

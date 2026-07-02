@@ -383,7 +383,8 @@ Current scope:
 - Make composite using `make-composite`, rendering channel-like axes as colored
   display layers without baking an RGB image;
 - Make RGB using `make-rgb`, publishing a channel-last RGB visualization result;
-- File toolbar shortcuts for quick load and save reconstruction;
+- File toolbar shortcuts for eager quick load, virtual/lazy load and save
+  reconstruction;
 - Analysis toolbar panel shortcuts for ROI manager, projection, segmentation
   and Results;
 - semantic icon mapping for all always-present file, image and analysis

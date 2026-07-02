@@ -7,6 +7,7 @@ from qtpy import QtGui, QtWidgets
 
 IMPROCESS_ICON_NAMES = {
     "quick-load-data": "fa5s.file-upload",
+    "quick-load-virtual-data": "mdi6.file-eye",
     "save-reconstruction": "fa5s.file-download",
     "auto-contrast": "mdi.contrast-circle",
     "brightness-contrast": "mdi.contrast",
@@ -29,6 +30,7 @@ IMPROCESS_ICON_NAMES = {
 
 _FALLBACK_STANDARDS = {
     "quick-load-data": QtWidgets.QStyle.SP_ArrowUp,
+    "quick-load-virtual-data": QtWidgets.QStyle.SP_FileDialogInfoView,
     "save-reconstruction": QtWidgets.QStyle.SP_ArrowDown,
     "auto-contrast": QtWidgets.QStyle.SP_DialogApplyButton,
     "brightness-contrast": QtWidgets.QStyle.SP_FileDialogDetailedView,

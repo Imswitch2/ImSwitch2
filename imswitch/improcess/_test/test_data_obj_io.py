@@ -66,6 +66,28 @@ def test_data_obj_hdf5_lazy_handle_does_not_materialize(tmp_path) -> None:
     assert not data_obj.dataLoaded
 
 
+def test_view_only_preserves_virtual_hdf5_handle(tmp_path) -> None:
+    path = tmp_path / "view-only-virtual.h5"
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+
+    with h5py.File(path, "w") as file:
+        file.create_dataset("CAM", data=data, chunks=(1, 4, 5))
+
+    data_obj = DataObj("view-only-virtual.h5", "CAM", path=str(path))
+    data_obj.checkAndOpenData()
+
+    result = ViewOnlyReconstructor().process(data_obj, {})
+
+    assert result.data is data_obj.data_handle
+    assert result.data.backend == "hdf5"
+    assert data_obj.sourceLoaded
+    assert not data_obj.dataMaterialized
+    np.testing.assert_array_equal(result.data[1], data[1])
+    assert not data_obj.dataMaterialized
+
+    data_obj.checkAndUnloadData()
+
+
 def test_data_obj_mean_uses_lazy_handle_without_materializing(tmp_path) -> None:
     path = tmp_path / "lazy-mean.h5"
     data = np.arange(4 * 3 * 2, dtype=np.uint16).reshape(4, 3, 2)

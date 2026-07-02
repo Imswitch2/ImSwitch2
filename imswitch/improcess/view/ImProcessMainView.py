@@ -49,6 +49,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigReconstructMultiConsolidated = QtCore.Signal()
     sigReconstructMultiIndividual = QtCore.Signal()
     sigQuickLoadData = QtCore.Signal()
+    sigQuickLoadVirtualData = QtCore.Signal()
     sigUpdate = QtCore.Signal()
 
     sigShowPatternChanged = QtCore.Signal(bool)
@@ -124,8 +125,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         quickLoadAction.setShortcut('Ctrl+T')
         quickLoadAction.triggered.connect(self.sigQuickLoadData)
+        quickLoadAction.setToolTip('Load data as current data')
+        quickLoadAction.setStatusTip('Load data as current data')
         file.addAction(quickLoadAction)
         self._addFileToolAction('quick-load-data', quickLoadAction)
+
+        quickLoadVirtualAction = QtWidgets.QAction(
+            improcessIcon('quick-load-virtual-data', self),
+            'Virtual load data…',
+            self,
+        )
+        quickLoadVirtualAction.setShortcut('Ctrl+Shift+T')
+        quickLoadVirtualAction.setToolTip('Open data as a lazy virtual stack')
+        quickLoadVirtualAction.setStatusTip('Open data as a lazy virtual stack')
+        quickLoadVirtualAction.triggered.connect(self.sigQuickLoadVirtualData)
+        file.addAction(quickLoadVirtualAction)
+        self._addFileToolAction('quick-load-virtual-data', quickLoadVirtualAction)
 
         file.addSeparator()
 
@@ -136,6 +151,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         saveReconAction.setShortcut('Ctrl+D')
         saveReconAction.triggered.connect(self.sigSaveReconstruction)
+        saveReconAction.setToolTip('Save the active reconstruction')
+        saveReconAction.setStatusTip('Save the active reconstruction')
         file.addAction(saveReconAction)
         self._addFileToolAction('save-reconstruction', saveReconAction)
         saveReconAllAction = QtWidgets.QAction('Save all reconstructions…', self)

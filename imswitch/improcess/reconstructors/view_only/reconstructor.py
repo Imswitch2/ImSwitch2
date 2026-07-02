@@ -6,9 +6,9 @@ STED, FLIM, confocal, widefield, anything where the user just wants to inspect
 raw frames with the same data-edit / multi-data / scan-params tooling that
 ImProcess already provides.
 
-`process()` does no signal processing — it returns the raw DataObj.data
-wrapped as a ProcessingResult so the rest of ImProcess (ReconstructionView,
-WatcherFrame save, etc.) can handle it uniformly.
+`process()` does no signal processing — it returns the raw DataObj data or
+lazy data handle wrapped as a ProcessingResult so the rest of ImProcess
+(ReconstructionView, WatcherFrame save, etc.) can handle it uniformly.
 """
 
 from pathlib import Path
@@ -76,16 +76,27 @@ class ViewOnlyReconstructor(Reconstructor):
         return None
 
     def process(self, data_obj: "DataObj", params: dict) -> ViewOnlyResult:
-        preloaded = data_obj.dataLoaded
-        try:
-            data_obj.checkAndLoadData()
-            data = np.asarray(data_obj.data)
+        virtual = (
+            getattr(data_obj, "sourceLoaded", False)
+            and not getattr(data_obj, "dataLoaded", False)
+            and getattr(data_obj, "data_handle", None) is not None
+        )
+        if virtual:
+            data = data_obj.data_handle
             source_axis_labels = data_obj.axis_labels
             source_axis_scales = data_obj.axis_scales
             source_scale_unit = data_obj.scale_unit
-        finally:
-            if not preloaded:
-                data_obj.checkAndUnloadData()
+        else:
+            preloaded = data_obj.dataLoaded
+            try:
+                data_obj.checkAndLoadData()
+                data = np.asarray(data_obj.data)
+                source_axis_labels = data_obj.axis_labels
+                source_axis_scales = data_obj.axis_scales
+                source_scale_unit = data_obj.scale_unit
+            finally:
+                if not preloaded:
+                    data_obj.checkAndUnloadData()
 
         ndim = data.ndim
         if source_axis_labels and len(source_axis_labels) == ndim:

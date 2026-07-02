@@ -91,8 +91,12 @@ File and image toolbars
 
 The main window includes always-visible *File*, *Image* and *Analysis tools*
 toolbars for common operations that should be available regardless of the
-active reconstructor.  The *File* toolbar exposes quick data loading and saving
-the active reconstruction.
+active reconstructor.  The *File* toolbar exposes quick data loading, virtual
+data loading and saving the active reconstruction.  *Virtual load data* opens
+the selected TIFF/OME-TIFF, HDF5 or Zarr dataset as a lazy current-data source
+so the raw-data panel can show the mean image and individual frames without
+materializing the whole stack first.  Normal *Quick load data* keeps the legacy
+eager behavior.
 
 The *Image* toolbar and matching *Image* menu provide viewer-level operations:
 
