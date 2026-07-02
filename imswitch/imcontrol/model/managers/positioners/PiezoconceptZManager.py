@@ -21,9 +21,16 @@ class PiezoconceptZManager(PositionerManager):
             axis: 0 for axis in positionerInfo.axes
         })
         self.__logger = initLogger(self, instanceName=name)
-        self._rs232Manager = lowLevelManagers['rs232sManager'][
-            positionerInfo.managerProperties['rs232device']
-        ]
+        try:
+            self._rs232Manager = lowLevelManagers['rs232sManager'][
+                positionerInfo.managerProperties['rs232device']
+            ]
+        except Exception as e:
+            self.__logger.warning(
+                f'Failed to initialize rs232sManager, falling back to mock mode: {e}'
+            )
+            from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
+            self._rs232Manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
 
     def move(self, value, _):
         if float(value) > 0:
