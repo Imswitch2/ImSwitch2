@@ -492,7 +492,7 @@ All third-party hardware libraries are imported lazily (try/except at module lev
 Most issues identified in the initial codebase analysis have been resolved (see ROADMAP.md Milestone 3). Remaining open items:
 
 ### Interface/Mock Separation
-`imswitch/imcontrol/model/interfaces/` mixes real hardware drivers (`hamamatsu.py`, `squid.py`, `lantzlasers.py`) with mock implementations (`hamamatsu_mock.py`, `RS232Driver_mock.py`, `piezoPiezoconceptZ_mock.py`) in the same directory with no clear organizational pattern.
+`imswitch/imcontrol/model/interfaces/` mixes real hardware drivers (`hamamatsu.py`, `squid.py`, `lantzlasers.py`) with mock implementations (`hamamatsu_mock.py`, `RS232Driver_mock.py`, `tiscamera_mock.py`) in the same directory with no clear organizational pattern.
 
 **Proposed fix:** Separate into `interfaces/drivers/` and `interfaces/mocks/` subdirectories (ROADMAP Milestone 3).
 
