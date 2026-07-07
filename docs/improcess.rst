@@ -136,12 +136,13 @@ composite and make RGB publish new ``ProcessingResult`` objects into the
 reconstruction list. Split stack and split channels publish multiple
 ``ProcessingResult`` objects and make the final split result current.
 
-The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for ROI
-manager, Projection, Segmentation and Results.  Runtime-backed buttons use the
-same loading path as the *Load tool* combo, so opening a panel registers its
-processor when needed, raises an existing dock when it already exists and
-preserves the runtime-loaded panel in the dock-layout state.  The Results
-button raises the built-in results-table dock directly.
+The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for Graph,
+Profile, ROI manager, ROI statistics, Projection, Segmentation and Results.
+Runtime-backed buttons use the same loading path as the *Load tool* combo, so
+opening a panel registers its processor when needed, raises an existing dock
+when it already exists and preserves the runtime-loaded panel in the
+dock-layout state.  The Results button raises the built-in results-table dock
+directly.
 
 Toolbar icons are selected through ImProcess semantic action IDs and rendered
 with QtAwesome when available, with Qt standard icons as a fallback.  This
@@ -471,6 +472,14 @@ to your Imcontrol setup file (the same JSON you select via
 
     {
         "processing": {
+            "parameterPanel": true,
+            "napariLayerControls": true,
+            "reconstructionPanel": true,
+            "actionsPanel": true,
+            "fileWatcherPanel": true,
+            "multiDataPanel": true,
+            "currentDataPanel": true,
+            "resultsPanel": true,
             "graphPanel": true,
             "projectionPanel": true,
             "segmentationPanel": true,
@@ -497,6 +506,15 @@ are not registered, even if their code is present.
 Set ``"graphPanel": true`` in the ``processing`` block to show the optional
 graph panel.  When the key is absent, ImProcess keeps the panel hidden.
 
+The core GUI layout can also be made more minimal from the same block.
+``"parameterPanel": false``, ``"actionsPanel": false``,
+``"fileWatcherPanel": false``, ``"multiDataPanel": false``,
+``"currentDataPanel": false`` and ``"resultsPanel": false`` hide the
+corresponding startup docks.  ``"napariLayerControls": false`` hides napari's
+built-in layer-controls dock, and ``"reconstructionPanel": false`` hides the
+Reconstruction dock until the first result is displayed.  These keys default to
+``true`` so existing setups keep the full ImProcess window.
+
 Processing-only setup presets
 =============================
 
@@ -508,6 +526,8 @@ Ready-to-use minimal configs ship under
 
    * - Setup file
      - Intended use
+   * - ``fiji_processor.json``
+     - Ultimate minimal Fiji/ImageJ-like processor: view-only loading, no startup docks, no napari layer controls and no Reconstruction dock until data is loaded
    * - ``monalisa_processor.json``
      - MoNaLISA reconstruction plus view-only fallback
    * - ``snouty_processor.json``
@@ -517,10 +537,22 @@ Ready-to-use minimal configs ship under
    * - ``general_image_processing.json``
      - View-only display, drift correction, projections, segmentation, PSF, colocalization, FRC, ROI and multicolor tools
 
+The Fiji preset is intentionally sparse: it starts with ``view-only`` and no
+registered processors, then lets the Image and Analysis toolbars register
+processor-backed tools only when the user opens them.
+
 The MoNaLISA preset has the same shape as the others::
 
     {
         "processing": {
+            "parameterPanel": true,
+            "napariLayerControls": true,
+            "reconstructionPanel": true,
+            "actionsPanel": true,
+            "fileWatcherPanel": true,
+            "multiDataPanel": true,
+            "currentDataPanel": true,
+            "resultsPanel": true,
             "graphPanel": true,
             "profilePanel": true,
             "projectionPanel": true,
@@ -544,7 +576,7 @@ the plugins from one of these setup presets:
 
 2. Set ``imcontrol_options.json`` to::
 
-       {"setupFileName": "general_image_processing.json"}
+       {"setupFileName": "fiji_processor.json"}
 
 3. Launch the app normally.  At startup the registry is populated with
    the reconstructors and processors listed in the selected setup file;

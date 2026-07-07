@@ -18,9 +18,14 @@ from imswitch.improcess.processors.make_rgb import MakeRGBProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
 from imswitch.improcess.processors.stack_split import StackSplitProcessor
 from imswitch.improcess.processors.stack_subset import StackSubsetProcessor
+from imswitch.improcess.processors._axis_split import resolve_axis, shape_for_result
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
+from imswitch.improcess.view.ChannelPickerDialog import ChannelPickerDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
+
+
+_RGB_CHANNEL_LABELS = ("C", "Channel", "Channels", "Base")
 
 
 class ImageToolbarController:
@@ -249,7 +254,52 @@ class ImageToolbarController:
         result = self._reconstructionController.getActiveResult()
         if not self._resultHasImage(result):
             return
-        self._runProcessor(MakeRGBProcessor(), result, {"axis": "Auto"})
+        try:
+            axis = resolve_axis(
+                result,
+                "Auto",
+                preferred_labels=_RGB_CHANNEL_LABELS,
+                require_label_match=True,
+            )
+        except Exception:
+            self._logger.exception("Could not resolve RGB channel axis")
+            return
+
+        channel_count = int(shape_for_result(result)[axis])
+        params = {"axis": "Auto"}
+        if channel_count > 3:
+            channels = ChannelPickerDialog.get_channels(result, axis, parent=self._view)
+            if channels is None:
+                return
+            params["channels"] = channels
+        else:
+            channels = list(range(channel_count))
+
+        channel_levels = self._channelLevelsForAxis(result, axis, channels)
+        if channel_levels is not None:
+            params["channel_levels"] = channel_levels
+
+        self._runProcessor(MakeRGBProcessor(), result, params)
+
+    def _channelLevelsForAxis(self, result, axis: int, channels: list) -> list | None:
+        display_layers = result.display_layers() if hasattr(result, "display_layers") else []
+        if not display_layers:
+            return None
+        if hasattr(result, "applyDisplayLayerSettings"):
+            display_layers = result.applyDisplayLayerSettings(display_layers)
+
+        levels_by_channel = {}
+        for layer in display_layers:
+            metadata = layer.metadata or {}
+            if metadata.get("channel_axis") != axis:
+                continue
+            channel_index = metadata.get("channel_index")
+            if channel_index is not None and layer.display_levels is not None:
+                levels_by_channel[int(channel_index)] = layer.display_levels
+
+        if not levels_by_channel:
+            return None
+        return [levels_by_channel.get(index) for index in channels]
 
     def _runProcessor(self, processor, result, params: dict) -> None:
         try:

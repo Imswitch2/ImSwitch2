@@ -83,6 +83,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
     def __init__(
         self,
+        showParameterPanel: bool = True,
+        showNapariLayerControls: bool = True,
+        showReconstructionPanel: bool = True,
+        showActionsPanel: bool = True,
+        showFileWatcherPanel: bool = True,
+        showMultiDataPanel: bool = True,
+        showCurrentDataPanel: bool = True,
+        showResultsPanel: bool = True,
         showGraphPanel: bool = True,
         showProfilePanel: bool = True,
         showFRCPanel: bool = False,
@@ -222,7 +230,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame.sigQuickLoadData.connect(self.sigQuickLoadData)
         btnFrame.sigUpdate.connect(self.sigUpdate)
 
-        self.reconstructionWidget = ReconstructionView()
+        self.reconstructionWidget = ReconstructionView(
+            showLayerControls=showNapariLayerControls
+        )
         self.graphWidget = GraphWidget() if showGraphPanel else None
         self.profileWidget = (
             ProfileWidget(self.reconstructionWidget.napariViewer)
@@ -349,26 +359,37 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         parametersDock.addWidget(parameterFrame)
         self.dockArea.addDock(parametersDock, 'left')
         self.docks['Parameters'] = parametersDock
+        self.parameterDock = parametersDock
+        if not showParameterPanel:
+            parametersDock.hide()
 
         actionsDock = Dock('Actions', size=(2, 1))
         actionsDock.addWidget(btnFrame)
         self.dockArea.addDock(actionsDock, 'bottom', parametersDock)
         self.docks['Actions'] = actionsDock
+        if not showActionsPanel:
+            actionsDock.hide()
 
         self.watcherDock = Dock('File watcher', size=(2, 3))
         self.watcherDock.addWidget(self.watcherFrame)
         self.dockArea.addDock(self.watcherDock, 'bottom', actionsDock)
         self.docks['File watcher'] = self.watcherDock
+        if not showFileWatcherPanel:
+            self.watcherDock.hide()
 
         self.multiDataDock = Dock('Multidata management', size=(2, 3))
         self.multiDataDock.addWidget(self.multiDataFrame)
         self.dockArea.addDock(self.multiDataDock, 'above', self.watcherDock)
         self.docks['Multidata management'] = self.multiDataDock
+        if not showMultiDataPanel:
+            self.multiDataDock.hide()
 
         self.currentDataDock = Dock('Current data', size=(2, 3))
         self.currentDataDock.addWidget(self.dataFrame)
         self.dockArea.addDock(self.currentDataDock, 'above', self.multiDataDock)
         self.docks['Current data'] = self.currentDataDock
+        if not showCurrentDataPanel:
+            self.currentDataDock.hide()
 
         # --- Center: reconstruction view ---
         reconstructionDock = Dock('Reconstruction', size=(6, 9))
@@ -376,6 +397,12 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.dockArea.addDock(reconstructionDock, 'right')
         self.docks['Reconstruction'] = reconstructionDock
         self._reconstructionDock = reconstructionDock
+        self._autoRevealReconstructionDock = not showReconstructionPanel
+        if not showReconstructionPanel:
+            reconstructionDock.hide()
+        self.reconstructionWidget.sigItemSelected.connect(
+            self._maybeAutoRevealReconstructionDock
+        )
 
         # --- Right column: optional analysis panels ---
         analysisPanels = [
@@ -404,12 +431,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             self.docks[title] = dock
             if title == 'Results':
                 self.resultsDock = dock
+                if not showResultsPanel:
+                    dock.hide()
             prevAnalysisDock = dock
             self._runtimeAnalysisDockAnchor = dock
 
         # Snapshot the default layout for the View > Reset layout action and
         # for callers that drop a corrupt persisted state.
         self._defaultDockState = self.dockArea.saveState()
+        self._defaultDockVisibility = {
+            title: not dock.isHidden()
+            for title, dock in self.docks.items()
+        }
 
         # --- View menu: toggle each dock + reset layout ---
         viewMenu = menuBar.addMenu('&View')
@@ -601,6 +634,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             setattr(self, spec.attribute, widget)
             if spec.widget_kind == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
+            if spec.widget_kind in ('profile', 'roi-stats'):
+                self._connectResultPusher(widget)
+            if spec.widget_kind == 'graph':
+                self._wireGraphToDependentWidgets()
             self._addDockVisibilityAction(title, dock)
             dock.show()
             self._safeRaiseDock(dock)
@@ -914,6 +951,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'result-processor': lambda: self._makeResultProcessorWidget(
                 spec.processor_id or spec.id
             ),
+            'graph': lambda: GraphWidget(),
+            'profile': lambda: ProfileWidget(viewer),
             'projection': lambda: ProjectionWidget(viewer),
             'segmentation': lambda: SegmentationWidget(
                 viewer,
@@ -930,6 +969,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'frc': lambda: FRCWidget(viewer),
             'multicolor': lambda: MulticolorWidget(viewer),
             'roi-manager': lambda: ROIManagerWidget(viewer),
+            'roi-stats': lambda: ROIStatsWidget(viewer),
         }
         try:
             return factories[spec.widget_kind]
@@ -971,6 +1011,29 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     )
             elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
+
+    def _wireGraphToDependentWidgets(self) -> None:
+        """Late-binding: connect table plot requests after Graph runtime load."""
+        if getattr(self, 'graphWidget', None) is None:
+            return
+        table = getattr(self, 'resultsTableWidget', None)
+        if table is None:
+            return
+        try:
+            table.sigPlotRequested.disconnect(self._onTablePlotRequested)
+        except Exception:
+            pass
+        try:
+            table.sigPlotRequested.connect(self._onTablePlotRequested)
+        except Exception:
+            self._logger.exception('Could not wire results table plot action to Graph')
+
+    def _maybeAutoRevealReconstructionDock(self, *args) -> None:
+        """Show the reconstruction dock when hidden-at-startup data arrives."""
+        if not getattr(self, '_autoRevealReconstructionDock', False):
+            return
+        self._autoRevealReconstructionDock = False
+        self.raiseDockByTitle('Reconstruction')
 
     def _setReconListPaneVisible(self, visible: bool) -> None:
         """Drive the reconstruction-list pane state from the View menu.
@@ -1130,6 +1193,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         dockAreaState = state.get('dock_area')
         if dockAreaState is None:
+            self._applyStartupHiddenDocks()
             self._syncDockVisibilityActions()
             return
         try:
@@ -1140,6 +1204,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             # A corrupt or incompatible saved state should never block startup;
             # fall back to the default placement silently.
             pass
+        self._applyStartupHiddenDocks()
         self._syncDockVisibilityActions()
 
     def runtimeAnalysisToolIdsLoaded(self) -> list[str]:
@@ -1172,9 +1237,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             )
         except Exception:
             return
-        for dock in self.docks.values():
-            dock.show()
+        default_visibility = getattr(self, '_defaultDockVisibility', {})
+        for title, dock in self.docks.items():
+            if default_visibility.get(title, True):
+                dock.show()
+            else:
+                dock.hide()
         self._syncDockVisibilityActions()
+
+    def _applyStartupHiddenDocks(self) -> None:
+        """Keep config-hidden startup docks hidden after layout restore."""
+        for title, visible in getattr(self, '_defaultDockVisibility', {}).items():
+            if visible:
+                continue
+            dock = self.docks.get(title)
+            if dock is not None:
+                dock.hide()
 
     def _syncDockVisibilityActions(self) -> None:
         """Keep the View-menu checkboxes in sync with the current dock visibility."""
@@ -1186,7 +1264,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if dock is None:
                 continue
             action.blockSignals(True)
-            action.setChecked(dock.isVisible())
+            action.setChecked(not dock.isHidden())
             action.blockSignals(False)
 
     def _addDockVisibilityAction(self, title: str, dock: Dock) -> None:
@@ -1194,7 +1272,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if actions is None or title in actions:
             return
         action = QtWidgets.QAction(title, self, checkable=True)
-        action.setChecked(True)
+        action.setChecked(not dock.isHidden())
         action.toggled.connect(
             lambda checked, d=dock: (d.show() if checked else d.hide())
         )

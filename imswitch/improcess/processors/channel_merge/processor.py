@@ -78,7 +78,7 @@ def merge_results(
             raise ValueError("All channel-merge inputs must have the same shape")
         if axis_labels_for_result(result) != labels:
             raise ValueError("All channel-merge inputs must have the same axis labels")
-        if axis_scales_for_result(result) != scales:
+        if not _scales_close(axis_scales_for_result(result), scales):
             raise ValueError("All channel-merge inputs must have the same axis scales")
         arrays.append(np.asarray(result.data))
         source_names.append(getattr(result, "name", "result"))
@@ -114,11 +114,22 @@ def can_merge_results(results: Sequence[ProcessingResult]) -> bool:
         return all(
             shape_for_result(result) == shape
             and axis_labels_for_result(result) == labels
-            and axis_scales_for_result(result) == scales
+            and _scales_close(axis_scales_for_result(result), scales)
             for result in results[1:]
         )
     except Exception:
         return False
+
+
+def _scales_close(scales: Sequence[float], other: Sequence[float]) -> bool:
+    """Compare axis scales with float tolerance instead of exact equality.
+
+    Two independently-produced results with the same nominal pixel size can
+    differ by floating-point noise; that shouldn't block a merge.
+    """
+    if len(scales) != len(other):
+        return False
+    return bool(np.allclose(scales, other, rtol=1e-5, atol=1e-8))
 
 
 __all__ = ["ChannelMergeProcessor", "can_merge_results", "merge_results"]

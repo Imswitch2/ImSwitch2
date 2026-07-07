@@ -4,13 +4,21 @@ from pathlib import Path
 from imswitch.improcess.reconstructors import available_reconstructor_ids
 from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.model.processing_config import (
+    are_napari_layer_controls_enabled,
+    is_actions_panel_enabled,
     is_colocalization_panel_enabled,
+    is_current_data_panel_enabled,
+    is_file_watcher_panel_enabled,
     is_frc_panel_enabled,
     is_graph_panel_enabled,
+    is_multi_data_panel_enabled,
     is_multicolor_panel_enabled,
+    is_parameter_panel_enabled,
     is_profile_panel_enabled,
     is_psf_resolution_panel_enabled,
     is_projection_panel_enabled,
+    is_reconstruction_panel_enabled,
+    is_results_panel_enabled,
     is_roi_manager_panel_enabled,
     is_roi_stats_panel_enabled,
     is_segmentation_panel_enabled,
@@ -28,6 +36,39 @@ def test_graph_panel_can_be_disabled():
 
 def test_graph_panel_can_be_enabled_explicitly():
     assert is_graph_panel_enabled({"graphPanel": True})
+
+
+def test_core_gui_panels_shown_by_default():
+    assert is_parameter_panel_enabled({})
+    assert are_napari_layer_controls_enabled({})
+    assert is_reconstruction_panel_enabled({})
+    assert is_actions_panel_enabled({})
+    assert is_file_watcher_panel_enabled({})
+    assert is_multi_data_panel_enabled({})
+    assert is_current_data_panel_enabled({})
+    assert is_results_panel_enabled({})
+
+
+def test_core_gui_panels_can_be_hidden_explicitly():
+    config = {
+        "parameterPanel": False,
+        "napariLayerControls": False,
+        "reconstructionPanel": False,
+        "actionsPanel": False,
+        "fileWatcherPanel": False,
+        "multiDataPanel": False,
+        "currentDataPanel": False,
+        "resultsPanel": False,
+    }
+
+    assert not is_parameter_panel_enabled(config)
+    assert not are_napari_layer_controls_enabled(config)
+    assert not is_reconstruction_panel_enabled(config)
+    assert not is_actions_panel_enabled(config)
+    assert not is_file_watcher_panel_enabled(config)
+    assert not is_multi_data_panel_enabled(config)
+    assert not is_current_data_panel_enabled(config)
+    assert not is_results_panel_enabled(config)
 
 
 def test_profile_panel_hidden_by_default():
@@ -108,7 +149,17 @@ def test_multicolor_panel_can_be_enabled_explicitly():
 
 def test_graph_panel_only_config_keeps_standalone_plugin_defaults():
     reconstructors, processors, has_plugin_config = plugin_ids_from_config(
-        {"graphPanel": False}
+        {
+            "graphPanel": False,
+            "parameterPanel": False,
+            "napariLayerControls": False,
+            "reconstructionPanel": False,
+            "actionsPanel": False,
+            "fileWatcherPanel": False,
+            "multiDataPanel": False,
+            "currentDataPanel": False,
+            "resultsPanel": False,
+        }
     )
 
     assert reconstructors == ["view-only"]
@@ -134,6 +185,7 @@ def test_improcess_setup_presets_use_known_processor_ids():
         / "imcontrol_setups"
     )
     setup_files = [
+        setup_dir / "fiji_processor.json",
         setup_dir / "snouty_processor.json",
         setup_dir / "general_image_processing.json",
         setup_dir / "monalisa_processor.json",
@@ -155,6 +207,7 @@ def test_improcess_setup_presets_use_known_reconstructor_ids():
         / "imcontrol_setups"
     )
     setup_files = [
+        setup_dir / "fiji_processor.json",
         setup_dir / "snouty_processor.json",
         setup_dir / "general_image_processing.json",
         setup_dir / "monalisa_processor.json",
@@ -181,3 +234,38 @@ def test_snouty_setup_enables_multicolor_workflow():
     assert processing["multicolorPanel"]
     assert "multicolor-registration" in processing["processors"]
     assert "multicolor-apply" in processing["processors"]
+
+
+def test_fiji_setup_is_ultimate_minimal_processor():
+    setup_file = (
+        Path(__file__).resolve().parents[2]
+        / "_data"
+        / "user_defaults"
+        / "imcontrol_setups"
+        / "fiji_processor.json"
+    )
+    processing = json.loads(setup_file.read_text(encoding="utf-8"))["processing"]
+
+    assert processing["reconstructors"] == ["view-only"]
+    assert processing["processors"] == []
+    assert processing["parameterPanel"] is False
+    assert processing["napariLayerControls"] is False
+    assert processing["reconstructionPanel"] is False
+    assert processing["actionsPanel"] is False
+    assert processing["fileWatcherPanel"] is False
+    assert processing["multiDataPanel"] is False
+    assert processing["currentDataPanel"] is False
+    assert processing["resultsPanel"] is False
+    for key in (
+        "graphPanel",
+        "profilePanel",
+        "projectionPanel",
+        "segmentationPanel",
+        "psfResolutionPanel",
+        "colocalizationPanel",
+        "multicolorPanel",
+        "frcPanel",
+        "roiManagerPanel",
+        "roiStatsPanel",
+    ):
+        assert processing[key] is False

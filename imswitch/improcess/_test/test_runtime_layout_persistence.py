@@ -2,8 +2,9 @@
 
 Verifies the new layout-state contract: getLayoutState includes the list
 of runtime-loaded analysis tool ids, and setLayoutState re-registers the
-matching processors before recreating the widget docks. Uses small stubs
-so the tests don't need Qt or napari.
+matching processors before recreating the widget docks. Most checks use small
+stubs; the view method checks call unbound methods without constructing Qt
+widgets.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 from imswitch.improcess.controller.ImProcessMainController import (
     _GuiLayoutStateAdapter,
 )
+from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
 
 
 def _make_view_stub():
@@ -134,3 +136,56 @@ def test_schema_version_bumped():
     be missing the runtime_analysis_tool_ids key."""
     adapter = _GuiLayoutStateAdapter(_make_view_stub())
     assert adapter.getStateSchemaVersion() == 2
+
+
+def test_startup_hidden_docks_are_rehidden_after_layout_restore():
+    class _Dock:
+        def __init__(self):
+            self.hidden = False
+
+        def hide(self):
+            self.hidden = True
+
+    parameters = _Dock()
+    actions = _Dock()
+    current_data = _Dock()
+    reconstruction = _Dock()
+    results = _Dock()
+    view = SimpleNamespace(
+        docks={
+            'Parameters': parameters,
+            'Actions': actions,
+            'Current data': current_data,
+            'Reconstruction': reconstruction,
+            'Results': results,
+        },
+        _defaultDockVisibility={
+            'Parameters': False,
+            'Actions': False,
+            'Current data': False,
+            'Reconstruction': False,
+            'Results': False,
+        },
+    )
+
+    ImProcessMainView._applyStartupHiddenDocks(view)
+
+    assert parameters.hidden
+    assert actions.hidden
+    assert current_data.hidden
+    assert reconstruction.hidden
+    assert results.hidden
+
+
+def test_auto_reveal_reconstruction_dock_runs_once():
+    raised = []
+    view = SimpleNamespace(
+        _autoRevealReconstructionDock=True,
+        raiseDockByTitle=lambda title: raised.append(title),
+    )
+
+    ImProcessMainView._maybeAutoRevealReconstructionDock(view)
+    ImProcessMainView._maybeAutoRevealReconstructionDock(view)
+
+    assert raised == ['Reconstruction']
+    assert view._autoRevealReconstructionDock is False

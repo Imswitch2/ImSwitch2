@@ -49,6 +49,12 @@ def test_improcess_icon_mapping_uses_supported_qtawesome_families():
     )
 
 
+def test_improcess_icon_mapping_uses_requested_panel_icons():
+    assert IMPROCESS_ICON_NAMES["graph"] == "fa6s.chart-line"
+    assert IMPROCESS_ICON_NAMES["profile"] == "mdi6.vector-line"
+    assert IMPROCESS_ICON_NAMES["roi-stats"] == "mdi.format-list-numbered"
+
+
 def test_improcess_icon_returns_qicon(qtbot):
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)

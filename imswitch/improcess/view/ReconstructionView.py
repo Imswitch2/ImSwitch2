@@ -17,7 +17,7 @@ class ReconstructionView(QtWidgets.QFrame):
     sigViewChanged = QtCore.Signal()
 
     # Methods
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, showLayerControls: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
 
@@ -30,6 +30,7 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer = self.napariViewer.add_image(
             np.zeros((1, 1)), rgb=False, name='Reconstruction', colormap='grayclip', protected=True
         )
+        self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
 
         # Button group for choosing view
@@ -114,6 +115,22 @@ class ReconstructionView(QtWidgets.QFrame):
         outerLayout = QtWidgets.QVBoxLayout(self)
         outerLayout.setContentsMargins(0, 0, 0, 0)
         outerLayout.addWidget(self._reconSplitter)
+
+    def setNapariLayerControlsVisible(self, visible: bool) -> None:
+        """Show/hide napari's built-in layer controls dock."""
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', FutureWarning)
+                warnings.simplefilter('ignore', DeprecationWarning)
+                qt_viewer = self.napariViewer.window.qt_viewer
+            dock = getattr(qt_viewer, 'dockLayerControls', None)
+            if dock is not None:
+                dock.setVisible(bool(visible))
+        except Exception as exc:
+            self._logger.debug(
+                "Could not set napari layer-controls visibility: %s",
+                exc,
+            )
 
     # --- Recon list pane controls -----------------------------------------
 

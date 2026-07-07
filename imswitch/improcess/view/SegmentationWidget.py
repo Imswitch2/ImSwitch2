@@ -113,7 +113,8 @@ class SegmentationWidget(QtWidgets.QWidget):
         self._update_manual_enabled()
 
     def run(self) -> None:
-        image = self._current_image_2d()
+        layer = self._active_image_layer()
+        image = self._image_2d_from_layer(layer)
         if image is None:
             self.summaryLabel.setText("No image layer selected.")
             return
@@ -137,7 +138,12 @@ class SegmentationWidget(QtWidgets.QWidget):
             self._viewer.add_labels(
                 analysis.labels,
                 name=f"Segmentation ({len(analysis.regions)} regions)",
-                metadata={"segmentation": analysis.metadata},
+                scale=self._spatial_layer_scale(layer),
+                metadata={
+                    "axis_labels": ["Y", "X"],
+                    "scale_unit": self._layer_scale_unit(layer),
+                    "segmentation": analysis.metadata,
+                },
             )
             self.summaryLabel.setText(
                 f"Threshold {analysis.threshold:.6g}; {len(analysis.regions)} region(s)."
@@ -223,6 +229,9 @@ class SegmentationWidget(QtWidgets.QWidget):
 
     def _current_image_2d(self):
         layer = self._active_image_layer()
+        return self._image_2d_from_layer(layer)
+
+    def _image_2d_from_layer(self, layer):
         if layer is None:
             return None
         data = np.asarray(layer.data)
@@ -238,6 +247,24 @@ class SegmentationWidget(QtWidgets.QWidget):
             else:
                 indexer.append(min(max(step[axis], 0), size - 1))
         return np.asarray(data[tuple(indexer)])
+
+    @staticmethod
+    def _spatial_layer_scale(layer) -> list[float]:
+        try:
+            scale = [float(value) for value in layer.scale]
+        except Exception:
+            scale = []
+        if len(scale) >= 2:
+            return scale[-2:]
+        return [1.0, 1.0]
+
+    @staticmethod
+    def _layer_scale_unit(layer) -> str:
+        try:
+            unit = layer.metadata.get("scale_unit", None)
+        except Exception:
+            unit = None
+        return str(unit or "px")
 
     def _current_step(self, ndim: int) -> tuple[int, ...]:
         try:

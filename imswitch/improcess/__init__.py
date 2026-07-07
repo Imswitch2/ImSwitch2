@@ -9,13 +9,21 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
 
     from .controller import ImProcessMainController
     from .model.processing_config import (
+        are_napari_layer_controls_enabled,
+        is_actions_panel_enabled,
         is_colocalization_panel_enabled,
+        is_current_data_panel_enabled,
+        is_file_watcher_panel_enabled,
         is_frc_panel_enabled,
         is_graph_panel_enabled,
+        is_multi_data_panel_enabled,
         is_multicolor_panel_enabled,
+        is_parameter_panel_enabled,
         is_profile_panel_enabled,
         is_psf_resolution_panel_enabled,
         is_projection_panel_enabled,
+        is_reconstruction_panel_enabled,
+        is_results_panel_enabled,
         is_roi_manager_panel_enabled,
         is_roi_stats_panel_enabled,
         is_segmentation_panel_enabled,
@@ -25,6 +33,14 @@ def getMainViewAndController(moduleCommChannel, *_args, **_kwargs):
 
     processing_config = load_processing_config()
     view = ImProcessMainView(
+        showParameterPanel=is_parameter_panel_enabled(processing_config),
+        showNapariLayerControls=are_napari_layer_controls_enabled(processing_config),
+        showReconstructionPanel=is_reconstruction_panel_enabled(processing_config),
+        showActionsPanel=is_actions_panel_enabled(processing_config),
+        showFileWatcherPanel=is_file_watcher_panel_enabled(processing_config),
+        showMultiDataPanel=is_multi_data_panel_enabled(processing_config),
+        showCurrentDataPanel=is_current_data_panel_enabled(processing_config),
+        showResultsPanel=is_results_panel_enabled(processing_config),
         showGraphPanel=is_graph_panel_enabled(processing_config),
         showProfilePanel=is_profile_panel_enabled(processing_config),
         showFRCPanel=is_frc_panel_enabled(processing_config),

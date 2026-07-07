@@ -56,13 +56,21 @@ class MakeRGBProcessor(Processor):
         )
         labels = axis_labels_for_result(result)
         scales = axis_scales_for_result(result)
-        rgb = make_rgb_array(result.data, axis=axis)
+        channels = params.get("channels")
+        rgb, used_channels = make_rgb_array(
+            result.data,
+            axis=axis,
+            channels=channels,
+            channel_levels=params.get("channel_levels"),
+        )
         output_labels = [
             label for index, label in enumerate(labels) if index != axis
         ] + ["RGB"]
         output_scales = [
             scale for index, scale in enumerate(scales) if index != axis
         ] + [1.0]
+        output_params = dict(params)
+        output_params["channels"] = list(used_channels)
         return RGBResult(
             name=f"{result.name} (RGB)",
             data=rgb,
@@ -71,7 +79,7 @@ class MakeRGBProcessor(Processor):
             source_channel_axis=labels[axis],
             axis_scales=output_scales,
             scale_unit=getattr(result, "scale_unit", "px"),
-            params=dict(params),
+            params=output_params,
         )
 
     @staticmethod
@@ -88,23 +96,59 @@ class MakeRGBProcessor(Processor):
         return False
 
 
-def make_rgb_array(data, *, axis: int) -> np.ndarray:
-    """Scale up to three channel planes into a channel-last uint8 RGB array."""
+def make_rgb_array(
+    data,
+    *,
+    axis: int,
+    channels: list[int] | None = None,
+    channel_levels: list[tuple[float, float] | None] | None = None,
+) -> tuple[np.ndarray, list[int]]:
+    """Scale up to three selected channel planes into a channel-last uint8 RGB array.
+
+    Returns the RGB array and the resolved list of source-axis channel
+    indices that were used (R, G, B order).
+    """
     array = np.asarray(data)
     moved = np.moveaxis(array, axis, -1)
+    available = int(moved.shape[-1])
+
+    if channels is None:
+        if available > 3:
+            raise ValueError(
+                f"Channel axis has {available} channels; pass channels=[r, g, b] "
+                "to select exactly which 3 to use for RGB."
+            )
+        channels = list(range(available))
+    else:
+        channels = [int(index) for index in channels]
+        if not 1 <= len(channels) <= 3:
+            raise ValueError("RGB channel selection must have between 1 and 3 channels")
+        for index in channels:
+            if index < 0 or index >= available:
+                raise ValueError(
+                    f"RGB channel index {index} outside channel axis range {available}"
+                )
+
     rgb = np.zeros((*moved.shape[:-1], 3), dtype=np.uint8)
-    channel_count = min(int(moved.shape[-1]), 3)
-    for channel in range(channel_count):
-        rgb[..., channel] = _scale_channel_to_uint8(moved[..., channel])
-    return rgb
+    for output_index, channel_index in enumerate(channels):
+        levels = channel_levels[output_index] if channel_levels else None
+        rgb[..., output_index] = _scale_channel_to_uint8(
+            moved[..., channel_index], levels=levels
+        )
+    return rgb, channels
 
 
-def _scale_channel_to_uint8(channel: np.ndarray) -> np.ndarray:
-    finite = channel[np.isfinite(channel)]
-    if finite.size == 0:
-        return np.zeros(channel.shape, dtype=np.uint8)
-    minimum = float(np.nanmin(finite))
-    maximum = float(np.nanmax(finite))
+def _scale_channel_to_uint8(
+    channel: np.ndarray, *, levels: tuple[float, float] | None = None
+) -> np.ndarray:
+    if levels is not None:
+        minimum, maximum = float(levels[0]), float(levels[1])
+    else:
+        finite = channel[np.isfinite(channel)]
+        if finite.size == 0:
+            return np.zeros(channel.shape, dtype=np.uint8)
+        minimum = float(np.nanmin(finite))
+        maximum = float(np.nanmax(finite))
     if maximum <= minimum:
         return np.zeros(channel.shape, dtype=np.uint8)
     scaled = (np.asarray(channel, dtype=np.float32) - minimum) / (maximum - minimum)

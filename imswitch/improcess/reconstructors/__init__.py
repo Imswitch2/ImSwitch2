@@ -17,6 +17,7 @@ from .snouty import SnoutyReconstructor
 from .view_only import ViewOnlyReconstructor
 from .snouty_projections import SnoutyProjectionsReconstructor
 from .widefield_starss import WidefieldStarssReconstructor
+from .smlm import SmlmLocalizer
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -25,6 +26,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'view-only': ViewOnlyReconstructor,
     'snouty-projections': SnoutyProjectionsReconstructor,
     'widefield-starss': WidefieldStarssReconstructor,
+    'smlm-localizer': SmlmLocalizer,
 }
 
 

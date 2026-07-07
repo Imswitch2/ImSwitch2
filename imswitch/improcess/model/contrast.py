@@ -6,14 +6,82 @@ from typing import Any
 
 import numpy as np
 
+# Above this many elements, a plain in-memory ndarray is downsampled before
+# computing percentiles/histograms so display-only operations stay cheap.
+_SAMPLE_ELEMENT_THRESHOLD = 64 * 1024 * 1024
+_MAX_SAMPLE_VALUES = 2_000_000
 
-def finite_values(data: Any) -> np.ndarray:
-    """Return a flat float array containing only finite values."""
-    arr = np.asarray(data)
+
+def _flatten_finite(arr: np.ndarray) -> np.ndarray:
     if arr.size == 0:
         return np.asarray([], dtype=np.float64)
     flat = arr.astype(np.float64, copy=False).ravel()
     return flat[np.isfinite(flat)]
+
+
+def _should_sample(data: Any) -> bool:
+    """True when reading the whole array is undesirable for a display-only op.
+
+    Any object that isn't a plain in-memory ``np.ndarray`` is treated as a
+    potentially lazy/virtual source (HDF5, Zarr, dask, or ImProcess's own
+    lazy wrappers) and is always sampled through ``__getitem__`` rather than
+    materialized in full via ``np.asarray``/``__array__``.
+    """
+    if isinstance(data, np.ndarray):
+        return data.size > _SAMPLE_ELEMENT_THRESHOLD
+    return True
+
+
+def _group_stride(axis_sizes: tuple[int, ...], remaining_factor: float) -> int:
+    """Pick one stride, applied uniformly across ``axis_sizes``, that reduces
+    the group's element count by roughly ``remaining_factor``."""
+    if not axis_sizes or remaining_factor <= 1:
+        return 1
+    stride = int(np.ceil(remaining_factor ** (1.0 / len(axis_sizes))))
+    return max(1, min(stride, max(axis_sizes)))
+
+
+def sample_values(data: Any, *, max_samples: int = _MAX_SAMPLE_VALUES) -> np.ndarray:
+    """Return a bounded flat sample of finite values without full materialization.
+
+    Reads a strided subset via a single ``__getitem__`` slice call. Leading
+    (non-spatial) axes are downsampled first so full image planes are
+    preferred over degrading in-plane resolution; the last two axes are only
+    strided if downsampling the leading axes alone isn't enough.
+    """
+    shape = tuple(int(size) for size in (getattr(data, "shape", None) or ()))
+    if not shape:
+        return _flatten_finite(np.asarray(data))
+
+    total = int(np.prod(shape))
+    if total == 0:
+        return np.asarray([], dtype=np.float64)
+
+    if total <= max_samples:
+        key = tuple(slice(None) for _ in shape)
+    else:
+        leading_shape = shape[:-2] if len(shape) > 2 else ()
+        spatial_shape = shape[-2:] if len(shape) >= 1 else ()
+
+        remaining = total / max_samples
+        leading_stride = _group_stride(leading_shape, remaining)
+        if leading_shape:
+            remaining = remaining / (leading_stride ** len(leading_shape))
+
+        spatial_stride = _group_stride(spatial_shape, remaining)
+
+        key = tuple(slice(0, size, leading_stride) for size in leading_shape)
+        key += tuple(slice(0, size, spatial_stride) for size in spatial_shape)
+
+    sampled = data[key] if hasattr(data, "__getitem__") else data
+    return _flatten_finite(np.asarray(sampled))
+
+
+def finite_values(data: Any) -> np.ndarray:
+    """Return a flat float array containing only finite values."""
+    if _should_sample(data):
+        return sample_values(data)
+    return _flatten_finite(np.asarray(data))
 
 
 def finite_range(data: Any, *, pad_fraction: float = 0.005) -> tuple[float, float]:
@@ -91,4 +159,5 @@ __all__ = [
     "finite_values",
     "histogram",
     "normalize_levels",
+    "sample_values",
 ]

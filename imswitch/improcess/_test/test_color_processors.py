@@ -1,6 +1,7 @@
 """Tests for channel/color processors."""
 
 import numpy as np
+import pytest
 
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.processors import available_processor_ids
@@ -104,6 +105,41 @@ def test_make_rgb_fills_missing_blue_channel_with_zero():
     assert np.all(rgb.data[..., 2] == 0)
 
 
+def test_make_rgb_raises_for_more_than_three_channels_without_selection():
+    data = np.zeros((5, 2, 2), dtype=np.float32)
+    result = _result(data, ["C", "Y", "X"])
+
+    with pytest.raises(ValueError, match="has 5 channels"):
+        MakeRGBProcessor().apply(result, {"axis": "Auto"})
+
+
+def test_make_rgb_accepts_explicit_channel_selection():
+    data = np.zeros((5, 2, 2), dtype=np.float32)
+    data[4] = np.array([[0, 10], [20, 30]], dtype=np.float32)
+    result = _result(data, ["C", "Y", "X"])
+
+    rgb = MakeRGBProcessor().apply(result, {"axis": "Auto", "channels": [4, 0, 0]})
+
+    assert rgb.data.shape == (2, 2, 3)
+    assert rgb.params["channels"] == [4, 0, 0]
+    assert rgb.data[..., 0].max() == 255
+    assert np.all(rgb.data[..., 1] == 0)
+
+
+def test_make_rgb_uses_provided_channel_levels_instead_of_autoscale():
+    data = np.zeros((3, 2, 2), dtype=np.float32)
+    data[0] = np.array([[0, 10], [20, 30]], dtype=np.float32)
+    result = _result(data, ["C", "Y", "X"])
+
+    rgb = MakeRGBProcessor().apply(
+        result,
+        {"axis": "Auto", "channel_levels": [(0.0, 100.0), None, None]},
+    )
+
+    expected_red = np.clip(data[0] / 100.0 * 255.0, 0, 255).astype(np.uint8)
+    np.testing.assert_array_equal(rgb.data[..., 0], expected_red)
+
+
 def test_channel_merge_combines_compatible_results_on_c_axis():
     red = _result(np.full((2, 3), 1.0, dtype=np.float32), ["Y", "X"])
     green = _result(np.full((2, 3), 2.0, dtype=np.float32), ["Y", "X"])
@@ -131,3 +167,14 @@ def test_channel_merge_compatibility_uses_shape_and_labels():
     assert can_merge_results([first, second])
     assert not can_merge_results([first, mismatched])
     assert not can_merge_results([first, scaled])
+
+
+def test_channel_merge_compatibility_tolerates_float_noise_in_scales():
+    first = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
+    first.axis_scales = [2.0, 1.0]
+    noisy = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
+    noisy.axis_scales = [2.0 + 1e-7, 1.0 - 1e-7]
+
+    assert can_merge_results([first, noisy])
+    merged = ChannelMergeProcessor().apply(first, {"results": [first, noisy]})
+    assert merged.data.shape == (2, 2, 3)

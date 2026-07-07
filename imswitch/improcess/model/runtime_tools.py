@@ -40,6 +40,20 @@ _PROCESSOR_WIDGET_SPECS = {
 }
 
 _NON_PROCESSOR_TOOL_SPECS = {
+    "graph": RuntimeAnalysisToolSpec(
+        id="graph",
+        title="Graph",
+        attribute="graphWidget",
+        widget_kind="graph",
+        processor_id=None,
+    ),
+    "profile": RuntimeAnalysisToolSpec(
+        id="profile",
+        title="Profile",
+        attribute="profileWidget",
+        widget_kind="profile",
+        processor_id=None,
+    ),
     "roi-manager": RuntimeAnalysisToolSpec(
         id="roi-manager",
         title="ROI manager",
@@ -47,13 +61,35 @@ _NON_PROCESSOR_TOOL_SPECS = {
         widget_kind="roi-manager",
         processor_id=None,
     ),
+    "roi-stats": RuntimeAnalysisToolSpec(
+        id="roi-stats",
+        title="ROI stats",
+        attribute="roiStatsWidget",
+        widget_kind="roi-stats",
+        processor_id=None,
+    ),
 }
 
 _PANEL_SHORTCUTS = (
     RuntimeAnalysisPanelShortcut(
+        id="graph",
+        title="Graph",
+        tooltip="Open the graph panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="profile",
+        title="Profile",
+        tooltip="Open the profile panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
         id="roi-manager",
         title="ROI manager",
         tooltip="Open the ROI manager panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="roi-stats",
+        title="ROI stats",
+        tooltip="Open the ROI statistics panel",
     ),
     RuntimeAnalysisPanelShortcut(
         id="projection",

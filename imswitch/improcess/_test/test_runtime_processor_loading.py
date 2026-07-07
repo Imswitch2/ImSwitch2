@@ -60,13 +60,19 @@ def test_runtime_analysis_tool_specs_classify_generic_and_custom_widgets():
     assert specs["denoise"].widget_kind == "result-processor"
     assert specs["projection"].widget_kind == "projection"
     assert specs["segmentation"].attribute == "segmentationWidget"
+    assert specs["graph"].widget_kind == "graph"
+    assert specs["profile"].widget_kind == "profile"
+    assert specs["roi-stats"].widget_kind == "roi-stats"
 
 
 def test_runtime_analysis_panel_shortcuts_cover_fiji_like_panels():
     shortcuts = runtime_analysis_panel_shortcuts()
 
     assert [shortcut.id for shortcut in shortcuts] == [
+        "graph",
+        "profile",
         "roi-manager",
+        "roi-stats",
         "projection",
         "segmentation",
     ]

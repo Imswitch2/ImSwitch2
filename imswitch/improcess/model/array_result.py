@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 import tifffile
 
+from .lazy_array import identity_lazy_view
 from .result import ProcessingResult, ViewMode
 
 
@@ -40,7 +41,14 @@ class ArrayProcessingResult(ProcessingResult):
 
     @classmethod
     def duplicate(cls, source: ProcessingResult, *, copy_data: bool = True) -> "ArrayProcessingResult":
-        data = np.array(source.data, copy=copy_data)
+        source_data = source.data
+        if isinstance(source_data, np.ndarray):
+            data = np.array(source_data, copy=copy_data)
+        else:
+            # Lazy/virtual source: don't eagerly materialize the whole
+            # array. Hand out a deferred full-range view instead; reads
+            # happen only when the duplicate is actually displayed/saved.
+            data = identity_lazy_view(source_data, source_shape=source_data.shape)
         duplicate = cls(
             name=f"{source.name} (duplicate)",
             data=data,

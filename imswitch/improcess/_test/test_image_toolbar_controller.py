@@ -420,6 +420,73 @@ def test_make_rgb_enabled_and_publishes_rgb_result():
     assert rgb.display_layers()[0].rgb is True
 
 
+def test_make_rgb_opens_channel_picker_for_more_than_three_channels(monkeypatch):
+    data = np.zeros((5, 2, 2), dtype=np.float32)
+    data[4] = np.array([[0, 10], [20, 30]], dtype=np.float32)
+    controller, view, recon = _controller(data)
+    recon.result.axis_labels = ["C", "Y", "X"]
+    controller.currentResultChanged(recon.result)
+
+    toolbar_module = importlib.import_module(
+        "imswitch.improcess.controller.ImageToolbarController"
+    )
+    monkeypatch.setattr(
+        toolbar_module.ChannelPickerDialog,
+        "get_channels",
+        staticmethod(lambda _result, _axis, parent=None: [4, 0, 0]),
+    )
+
+    controller.makeRgb()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 1
+    rgb = produced[0][0]
+    assert rgb.params["channels"] == [4, 0, 0]
+    assert rgb.data[..., 0].max() == 255
+
+
+def test_make_rgb_cancelled_picker_does_not_publish(monkeypatch):
+    data = np.zeros((5, 2, 2), dtype=np.float32)
+    controller, view, recon = _controller(data)
+    recon.result.axis_labels = ["C", "Y", "X"]
+    controller.currentResultChanged(recon.result)
+
+    toolbar_module = importlib.import_module(
+        "imswitch.improcess.controller.ImageToolbarController"
+    )
+    monkeypatch.setattr(
+        toolbar_module.ChannelPickerDialog,
+        "get_channels",
+        staticmethod(lambda *args, **kwargs: None),
+    )
+
+    controller.makeRgb()
+
+    assert controller._commChannel.sigResultProduced.emitted == []
+
+
+def test_make_rgb_uses_composite_display_levels():
+    from imswitch.improcess.processors.make_composite import MakeCompositeProcessor
+
+    data = np.zeros((3, 2, 2), dtype=np.float32)
+    data[0] = np.array([[0, 10], [20, 30]], dtype=np.float32)
+    source = _Result(data)
+    source.axis_labels = ["C", "Y", "X"]
+    composite = MakeCompositeProcessor().apply(source, {"axis": "Auto"})
+    composite.setDisplayLayerLevels("C_0", (0.0, 100.0))
+
+    controller, view, recon = _controller(data)
+    recon.result = composite
+    controller.currentResultChanged(composite)
+
+    controller.makeRgb()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    rgb = produced[0][0]
+    expected_red = np.clip(data[0] / 100.0 * 255.0, 0, 255).astype(np.uint8)
+    np.testing.assert_array_equal(rgb.data[..., 0], expected_red)
+
+
 def test_merge_channels_enabled_for_selected_compatible_results_and_publishes_stack():
     data = np.arange(2 * 2, dtype=np.float32).reshape(2, 2)
     controller, view, recon = _controller(data)

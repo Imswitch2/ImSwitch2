@@ -28,6 +28,46 @@ def is_graph_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("graphPanel", False))
 
 
+def is_parameter_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess parameter panel should be shown at startup."""
+    return bool(processing_config.get("parameterPanel", True))
+
+
+def are_napari_layer_controls_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether napari's built-in layer controls should be shown."""
+    return bool(processing_config.get("napariLayerControls", True))
+
+
+def is_reconstruction_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the reconstruction viewer dock should be shown at startup."""
+    return bool(processing_config.get("reconstructionPanel", True))
+
+
+def is_actions_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess Actions dock should be shown at startup."""
+    return bool(processing_config.get("actionsPanel", True))
+
+
+def is_file_watcher_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess File watcher dock should be shown at startup."""
+    return bool(processing_config.get("fileWatcherPanel", True))
+
+
+def is_multi_data_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess Multidata dock should be shown at startup."""
+    return bool(processing_config.get("multiDataPanel", True))
+
+
+def is_current_data_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess Current data dock should be shown at startup."""
+    return bool(processing_config.get("currentDataPanel", True))
+
+
+def is_results_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the ImProcess Results table dock should be shown at startup."""
+    return bool(processing_config.get("resultsPanel", True))
+
+
 def is_profile_panel_enabled(processing_config: dict[str, Any]) -> bool:
     """Return whether the optional ImProcess profile panel should be shown."""
     return bool(processing_config.get("profilePanel", False))

@@ -19,6 +19,7 @@ from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
 from .psf_resolution import PSFResolutionProcessor
 from .segmentation import SegmentationProcessor
+from .smlm_render import SmlmRenderProcessor
 from .stack_split import StackSplitProcessor
 from .stack_subset import StackSubsetProcessor
 
@@ -37,6 +38,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'projection': ProjectionProcessor,
     'psf-resolution': PSFResolutionProcessor,
     'segmentation': SegmentationProcessor,
+    'smlm-render': SmlmRenderProcessor,
     'stack-split': StackSplitProcessor,
     'stack-subset': StackSubsetProcessor,
 }

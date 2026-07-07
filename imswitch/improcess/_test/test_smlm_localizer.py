@@ -1,0 +1,208 @@
+"""Phase 2 tests: SMLM detection, fitting, and the localizer reconstructor."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+from qtpy import QtWidgets
+
+from imswitch.improcess.model.localization_result import LocalizationResult
+from imswitch.improcess.reconstructors.smlm.detection import detect_spots
+from imswitch.improcess.reconstructors.smlm.fitting import fit_spot, fit_spots
+from imswitch.improcess.reconstructors.smlm.localizer import (
+    SmlmLocalizer,
+    iter_frames,
+    localize_stack,
+)
+
+
+def _gaussian_spot(frame, y, x, amplitude=200.0, sigma=1.3):
+    rows, cols = np.indices(frame.shape)
+    frame += amplitude * np.exp(
+        -((cols - x) ** 2 + (rows - y) ** 2) / (2 * sigma ** 2)
+    )
+    return frame
+
+
+def _synthetic_frame(shape=(64, 64), emitters=((16.0, 20.0), (40.0, 48.0), (30.0, 10.0)),
+                     background=10.0, amplitude=300.0):
+    frame = np.full(shape, background, dtype=np.float32)
+    for y, x in emitters:
+        _gaussian_spot(frame, y, x, amplitude=amplitude)
+    return frame
+
+
+# -- detection --------------------------------------------------------------
+
+
+def test_detect_spots_finds_three_emitters():
+    emitters = [(16.0, 20.0), (40.0, 48.0), (30.0, 10.0)]
+    frame = _synthetic_frame(emitters=emitters)
+    coords = detect_spots(frame, threshold=20.0, roi=7, sigma=1.0)
+    assert coords.shape[1] == 2
+    assert len(coords) == 3
+    for y, x in emitters:
+        distances = np.hypot(coords[:, 0] - y, coords[:, 1] - x)
+        assert distances.min() <= 1.5
+
+
+def test_detect_spots_blank_frame_finds_nothing():
+    frame = np.full((48, 48), 10.0, dtype=np.float32)
+    coords = detect_spots(frame, threshold=20.0)
+    assert coords.shape == (0, 2)
+
+
+def test_detect_spots_excludes_edges():
+    frame = np.full((32, 32), 5.0, dtype=np.float32)
+    _gaussian_spot(frame, 1.0, 1.0, amplitude=500.0)  # near the corner
+    coords = detect_spots(frame, threshold=10.0, roi=7)
+    assert len(coords) == 0
+
+
+def test_detect_spots_rejects_non_2d():
+    with pytest.raises(ValueError):
+        detect_spots(np.zeros((3, 8, 8)), threshold=1.0)
+
+
+# -- fitting ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["gausslq", "mle"])
+def test_fit_spot_recovers_position(method):
+    frame = np.full((64, 64), 8.0, dtype=np.float32)
+    _gaussian_spot(frame, 31.4, 20.7, amplitude=400.0, sigma=1.3)
+    fit = fit_spot(frame, 31, 21, roi=9, method=method)
+    assert fit["x"] == pytest.approx(20.7, abs=0.4)
+    assert fit["y"] == pytest.approx(31.4, abs=0.4)
+    assert fit["intensity"] > 0
+    assert fit["sigma_x"] > 0
+
+
+def test_fit_spot_out_of_bounds_raises():
+    frame = np.zeros((16, 16), dtype=np.float32)
+    with pytest.raises(ValueError):
+        fit_spot(frame, 0, 0, roi=7)
+
+
+def test_fit_spot_dark_roi_raises():
+    frame = np.full((16, 16), 5.0, dtype=np.float32)
+    with pytest.raises(ValueError):
+        fit_spot(frame, 8, 8, roi=7)  # flat ROI -> zero after background subtraction
+
+
+def test_fit_spots_skips_failures():
+    frame = _synthetic_frame()
+    coords = np.array([[16, 20], [0, 0], [40, 48]])  # middle one is out of bounds
+    fits = fit_spots(frame, coords, roi=7)
+    assert len(fits) == 2
+
+
+def test_fit_spot_unknown_method():
+    frame = _synthetic_frame()
+    with pytest.raises(ValueError):
+        fit_spot(frame, 16, 20, method="bogus")
+
+
+# -- stack localization -----------------------------------------------------
+
+
+def test_iter_frames_flattens_leading_dims():
+    stack = np.zeros((2, 3, 8, 8))
+    frames = list(iter_frames(stack))
+    assert len(frames) == 6
+    assert frames[0][1].shape == (8, 8)
+
+
+def test_iter_frames_single_frame():
+    frames = list(iter_frames(np.zeros((8, 8))))
+    assert len(frames) == 1
+    assert frames[0][0] == 0
+
+
+def test_localize_stack_recovers_nm_positions():
+    emitters = [(16.0, 20.0), (40.0, 48.0)]
+    frame = _synthetic_frame(emitters=emitters)
+    stack = np.stack([frame, frame])  # two identical frames
+    locs = localize_stack(
+        stack, threshold=20.0, roi=9, sigma=1.0, method="gausslq", pixel_size_nm=100.0
+    )
+    assert len(locs) == 4  # 2 emitters x 2 frames
+    # nm conversion: first emitter x ~= 20 px * 100 nm
+    xs = np.sort(np.unique(np.round(locs.x_nm / 100.0)))
+    assert set(xs).issuperset({20.0, 48.0})
+    assert set(locs.frame.tolist()) == {0, 1}
+
+
+def test_localize_stack_blank_returns_empty():
+    stack = np.full((3, 32, 32), 10.0, dtype=np.float32)
+    locs = localize_stack(stack, threshold=50.0, pixel_size_nm=100.0)
+    assert len(locs) == 0
+
+
+# -- reconstructor ----------------------------------------------------------
+
+
+class _FakeDataObj:
+    def __init__(self, data, name="blink"):
+        self._data = np.asarray(data)
+        self.name = name
+        self.dataLoaded = False
+
+    @property
+    def data(self):
+        return self._data
+
+    def checkAndLoadData(self):
+        self.dataLoaded = True
+
+    def checkAndUnloadData(self):
+        self.dataLoaded = False
+
+
+def test_localizer_process_produces_localization_result():
+    frame = _synthetic_frame(emitters=[(16.0, 20.0), (40.0, 48.0)])
+    stack = np.stack([frame, frame, frame])
+    data_obj = _FakeDataObj(stack)
+
+    localizer = SmlmLocalizer()
+    params = {"threshold": 20.0, "roi": 9, "sigma": 1.0, "method": "gausslq",
+              "pixel_size_nm": 100.0}
+    result = localizer.process(data_obj, params)
+
+    assert isinstance(result, LocalizationResult)
+    assert result.count == 6
+    assert result.pixel_size_nm == pytest.approx(100.0)
+    assert result.dims == "2D"
+    assert result.source_shape == (64, 64)
+    assert result.metadata["fit_method"] == "gausslq"
+
+
+def test_localizer_registers_in_registry():
+    from imswitch.improcess.reconstructors import (
+        available_reconstructor_ids,
+        register_default_reconstructors,
+    )
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+
+    assert "smlm-localizer" in available_reconstructor_ids()
+    registry = PluginRegistry()
+    register_default_reconstructors(registry, ["smlm-localizer"])
+    plugin = registry.get_reconstructor("smlm-localizer")
+    assert plugin.id == "smlm-localizer"
+    assert plugin.name == "SMLM localizer"
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    yield app
+
+
+def test_localizer_params_widget_get_values(qapp):
+    localizer = SmlmLocalizer()
+    widget = localizer.make_param_widget(None)
+    values = widget.get_values()
+    assert values["method"] == "gausslq"
+    assert values["pixel_size_nm"] == pytest.approx(100.0)
+    assert values["roi"] == 7
+    assert localizer.make_metadata_dialog(None) is None

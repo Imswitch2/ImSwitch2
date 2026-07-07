@@ -506,6 +506,16 @@ optional.
     "processors":     ["drift-correct", "projection"], // ids from
                                                    // _AVAILABLE_PROCESSOR_CLASSES
 
+    // --- core GUI visibility flags (all default true) ---
+    "parameterPanel":       true,
+    "napariLayerControls":  true,
+    "reconstructionPanel":  true,
+    "actionsPanel":         true,
+    "fileWatcherPanel":     true,
+    "multiDataPanel":       true,
+    "currentDataPanel":     true,
+    "resultsPanel":         true,
+
     // --- optional analysis-panel enable flags (all default false) ---
     "graphPanel":          false,
     "profilePanel":        false,
@@ -536,6 +546,15 @@ Rules:
   the processor that backs them: a panel flag toggles UI visibility, while the
   `processors` list controls which processor plugins are registered (some
   analysis tools, e.g. `roi-manager`, are panel-only with no processor).
+- **Core GUI flags.** `parameterPanel`, `actionsPanel`, `fileWatcherPanel`,
+  `multiDataPanel`, `currentDataPanel`, `resultsPanel`,
+  `napariLayerControls`, and `reconstructionPanel` default to `true` to
+  preserve the standard ImProcess layout. Setting any dock flag to `false`
+  hides that dock at startup while keeping the backing widget alive for
+  controllers and toolbar actions. Setting `napariLayerControls: false` hides
+  napari's built-in layer-controls dock. Setting `reconstructionPanel: false`
+  hides the Reconstruction dock at startup; it is automatically shown when the
+  first result is added to the viewer.
 
 ---
 
