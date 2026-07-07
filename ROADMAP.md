@@ -6,20 +6,11 @@ with links to the artefacts; the sections below are the active workstreams.
 
 ---
 
-## Milestone 6: DAQ Safety Layer
+## Milestone 9: Scanning, Galvo & DAQ Modernization 🔄
 
-**Goal:** Add a safety layer around all DAQ operations.
-
-- ⬜ Implement voltage limit enforcement
-- ⬜ Add scan-parameter validation in `SetupInfo` validators (config-level
-  limits, e.g. galvo `maxVolt` range, dwell-time bounds)
-- ⬜ Implement graceful error recovery for DAQ failures
-- ⬜ Add structured logging for all DAQ operations
-- ⬜ Create integration tests with mock hardware
-
----
-
-## Milestone 9: Scanning & Galvo Modernization 🔄
+*(absorbed the former Milestone 6 "DAQ Safety Layer" on 2026-07-08 — the
+safety work only makes sense against the designer/manager APIs this
+milestone reshapes, so it is tracked here as a sub-plan.)*
 
 **Goal:** Make galvo scanning correct-by-construction and remove the
 manually tuned offsets and magic numbers, especially for fast scans.
@@ -81,9 +72,18 @@ manually tuned offsets and magic numbers, especially for fast scans.
 - ⬜ **Magic-number cleanup.** Promote `__paddingtime_full`, `clock_len`,
   etc. to named, documented, physically meaningful config parameters.
 
+**DAQ safety layer (former Milestone 6):**
+
+- ⬜ Implement voltage limit enforcement
+- ⬜ Add scan-parameter validation in `SetupInfo` validators (config-level
+  limits, e.g. galvo `maxVolt` range, dwell-time bounds)
+- ⬜ Implement graceful error recovery for DAQ failures
+- ⬜ Add structured logging for all DAQ operations
+- ⬜ Create integration tests with mock hardware
+
 ---
 
-## Milestone 10: Recording Manager Upgrade
+## Milestone 10: Recording Manager Upgrade 🔄 (almost done)
 
 **Goal:** Modernize `RecordingManager` and bring in the live-recording /
 live-reconstruction developments from upstream ImSwitch 1.
@@ -143,13 +143,30 @@ should be an optional extra.
     discards the partial output (`Storer.abortStream` deletes the file/store);
     free-running detectors are cleanly abortable. Scan *source* abort
     (mid-scan nidaq/galvo stop) is designed but hardware-gated — see the plan.
-- ⬜ Port the `improcess` live-reconstruction pipeline as a separate
-  phase; rename the `karl_*` packages to descriptive names; gate GPU
-  behind an extra. Coordinates with Milestone 12.
-- 🔄 Build further recording-manager improvements from that foundation:
-  Phase 1.5 `ChunkBroker` subscription API, producer-driven detector sources,
-  a hard RAM cap for `SaveMode.RAM`, live monitoring hooks, MemoryStore for
-  in-RAM Zarr, and dtype-aware compression presets (see plan doc).
+- ✅ **Live reconstruction pipeline** (2026-06/07, `feat/live-reconstruction`).
+  Implemented natively instead of porting the upstream WIP branch — see
+  [docs/design/plans/live-reconstruction-port.md](docs/design/plans/live-reconstruction-port.md).
+  Streaming reconstructor contract (`StreamingReconstructor` /
+  `StreamingSession`) so *any* registered reconstructor can consume frames
+  as they arrive; file-backed `LiveSource` for Zarr/HDF5 recordings
+  including folder discovery and single-file `scan{N}` timelapse streams;
+  completion gate + progressive lapse updates; `frames_committed` barrier
+  so mid-recording streaming never reads unwritten chunks; and a
+  `stream_complete` marker that tolerates finalize/reader collisions.
+  The low-latency Gauss (MoNaLISA) path is the first live consumer; the
+  GPU variant stays optional. **Remaining:** a crashed-writer stall
+  fallback (reader currently waits forever if the writer dies mid-stream)
+  and validation on a real rig.
+- 🔄 **OME-standard recording formats.** TIFF/HDF5/Zarr recordings move to
+  OME conventions (OME-TIFF, OME-NGFF 0.5, HDF5 + OME-XML) via a shared
+  `OmeImageMeta` — implementation and tests in place
+  (see [docs/recording_ome_standardization_plan.md](docs/recording_ome_standardization_plan.md));
+  back-compat sweep + docs remaining.
+- 🔄 Remaining recording-manager improvements: a hard RAM cap for
+  `SaveMode.RAM`, MemoryStore for in-RAM Zarr, live monitoring hooks, and
+  dtype-aware compression presets (see plan doc). The `ChunkBroker`
+  subscription API and producer-driven detector sources are consciously
+  parked — see [Deferred / parked plans](#deferred--parked-plans).
 
 ---
 
@@ -238,9 +255,21 @@ confocal processing remain the main open modality targets.
   - ✅ Lightsheet (SNOUTY): deskew and projection-preview reconstructors are
     implemented; deconvolution and real setup validation remain pending.
   - SIM / MoNaLISA: existing pipeline as one registered reconstructor.
-- ⬜ **Hook into M10's live pipeline.** Once the Zarr streaming
-  reconstruction lands (Milestone 10), let it drive any registered
-  reconstructor — not only the MoNaLISA path.
+- ✅ **Hooked into M10's live pipeline** (2026-06/07). The streaming
+  session drives any registered reconstructor that implements the
+  `StreamingReconstructor` contract — not only the MoNaLISA path. Live
+  results update progressively in the reconstruction viewer
+  (`sigLiveResultUpdated`), including mid-recording streams.
+- ✅ **Results-table + plotting infrastructure.** Table-backed results
+  render in the shared `ResultsTableWidget`; generic plotting (histogram,
+  line, 2D histogram, PCA, optional UMAP) reuses `GraphWidget` for any
+  tabular result. Foundation for the M15 localization tables and future
+  filter-cutoff selection.
+- 🔄 **Viewer UX: previews + one source of truth** (in progress
+  2026-07-08). Live preview overlays for parameter tuning (SMLM detection
+  preview on the raw-frame viewer, segmentation mask preview) and
+  synchronizing the recon-list selection with the napari layer selection
+  so tools and the viewer agree on the "current" image.
 - ✅ **Update docs.** `docs/improcess.rst` covers launch modes,
   plugin architecture, config schema, drag-and-drop, built-in plugins,
   optional analysis panels, WFS pairing and how to write a new plugin.
@@ -257,7 +286,11 @@ confocal processing remain the main open modality targets.
 
 ---
 
-## Milestone 14: Device Plugin Architecture 🔄
+## Milestone 14: Device Plugin Architecture 🔄 (active workstream)
+
+**Status (2026-07-08):** the framework phases are complete; current focus
+is continuing the Phase 8 gradual extraction of in-tree devices into
+plugin packages, followed by publishing.
 
 **Goal:** Let device support live in external plugin packages so the core
 repository stays stable while device support evolves independently — a
@@ -292,11 +325,13 @@ dependency).
   hint, so a setup naming a manager that moved to a plugin gets a clear
   "pip install <package>" message instead of an opaque import error. Extraction
   checklist in `docs/devices/plugins.rst`.
-- 🔄 **Gradual extraction of in-tree devices (Phase 8).** First extraction
-  done: `examples/plugins/imswitch-device-thorlabs` moves the Thorlabs TSI
-  camera into a plugin (legacy class name kept as an alias; in-tree copy
-  retained until the plugin is published). Extract non-safety-critical cameras
-  first; lasers/DAQ/stage paths need extra review.
+- 🔄 **Gradual extraction of in-tree devices (Phase 8) — next up.** First
+  extraction done: `examples/plugins/imswitch-device-thorlabs` moves the
+  Thorlabs TSI camera into a plugin (legacy class name kept as an alias;
+  in-tree copy retained until the plugin is published). Continue with the
+  remaining non-safety-critical cameras and simple serial devices, one
+  plugin per vendor, following the extraction checklist in
+  `docs/devices/plugins.rst`; lasers/DAQ/stage paths need extra review.
 - ⬜ **Publish.** Make the template a public GitHub template repo; publish
   device plugin packages to PyPI; remove in-tree copies once their plugins are
   published (the install hint then becomes live).
@@ -345,20 +380,25 @@ initial scope.
 
 **Surface-level plan (refined in the plan doc):**
 
-- ⬜ **`LocalizationResult` + canonical schema.** A table-backed
+- ✅ **`LocalizationResult` + canonical schema** (2026-07). Table-backed
   `ProcessingResult` around the `(frame, x/y/z, sigma_x/y/z, photons)`
-  recarray, with pixel-size/units metadata and a stable column contract
-  shared with napari-storm.
-- ⬜ **`Localizer` reconstructor (batch first, then streaming).** Port the
-  Picasso-style net-gradient `detect_spots` + centroid/MLE `fit_spot` from
-  napari-storm as a pure-function core behind a `Reconstructor`, then a
-  `StreamingSession` that localizes per chunk.
-- ⬜ **In-house renderer.** Pure-numpy `render_xy`/`render_xyz`
-  (histogram + fixed-Gaussian) → image `ProcessingResult`; wire a render
-  processor + params widget into the existing viewer.
-- ⬜ **napari-storm handoff.** Export the `LocalizationResult` recarray in the
-  format napari-storm's reader consumes, so the premium renderer is one
-  export away without a runtime dependency.
+  recarray (`model/localization_schema.py` / `localization_result.py`),
+  with pixel-size/units metadata, a lazy histogram preview as the default
+  viewable data, results-table/plot projections, and CSV/HDF5 persistence.
+- 🔄 **`Localizer` reconstructor** (batch ✅, streaming ⬜). Picasso-style
+  net-gradient `detect_spots` + centroid/MLE `fit_spots` as a
+  pure-function core behind `reconstructors/smlm/SmlmLocalizer`; the
+  `StreamingSession` that localizes per chunk (live SMLM via the M10
+  stack) is still open. A live detection-preview overlay for tuning the
+  threshold on raw frames is in progress (2026-07-08).
+- ✅ **In-house renderer** (2026-07). Pure-numpy histogram +
+  fixed-Gaussian rendering (`analysis/smlm_render.py`) exposed as the
+  `processors/smlm_render` processor producing an image
+  `ProcessingResult` the existing viewer displays.
+- ✅ **napari-storm handoff** (2026-07). `analysis/smlm_export.py` writes
+  the Picasso-format HDF5 that napari-storm's reader consumes
+  (`LocalizationResult.save(fmt="picasso")`), so the premium renderer is
+  one export away without a runtime dependency.
 - ⬜ **Future phases (out of initial scope):** COMET drift correction
   (GPU-optional), grouping/linking, advanced filtering, 3D (astigmatism/PSF)
   fitting, throughput-oriented (vectorized/GPU) localization.
