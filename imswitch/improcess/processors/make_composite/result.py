@@ -16,6 +16,8 @@ from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, 
 class CompositeResult(ProcessingResult):
     """ProcessingResult that renders one display layer per channel."""
 
+    kind = "composite"
+
     def __init__(
         self,
         name: str,

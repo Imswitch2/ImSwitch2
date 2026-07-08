@@ -203,6 +203,12 @@ selection.
   shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
   image source cannot drift between tools.
 
+The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
+and optionally overlay fitted curves.  Available profile fits are no fit,
+single Gaussian, two independent Gaussians with center-distance reporting,
+and a single exponential decay/rise model.  Fit metrics are included when the
+profile is pushed to the results table or saved as CSV.
+
 Ephemeral preview layers (the segmentation preview, multicolor's
 split-boundary and detected-bead overlays) are the exception: they are
 tuning/diagnostic overlays, restore the previously active layer and are
@@ -244,12 +250,31 @@ denoise                 Processor      UNet / UNet+RCAN neural-network denoising
 Processor categories and compatibility
 ======================================
 
-Built-in processors now carry a category label that is used by the runtime
-tool loader and should be used by future processor-chain UI.  The table below
-documents the current input and output contracts as implemented by
+Built-in processors carry a category label used by the runtime tool loader,
+and compatibility is decided by ``Processor.accepts(result)``, which checks
+two things in order:
+
+1. **Semantic kind.** Every ``ProcessingResult`` declares a ``kind`` — one of
+   ``image`` (the default), ``labels``, ``table``, ``curve``,
+   ``localization``, ``rgb`` or ``composite`` — and every processor declares
+   the ``kinds`` it accepts (default ``("image",)``).  This is what keeps a
+   colocalization *table* (a 2D array of metric values) from being offered to
+   the segmentation processor just because its shape fits.  Component inputs
+   derived from display layers inherit the layer's semantics: a
+   segmentation's labels layer is a ``labels`` input, a composite's channel
+   is an ``image`` input.
+2. **Shape/axis contract**, encoded in each processor's ``applies_to()``.
+
+UI code (the image toolbar, the generic result-processor panels) must gate on
+``accepts()``; ``applies_to()`` alone cannot tell a metrics table from an
+image.  The table below documents the shape/axis contracts as implemented by
 ``applies_to()`` and ``apply()``.  "Image-like" means a
 ``ProcessingResult.data`` array whose last two axes are treated as spatial
-``Y, X`` unless the processor documents a stricter axis contract.
+``Y, X`` unless the processor documents a stricter axis contract.  Processors
+accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
+``stack-split``, ``channel-split``, ``make-rgb``, ``drift-correct`` and
+``colocalization`` also accept ``composite`` (composite data is the source
+intensity stack), and ``smlm-render`` accepts only ``localization``.
 
 .. list-table::
    :header-rows: 1
@@ -353,32 +378,27 @@ documents the current input and output contracts as implemented by
      - ``ArrayProcessingResult`` render with ``Y, X`` or ``Z, Y, X`` axes,
        nanometer axis scales and image display levels.
 
-Current inconsistencies and follow-ups
---------------------------------------
+Remaining follow-ups
+--------------------
 
-The processor registry is now categorized, but compatibility is still mostly
-encoded in each processor's local ``applies_to()`` gate.  The most important
-remaining gap is semantic result typing: table/curve outputs such as
-``FRCResult``, ``PSFResolutionResult`` and ``ColocalizationResult`` are still
-``ProcessingResult`` objects with 2D ``data`` arrays, so a shape-only gate can
-make an image processor look applicable even when the result is not a
-microscope image.  The next improvement should add explicit result and
-processor kinds, for example ``image``, ``labels``, ``table``, ``curve``,
-``localization``, ``rgb`` and ``composite``.  Processor UI should then filter
-on both semantic kind and shape/axis labels.
-
-Other follow-ups:
+Semantic result kinds are implemented: results declare ``kind``, processors
+declare ``kinds``, ``accepts()`` combines the kind and shape gates, and
+``test_result_kind_matrix.py`` pins every built-in processor against
+representative image, labels, table, curve, localization, RGB and composite
+results.  Still open:
 
 * Populate parameter widgets from the active result's real axis labels instead
   of hard-coded choices such as ``T``, ``Z``, ``C`` and ``D0``.
-* Add a synthetic compatibility matrix test that checks every built-in
-  processor against representative image, table, curve, label, RGB/composite
-  and localization results.
+* Kind propagation through generic axis processors: cropping or splitting a
+  ``labels`` or ``rgb`` result would currently come out as a plain ``image``
+  ``ArrayProcessingResult``, so those kinds are simply not offered to the
+  axis processors yet.  Propagating the input kind to the output would let
+  label stacks be cropped/split without mislabeling.
 * Keep multicolor registration/apply deliberately strict until their input
   assumptions are generalized beyond deskewed ``ZYX``/``TZYX`` strip data.
-* Treat RGB outputs as visualization/export artifacts in downstream UI, because
-  their values are autoscaled ``uint8`` display values rather than calibrated
-  intensities.
+* RGB outputs are visualization/export artifacts (autoscaled ``uint8`` display
+  values, not calibrated intensities); the ``rgb`` kind now enforces this by
+  matching no analysis processor.
 
 Result graph panel
 ==================
@@ -996,6 +1016,13 @@ Two optional class attributes refine the UX without any extra method:
 A ``Processor`` follows the same pattern but its ``apply(result, params)``
 takes a ``ProcessingResult`` and returns a new one — see
 :py:mod:`imswitch.improcess.processors.drift_correct` as a reference.
+Declare the semantic result kinds your processor handles with the ``kinds``
+class attribute (default ``("image",)``), and keep ``applies_to()`` about
+shapes and axis labels — UI compatibility is decided by ``accepts()``, which
+checks both.  Likewise, if your result subclass is not a calibrated intensity
+image, set its ``kind`` class attribute (``labels``, ``table``, ``curve``,
+``localization``, ``rgb`` or ``composite``) so image processors are not
+offered on it.
 
 To publish plots in the graph panel, implement ``plot_payloads()`` on the
 returned ``ProcessingResult`` and return ``PlotPayload`` objects from

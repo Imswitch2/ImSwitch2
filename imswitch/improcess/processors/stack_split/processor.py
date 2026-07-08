@@ -15,6 +15,7 @@ class StackSplitProcessor(Processor):
     name = "Split stack"
     id = "stack-split"
     category = "Dimensions and channels"
+    kinds = ("image", "composite")
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

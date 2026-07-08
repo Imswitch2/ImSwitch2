@@ -111,6 +111,8 @@ class _LazyHistogramPreview:
 class LocalizationResult(ProcessingResult):
     """A localization table presented as a first-class ImProcess result."""
 
+    kind = "localization"
+
     def __init__(
         self,
         name: str,

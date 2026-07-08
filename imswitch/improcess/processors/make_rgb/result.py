@@ -15,6 +15,8 @@ from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, 
 class RGBResult(ProcessingResult):
     """Channel-last RGB image or stack for display/export."""
 
+    kind = "rgb"
+
     def __init__(
         self,
         name: str,

@@ -10,11 +10,13 @@ from .localization_schema import (
     to_napari_storm_recarray,
 )
 from .result import (
+    RESULT_KINDS,
     DisplayLayerProcessingResult,
     DisplayLayerSpec,
     ProcessingResult,
     ProcessorInputChoice,
     ViewMode,
+    result_kind,
 )
 from .plotting import PlotPayload, PlotSeries
 from .virtual_image import VirtualImageSource

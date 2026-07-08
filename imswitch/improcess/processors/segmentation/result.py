@@ -22,6 +22,8 @@ class SegmentationResult(ProcessingResult):
     one reconstruction-list entry.
     """
 
+    kind = "labels"
+
     def __init__(
         self,
         name: str,

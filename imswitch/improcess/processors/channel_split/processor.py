@@ -23,6 +23,7 @@ class ChannelSplitProcessor(Processor):
     name = "Split channels"
     id = "channel-split"
     category = "Dimensions and channels"
+    kinds = ("image", "composite")
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

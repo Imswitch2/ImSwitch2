@@ -7,6 +7,7 @@ import numpy as np
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
+from imswitch.improcess.model.result import result_kind
 from imswitch.improcess.processors.base import normalize_processor_output
 from imswitch.improcess.processors.channel_merge import (
     ChannelMergeProcessor,
@@ -66,19 +67,21 @@ class ImageToolbarController:
             )
             self._view.setImageActionEnabled(
                 "max-projection",
-                has_image and getattr(getattr(result, "data", None), "ndim", 0) > 2,
+                has_image
+                and getattr(getattr(result, "data", None), "ndim", 0) > 2
+                and ProjectionProcessor().accepts(result),
             )
             self._view.setImageActionEnabled(
                 "crop-substack",
-                has_image and StackSubsetProcessor().applies_to(result),
+                has_image and StackSubsetProcessor().accepts(result),
             )
             self._view.setImageActionEnabled(
                 "split-stack",
-                has_image and StackSplitProcessor().applies_to(result),
+                has_image and StackSplitProcessor().accepts(result),
             )
             self._view.setImageActionEnabled(
                 "split-channels",
-                has_image and ChannelSplitProcessor().applies_to(result),
+                has_image and ChannelSplitProcessor().accepts(result),
             )
             self._view.setImageActionEnabled(
                 "merge-channels",
@@ -86,11 +89,11 @@ class ImageToolbarController:
             )
             self._view.setImageActionEnabled(
                 "make-composite",
-                has_image and MakeCompositeProcessor().applies_to(result),
+                has_image and MakeCompositeProcessor().accepts(result),
             )
             self._view.setImageActionEnabled(
                 "make-rgb",
-                has_image and MakeRGBProcessor().applies_to(result),
+                has_image and MakeRGBProcessor().accepts(result),
             )
         if hasattr(self._view, "setImageLutEnabled"):
             self._view.setImageLutEnabled(has_image)
@@ -400,7 +403,11 @@ class ImageToolbarController:
     @staticmethod
     def _resultHasImage(result) -> bool:
         data = getattr(result, "data", None)
-        return data is not None and getattr(data, "ndim", 0) >= 2
+        if data is None or getattr(data, "ndim", 0) < 2:
+            return False
+        # Metric tables and curves carry 2D data arrays but are not images;
+        # duplicate/contrast/LUT/stack actions must not be offered on them.
+        return result_kind(result) not in ("table", "curve")
 
     def _selectedProcessingResults(self):
         if hasattr(self._reconstructionController, "getSelectedResults"):

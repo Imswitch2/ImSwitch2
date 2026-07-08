@@ -26,6 +26,7 @@ class DriftCorrectProcessor(Processor):
     name = "Drift Correction"
     id = "drift-correct"
     category = "Restoration"
+    kinds = ("image", "composite")
     
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

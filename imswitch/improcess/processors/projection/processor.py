@@ -17,6 +17,7 @@ class ProjectionProcessor(Processor):
     name = "Projection"
     id = "projection"
     category = "Dimensions and channels"
+    kinds = ("image", "composite")
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

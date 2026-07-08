@@ -13,6 +13,8 @@ from imswitch.improcess.model.result import ProcessingResult, ViewMode
 class PSFResolutionResult(ProcessingResult):
     """Result wrapper for PSF fit tables."""
 
+    kind = "table"
+
     _METRICS = [
         "center_y_px",
         "center_x_px",

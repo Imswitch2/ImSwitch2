@@ -57,7 +57,10 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             choices = []
             for choice in result.processor_input_choices():
                 try:
-                    applies = bool(self.processor.applies_to(choice.result))
+                    # accepts() = semantic kind + shape gate; a table result
+                    # with a 2D data array must not be offered to an image
+                    # processor.
+                    applies = bool(self.processor.accepts(choice.result))
                 except Exception:
                     applies = False
                 if applies:

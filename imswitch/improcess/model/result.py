@@ -9,6 +9,35 @@ import numpy as np
 
 from .plotting import PlotPayload
 
+#: Semantic result kinds. ``data`` alone cannot distinguish a microscope
+#: image from a metrics table with a 2D array — the kind says what the
+#: values MEAN, so processors and UI can filter on semantics instead of
+#: shape alone.
+#:
+#: - ``"image"`` — calibrated intensity image/stack (the default);
+#: - ``"labels"`` — integer segmentation label mask;
+#: - ``"table"`` — tabular metrics (rows x named metric columns);
+#: - ``"curve"`` — sampled function values (e.g. FRC over frequency);
+#: - ``"localization"`` — point-emitter coordinate table with render;
+#: - ``"rgb"`` — autoscaled uint8 visualization/export product, not
+#:   quantitative intensities;
+#: - ``"composite"`` — multi-channel intensity stack with independently
+#:   scaled display channels.
+RESULT_KINDS = (
+    "image",
+    "labels",
+    "table",
+    "curve",
+    "localization",
+    "rgb",
+    "composite",
+)
+
+
+def result_kind(result) -> str:
+    """Semantic kind of ``result``; duck-typed/legacy results count as images."""
+    return str(getattr(result, "kind", "image") or "image")
+
 
 @dataclass
 class ViewMode:
@@ -79,7 +108,12 @@ class ProcessingResult(ABC):
     subclass tailored to its output format (MoNaLISA coefficients vs.
     raw frames vs. STED deconvolved stacks, etc.).
     """
-    
+
+    #: Semantic kind of this result (one of RESULT_KINDS). Subclasses whose
+    #: ``data`` is not a calibrated intensity image MUST override this, or
+    #: shape-only gates will offer image processors on non-image values.
+    kind: str = "image"
+
     def __init__(
         self,
         name: str,
@@ -253,6 +287,7 @@ class DisplayLayerProcessingResult(ProcessingResult):
         axis_scales: list[float] | None = None,
         scale_unit: str = "px",
         metadata: dict[str, Any] | None = None,
+        kind: str = "image",
     ):
         super().__init__(
             name=name,
@@ -265,6 +300,7 @@ class DisplayLayerProcessingResult(ProcessingResult):
         self.source_result = source_result
         self.component = component
         self.metadata = dict(metadata or {})
+        self.kind = str(kind or "image")
 
     @classmethod
     def from_spec(
@@ -283,6 +319,10 @@ class DisplayLayerProcessingResult(ProcessingResult):
             axis_scales=layer.axis_scales,
             scale_unit=layer.scale_unit,
             metadata=layer.metadata,
+            # A component input inherits the layer's semantics: an image
+            # channel stays "image", a labels layer stays "labels", and
+            # points/shapes pass through (matching no image processor).
+            kind=layer.kind,
         )
 
     def save(self, path: Path, fmt: str) -> None:

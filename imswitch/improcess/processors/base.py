@@ -6,7 +6,7 @@ from typing import Callable
 
 from qtpy import QtWidgets
 
-from imswitch.improcess.model.result import ProcessingResult
+from imswitch.improcess.model.result import ProcessingResult, result_kind
 
 
 @dataclass(frozen=True)
@@ -56,13 +56,29 @@ class Processor(ABC):
     name: str = "Unnamed Processor"  # Human-readable
     id: str = "unnamed"  # Stable identifier for config + registry
     category: str = "Other"  # Human-readable grouping for runtime tools/docs
-    
+    #: Semantic result kinds this processor accepts (ProcessingResult.kind).
+    #: Checked by accepts() BEFORE the shape/axis gate, so a table result with
+    #: a 2D data array is never offered to an image processor.
+    kinds: tuple[str, ...] = ("image",)
+
+    def accepts(self, result: ProcessingResult) -> bool:
+        """Full compatibility gate: semantic kind, then shape/axis contract.
+
+        UI code deciding whether to offer this processor for a result must
+        call this, not ``applies_to`` directly — ``applies_to`` only encodes
+        the shape/axis contract and cannot tell a metrics table from an
+        image.
+        """
+        return result_kind(result) in self.kinds and bool(self.applies_to(result))
+
     @property
     @abstractmethod
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         """
-        Gate function: return True if this processor can handle the given result.
-        
+        Shape/axis gate: return True if this processor can handle the given
+        result's array layout. Semantic-kind filtering is handled by
+        ``accepts()``; keep this gate about shapes and axis labels.
+
         Examples:
         - Drift correction: lambda r: "T" in r.axis_labels
         - Z-projection: lambda r: "Z" in r.axis_labels

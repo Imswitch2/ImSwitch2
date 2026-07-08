@@ -13,6 +13,8 @@ from imswitch.improcess.model.result import ProcessingResult, ViewMode
 class FRCResult(ProcessingResult):
     """Result wrapper for Fourier ring correlation curves."""
 
+    kind = "curve"
+
     def __init__(self, name: str, analysis: FRCAnalysis, params: dict):
         self.analysis = analysis
         self.params = params

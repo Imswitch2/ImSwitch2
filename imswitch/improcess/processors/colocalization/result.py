@@ -13,6 +13,8 @@ from imswitch.improcess.model.result import ProcessingResult, ViewMode
 class ColocalizationResult(ProcessingResult):
     """Result wrapper for colocalization tables."""
 
+    kind = "table"
+
     _METRICS = [
         "pearson",
         "manders_m1",

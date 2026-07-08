@@ -12,6 +12,8 @@ from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.profile_helpers import (
     ProfileFit,
     GaussianFit,
+    TwoGaussianFit,
+    ExponentialFit,
     build_profile_record,
 )
 
@@ -25,7 +27,15 @@ class ProfileWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolManager = ViewerToolManager(napariViewer)
-        self._fitters = {fit.id: fit for fit in (ProfileFit(), GaussianFit())}
+        self._fitters = {
+            fit.id: fit
+            for fit in (
+                ProfileFit(),
+                GaussianFit(),
+                TwoGaussianFit(),
+                ExponentialFit(),
+            )
+        }
         self._last_kind = None
         self._last_payload: list[tuple[str, np.ndarray, np.ndarray]] = []
         self._current_record_inputs = []
