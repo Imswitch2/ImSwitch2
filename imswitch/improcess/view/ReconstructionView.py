@@ -218,9 +218,14 @@ class ReconstructionView(QtWidgets.QFrame):
     def getImage(self):
         return self.imgLayer.data
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip"):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
         self._clearDisplayLayers()
-        self.imgLayer.name = 'Reconstruction'
+        # Name the layer after the result (single source of truth for "current image").
+        # When name is given, tools operating on the active layer will see this result's name.
+        if name is not None:
+            self.imgLayer.name = str(name)
+        else:
+            self.imgLayer.name = 'Reconstruction'
         self.imgLayer.colormap = colormap
         im = np.asarray(im)
         old_ndim = self.imgLayer.data.ndim
@@ -229,9 +234,9 @@ class ReconstructionView(QtWidgets.QFrame):
             axisScales = [1.0] * new_ndim
 
         self._logger.debug(
-            "setImage: shape=%s  ndim %d→%d  labels=%s  scales=%s  unit=%s",
+            "setImage: shape=%s  ndim %d→%d  labels=%s  scales=%s  unit=%s  name=%s",
             im.shape, old_ndim, new_ndim,
-            list(axisLabels), [f"{s:.4g}" for s in axisScales], scaleUnit,
+            list(axisLabels), [f"{s:.4g}" for s in axisScales], scaleUnit, name or 'Reconstruction',
         )
 
         self._patchLayerForNdimChange(self.imgLayer, old_ndim, new_ndim, "setImage")
@@ -253,6 +258,13 @@ class ReconstructionView(QtWidgets.QFrame):
         try:
             self.imgLayer.metadata["axis_labels"] = list(axisLabels)
             self.imgLayer.metadata["scale_unit"] = scaleUnit
+            # Store source_result for per-result display settings persistence (levels, colormap).
+            # Persistence code (_storeDisplayLayerState, _activeDisplayLayerId) compares this
+            # against result.name to ensure settings round-trip correctly even after renaming.
+            if name is not None:
+                self.imgLayer.metadata["source_result"] = str(name)
+            else:
+                self.imgLayer.metadata.pop("source_result", None)
             self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
         except Exception as exc:
             self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
@@ -368,6 +380,7 @@ class ReconstructionView(QtWidgets.QFrame):
     def clearImage(self):
         self._clearDisplayLayers()
         self.imgLayer.name = 'Reconstruction'
+        self.imgLayer.metadata.pop("source_result", None)
         self.imgLayer.data = np.zeros((1, 1))
 
     def getImageDisplayLevels(self):

@@ -203,6 +203,11 @@ class FRCWidget(QtWidgets.QWidget):
         return [*extra, *defaults]
 
     def _active_image_layer(self):
+        """Return the active image-like Napari layer, falling back to the first valid one.
+        
+        Aligned with ReconstructionView.getActiveImageLayer() semantics: prefer the active
+        layer when it's image-like, otherwise scan for a valid layer.
+        """
         try:
             active = self._viewer.layers.selection.active
         except Exception:

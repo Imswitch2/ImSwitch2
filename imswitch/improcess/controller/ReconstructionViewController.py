@@ -110,13 +110,22 @@ class ReconstructionViewController(ImProcessWidgetController):
             if hasattr(result, "getDisplayColormap")
             else "grayclip"
         )
+        result_name = getattr(result, 'name', None)
         self._widget.setImage(
             im,
             axisLabels,
             axisScales,
             result.scale_unit,
             colormap=colormap,
+            name=result_name,
         )
+        # Re-activate the main layer so tools operate on the selected result.
+        # (setDisplayLayers already does this; here we match that behavior for the setImage path.)
+        try:
+            self._widget.napariViewer.layers.selection.active = self._widget.imgLayer
+        except Exception as exc:
+            self._logger.debug("_setProcessingResultSlice: could not re-activate imgLayer: %s", exc)
+        
         if levels is not None:
             self._widget.setImageDisplayLevels(*levels)
         elif autoLevels:

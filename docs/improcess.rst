@@ -149,6 +149,55 @@ with QtAwesome when available, with Qt standard icons as a fallback.  This
 keeps icon choices centralized while allowing each action to retain its
 existing text, tooltip and menu entry.
 
+Results list vs. napari layers
+===============================
+
+The reconstruction viewer has two visible lists — the **reconstruction list** (right
+pane) and the **napari layer list** (napari's built-in layer controls, shown by
+default and hidden by setting ``"napariLayerControls": false`` in the
+``processing:`` config block).  They serve complementary purposes:
+
+* The **reconstruction list** is the *registry* of processing results.  Each
+  entry holds:
+  
+  - The result data and metadata (axis labels, scales, units)
+  - Per-result display settings (contrast levels, colormap)
+  - The result's view modes (standard / bottom side / left side / custom XY/XZ/YZ)
+  
+  These settings are persisted when you adjust contrast or LUT, and restored
+  when you click back to that result.
+
+* The **napari layer list** is the *presentation* of the currently selected
+  result.  It contains:
+  
+  - The main image layer, now named after the selected result (not the generic
+    ``Reconstruction``)
+  - Derived overlays: per-component display layers (composite results with
+    independent channel scaling), segmentation mask layers, multicolor preview
+    layers, and so on
+
+**Single source of truth: the active napari layer.** Tool panels (Segmentation,
+Profile, ROI Manager, FRC, etc.) operate on the *active* (highlighted) napari
+layer.  When you select a result from the reconstruction list, the viewer
+automatically:
+
+1. Loads the result's data into the main image layer
+2. Renames the layer to match the result's name
+3. Re-activates the main layer so it becomes the target for tool operations
+
+This keeps "which image am I processing?" unambiguous: it's always the active
+napari layer, and the reconstruction list keeps that layer aligned with your
+selection.  When a tool *commits* a new layer (e.g. a segmentation result),
+napari activates that new layer — at that point tools operate on it until you
+click back to a result or select a different layer in napari's layer list.
+Ephemeral preview layers (the segmentation preview) are the exception: they
+restore the previously active layer and are excluded from tool source
+resolution, so a preview can never become its own input.
+
+To see which result produced the current image, check the main layer's name or
+the highlighted item in the reconstruction list — after clicking a result, those
+two always agree.
+
 Built-in plugins
 ----------------
 

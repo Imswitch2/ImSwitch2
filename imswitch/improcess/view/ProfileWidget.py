@@ -298,6 +298,11 @@ class ProfileWidget(QtWidgets.QWidget):
         return data[tuple(leading)]
 
     def _activeImageLayer(self):
+        """Return the active image-like Napari layer, falling back to the first valid one.
+        
+        Aligned with ReconstructionView.getActiveImageLayer() semantics: prefer the active
+        layer when it's image-like, otherwise scan for a valid layer.
+        """
         try:
             active = self._viewer.layers.selection.active
         except Exception:
