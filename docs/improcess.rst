@@ -657,9 +657,24 @@ The MoNaLISA preset has the same shape as the others::
             "roiManagerPanel": true,
             "roiStatsPanel": true,
             "reconstructors": ["monalisa", "view-only"],
-            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"]
+            "processors":     ["drift-correct", "projection", "segmentation", "psf-resolution", "colocalization", "frc"],
+            "liveStallTimeoutS": 300
         }
     }
+
+The ``processing:`` block also accepts:
+
+* **liveStallTimeoutS** (numeric, optional) — timeout in seconds for detecting
+  crashed recording writers during live reconstruction. When a live-reconstruction
+  reader waits this long without receiving new frames and without seeing a
+  completion marker, it assumes the writer has crashed and finalizes the session
+  with the partial data received so far. Defaults to 300 seconds (5 minutes).
+  Set to ``0``, ``null`` or ``false`` to disable the watchdog. Timelapse
+  sources — both single-file (``scan{N}`` groups in one store) and per-file
+  (one store per timepoint) — legitimately idle between timepoints while the
+  recorder prepares the next one; the reader automatically disables the
+  watchdog for these lapse sources unless you explicitly set a value in this
+  config key (an explicit value then applies everywhere).
 
 To launch Imswitch2 with *only* ImProcess (no Imcontrol GUI) and *only*
 the plugins from one of these setup presets:

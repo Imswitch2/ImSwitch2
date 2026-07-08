@@ -365,6 +365,64 @@ def test_controller_clears_streaming_run_when_session_finish_fails():
 # (test_stream_worker_startup_*).
 
 
+def test_controller_effective_stall_timeout_with_idle_source(qtbot, tmpdir, monkeypatch):
+    """Source with idles_between_stacks=True + absent config → timeout disabled.
+    Explicit config value applies even to idle sources."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    comm = CommunicationChannel()
+
+    # Patch to return custom config
+    def mock_load_config(logger):
+        return {}  # absent key → default 300.0, was_explicit=False
+
+    monkeypatch.setattr(
+        "imswitch.improcess.controller.LiveReconstructionController.load_processing_config",
+        mock_load_config,
+    )
+
+    controller = LiveReconstructionController(comm)
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    source = _TestSource(stack, chunk_size=2)
+    source.idles_between_stacks = True  # simulate lapse source
+
+    controller._source = source
+    assert controller._effective_stall_timeout() is None  # disabled for idle source
+
+    # Explicit config should apply even to idle sources
+    def mock_load_config_explicit(logger):
+        return {"liveStallTimeoutS": 120}
+
+    monkeypatch.setattr(
+        "imswitch.improcess.controller.LiveReconstructionController.load_processing_config",
+        mock_load_config_explicit,
+    )
+    controller2 = LiveReconstructionController(comm)
+    controller2._source = source
+    assert controller2._effective_stall_timeout() == 120.0  # explicit value applies
+
+
+def test_controller_effective_stall_timeout_without_idle_source(qtbot, tmpdir, monkeypatch):
+    """Source with idles_between_stacks=False (or absent) uses default config timeout."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    comm = CommunicationChannel()
+
+    def mock_load_config(logger):
+        return {}  # absent key → default 300.0
+
+    monkeypatch.setattr(
+        "imswitch.improcess.controller.LiveReconstructionController.load_processing_config",
+        mock_load_config,
+    )
+
+    controller = LiveReconstructionController(comm)
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    source = _TestSource(stack, chunk_size=2)
+    # source.idles_between_stacks not set → defaults to False
+
+    controller._source = source
+    assert controller._effective_stall_timeout() == 300.0  # default applies
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #

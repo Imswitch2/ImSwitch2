@@ -127,3 +127,33 @@ def plugin_ids_from_config(
             True,
         )
     return ["view-only"], ["drift-correct"], False
+
+
+def live_stall_timeout_s(processing_config: dict[str, Any]) -> tuple[float | None, bool]:
+    """Return the live stall timeout and whether it was explicitly configured.
+    
+    Returns:
+        A tuple of (timeout_value, was_explicit) where:
+        - timeout_value: The timeout in seconds (None means disabled)
+        - was_explicit: True if the key was present in config, False if absent
+    
+    Default (key absent): 300.0 seconds.
+    Key present and falsy/0/null: disabled (None).
+    Key present numeric: that value.
+    """
+    key = "liveStallTimeoutS"
+    if key not in processing_config:
+        return (300.0, False)
+    
+    value = processing_config[key]
+    if value is None or value == 0 or not value:
+        return (None, True)
+    
+    try:
+        timeout = float(value)
+        if timeout > 0:
+            return (timeout, True)
+        else:
+            return (None, True)
+    except (TypeError, ValueError):
+        return (300.0, True)

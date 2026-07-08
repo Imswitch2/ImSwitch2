@@ -6,6 +6,10 @@ from qtpy import QtCore
 from imswitch.imcommon.model.logging import initLogger
 from imswitch.improcess.live import InMemoryStackWrapper
 from imswitch.improcess.live.workers import LiveProcessWorker, LiveStreamWorker
+from imswitch.improcess.model.processing_config import (
+    live_stall_timeout_s,
+    load_processing_config,
+)
 from imswitch.improcess.reconstructors.base import Chunk, StreamInit
 
 
@@ -23,6 +27,7 @@ class LiveReconstructionController(QtCore.QObject):
         super().__init__()
         self._commChannel = comm_channel
         self._logger = initLogger(self, tryInheritParent=False)
+        self._processing_config = load_processing_config(self._logger)
 
         self._reconstructor = None
         self._source = None
@@ -96,6 +101,20 @@ class LiveReconstructionController(QtCore.QObject):
 
         self._running = True
         return True
+
+    def _effective_stall_timeout(self) -> float | None:
+        """Compute the effective stall timeout for the current source.
+        
+        When the source has ``idles_between_stacks == True`` (single-file lapse
+        sources that present multiple timepoints through one long-lived stream)
+        and the config key was not explicitly set, return None to disable the
+        watchdog (avoid false triggers on slow timelapses). An explicitly
+        configured value applies everywhere.
+        """
+        timeout, was_explicit = live_stall_timeout_s(self._processing_config)
+        if not was_explicit and getattr(self._source, "idles_between_stacks", False):
+            return None
+        return timeout
 
     def _reset_workers(self) -> None:
         """Drop worker/thread references after a failed or finished startup."""
@@ -191,12 +210,16 @@ class LiveReconstructionController(QtCore.QObject):
 
         self._stream_thread = QtCore.QThread()
         self._stream_worker = LiveStreamWorker(
-            self._source, source_arg=self._source_arg, do_open=True
+            self._source,
+            source_arg=self._source_arg,
+            do_open=True,
+            stall_timeout_s=self._effective_stall_timeout(),
         )
         self._stream_worker.moveToThread(self._stream_thread)
         self._stream_worker.sigOpened.connect(self._on_opened)
         self._stream_worker.sigInitStackReady.connect(self._on_init_stack_ready)
         self._stream_worker.sigFailed.connect(self._on_stream_failed)
+        self._stream_worker.sigStalled.connect(self._on_stalled)
 
         self._process_thread.start()
         self._stream_thread.started.connect(self._stream_worker.run)
@@ -249,6 +272,19 @@ class LiveReconstructionController(QtCore.QObject):
         self._logger.warning(f"Live stream processing failed: {message}")
         self._finish_without_result()
 
+    @QtCore.Slot(float)
+    def _on_stalled(self, seconds_waited: float) -> None:
+        """Writer appears to have crashed (no progress and no completion marker).
+        
+        The worker has already emitted sigStackComplete to finalize with partial
+        data, so just log the event here. The partial result flows through the
+        normal completion path.
+        """
+        self._logger.warning(
+            f"Live stream stalled for {seconds_waited:.0f}s; "
+            f"finalizing with partial data"
+        )
+
     def _finish_without_result(self) -> None:
         """Signal completion without a result so a queue driver advances."""
         self._finish_run()
@@ -258,11 +294,14 @@ class LiveReconstructionController(QtCore.QObject):
         self._logger.debug("Starting batch fallback path")
 
         self._stream_thread = QtCore.QThread()
-        self._stream_worker = LiveStreamWorker(self._source)
+        self._stream_worker = LiveStreamWorker(
+            self._source, stall_timeout_s=self._effective_stall_timeout()
+        )
         self._stream_worker.moveToThread(self._stream_thread)
 
         self._stream_worker.sigChunkReady.connect(self._on_chunk_for_buffer)
         self._stream_worker.sigStackComplete.connect(self._on_batch_stack_complete)
+        self._stream_worker.sigStalled.connect(self._on_stalled)
 
         self._stream_thread.started.connect(self._stream_worker.run)
         self._stream_thread.start()

@@ -186,3 +186,33 @@ def test_live_source_contract_yields_chunk_ranges():
     assert source.poll()[0].end == 5
     assert source.poll() == []
     assert source.is_complete() is True
+
+
+def test_lapse_sources_idle_between_stacks_but_plain_sources_do_not():
+    """Stall-watchdog contract: lapse sources present multiple timepoints
+    through one worker run and legitimately go quiet between them, so they must
+    advertise ``idles_between_stacks`` to suppress the crashed-writer watchdog;
+    plain single-stack live sources must not (a quiet writer there is a stall).
+
+    Regression: the multi-file lapse sources were initially left unflagged, so
+    a per-file timelapse slower than the default timeout would be truncated.
+    """
+    from imswitch.improcess.live.sources import (
+        Hdf5LapseSource,
+        Hdf5LiveSource,
+        Hdf5MultiFileLapseSource,
+        ZarrLapseSource,
+        ZarrLiveSource,
+        ZarrMultiFileLapseSource,
+    )
+
+    assert LiveSource.idles_between_stacks is False
+    for cls in (ZarrLiveSource, Hdf5LiveSource):
+        assert cls.idles_between_stacks is False, cls.__name__
+    for cls in (
+        ZarrLapseSource,
+        Hdf5LapseSource,
+        ZarrMultiFileLapseSource,
+        Hdf5MultiFileLapseSource,
+    ):
+        assert cls.idles_between_stacks is True, cls.__name__

@@ -161,6 +161,8 @@ def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
 class LiveSource(ABC):
     """Polls a growing source and yields new raw-frame chunks."""
 
+    idles_between_stacks: bool = False
+
     @abstractmethod
     def open(self, path_or_handle: Any) -> StackInfo:
         """Open the source and return its stack metadata."""
@@ -550,6 +552,11 @@ class ZarrMultiFileLapseSource(LiveSource):
     files (live recording) are picked up by re-deriving the next index path.
     """
 
+    # Multiple timepoints stream through one worker run; between timepoints the
+    # worker idles while the recorder writes the next _scanNN.zarr store, so the
+    # stall watchdog must not treat that gap as a crashed writer.
+    idles_between_stacks = True
+
     def __init__(self, first_path, detector_name=None, chunk_size=None,
                  num_timepoints=None):
         self._first_path = str(first_path)
@@ -655,6 +662,8 @@ class ZarrMultiFileLapseSource(LiveSource):
 
 class ZarrLapseSource(LiveSource):
     """Polls a single-file scan{N} timelapse store as one continuous global frame stream."""
+
+    idles_between_stacks = True  # Single file with multiple scan{N} groups; worker idles while recorder prepares next timepoint.
 
     def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
         """
@@ -1261,6 +1270,11 @@ class Hdf5MultiFileLapseSource(LiveSource):
     files (live recording) are picked up by re-deriving the next index path.
     """
 
+    # Multiple timepoints stream through one worker run; between timepoints the
+    # worker idles while the recorder writes the next _scanNN.h5 file, so the
+    # stall watchdog must not treat that gap as a crashed writer.
+    idles_between_stacks = True
+
     def __init__(self, first_path, detector_name=None, chunk_size=None,
                  num_timepoints=None):
         self._first_path = str(first_path)
@@ -1357,6 +1371,8 @@ class Hdf5MultiFileLapseSource(LiveSource):
 
 class Hdf5LapseSource(LiveSource):
     """Polls a single-file scan{N} timelapse HDF5 as one continuous global frame stream."""
+
+    idles_between_stacks = True  # Single file with multiple scan{N} groups; worker idles while recorder prepares next timepoint.
 
     def __init__(self, detector_name: str | None = None, chunk_size: int | None = None):
         """

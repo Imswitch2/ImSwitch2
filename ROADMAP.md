@@ -154,9 +154,9 @@ should be an optional extra.
   so mid-recording streaming never reads unwritten chunks; and a
   `stream_complete` marker that tolerates finalize/reader collisions.
   The low-latency Gauss (MoNaLISA) path is the first live consumer; the
-  GPU variant stays optional. **Remaining:** a crashed-writer stall
-  fallback (reader currently waits forever if the writer dies mid-stream)
-  and validation on a real rig.
+  GPU variant stays optional. **Remaining:** validation on a real rig.
+  Crashed-writer stall fallback landed (configurable timeout with automatic
+  disable for lapse sources that idle between timepoints).
 - 🔄 **OME-standard recording formats.** TIFF/HDF5/Zarr recordings move to
   OME conventions (OME-TIFF, OME-NGFF 0.5, HDF5 + OME-XML) via a shared
   `OmeImageMeta` — implementation and tests in place

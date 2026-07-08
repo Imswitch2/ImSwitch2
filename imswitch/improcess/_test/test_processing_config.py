@@ -22,6 +22,7 @@ from imswitch.improcess.model.processing_config import (
     is_roi_manager_panel_enabled,
     is_roi_stats_panel_enabled,
     is_segmentation_panel_enabled,
+    live_stall_timeout_s,
     plugin_ids_from_config,
 )
 
@@ -269,3 +270,52 @@ def test_fiji_setup_is_ultimate_minimal_processor():
         "roiStatsPanel",
     ):
         assert processing[key] is False
+
+
+def test_live_stall_timeout_absent_defaults_to_300s():
+    """Default when key absent: 300.0 seconds, was_explicit=False."""
+    timeout, was_explicit = live_stall_timeout_s({})
+    assert timeout == 300.0
+    assert was_explicit is False
+
+
+def test_live_stall_timeout_null_disables():
+    """Key present with null value disables the watchdog."""
+    timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": None})
+    assert timeout is None
+    assert was_explicit is True
+
+
+def test_live_stall_timeout_zero_disables():
+    """Key present with 0 disables the watchdog."""
+    timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": 0})
+    assert timeout is None
+    assert was_explicit is True
+
+
+def test_live_stall_timeout_false_disables():
+    """Key present with False disables the watchdog."""
+    timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": False})
+    assert timeout is None
+    assert was_explicit is True
+
+
+def test_live_stall_timeout_numeric_value():
+    """Key present with numeric value returns that value."""
+    timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": 120})
+    assert timeout == 120.0
+    assert was_explicit is True
+
+
+def test_live_stall_timeout_float_value():
+    """Key present with float value returns that value."""
+    timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": 45.5})
+    assert timeout == 45.5
+    assert was_explicit is True
+
+
+def test_live_stall_timeout_negative_disables():
+    """Key present with negative value disables the watchdog."""
+    timeout, was_explicit = live_stall_timeout_s({"liveStallTimeoutS": -10})
+    assert timeout is None
+    assert was_explicit is True

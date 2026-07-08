@@ -29,10 +29,11 @@ class LiveStreamWorker(QtCore.QObject):
     sigChunkReady = QtCore.Signal(object)      # Chunk
     sigStackComplete = QtCore.Signal()
     sigFailed = QtCore.Signal(str)
+    sigStalled = QtCore.Signal(float)          # seconds waited
 
     def __init__(self, source, source_arg=None, do_open: bool = False,
                  poll_interval_ms: int = 200, open_max_attempts: int = 50,
-                 max_poll_error_retries: int = 50):
+                 max_poll_error_retries: int = 50, stall_timeout_s: float | None = None):
         """
         Args:
             source: A LiveSource. Opened already when ``do_open`` is False.
@@ -44,6 +45,10 @@ class LiveStreamWorker(QtCore.QObject):
                 PermissionError while the recorder still holds a live store)
                 tolerated before giving up, rather than killing the stream on
                 the first error.
+            stall_timeout_s: Optional timeout for detecting stalled writers. If
+                no new frames arrive and no completion marker appears for this
+                many seconds, the worker finalizes with partial data. ``None``
+                disables the watchdog.
         """
         super().__init__()
         self._source = source
@@ -52,11 +57,13 @@ class LiveStreamWorker(QtCore.QObject):
         self._poll_interval_ms = poll_interval_ms
         self._open_max_attempts = open_max_attempts
         self._max_poll_error_retries = max_poll_error_retries
+        self._stall_timeout_s = stall_timeout_s
         self._frames_per_stack = None
         self._logger = initLogger(self, tryInheritParent=False)
         self._running = False
         self._resume_event = threading.Event()
         self._pending_chunks: list[Chunk] = []
+        self._last_progress = None
 
     def resume(self) -> None:
         """Release the post-``begin()`` gate so the remainder starts streaming."""
@@ -100,6 +107,7 @@ class LiveStreamWorker(QtCore.QObject):
             return False
         self._frames_per_stack = max(1, int(stack_info.frames_per_stack or 1))
         self.sigOpened.emit(stack_info)
+        self._last_progress = time.monotonic()
 
         # 2. Collect the first logical stack (needed whole for localize/orient).
         buffered = []
@@ -107,6 +115,7 @@ class LiveStreamWorker(QtCore.QObject):
         while total < self._frames_per_stack and not self._interrupted():
             chunks = self._source.poll()
             if chunks:
+                self._last_progress = time.monotonic()
                 for chunk in chunks:
                     remaining = self._frames_per_stack - total
                     if remaining <= 0:
@@ -129,6 +138,18 @@ class LiveStreamWorker(QtCore.QObject):
             elif self._source.is_complete():
                 break
             else:
+                if self._stall_timeout_s is not None:
+                    elapsed = time.monotonic() - self._last_progress
+                    if elapsed > self._stall_timeout_s:
+                        self._logger.warning(
+                            f"No new frames and no completion marker for {elapsed:.0f}s "
+                            f"during startup — assuming the writer crashed; cannot salvage "
+                            f"incomplete first stack"
+                        )
+                        self.sigFailed.emit(
+                            f"writer stalled for {elapsed:.0f}s before first stack complete"
+                        )
+                        return False
                 self._sleep()
         if self._interrupted():
             return False
@@ -155,10 +176,13 @@ class LiveStreamWorker(QtCore.QObject):
         ``max_poll_error_retries`` consecutive errors) stops the stream.
         """
         consecutive_errors = 0
+        if self._last_progress is None:
+            self._last_progress = time.monotonic()
         while not self._interrupted():
             if self._pending_chunks:
                 chunks = self._pending_chunks
                 self._pending_chunks = []
+                self._last_progress = time.monotonic()
                 for chunk in chunks:
                     self.sigChunkReady.emit(chunk)
                 continue
@@ -181,6 +205,7 @@ class LiveStreamWorker(QtCore.QObject):
                 continue
 
             if chunks:
+                self._last_progress = time.monotonic()
                 for chunk in chunks:
                     self.sigChunkReady.emit(chunk)
             elif self._source.is_complete():
@@ -188,6 +213,16 @@ class LiveStreamWorker(QtCore.QObject):
                 self.sigStackComplete.emit()
                 break
             else:
+                if self._stall_timeout_s is not None:
+                    elapsed = time.monotonic() - self._last_progress
+                    if elapsed > self._stall_timeout_s:
+                        self._logger.warning(
+                            f"No new frames and no completion marker for {elapsed:.0f}s — "
+                            f"assuming the writer crashed; finalizing with the frames received so far"
+                        )
+                        self.sigStalled.emit(elapsed)
+                        self.sigStackComplete.emit()
+                        break
                 self._sleep()
 
     def stop(self) -> None:

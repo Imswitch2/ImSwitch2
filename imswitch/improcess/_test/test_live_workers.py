@@ -355,6 +355,131 @@ def test_stream_worker_gives_up_after_persistent_poll_errors():
     assert len(failed) == 1
 
 
+def test_poll_loop_stall_detection():
+    """Worker detects stalls (no frames, no completion marker) and finalizes with partial data."""
+    class _StallSource(_TestSource):
+        def __init__(self, stack, chunk_size, chunks_before_stall):
+            super().__init__(stack, chunk_size)
+            self._chunks_before_stall = chunks_before_stall
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if self.cursor >= self._chunks_before_stall * self.chunk_size:
+                return []  # stall forever
+            return super().poll()
+
+        def is_complete(self):
+            return False  # never marks complete
+
+    stack = np.arange(10 * 4 * 5, dtype=np.float32).reshape(10, 4, 5)
+    source = _StallSource(stack, chunk_size=3, chunks_before_stall=1)
+    source.open("test")
+
+    worker = LiveStreamWorker(source, poll_interval_ms=10, stall_timeout_s=0.05)
+    chunks, stalled, complete = [], [], [False]
+    worker.sigChunkReady.connect(lambda c: chunks.append(c))
+    worker.sigStalled.connect(lambda s: stalled.append(s))
+    worker.sigStackComplete.connect(lambda: complete.__setitem__(0, True))
+
+    worker.run()
+
+    assert len(chunks) == 1  # only got one chunk before stall
+    assert chunks[0].data.shape[0] == 3
+    assert len(stalled) == 1
+    assert stalled[0] >= 0.05  # waited at least timeout duration
+    assert complete[0] is True  # finalized with partial data
+
+
+def test_no_stall_when_complete():
+    """Normal completion (source marks itself complete) should not trigger stall."""
+    stack = np.arange(4 * 3 * 3, dtype=np.float32).reshape(4, 3, 3)
+    source = _TestSource(stack, chunk_size=2)
+    source.open("test")
+
+    worker = LiveStreamWorker(source, poll_interval_ms=1, stall_timeout_s=0.1)
+    chunks, stalled, complete = [], [], [False]
+    worker.sigChunkReady.connect(lambda c: chunks.append(c))
+    worker.sigStalled.connect(lambda s: stalled.append(s))
+    worker.sigStackComplete.connect(lambda: complete.__setitem__(0, True))
+
+    worker.run()
+
+    assert len(chunks) == 2
+    assert stalled == []  # no stall signal
+    assert complete[0] is True
+
+
+def test_disabled_stall_timeout():
+    """Worker with stall_timeout_s=None should poll indefinitely without stalling."""
+    class _NeverCompleteSource(_TestSource):
+        def __init__(self, stack, chunk_size, emit_chunks):
+            super().__init__(stack, chunk_size)
+            self._emit_chunks = emit_chunks
+
+        def poll(self):
+            if self.cursor < self._emit_chunks * self.chunk_size:
+                return super().poll()
+            return []  # stall after emitting specified chunks
+
+        def is_complete(self):
+            return False  # never complete
+
+    stack = np.arange(10 * 4 * 5, dtype=np.float32).reshape(10, 4, 5)
+    source = _NeverCompleteSource(stack, chunk_size=2, emit_chunks=2)
+    source.open("test")
+
+    worker = LiveStreamWorker(source, poll_interval_ms=5, stall_timeout_s=None)
+    chunks, stalled = [], []
+    worker.sigChunkReady.connect(lambda c: chunks.append(c))
+    worker.sigStalled.connect(lambda s: stalled.append(s))
+
+    # Drive a bounded number of iterations then stop
+    def stop_after_chunks():
+        if len(chunks) >= 2:
+            import time
+            time.sleep(0.05)  # give it time to stall if it would
+            worker.stop()
+
+    worker.sigChunkReady.connect(lambda _: stop_after_chunks())
+    worker.run()
+
+    assert len(chunks) == 2
+    assert stalled == []  # no stall with timeout disabled
+
+
+def test_startup_stall_detection():
+    """do_open startup that stalls before collecting first stack emits sigFailed."""
+    class _StartupStallSource(_TestSource):
+        def poll(self):
+            return []  # never yields frames
+
+        def is_complete(self):
+            return False
+
+    stack = np.zeros((4, 3, 3), dtype=np.float32)
+    source = _StartupStallSource(stack, chunk_size=2)
+
+    worker = LiveStreamWorker(
+        source,
+        source_arg="test",
+        do_open=True,
+        poll_interval_ms=5,
+        stall_timeout_s=0.05,
+    )
+    opened, init_data, failed = [], [], []
+    worker.sigOpened.connect(lambda si: opened.append(si))
+    worker.sigInitStackReady.connect(lambda d: init_data.append(d))
+    worker.sigFailed.connect(lambda msg: failed.append(msg))
+
+    worker.run()
+
+    assert len(opened) == 1  # source opened
+    assert init_data == []  # no init stack collected
+    assert len(failed) == 1
+    assert "stall" in failed[0].lower()
+
+
 # Copyright (C) 2020-2026 ImSwitch developers
 # This file is part of ImSwitch.
 #
