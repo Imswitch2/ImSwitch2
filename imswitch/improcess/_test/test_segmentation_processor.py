@@ -339,3 +339,55 @@ def test_segmentation_result_saves_hdf5(tmp_path):
         assert h5.attrs["threshold"] == 1.0
         np.testing.assert_allclose(h5.attrs["axis_scales"], [0.4, 0.5])
         assert h5.attrs["scale_unit"] == "um"
+
+
+def test_segmentation_result_declares_source_context_and_labels_layers():
+    """The result renders as one list entry with two owned display layers:
+    a context source image behind the primary labels mask."""
+    image = np.zeros((20, 20), dtype=np.float32)
+    image[4:9, 4:9] = 50.0
+    src = MinimalResult(name="raw", data=image, axis_labels=["Y", "X"])
+
+    result = SegmentationProcessor().apply(
+        src, {"threshold_method": "otsu", "min_area": 4}
+    )
+
+    layers = result.display_layers()
+    assert len(layers) == 2
+
+    context, primary = layers
+    assert context.kind == "image" and context.role == "context"
+    assert context.component == "source"
+    np.testing.assert_array_equal(np.asarray(context.data), image)
+
+    assert primary.kind == "labels" and primary.role == "primary"
+    assert primary.component == "labels"
+    np.testing.assert_array_equal(np.asarray(primary.data), result.data)
+
+
+def test_segmentation_result_context_layer_not_offered_as_processor_input():
+    image = np.zeros((16, 16), dtype=np.float32)
+    image[3:8, 3:8] = 40.0
+    src = MinimalResult(name="raw", data=image, axis_labels=["Y", "X"])
+    result = SegmentationProcessor().apply(src, {"threshold_method": "otsu", "min_area": 4})
+
+    ids = [choice.id for choice in result.processor_input_choices()]
+    assert "result" in ids
+    assert "component:labels" in ids
+    assert "component:source" not in ids  # context is display-only
+
+
+def test_segmentation_result_without_source_image_falls_back_to_labels_only():
+    from imswitch.improcess.analysis.segmentation import segment_image
+
+    analysis = segment_image(
+        np.pad(np.ones((4, 4), dtype=np.float32) * 10.0, 2),
+        threshold_method="manual",
+        threshold_value=5.0,
+        min_area=1,
+    )
+    result = SegmentationResult("seg", analysis)  # no source_image
+
+    layers = result.display_layers()
+    assert len(layers) == 1
+    assert layers[0].kind == "labels" and layers[0].role == "primary"

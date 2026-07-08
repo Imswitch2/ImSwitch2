@@ -155,6 +155,7 @@ class SegmentationProcessor(Processor):
             params=dict(params),
             axis_scales=axis_scales,
             scale_unit=result.scale_unit,
+            source_image=np.asarray(image),
         )
 
     @staticmethod

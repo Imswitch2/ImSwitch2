@@ -9,6 +9,24 @@ from imswitch.improcess.model.contrast import safe_display_levels
 from . import guitools
 
 
+def _spec_kind(spec) -> str:
+    return str(getattr(spec, "kind", "image") or "image")
+
+
+def _spec_role(spec) -> str:
+    return str(getattr(spec, "role", "primary") or "primary")
+
+
+def _spec_component(spec) -> str:
+    component = getattr(spec, "component", None)
+    if component:
+        return str(component)
+    metadata = getattr(spec, "metadata", None) or {}
+    if metadata.get("component"):
+        return str(metadata["component"])
+    return str(getattr(spec, "name", "layer"))
+
+
 class ReconstructionView(QtWidgets.QFrame):
     """ Frame for showing the reconstructed image"""
 
@@ -33,6 +51,11 @@ class ReconstructionView(QtWidgets.QFrame):
         )
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
+        # Tracks which managed/protected layer is the selected result's canonical
+        # output (may be a labels/points layer, not imgLayer) so the toolbar and
+        # active-image accessors can target it by role rather than by identity.
+        self._primaryLayer = self.imgLayer
+        self._primaryComponent = None
 
         # Button group for choosing view
         self.chooseViewGroup = QtWidgets.QButtonGroup()
@@ -220,6 +243,11 @@ class ReconstructionView(QtWidgets.QFrame):
 
     def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
         self._clearDisplayLayers()
+        # A prior labels/points-primary result may have hidden imgLayer; a plain
+        # image result restores it as the (visible) primary again.
+        self.imgLayer.visible = True
+        self._primaryLayer = self.imgLayer
+        self._primaryComponent = None
         # Name the layer after the result (single source of truth for "current image").
         # When name is given, tools operating on the active layer will see this result's name.
         if name is not None:
@@ -276,48 +304,37 @@ class ReconstructionView(QtWidgets.QFrame):
             self.clearImage()
             return
 
+        # The protected imgLayer is permanently an Image layer (a napari layer's
+        # type is fixed at creation), so route the FIRST image-kind spec through
+        # it (stable reference the contrast toolbar/active-image accessors rely
+        # on) and render every other spec as a fresh managed layer of its
+        # declared kind. When no spec is an image, imgLayer is hidden — a
+        # labels/points-primary result renders purely through managed layers.
+        img_spec_index = next(
+            (i for i, spec in enumerate(specs)
+             if _spec_kind(spec) == "image"),
+            None,
+        )
+        self._primaryComponent = None
+        self._primaryLayer = None
+
         for index, spec in enumerate(specs):
-            data = np.asarray(spec.data)
-            axisScales = spec.axis_scales
-            if axisScales is None:
-                axisScales = [1.0] * data.ndim
-            metadata = dict(spec.metadata or {})
-            metadata.setdefault("axis_labels", list(spec.axis_labels))
-            metadata.setdefault("scale_unit", spec.scale_unit)
-
-            if index == 0:
-                layer = self.imgLayer
-                old_ndim = layer.data.ndim
-                new_ndim = data.ndim
-                layer.name = spec.name
-                layer.colormap = spec.colormap
-                try:
-                    layer.rgb = bool(spec.rgb)
-                except Exception:
-                    pass
-                self._patchLayerForNdimChange(
-                    layer, old_ndim, new_ndim, "setDisplayLayers"
-                )
-                layer.data = data
-                layer.scale = tuple(axisScales)
-                layer.metadata.update(metadata)
-                layer.visible = bool(spec.visible)
+            if index == img_spec_index:
+                layer = self._applyImageSpecToImgLayer(spec)
             else:
-                layer = self.napariViewer.add_image(
-                    data,
-                    rgb=bool(spec.rgb),
-                    name=spec.name,
-                    colormap=spec.colormap,
-                    scale=tuple(axisScales),
-                    metadata=metadata,
-                    visible=bool(spec.visible),
-                )
-                self._displayLayers.append(layer)
+                layer = self._addManagedLayer(spec)
+            if layer is None:
+                continue
+            if _spec_role(spec) == "primary":
+                self._primaryComponent = _spec_component(spec)
+                self._primaryLayer = layer
 
-            if spec.display_levels is not None:
-                safe_levels = safe_display_levels(*spec.display_levels)
-                layer.contrast_limits_range = safe_levels
-                layer.contrast_limits = safe_levels
+        if img_spec_index is None:
+            # No image to anchor the protected layer — keep it present but out
+            # of the way; the primary is a managed labels/points/shapes layer.
+            self.imgLayer.visible = False
+            self.imgLayer.name = 'Reconstruction'
+            self.imgLayer.metadata.pop("source_result", None)
 
         first = specs[0]
         try:
@@ -333,10 +350,121 @@ class ReconstructionView(QtWidgets.QFrame):
         except Exception as exc:
             self._logger.debug("setDisplayLayers: could not set scale_bar unit: %s", exc)
 
+        # Re-activate the image anchor when there is one (keeps the contrast
+        # toolbar targeting an intensity layer); otherwise activate the primary
+        # managed layer so tools operate on the result the list shows.
+        active = self.imgLayer if img_spec_index is not None else self._primaryLayer
+        if active is not None:
+            try:
+                self.napariViewer.layers.selection.active = active
+            except Exception as exc:
+                self._logger.debug(
+                    "setDisplayLayers: could not select active layer: %s", exc)
+
+    def _applyImageSpecToImgLayer(self, spec):
+        """Render an image-kind spec into the reused protected imgLayer."""
+        data = np.asarray(spec.data)
+        axisScales = spec.axis_scales if spec.axis_scales is not None else [1.0] * data.ndim
+        metadata = dict(spec.metadata or {})
+        metadata.setdefault("axis_labels", list(spec.axis_labels))
+        metadata.setdefault("scale_unit", spec.scale_unit)
+        metadata.setdefault("component", _spec_component(spec))
+
+        layer = self.imgLayer
+        old_ndim = layer.data.ndim
+        layer.visible = True
+        layer.name = spec.name
+        layer.colormap = spec.colormap
         try:
-            self.napariViewer.layers.selection.active = self.imgLayer
+            layer.rgb = bool(spec.rgb)
+        except Exception:
+            pass
+        self._patchLayerForNdimChange(layer, old_ndim, data.ndim, "setDisplayLayers")
+        layer.data = data
+        layer.scale = tuple(axisScales)
+        layer.metadata.update(metadata)
+        layer.visible = bool(spec.visible)
+        if spec.display_levels is not None:
+            safe_levels = safe_display_levels(*spec.display_levels)
+            layer.contrast_limits_range = safe_levels
+            layer.contrast_limits = safe_levels
+        return layer
+
+    def _addManagedLayer(self, spec):
+        """Add a fresh managed napari layer of the spec's declared kind.
+
+        Image/context layers become ``add_image``; labels/points/shapes use the
+        matching napari constructor. Managed layers are removable (unlike the
+        protected imgLayer) and are tracked in ``_displayLayers`` so the next
+        result render clears them.
+        """
+        kind = _spec_kind(spec)
+        data = np.asarray(spec.data)
+        axisScales = spec.axis_scales if spec.axis_scales is not None else [1.0] * data.ndim
+        metadata = dict(spec.metadata or {})
+        metadata.setdefault("axis_labels", list(spec.axis_labels))
+        metadata.setdefault("scale_unit", spec.scale_unit)
+        metadata.setdefault("component", _spec_component(spec))
+        extra = dict(spec.layer_kwargs or {})
+
+        try:
+            if kind == "labels":
+                layer = self.napariViewer.add_labels(
+                    data.astype(np.int32, copy=False),
+                    name=spec.name,
+                    scale=tuple(axisScales),
+                    metadata=metadata,
+                    visible=bool(spec.visible),
+                    **extra,
+                )
+            elif kind == "points":
+                # points scale must match coordinate dimensionality (N, D).
+                point_scale = (
+                    tuple(axisScales)
+                    if data.ndim == 2 and data.shape[1] == len(axisScales)
+                    else None
+                )
+                layer = self.napariViewer.add_points(
+                    data,
+                    name=spec.name,
+                    scale=point_scale,
+                    metadata=metadata,
+                    visible=bool(spec.visible),
+                    **extra,
+                )
+            elif kind == "shapes":
+                layer = self.napariViewer.add_shapes(
+                    data,
+                    name=spec.name,
+                    scale=tuple(axisScales),
+                    metadata=metadata,
+                    visible=bool(spec.visible),
+                    **extra,
+                )
+            else:  # "image" (context/overlay image) or unknown -> image
+                layer = self.napariViewer.add_image(
+                    data,
+                    rgb=bool(spec.rgb),
+                    name=spec.name,
+                    colormap=spec.colormap,
+                    scale=tuple(axisScales),
+                    metadata=metadata,
+                    visible=bool(spec.visible),
+                    **extra,
+                )
+                if spec.display_levels is not None:
+                    safe_levels = safe_display_levels(*spec.display_levels)
+                    layer.contrast_limits_range = safe_levels
+                    layer.contrast_limits = safe_levels
         except Exception as exc:
-            self._logger.debug("setDisplayLayers: could not select first display layer: %s", exc)
+            self._logger.warning(
+                "setDisplayLayers: could not add %s layer %r: %s",
+                kind, spec.name, exc,
+            )
+            return None
+
+        self._displayLayers.append(layer)
+        return layer
 
     def _patchLayerForNdimChange(self, layer, old_ndim: int, new_ndim: int, context: str) -> None:
         """Pre-size napari's vispy units tuple before changing layer dimensionality.
@@ -379,9 +507,12 @@ class ReconstructionView(QtWidgets.QFrame):
 
     def clearImage(self):
         self._clearDisplayLayers()
+        self.imgLayer.visible = True
         self.imgLayer.name = 'Reconstruction'
         self.imgLayer.metadata.pop("source_result", None)
         self.imgLayer.data = np.zeros((1, 1))
+        self._primaryLayer = self.imgLayer
+        self._primaryComponent = None
 
     def getImageDisplayLevels(self):
         return self.imgLayer.contrast_limits

@@ -19,10 +19,31 @@ class ViewMode:
 
 @dataclass
 class DisplayLayerSpec:
-    """One Napari image layer derived from a processing result.
+    """One Napari layer derived from a processing result.
 
     Results can expose these when their canonical data array groups
-    semantically different images that should not share contrast limits.
+    semantically different images that should not share contrast limits, or
+    when the result renders as a non-image napari layer (labels/points/shapes).
+
+    ``kind`` selects the napari layer type the renderer adds:
+
+    - ``"image"`` (default) — an intensity image (``add_image``);
+    - ``"labels"`` — an integer label mask (``add_labels``);
+    - ``"points"`` — an ``(N, D)`` coordinate array (``add_points``);
+    - ``"shapes"`` — a list of shape vertex arrays (``add_shapes``).
+
+    ``role`` tells the processing UI how to interpret the layer:
+
+    - ``"primary"`` — the result's canonical output;
+    - ``"context"`` — a background/source layer shown only to interpret the
+      output (e.g. the source image behind a segmentation mask); never offered
+      as a processor input;
+    - ``"overlay"`` — an auxiliary annotation layer.
+
+    ``component`` is the stable id used for display-setting persistence and
+    explicit component inputs (falls back to ``metadata['component']`` then
+    ``name``). ``layer_kwargs`` carries kind-specific napari options
+    (e.g. ``size``/``face_color`` for points, ``shape_type`` for shapes).
     """
 
     name: str
@@ -35,6 +56,10 @@ class DisplayLayerSpec:
     rgb: bool = False
     visible: bool = True
     metadata: dict[str, Any] | None = None
+    kind: str = "image"
+    role: str = "primary"
+    component: str | None = None
+    layer_kwargs: dict[str, Any] | None = None
 
 
 @dataclass
@@ -198,6 +223,10 @@ class ProcessingResult(ABC):
         """
         choices = [ProcessorInputChoice("result", "Whole result", self)]
         for layer in self.display_layers():
+            # Context layers are display-only (e.g. the source image behind a
+            # segmentation mask) — never offer them as a processor input.
+            if getattr(layer, "role", "primary") == "context":
+                continue
             component = _display_layer_component_id(layer)
             choices.append(
                 ProcessorInputChoice(
@@ -264,6 +293,8 @@ class DisplayLayerProcessingResult(ProcessingResult):
 
 
 def _display_layer_component_id(layer: DisplayLayerSpec) -> str:
+    if getattr(layer, "component", None):
+        return str(layer.component)
     metadata = layer.metadata or {}
     component = metadata.get("component")
     if component:
