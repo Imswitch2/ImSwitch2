@@ -19,6 +19,7 @@ class CoboltLaser:
         self.serialnumber = serialnumber
         self.port = port
         self.modelnumber = None
+        self.firmware = None
         self.baudrate = baudrate
         self.address = None
         self.connect()
@@ -87,6 +88,7 @@ class CoboltLaser:
         """
         try:
             firmware = self.send_cmd("gfv?")
+            self.firmware = firmware
             if "error" in firmware.lower():
                 self.disconnect()
                 raise RuntimeError("Not a Cobolt laser")

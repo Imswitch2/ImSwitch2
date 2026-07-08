@@ -7,14 +7,16 @@ records every command and lets the test choose whether SCPI variants are
 here keeps each test self-contained.
 
 Tests cover:
+- firmware/model/serial identity readout (gfv?/sn?/glm?)
 - legacy-firmware autodetection (default)
-- SCPI-firmware autodetection
+- SCPI-firmware autodetection, including upstream pycobolt's
+  LASer:CP:POWer:SETPoint? probe
 - safe-state startup command sequence (both firmwares)
 - setEnabled(True) wire trace + ``_enabled`` only updates on success
 - setEnabled(False) wire trace + critical ``l0`` failure keeps ``_enabled = True``
 - setValue cached while off; flushed while on
 - setScanModeActive enters modulation; falls back to enable state on deactivate
-- SCPI modulation-power unit (Watts) — pins the conversion deliberately
+- SCPI modulation-power unit (mW by default, matching upstream pycobolt)
 """
 
 import logging
@@ -38,6 +40,9 @@ class FakeLaser:
         self.firmware = firmware                  # 'legacy' or 'scpi'
         self.cmds: list = []
         self.failed_cmds: set = set(failed_cmds or ())
+        self.serialnumber = 'SN12345'
+        self.modelnumber = '0561-06-01-0100-C'
+        self.firmware_version = '1.2.3.4'
         # Used by test_critical_off_failure to simulate a stuck controller.
 
     def send_cmd(self, command: str) -> str:
@@ -46,12 +51,25 @@ class FakeLaser:
             return 'Syntax error: illegal command'
         cl = command.lower().strip()
         is_scpi = cl.startswith(('laser:', 'las:'))
+        if cl == 'gfv?':
+            return self.firmware_version
+        if cl in ('sn?', 'gsn?'):
+            return self.serialnumber
+        if cl == 'glm?':
+            return self.modelnumber
         if is_scpi and self.firmware != 'scpi':
             return 'Syntax error: illegal command'
         if cl == 'laser:runmode?':
             return 'ConstantPower'
+        if cl == 'laser:cp:power:setpoint?':
+            return '50.0'
         if cl == 'laser:power:setpoint?':
-            return '0.005'
+            # Current upstream pycobolt uses the CP-specific query instead.
+            return 'Syntax error: illegal command'
+        if cl.startswith('laser:power:setpoint '):
+            return 'Syntax error: illegal command'
+        if cl == 'laser:powermodulation:power:setpoint?':
+            return '5.0'
         if cl.endswith('?'):
             return '0'
         return 'OK'
@@ -69,6 +87,12 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._real_hw = True
     m._scpi = None
     m._pause_mode = pause_mode
+    m._emission_control = 'pause' if pause_mode else 'master'
+    m._scpi_power_unit = 'mw'
+    m._firmware_version = None
+    m._serial_number = None
+    m._model_number = None
+    m._command_variant_cache = {}
     # Real manager uses name-mangled logger; tests don't need its output.
     import logging
     m._Cobolt0601NewLaserManager__logger = logging.getLogger(
@@ -80,6 +104,24 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
 # ---------------------------------------------------------------------------
 # Firmware autodetection
 # ---------------------------------------------------------------------------
+
+
+def test_detect_firmware_records_identity():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._detect_firmware()
+
+    assert m.getFirmwareInfo() == {
+        'firmware': '1.2.3.4',
+        'serial': 'SN12345',
+        'model': '0561-06-01-0100-C',
+        'commandSet': 'SCPI',
+        'requestedEmissionControl': 'master',
+        'resolvedEmissionControl': 'master',
+        'emissionControl': 'master',
+        'scpiPowerUnit': 'mW',
+    }
+    assert laser.cmds[:3] == ['gfv?', 'sn?', 'glm?']
 
 
 def test_detect_firmware_legacy():
@@ -109,12 +151,44 @@ def test_detect_firmware_scpi():
     assert m._scpi is True
 
 
+def test_detect_firmware_scpi_accepts_cp_power_probe_without_generic_probe():
+    """Current upstream pycobolt uses LASer:CP:POWer:SETPoint?."""
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._detect_firmware()
+    assert m._scpi is True
+    assert 'LASer:POWer:SETPoint?' in laser.cmds
+    assert 'LASer:CP:POWer:SETPoint?' in laser.cmds
+
+
 def test_detect_firmware_partial_scpi_treated_as_legacy():
-    """If one probe succeeds but the other doesn't, fall back to legacy."""
-    laser = FakeLaser(firmware='scpi', failed_cmds={'LASer:POWer:SETPoint?'})
+    """If runmode works but no SCPI setpoint probe works, fall back to legacy."""
+    laser = FakeLaser(
+        firmware='scpi',
+        failed_cmds={
+            'LASer:CP:POWer:SETPoint?',
+            'LASer:PowerModulation:POWer:SETPoint?',
+        },
+    )
     m = _build_manager(laser)
     m._detect_firmware()
     assert m._scpi is False
+
+
+def test_detect_firmware_auto_emission_control_is_diagnostic_only(caplog):
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._emission_control = 'auto'
+    with caplog.at_level(logging.WARNING, logger='test.Cobolt0601NewLaserManager'):
+        m._detect_firmware()
+
+    assert m._scpi is True
+    assert m._pause_mode is False
+    assert 'las:paus 1' not in laser.cmds
+    assert 'diagnostic only' in caplog.text
+    info = m.getFirmwareInfo()
+    assert info['requestedEmissionControl'] == 'auto'
+    assert info['resolvedEmissionControl'] == 'master'
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +215,11 @@ def test_init_safe_state_scpi_command_sequence():
     m._init_safe_state()
 
     # SCPI safe state: same flow, SCPI command names. Modulation power is
-    # expressed in Watts (5 mW → 0.005).
+    # expressed in mW by default, matching upstream pycobolt.
     assert laser.cmds == [
         '@cobas 0',
-        'LASer:PowerModulation:POWer:SETPoint 0.005',
-        'LAS:RUNM PowerModulation',
+        'LASer:PowerModulation:POWer:SETPoint 5.0',
+        'LASer:RUNMode PowerModulation',
         'las:pm:dig:ena 1',
         'l0',
     ]
@@ -175,8 +249,45 @@ def test_set_enabled_true_scpi_command_sequence():
     m._setpoint_mw = 50
     m.setEnabled(True)
 
-    assert laser.cmds == ['p 0.050000', 'LAS:RUNM ConstantPower', 'l1']
+    assert laser.cmds == [
+        'LASer:CP:POWer:SETPoint 50.0',
+        'LASer:RUNMode ConstantPower',
+        'l1',
+    ]
     assert m._enabled is True
+
+
+def test_set_enabled_true_scpi_cp_rejection_falls_back_to_p_not_generic_power():
+    laser = FakeLaser(
+        firmware='scpi',
+        failed_cmds={'LASer:CP:POWer:SETPoint 50.0'},
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert 'LASer:CP:POWer:SETPoint 50.0' in laser.cmds
+    assert 'LASer:POWer:SETPoint 50.0' not in laser.cmds
+    assert 'p 0.050000' in laser.cmds
+    assert m._enabled is True
+
+
+def test_cmd_any_caches_winning_variant_for_repeated_power_writes():
+    laser = FakeLaser(
+        firmware='scpi',
+        failed_cmds={'LASer:CP:POWer:SETPoint 50.0'},
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+
+    assert m._set_cw_power_mw(50) is True
+    assert m._set_cw_power_mw(75) is True
+
+    assert 'LASer:CP:POWer:SETPoint 50.0' in laser.cmds
+    assert 'p 0.050000' in laser.cmds
+    assert 'LASer:CP:POWer:SETPoint 75.0' not in laser.cmds
+    assert 'p 0.075000' in laser.cmds
 
 
 def test_set_enabled_true_fails_closed_when_l1_rejected():
@@ -322,7 +433,11 @@ def test_pause_mode_enable_at_zero_setpoint_flushes_zero_power():
     m._setpoint_mw = 0
     m.setEnabled(True)
 
-    assert laser.cmds == ['las:paus 0', 'LAS:RUNM ConstantPower', 'p 0.000000']
+    assert laser.cmds == [
+        'LASer:CP:POWer:SETPoint 0.0',
+        'LASer:RUNMode ConstantPower',
+        'las:paus 0',
+    ]
     assert m._enabled is True
 
 
@@ -334,7 +449,7 @@ def test_pause_mode_scan_arm_at_zero_setpoint_stays_paused():
     m.setScanModeActive(True)
 
     assert 'LASer:PowerModulation:POWer:SETPoint 0.0' in laser.cmds
-    assert 'LASer:PowerModulation:POWer:SETPoint 0.005' not in laser.cmds
+    assert 'LASer:PowerModulation:POWer:SETPoint 5.0' not in laser.cmds
     assert 'las:paus 1' in laser.cmds
     assert 'las:paus 0' not in laser.cmds
 
@@ -367,8 +482,8 @@ def test_pause_mode_init_gated_and_paused_without_autostart():
     m._init_safe_state()
 
     assert laser.cmds == [
-        'LASer:PowerModulation:POWer:SETPoint 0.005',
-        'LAS:RUNM PowerModulation',
+        'LASer:PowerModulation:POWer:SETPoint 5.0',
+        'LASer:RUNMode PowerModulation',
         'las:pm:dig:ena 1',
         'las:paus 1',
     ]
@@ -385,7 +500,11 @@ def test_pause_mode_enable_resumes_without_l1():
     m._setpoint_mw = 50
     m.setEnabled(True)
 
-    assert laser.cmds == ['las:paus 0', 'LAS:RUNM ConstantPower', 'p 0.050000']
+    assert laser.cmds == [
+        'LASer:CP:POWer:SETPoint 50.0',
+        'LASer:RUNMode ConstantPower',
+        'las:paus 0',
+    ]
     assert 'l1' not in laser.cmds
     assert m._enabled is True
 
@@ -425,26 +544,37 @@ def test_pause_mode_finalize_pauses_not_l0():
 
 
 # ---------------------------------------------------------------------------
-# SCPI modulation-power unit pin (Watts)
+# SCPI modulation-power unit pin (mW by default)
 # ---------------------------------------------------------------------------
 
 
-def test_scpi_set_modulation_power_uses_watts():
-    """SCPI ``LASer:PowerModulation:POWer:SETPoint`` is assumed to take
-    Watts (matching the SCPI convention used by ``LASer:POWer:SETPoint``).
-    This test pins that behaviour so a future change is deliberate.
-
-    If a firmware revision is found that expects milliwatts on this
-    command, fix ``_enter_modulation_mode``/``setModulationPower`` AND
-    update this test.
-    """
+def test_scpi_set_modulation_power_uses_milliwatts_by_default():
+    """Matches upstream pycobolt's Cobolt06.set_modulation_power wrapper."""
     laser = FakeLaser(firmware='scpi')
     m = _build_manager(laser)
     m._scpi = True
     m.setModulationPower(5)  # 5 mW
 
-    # 5 mW = 0.005 W
+    assert 'LASer:PowerModulation:POWer:SETPoint 5.0' in laser.cmds
+
+
+def test_scpi_set_modulation_power_can_use_watts_override():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._scpi = True
+    m._scpi_power_unit = 'w'
+    m.setModulationPower(5)  # 5 mW
+
     assert 'LASer:PowerModulation:POWer:SETPoint 0.005' in laser.cmds
+
+
+def test_get_modulation_power_parses_cmd_reply():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._scpi = True
+
+    assert m.getModulationPower() == 5.0
+    assert laser.cmds == ['LASer:PowerModulation:POWer:SETPoint?']
 
 
 def test_legacy_set_modulation_power_uses_milliwatts():

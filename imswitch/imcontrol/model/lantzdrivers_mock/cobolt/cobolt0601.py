@@ -30,6 +30,9 @@ class MockCobolt06:
         # Test/observability hooks
         self.cmds = []                # ordered log of every send_cmd argument
         self.firmware = 'legacy'      # 'legacy' or 'scpi'
+        self.firmware_version = 'mock'
+        self.serialnumber = 'MOCK-COBOLT'
+        self.modelnumber = '0561-06-01-0100-C'
 
     def send_cmd(self, command):
         """Record the command and return a canned reply.
@@ -42,14 +45,30 @@ class MockCobolt06:
         self.cmds.append(command)
         cl = command.lower().strip()
         is_scpi = cl.startswith(('laser:', 'las:'))
+        if cl == 'gfv?':
+            return self.firmware_version
+        if cl in ('sn?', 'gsn?'):
+            return self.serialnumber
+        if cl == 'glm?':
+            return self.modelnumber
         if is_scpi and self.firmware != 'scpi':
             return 'Syntax error: illegal command'
         if cl == 'laser:runmode?':
             return 'ConstantPower'
+        if cl == 'laser:cp:power:setpoint?':
+            return f'{self._power:.6f}'
         if cl == 'laser:power:setpoint?':
-            return f'{self._power / 1000.0:.6f}'
+            return 'Syntax error: illegal command'
+        if cl.startswith('laser:power:setpoint '):
+            return 'Syntax error: illegal command'
+        if cl == 'laser:powermodulation:power:setpoint?':
+            return f'{self._mod_power:.6f}'
         if cl.endswith('?'):
             return '0'
+        if cl.startswith('laser:cp:power:setpoint '):
+            self._power = float(command.split()[-1])
+        if cl.startswith('laser:powermodulation:power:setpoint '):
+            self._mod_power = float(command.split()[-1])
         return 'OK'
 
     def initialize(self):

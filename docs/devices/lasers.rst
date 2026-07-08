@@ -221,7 +221,9 @@ mock fallback.
         "Cobolt561": {
             "managerName": "Cobolt0601NewLaserManager",
             "managerProperties": {
-                "digitalPorts": ["COM7"]
+                "digitalPorts": ["COM7"],
+                "emissionControl": "master",
+                "scpiPowerUnit": "mW"
             },
             "wavelength": 561,
             "valueRangeMin": 0,
@@ -242,6 +244,22 @@ mock fallback.
      - list[str]
      - COM ports to connect to.  Only the first port is used (the
        manager indexes ``[0]`` after normalisation).  **Required**.
+   * - ``emissionControl``
+     - str
+     - ``"master"`` uses ``l0``/``l1`` and is the default fail-safe off path.
+       ``"pause"`` uses ``las:paus 1``/``0`` and is only for OEM/interlock
+       firmware that must not be stopped with ``l0``; it assumes the laser is
+       otherwise externally started/armed. ``"auto"`` is diagnostic-only: it
+       logs the detected command family and still resolves to ``"master"``.
+   * - ``modulationPowerMw``
+     - float
+     - Digital-modulation setpoint used for the idle safe state.  Defaults to
+       5 mW.
+   * - ``scpiPowerUnit``
+     - str
+     - Unit used by SCPI power setpoint commands.  Defaults to ``"mW"``, which
+       matches Cobolt's current ``pycobolt`` ``Cobolt06`` wrapper.  Use ``"W"``
+       only for firmware/configurations that expose SCPI setpoints in watts.
 
 **LaserInfo fields used**
 
@@ -262,9 +280,14 @@ for headless operation.
 
 **Gotchas**
 
-* If the laser ``name`` contains the substring ``"DPL"`` the manager
-  flags itself as a DPL variant (``self._is_DPL = True``).  The flag is
-  set but currently not branched on elsewhere.
+* On startup the manager queries ``gfv?`` (firmware), ``sn?``/``gsn?``
+  (serial), and ``glm?`` (model) and logs the selected command profile.
+  Keep this log line when reporting a Cobolt that behaves differently from
+  the existing units.
+* If an older manager controlled the laser but this manager cannot, try
+  ``"emissionControl": "pause"`` only when the controller is known to be
+  externally started/armed and must not receive ``l0``.  ``"auto"`` is useful
+  for logging/diagnosis, but intentionally keeps the master-off path.
 
 **Source**
 
