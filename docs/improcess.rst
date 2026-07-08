@@ -466,6 +466,12 @@ warning message directs users to enable the preview checkbox to visualize
 which pixels meet the detection criteria before running the full processing
 pipeline.
 
+The SMLM localizer is **streaming-capable**: during a live recording, 
+localizations accumulate incrementally as frames arrive, and the preview 
+histogram in the viewer updates in real time to show the growing point cloud. 
+The output from a live reconstruction is identical to running the batch 
+reconstruction on the saved data afterwards, ensuring reproducibility.
+
 File watcher save folder
 ========================
 

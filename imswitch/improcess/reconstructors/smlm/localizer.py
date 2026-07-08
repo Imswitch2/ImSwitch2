@@ -17,7 +17,7 @@ from qtpy import QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
-from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.reconstructors.base import StreamingReconstructor
 
 from .detection import detect_spots
 from .fitting import fit_spots
@@ -93,7 +93,7 @@ def localize_stack(
     )
 
 
-class SmlmLocalizer(Reconstructor):
+class SmlmLocalizer(StreamingReconstructor):
     """Localize a blinking stack into a coordinate table."""
 
     name = "SMLM localizer"
@@ -110,13 +110,18 @@ class SmlmLocalizer(Reconstructor):
 
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         return None
+    
+    def make_session(self):
+        """Create a fresh streaming session for live localization."""
+        from .live_session import SmlmLiveSession
+        return SmlmLiveSession()
 
     def process(self, data_obj: "DataObj", params: dict) -> LocalizationResult:
         data, source_shape = self._load_frames(data_obj)
         pixel_size_nm = float(params.get("pixel_size_nm", 1.0) or 1.0)
         locs = localize_stack(
             data,
-            threshold=float(params.get("threshold", 100.0)),
+            threshold=float(params.get("threshold", 500.0)),
             roi=int(params.get("roi", 7)),
             sigma=float(params.get("sigma", 1.0)),
             method=str(params.get("method", "gausslq")),
@@ -135,7 +140,7 @@ class SmlmLocalizer(Reconstructor):
             source_name=data_obj.name,
             source_shape=source_shape,
             metadata={
-                "threshold": float(params.get("threshold", 100.0)),
+                "threshold": float(params.get("threshold", 500.0)),
                 "roi": int(params.get("roi", 7)),
                 "fit_method": str(params.get("method", "gausslq")),
             },
