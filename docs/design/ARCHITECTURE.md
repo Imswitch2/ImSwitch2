@@ -4,14 +4,14 @@
 
 ImSwitch follows a strict **Model-View-Presenter (MVP)** architecture organized into four independent modules, each loadable as a plugin:
 
-| Module | Purpose | Package |
-|---|---|---|
-| **imcontrol** | Hardware control (lasers, stages, DAQ, detectors) | `imswitch.imcontrol` |
-| **improcess** | Image processing and reconstruction | `imswitch.improcess` |
-| **imscripting** | Python scripting console & editor | `imswitch.imscripting` |
-| **imcommon** | Shared framework, signals, utilities | `imswitch.imcommon` |
+| Module | Purpose | Package | Standalone Launch |
+|---|---|---|---|
+| **imcontrol** | Hardware control (lasers, stages, DAQ, detectors) | `imswitch.imcontrol` | ❌ (requires hardware config) |
+| **improcess** | Image processing and reconstruction | `imswitch.improcess` | ✅ `python -m imswitch.improcess` |
+| **imscripting** | Python scripting console & editor | `imswitch.imscripting` | ❌ |
+| **imcommon** | Shared framework, signals, utilities | `imswitch.imcommon` | N/A (library) |
 
-Each module implements `getMainViewAndController()` and sets `__imswitch_module__ = True` for dynamic discovery. The top-level `__main__.py` orchestrates multi-module loading via `MultiModuleWindow`.
+Each module implements `getMainViewAndController()` and sets `__imswitch_module__ = True` for dynamic discovery. The top-level `__main__.py` orchestrates multi-module loading via `MultiModuleWindow`. **ImProcess** can also run standalone for offline processing of recorded data.
 
 ---
 
@@ -324,7 +324,7 @@ Large arrays (images) are passed via POSIX shared memory through `SerNDArray` to
 
 ## View Layer — Widgets
 
-28 widget files in `imcontrol/view/widgets/`, all inheriting from `Widget` or `NapariHybridWidget`. Key widgets include:
+50 widget files in `imcontrol/view/widgets/`, all inheriting from `Widget` or `NapariHybridWidget`. Key widgets include:
 
 | Widget | Purpose |
 |---|---|
@@ -342,7 +342,7 @@ Large arrays (images) are passed via POSIX shared memory through `SerNDArray` to
 | `AlignAverageWidget`, `AlignXYWidget` | Image alignment tools |
 | `FFTWidget` | Fourier transform display |
 | `BeadRecWidget`, `MotCorrWidget` | Bead reconstruction, motion correction |
-| `EtSTEDWidget`, `EtMonalisaWidget` | STED/MoNaLISA microscopy |
+| `EtSTEDWidget`, `EtMonalisaWidget`, `EtSnoutyWidget` | STED/MoNaLISA/Snouty microscopy |
 | `SLMWidget`, `SLMsWidget` | SLM pattern control |
 | `RotationScanWidget`, `RotatorWidget` | Rotation stage control |
 | `ULensesWidget` | Microlens array analysis |
@@ -351,12 +351,103 @@ Large arrays (images) are passed via POSIX shared memory through `SerNDArray` to
 | `ConsoleWidget`, `WatcherWidget` | Scripting and monitoring |
 | `ViewWidget` | Additional viewer controls |
 | `AlignmentLineWidget` | Line alignment overlay |
+| `SetupModesWidget`, `SetupStatusWidget` | Smart microscopy mode switching, setup status |
+| `WellPlateWidget` | Multi-well plate scanning |
+| `FlipMirrorWidget` | Flip mirror control |
+| `BSC203Widget` | Thorlabs BSC203 servo controller |
+| `SegmentationParamsWidget` | Segmentation parameter tuning |
+| `LightSheetMulticolorWidget` | Lightsheet multicolor control |
+| `TriggerScope*Widgets` | Family of 6 TriggerScope-synchronized lightsheet scan widgets (GalvoDetection, LSXYR, PLSR, PLSRMulticolor, Raster, Scan) |
 
 Key architecture patterns:
 - `pyqtgraph.dockarea.DockArea` for flexible panel layout
 - `pyqtgraph.ParameterTree` for structured settings
 - `EmbeddedNapari` for live image display
 - Qt Signals following `sigVerbNoun` / `sigNounChanged` convention
+
+---
+
+## Device Plugin Architecture
+
+Device support can live in external pip-installable packages (napari-style), so setups can name managers that ship outside the core repo. Design: [DEVICE_PLUGINS.md](DEVICE_PLUGINS.md); user guide: `docs/devices/plugins.rst`.
+
+| Piece | Location | Role |
+|---|---|---|
+| Public authoring API | `imswitch/pluginapi/` | The stable surface plugin authors import: device info dataclasses + abstract managers (`DetectorManager`, `LaserManager`, `PositionerManager`, `RotatorManager`, parameter/action types) |
+| Manifest model | `imcontrol/model/plugins/manifest.py` | JSON manifest parsing → `DeviceManagerContribution` (kind, manager class path, optional managerProperties JSON-Schema) |
+| Discovery | `imcontrol/model/plugins/discovery.py` | Finds plugins via `imswitch.manifest` entry points |
+| Registry | `imcontrol/model/plugins/registry.py` | `DevicePluginRegistry` — merges an explicit built-in table (`builtins.py`) with discovered external contributions (`external.py`) |
+| Validation | `imcontrol/model/plugins/validation.py` | Best-effort managerProperties JSON-Schema validation |
+| Diagnostics CLI | `python -m imswitch.imcontrol.model.plugins list \| inspect \| validate-setup` | Inspect what is registered and validate a setup file against it |
+
+**Resolution order:** `MultiManager` resolves a setup's `managerName` through the registry first, then the legacy internal import path — existing setups boot unchanged. An unresolved registry-backed kind raises an actionable diagnostic; known-extracted manager names map to a "pip install <package>" hint. In-tree example plugins: `examples/plugins/imswitch-zhinst-devices` (new device) and `examples/plugins/imswitch-device-thorlabs` (first Phase-8 extraction).
+
+---
+
+## Recording Data Path
+
+`RecordingManager` (`imcontrol/model/managers/RecordingManager.py`) owns the acquisition→disk pipeline. See [recording_dataflow_plan.md](../recording_dataflow_plan.md) for the full design.
+
+```
+DetectorsManager frames
+   → RecordingManager (dtype contract: DetectorManager.dtype/bitDepth is authoritative;
+                       storers warn loudly on mismatch instead of silently casting)
+   → WriterThread (off-acquisition-thread disk I/O + compression,
+                   bounded backpressure queue, batched multi-frame chunks)
+   → Storer (ABC) ── ZarrStorer | HDF5Storer | TiffStorer
+```
+
+- **Abort semantics:** `abortRecording()` stops the recording and discards the partial output (`Storer.abortStream` deletes the file/store).
+- **Live-consumer barrier:** streaming storers publish a `recording:frames_committed` attribute *after* each data flush, so mid-recording readers (the ImProcess live pipeline below) never read unwritten chunks; a stream-complete marker signals finalization.
+- **In progress:** OME standardization of all three formats (OME-TIFF, OME-NGFF 0.5, HDF5 + OME-XML) via a shared `OmeImageMeta` — see `docs/recording_ome_standardization_plan.md`.
+
+---
+
+## ImProcess Module Architecture
+
+The post-processing module (Milestone 12) is a plugin shell around two contracts defined in `improcess/reconstructors/base.py` and registered in a `PluginRegistry` (`reconstructors/registry.py`, populated from the setup's `processing:` block or standalone defaults):
+
+| Contract | Role | Built-ins |
+|---|---|---|
+| `Reconstructor` | raw `DataObj` → `ProcessingResult` (one per dataset) | `monalisa`, `view-only`, `snouty`, `snouty-projections`, `widefield-starss`, `smlm-localizer` |
+| `Processor` | `ProcessingResult` → new result(s), stackable | `drift_correct`, `frc`, `projection`, `segmentation`, `psf_resolution`, `colocalization`, `denoise`, `smlm_render`, `channel_merge`/`channel_split`, `make_composite`/`make_rgb`, `multicolor_*`, `stack_split`/`stack_subset` |
+
+**Result types** (`improcess/model/`): the image/array-centric `ProcessingResult` family (`array_result.py`, per-modality subclasses) plus the table-backed `LocalizationResult` (`localization_result.py` / `localization_schema.py`) whose payload is an SMLM coordinate recarray with a lazy histogram preview as viewable data.
+
+**Controller decomposition:** `ImProcessMainViewController` is a thin coordinator owning sub-controllers (`DataFrameController`, `ReconstructionViewController`, `ReconstructorManagerController`, `MoNaLISAController`, `FileIOController`, `WatcherFrameController`, `LiveModeController`, `MemoryLiveController`, `WidefieldStarssBatchController`, …), wired over the ImProcess `CommunicationChannel`.
+
+**View split & source of truth:** the raw-data pane (`DataFrame`, pyqtgraph; hosts the MoNaLISA pattern overlay and the SMLM detection-preview scatter) is separate from the napari-based `ReconstructionView`, whose results list is the registry of produced results; selecting a result re-targets, renames and re-activates the main napari layer, so tool panels always operate on the selected result (contract documented in `docs/improcess.rst`, "Results list vs. napari layers").
+
+---
+
+## Live Reconstruction Pipeline
+
+Milestone 10's streaming path lets any registered reconstructor consume frames while a recording is still being written (`improcess/live/`):
+
+```
+imcontrol recording (Zarr/HDF5 + recording:frames_committed barrier)
+   → LiveSource (ABC, sources.py): ZarrLiveSource | ZarrLapseSource |
+     ZarrMultiFileLapseSource | Hdf5LiveSource | Hdf5MultiFileLapseSource
+     (selected by make_live_source(), source_factory.py)
+   → LiveStreamWorker / LiveProcessWorker (workers.py, Qt worker objects)
+   → StreamingReconstructor.make_session() → StreamingSession
+     (reconstructors/base.py) consumes chunks incrementally
+   → sigLiveResultUpdated → ReconstructionViewController updates the viewer
+```
+
+The first streaming consumer is the MoNaLISA fast-Gauss path (`reconstructors/monalisa/live_session.py`). Completion is gated on the writer's stream-complete marker, with progressive updates for timelapse (`scan{N}`) stores. Remaining known gap: a crashed-writer stall fallback (tracked in ROADMAP M10).
+
+---
+
+## Workflow Scripting Layer
+
+Headless, testable acquisition workflows live in `imcontrol/model/workflows/` and talk to a narrow facade instead of managers/controllers:
+
+- **Facades** (`facade.py`): `MicroscopeFacade` (+ `build_facade_from_master`), `ScanWorkflowFacade.run_once()` for triggering the configured scan, `TimeResolvedDetectorFacade` wrapping the time-resolved detector contract (`imcontrol/model/timeresolved/`); `MockMicroscopeFacade` (`mock_facade.py`) for hardware-free tests.
+- **Workflows:** WidefieldSTARSS family (`WidefieldStarssWorkflow`, `ZStackWorkflow`, `CWSTARSSWorkflow`, `CalibrationWorkflow`, composites `DefocusScan`/`SerialCWSTARSS`/`MultiWellTiling`), time-resolved workflows (`time_resolved.py`: binned photon-arrival cubes, gated STED, tau-STED), plus event-probe and target-timelapse workflows.
+- **Entry point:** `api.imcontrol.buildWorkflowFacade(...)` (exposed by `WorkflowFacadeController`).
+
+Cookbooks: `docs/scripting-wfs-workflows.rst` (general pattern, WFS worked example) and `docs/scripting-time-resolved-workflows.rst` (detector contract + TimeTagger worked example).
 
 ---
 
