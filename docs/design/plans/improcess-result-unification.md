@@ -238,10 +238,14 @@ Each phase is independently shippable and testable. Load-bearing view dispatch
 (Pillar 1) done in-house; panel reroutes (Pillar 2/3) are OpenHands-friendly with
 review + gated commit.
 
-- ⬜ **Phase 1 — Typed, owned layer contract.** `DisplayLayerSpec.kind`, `role`,
-  stable `component`, and `layer_kwargs`; `setDisplayLayers` dispatch;
-  `SegmentationResult` renders as source image + real labels owned by one
-  reconstruction-list item. No panel rerouting yet. *(model + view, low risk)*
+- ✅ **Phase 1 — Typed, owned layer contract** (2026-07-08, committed
+  `8d338180`). `DisplayLayerSpec.kind`/`role`/`component`/`layer_kwargs`;
+  `setDisplayLayers` dispatches on kind and decouples the primary target from
+  the protected imgLayer (reuse for first image, hide for non-image primary,
+  track `_primaryLayer`/`_primaryComponent`); `SegmentationResult` carries the
+  source slice and renders as context image + real labels on one list item;
+  context layers excluded from `processor_input_choices()`. No panel rerouting
+  yet. 109 tests pass (`test_typed_display_layers.py` new).
 - ⬜ **Phase 2 — Producing panels → processors.** Reroute Projection &
   Segmentation panels through `ResultProcessorController`; drop their `add_*`.
   Preview stays ephemeral; commit produces a result. Remove per-panel layer
