@@ -72,15 +72,12 @@ def test_overlay_scale_pads_when_scale_shorter_than_requested():
     assert widget._overlay_scale(3) == [1.0, 1.0, 1.0]
 
 
-def test_output_scale_maps_source_scale_onto_output_labels_by_name():
-    layer = _FakeLayer(np.ones((3, 4, 5, 6)), scale=[1.0, 5.0, 2.0, 3.0])
-    widget = _widget_with_layer(layer)
-    out = widget._output_scale(layer, ["T", "Z", "Y", "X"], ["C", "Z", "Y", "X"])
-    # T is dropped, C is new (1.0), Z/Y/X carry their source scale.
-    assert out == [1.0, 5.0, 2.0, 3.0]
+def test_czyx_scales_inserts_color_axis_before_source_scales():
+    source = SimpleNamespace(axis_scales=[5.0, 2.0, 3.0])
+    # C is new (1.0), Z/Y/X carry their source scale.
+    assert MulticolorWidget._czyx_scales(source) == [1.0, 5.0, 2.0, 3.0]
 
 
-def test_output_scale_returns_none_for_unscaled_source():
-    layer = _FakeLayer(np.ones((4, 5, 6)), scale=[1.0, 1.0, 1.0])
-    widget = _widget_with_layer(layer)
-    assert widget._output_scale(layer, ["Z", "Y", "X"], ["C", "Z", "Y", "X"]) is None
+def test_czyx_scales_returns_none_when_source_scale_unusable():
+    assert MulticolorWidget._czyx_scales(SimpleNamespace(axis_scales=[2.0])) is None
+    assert MulticolorWidget._czyx_scales(SimpleNamespace(axis_scales=[])) is None

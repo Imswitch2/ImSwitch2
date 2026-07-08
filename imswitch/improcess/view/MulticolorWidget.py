@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.analysis.multicolor import (
     alignment_summary,
@@ -17,16 +17,45 @@ from imswitch.improcess.analysis.multicolor import (
     extract_calibration_volume,
     load_alignment,
     output_axis_labels,
+    output_axis_scales,
     parse_bounds,
     save_alignment,
     split_axis_index,
     transform_details,
 )
 from imswitch.improcess.analysis.projections import axis_labels_for_shape
+from imswitch.improcess.processors.multicolor_apply import MulticolorApplyResult
+from imswitch.improcess.processors.multicolor_registration import (
+    MulticolorRegistrationResult,
+)
+
+
+class _MulticolorSource:
+    """Normalized input for Register/Apply: data + axis metadata + name.
+
+    Built either from the selected reconstruction result (preferred) or from
+    the active napari layer (standalone fallback), so the producing actions
+    and the ephemeral previews all agree on what is being processed.
+    """
+
+    def __init__(self, data, axis_labels, axis_scales, name):
+        self.data = data
+        self.axis_labels = list(axis_labels)
+        self.axis_scales = list(axis_scales or [])
+        self.name = str(name)
 
 
 class MulticolorWidget(QtWidgets.QWidget):
-    """Register and apply multicolor slice alignment from active image layers."""
+    """Register and apply multicolor slice alignment for the selected result.
+
+    The two producing actions (Register, Apply) publish ProcessingResults into
+    the reconstruction list via ``sigResultProduced`` — they do not create
+    floating napari layers. The split-boundary and detected-bead overlays are
+    ephemeral tuning/diagnostic layers (like the segmentation preview), the one
+    legitimate exception to the results-only rule.
+    """
+
+    sigResultProduced = QtCore.Signal(object, str)
 
     _SPLIT_PREVIEW_LAYER = "multicolor split preview"
     _BEAD_PREVIEW_LAYER = "multicolor beads"
@@ -37,6 +66,7 @@ class MulticolorWidget(QtWidgets.QWidget):
         self._viewer = napariViewer
         self._alignment: dict | None = None
         self._bead_state: dict | None = None
+        self._currentResult = None
 
         self.slicesSpin = QtWidgets.QSpinBox()
         self.slicesSpin.setRange(2, 16)
@@ -183,7 +213,7 @@ class MulticolorWidget(QtWidgets.QWidget):
     def find_beads(self) -> None:
         """Step 1 of the two-step workflow: detect beads and mark them."""
         try:
-            layer, volume = self._current_layer_volume()
+            source, volume = self._current_layer_volume()
             bounds, axis = self._split_params(volume)
             sigma = self.beadSigmaSpin.value()
             min_dist = self.beadMinDistSpin.value()
@@ -206,7 +236,7 @@ class MulticolorWidget(QtWidgets.QWidget):
             "axis": axis,
             "detect_params": (float(sigma), int(min_dist), float(threshold)),
             "time_index": self.timeSpin.value(),
-            "layer_name": getattr(layer, "name", None),
+            "source_name": source.name,
         }
         self._show_bead_preview(coords, bounds, axis, min_dist)
 
@@ -221,16 +251,12 @@ class MulticolorWidget(QtWidgets.QWidget):
         )
 
     def register(self) -> None:
-        layer = self._active_image_layer()
-        if layer is None:
-            self.summaryLabel.setText("No image layer selected.")
-            return
         try:
-            layer, volume = self._current_layer_volume()
+            source, volume = self._current_layer_volume()
             bounds, axis = self._split_params(volume)
             mode = self.modeCombo.currentText()
             bead_coords = (
-                self._reusable_bead_coords(layer, bounds, axis)
+                self._reusable_bead_coords(source, bounds, axis)
                 if mode == "descriptor_3d"
                 else None
             )
@@ -250,23 +276,22 @@ class MulticolorWidget(QtWidgets.QWidget):
             )
             self._alignment = alignment
             preview = apply_alignment(volume, alignment)
-            preview_labels = ["C", "Z", "Y", "X"]
-            preview_scale = self._output_scale(
-                layer, self._axis_labels(layer, np.asarray(layer.data)), preview_labels
-            )
-            preview_kwargs = {} if preview_scale is None else {"scale": preview_scale}
-            self._viewer.add_image(
-                preview,
-                name=f"{getattr(layer, 'name', 'image')} multicolor registration",
-                metadata={
-                    "axis_labels": preview_labels,
-                    "multicolor_alignment": alignment_summary(alignment),
-                },
-                **preview_kwargs,
-            )
             path = self.alignmentPathEdit.text().strip()
             if path:
                 save_alignment(alignment, Path(path))
+            # Publish the aligned calibration preview as a real result (same
+            # type the multicolor-registration processor returns) instead of a
+            # floating napari layer.
+            result = MulticolorRegistrationResult(
+                name=f"{source.name} (multicolor registration)",
+                data=preview,
+                alignment=alignment,
+                params=self._registration_params(bounds, axis, mode, path),
+                axis_scales=self._czyx_scales(source),
+                scale_unit=getattr(self._currentResult, "scale_unit", "px")
+                if self._currentResult is not None else "px",
+            )
+            self.sigResultProduced.emit(result, result.name)
             summary = alignment_summary(alignment)
             if bead_coords is not None:
                 summary = f"{summary}  (reused found beads)"
@@ -275,28 +300,64 @@ class MulticolorWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.summaryLabel.setText(str(exc))
 
+    def _registration_params(self, bounds, axis, mode, save_path) -> dict:
+        """Mirror the multicolor-registration processor's param names."""
+        return {
+            "mode": mode,
+            "reference_channel": self.referenceSpin.value(),
+            "split_axis": axis,
+            "n_slices": self.slicesSpin.value(),
+            "bounds": list(bounds),
+            "time_index": self.timeSpin.value(),
+            "bead_sigma": self.beadSigmaSpin.value(),
+            "bead_min_dist": self.beadMinDistSpin.value(),
+            "bead_thr_rel": self.beadThresholdSpin.value(),
+            "match_max_dist": self.matchMaxDistSpin.value(),
+            "ransac_n_iter": self.ransacIterSpin.value(),
+            "ransac_inlier_px": self.ransacInlierSpin.value(),
+            "save_path": save_path,
+        }
+
+    @staticmethod
+    def _czyx_scales(source: "_MulticolorSource") -> list[float] | None:
+        """(C, Z, Y, X) scales for the registration preview, when derivable."""
+        scales = list(source.axis_scales or [])
+        if len(scales) < 3:
+            return None
+        try:
+            return output_axis_scales(["Z", "Y", "X"], scales[-3:])
+        except Exception:
+            return None
+
     def apply(self) -> None:
-        layer = self._active_image_layer()
-        if layer is None:
-            self.summaryLabel.setText("No image layer selected.")
-            return
         try:
             alignment = self._alignment_or_loaded()
-            data = np.asarray(layer.data)
-            labels = self._axis_labels(layer, data)
+            source = self._resolve_source()
+            data = np.asarray(source.data)
+            labels = source.axis_labels
             aligned = apply_alignment_to_result_data(data, labels, alignment)
             out_labels = output_axis_labels(labels)
-            aligned_scale = self._output_scale(layer, labels, out_labels)
-            aligned_kwargs = {} if aligned_scale is None else {"scale": aligned_scale}
-            self._viewer.add_image(
-                aligned,
-                name=f"{getattr(layer, 'name', 'image')} multicolor aligned",
-                metadata={
-                    "axis_labels": out_labels,
-                    "multicolor_alignment": alignment_summary(alignment),
+            try:
+                out_scales = output_axis_scales(labels, source.axis_scales) \
+                    if len(source.axis_scales) == len(labels) else None
+            except Exception:
+                out_scales = None
+            # Publish the aligned stack as a real result (same type the
+            # multicolor-apply processor returns) instead of a floating layer.
+            result = MulticolorApplyResult(
+                name=f"{source.name} (multicolor aligned)",
+                data=aligned,
+                axis_labels=out_labels,
+                alignment=alignment,
+                params={
+                    "alignment_path": self.alignmentPathEdit.text().strip()
+                    or "(in-memory registration)",
                 },
-                **aligned_kwargs,
+                axis_scales=out_scales,
+                scale_unit=getattr(self._currentResult, "scale_unit", "px")
+                if self._currentResult is not None else "px",
             )
+            self.sigResultProduced.emit(result, result.name)
             self.summaryLabel.setText(
                 f"Applied {alignment_summary(alignment)}: {data.shape} -> {aligned.shape}"
             )
@@ -441,7 +502,7 @@ class MulticolorWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.summaryLabel.setText(f"Could not draw bead preview: {exc}")
 
-    def _reusable_bead_coords(self, layer, bounds, axis):
+    def _reusable_bead_coords(self, source, bounds, axis):
         """Return cached Find Beads coordinates if they match the current setup."""
         state = self._bead_state
         if not state:
@@ -454,21 +515,44 @@ class MulticolorWidget(QtWidgets.QWidget):
         if (
             state["bounds"] == list(bounds)
             and state["axis"] == axis
-            and state["layer_name"] == getattr(layer, "name", None)
+            and state["source_name"] == source.name
             and state["time_index"] == self.timeSpin.value()
             and state["detect_params"] == detect_params
         ):
             return state["coords"]
         return None
 
-    def _current_layer_volume(self):
+    def setCurrentResult(self, result) -> None:
+        """The reconstruction-list selection Register/Apply operate on."""
+        self._currentResult = result
+
+    def _resolve_source(self) -> "_MulticolorSource":
+        """Return the volume source: the selected reconstruction result if one
+        is set, else the active image layer (standalone use). Register/Apply and
+        the previews all read from this, so processing follows the selected
+        result rather than whatever napari layer happens to be active."""
+        result = getattr(self, "_currentResult", None)
+        if result is not None and getattr(result, "data", None) is not None:
+            data = np.asarray(result.data)
+            labels = list(
+                getattr(result, "axis_labels", None) or axis_labels_for_shape(data, [])
+            )
+            scales = list(getattr(result, "axis_scales", None) or [])
+            return _MulticolorSource(data, labels, scales, getattr(result, "name", "result"))
         layer = self._active_image_layer()
         if layer is None:
-            raise ValueError("No image layer selected.")
+            raise ValueError("No result or image layer selected.")
         data = np.asarray(layer.data)
         labels = self._axis_labels(layer, data)
-        volume = extract_calibration_volume(data, labels, self.timeSpin.value())
-        return layer, volume
+        scales = list(self._layer_scale(layer))
+        return _MulticolorSource(data, labels, scales, str(getattr(layer, "name", "image")))
+
+    def _current_layer_volume(self):
+        source = self._resolve_source()
+        volume = extract_calibration_volume(
+            source.data, source.axis_labels, self.timeSpin.value()
+        )
+        return source, volume
 
     def _split_params(self, volume: np.ndarray):
         axis = self.axisCombo.currentText()
@@ -525,7 +609,7 @@ class MulticolorWidget(QtWidgets.QWidget):
             return ()
 
     def _overlay_scale(self, ndim: int) -> list[float]:
-        """Trailing-``ndim`` slice of the active image layer's scale.
+        """Trailing-``ndim`` slice of the current source's per-axis scale.
 
         Bead points and split rectangles are built in image pixel-index space,
         but napari places overlay layers in world coordinates. Without a
@@ -533,27 +617,13 @@ class MulticolorWidget(QtWidgets.QWidget):
         carries a physical scale (e.g. nm/px on a reconstruction). Falls back to
         ``1.0`` so unscaled images are unaffected.
         """
-        scale = self._layer_scale(self._active_image_layer())
+        try:
+            scale = tuple(float(v) for v in self._resolve_source().axis_scales)
+        except Exception:
+            scale = self._layer_scale(self._active_image_layer())
         if len(scale) >= ndim:
             return list(scale[-ndim:])
         return [1.0] * ndim
-
-    def _output_scale(self, layer, source_labels, out_labels) -> list[float] | None:
-        """Map a source layer's per-axis scale onto ``out_labels`` by axis name.
-
-        Keeps derived registration/aligned images physically consistent with
-        the source. Returns ``None`` when the source has no usable scale so the
-        caller can omit ``scale`` entirely (napari then defaults to 1.0).
-        """
-        scale = self._layer_scale(layer)
-        if not scale or all(s == 1.0 for s in scale):
-            return None
-        label_scale = {
-            str(label): scale[index]
-            for index, label in enumerate(source_labels)
-            if index < len(scale)
-        }
-        return [float(label_scale.get(str(label), 1.0)) for label in out_labels]
 
     @staticmethod
     def _is_image_layer(layer) -> bool:

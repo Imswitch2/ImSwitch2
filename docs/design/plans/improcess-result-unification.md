@@ -257,10 +257,17 @@ review + gated commit.
   the seg preview, and the deferred Multicolor). Review caught + fixed a
   param-key mismatch that would have silently dropped the panel's settings on
   commit. 162 tests pass.
-- ⬜ **Phase 3 — Multicolor split.** Separate true *results* (composite/RGB
-  images) from *annotations* (scale bar, ROIs, points). Results publish;
-  annotations become typed overlay layers on the active result. (Trickiest —
-  multicolor mixes display styling and image production.)
+- ✅ **Phase 3 — Multicolor split** (2026-07-08). Register/Apply publish
+  `MulticolorRegistrationResult`/`MulticolorApplyResult` via a new panel
+  `sigResultProduced` → comm-channel bridge in `ImProcessMainController`
+  (`_wire_producing_panel`, keyed by widget identity — two tool ids share the
+  Multicolor widget, a per-id key would double-publish). The panel operates on
+  the selected result via `setCurrentResult`/`_resolve_source` (active-layer
+  fallback for standalone use); `add_image` removed entirely; the
+  split-boundary shapes + detected-bead points remain ephemeral diagnostics.
+  Allowlist test tightened to per-file layer kinds (Multicolor: points/shapes
+  only). Result parity with the multicolor processors (same result types,
+  param names, output scales).
 - ⬜ **Phase 4 — Tool/producer audit.** ROI manager, Profile, ROI stats, FRC,
   PSF resolution, colocalization: confirm each is tool-only or add a "→ result"
   publish; delete now-redundant `_active_image_layer` copies in favor of the one

@@ -186,13 +186,16 @@ you select a result from the reconstruction list, the viewer automatically:
 
 This keeps "which image am I processing?" unambiguous: it's always the active
 napari layer, and the reconstruction list keeps that layer aligned with your
-selection.  Most analysis panels now produce new results in the reconstruction
-list instead of creating floating napari layers (Projection and Segmentation have
-been unified with the generic processor path; ROI Manager, FRC, PSF, Colocalization
-and Multicolor will follow in later phases).  Ephemeral preview layers (the
-segmentation preview) are the exception: they restore the previously active layer
-and are excluded from tool source resolution, so a preview can never become its own
-input.
+selection.  Producing panels create new results in the reconstruction list
+instead of floating napari layers: Projection and Segmentation run through the
+generic processor path, and Multicolor's Register/Apply publish
+registration/aligned results (the measurement tools — ROI Manager, FRC, PSF,
+Colocalization, Profile, ROI stats — are covered by the tool/producer audit in
+a later phase).  Ephemeral preview layers (the segmentation preview,
+multicolor's split-boundary and detected-bead overlays) are the exception:
+they are tuning/diagnostic overlays, restore the previously active layer and
+are excluded from tool source resolution, so a preview can never become its
+own input.
 
 To see which result produced the current image, check the main layer's name or
 the highlighted item in the reconstruction list — after clicking a result, those
@@ -327,10 +330,16 @@ Multicolor panel
 Set ``"multicolorPanel": true`` in the ``processing`` block to show a
 three-color strip registration panel.  It is intended for SNOUTY / OPM /
 MS-RESOLFT measurements where a deskewed bead volume contains three color
-channels as adjacent X-axis strips.  The panel can split the active ``ZYX`` or
-``TZYX`` image layer into three X ROIs, estimate transforms in ``maxproj``,
-``volume`` or ``descriptor_3d`` mode, save the calibration as an HDF5 alignment
-file and add an aligned bead preview layer to the viewer.
+channels as adjacent X-axis strips.  The panel operates on the currently
+selected ``ZYX`` or ``TZYX`` reconstruction result (falling back to the active
+image layer in standalone use), splits it into channel ROIs, estimates
+transforms in ``maxproj``, ``volume`` or ``descriptor_3d`` mode, and saves the
+calibration as an HDF5 alignment file.  **Register** publishes the aligned
+calibration preview and **Apply** publishes the aligned sample stack as
+results in the reconstruction list (the same result types the
+``multicolor-registration`` / ``multicolor-apply`` processors return).  The
+split-boundary rectangles and detected-bead markers are ephemeral
+tuning/diagnostic overlays, like the segmentation preview.
 
 The usual workflow is:
 

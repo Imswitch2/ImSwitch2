@@ -58,6 +58,10 @@ class ImProcessMainController(MainController):
             self.mainViewController.reconstructionController,
         )
         self._resultProcessorControllers = {}
+        # Runtime panels that publish their own results (multi-action producers
+        # like Multicolor) expose sigResultProduced; we forward it to the comm
+        # channel once. Tracks which panels have had that bridge connected.
+        self._panelResultBridges = set()
 
         # Register the view's dock layout with the shared widget-state
         # persistence service so it is auto-restored at startup and auto-saved
@@ -229,13 +233,43 @@ class ImProcessMainController(MainController):
 
     def _wire_runtime_result_processor(self, processor_id: str) -> None:
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
-        if widget is None or not hasattr(widget, "sigRunRequested"):
+        if widget is None:
             return
-        if processor_id not in self._resultProcessorControllers:
-            self._resultProcessorControllers[processor_id] = self.__factory.createController(
-                ResultProcessorController,
-                widget,
-            )
+        # Single-processor panels (generic ResultProcessorWidget, and custom
+        # panels like Segmentation that conform to the contract) run one
+        # processor and publish through ResultProcessorController.
+        if hasattr(widget, "sigRunRequested"):
+            if processor_id not in self._resultProcessorControllers:
+                self._resultProcessorControllers[processor_id] = self.__factory.createController(
+                    ResultProcessorController,
+                    widget,
+                )
+            self._seed_runtime_result_processor(widget)
+            return
+        # Multi-action producing panels (e.g. Multicolor: register + apply)
+        # publish their own results via sigResultProduced; forward those to the
+        # reconstruction list and feed them the current result.
+        if hasattr(widget, "sigResultProduced"):
+            self._wire_producing_panel(widget)
+
+    def _wire_producing_panel(self, widget) -> None:
+        """Bridge a panel that publishes its own results into the pipeline.
+
+        Keyed by widget identity, not tool id: several tool ids can map to one
+        panel (multicolor-registration and multicolor-apply share the
+        Multicolor widget), and a per-id key would double-connect the forward,
+        publishing every result twice.
+        """
+        comm_channel = self.__commChannel
+        if id(widget) not in self._panelResultBridges:
+            def _forward(result, name):
+                comm_channel.sigResultProduced.emit(result, name)
+                comm_channel.sigCurrentResultChanged.emit(result)
+
+            widget.sigResultProduced.connect(_forward)
+            if hasattr(widget, "setCurrentResult"):
+                comm_channel.sigCurrentResultChanged.connect(widget.setCurrentResult)
+            self._panelResultBridges.add(id(widget))
         self._seed_runtime_result_processor(widget)
 
     def _seed_runtime_result_processor(self, widget) -> None:

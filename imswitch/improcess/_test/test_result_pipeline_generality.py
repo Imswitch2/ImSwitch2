@@ -90,25 +90,29 @@ def test_only_allowlisted_view_modules_create_napari_layers():
     calls viewer.add_* (reintroducing the floating-layer smell) fails this test
     and must instead publish a ProcessingResult.
 
-    Allowed:
-      - ReconstructionView: THE render path for selected results.
-      - SegmentationWidget: ephemeral tuning preview only (commit publishes a
-        SegmentationResult).
-      - MulticolorWidget: still floats its overlays — deferred to Phase 3 of
-        docs/design/plans/improcess-result-unification.md. Remove from this
-        allowlist when Phase 3 lands.
+    Per-file allowances (Phase 3 state):
+      - ReconstructionView: THE render path for selected results — all kinds.
+      - SegmentationWidget: ephemeral tuning preview only (labels mode +
+        binary-mask image mode); commit publishes a SegmentationResult.
+      - MulticolorWidget: ephemeral split-boundary shapes + detected-bead
+        points only; Register/Apply publish Multicolor*Results. add_image is
+        deliberately NOT allowed here anymore.
     """
     view_dir = Path(__file__).resolve().parent.parent / "view"
-    allow = {"ReconstructionView.py", "SegmentationWidget.py", "MulticolorWidget.py"}
     markers = ("add_image(", "add_labels(", "add_points(", "add_shapes(")
+    allow: dict[str, set[str]] = {
+        "ReconstructionView.py": set(markers),
+        "SegmentationWidget.py": {"add_image(", "add_labels("},
+        "MulticolorWidget.py": {"add_points(", "add_shapes("},
+    }
 
     offenders = []
     for path in sorted(view_dir.glob("*.py")):
-        if path.name in allow:
-            continue
+        allowed = allow.get(path.name, set())
         source = path.read_text()
-        if any(marker in source for marker in markers):
-            offenders.append(path.name)
+        for marker in markers:
+            if marker in source and marker not in allowed:
+                offenders.append(f"{path.name}:{marker.rstrip('(')}")
 
     assert not offenders, (
         "these view panels create napari layers directly instead of publishing "
