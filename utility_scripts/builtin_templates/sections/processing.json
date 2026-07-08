@@ -6,6 +6,86 @@
   "summary": "ImProcess module configuration. Select which reconstructors and processors are loaded for this setup.",
   "fields": [
     {
+      "key": "parameterPanel",
+      "label": "Show parameter panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the ImProcess Parameters dock at startup. Hidden still keeps reconstructor parameters available internally.",
+      "opts": []
+    },
+    {
+      "key": "napariLayerControls",
+      "label": "Show napari layer controls",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show napari's built-in layer controls dock inside the reconstruction viewer.",
+      "opts": []
+    },
+    {
+      "key": "reconstructionPanel",
+      "label": "Show reconstruction panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the Reconstruction viewer dock at startup. If hidden, it opens automatically when data is displayed.",
+      "opts": []
+    },
+    {
+      "key": "actionsPanel",
+      "label": "Show actions panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the ImProcess Actions dock at startup.",
+      "opts": []
+    },
+    {
+      "key": "fileWatcherPanel",
+      "label": "Show file watcher panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the ImProcess File watcher dock at startup.",
+      "opts": []
+    },
+    {
+      "key": "multiDataPanel",
+      "label": "Show multidata panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the ImProcess Multidata management dock at startup.",
+      "opts": []
+    },
+    {
+      "key": "currentDataPanel",
+      "label": "Show current data panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the ImProcess Current data dock at startup.",
+      "opts": []
+    },
+    {
+      "key": "resultsPanel",
+      "label": "Show results table panel",
+      "type": "bool",
+      "default": true,
+      "req": false,
+      "grp": "Layout",
+      "tip": "Show the ImProcess Results table dock at startup.",
+      "opts": []
+    },
+    {
       "key": "graphPanel",
       "label": "Show graph panel",
       "type": "bool",

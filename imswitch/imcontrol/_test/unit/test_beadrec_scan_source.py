@@ -1,5 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
 
+from imswitch.imcontrol.controller.CommunicationChannel import CommunicationChannel
 from imswitch.imcontrol.controller.controllers._beadrec_scan_source import (
     BeadRecScanSource,
     BeadRecScanSourceMixin,
@@ -49,3 +51,16 @@ def test_communication_channel_prefers_active_scan_source():
         # Idle fallback chain must remain for reads outside a running scan
         assert "_get_required_controller('Scan', 'scan')" in body
         assert 'self.getBeadRecScanSource()' in body
+
+
+def test_communication_channel_uses_idle_beadrec_source_before_legacy_scan_methods():
+    scan_source = _RasterLikeController()
+    channel = CommunicationChannel.__new__(CommunicationChannel)
+    channel._activeScanSource = None
+    channel._CommunicationChannel__main = SimpleNamespace(
+        controllers={'Scan': scan_source}
+    )
+
+    assert not hasattr(scan_source, 'getDimsScan')
+    assert channel.getDimsScan() == [10, 20]
+    assert channel.getScanStepSizes() == [0.05, 0.1]

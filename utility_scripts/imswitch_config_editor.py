@@ -70,6 +70,26 @@ _CATEGORY_REGISTRY = {
 }
 
 
+def _imswitch_user_root() -> Path:
+    """Return ImSwitch's user config root using the app's shared convention."""
+    try:
+        from imswitch.imcommon.model import dirtools
+
+        return Path(dirtools.UserFileDirs.Root)
+    except Exception:
+        if os.name == "nt":
+            return Path.home() / "Documents" / "ImSwitchConfig"
+        return Path.home() / "ImSwitchConfig"
+
+
+def _default_setup_dir() -> Path:
+    return _imswitch_user_root() / "imcontrol_setups"
+
+
+def _default_config_dir() -> Path:
+    return _imswitch_user_root() / "config"
+
+
 # =============================================================================
 # Schema loading – reads builtin_templates/{category}/*.json at startup
 # =============================================================================
@@ -2871,7 +2891,7 @@ class LeftPanel(QWidget):
     # ── File browser ──────────────────────────────────────────────────────
     def _open_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Open Config Folder",
-                                             str(Path.home()))
+                                             str(_default_setup_dir()))
         if d:
             self._config_dir = d
             count = self._refresh_file_list(d)
@@ -3235,8 +3255,8 @@ class ValidationPanel(QFrame):
 class MainWindow(QMainWindow):
     # Well-known location of imcontrol_options.json
     _OPTIONS_SEARCH_ROOTS = [
+        _default_config_dir(),
         Path.home() / "Documents" / "ImSwitchConfig" / "config",
-        Path.home() / "ImSwitchConfig" / "config",
         Path("/") / "etc" / "imswitch",
     ]
 
@@ -3388,8 +3408,9 @@ class MainWindow(QMainWindow):
     def _open_file(self):
         if not self._confirm_discard():
             return
+        start_dir = str(Path(self._path).parent if self._path else _default_setup_dir())
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Config", "", "JSON files (*.json)"
+            self, "Open Config", start_dir, "JSON files (*.json)"
         )
         if path:
             self._load_file(path)
@@ -3428,8 +3449,9 @@ class MainWindow(QMainWindow):
         self._write_file(self._path)
 
     def _save_as(self):
+        start_path = self._path or str(_default_setup_dir() / "new_setup.json")
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Config As", self._path or "", "JSON files (*.json)"
+            self, "Save Config As", start_path, "JSON files (*.json)"
         )
         if path:
             self._write_file(path)
@@ -4050,7 +4072,7 @@ def main():
     if len(sys.argv) > 1:
         folder = sys.argv[1]
     else:
-        _default = Path.home() / "Documents" / "ImSwitchConfig" / "imcontrol_setups"
+        _default = _default_setup_dir()
         folder = str(_default) if _default.is_dir() else ""
     win = MainWindow(start_folder=folder)
     win.show()

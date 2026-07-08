@@ -49,11 +49,11 @@ class MockCameraTIS:
         if mocktype=="focus_lock":
             img = np.zeros(self.shape)
             beamCenter = [int(np.random.randn() * 1 + 250), int(np.random.randn() * 30 + 300)]
-            img[beamCenter[0] - 10:beamCenter[0] + 10, beamCenter[1] - 10:beamCenter[1] + 10] = 1
+            img[beamCenter[0] - 10:beamCenter[0] + 10, beamCenter[1] - 10:beamCenter[1] + 10] = 4000
         elif mocktype=="random_peak":
             imgsize = self.shape
-            peakmax = 60
-            noisemean = 10
+            peakmax = 3000
+            noisemean = 100
             # generate image
             img = np.zeros(imgsize)
             # add a random gaussian peak sometimes
@@ -71,8 +71,8 @@ class MockCameraTIS:
             imgsize = self.shape
             x, y = np.meshgrid(np.linspace(0,imgsize[1],imgsize[1]), np.linspace(0,imgsize[0],imgsize[0]))
             pos = np.dstack((x, y))
-            peakmax = 60
-            noisemean = 10
+            peakmax = 3000
+            noisemean = 100
             beads = 13
             fixedrand1 = np.random.RandomState(1234537890)
             fixedrand2 = np.random.RandomState(2345678901)
@@ -92,8 +92,11 @@ class MockCameraTIS:
             img = np.zeros(self.shape)
             beamCenter = [int(np.random.randn() * 30 + 250), int(np.random.randn() * 30 + 300)]
             img[beamCenter[0] - 10:beamCenter[0] + 10, beamCenter[1] - 10:beamCenter[1] + 10] = 1
-            img = np.random.randn(img.shape[0],img.shape[1])
-        return img
+            img = np.random.randn(img.shape[0],img.shape[1]) * 100 + 500
+        # Real TIS cameras deliver integer frames and the recording path uses
+        # the manager-declared uint16 dtype, so emit uint16 (values scaled to
+        # a plausible 12-bit range) rather than raw float64.
+        return np.clip(img, 0, 65535).astype(np.uint16)
 
     def getLast(self, is_resize=False):
         return self.grabFrame()

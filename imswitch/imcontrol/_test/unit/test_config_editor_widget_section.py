@@ -144,6 +144,46 @@ def test_processing_section_exposes_monalisa_reconstructor():
     assert "monalisa" in reconstructors
 
 
+def test_config_editor_defaults_to_imswitch_user_setup_folder():
+    """The editor should use the same user config root as ImSwitch itself."""
+    root = editor._imswitch_user_root()
+
+    assert root.name == "ImSwitchConfig"
+    assert editor._default_setup_dir() == root / "imcontrol_setups"
+    assert editor._default_config_dir() == root / "config"
+
+
+def test_processing_section_exposes_minimal_gui_flags():
+    """The config editor exposes ImProcess layout-minimal mode toggles."""
+    schema = editor.SECTION_SCHEMAS.get("processing")
+    assert schema is not None
+
+    fields = {field["key"]: field for field in schema.get("fields", [])}
+    for key in (
+        "parameterPanel",
+        "napariLayerControls",
+        "reconstructionPanel",
+        "actionsPanel",
+        "fileWatcherPanel",
+        "multiDataPanel",
+        "currentDataPanel",
+        "resultsPanel",
+    ):
+        assert fields[key]["type"] == "bool"
+        assert fields[key]["default"] is True
+        assert fields[key]["grp"] == "Layout"
+
+    defaults = editor._build_default_section(schema)
+    assert defaults["parameterPanel"] is True
+    assert defaults["napariLayerControls"] is True
+    assert defaults["reconstructionPanel"] is True
+    assert defaults["actionsPanel"] is True
+    assert defaults["fileWatcherPanel"] is True
+    assert defaults["multiDataPanel"] is True
+    assert defaults["currentDataPanel"] is True
+    assert defaults["resultsPanel"] is True
+
+
 def test_validation_warning_includes_clickable_link():
     """
     Widget→section validation warnings must include a clickable 'Configure…' link.

@@ -306,15 +306,29 @@ class CommunicationChannel(SignalInterface):
             raise RuntimeError('No scan controller available to provide getNumCamTTL')
         return getter()
 
+    def _asBeadRecScanSource(self, controller) -> 'BeadRecScanSource | None':
+        """Return controller as a compatible BeadRec scan source, else None."""
+        from .controllers._beadrec_scan_source import BeadRecScanSource
+        if controller is None:
+            return None
+        if (
+            isinstance(controller, BeadRecScanSource)
+            or (
+                hasattr(controller, 'getBeadRecScanDims')
+                and hasattr(controller, 'getBeadRecStepSizes')
+                and hasattr(controller, 'getNumLineSteps')
+                and hasattr(controller, 'getFramesPerScanPixel')
+                and hasattr(controller, 'isBeadRecCompatible')
+            )
+        ):
+            if controller.isBeadRecCompatible():
+                return controller
+        return None
+
     def _activeBeadRecScanSource(self) -> 'BeadRecScanSource | None':
         """Return the active scan source if it satisfies the BeadRecScanSource
         protocol and reports itself BeadRec-compatible, else None."""
-        from .controllers._beadrec_scan_source import BeadRecScanSource
-        source = self._activeScanSource
-        if (source is not None and isinstance(source, BeadRecScanSource)
-                and source.isBeadRecCompatible()):
-            return source
-        return None
+        return self._asBeadRecScanSource(self._activeScanSource)
 
     def getBeadRecScanSource(self) -> 'BeadRecScanSource | None':
         """Return the BeadRec-compatible scan source, or None.
@@ -325,7 +339,6 @@ class CommunicationChannel(SignalInterface):
         1. Implements the BeadRecScanSource protocol methods
         2. Returns True from isBeadRecCompatible()
         """
-        from .controllers._beadrec_scan_source import BeadRecScanSource
         active = self._activeBeadRecScanSource()
         if active is not None:
             return active
@@ -333,14 +346,9 @@ class CommunicationChannel(SignalInterface):
         if controllers is None:
             return None
         for controller in controllers.values():
-            if (isinstance(controller, BeadRecScanSource) or
-                (hasattr(controller, 'getBeadRecScanDims') and
-                 hasattr(controller, 'getBeadRecStepSizes') and
-                 hasattr(controller, 'getNumLineSteps') and
-                 hasattr(controller, 'getFramesPerScanPixel') and
-                 hasattr(controller, 'isBeadRecCompatible'))):
-                if controller.isBeadRecCompatible():
-                    return controller
+            source = self._asBeadRecScanSource(controller)
+            if source is not None:
+                return source
         return None
 
     def getDimsScan(self):
@@ -349,13 +357,21 @@ class CommunicationChannel(SignalInterface):
             dims = source.getBeadRecScanDims()
             return [dims[0], dims[1]]
         try:
-            return self._get_required_controller('Scan', 'scan').getDimsScan()
+            controller = self._get_required_controller('Scan', 'scan')
         except RuntimeError:
             source = self.getBeadRecScanSource()
             if source is not None:
                 dims = source.getBeadRecScanDims()
                 return [dims[0], dims[1]]
             raise
+        source = self._asBeadRecScanSource(controller)
+        if source is not None:
+            dims = source.getBeadRecScanDims()
+            return [dims[0], dims[1]]
+        getter = getattr(controller, 'getDimsScan', None)
+        if getter is not None:
+            return getter()
+        raise RuntimeError('No scan controller available to provide getDimsScan')
 
     def getScanStepSizes(self):
         source = self._activeBeadRecScanSource()
@@ -363,13 +379,21 @@ class CommunicationChannel(SignalInterface):
             steps = source.getBeadRecStepSizes()
             return [steps[0], steps[1]]
         try:
-            return self._get_required_controller('Scan', 'scan').getScanStepSizes()
+            controller = self._get_required_controller('Scan', 'scan')
         except RuntimeError:
             source = self.getBeadRecScanSource()
             if source is not None:
                 steps = source.getBeadRecStepSizes()
                 return [steps[0], steps[1]]
             raise
+        source = self._asBeadRecScanSource(controller)
+        if source is not None:
+            steps = source.getBeadRecStepSizes()
+            return [steps[0], steps[1]]
+        getter = getattr(controller, 'getScanStepSizes', None)
+        if getter is not None:
+            return getter()
+        raise RuntimeError('No scan controller available to provide getScanStepSizes')
 
     def getNumLineSteps(self):
         """Return the number of linesteps from the scan controller. Returns 1
@@ -385,6 +409,9 @@ class CommunicationChannel(SignalInterface):
             if source is not None:
                 return source.getNumLineSteps()
             return 1
+        source = self._asBeadRecScanSource(controller)
+        if source is not None:
+            return source.getNumLineSteps()
         getter = getattr(controller, 'getNumLineSteps', None)
         return getter() if getter is not None else 1
 
@@ -402,6 +429,9 @@ class CommunicationChannel(SignalInterface):
             if source is not None:
                 return source.getFramesPerScanPixel()
             return 1
+        source = self._asBeadRecScanSource(controller)
+        if source is not None:
+            return source.getFramesPerScanPixel()
         getter = getattr(controller, 'getFramesPerScanPixel', None)
         return getter() if getter is not None else 1
 

@@ -93,6 +93,21 @@ def test_beta_scan_designer_keeps_linesteps_out_of_physical_dimensions():
     assert validate_scan_info_contract(scan_info) is True
 
 
+def test_beta_scan_designer_defaults_missing_conversion_factor_to_one():
+    setup_info = _scan_setup()
+    for positioner in setup_info.positioners.values():
+        positioner.managerProperties = {}
+
+    signals, positions, scan_info = BetaScanDesigner().make_signal(
+        _beta_scan_parameters(),
+        setup_info,
+    )
+
+    assert positions == [3, 2]
+    assert scan_info["pixel_sizes"] == [1, 1]
+    assert {len(signal) for signal in signals.values()} == {14}
+
+
 def test_beta_scan_designer_validates_3d_sample_levels():
     setup_info = _scan_setup()
     parameters = _beta_scan_parameters(n_linesteps=2)

@@ -4,7 +4,7 @@ import numpy as np
 from collections.abc import Callable, Sequence
 from threading import Lock
 
-from imswitch.imcommon.framework import Thread, Worker, Signal
+from imswitch.imcommon.framework import Thread, Timer, Worker, Signal
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from ..display_transform import (
     DisplayTransform,
@@ -29,6 +29,10 @@ from imswitch.imcontrol.model.bead_recognition import (
     reconstruction_image,
     rescale_reconstruction_to_pixel_size,
 )
+
+_SCAN_END_DRAIN_TIMEOUT_S = 0.5
+_SCAN_END_DRAIN_CHECK_MS = 10
+
 
 class BeadRecController(ImConWidgetController, StatefulComponentMixin):
     
@@ -67,6 +71,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # frame exists. Consuming on the early flag pulled the pre-scan camera
         # backlog into the reconstruction, shifting and inflating it.
         self._scanArmed = False
+        self._drainingEndedScan = False
+        self._scanEndDrainDeadline = None
+        self._scanEndDrainTimer = Timer()
+        self._scanEndDrainTimer.timeout.connect(self._finishEndedScanIfReady)
         self.beadWorker = BeadWorker(
             isScanRunning=self._scanFramesReady,
             getFrames=self._getCurrentDetectorChunk,
@@ -128,6 +136,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         
 
     def __del__(self) -> None:
+        try:
+            self._scanEndDrainTimer.stop()
+        except Exception:
+            pass
         self.beadWorker.stop()
         self.thread.quit()
         self.thread.wait()
@@ -183,7 +195,41 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         insufficient: it turns True while the scan signals are still being
         armed, before any scan frame exists.
         """
-        return self._scanArmed and self._commChannel.isScanRunning()
+        if not self._scanArmed:
+            return False
+        if self._commChannel.isScanRunning():
+            return True
+        return self._drainingEndedScan and not self._hasExpectedScanFrames()
+
+    def _expectedScanPixels(self) -> int | None:
+        if self.dims is None:
+            return None
+        return int(self.dims[0]) * int(self.dims[1])
+
+    def _workerFilledPixels(self) -> int:
+        try:
+            return int(self.beadWorker.filledPixels())
+        except Exception:
+            return 0
+
+    def _receivedScanFrames(self) -> int:
+        return max(int(self.framesReceivedThisScan), self._workerFilledPixels())
+
+    def _hasExpectedScanFrames(self) -> bool:
+        expected = self._expectedScanPixels()
+        return expected is not None and self._receivedScanFrames() >= expected
+
+    def _syncReconstructionFromWorker(self) -> None:
+        try:
+            buffer, filled_pixels = self.beadWorker.snapshot()
+        except Exception:
+            return
+        if buffer is not None:
+            self.recIm = buffer
+        self.framesReceivedThisScan = max(
+            int(self.framesReceivedThisScan),
+            int(filled_pixels or 0),
+        )
 
     def _discardBufferedFrames(self) -> None:
         """Drop any frames buffered before the scan started, so reconstruction
@@ -509,6 +555,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
     def run(self):
         # if not self.running:
         if self._widget.runButton.isChecked():
+            self._scanEndDrainTimer.stop()
+            self._drainingEndedScan = False
+            self._scanEndDrainDeadline = None
             self.updateParameters()
             config = self._createAcquisitionConfig()
             self.running = True
@@ -526,6 +575,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         else:
             self.running = False
             self._scanArmed = False
+            self._drainingEndedScan = False
+            self._scanEndDrainDeadline = None
+            self._scanEndDrainTimer.stop()
             self.beadWorker.stop()
             self._widget.setStatusText("Bead reconstruction stopped")
             self.thread.quit()
@@ -535,6 +587,9 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
     def onNewScan(self):
         self.newScan = True
         self.framesReceivedThisScan = 0
+        self._scanEndDrainTimer.stop()
+        self._drainingEndedScan = False
+        self._scanEndDrainDeadline = None
         if self.autoAxial:
             self.axialName = self._commChannel.getNextAxial()
         else:
@@ -570,10 +625,43 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
     def onEndedScan(self):
         self.ongoingScan=False
+        should_drain = (
+            self.running
+            and self._expectedScanPixels() is not None
+            and not self._hasExpectedScanFrames()
+        )
+        if should_drain:
+            # Live-view-only mock scans can emit sigScanEnded before the final
+            # detector frames have been delivered to the chunk buffer. The
+            # RecordingManager avoids this by polling until its expected frame
+            # count is reached; mirror that behavior briefly for BeadRec.
+            self._drainingEndedScan = True
+            self._scanArmed = True
+            self._scanEndDrainDeadline = time.monotonic() + _SCAN_END_DRAIN_TIMEOUT_S
+            self._scanEndDrainTimer.start(_SCAN_END_DRAIN_CHECK_MS)
+            return
+        self._completeEndedScan()
+
+    def _finishEndedScanIfReady(self) -> None:
+        deadline = self._scanEndDrainDeadline
+        if (
+            self._hasExpectedScanFrames()
+            or deadline is None
+            or time.monotonic() >= deadline
+        ):
+            self._completeEndedScan()
+
+    def _completeEndedScan(self) -> None:
+        self._scanEndDrainTimer.stop()
+        self._drainingEndedScan = False
+        self._scanEndDrainDeadline = None
+        self._syncReconstructionFromWorker()
         # Stop consuming: frames the free-running camera keeps producing after
         # the scan ends must not bleed into the finished reconstruction.
         self._scanArmed = False
-        if self.running and self.framesReceivedThisScan == 0:
+        self._releaseDetectorChunkConsumer()
+        received = self._receivedScanFrames()
+        if self.running and received == 0:
             msg = ('BeadRec: 0 detector frames received during the scan — '
                    'check camera triggering (e.g. external-trigger TTL '
                    'never pulsed).')
@@ -588,7 +676,6 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # more triggers than the grid expects; a deficit means dropped triggers.
         if self.dims is not None:
             expected = self.dims[0] * self.dims[1]
-            received = self.framesReceivedThisScan
             if received != expected:
                 self._logger.warning(
                     'BeadRec frame-count mismatch: received %d kept frames, '
@@ -972,10 +1059,20 @@ class BeadWorker(Worker):
             self._config = config
             self._resetRequested = True
             self._lineStepPhase = 0
+            self._filledPixels = 0
+            self._nextIndex = 0
 
     def _isRunning(self) -> bool:
         with self._lock:
             return self._running
+
+    def filledPixels(self) -> int:
+        with self._lock:
+            return int(self._filledPixels)
+
+    def snapshot(self) -> tuple[np.ndarray | None, int]:
+        with self._lock:
+            return self._recIm, int(self._filledPixels)
 
     def _getBufferAndIndex(
         self,

@@ -44,8 +44,10 @@ class BetaScanDesigner(ScanDesigner):
                 raise ValueError(f'{self.__class__.__name__} does not support multi-axis'
                                  f' positioners')
 
-        convFactors = [positioner.managerProperties['conversionFactor']
-                       for positioner in setupInfo.positioners.values() if positioner.forScanning]
+        convFactors = [
+            positioner.managerProperties.get('conversionFactor', 1)
+            for positioner in setupInfo.positioners.values() if positioner.forScanning
+        ]
 
         # Retrieve sizes
         [fast_axis_size, middle_axis_size, slow_axis_size] = \

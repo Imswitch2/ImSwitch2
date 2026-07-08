@@ -1,10 +1,20 @@
 from pathlib import Path
+from types import SimpleNamespace
+
+from imswitch.imcontrol.controller.controllers.BeadRecController import (
+    BeadRecController,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
 BEAD_REC_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'BeadRecController.py'
 )
+
+
+def _stub_lifecycle(ctrl):
+    ctrl._scanEndDrainTimer = SimpleNamespace(stop=lambda: None)
+    ctrl.thread = SimpleNamespace(quit=lambda: None, wait=lambda: None)
 
 
 def test_bead_rec_controller_uses_pure_reconstruction_helpers():
@@ -83,6 +93,51 @@ def test_bead_rec_controller_uses_acquisition_config_and_worker_updates():
     assert 'self._widget.updateProgress(0, config.total_pixels)' in source
     assert 'if isinstance(recIm, BeadWorkerUpdate):' in source
     assert 'self._updateProgress(recIm.filled_pixels, recIm.total_pixels)' in source
+
+
+def test_bead_rec_scan_gate_drains_after_scan_until_expected_frames():
+    ctrl = BeadRecController.__new__(BeadRecController)
+    _stub_lifecycle(ctrl)
+    ctrl._scanArmed = True
+    ctrl._drainingEndedScan = True
+    ctrl.dims = (5, 2)
+    ctrl.framesReceivedThisScan = 8
+    ctrl.beadWorker = SimpleNamespace(filledPixels=lambda: 8, stop=lambda: None)
+    ctrl._commChannel = SimpleNamespace(isScanRunning=lambda: False)
+
+    assert BeadRecController._scanFramesReady(ctrl) is True
+
+    ctrl.framesReceivedThisScan = 10
+    ctrl.beadWorker = SimpleNamespace(filledPixels=lambda: 10, stop=lambda: None)
+
+    assert BeadRecController._scanFramesReady(ctrl) is False
+
+
+def test_bead_rec_scan_gate_still_uses_active_scan_running_state():
+    ctrl = BeadRecController.__new__(BeadRecController)
+    _stub_lifecycle(ctrl)
+    ctrl._scanArmed = True
+    ctrl._drainingEndedScan = False
+    ctrl.dims = (5, 2)
+    ctrl.framesReceivedThisScan = 10
+    ctrl.beadWorker = SimpleNamespace(filledPixels=lambda: 10, stop=lambda: None)
+    ctrl._commChannel = SimpleNamespace(isScanRunning=lambda: True)
+
+    assert BeadRecController._scanFramesReady(ctrl) is True
+
+
+def test_bead_rec_syncs_final_count_from_worker_snapshot():
+    buffer = object()
+    ctrl = BeadRecController.__new__(BeadRecController)
+    _stub_lifecycle(ctrl)
+    ctrl.recIm = None
+    ctrl.framesReceivedThisScan = 7
+    ctrl.beadWorker = SimpleNamespace(snapshot=lambda: (buffer, 10), stop=lambda: None)
+
+    BeadRecController._syncReconstructionFromWorker(ctrl)
+
+    assert ctrl.recIm is buffer
+    assert ctrl.framesReceivedThisScan == 10
 
 
 def test_bead_rec_controller_updates_widget_status_and_progress():
