@@ -407,9 +407,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self.recMode = RecMode.SpecTime
 
     def specLapse(self):
-        self._widget.checkSpecLapse()
-        self._widget.setEnabledParams(specLapse=True)
-        self.recMode = RecMode.SpecLapse
+        self.__logger.warning(
+            'Camera-only Timelapse recording mode is not implemented; '
+            'falling back to Run until STOP.'
+        )
+        self.untilStop()
 
     def recScanOnce(self):
         self._widget.checkScanOnce()
@@ -718,7 +720,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             elif recModeName == 'SpecTime':
                 self.specTime()
             elif recModeName == 'SpecLapse':
-                self.specLapse()
+                self.untilStop()
+                warnings.append(
+                    'Legacy SpecLapse camera timelapse mode is unsupported; '
+                    'restored Run until STOP instead.'
+                )
             elif recModeName == 'ScanOnce':
                 self.recScanOnce()
             elif recModeName == 'ScanLapse':

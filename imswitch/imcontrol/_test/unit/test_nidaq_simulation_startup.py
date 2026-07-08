@@ -78,6 +78,22 @@ def test_nidaq_simulation_allows_channels_without_nidaqmx(monkeypatch):
     assert manager.tasks == {}
 
 
+def test_nidaq_runtime_errors_warn_once_then_debug(monkeypatch):
+    """Repeated identical NI-DAQ write failures must not spam warnings."""
+    monkeypatch.setattr(nidaq_module, "_NIDAQMX_AVAILABLE", False)
+    setup_info = SetupInfo.from_json(SIMULATED_NIDAQ_SETUP, infer_missing=True)
+    manager = nidaq_module.NidaqManager(setup_info)
+    logger = SimpleNamespace(warning=Mock(), debug=Mock())
+    manager._NidaqManager__logger = logger
+
+    manager._warnRuntimeErrorOnce(('setDigital', 'Laser', 'DaqError', 'boom'), 'msg 1')
+    manager._warnRuntimeErrorOnce(('setDigital', 'Laser', 'DaqError', 'boom'), 'msg 1')
+    manager._warnRuntimeErrorOnce(('setAnalog', 'X', 'DaqError', 'boom'), 'msg 2')
+
+    assert logger.warning.call_count == 2
+    assert logger.debug.call_count == 1
+
+
 def test_nidaq_real_channels_still_require_nidaqmx(monkeypatch):
     """Real NI-DAQ setups should still fail clearly when nidaqmx is absent."""
     monkeypatch.setattr(nidaq_module, "_NIDAQMX_AVAILABLE", False)

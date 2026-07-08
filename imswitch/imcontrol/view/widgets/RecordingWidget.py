@@ -178,6 +178,18 @@ class RecordingWidget(Widget):
         recGrid.addWidget(self.timelapseFrameTimeLabel, gridRow, 3)
         recGrid.addWidget(self.timelapseFrameTimeEdit, gridRow, 4)
         recGrid.addWidget(self.lasersList, gridRow, 5)
+        # Plain camera-only timelapse is not backed by RecordingManager. Keep
+        # the legacy widgets for saved-state compatibility, but do not offer a
+        # mode that cannot start successfully.
+        for widget in (
+            self.recTimelapseBtn,
+            self.currentTimelapseFrame,
+            self.timelapseFramesEdit,
+            self.timelapseFrameTimeLabel,
+            self.timelapseFrameTimeEdit,
+            self.lasersList,
+        ):
+            widget.setVisible(False)
         gridRow += 1
 
         recGrid.addWidget(self.recScanOnceBtn, gridRow, 0, 1, 5)

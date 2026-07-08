@@ -145,6 +145,11 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self._sequenceDownButton = guitools.BetterPushButton("↓")
         self._dwellDeadTimeLabel = QtWidgets.QLabel("Dead time: -")
         self._dwellDeadTimeLabel.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self._dwellDeadTimeLabel.setMinimumWidth(120)
+        self._dwellDeadTimeLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
         for button in (
             self._sequenceAddButton,
             self._sequenceRemoveButton,
@@ -436,7 +441,9 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self._sequenceButtons.setVisible(False)
 
         advLayout.addWidget(self._sequenceTable, 1, 0, 4, 4)
-        advLayout.addWidget(self._sequenceButtons, 5, 0, 1, 4, QtCore.Qt.AlignBottom)
+        # Keep the dead-time footer out of row 5, which contains the timing-mode
+        # analog value editor.
+        advLayout.addWidget(self._sequenceButtons, 6, 0, 1, 4, QtCore.Qt.AlignBottom)
         advanced_row_height = max(18, self._pulseStartEdit.sizeHint().height() - 4)
         for widget in (
             self._pulseStartEdit,
@@ -448,7 +455,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
             widget.setMaximumHeight(advanced_row_height)
             widget.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
             advLayout.setAlignment(widget, QtCore.Qt.AlignVCenter)
-        for row in (2, 3, 4, 5):
+        for row in (2, 3, 4, 5, 6):
             advLayout.setRowMinimumHeight(row, advanced_row_height + 6)
 
         self._pixelAxisUnitWidget = QtWidgets.QWidget()
@@ -461,7 +468,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
         pixelAxisUnitLayout.addWidget(self._pixelXAxisUnitCombo)
         self._pixelAxisUnitWidget.setLayout(pixelAxisUnitLayout)
         advLayout.addWidget(self.graph_pixel, 0, 4, 5, 4)
-        advLayout.addWidget(self._pixelAxisUnitWidget, 5, 4, 1, 4, QtCore.Qt.AlignBottom)
+        advLayout.addWidget(self._pixelAxisUnitWidget, 6, 4, 1, 4, QtCore.Qt.AlignBottom)
         for col in range(8):
             advLayout.setColumnStretch(col, 1)
             advLayout.setColumnMinimumWidth(col, 0)

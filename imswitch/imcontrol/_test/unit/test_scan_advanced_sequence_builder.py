@@ -67,6 +67,15 @@ def test_pixel_graph_time_unit_selection_is_reused_for_replot():
     assert 'return "Time within single dwell time (us)"' in source
 
 
+def test_sequence_deadtime_footer_does_not_share_value_editor_row():
+    source = WIDGET_PATH.read_text()
+
+    assert "advLayout.addWidget(self._analogLevelEdit, 5, 2, 1, 2)" in source
+    assert "advLayout.addWidget(self._sequenceButtons, 5, 0, 1, 4" not in source
+    assert "advLayout.addWidget(self._sequenceButtons, 6, 0, 1, 4" in source
+    assert "advLayout.addWidget(self._pixelAxisUnitWidget, 6, 4, 1, 4" in source
+
+
 def test_advanced_ttl_targets_filter_scanning_positioners():
     setup_info = SimpleNamespace(
         positioners={

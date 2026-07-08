@@ -1,6 +1,5 @@
 import operator
 import traceback
-import warnings
 
 try:
     import nidaqmx
@@ -76,6 +75,7 @@ class NidaqManager(SignalInterface):
         super().__init__()
         self.__logger = initLogger(self)
         self.__simulating = bool(setupInfo.nidaq.simulation)
+        self.__warnedRuntimeErrors = set()
 
         if not _NIDAQMX_AVAILABLE:
             hasNidaqDevices = any(
@@ -88,11 +88,11 @@ class NidaqManager(SignalInterface):
                     'Install it with: pip install "imswitch[hardware]"'
                 )
             if hasNidaqDevices:
-                self.__logger.warning(
+                self.__logger.info(
                     'nidaqmx not installed; running NI-DAQ devices in simulation mode.'
                 )
             else:
-                self.__logger.warning('nidaqmx not installed; NI-DAQ operations disabled.')
+                self.__logger.debug('nidaqmx not installed; NI-DAQ operations disabled.')
 
         self.__setupInfo = setupInfo
         self.tasks = {}
@@ -128,6 +128,13 @@ class NidaqManager(SignalInterface):
     def isSimulated(self):
         """Whether this NI-DAQ runs in simulation (no hardware) mode."""
         return self.__simulating
+
+    def _warnRuntimeErrorOnce(self, key, message):
+        if key in self.__warnedRuntimeErrors:
+            self.__logger.debug(message)
+            return
+        self.__warnedRuntimeErrors.add(key)
+        self.__logger.warning(message)
 
     def registerExternalScanDriver(self):
         """Legacy compatibility hook.
@@ -305,7 +312,10 @@ class NidaqManager(SignalInterface):
                         dotask.close()
                 except (nidaqmx._lib.DaqNotFoundError, nidaqmx._lib.DaqFunctionNotSupportedError,
                         nidaqmx.DaqError) as e:
-                    warnings.warn(str(e), RuntimeWarning)
+                    self._warnRuntimeErrorOnce(
+                        ('setDigital', target, type(e).__name__, str(e)),
+                        f'NI-DAQ digital write failed for {target}: {e}'
+                    )
                 finally:
                     self.busy = False
 
@@ -340,7 +350,10 @@ class NidaqManager(SignalInterface):
                         aotask.close()
                 except (nidaqmx._lib.DaqNotFoundError, nidaqmx._lib.DaqFunctionNotSupportedError,
                         nidaqmx.DaqError) as e:
-                    warnings.warn(str(e), RuntimeWarning)
+                    self._warnRuntimeErrorOnce(
+                        ('setAnalog', target, type(e).__name__, str(e)),
+                        f'NI-DAQ analog write failed for {target}: {e}'
+                    )
                 finally:
                     self.busy = False
 

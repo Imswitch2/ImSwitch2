@@ -363,6 +363,24 @@ class TestRecordingController:
         )
         
         controller._master.recordingManager.startRecording.assert_not_called()
+
+    def test_legacy_spec_lapse_state_restores_until_stop(self, controller):
+        """Legacy plain Timelapse states must not touch missing RecMode.SpecLapse."""
+        state = {
+            'saveFormat': 1,
+            'snapSaveMode': 1,
+            'recSaveMode': 1,
+            'recMode': 'SpecLapse',
+        }
+
+        warnings = controller.applyComponentState(
+            state,
+            applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+        )
+
+        controller.specLapse.assert_not_called()
+        controller.untilStop.assert_called_once()
+        assert any('SpecLapse' in warning for warning in warnings)
     
     def test_describe_component_state(self, controller):
         """Verify describeComponentState returns non-empty."""
