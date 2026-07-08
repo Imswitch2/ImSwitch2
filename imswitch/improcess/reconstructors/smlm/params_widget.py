@@ -16,9 +16,12 @@ class SmlmParamsWidget(QtWidgets.QWidget):
         super().__init__(parent)
         params = [
             {"name": "Detection", "type": "group", "children": [
-                {"name": "Net-gradient threshold", "type": "float", "value": 100.0,
+                {"name": "Net-gradient threshold", "type": "float", "value": 500.0,
                  "limits": (0.0, 1e9),
-                 "tip": "Minimum summed 4-direction gradient for a candidate peak"},
+                 "tip": ("Minimum Picasso net gradient (inward slopes summed over "
+                         "the ROI) for a candidate peak. Tune with the Preview "
+                         "detection toggle: raise to reject noise, lower to catch "
+                         "dim emitters.")},
                 {"name": "Smoothing sigma", "type": "float", "value": 1.0,
                  "limits": (0.0, 20.0),
                  "tip": "Gaussian pre-smoothing width in pixels"},

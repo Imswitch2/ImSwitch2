@@ -64,6 +64,46 @@ def test_detect_spots_rejects_non_2d():
         detect_spots(np.zeros((3, 8, 8)), threshold=1.0)
 
 
+def test_detect_spots_finds_broad_saturated_bead_over_noise():
+    """Regression (2026-07-08): a broad, saturated bead over camera noise must
+    be detected at a threshold that rejects the noise. The old single-pixel
+    'net gradient' (a discrete Laplacian) vanished on the bead's flat top, so
+    the true peak was invisible at any usable threshold while noise spikes were
+    picked instead — the real Picasso net gradient (inward slopes integrated
+    over the ROI) stays sharply peaked at the centre even for a flat top."""
+    rng = np.random.default_rng(2)
+    height = width = 128
+    yy, xx = np.ogrid[:height, :width]
+    cy, cx = 80, 40
+    bead = 6000.0 * np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 4.0 ** 2)))
+    bead = np.clip(bead, 0, 3000.0)  # saturated flat top
+    frame = (bead + 100.0 + rng.normal(0, 20.0, (height, width))).astype(np.float32)
+
+    coords = detect_spots(frame, threshold=500.0, roi=7, sigma=1.0)
+
+    # The bead is found...
+    assert len(coords) >= 1
+    dist = np.hypot(coords[:, 0] - cy, coords[:, 1] - cx)
+    assert dist.min() <= 4.0
+    # ...and the same threshold produces no detections on the noise alone.
+    noise_only = (100.0 + rng.normal(0, 20.0, (height, width))).astype(np.float32)
+    assert len(detect_spots(noise_only, threshold=500.0, roi=7, sigma=1.0)) == 0
+
+
+def test_net_gradient_peaks_at_emitter_not_on_flat_background():
+    """The net-gradient score is ~0 on flat regions and strongly positive at a
+    peak, regardless of the peak's absolute brightness/width."""
+    from imswitch.improcess.reconstructors.smlm.detection import net_gradient_map
+
+    frame = np.full((48, 48), 500.0, dtype=np.float32)
+    rows, cols = np.indices(frame.shape)
+    frame += 200.0 * np.exp(-(((cols - 24) ** 2 + (rows - 24) ** 2) / (2 * 1.5 ** 2)))
+
+    ng = net_gradient_map(frame, roi=7, sigma=1.0)
+    assert ng[24, 24] > 100.0
+    assert abs(ng[5, 5]) < ng[24, 24] * 0.05  # flat corner ~ 0
+
+
 # -- fitting ----------------------------------------------------------------
 
 

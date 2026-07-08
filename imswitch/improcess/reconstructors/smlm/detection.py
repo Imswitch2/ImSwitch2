@@ -1,17 +1,77 @@
 """Net-gradient spot detection — pure-function core.
 
-Ported from napari-storm (``super-resolution/napari-storm``,
-``picasso_localization/picasso_localiztion.py``), itself a reimplementation of
-the Picasso (jungmannlab) net-gradient detector. No Qt/registry coupling: this
-is numpy/scipy in, ``(N, 2)`` integer ``(row, col)`` coordinates out, so it can
-be unit-tested against synthetic frames and swapped for a vectorized/GPU
-implementation later behind the same signature.
+Implements the Picasso (jungmannlab) net-gradient detector: for every pixel,
+the local image gradient is projected onto the *inward* radial direction and
+summed over a small box. A real emitter's PSF slopes all point toward its
+centre, so the projections add up to a large positive value; uncorrelated
+noise gradients cancel. Because the score integrates the slopes *around* the
+peak rather than the peak pixel itself, it stays sharply localised even when
+the peak is broad or saturated (a flat top has no single-pixel gradient but
+its flanks still slope inward).
+
+.. note::
+
+   Earlier revisions (ported verbatim from ``napari-storm``) scored each pixel
+   by ``up + down + left + right`` — a single-pixel discrete Laplacian, not a
+   net gradient. That measure is noise-dominated and, worse, vanishes on broad
+   or saturated peaks, so bright beads were missed while noise spikes were
+   detected. This is the real Picasso net gradient.
+
+No Qt/registry coupling: numpy/scipy in, ``(N, 2)`` integer ``(row, col)``
+coordinates out, so it can be unit-tested against synthetic frames and swapped
+for a vectorized/GPU implementation later behind the same signature.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import gaussian_filter, maximum_filter
+from scipy.ndimage import correlate, gaussian_filter, maximum_filter
+
+
+def _radial_gradient_kernels(box: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(wy, wx)`` correlation kernels for the inward gradient sum.
+
+    ``wy[dy, dx]`` / ``wx[dy, dx]`` are the y/x components of the unit vector
+    pointing from box offset ``(dy, dx)`` back to the box centre. Correlating
+    the gradient fields with these kernels evaluates, at every pixel, the sum
+    over the box of ``grad · inward_direction`` — the Picasso net gradient.
+    """
+    half = box // 2
+    yy, xx = np.mgrid[-half:half + 1, -half:half + 1].astype(np.float32)
+    radius = np.hypot(yy, xx)
+    radius[half, half] = 1.0  # avoid div-by-zero at the centre
+    wy = (-yy / radius).astype(np.float32)
+    wx = (-xx / radius).astype(np.float32)
+    wy[half, half] = 0.0  # the centre pixel carries no radial direction
+    wx[half, half] = 0.0
+    return wy, wx
+
+
+def net_gradient_map(frame: np.ndarray, roi: int = 7, sigma: float = 1.0) -> np.ndarray:
+    """Compute the Picasso net-gradient score at every pixel.
+
+    Parameters
+    ----------
+    frame:
+        2D image.
+    roi:
+        Box size (px) over which slopes are integrated; also the fitting ROI.
+    sigma:
+        Gaussian pre-smoothing width (px); ``0`` disables smoothing.
+
+    Returns
+    -------
+    float32 array, same shape as ``frame``.
+    """
+    frame = np.asarray(frame, dtype=np.float32)
+    smoothed = gaussian_filter(frame, sigma=sigma) if sigma > 0 else frame
+    gy, gx = np.gradient(smoothed)
+    box = max(3, int(roi) | 1)  # odd, >= 3
+    wy, wx = _radial_gradient_kernels(box)
+    return (
+        correlate(gy, wy, mode="constant")
+        + correlate(gx, wx, mode="constant")
+    ).astype(np.float32)
 
 
 def detect_spots(
@@ -27,11 +87,13 @@ def detect_spots(
     frame:
         2D image.
     threshold:
-        Net-gradient threshold; only local maxima whose summed 4-direction
-        gradient exceeds this are kept.
+        Net-gradient threshold; only net-gradient local maxima above this are
+        kept. Higher rejects more noise. Interpretable via the live preview's
+        candidate-count feedback.
     roi:
-        Fitting ROI size (px). Candidates closer than ``roi // 2`` to any edge
-        are dropped so a full ROI can be extracted for fitting.
+        Box/ROI size (px). Sets both the net-gradient integration window and
+        the fitting window; candidates closer than ``roi // 2`` to any edge are
+        dropped so a full ROI can be extracted for fitting.
     sigma:
         Gaussian pre-smoothing width (px).
 
@@ -44,25 +106,15 @@ def detect_spots(
     if frame.ndim != 2:
         raise ValueError(f"detect_spots expects a 2D frame, got ndim={frame.ndim}")
 
-    smoothed = gaussian_filter(frame.astype(np.float32), sigma=sigma)
+    box = max(3, int(roi) | 1)
+    net_grad = net_gradient_map(frame, roi=roi, sigma=sigma)
 
-    # 4-direction forward differences (Picasso-style).
-    up = np.zeros_like(smoothed)
-    down = np.zeros_like(smoothed)
-    left = np.zeros_like(smoothed)
-    right = np.zeros_like(smoothed)
-    up[1:] = smoothed[1:] - smoothed[:-1]
-    down[:-1] = smoothed[:-1] - smoothed[1:]
-    left[:, 1:] = smoothed[:, 1:] - smoothed[:, :-1]
-    right[:, :-1] = smoothed[:, :-1] - smoothed[:, 1:]
-
-    # Net gradient only where the point is a local peak in every direction.
-    peak = (up > 0) & (down > 0) & (left > 0) & (right > 0)
-    net_grad = np.where(peak, up + down + left + right, 0.0)
-
-    above_thresh = net_grad > threshold
-    local_max = maximum_filter(smoothed, size=3) == smoothed
-    candidate_mask = above_thresh & local_max
+    # Candidates = net-gradient local maxima above threshold. Non-maximum
+    # suppression over the box keeps one detection per PSF; because the score
+    # peaks at the emitter centre even for saturated beads, this finds broad
+    # peaks the old strict-intensity-maximum test missed.
+    local_max = maximum_filter(net_grad, size=box) == net_grad
+    candidate_mask = local_max & (net_grad > threshold)
 
     coords = np.argwhere(candidate_mask)
     if coords.size == 0:
@@ -81,4 +133,4 @@ def detect_spots(
     return coords[inside].astype(np.intp)
 
 
-__all__ = ["detect_spots"]
+__all__ = ["detect_spots", "net_gradient_map"]
