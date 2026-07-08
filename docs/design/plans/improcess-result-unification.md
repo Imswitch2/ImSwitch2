@@ -268,13 +268,31 @@ review + gated commit.
   Allowlist test tightened to per-file layer kinds (Multicolor: points/shapes
   only). Result parity with the multicolor processors (same result types,
   param names, output scales).
-- ⬜ **Phase 4 — Tool/producer audit.** ROI manager, Profile, ROI stats, FRC,
-  PSF resolution, colocalization: confirm each is tool-only or add a "→ result"
-  publish; delete now-redundant `_active_image_layer` copies in favor of the one
-  accessor.
-- ⬜ **Phase 5 — Docs.** Update `docs/improcess.rst` "Results list vs. napari
-  layers" with the finalized invariant and the producer/tool rule; ROADMAP M12
-  note.
+- ✅ **Phase 4 — Tool/producer audit** (2026-07-08). Verdicts: **FRC panel
+  retired** — the custom panel duplicated `FRCProcessor`'s parameters 1:1 and
+  only plotted locally; `frc` now maps to the generic result-processor panel
+  (dock title/attribute preserved), the curve renders via `FRCResult` graph
+  payloads. **PSF resolution + Colocalization converted to producing panels**
+  (Segmentation-style hybrid): they keep their unique ROI-Manager sourcing but
+  emit `sigRunRequested` on the selected result; both processors accept a
+  `rois` param forwarded to `fit_psf_batch`/`colocalization_batch`; local
+  result tables and CSV/JSON export buttons removed (the results-table dock
+  covers display + CSV). **ROI manager, ROI stats, Profile confirmed
+  tool-only** (measure on active layer, no results, no `viewer.add_*`).
+  All eight `_active_image_layer`/`_is_image_layer` copies consolidated into
+  `imswitch/improcess/layer_selection.py` (`active_image_layer` with
+  `min_ndim`/`exclude_names`; Multicolor keeps `min_ndim=3`, Segmentation its
+  preview exclusion; FRC/Multicolor gained the previously-drifted
+  "Viewer Tools" exclusion). Bonus fix: `_wire_runtime_result_processors()`
+  is now called unconditionally in `ImProcessMainController.__init__` — on a
+  fresh profile (no saved layout) the persistence-adapter hook never fired,
+  leaving startup-constructed producing panels unbound (dead run buttons).
+  New tests: `test_layer_selection.py`, `test_measurement_panels_publish.py`
+  (panel params run through the real processors end-to-end), rois-param
+  processor tests, startup-wiring source assertion.
+- ✅ **Phase 5 — Docs** (2026-07-08). `docs/improcess.rst`: producer/tool rule
+  spelled out in the source-of-truth section; FRC/PSF/Colocalization panel
+  sections rewritten for the publish pipeline.
 
 ## Open questions / risks
 

@@ -186,16 +186,28 @@ you select a result from the reconstruction list, the viewer automatically:
 
 This keeps "which image am I processing?" unambiguous: it's always the active
 napari layer, and the reconstruction list keeps that layer aligned with your
-selection.  Producing panels create new results in the reconstruction list
-instead of floating napari layers: Projection and Segmentation run through the
-generic processor path, and Multicolor's Register/Apply publish
-registration/aligned results (the measurement tools — ROI Manager, FRC, PSF,
-Colocalization, Profile, ROI stats — are covered by the tool/producer audit in
-a later phase).  Ephemeral preview layers (the segmentation preview,
-multicolor's split-boundary and detected-bead overlays) are the exception:
-they are tuning/diagnostic overlays, restore the previously active layer and
-are excluded from tool source resolution, so a preview can never become its
-own input.
+selection.
+
+**The producer/tool rule.** Every panel is one of two things:
+
+* *Producing panels* create new ``ProcessingResult`` entries in the
+  reconstruction list, never floating napari layers.  Projection, FRC,
+  Segmentation, PSF resolution and Colocalization run through the generic
+  run→publish pipeline (``sigRunRequested`` →
+  ``ResultProcessorController`` → ``sigResultProduced``), operating on the
+  *selected result*; Multicolor's Register/Apply publish
+  registration/aligned results through its own producing-panel bridge.
+* *Interacting/measuring tools* (ROI Manager, ROI stats, Profile) operate on
+  the *active napari layer* and display their measurements in place; they do
+  not create results.  All of them resolve their source layer through the
+  shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
+  image source cannot drift between tools.
+
+Ephemeral preview layers (the segmentation preview, multicolor's
+split-boundary and detected-bead overlays) are the exception: they are
+tuning/diagnostic overlays, restore the previously active layer and are
+excluded from tool source resolution, so a preview can never become its own
+input.
 
 To see which result produced the current image, check the main layer's name or
 the highlighted item in the reconstruction list — after clicking a result, those
@@ -399,12 +411,16 @@ list, not floating napari layers.
 FRC panel
 =========
 
-Set ``"frcPanel": true`` in the ``processing`` block to show an interactive
-Fourier ring correlation panel below the reconstruction viewer.  It runs on the
-active image layer and supports two-image FRC across an image axis or
-single-image FRC with checkerboard / odd-even splitting.  The registered
-``frc`` processor exposes the same analysis path for future processor-chain UI
-integration.
+Set ``"frcPanel": true`` in the ``processing`` block to show a Fourier ring
+correlation panel below the reconstruction viewer.  The panel is the generic
+result-processor panel for the ``frc`` processor: it runs on the currently
+selected reconstruction result and publishes an ``FRCResult`` into the
+reconstruction list.  Two-image FRC across an image axis and single-image FRC
+with checkerboard / odd-even splitting are both supported; selecting the
+result shows the FRC curve, threshold curve and cutoff marker in the graph
+panel.  (The former custom FRC panel duplicated the processor's parameters
+and plotted only locally; it was retired in the result-unification tool
+audit.)
 
 ROI statistics panel
 ====================
@@ -447,21 +463,26 @@ PSF resolution panel
 ====================
 
 Set ``"psfResolutionPanel": true`` in the ``processing`` block to show a
-bead/PSF resolution panel.  It fits a non-rotated 2D Gaussian to the active
-image plane or to each ROI Manager entry, reports center, sigma, FWHM,
-amplitude, background and RMS fit error, and exports the fit table as CSV or
-JSON.  The registered ``psf-resolution`` processor exposes the same Gaussian
-fit path for full-image processor-chain use.
+bead/PSF resolution panel.  It fits a non-rotated 2D Gaussian to the
+currently selected reconstruction result — full-frame or per ROI Manager
+entry — and publishes a ``PSFResolutionResult`` into the reconstruction list.
+Selecting the result shows center, sigma, FWHM, amplitude, background and RMS
+fit error in the results table (with CSV export) and the FWHM plot in the
+graph panel.  The panel's ROI Manager sourcing is forwarded to the
+``psf-resolution`` processor via the ``rois`` parameter.
 
 Colocalization panel
 ====================
 
 Set ``"colocalizationPanel": true`` in the ``processing`` block to show a
 channel colocalization panel.  It compares two planes from a selected stack
-axis, supports full-image or ROI Manager batched analysis, reports Pearson
-correlation, Manders M1/M2, overlap coefficient and mean intensities, and
-exports the table as CSV or JSON.  The registered ``colocalization`` processor
-exposes the same metric path for full-image processor-chain use.
+axis of the currently selected reconstruction result — full-image or ROI
+Manager batched — and publishes a ``ColocalizationResult`` into the
+reconstruction list.  Selecting the result shows Pearson correlation, Manders
+M1/M2, overlap coefficient and mean intensities in the results table (with
+CSV export) and the intensity scatter in the graph panel.  The panel's ROI
+Manager sourcing is forwarded to the ``colocalization`` processor via the
+``rois`` parameter.
 
 Multicolor panel
 ================

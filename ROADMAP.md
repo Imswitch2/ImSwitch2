@@ -265,11 +265,16 @@ confocal processing remain the main open modality targets.
   line, 2D histogram, PCA, optional UMAP) reuses `GraphWidget` for any
   tabular result. Foundation for the M15 localization tables and future
   filter-cutoff selection.
-- 🔄 **Viewer UX: previews + one source of truth** (in progress
-  2026-07-08). Live preview overlays for parameter tuning (SMLM detection
-  preview on the raw-frame viewer, segmentation mask preview) and
-  synchronizing the recon-list selection with the napari layer selection
-  so tools and the viewer agree on the "current" image.
+- ✅ **Viewer UX: previews + one source of truth** (completed 2026-07-08).
+  Live preview overlays for parameter tuning (SMLM detection preview on the
+  raw-frame viewer, segmentation mask preview), recon-list selection synced
+  with the napari layer selection, and the result-unification plan
+  (docs/design/plans/improcess-result-unification.md) finished through
+  Phase 5: every producing panel (Projection, FRC, Segmentation,
+  PSF resolution, Colocalization, Multicolor) publishes ProcessingResults
+  through the run→publish pipeline, measuring tools (ROI manager, ROI stats,
+  Profile) stay tool-only on the active layer, and all tools share one
+  active-image-layer accessor (imswitch/improcess/layer_selection.py).
 - ✅ **Update docs.** `docs/improcess.rst` covers launch modes,
   plugin architecture, config schema, drag-and-drop, built-in plugins,
   optional analysis panels, WFS pairing and how to write a new plugin.
