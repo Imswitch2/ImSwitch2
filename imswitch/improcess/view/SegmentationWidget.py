@@ -10,6 +10,7 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segment_image
+from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.processors import SegmentationProcessor
 
 
@@ -508,35 +509,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         return step
 
     def _active_image_layer(self):
-        """Return the active image-like Napari layer, falling back to the first valid one.
-        
-        Aligned with ReconstructionView.getActiveImageLayer() semantics: prefer the active
-        layer when it's image-like, otherwise scan for a valid layer. Excludes preview layers,
-        hidden layers (underscore prefix), and "Viewer Tools".
-        """
-        try:
-            active = self._viewer.layers.selection.active
-        except Exception:
-            active = None
-        if self._is_image_layer(active) and not self._is_preview_layer(active):
-            return active
-        for layer in self._viewer.layers:
-            if self._is_image_layer(layer) and not self._is_preview_layer(layer):
-                return layer
-        return None
-
-    def _is_preview_layer(self, layer) -> bool:
-        """The preview layer must never be picked as a segmentation source."""
-        return str(getattr(layer, "name", "")) in self._preview_layer_names()
-
-    @staticmethod
-    def _is_image_layer(layer) -> bool:
-        return (
-            layer is not None
-            and hasattr(layer, "data")
-            and isinstance(layer.data, np.ndarray)
-            and layer.data.ndim >= 2
-            and getattr(layer, "visible", True)
-            and not str(getattr(layer, "name", "")).startswith("_")
-            and getattr(layer, "name", "") != "Viewer Tools"
+        # Preview layers must never be picked as a segmentation source.
+        return active_image_layer(
+            self._viewer, exclude_names=self._preview_layer_names()
         )

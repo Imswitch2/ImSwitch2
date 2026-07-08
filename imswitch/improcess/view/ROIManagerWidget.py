@@ -10,6 +10,7 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.analysis.roi_manager import (
     ROIManagerModel,
     ROIRecord,
@@ -328,33 +329,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         return step
 
     def _active_image_layer(self):
-        """Return the active image-like Napari layer, falling back to the first valid one.
-        
-        Aligned with ReconstructionView.getActiveImageLayer() semantics: prefer the active
-        layer when it's image-like, otherwise scan for a valid layer.
-        """
-        try:
-            active = self._viewer.layers.selection.active
-        except Exception:
-            active = None
-        if self._is_image_layer(active):
-            return active
-        for layer in self._viewer.layers:
-            if self._is_image_layer(layer):
-                return layer
-        return None
-
-    @staticmethod
-    def _is_image_layer(layer) -> bool:
-        return (
-            layer is not None
-            and hasattr(layer, "data")
-            and isinstance(layer.data, np.ndarray)
-            and layer.data.ndim >= 2
-            and getattr(layer, "visible", True)
-            and not str(getattr(layer, "name", "")).startswith("_")
-            and getattr(layer, "name", "") != "Viewer Tools"
-        )
+        return active_image_layer(self._viewer)
 
     @staticmethod
     def _format_value(value) -> str:

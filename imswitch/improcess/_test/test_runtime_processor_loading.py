@@ -74,6 +74,12 @@ def test_runtime_analysis_tool_specs_classify_generic_and_custom_widgets():
     assert specs["drift-correct"].widget_kind == "result-processor"
     assert specs["denoise"].widget_kind == "result-processor"
     assert specs["projection"].widget_kind == "result-processor"
+    # FRC's custom panel was retired in result-unification Phase 4; the
+    # processor param widget has full parity and the curve renders in the
+    # Graph dock from FRCResult plot payloads.
+    assert specs["frc"].widget_kind == "result-processor"
+    assert specs["psf-resolution"].widget_kind == "psf-resolution"
+    assert specs["colocalization"].widget_kind == "colocalization"
     assert specs["segmentation"].attribute == "segmentationWidget"
     assert specs["graph"].widget_kind == "graph"
     assert specs["profile"].widget_kind == "profile"

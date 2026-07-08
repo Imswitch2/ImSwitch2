@@ -22,7 +22,6 @@ from .MultiDataFrame import MultiDataFrame
 from .MulticolorWidget import MulticolorWidget
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
-from .FRCWidget import FRCWidget
 from .GraphWidget import GraphWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
@@ -239,7 +238,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             else None
         )
         self.frcWidget = (
-            FRCWidget(self.reconstructionWidget.napariViewer)
+            self._makeResultProcessorWidget('frc')
             if showFRCPanel
             else None
         )
@@ -964,7 +963,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 viewer,
                 roiManagerWidget=self.roiManagerWidget,
             ),
-            'frc': lambda: FRCWidget(viewer),
             'multicolor': lambda: MulticolorWidget(viewer),
             'roi-manager': lambda: ROIManagerWidget(viewer),
             'roi-stats': lambda: ROIStatsWidget(viewer),

@@ -86,6 +86,28 @@ def test_colocalization_processor_registered_and_generates_payload():
     assert payloads[0].metadata["region_count"] == 1
 
 
+def test_colocalization_processor_accepts_rois_param():
+    """The panel passes ROI Manager selections through params['rois']."""
+    y, x = np.mgrid[:8, :8]
+    a = (y + x).astype(float)
+    b = 3.0 * a
+    result = MinimalResult(
+        name="channels",
+        data=np.stack([a, b], axis=0),
+        axis_labels=["C", "Y", "X"],
+    )
+    rois = [ROIRecord("roi-1", "rectangle", (1, 6, 1, 6))]
+
+    coloc = ColocalizationProcessor().apply(
+        result,
+        {"compare_axis": "C", "index_a": 0, "index_b": 1, "rois": rois},
+    )
+
+    row = coloc.analysis.rows()[0]
+    assert row["name"] == "roi-1"
+    assert row["pixel_count"] == 25
+
+
 def test_colocalization_result_saves_hdf5(tmp_path):
     a = np.arange(25, dtype=float).reshape(5, 5)
     b = a.copy()

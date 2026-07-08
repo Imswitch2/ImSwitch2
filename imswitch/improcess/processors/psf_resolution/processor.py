@@ -53,6 +53,7 @@ class PSFResolutionProcessor(Processor):
         image = extract_2d_plane(result)
         analysis = fit_psf_batch(
             image,
+            params.get("rois") or None,
             pixel_size=float(params.get("pixel_size", 1.0)),
             unit=str(params.get("unit", "px")),
         )

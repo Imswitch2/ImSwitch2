@@ -72,6 +72,20 @@ def test_psf_resolution_processor_registered_and_generates_payload():
     assert payloads[0].metadata["fit_count"] == 1
 
 
+def test_psf_resolution_processor_accepts_rois_param():
+    """The panel passes ROI Manager selections through params['rois']."""
+    image = _gaussian(shape=(24, 24), center=(10.0, 12.0), sigma=(1.5, 2.0))
+    result = MinimalResult(name="image", data=image, axis_labels=["Y", "X"])
+    rois = [ROIRecord("roi-bead", "rectangle", (4, 17, 5, 20))]
+
+    psf_result = PSFResolutionProcessor().apply(
+        result, {"pixel_size": 1.0, "unit": "px", "rois": rois}
+    )
+
+    assert psf_result.analysis.metadata["source"] == "roi"
+    assert psf_result.analysis.rows()[0]["name"] == "roi-bead"
+
+
 def test_psf_resolution_result_saves_hdf5(tmp_path):
     analysis = fit_psf_batch(_gaussian(), pixel_size=1.0, unit="px")
     result = PSFResolutionResult("psf", analysis, params={"pixel_size": 1.0})

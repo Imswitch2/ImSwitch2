@@ -85,7 +85,15 @@ class ImProcessMainController(MainController):
             self.__logger.debug(
                 f'Widget-state persistence unavailable for ImProcess layout: {e}'
             )
-    
+
+        # Wire producing panels unconditionally: on a fresh profile there is
+        # no saved layout, so the persistence adapter hook above never fires,
+        # and startup-constructed panels (projection, segmentation, PSF,
+        # colocalization) would otherwise never get their
+        # ResultProcessorController. Wiring is idempotent, so a later layout
+        # restore re-running it is harmless.
+        self._wire_runtime_result_processors()
+
     def _initialize_plugins(self):
         """
         Initialize the plugin registry based on config or standalone defaults.

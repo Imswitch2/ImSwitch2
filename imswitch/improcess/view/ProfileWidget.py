@@ -8,6 +8,7 @@ from qtpy import QtCore, QtWidgets
 from scipy.ndimage import map_coordinates
 
 from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.profile_helpers import (
     ProfileFit,
     GaussianFit,
@@ -298,21 +299,7 @@ class ProfileWidget(QtWidgets.QWidget):
         return data[tuple(leading)]
 
     def _activeImageLayer(self):
-        """Return the active image-like Napari layer, falling back to the first valid one.
-        
-        Aligned with ReconstructionView.getActiveImageLayer() semantics: prefer the active
-        layer when it's image-like, otherwise scan for a valid layer.
-        """
-        try:
-            active = self._viewer.layers.selection.active
-        except Exception:
-            active = None
-        if self._isImageLayer(active):
-            return active
-        for layer in self._viewer.layers:
-            if self._isImageLayer(layer):
-                return layer
-        return None
+        return active_image_layer(self._viewer)
 
     def _visiblePixelScales(self) -> tuple[float, float]:
         layer = self._activeImageLayer()
@@ -396,18 +383,6 @@ class ProfileWidget(QtWidgets.QWidget):
                 f.write(csv_text)
         except Exception as e:
             self.fitSummary.setText(f"Error saving CSV: {e}")
-
-    @staticmethod
-    def _isImageLayer(layer):
-        return (
-            layer is not None
-            and hasattr(layer, "data")
-            and getattr(layer, "visible", True)
-            and isinstance(layer.data, np.ndarray)
-            and layer.data.ndim >= 2
-            and not str(getattr(layer, "name", "")).startswith("_")
-            and getattr(layer, "name", "") != "Viewer Tools"
-        )
 
     @staticmethod
     def _computeLineProfile(image, r0, c0, r1, c1, width=1):

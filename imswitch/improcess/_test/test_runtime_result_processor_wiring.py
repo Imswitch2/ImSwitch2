@@ -72,3 +72,14 @@ def test_runtime_result_processor_widget_is_reseeded_when_already_wired():
 
     assert factory.created == []
     assert widget.current_results == [current_result]
+
+
+def test_startup_wires_producing_panels_without_saved_layout():
+    """A fresh profile has no saved layout, so the persistence adapter hook
+    never fires; __init__ must wire producing panels unconditionally or their
+    run buttons stay dead until the first layout save/restore cycle."""
+    import inspect
+
+    source = inspect.getsource(ImProcessMainController.__init__)
+
+    assert "self._wire_runtime_result_processors()" in source

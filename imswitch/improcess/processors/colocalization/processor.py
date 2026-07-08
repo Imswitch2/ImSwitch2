@@ -90,6 +90,7 @@ class ColocalizationProcessor(Processor):
         analysis = colocalization_batch(
             image_a,
             image_b,
+            params.get("rois") or None,
             threshold_a=float(params.get("threshold_a", 0.0)),
             threshold_b=float(params.get("threshold_b", 0.0)),
         )

@@ -24,6 +24,7 @@ from imswitch.improcess.analysis.multicolor import (
     transform_details,
 )
 from imswitch.improcess.analysis.projections import axis_labels_for_shape
+from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.processors.multicolor_apply import MulticolorApplyResult
 from imswitch.improcess.processors.multicolor_registration import (
     MulticolorRegistrationResult,
@@ -584,21 +585,8 @@ class MulticolorWidget(QtWidgets.QWidget):
         return axis_labels_for_shape(data, labels)
 
     def _active_image_layer(self):
-        """Return the active image-like Napari layer, falling back to the first valid one.
-        
-        Aligned with ReconstructionView.getActiveImageLayer() semantics: prefer the active
-        layer when it's image-like, otherwise scan for a valid layer.
-        """
-        try:
-            active = self._viewer.layers.selection.active
-        except Exception:
-            active = None
-        if self._is_image_layer(active):
-            return active
-        for layer in self._viewer.layers:
-            if self._is_image_layer(layer):
-                return layer
-        return None
+        # Multicolor needs a volume source, not a plain 2D image.
+        return active_image_layer(self._viewer, min_ndim=3)
 
     @staticmethod
     def _layer_scale(layer) -> tuple[float, ...]:
@@ -624,14 +612,3 @@ class MulticolorWidget(QtWidgets.QWidget):
         if len(scale) >= ndim:
             return list(scale[-ndim:])
         return [1.0] * ndim
-
-    @staticmethod
-    def _is_image_layer(layer) -> bool:
-        return (
-            layer is not None
-            and hasattr(layer, "data")
-            and isinstance(layer.data, np.ndarray)
-            and layer.data.ndim >= 3
-            and getattr(layer, "visible", True)
-            and not str(getattr(layer, "name", "")).startswith("_")
-        )

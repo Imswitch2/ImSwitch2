@@ -35,7 +35,7 @@ _PROCESSOR_WIDGET_SPECS = {
     "segmentation": ("Segmentation", "segmentationWidget", "segmentation"),
     "psf-resolution": ("PSF resolution", "psfResolutionWidget", "psf-resolution"),
     "colocalization": ("Colocalization", "colocalizationWidget", "colocalization"),
-    "frc": ("FRC", "frcWidget", "frc"),
+    "frc": ("FRC", "frcWidget", "result-processor"),
     "multicolor-registration": ("Multicolor", "multicolorWidget", "multicolor"),
     "multicolor-apply": ("Multicolor", "multicolorWidget", "multicolor"),
 }
