@@ -18,6 +18,7 @@ class SegmentationWidget(QtWidgets.QWidget):
     # Class attribute so layer-resolution helpers work even on partially
     # constructed instances (unit tests build the widget via __new__).
     _preview_layer_name = "Segmentation preview"
+    _binary_preview_layer_name = "Binarization preview"
 
     def __init__(self, napariViewer, roiManagerWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -60,6 +61,8 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.fillHolesCheck = QtWidgets.QCheckBox("Fill holes")
         self.clearBorderCheck = QtWidgets.QCheckBox("Clear border")
         self.previewCheck = QtWidgets.QCheckBox("Preview")
+        self.previewModeCombo = QtWidgets.QComboBox()
+        self.previewModeCombo.addItems(["Segmentation labels", "Binarization mask"])
 
         self.localBlockSpin = QtWidgets.QSpinBox()
         self.localBlockSpin.setRange(3, 9999)
@@ -102,6 +105,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         form.addRow("Watershed distance", self.watershedDistanceSpin)
         form.addRow("ROI prefix", self.prefixEdit)
         form.addRow("", self.previewCheck)
+        form.addRow("Preview mode", self.previewModeCombo)
 
         controls = QtWidgets.QHBoxLayout()
         controls.addLayout(form)
@@ -135,6 +139,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.localBlockSpin.valueChanged.connect(self._schedule_preview)
         self.localOffsetSpin.valueChanged.connect(self._schedule_preview)
         self.watershedDistanceSpin.valueChanged.connect(self._schedule_preview)
+        self.previewModeCombo.currentTextChanged.connect(self._schedule_preview)
         
         self._update_manual_enabled()
 
@@ -288,7 +293,17 @@ class SegmentationWidget(QtWidgets.QWidget):
                 local_offset=self.localOffsetSpin.value(),
                 watershed_min_distance=self.watershedDistanceSpin.value(),
             )
-            preview_layer = self._get_preview_layer()
+            preview_mode = self._preview_mode()
+            preview_name = self._current_preview_layer_name(preview_mode)
+            self._remove_inactive_preview_layers(preview_name)
+            preview_layer = self._get_preview_layer(preview_name)
+            preview_data = self._preview_data_for_analysis(analysis, preview_mode)
+            preview_metadata = {
+                "axis_labels": ["Y", "X"],
+                "scale_unit": self._layer_scale_unit(layer),
+                "segmentation": analysis.metadata,
+                "preview_mode": preview_mode,
+            }
             if preview_layer is None:
                 # napari activates freshly added layers; restore the previous
                 # active layer so the preview never becomes its own source.
@@ -296,28 +311,45 @@ class SegmentationWidget(QtWidgets.QWidget):
                     prev_active = self._viewer.layers.selection.active
                 except Exception:
                     prev_active = None
-                self._viewer.add_labels(
-                    analysis.labels,
-                    name=self._preview_layer_name,
-                    scale=self._spatial_layer_scale(layer),
-                    opacity=0.5,
-                    metadata={
-                        "axis_labels": ["Y", "X"],
-                        "scale_unit": self._layer_scale_unit(layer),
-                        "segmentation": analysis.metadata,
-                    },
-                )
+                if preview_mode == "mask":
+                    self._viewer.add_image(
+                        preview_data,
+                        name=preview_name,
+                        scale=self._spatial_layer_scale(layer),
+                        opacity=0.45,
+                        colormap="green",
+                        blending="translucent",
+                        metadata=preview_metadata,
+                    )
+                else:
+                    self._viewer.add_labels(
+                        preview_data,
+                        name=preview_name,
+                        scale=self._spatial_layer_scale(layer),
+                        opacity=0.5,
+                        metadata=preview_metadata,
+                    )
                 if prev_active is not None:
                     try:
                         self._viewer.layers.selection.active = prev_active
                     except Exception:
                         pass
             else:
-                preview_layer.data = analysis.labels
+                preview_layer.data = preview_data
                 preview_layer.scale = self._spatial_layer_scale(layer)
-            self.summaryLabel.setText(
-                f"Preview: threshold {analysis.threshold:.6g}; {len(analysis.regions)} region(s)."
-            )
+                try:
+                    preview_layer.metadata = preview_metadata
+                except Exception:
+                    pass
+            if preview_mode == "mask":
+                foreground = int(np.count_nonzero(preview_data))
+                self.summaryLabel.setText(
+                    f"Preview mask: threshold {analysis.threshold:.6g}; {foreground} foreground pixel(s)."
+                )
+            else:
+                self.summaryLabel.setText(
+                    f"Preview: threshold {analysis.threshold:.6g}; {len(analysis.regions)} region(s)."
+                )
         except Exception as exc:
             self.summaryLabel.setText(str(exc))
 
@@ -351,10 +383,33 @@ class SegmentationWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
-    def _get_preview_layer(self):
+    def _preview_layer_names(self) -> tuple[str, str]:
+        return (self._preview_layer_name, self._binary_preview_layer_name)
+
+    def _preview_mode(self) -> str:
+        combo = getattr(self, "previewModeCombo", None)
+        try:
+            text = str(combo.currentText()).strip().lower()
+        except Exception:
+            text = ""
+        return "mask" if "mask" in text or "binar" in text else "labels"
+
+    def _current_preview_layer_name(self, preview_mode: str | None = None) -> str:
+        mode = preview_mode or self._preview_mode()
+        return self._binary_preview_layer_name if mode == "mask" else self._preview_layer_name
+
+    @staticmethod
+    def _preview_data_for_analysis(analysis: SegmentationAnalysis, preview_mode: str) -> np.ndarray:
+        if preview_mode == "mask":
+            mask = analysis.binary_mask if analysis.binary_mask is not None else analysis.mask
+            return np.asarray(mask, dtype=np.uint8)
+        return np.asarray(analysis.labels)
+
+    def _get_preview_layer(self, name: str | None = None):
+        names = (name,) if name is not None else self._preview_layer_names()
         try:
             for layer in self._viewer.layers:
-                if getattr(layer, "name", "") == self._preview_layer_name:
+                if getattr(layer, "name", "") in names:
                     return layer
         except Exception:
             pass
@@ -362,9 +417,21 @@ class SegmentationWidget(QtWidgets.QWidget):
 
     def _remove_preview_layer(self) -> None:
         try:
-            preview_layer = self._get_preview_layer()
-            if preview_layer is not None:
-                self._viewer.layers.remove(preview_layer)
+            for preview_name in self._preview_layer_names():
+                preview_layer = self._get_preview_layer(preview_name)
+                if preview_layer is not None:
+                    self._viewer.layers.remove(preview_layer)
+        except Exception:
+            pass
+
+    def _remove_inactive_preview_layers(self, active_name: str) -> None:
+        try:
+            for preview_name in self._preview_layer_names():
+                if preview_name == active_name:
+                    continue
+                preview_layer = self._get_preview_layer(preview_name)
+                if preview_layer is not None:
+                    self._viewer.layers.remove(preview_layer)
         except Exception:
             pass
 
@@ -436,7 +503,7 @@ class SegmentationWidget(QtWidgets.QWidget):
 
     def _is_preview_layer(self, layer) -> bool:
         """The preview layer must never be picked as a segmentation source."""
-        return str(getattr(layer, "name", "")) == self._preview_layer_name
+        return str(getattr(layer, "name", "")) in self._preview_layer_names()
 
     @staticmethod
     def _is_image_layer(layer) -> bool:

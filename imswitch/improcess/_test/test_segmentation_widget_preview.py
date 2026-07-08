@@ -39,6 +39,7 @@ class _FakeViewer:
         self.layers = _FakeLayerList([layer], active=layer)
         self.dims = SimpleNamespace(current_step=current_step or ())
         self.added_labels = []
+        self.added_images = []
 
     def add_labels(self, data, **kwargs):
         label_obj = SimpleNamespace(
@@ -51,6 +52,19 @@ class _FakeViewer:
         self.layers.append(label_obj)
         self.added_labels.append((np.asarray(data), kwargs))
 
+    def add_image(self, data, **kwargs):
+        image_obj = SimpleNamespace(
+            data=np.asarray(data),
+            scale=kwargs.get("scale", [1.0, 1.0]),
+            name=kwargs.get("name", "image"),
+            metadata=kwargs.get("metadata", {}),
+            opacity=kwargs.get("opacity", 1.0),
+            colormap=kwargs.get("colormap"),
+            blending=kwargs.get("blending"),
+        )
+        self.layers.append(image_obj)
+        self.added_images.append((np.asarray(data), kwargs))
+
 
 class _Combo:
     def __init__(self, text):
@@ -58,6 +72,9 @@ class _Combo:
 
     def currentText(self):
         return self._text
+
+    def setText(self, text):
+        self._text = text
 
     def addItems(self, items):
         pass
@@ -161,6 +178,7 @@ def _widget_for_viewer(viewer):
     widget.localOffsetSpin = _Spin(0.0)
     widget.watershedDistanceSpin = _Spin(5)
     widget.previewCheck = _Check(False)
+    widget.previewModeCombo = _Combo("Segmentation labels")
     widget.summaryLabel = _Summary()
     
     widget._preview_timer = _Timer()
@@ -187,6 +205,33 @@ def test_preview_creates_single_layer():
     preview_layer = viewer.layers[-1]
     assert preview_layer.name == "Segmentation preview"
     assert preview_layer.opacity == 0.5
+    assert viewer.added_labels
+    assert not viewer.added_images
+
+
+def test_binarization_preview_creates_mask_image_layer():
+    """Mask mode previews the binary threshold mask instead of labels."""
+    data = np.zeros((8, 9), dtype=np.float32)
+    data[2:5, 3:7] = 10.0
+    layer = _FakeLayer(data, scale=[0.25, 0.5])
+    viewer = _FakeViewer(layer)
+    widget = _widget_for_viewer(viewer)
+
+    widget.previewModeCombo.setText("Binarization mask")
+    widget.previewCheck.setChecked(True)
+    widget._update_preview()
+
+    assert len(viewer.layers) == 2
+    preview_layer = viewer.layers[-1]
+    assert preview_layer.name == "Binarization preview"
+    assert preview_layer.opacity == 0.45
+    assert preview_layer.colormap == "green"
+    assert preview_layer.metadata["preview_mode"] == "mask"
+    assert preview_layer.data.dtype == np.uint8
+    assert int(preview_layer.data.sum()) == 12
+    assert viewer.added_images
+    assert not viewer.added_labels
+    assert "Preview mask:" in widget.summaryLabel.text
 
 
 def test_preview_reuses_same_layer():
@@ -312,6 +357,28 @@ def test_preview_layer_never_becomes_its_own_source():
     # Still exactly one preview layer, recomputed from the image (2 layers total).
     assert len(viewer.layers) == 2
     assert viewer.layers[-1] is preview_layer
+
+
+def test_switching_preview_modes_removes_inactive_preview_layer():
+    data = np.zeros((8, 9), dtype=np.float32)
+    data[2:5, 3:7] = 10.0
+    layer = _FakeLayer(data, scale=[0.25, 0.5])
+    viewer = _FakeViewer(layer)
+    widget = _widget_for_viewer(viewer)
+
+    widget.previewCheck.setChecked(True)
+    widget._update_preview()
+    assert viewer.layers[-1].name == "Segmentation preview"
+
+    widget.previewModeCombo.setText("Binarization mask")
+    widget._update_preview()
+
+    assert len(viewer.layers) == 2
+    assert viewer.layers[-1].name == "Binarization preview"
+    assert all(
+        getattr(layer, "name", "") != "Segmentation preview"
+        for layer in viewer.layers
+    )
 
 
 def test_schedule_preview_only_when_checked():

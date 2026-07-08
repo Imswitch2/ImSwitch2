@@ -32,6 +32,8 @@ def test_segment_image_manual_threshold_filters_and_measures_regions():
 
     assert analysis.threshold == 5.0
     assert analysis.labels.max() == 2
+    assert analysis.binary_mask[0, 0]
+    assert not analysis.mask[0, 0]
     assert [region.area_pixels for region in analysis.regions] == [12, 6]
     assert [region.bounds for region in analysis.regions] == [(2, 5, 3, 7), (8, 10, 9, 12)]
     assert [roi.name for roi in analysis.rois(name_prefix="Seg")] == ["Seg_1", "Seg_2"]

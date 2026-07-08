@@ -84,6 +84,7 @@ class SegmentationAnalysis:
     regions: list[SegmentationRegion]
     metadata: dict[str, object]
     processed_image: np.ndarray | None = None
+    binary_mask: np.ndarray | None = None
 
     def rois(self, *, name_prefix: str = "ROI") -> list[ROIRecord]:
         return [region.to_roi(name_prefix=name_prefix) for region in self.regions]
@@ -195,6 +196,7 @@ def segment_image(
         regions=regions,
         metadata=metadata,
         processed_image=work,
+        binary_mask=mask.astype(bool, copy=True),
     )
 
 

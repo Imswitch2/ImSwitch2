@@ -228,15 +228,38 @@ class ImProcessMainController(MainController):
         self._refresh_runtime_processor_choices()
 
     def _wire_runtime_result_processor(self, processor_id: str) -> None:
-        if processor_id in self._resultProcessorControllers:
-            return
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
         if widget is None or not hasattr(widget, "sigRunRequested"):
             return
-        self._resultProcessorControllers[processor_id] = self.__factory.createController(
-            ResultProcessorController,
-            widget,
-        )
+        if processor_id not in self._resultProcessorControllers:
+            self._resultProcessorControllers[processor_id] = self.__factory.createController(
+                ResultProcessorController,
+                widget,
+            )
+        self._seed_runtime_result_processor(widget)
+
+    def _seed_runtime_result_processor(self, widget) -> None:
+        """Populate a newly opened processor dock with the current result.
+
+        Runtime result-processor widgets are often opened after a
+        reconstruction has already been selected. Those widgets only receive
+        future sigCurrentResultChanged events, so seed them explicitly with the
+        active reconstruction result at wire time.
+        """
+        setter = getattr(widget, "setCurrentResult", None)
+        if not callable(setter):
+            return
+        try:
+            result = self.mainViewController.reconstructionController.getActiveResult()
+        except Exception:
+            return
+        try:
+            setter(result)
+        except Exception:
+            self.__logger.debug(
+                "Could not seed runtime processor widget with current result",
+                exc_info=True,
+            )
 
     def _wire_runtime_result_processors(self) -> None:
         from .runtime_result_processors import runtime_result_processor_ids
