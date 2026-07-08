@@ -246,11 +246,17 @@ review + gated commit.
   source slice and renders as context image + real labels on one list item;
   context layers excluded from `processor_input_choices()`. No panel rerouting
   yet. 109 tests pass (`test_typed_display_layers.py` new).
-- ⬜ **Phase 2 — Producing panels → processors.** Reroute Projection &
-  Segmentation panels through `ResultProcessorController`; drop their `add_*`.
-  Preview stays ephemeral; commit produces a result. Remove per-panel layer
-  scanning. Processor inputs remain explicit: selected result or named
-  component, never implicit napari active layer.
+- ✅ **Phase 2 — Producing panels → processors** (2026-07-08, committed
+  `975d98a7`). Projection retired → generic result-processor panel;
+  Segmentation keeps its custom panel (preview + ROI export) but the Segment
+  button emits `sigRunRequested` → `ResultProcessorController` publishes a
+  `SegmentationResult` (renders source+labels). `_wire_runtime_result_processors`
+  generalized to bind a controller to any panel exposing `sigRunRequested`.
+  Registry-wide generality tests added (every processor conforms + an
+  architectural allowlist test locking `viewer.add_*` to the render path,
+  the seg preview, and the deferred Multicolor). Review caught + fixed a
+  param-key mismatch that would have silently dropped the panel's settings on
+  commit. 162 tests pass.
 - ⬜ **Phase 3 — Multicolor split.** Separate true *results* (composite/RGB
   images) from *annotations* (scale bar, ROIs, points). Results publish;
   annotations become typed overlay layers on the active result. (Trickiest —
