@@ -19,6 +19,12 @@ class CommunicationChannel(SignalInterface):
 
     sigPatternVisibilityChanged = Signal(bool)  # (visible)
 
+    sigDetectionPreviewUpdated = Signal(object, object)  # (x, y) scatter arrays
+
+    sigDetectionPreviewVisibilityChanged = Signal(bool)  # (visible)
+
+    sigDisplayedFrameChanged = Signal()  # emitted when the displayed frame changes
+
     sigAddToMultiData = Signal(str, str)  # (path, datasetName)
 
     sigReconstruct = Signal(object, bool)

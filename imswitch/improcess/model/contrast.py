@@ -153,11 +153,49 @@ def normalize_levels(
     return minimum, maximum
 
 
+def safe_display_levels(
+    minimum: float,
+    maximum: float,
+    *,
+    min_span: float = 1.0,
+) -> tuple[float, float]:
+    """Return strictly increasing display levels safe for napari.
+
+    Napari rejects degenerate (non-increasing) contrast_limits and
+    contrast_limits_range. This helper expands degenerate ranges to a
+    minimum span.
+
+    Parameters
+    ----------
+    minimum:
+        Lower display level.
+    maximum:
+        Upper display level.
+    min_span:
+        Minimum span (maximum - minimum) to enforce when the input is
+        degenerate. Defaults to 1.0.
+
+    Returns
+    -------
+    tuple[float, float]
+        (min, max) unchanged when max > min; otherwise expanded to
+        (min, min + min_span). NaN inputs are coerced to (0.0, min_span).
+    """
+    minimum = float(minimum)
+    maximum = float(maximum)
+    if not np.isfinite(minimum) or not np.isfinite(maximum):
+        return 0.0, float(min_span)
+    if maximum > minimum:
+        return minimum, maximum
+    return minimum, minimum + float(min_span)
+
+
 __all__ = [
     "auto_levels",
     "finite_range",
     "finite_values",
     "histogram",
     "normalize_levels",
+    "safe_display_levels",
     "sample_values",
 ]

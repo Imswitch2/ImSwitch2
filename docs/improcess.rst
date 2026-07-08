@@ -378,6 +378,41 @@ reconstructor in the built-in registry at ``is_pass_through = False`` so a
 real-compute plugin can't silently trigger the auto-route on every dataset
 load.
 
+SMLM localization
+=================
+
+The SMLM localizer reconstructor (id ``smlm-localizer``) performs
+single-molecule localization microscopy (SMLM) on raw data. It detects and
+fits bright spots in each frame, outputting a table of localizations with
+sub-pixel coordinates, photon counts, and fit widths.
+
+The SMLM parameter widget exposes:
+
+* **Detection** threshold, smoothing sigma, and ROI size for the net-gradient
+  spot detection algorithm.
+* **Fitting** method — ``gausslq`` (centroid + Gaussian moments) or ``mle``
+  (Poisson Gaussian maximum-likelihood).
+* **Pixel size** in nanometers for converting pixel coordinates to physical
+  units.
+* **Preview detection** toggle — when enabled, candidate spots from the
+  detection step (before fitting) appear as a live scatter overlay on the
+  raw-data frame viewer. The overlay updates automatically whenever detection
+  parameters change or when the displayed frame changes (via the frame slider
+  or "show mean"). This preview is essential for tuning the detection threshold
+  before running the full reconstruction stack, since an incorrect threshold
+  often results in zero localizations.
+
+The preview uses only the detection step (no fitting) to stay responsive, and
+recomputes with a short debounce (~250 ms). The scatter markers appear as open
+red circles on the pyqtgraph frame viewer, distinct from the MoNaLISA pattern
+overlay.
+
+If the reconstructor returns zero localizations, it logs a warning suggesting
+that the user tune the detection threshold using the preview toggle. The
+warning message directs users to enable the preview checkbox to visualize
+which pixels meet the detection criteria before running the full processing
+pipeline.
+
 File watcher save folder
 ========================
 

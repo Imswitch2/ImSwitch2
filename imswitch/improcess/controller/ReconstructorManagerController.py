@@ -94,6 +94,20 @@ class ReconstructorManagerController(ImProcessWidgetController):
         except Exception:
             pass
 
+        # Switching away from the SMLM localizer must not leave a stale
+        # detection-preview overlay on the raw-data viewer.
+        if (getattr(self, '_smlmPreviewWidget', None) is not None
+                and reconstructor.id != 'smlm-localizer'):
+            self._smlmPreviewWidget = None
+            try:
+                import numpy as np
+                self._commChannel.sigDetectionPreviewUpdated.emit(
+                    np.array([]), np.array([])
+                )
+                self._commChannel.sigDetectionPreviewVisibilityChanged.emit(False)
+            except Exception:
+                pass
+
         # Gate the modality-specific Actions buttons:
         # - 'Reconstruct current' is ceremonial for pass-through plugins
         #   (process() is a no-op wrap), so hide it; currentDataChanged
@@ -144,6 +158,23 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     widget.sigPlotMetricRequested.connect(self._main.wfsBatchController.plotMetric)
                 if hasattr(widget, "sigTablePlotRequested"):
                     widget.sigTablePlotRequested.connect(self._main.wfsBatchController.plotTable)
+            except Exception:
+                pass
+
+        # SMLM live detection preview wiring. The installed widget replaces
+        # self._widget.parTree, so keep our own reference for the preview
+        # computation; the frame-changed connection is made once and stays —
+        # _updateSmlmPreview no-ops when the SMLM widget is not installed.
+        if reconstructor.id == "smlm-localizer" and hasattr(widget, "sigPreviewToggled"):
+            try:
+                widget.sigPreviewToggled.connect(self._handleSmlmPreviewToggled)
+                widget.sigDetectionParamsChanged.connect(self._updateSmlmPreview)
+                if not getattr(self, '_smlmFrameSignalConnected', False):
+                    self._commChannel.sigDisplayedFrameChanged.connect(
+                        self._updateSmlmPreview
+                    )
+                    self._smlmFrameSignalConnected = True
+                self._smlmPreviewWidget = widget
             except Exception:
                 pass
 
@@ -211,6 +242,54 @@ class ReconstructorManagerController(ImProcessWidgetController):
                     setter(output_pixel_size_nm)
                 except Exception:
                     pass
+
+    def _handleSmlmPreviewToggled(self, enabled):
+        """Handle SMLM preview checkbox toggle."""
+        self._commChannel.sigDetectionPreviewVisibilityChanged.emit(enabled)
+        if enabled:
+            self._updateSmlmPreview()
+        else:
+            import numpy as np
+            self._commChannel.sigDetectionPreviewUpdated.emit(
+                np.array([]), np.array([])
+            )
+
+    def _updateSmlmPreview(self):
+        """Compute and emit SMLM detection preview for the currently displayed frame."""
+        try:
+            if (self._main._activeReconstructor is None
+                    or self._main._activeReconstructor.id != "smlm-localizer"):
+                return
+
+            widget = getattr(self, '_smlmPreviewWidget', None)
+            if widget is None or not hasattr(widget, 'previewCheckbox'):
+                return
+            if not widget.previewCheckbox.isChecked():
+                return
+
+            dataframe_ctrl = self._main.dataFrameController
+            image = dataframe_ctrl.getDisplayedImage2D()
+            if image is None:
+                import numpy as np
+                self._commChannel.sigDetectionPreviewUpdated.emit(
+                    np.array([]), np.array([])
+                )
+                return
+
+            params = widget.get_detection_values()
+            import numpy as np
+            image = np.asarray(image)
+
+            from imswitch.improcess.reconstructors.smlm.preview import compute_detection_preview
+            x, y = compute_detection_preview(
+                image,
+                threshold=params['threshold'],
+                roi=params['roi'],
+                sigma=params['sigma'],
+            )
+            self._commChannel.sigDetectionPreviewUpdated.emit(x, y)
+        except Exception as e:
+            self._logger.debug(f"SMLM preview computation failed: {e}")
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

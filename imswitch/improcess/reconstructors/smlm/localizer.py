@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 import numpy as np
 from qtpy import QtWidgets
 
+from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import localizations_from_columns
 from imswitch.improcess.reconstructors.base import Reconstructor
@@ -101,6 +102,9 @@ class SmlmLocalizer(Reconstructor):
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
 
+    def __init__(self):
+        self._logger = initLogger('SmlmLocalizer')
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return SmlmParamsWidget(parent)
 
@@ -118,6 +122,11 @@ class SmlmLocalizer(Reconstructor):
             method=str(params.get("method", "gausslq")),
             pixel_size_nm=pixel_size_nm,
         )
+        if len(locs) == 0:
+            self._logger.warning(
+                "0 localizations found. Tune the detection threshold with the "
+                "Preview detection toggle in the SMLM parameters panel."
+            )
         return LocalizationResult(
             name=f"{data_obj.name} localizations",
             locs=locs,

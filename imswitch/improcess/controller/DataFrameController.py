@@ -17,10 +17,13 @@ class DataFrameController(ImProcessWidgetController):
         self._patternGrid = []
         self._patternGridMade = False
         self._patternVisible = False
+        self._displayedImage = None
 
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
         self._commChannel.sigPatternUpdated.connect(self.patternUpdated)
         self._commChannel.sigPatternVisibilityChanged.connect(self.patternVisibilityChanged)
+        self._commChannel.sigDetectionPreviewUpdated.connect(self.detectionPreviewUpdated)
+        self._commChannel.sigDetectionPreviewVisibilityChanged.connect(self.detectionPreviewVisibilityChanged)
 
         self._widget.sigShowMeanClicked.connect(self.showMean)
         self._widget.sigAdjustDataClicked.connect(self.adjustData)
@@ -41,12 +44,22 @@ class DataFrameController(ImProcessWidgetController):
 
         self._widget.setShowPattern(showPattern)
 
+    def detectionPreviewUpdated(self, x, y):
+        self._widget.setDetectionPreviewData(x, y)
+
+    def detectionPreviewVisibilityChanged(self, visible):
+        self._widget.setShowDetectionPreview(visible)
+
     def setImgSlice(self, frame):
         data = self._currentDataArray()
-        self._widget.setImage(data[frame], autoLevels=False)
+        img = data[frame]
+        self._displayedImage = img
+        self._widget.setImage(img, autoLevels=False)
+        self._commChannel.sigDisplayedFrameChanged.emit()
 
     def unloadData(self):
         self._dataObj = None
+        self._displayedImage = None
         self.showMean()
         self._widget.setNumFrames(0)
         self._widget.setDataName('')
@@ -61,7 +74,14 @@ class DataFrameController(ImProcessWidgetController):
             self._logger.error('No data to edit')
 
     def showMean(self):
-        self._widget.setImage(self._dataObj.getMeanData(), autoLevels=True)
+        img = self._dataObj.getMeanData() if self._dataObj is not None else np.zeros((1, 1))
+        self._displayedImage = img
+        self._widget.setImage(img, autoLevels=True)
+        self._commChannel.sigDisplayedFrameChanged.emit()
+
+    def getDisplayedImage2D(self):
+        """Return the currently displayed 2D image, or None if no data loaded."""
+        return self._displayedImage
 
     def currentDataChanged(self, inDataObj):
         self._dataObj = inDataObj

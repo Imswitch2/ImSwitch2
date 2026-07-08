@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pyqtgraph.parametertree import Parameter, ParameterTree
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 
 class SmlmParamsWidget(QtWidgets.QWidget):
     """Detection + fitting parameters for :class:`SmlmLocalizer`."""
+
+    sigPreviewToggled = QtCore.Signal(bool)
+    sigDetectionParamsChanged = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -39,10 +42,33 @@ class SmlmParamsWidget(QtWidgets.QWidget):
         self.tree = ParameterTree(showHeader=False)
         self.tree.setParameters(self.p, showTop=False)
 
+        self.previewCheckbox = QtWidgets.QCheckBox("Preview detection")
+        self.previewCheckbox.setToolTip(
+            "Show detected spots on the raw data viewer (detection only, no fitting)"
+        )
+        self.previewCheckbox.toggled.connect(self.sigPreviewToggled)
+
+        # Debounce rapid parameter edits (spinbox arrows, typing) so the
+        # preview recomputes at most once per pause instead of per keystroke.
+        self._detectionDebounce = QtCore.QTimer(self)
+        self._detectionDebounce.setSingleShot(True)
+        self._detectionDebounce.setInterval(250)
+        self._detectionDebounce.timeout.connect(self.sigDetectionParamsChanged)
+
+        self.p.sigTreeStateChanged.connect(self._onTreeChanged)
+
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tree)
+        layout.addWidget(self.previewCheckbox)
         self.setLayout(layout)
+
+    def _onTreeChanged(self, param, changes):
+        for param, change, _data in changes:
+            parent_name = param.parent().name() if param.parent() is not None else None
+            if parent_name == "Detection":
+                self._detectionDebounce.start()
+                break
 
     def get_values(self) -> dict:
         detection = self.p.param("Detection")
@@ -54,6 +80,15 @@ class SmlmParamsWidget(QtWidgets.QWidget):
             "roi": int(detection.param("ROI size").value()),
             "method": str(fitting.param("Method").value()),
             "pixel_size_nm": float(calibration.param("Pixel size (nm)").value()),
+        }
+
+    def get_detection_values(self) -> dict:
+        """Return only detection parameters (threshold, sigma, ROI)."""
+        detection = self.p.param("Detection")
+        return {
+            "threshold": float(detection.param("Net-gradient threshold").value()),
+            "sigma": float(detection.param("Smoothing sigma").value()),
+            "roi": int(detection.param("ROI size").value()),
         }
 
 

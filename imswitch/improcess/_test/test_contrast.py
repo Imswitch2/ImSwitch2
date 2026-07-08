@@ -8,6 +8,7 @@ from imswitch.improcess.model.contrast import (
     finite_range,
     finite_values,
     histogram,
+    safe_display_levels,
     sample_values,
 )
 
@@ -124,3 +125,33 @@ def test_sample_values_prefers_downsampling_leading_axes_over_spatial(monkeypatc
     key = lazy.keys[-1]
     assert key[-2] == slice(0, 5, 1)
     assert key[-1] == slice(0, 5, 1)
+
+
+def test_safe_display_levels_returns_unchanged_when_strictly_increasing():
+    minimum, maximum = safe_display_levels(10.0, 20.0)
+    assert minimum == 10.0
+    assert maximum == 20.0
+
+
+def test_safe_display_levels_expands_flat_levels_by_min_span():
+    minimum, maximum = safe_display_levels(5.0, 5.0)
+    assert minimum == 5.0
+    assert maximum == 6.0
+
+
+def test_safe_display_levels_expands_flat_levels_with_custom_span():
+    minimum, maximum = safe_display_levels(0.0, 0.0, min_span=10.0)
+    assert minimum == 0.0
+    assert maximum == 10.0
+
+
+def test_safe_display_levels_coerces_nan_to_zero_span():
+    minimum, maximum = safe_display_levels(np.nan, np.nan)
+    assert minimum == 0.0
+    assert maximum == 1.0
+
+
+def test_safe_display_levels_coerces_mixed_nan_to_zero_span():
+    minimum, maximum = safe_display_levels(5.0, np.nan, min_span=2.0)
+    assert minimum == 0.0
+    assert maximum == 2.0

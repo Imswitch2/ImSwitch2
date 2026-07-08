@@ -5,6 +5,7 @@ from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
+from imswitch.improcess.model.contrast import safe_display_levels
 from . import guitools
 
 
@@ -302,8 +303,9 @@ class ReconstructionView(QtWidgets.QFrame):
                 self._displayLayers.append(layer)
 
             if spec.display_levels is not None:
-                layer.contrast_limits_range = spec.display_levels
-                layer.contrast_limits = spec.display_levels
+                safe_levels = safe_display_levels(*spec.display_levels)
+                layer.contrast_limits_range = safe_levels
+                layer.contrast_limits = safe_levels
 
         first = specs[0]
         try:
@@ -372,10 +374,10 @@ class ReconstructionView(QtWidgets.QFrame):
         return self.imgLayer.contrast_limits
 
     def setImageDisplayLevels(self, minimum, maximum):
-        self.imgLayer.contrast_limits = (minimum, maximum)
+        self.imgLayer.contrast_limits = safe_display_levels(minimum, maximum)
 
     def setImageDisplayLevelsRange(self, minimum, maximum):
-        self.imgLayer.contrast_limits_range = (minimum, maximum)
+        self.imgLayer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def getActiveImageLayer(self):
         """Return the active image-like Napari layer, falling back to imgLayer."""
@@ -423,7 +425,7 @@ class ReconstructionView(QtWidgets.QFrame):
         return self.getActiveImageLayer().contrast_limits
 
     def setActiveImageDisplayLevels(self, minimum, maximum):
-        self.getActiveImageLayer().contrast_limits = (minimum, maximum)
+        self.getActiveImageLayer().contrast_limits = safe_display_levels(minimum, maximum)
 
     def getActiveImageColormap(self) -> str:
         return self._colormapName(self.getActiveImageLayer())
@@ -448,7 +450,7 @@ class ReconstructionView(QtWidgets.QFrame):
     def setActiveImageDisplayLevelsRange(self, minimum, maximum):
         layer = self.getActiveImageLayer()
         if hasattr(layer, "contrast_limits_range"):
-            layer.contrast_limits_range = (minimum, maximum)
+            layer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def removeRecon(self):
         numSelected = len(self.reconList.selectedIndexes())

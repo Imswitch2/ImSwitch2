@@ -70,6 +70,15 @@ class DataFrame(QtWidgets.QFrame):
             brush=pg.mkBrush(color=(255, 0, 0), antialias=True), size=1,
             pxMode=False)
 
+        self.detectionScatter = pg.ScatterPlotItem()
+        self.detectionScatter.setData(
+            pos=[[0, 0]],
+            pen=pg.mkPen(color=(255, 50, 50), width=1.5,
+                         style=QtCore.Qt.SolidLine, antialias=True),
+            brush=None, size=8,
+            symbol='o',
+            pxMode=False)
+
         self.editWdw = DataEditDialog(self)
 
         layout = QtWidgets.QGridLayout()
@@ -88,6 +97,7 @@ class DataFrame(QtWidgets.QFrame):
         layout.addWidget(imageWidget, 3, 0, 1, -1)
 
         self._showPattern = False
+        self._showDetectionPreview = False
 
     def setShowPattern(self, value):
         self._showPattern = value
@@ -97,6 +107,20 @@ class DataFrame(QtWidgets.QFrame):
         else:
             self.imgVb.removeItem(self.patternScatter)
 
+    def setShowDetectionPreview(self, value):
+        # Idempotent: visibility may be re-asserted (e.g. cleared again when
+        # the active reconstructor switches away), and ViewBox.removeItem on
+        # an item that was never added raises.
+        value = bool(value)
+        if value == self._showDetectionPreview:
+            return
+        self._showDetectionPreview = value
+
+        if value:
+            self.imgVb.addItem(self.detectionScatter)
+        else:
+            self.imgVb.removeItem(self.detectionScatter)
+
     def showEditWindow(self):
         self.editWdw.show()
 
@@ -105,6 +129,9 @@ class DataFrame(QtWidgets.QFrame):
 
     def setPatternGridData(self, x, y):
         self.patternScatter.setData(x, y)
+
+    def setDetectionPreviewData(self, x, y):
+        self.detectionScatter.setData(x, y)
 
     def setCurrentFrame(self, value):
         self.frameNum.setText(str(value))
