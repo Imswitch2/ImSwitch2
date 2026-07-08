@@ -11,7 +11,7 @@ def test_runtime_result_processor_ids_track_generic_processor_widgets():
 
     assert "drift-correct" in ids
     assert "denoise" in ids
-    assert "projection" not in ids
+    assert "projection" in ids
     assert "roi-manager" not in ids
 
 

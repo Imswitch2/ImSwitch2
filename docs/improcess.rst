@@ -176,10 +176,9 @@ default and hidden by setting ``"napariLayerControls": false`` in the
     independent channel scaling), segmentation mask layers, multicolor preview
     layers, and so on
 
-**Single source of truth: the active napari layer.** Tool panels (Segmentation,
-Profile, ROI Manager, FRC, etc.) operate on the *active* (highlighted) napari
-layer.  When you select a result from the reconstruction list, the viewer
-automatically:
+**Single source of truth: the active napari layer.** Tool panels (Profile, ROI
+Manager, FRC, etc.) operate on the *active* (highlighted) napari layer.  When
+you select a result from the reconstruction list, the viewer automatically:
 
 1. Loads the result's data into the main image layer
 2. Renames the layer to match the result's name
@@ -187,12 +186,13 @@ automatically:
 
 This keeps "which image am I processing?" unambiguous: it's always the active
 napari layer, and the reconstruction list keeps that layer aligned with your
-selection.  When a tool *commits* a new layer (e.g. a segmentation result),
-napari activates that new layer — at that point tools operate on it until you
-click back to a result or select a different layer in napari's layer list.
-Ephemeral preview layers (the segmentation preview) are the exception: they
-restore the previously active layer and are excluded from tool source
-resolution, so a preview can never become its own input.
+selection.  Most analysis panels now produce new results in the reconstruction
+list instead of creating floating napari layers (Projection and Segmentation have
+been unified with the generic processor path; ROI Manager, FRC, PSF, Colocalization
+and Multicolor will follow in later phases).  Ephemeral preview layers (the
+segmentation preview) are the exception: they restore the previously active layer
+and are excluded from tool source resolution, so a preview can never become its own
+input.
 
 To see which result produced the current image, check the main layer's name or
 the highlighted item in the reconstruction list — after clicking a result, those
@@ -246,11 +246,13 @@ Projection panel
 ================
 
 Set ``"projectionPanel": true`` in the ``processing`` block to show an
-interactive projection panel below the reconstruction viewer.  It runs on the
-active image layer and can project along ``T``, ``Z``, ``C`` or another selected
-axis using max, mean, sum, median or standard-deviation modes.  The registered
-``projection`` processor exposes the same operation for future processor-chain
-UI integration.
+interactive projection panel below the reconstruction viewer.  It operates on the
+currently selected reconstruction result and produces a new projection result in
+the reconstruction list.  The panel supports projection along ``T``, ``Z``, ``C``
+or another selected axis using max, mean, sum, median or standard-deviation modes.
+The projection panel uses the generic result-processor infrastructure — committed
+projections are published as ``ProcessingResult`` entries in the reconstruction
+list, not floating napari layers.
 
 FRC panel
 =========
@@ -283,15 +285,21 @@ Segmentation panel
 ==================
 
 Set ``"segmentationPanel": true`` in the ``processing`` block to show a
-threshold and connected-component segmentation panel.  It runs on the active
-2D image plane, supports manual and Otsu thresholding, minimum-area filtering
-and optional Gaussian smoothing, adds a label layer to the viewer, exports
-region tables as CSV/JSON and can push exact segmented component masks into the
-ROI manager.  Enable the **Preview** checkbox to see a live, reused preview
-layer that updates when parameters change or when the viewer slice changes,
-making it easier to tune segmentation settings without committing multiple
-layers.  The preview layer is shown at 50% opacity to distinguish it from
-committed segmentations.
+threshold and connected-component segmentation panel.  It operates on the
+currently selected reconstruction result and produces a new ``SegmentationResult``
+in the reconstruction list when you click **Segment**.  The panel supports manual
+and Otsu thresholding, minimum-area filtering, optional Gaussian smoothing,
+morphological operations, and watershed segmentation.  Region tables can be
+exported as CSV/JSON, and exact segmented component masks can be pushed into the
+ROI manager.
+
+Enable the **Preview** checkbox to see a live, ephemeral preview layer that
+updates when parameters change or when the viewer slice changes, making it easier
+to tune segmentation settings before committing.  The preview layer is shown at
+50% opacity and remains a transient tuning overlay.  Clicking **Segment** commits
+the final segmentation as a reconstruction-list result (not a floating napari
+layer), allowing you to save, reload, and reprocess segmentations alongside other
+processing results.
 
 PSF resolution panel
 ====================

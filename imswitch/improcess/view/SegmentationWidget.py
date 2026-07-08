@@ -10,10 +10,13 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segment_image
+from imswitch.improcess.processors import SegmentationProcessor
 
 
 class SegmentationWidget(QtWidgets.QWidget):
     """Threshold + connected-component segmentation for the active image layer."""
+
+    sigRunRequested = QtCore.Signal(object, dict)
 
     # Class attribute so layer-resolution helpers work even on partially
     # constructed instances (unit tests build the widget via __new__).
@@ -25,6 +28,8 @@ class SegmentationWidget(QtWidgets.QWidget):
         self._viewer = napariViewer
         self._roiManagerWidget = roiManagerWidget
         self._last_analysis: SegmentationAnalysis | None = None
+        self._currentResult = None
+        self.processor = SegmentationProcessor()
         self._preview_timer = QtCore.QTimer()
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(350)
@@ -144,43 +149,62 @@ class SegmentationWidget(QtWidgets.QWidget):
         self._update_manual_enabled()
 
     def run(self) -> None:
-        layer = self._active_image_layer()
-        image = self._image_2d_from_layer(layer)
-        if image is None:
-            self.summaryLabel.setText("No image layer selected.")
+        """Commit button: segment the current result and emit sigRunRequested.
+        
+        The processor extracts the 2D plane itself (_extract_2d), so we segment
+        the whole current result. The preview operates on the active layer (visual
+        tuning); commit segments the current result.
+        """
+        if self._currentResult is None:
+            self.summaryLabel.setText("No result selected. Load or create a result first.")
             return
         try:
-            method = self.methodCombo.currentText()
-            analysis = segment_image(
-                image,
-                threshold_method=method,
-                threshold_value=self.thresholdSpin.value() if method == "manual" else None,
-                min_area=self.minAreaSpin.value(),
-                smooth_sigma=self.smoothSpin.value(),
-                background_radius=self.backgroundSpin.value(),
-                morphology_radius=self.morphologySpin.value(),
-                fill_holes=self.fillHolesCheck.isChecked(),
-                clear_border=self.clearBorderCheck.isChecked(),
-                local_block_size=self.localBlockSpin.value(),
-                local_offset=self.localOffsetSpin.value(),
-                watershed_min_distance=self.watershedDistanceSpin.value(),
-            )
-            self._last_analysis = analysis
-            self._viewer.add_labels(
-                analysis.labels,
-                name=f"Segmentation ({len(analysis.regions)} regions)",
-                scale=self._spatial_layer_scale(layer),
-                metadata={
-                    "axis_labels": ["Y", "X"],
-                    "scale_unit": self._layer_scale_unit(layer),
-                    "segmentation": analysis.metadata,
-                },
-            )
-            self.summaryLabel.setText(
-                f"Threshold {analysis.threshold:.6g}; {len(analysis.regions)} region(s)."
-            )
+            self.sigRunRequested.emit(self._currentResult, self.parameterValues())
         except Exception as exc:
             self.summaryLabel.setText(str(exc))
+
+    def setCurrentResult(self, result):
+        """Conform to result-processor widget contract: store the current result."""
+        from imswitch.improcess.processors.segmentation.result import SegmentationResult
+        
+        self._currentResult = result
+        # Enable/disable Segment button based on whether result has image data
+        has_image = result is not None and hasattr(result, 'data') and result.data is not None
+        self.runButton.setEnabled(has_image)
+        
+        # Capture analysis from SegmentationResult for ROI export
+        if isinstance(result, SegmentationResult):
+            self._last_analysis = getattr(result, "analysis", None)
+        else:
+            # Non-segmentation result: clear cached analysis
+            # (ROI export will show "Run segmentation first.")
+            self._last_analysis = None
+
+    def setStatusText(self, text: str):
+        """Conform to result-processor widget contract: forward to summaryLabel."""
+        self.summaryLabel.setText(text)
+
+    def parameterValues(self) -> dict:
+        """Conform to result-processor widget contract: return current params.
+
+        Keys MUST match SegmentationProcessor.apply()'s param contract
+        (threshold_method/threshold_value/smooth_sigma/background_radius/
+        morphology_radius/...), otherwise the processor silently falls back to
+        its defaults and the panel's controls are ignored on commit.
+        """
+        return {
+            "threshold_method": self.methodCombo.currentText(),
+            "threshold_value": self.thresholdSpin.value(),
+            "min_area": self.minAreaSpin.value(),
+            "smooth_sigma": self.smoothSpin.value(),
+            "background_radius": self.backgroundSpin.value(),
+            "morphology_radius": self.morphologySpin.value(),
+            "fill_holes": self.fillHolesCheck.isChecked(),
+            "clear_border": self.clearBorderCheck.isChecked(),
+            "local_block_size": self.localBlockSpin.value(),
+            "local_offset": self.localOffsetSpin.value(),
+            "watershed_min_distance": self.watershedDistanceSpin.value(),
+        }
 
     def setRoiManagerWidget(self, roiManagerWidget) -> None:
         """Wire (or rewire) the ROI Manager dependency at runtime.

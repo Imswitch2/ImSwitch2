@@ -161,6 +161,7 @@ def _widget_for_viewer(viewer):
     widget = SegmentationWidget.__new__(SegmentationWidget)
     widget._viewer = viewer
     widget._last_analysis = None
+    widget._currentResult = None
     widget._preview_layer_name = "Segmentation preview"
     widget._dims_connection = None
     widget._layer_selection_connection = None
@@ -293,28 +294,45 @@ def test_preview_with_no_image_layer():
 
 
 def test_run_commits_independent_layer():
-    """run() still commits a new layer independent of preview state."""
+    """run() now emits sigRunRequested instead of creating a layer directly."""
+    from types import SimpleNamespace
+    
     data = np.zeros((8, 9), dtype=np.float32)
     data[2:5, 3:7] = 10.0
     layer = _FakeLayer(data, scale=[0.25, 0.5])
     viewer = _FakeViewer(layer)
     widget = _widget_for_viewer(viewer)
     
-    # Turn on preview
+    # Set a fake current result (new run() requires a current result)
+    fake_result = SimpleNamespace(name="test_result", data=data)
+    widget._currentResult = fake_result
+    
+    # Add signal tracking with a proper fake signal object
+    class FakeSignal:
+        def __init__(self):
+            self.emitted = []
+        def emit(self, result, params):
+            self.emitted.append((result, params))
+    
+    widget.sigRunRequested = FakeSignal()
+    
+    # Turn on preview (should still work as before)
     widget.previewCheck.setChecked(True)
     widget._update_preview()
     layer_count_with_preview = len(viewer.layers)
     
-    # Run a commit
+    # Preview layer should exist
+    assert any(layer.name == "Segmentation preview" for layer in viewer.layers)
+    
+    # Run a commit (should emit signal, not create layer)
     widget.run()
     
-    # Should have both preview and committed layer
-    assert len(viewer.layers) == layer_count_with_preview + 1
+    # Preview layer should still be there (unchanged)
+    assert any(layer.name == "Segmentation preview" for layer in viewer.layers)
     
-    # Last layer should be the committed one (not "Segmentation preview")
-    committed_layer = viewer.layers[-1]
-    assert committed_layer.name != "Segmentation preview"
-    assert "region" in committed_layer.name.lower()
+    # Should have emitted sigRunRequested (but not created a committed layer)
+    assert len(widget.sigRunRequested.emitted) == 1
+    assert widget.sigRunRequested.emitted[0][0] is fake_result
 
 
 def test_preview_updates_summary_label():

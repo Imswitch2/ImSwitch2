@@ -262,10 +262,10 @@ class ImProcessMainController(MainController):
             )
 
     def _wire_runtime_result_processors(self) -> None:
-        from .runtime_result_processors import runtime_result_processor_ids
+        from imswitch.improcess.model.runtime_tools import runtime_analysis_tool_specs
 
-        for processor_id in runtime_result_processor_ids():
-            self._wire_runtime_result_processor(processor_id)
+        for tool_id in runtime_analysis_tool_specs().keys():
+            self._wire_runtime_result_processor(tool_id)
 
     def _onResultProduced(self, result, name):
         """Bridge processing result to imcontrol if display is enabled."""

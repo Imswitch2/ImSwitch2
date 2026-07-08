@@ -76,6 +76,7 @@ def _widget_for_viewer(viewer):
     widget = SegmentationWidget.__new__(SegmentationWidget)
     widget._viewer = viewer
     widget._last_analysis = None
+    widget._currentResult = None
     widget.methodCombo = _Combo("manual")
     widget.thresholdSpin = _Spin(0.5)
     widget.minAreaSpin = _Spin(1)
@@ -92,6 +93,9 @@ def _widget_for_viewer(viewer):
 
 
 def test_segmentation_labels_use_source_layer_spatial_scale():
+    """run() emits sigRunRequested; scale handling is processor responsibility."""
+    from types import SimpleNamespace
+    
     data = np.zeros((2, 8, 9), dtype=np.float32)
     data[1, 2:5, 3:7] = 10.0
     layer = _FakeLayer(
@@ -102,15 +106,27 @@ def test_segmentation_labels_use_source_layer_spatial_scale():
     viewer = _FakeViewer(layer, current_step=(1, 0, 0))
     widget = _widget_for_viewer(viewer)
 
+    # Set a fake current result (new run() requires a current result)
+    fake_result = SimpleNamespace(name="test_result", data=data[1])
+    widget._currentResult = fake_result
+
+    # Add signal tracking with a proper fake signal object
+    class FakeSignal:
+        def __init__(self):
+            self.emitted = []
+        def emit(self, result, params):
+            self.emitted.append((result, params))
+    
+    widget.sigRunRequested = FakeSignal()
+
     widget.run()
 
-    assert len(viewer.added_labels) == 1
-    labels, kwargs = viewer.added_labels[0]
-    assert labels.shape == (8, 9)
-    assert labels.max() == 1
-    assert kwargs["scale"] == [0.25, 0.5]
-    assert kwargs["metadata"]["axis_labels"] == ["Y", "X"]
-    assert kwargs["metadata"]["scale_unit"] == "um"
+    # Should emit signal instead of creating layer directly
+    assert len(widget.sigRunRequested.emitted) == 1
+    assert len(viewer.added_labels) == 0  # No direct layer creation
+    
+    # Scale extraction still works (helper method unchanged)
+    assert widget._spatial_layer_scale(layer) == [0.25, 0.5]
 
 
 def test_segmentation_label_scale_falls_back_to_unit_pixels():

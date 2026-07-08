@@ -4,7 +4,6 @@ from .FRCWidget import FRCWidget
 from .GraphWidget import GraphWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
-from .ProjectionWidget import ProjectionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
 from .SegmentationWidget import SegmentationWidget

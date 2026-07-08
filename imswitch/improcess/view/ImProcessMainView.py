@@ -26,7 +26,6 @@ from .FRCWidget import FRCWidget
 from .GraphWidget import GraphWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
-from .ProjectionWidget import ProjectionWidget
 from .ROIManagerWidget import ROIManagerWidget
 from .ROIStatsWidget import ROIStatsWidget
 from .ResultProcessorWidget import ResultProcessorWidget
@@ -255,7 +254,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             else None
         )
         self.projectionWidget = (
-            ProjectionWidget(self.reconstructionWidget.napariViewer)
+            self._makeResultProcessorWidget('projection')
             if showProjectionPanel
             else None
         )
@@ -953,7 +952,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             ),
             'graph': lambda: GraphWidget(),
             'profile': lambda: ProfileWidget(viewer),
-            'projection': lambda: ProjectionWidget(viewer),
             'segmentation': lambda: SegmentationWidget(
                 viewer,
                 roiManagerWidget=self.roiManagerWidget,

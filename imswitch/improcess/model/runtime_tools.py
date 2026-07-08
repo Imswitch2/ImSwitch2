@@ -30,7 +30,7 @@ _PROCESSOR_WIDGET_SPECS = {
         "result-processor",
     ),
     "denoise": ("Denoise", "denoiseProcessorWidget", "result-processor"),
-    "projection": ("Projection", "projectionWidget", "projection"),
+    "projection": ("Projection", "projectionWidget", "result-processor"),
     "segmentation": ("Segmentation", "segmentationWidget", "segmentation"),
     "psf-resolution": ("PSF resolution", "psfResolutionWidget", "psf-resolution"),
     "colocalization": ("Colocalization", "colocalizationWidget", "colocalization"),
