@@ -22,8 +22,13 @@ import logging
 import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 from imswitch.imcontrol.model.managers import recording_metadata as _ome
+from imswitch.imcommon.model.zarr_compat import (
+    install_zarr_create_array_compat,
+    write_zarr_json_sidecar,
+)
 
 logger = logging.getLogger(__name__)
+install_zarr_create_array_compat()
 
 # Recording loop constants
 FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
@@ -34,6 +39,11 @@ RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before sta
 # Off-thread writer constants
 WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
+# SWMR requires HDF5 1.10+ object formats, but libver='latest' maps to
+# ('v200', 'v200') with HDF5 2.x. Pin the writer to the oldest SWMR-capable
+# format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
+# completed recordings.
+HDF5_STREAM_LIBVER = ('v110', 'v110')
 
 
 class AsTemporaryFile(object):
@@ -197,34 +207,40 @@ class ZarrStorer(Storer):
     def _create_array(root: Any, name: str, *, data: Any = None,
                       shape: tuple | None = None, chunks: tuple | None = None,
                       dtype: Any = None, dimension_names: tuple | None = None) -> Any:
-        if hasattr(root, 'create_dataset'):
-            kwargs = {'chunks': chunks}
+        if hasattr(root, 'create_array'):
+            # Zarr v3: flat v2-style chunk keys ("0.0.0") instead of the v3
+            # default nested folders ("c/0/0/0"), so a recording creates far
+            # fewer on-disk directories. On zarr v2 this method may be the
+            # compatibility shim installed above, which ignores v3-only kwargs.
+            kwargs = {'chunks': chunks,
+                      'chunk_key_encoding': {'name': 'v2', 'configuration': {'separator': '.'}}}
+            if dimension_names is not None:
+                kwargs['dimension_names'] = tuple(dimension_names)
             if data is not None:
                 kwargs['data'] = data
-            if shape is not None:
+            else:
                 kwargs['shape'] = shape
-            if dtype is not None:
                 kwargs['dtype'] = dtype
-            return root.create_dataset(name, **kwargs)
+            try:
+                return root.create_array(name, **kwargs)
+            except TypeError:
+                # Older zarr builds do not expose dimension_names yet. The NGFF
+                # multiscales block remains authoritative in that case.
+                kwargs.pop('dimension_names', None)
+                array = root.create_array(name, **kwargs)
+                write_zarr_json_sidecar(array, dimension_names)
+                return array
 
-        # Zarr v3: flat v2-style chunk keys ("0.0.0") instead of the v3 default
-        # nested folders ("c/0/0/0"), so a recording is far fewer on-disk dirs.
-        kwargs = {'chunks': chunks,
-                  'chunk_key_encoding': {'name': 'v2', 'configuration': {'separator': '.'}}}
-        if dimension_names is not None:
-            kwargs['dimension_names'] = tuple(dimension_names)
+        kwargs = {'chunks': chunks}
         if data is not None:
             kwargs['data'] = data
-        else:
+        if shape is not None:
             kwargs['shape'] = shape
+        if dtype is not None:
             kwargs['dtype'] = dtype
-        try:
-            return root.create_array(name, **kwargs)
-        except TypeError:
-            # Older zarr builds do not expose dimension_names yet. The NGFF
-            # multiscales block remains authoritative in that case.
-            kwargs.pop('dimension_names', None)
-            return root.create_array(name, **kwargs)
+        dataset = root.create_dataset(name, **kwargs)
+        write_zarr_json_sidecar(dataset, dimension_names)
+        return dataset
 
     @staticmethod
     def _require_group(parent: Any, name: str) -> Any:
@@ -793,10 +809,12 @@ class HDF5Storer(Storer):
             else:
                 # Open new file (append mode for lapse files, write mode otherwise)
                 mode = 'a' if singleLapseFile else 'w-'
-                # Enable SWMR (libver='latest') for disk-based streaming recordings
+                # Enable SWMR for disk-based streaming recordings
                 # (not RAM mode, which uses BytesIO and doesn't support SWMR)
                 if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
-                    self._files[detectorName] = h5py.File(fileDests[detectorName], mode, libver='latest')
+                    self._files[detectorName] = h5py.File(
+                        fileDests[detectorName], mode, libver=HDF5_STREAM_LIBVER
+                    )
                 else:
                     self._files[detectorName] = h5py.File(fileDests[detectorName], mode)
 
@@ -904,19 +922,21 @@ class HDF5Storer(Storer):
     
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close HDF5 files and emit signals."""
-        # Track unique files to avoid duplicate close (singleMultiDetectorFile mode)
-        processed_files = set()
         pending_memory_signals = []
-        
+        pending_disk_memory_signals = []
+
         # Track dataset paths for updating writing attribute after SWMR close
         dataset_paths = {}
         for detectorName, dataset in self._datasets.items():
             if dataset is not None:
                 dataset_paths[detectorName] = dataset.name
-        
-        for detectorName, file in self._files.items():
+
+        # Finalize every detector dataset before closing any shared file handle.
+        # In singleMultiDetectorFile mode multiple detector names point to the
+        # same h5py.File; closing inside this loop invalidates later datasets.
+        for detectorName, dataset in self._datasets.items():
+            file = self._files[detectorName]
             # Remove empty datasets (if no frames captured)
-            dataset = self._datasets.get(detectorName)
             if dataset is not None and currentFrames[detectorName] < 1:
                 dataset.resize(0, axis=0)
 
@@ -932,6 +952,12 @@ class HDF5Storer(Storer):
             if (committed is not None or complete is not None) and \
                     saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
                 file.flush()
+
+            # For RAM mode, we can directly modify attributes now (no SWMR).
+            if saveMode == SaveMode.RAM and dataset is not None:
+                dataset.attrs['writing'] = False
+                if currentFrames.get(detectorName, 0) >= 1:
+                    self._embed_ome_xml(dataset.parent, detectorName, dataset.shape)
             
             # Emit signal for each detector (even in singleMultiDetectorFile mode).
             # RAM-backed BytesIO recordings are announced after their HDF5 file
@@ -945,41 +971,33 @@ class HDF5Storer(Storer):
                         (name, self._fileDests[detectorName], filePath, False)
                     )
                 else:  # DiskAndRAM
-                    recordingManager.sigMemoryRecordingAvailable.emit(
-                        name, file, filePath, True
-                    )
-            
-            # Only close/flush each unique file once (handles singleMultiDetectorFile mode)
+                    pending_disk_memory_signals.append((name, filePath, True))
+
+        # Only close/flush each unique file once (handles singleMultiDetectorFile mode).
+        processed_files = set()
+        for file in self._files.values():
             file_id = id(file)
             if file_id in processed_files:
                 continue
             processed_files.add(file_id)
-            
+
             if saveMode == SaveMode.RAM:
-                # For RAM mode, we can directly modify attributes (no SWMR)
-                if dataset is not None:
-                    dataset.attrs['writing'] = False
-                    if currentFrames.get(detectorName, 0) >= 1:
-                        self._embed_ome_xml(dataset.parent, detectorName, dataset.shape)
                 file.close()
             elif saveMode == SaveMode.DiskAndRAM:
                 file.flush()
+                file.close()
             elif saveMode == SaveMode.Disk:
                 file.close()
 
-        for signalArgs in pending_memory_signals:
-            recordingManager.sigMemoryRecordingAvailable.emit(*signalArgs)
-        
         # For disk-based SWMR recordings, reopen files to set writing=False
         # (cannot modify attributes while in SWMR mode)
         if saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
-            processed_paths = set()
+            paths_to_datasets = {}
             for detectorName, dataset_path in dataset_paths.items():
                 filePath = filePaths[detectorName]
-                if filePath in processed_paths:
-                    continue
-                processed_paths.add(filePath)
-                
+                paths_to_datasets.setdefault(filePath, []).append((detectorName, dataset_path))
+
+            for filePath, entries in paths_to_datasets.items():
                 # Reopen file in read/write mode (not SWMR) to update writing
                 # attribute and embed OME-XML (both forbidden under SWMR).
                 # This reopen can fail while a live reader holds a SWMR handle
@@ -989,12 +1007,13 @@ class HDF5Storer(Storer):
                 # terminate via the stream_complete marker written above, and
                 # the completion gate accepts the marker as well.
                 try:
-                    with h5py.File(filePath, 'r+') as f:
-                        if dataset_path in f:
-                            f[dataset_path].attrs['writing'] = False
-                            if currentFrames.get(detectorName, 0) >= 1:
-                                self._embed_ome_xml(
-                                    f[dataset_path].parent, detectorName, f[dataset_path].shape)
+                    with h5py.File(filePath, 'r+', libver=HDF5_STREAM_LIBVER) as f:
+                        for detectorName, dataset_path in entries:
+                            if dataset_path in f:
+                                f[dataset_path].attrs['writing'] = False
+                                if currentFrames.get(detectorName, 0) >= 1:
+                                    self._embed_ome_xml(
+                                        f[dataset_path].parent, detectorName, f[dataset_path].shape)
                 except OSError as e:
                     logger.warning(
                         f'HDF5 finalize: could not rewrite writing=False / embed '
@@ -1002,6 +1021,23 @@ class HDF5Storer(Storer):
                         f'open): {e}. The stream_complete marker still marks the '
                         f'recording as finished.'
                     )
+
+        if recordingManager is not None:
+            for signalArgs in pending_memory_signals:
+                recordingManager.sigMemoryRecordingAvailable.emit(*signalArgs)
+
+            # DiskAndRAM should not keep the SWMR writer handle open after
+            # finalization. Reopen read-only for in-app consumers; the saved file
+            # is then a normal, completed HDF5 file for external viewers too.
+            for name, filePath, savedToDisk in pending_disk_memory_signals:
+                try:
+                    readFile = h5py.File(filePath, 'r', libver=HDF5_STREAM_LIBVER)
+                except OSError as e:
+                    logger.warning(f'HDF5 finalize: could not reopen {filePath} for memory hand-off: {e}')
+                    continue
+                recordingManager.sigMemoryRecordingAvailable.emit(
+                    name, readFile, filePath, savedToDisk
+                )
 
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close HDF5 files and remove the partial on-disk file(s)."""

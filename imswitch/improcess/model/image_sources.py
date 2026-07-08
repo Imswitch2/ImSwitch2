@@ -15,6 +15,11 @@ import numpy as np
 import tifffile as tiff
 import zarr
 
+from imswitch.imcommon.model.zarr_compat import install_zarr_create_array_compat
+
+
+install_zarr_create_array_compat()
+
 
 _ZarrGroup = getattr(zarr, "Group", None) or getattr(getattr(zarr, "hierarchy", None), "Group", None)
 _ZarrArray = getattr(zarr, "Array", None) or getattr(getattr(zarr, "core", None), "Array", None)

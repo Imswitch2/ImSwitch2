@@ -625,6 +625,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
     def onEndedScan(self):
         self.ongoingScan=False
+        # If self.framesReceivedThisScan == 0 after the short drain below,
+        # _completeEndedScan reports "0 detector frames received" loudly.
         should_drain = (
             self.running
             and self._expectedScanPixels() is not None

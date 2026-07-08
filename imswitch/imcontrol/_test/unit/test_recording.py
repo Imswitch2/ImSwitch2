@@ -7,7 +7,9 @@ import numpy as np
 import zarr
 
 from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
-from imswitch.imcontrol.model.managers.RecordingManager import HDF5Storer, ZarrStorer
+from imswitch.imcontrol.model.managers.RecordingManager import (
+    HDF5Storer, HDF5_STREAM_LIBVER, ZarrStorer,
+)
 from imswitch.imcontrol.model.managers.recording_metadata import MODE_SCAN, MODE_TIMELAPSE
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
 
@@ -906,6 +908,7 @@ def test_hdf5_streaming_frames_committed_and_complete_marker(tmp_path) -> None:
     )
 
     storer.writeFrames(detectorName, np.ones((3, 4, 5), dtype=np.uint16))
+    assert storer._files[detectorName].libver == HDF5_STREAM_LIBVER
     with h5py.File(file_path, 'r', libver='latest', swmr=True) as f:
         group = f[detectorName]
         assert int(group['frames_committed'][0]) == 3
@@ -924,6 +927,104 @@ def test_hdf5_streaming_frames_committed_and_complete_marker(tmp_path) -> None:
         assert int(group['frames_committed'][0]) == 5
         assert int(group['stream_complete'][0]) == 1
         assert not bool(group['data'].attrs['writing'])
+
+
+def test_hdf5_disk_and_ram_closes_writer_and_hands_off_readonly(tmp_path) -> None:
+    """DiskAndRAM finalization must leave a normal closed file for external viewers."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    file_path = str(tmp_path / 'disk_and_ram.hdf5')
+
+    class _SignalSink:
+        def __init__(self):
+            self.calls = []
+
+        def emit(self, *args):
+            self.calls.append(args)
+
+    class _RecordingManager:
+        def __init__(self):
+            self.sigMemoryRecordingAvailable = _SignalSink()
+
+    storer = HDF5Storer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests={detectorName: file_path},
+        detectorNames=[detectorName],
+        shapes={detectorName: (4, 5)},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.DiskAndRAM,
+    )
+    storer.writeFrames(detectorName, np.ones((2, 4, 5), dtype=np.uint16))
+
+    manager = _RecordingManager()
+    writer_file = storer._files[detectorName]
+    assert writer_file.libver == HDF5_STREAM_LIBVER
+    storer.finalizeStream(
+        currentFrames={detectorName: 2}, filePaths={detectorName: file_path},
+        recordingManager=manager, saveMode=SaveMode.DiskAndRAM,
+    )
+
+    assert not writer_file.id.valid
+    assert len(manager.sigMemoryRecordingAvailable.calls) == 1
+    name, handoff_file, path, saved_to_disk = manager.sigMemoryRecordingAvailable.calls[0]
+    assert name == os.path.basename(file_path)
+    assert path == file_path
+    assert saved_to_disk is True
+    assert isinstance(handoff_file, h5py.File)
+    assert handoff_file.mode == 'r'
+    assert handoff_file[detectorName]['data'].shape == (2, 4, 5)
+
+    with h5py.File(file_path, 'r', libver=HDF5_STREAM_LIBVER) as f:
+        assert not bool(f[detectorName]['data'].attrs['writing'])
+        np.testing.assert_array_equal(f[detectorName]['data'][:], np.ones((2, 4, 5), dtype=np.uint16))
+
+    handoff_file.close()
+    with h5py.File(file_path, 'r+') as f:
+        assert detectorName in f
+
+
+def test_hdf5_single_multidetector_finalize_updates_all_datasets(tmp_path) -> None:
+    """Shared HDF5 files must finalize every detector before closing the file."""
+    detectorsManager = DetectorsManager(detectorInfosMulti, updatePeriod=100)
+    detectorNames = list(detectorInfosMulti.keys())
+    file_path = str(tmp_path / 'multi_detector.hdf5')
+
+    storer = HDF5Storer(str(tmp_path / 'unused'), detectorsManager)
+    storer.openStream(
+        fileDests={name: file_path for name in detectorNames},
+        detectorNames=detectorNames,
+        shapes={name: (4, 5) for name in detectorNames},
+        attrs={name: {} for name in detectorNames},
+        singleMultiDetectorFile=True,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    for index, detectorName in enumerate(detectorNames):
+        storer.writeFrames(
+            detectorName,
+            np.full((2, 4, 5), index + 1, dtype=np.uint16),
+        )
+    assert storer._files[detectorNames[0]].libver == HDF5_STREAM_LIBVER
+
+    storer.finalizeStream(
+        currentFrames={name: 2 for name in detectorNames},
+        filePaths={name: file_path for name in detectorNames},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+
+    with h5py.File(file_path, 'r', libver=HDF5_STREAM_LIBVER) as f:
+        for index, detectorName in enumerate(detectorNames):
+            group = f[detectorName]
+            assert int(group['frames_committed'][0]) == 2
+            assert int(group['stream_complete'][0]) == 1
+            assert not bool(group['data'].attrs['writing'])
+            np.testing.assert_array_equal(
+                group['data'][:],
+                np.full((2, 4, 5), index + 1, dtype=np.uint16),
+            )
 
 
 def test_zarr_streaming_single_lapse_adds_scan_groups(tmp_path) -> None:
