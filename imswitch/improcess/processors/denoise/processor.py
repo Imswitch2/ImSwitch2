@@ -23,6 +23,7 @@ class DenoiseProcessor(Processor):
 
     name = "Denoise"
     id = "denoise"
+    category = "Restoration"
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

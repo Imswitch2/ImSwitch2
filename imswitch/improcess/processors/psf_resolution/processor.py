@@ -17,6 +17,7 @@ class PSFResolutionProcessor(Processor):
 
     name = "PSF / Bead Resolution"
     id = "psf-resolution"
+    category = "Measurement"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

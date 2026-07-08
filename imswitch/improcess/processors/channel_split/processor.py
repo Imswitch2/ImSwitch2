@@ -22,6 +22,7 @@ class ChannelSplitProcessor(Processor):
 
     name = "Split channels"
     id = "channel-split"
+    category = "Dimensions and channels"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
@@ -57,5 +58,9 @@ class ChannelSplitProcessor(Processor):
         if len(shape) < 3:
             return False
         labels = axis_labels_for_result(result)
-        lowered = {label.lower() for label in labels}
-        return any(label.lower() in lowered for label in _CHANNEL_LABELS)
+        lowered = {label.lower(): index for index, label in enumerate(labels)}
+        for label in _CHANNEL_LABELS:
+            index = lowered.get(label.lower())
+            if index is not None and shape[index] > 1:
+                return True
+        return False

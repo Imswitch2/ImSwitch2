@@ -24,6 +24,7 @@ class StackSubsetProcessor(Processor):
 
     name = "Crop/Substack"
     id = "stack-subset"
+    category = "Dimensions and channels"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

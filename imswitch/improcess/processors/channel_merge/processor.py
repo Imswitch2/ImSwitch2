@@ -24,6 +24,7 @@ class ChannelMergeProcessor(Processor):
 
     name = "Merge channels"
     id = "channel-merge"
+    category = "Dimensions and channels"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

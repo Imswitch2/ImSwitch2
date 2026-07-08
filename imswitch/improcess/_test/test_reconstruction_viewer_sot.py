@@ -147,7 +147,10 @@ class _FakeCommChannel:
         self.sigScanParamsUpdated = SimpleNamespace(connect=lambda x: None)
         self.sigResultProduced = SimpleNamespace(connect=lambda x: None)
         self.sigLiveResultUpdated = SimpleNamespace(connect=lambda x: None)
-        self.sigCurrentResultChanged = SimpleNamespace(emit=lambda x: None)
+        self.current_results = []
+        self.sigCurrentResultChanged = SimpleNamespace(
+            emit=lambda x: self.current_results.append(x)
+        )
 
 
 # --- Tests for view layer naming behavior (via fake view) ---
@@ -296,3 +299,27 @@ def test_controller_handles_result_without_name_attribute():
     
     assert view.imgLayer.name == "Reconstruction"
     assert "source_result" not in view.imgLayer.metadata
+
+
+def test_controller_handles_removed_current_item_without_crash():
+    """Removing the active result leaves no current item; controller must clear."""
+    view = _FakeReconstructionView()
+    comm = _FakeCommChannel()
+    controller = ReconstructionViewController.__new__(ReconstructionViewController)
+    controller._widget = view
+    controller._commChannel = comm
+    controller._logger = SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)
+    controller._transposeOrder = [0, 1]
+    controller._axisStep = (0, 0)
+    controller._displayedAxisLabels = []
+    controller._currItemInd = 0
+    controller._prevViewId = None
+
+    view._reconList = []
+    view._currentIndex = None
+
+    controller.listItemChanged()
+
+    assert view.imgLayer.name == "Reconstruction"
+    assert view.imgLayer.data.shape == (1, 1)
+    assert comm.current_results == [None]

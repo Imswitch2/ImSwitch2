@@ -9,6 +9,7 @@ from imswitch.improcess.processors.channel_merge import (
     ChannelMergeProcessor,
     can_merge_results,
 )
+from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.make_composite import (
     CompositeResult,
     MakeCompositeProcessor,
@@ -34,6 +35,13 @@ def test_make_rgb_registered():
 
 def test_channel_merge_registered():
     assert "channel-merge" in available_processor_ids()
+
+
+def test_channel_split_requires_multiple_channel_planes():
+    processor = ChannelSplitProcessor()
+
+    assert processor.applies_to(_result(np.zeros((2, 4, 5)), ["C", "Y", "X"]))
+    assert not processor.applies_to(_result(np.zeros((1, 4, 5)), ["C", "Y", "X"]))
 
 
 def test_make_composite_creates_colored_display_layers_from_c_axis():

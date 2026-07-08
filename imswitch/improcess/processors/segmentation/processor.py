@@ -18,6 +18,7 @@ class SegmentationProcessor(Processor):
 
     name = "Segmentation"
     id = "segmentation"
+    category = "Segmentation"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

@@ -197,10 +197,16 @@ class ReconstructionView(QtWidgets.QFrame):
         self.reconList.setCurrentItem(listItem)
 
     def getCurrentItemIndex(self):
-        return self.reconList.indexFromItem(self.reconList.currentItem()).row()
+        currentItem = self.reconList.currentItem()
+        if currentItem is None:
+            return None
+        return self.reconList.indexFromItem(currentItem).row()
 
     def getDataAtIndex(self, index):
-        return self.reconList.item(index).data(1)
+        if index is None or index < 0 or index >= self.reconList.count():
+            return None
+        item = self.reconList.item(index)
+        return item.data(1) if item is not None else None
 
     def getCurrentItemData(self):
         currentItem = self.reconList.currentItem()
@@ -597,16 +603,17 @@ class ReconstructionView(QtWidgets.QFrame):
             layer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def removeRecon(self):
-        numSelected = len(self.reconList.selectedIndexes())
-        while not numSelected == 0:
-            row = self.reconList.selectedIndexes()[0].row()
+        rows = sorted(
+            {index.row() for index in self.reconList.selectedIndexes()},
+            reverse=True,
+        )
+        if not rows and self.reconList.currentRow() >= 0:
+            rows = [self.reconList.currentRow()]
+        for row in rows:
             self.reconList.takeItem(row)
-            numSelected -= 1
 
     def removeAllRecon(self):
-        for i in range(self.reconList.count()):
-            currRow = self.reconList.currentRow()
-            self.reconList.takeItem(currRow)
+        self.reconList.clear()
 
     def resetView(self):
         self.napariViewer.reset_view()

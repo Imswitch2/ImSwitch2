@@ -55,6 +55,7 @@ class Processor(ABC):
     # Class attributes (override in subclasses)
     name: str = "Unnamed Processor"  # Human-readable
     id: str = "unnamed"  # Stable identifier for config + registry
+    category: str = "Other"  # Human-readable grouping for runtime tools/docs
     
     @property
     @abstractmethod

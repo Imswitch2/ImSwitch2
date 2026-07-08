@@ -89,6 +89,27 @@ def test_stack_subset_step_updates_axis_scale_and_can_copy():
     np.testing.assert_array_equal(subset.data, data[0:5:2])
 
 
+def test_stack_subset_crops_multiple_dimensions():
+    data = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    result = _result(data, ["T", "Y", "X"])
+    result.axis_scales = [1.0, 0.5, 0.2]
+
+    subset = StackSubsetProcessor().apply(
+        result,
+        {
+            "ranges": [
+                {"axis": "T", "start": 1, "stop": 3},
+                {"axis": "X", "start": 0, "stop": 5, "step": 2},
+            ]
+        },
+    )
+
+    assert subset.data.shape == (2, 4, 3)
+    assert subset.axis_labels == ["T", "Y", "X"]
+    assert subset.axis_scales == [1.0, 0.5, 0.4]
+    np.testing.assert_array_equal(subset.data, data[1:3, :, 0:5:2])
+
+
 def test_stack_subset_validates_ranges():
     result = _result(np.zeros((2, 3, 4), dtype=np.float32), ["Z", "Y", "X"])
 
@@ -128,6 +149,31 @@ def test_stack_subset_defers_non_numpy_array_slicing_until_read():
     assert subset.data.backend == "test-lazy-subset"
     np.testing.assert_array_equal(subset.data[1], data[2])
     assert lazy.keys == [(2, slice(0, 4, 1), slice(0, 5, 1))]
+
+
+def test_stack_subset_defers_multi_axis_lazy_slicing_until_read():
+    data = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    lazy = _LazyArray(data)
+    result = ArrayProcessingResult(
+        name="lazy",
+        data=lazy,
+        axis_labels=["Z", "Y", "X"],
+    )
+
+    subset = StackSubsetProcessor().apply(
+        result,
+        {
+            "ranges": [
+                {"axis": "Z", "start": 0, "stop": 4, "step": 2},
+                {"axis": "Y", "start": 1, "stop": 5},
+            ]
+        },
+    )
+
+    assert lazy.keys == []
+    assert subset.data.shape == (2, 4, 6)
+    np.testing.assert_array_equal(subset.data[1, 2], data[2, 3])
+    assert lazy.keys == [(2, 3, slice(0, 6, 1))]
 
 
 def test_stack_split_prefers_z_axis_and_removes_label():

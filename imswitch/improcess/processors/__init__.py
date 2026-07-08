@@ -57,6 +57,18 @@ def available_processor_choices() -> list[tuple[str, str]]:
     )
 
 
+def available_processor_specs() -> list[tuple[str, str, str]]:
+    """Return built-in processor ids, display names and categories."""
+    return sorted(
+        (
+            processor_id,
+            plugin_cls.name,
+            getattr(plugin_cls, "category", "Other"),
+        )
+        for processor_id, plugin_cls in _AVAILABLE_PROCESSOR_CLASSES.items()
+    )
+
+
 def register_processor_by_id(registry, processor_id: str) -> Processor:
     """Instantiate and register one built-in processor by id."""
     try:
@@ -112,6 +124,7 @@ __all__ = [
     "StackSubsetProcessor",
     "available_processor_choices",
     "available_processor_ids",
+    "available_processor_specs",
     "register_processor_by_id",
     "register_default_processors",
 ]

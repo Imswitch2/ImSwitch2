@@ -12,6 +12,7 @@ class RuntimeAnalysisToolSpec:
     attribute: str
     widget_kind: str
     processor_id: str | None = None
+    category: str = "Other"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         attribute="graphWidget",
         widget_kind="graph",
         processor_id=None,
+        category="Exploration",
     ),
     "profile": RuntimeAnalysisToolSpec(
         id="profile",
@@ -53,6 +55,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         attribute="profileWidget",
         widget_kind="profile",
         processor_id=None,
+        category="Exploration",
     ),
     "roi-manager": RuntimeAnalysisToolSpec(
         id="roi-manager",
@@ -60,6 +63,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         attribute="roiManagerWidget",
         widget_kind="roi-manager",
         processor_id=None,
+        category="ROI",
     ),
     "roi-stats": RuntimeAnalysisToolSpec(
         id="roi-stats",
@@ -67,6 +71,7 @@ _NON_PROCESSOR_TOOL_SPECS = {
         attribute="roiStatsWidget",
         widget_kind="roi-stats",
         processor_id=None,
+        category="ROI",
     ),
 }
 
@@ -106,10 +111,10 @@ _PANEL_SHORTCUTS = (
 
 def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
     """Return all built-in runtime-loadable analysis tool descriptors."""
-    from imswitch.improcess.processors import available_processor_choices
+    from imswitch.improcess.processors import available_processor_specs
 
     specs: dict[str, RuntimeAnalysisToolSpec] = {}
-    for processor_id, processor_name in available_processor_choices():
+    for processor_id, processor_name, processor_category in available_processor_specs():
         title, attribute, widget_kind = _PROCESSOR_WIDGET_SPECS.get(
             processor_id,
             (
@@ -124,6 +129,7 @@ def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
             attribute=attribute,
             widget_kind=widget_kind,
             processor_id=processor_id,
+            category=str(processor_category or "Other"),
         )
     specs.update(_NON_PROCESSOR_TOOL_SPECS)
     return specs
@@ -135,7 +141,7 @@ def runtime_analysis_tool_choices() -> list[tuple[str, str]]:
         (spec.id, spec.title)
         for spec in sorted(
             runtime_analysis_tool_specs().values(),
-            key=lambda item: item.id,
+            key=lambda item: (item.category, item.title, item.id),
         )
     ]
 
@@ -152,7 +158,7 @@ def runtime_result_processor_ids() -> list[str]:
         spec.id
         for spec in sorted(
             runtime_analysis_tool_specs().values(),
-            key=lambda item: item.id,
+            key=lambda item: (item.category, item.title, item.id),
         )
         if spec.widget_kind == "result-processor" and spec.processor_id is not None
     ]

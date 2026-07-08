@@ -18,6 +18,7 @@ class FRCProcessor(Processor):
 
     name = "FRC Resolution"
     id = "frc"
+    category = "Measurement"
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

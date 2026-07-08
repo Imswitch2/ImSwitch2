@@ -23,6 +23,7 @@ class MulticolorApplyProcessor(Processor):
 
     name = "Multicolor Apply"
     id = "multicolor-apply"
+    category = "Registration"
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

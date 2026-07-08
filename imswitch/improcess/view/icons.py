@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from qtpy import QtGui, QtWidgets
 
+from imswitch.imcommon.model import initLogger
+
 
 IMPROCESS_ICON_NAMES = {
     "quick-load-data": "fa5s.file-upload",
@@ -57,6 +59,9 @@ _FALLBACK_STANDARDS = {
     "results-table": QtWidgets.QStyle.SP_FileDialogDetailedView,
 }
 
+_QTAWESOME_MISSING_WARNED = False
+_QTAWESOME_ICON_WARNED: set[str] = set()
+
 
 def improcessIcon(action_id: str, owner=None) -> QtGui.QIcon:
     """Return a semantic toolbar icon, falling back to Qt built-ins."""
@@ -69,14 +74,31 @@ def improcessIcon(action_id: str, owner=None) -> QtGui.QIcon:
 
 
 def _qtawesomeIcon(icon_name: str, owner=None) -> QtGui.QIcon | None:
+    global _QTAWESOME_MISSING_WARNED
     try:
         import qtawesome as qta
-    except Exception:
+    except Exception as exc:
+        if not _QTAWESOME_MISSING_WARNED:
+            _iconsLogger().warning(
+                'qtawesome is not available; using Qt fallback icons. '
+                'Install or refresh the environment with qtawesome>=1.4. '
+                f'Import error: {exc}'
+            )
+            _QTAWESOME_MISSING_WARNED = True
         return None
     try:
         return qta.icon(icon_name, color=_paletteIconColor(owner))
-    except Exception:
+    except Exception as exc:
+        if icon_name not in _QTAWESOME_ICON_WARNED:
+            _iconsLogger().warning(
+                f'qtawesome could not create icon {icon_name!r}; using Qt fallback: {exc}'
+            )
+            _QTAWESOME_ICON_WARNED.add(icon_name)
         return None
+
+
+def _iconsLogger():
+    return initLogger('ImProcessIcons')
 
 
 def _fallbackIcon(action_id: str, owner=None) -> QtGui.QIcon:

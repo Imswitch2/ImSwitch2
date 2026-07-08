@@ -27,6 +27,7 @@ class MakeRGBProcessor(Processor):
 
     name = "Make RGB"
     id = "make-rgb"
+    category = "Visualization"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

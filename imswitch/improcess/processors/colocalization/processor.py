@@ -18,6 +18,7 @@ class ColocalizationProcessor(Processor):
 
     name = "Colocalization"
     id = "colocalization"
+    category = "Measurement"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

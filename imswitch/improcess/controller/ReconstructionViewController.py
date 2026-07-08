@@ -42,24 +42,25 @@ class ReconstructionViewController(ImProcessWidgetController):
         return [(getattr(current, "name", "result"), current)]
 
     def listItemChanged(self):
+        currItem = self._widget.getCurrentItemData()
         if self._currItemInd is not None:
             prevItem = self._widget.getDataAtIndex(self._currItemInd)
             self._persistActiveViewerSettings(prevItem)
+        self._syncViewModes(currItem)
 
-            currItem = self._widget.getCurrentItemData()
-            self._syncViewModes(currItem)
-            retrievedLevels = \
-                self._widget.getCurrentItemData().getDispLevels() if currItem is not None else None
-            self.fullUpdate(levels=retrievedLevels)
-            if retrievedLevels is not None:
-                self._widget.setImageDisplayLevels(retrievedLevels[0], retrievedLevels[1])
-        else:
-            self._syncViewModes(self._widget.getCurrentItemData())
-            self.fullUpdate(autoLevels=True,
-                            levels=self._widget.getCurrentItemData().getDispLevels())
+        if currItem is None:
+            self.fullUpdate(levels=None)
+            self._currItemInd = self._widget.getCurrentItemIndex()
+            self._commChannel.sigCurrentResultChanged.emit(None)
+            return
+
+        retrievedLevels = currItem.getDispLevels() if hasattr(currItem, "getDispLevels") else None
+        self.fullUpdate(autoLevels=self._currItemInd is None, levels=retrievedLevels)
+        if retrievedLevels is not None:
+            self._widget.setImageDisplayLevels(retrievedLevels[0], retrievedLevels[1])
 
         self._currItemInd = self._widget.getCurrentItemIndex()
-        self._commChannel.sigCurrentResultChanged.emit(self._widget.getCurrentItemData())
+        self._commChannel.sigCurrentResultChanged.emit(currItem)
 
     def fullUpdate(self, autoLevels=False, levels=None):
         reconObj = self._widget.getCurrentItemData()

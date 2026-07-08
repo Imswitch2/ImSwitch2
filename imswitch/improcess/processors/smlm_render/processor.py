@@ -19,6 +19,7 @@ class SmlmRenderProcessor(Processor):
 
     name = "SMLM render"
     id = "smlm-render"
+    category = "Localization"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

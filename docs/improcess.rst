@@ -229,6 +229,145 @@ multicolor-apply        Processor      Apply saved three-color X-strip alignment
 denoise                 Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
 ======================= ============== ====================================================
 
+Processor categories and compatibility
+======================================
+
+Built-in processors now carry a category label that is used by the runtime
+tool loader and should be used by future processor-chain UI.  The table below
+documents the current input and output contracts as implemented by
+``applies_to()`` and ``apply()``.  "Image-like" means a
+``ProcessingResult.data`` array whose last two axes are treated as spatial
+``Y, X`` unless the processor documents a stricter axis contract.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 18 30 34
+
+   * - Processor
+     - Category
+     - Accepts
+     - Output and chaining notes
+   * - ``stack-subset``
+     - Dimensions and channels
+     - Any rank >= 2 result; ranges are addressed by axis label or index.
+     - ``ArrayProcessingResult`` with the same rank and sliced data.  Lazy
+       sources stay lazy when possible; stepped axes get scaled axis spacing.
+   * - ``projection``
+     - Dimensions and channels
+     - Any rank >= 2 result.  Auto prefers ``Z``, then ``T``, then ``C``.
+     - ``ProjectionResult`` with the projected axis removed and a histogram
+       plot payload.
+   * - ``stack-split``
+     - Dimensions and channels
+     - Rank > 2 image-like stacks; auto prefers ``Z``, then ``T``, then a
+       remaining non-spatial axis.
+     - Multiple ``ArrayProcessingResult`` objects, one per plane, with the
+       split axis removed.
+   * - ``channel-split``
+     - Dimensions and channels
+     - Rank >= 3 result with a ``C``, ``Channel``, ``Channels`` or ``Base``
+       axis containing more than one plane.
+     - Multiple ``ArrayProcessingResult`` objects, one per channel/base, with
+       the channel-like axis removed.
+   * - ``channel-merge``
+     - Dimensions and channels
+     - Two or more selected rank >= 2 results with identical shape, axis
+       labels and compatible axis scales.
+     - ``ArrayProcessingResult`` with a new leading channel axis, default
+       label ``C``.
+   * - ``make-composite``
+     - Visualization
+     - Rank >= 3 result with a multi-plane ``C``, ``Channel``, ``Channels``
+       or ``Base`` axis.
+     - ``CompositeResult`` retaining source data but exposing one independently
+       scaled display layer per channel.  Component layers can be selected as
+       explicit processor inputs.
+   * - ``make-rgb``
+     - Visualization
+     - Rank >= 3 result with a multi-plane channel-like axis.  More than three
+       channels require explicit channel selection.
+     - ``RGBResult`` with channel-last ``uint8`` RGB visualization data.  This
+       is a display/export product, not a quantitative intensity result.
+   * - ``drift-correct``
+     - Restoration
+     - Any result whose ``axis_labels`` contain ``T``.
+     - ``DriftCorrectedResult`` with the same shape and axes plus drift trace
+       plots.  Shift estimation uses a 2D ``Y, X`` plane and first index of
+       intermediate axes, then applies the same shift to every slice.
+   * - ``denoise``
+     - Restoration
+     - Any rank >= 2 image-like result; requires an installed denoising model
+       and torch/torchvision.
+     - ``DenoisedResult``.  With padding enabled the original shape is
+       preserved; without padding the output can become a cropped plane or
+       frame stack depending on the selected frame-like axis.
+   * - ``segmentation``
+     - Segmentation
+     - Any rank >= 2 image-like result.  Extra axes are collapsed to selected
+       indices or ``0``.
+     - ``SegmentationResult`` with ``Y, X`` integer labels, a context source
+       image layer, and region-area plot payload.
+   * - ``psf-resolution``
+     - Measurement
+     - Any rank >= 2 image-like result.  Extra axes collapse to index ``0``.
+     - ``PSFResolutionResult`` table with axes ``ROI, Metric`` and FWHM plot
+       payload.  Intended as an analysis output, not an image-stack input.
+   * - ``colocalization``
+     - Measurement
+     - Rank >= 3 image-like result with a compare axis containing at least two
+       planes; auto prefers ``C``, then ``T``, then ``Z``.
+     - ``ColocalizationResult`` table with axes ``ROI, Metric`` and intensity
+       scatter plot payload.
+   * - ``frc``
+     - Measurement
+     - Rank >= 2 image-like result for single-image FRC; two-image mode also
+       needs a compare axis with at least two planes.
+     - ``FRCResult`` curve data with axes ``C, Frequency`` and graph payload.
+       This is a curve/table result, not an image-stack input.
+   * - ``multicolor-registration``
+     - Registration
+     - Strictly ``["Z", "Y", "X"]`` or ``["T", "Z", "Y", "X"]`` deskewed
+       volumes containing color strips along the configured split axis.
+     - ``MulticolorRegistrationResult`` with aligned ``C, Z, Y, X`` preview
+       data plus a reusable alignment transform, optionally saved to HDF5.
+   * - ``multicolor-apply``
+     - Registration
+     - Strictly ``["Z", "Y", "X"]`` or ``["T", "Z", "Y", "X"]`` deskewed
+       sample volumes and a saved multicolor alignment HDF5.
+     - ``MulticolorApplyResult`` with ``C, Z, Y, X`` or ``T, C, Z, Y, X`` data.
+   * - ``smlm-render``
+     - Localization
+     - ``LocalizationResult`` only.
+     - ``ArrayProcessingResult`` render with ``Y, X`` or ``Z, Y, X`` axes,
+       nanometer axis scales and image display levels.
+
+Current inconsistencies and follow-ups
+--------------------------------------
+
+The processor registry is now categorized, but compatibility is still mostly
+encoded in each processor's local ``applies_to()`` gate.  The most important
+remaining gap is semantic result typing: table/curve outputs such as
+``FRCResult``, ``PSFResolutionResult`` and ``ColocalizationResult`` are still
+``ProcessingResult`` objects with 2D ``data`` arrays, so a shape-only gate can
+make an image processor look applicable even when the result is not a
+microscope image.  The next improvement should add explicit result and
+processor kinds, for example ``image``, ``labels``, ``table``, ``curve``,
+``localization``, ``rgb`` and ``composite``.  Processor UI should then filter
+on both semantic kind and shape/axis labels.
+
+Other follow-ups:
+
+* Populate parameter widgets from the active result's real axis labels instead
+  of hard-coded choices such as ``T``, ``Z``, ``C`` and ``D0``.
+* Add a synthetic compatibility matrix test that checks every built-in
+  processor against representative image, table, curve, label, RGB/composite
+  and localization results.
+* Keep multicolor registration/apply deliberately strict until their input
+  assumptions are generalized beyond deskewed ``ZYX``/``TZYX`` strip data.
+* Treat RGB outputs as visualization/export artifacts in downstream UI, because
+  their values are autoscaled ``uint8`` display values rather than calibrated
+  intensities.
+
 Result graph panel
 ==================
 

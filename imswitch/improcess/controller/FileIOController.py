@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile as tiff
+from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
@@ -63,25 +64,68 @@ class FileIOController(ImProcessWidgetController):
 
     def _requestLoadPath(self, *, caption_prefix: str = 'Open'):
         specs = self._activeSourceSpecs()
-        extension = self._widget.extension.value() if self._widget.extension is not None else None
+        extensionParam = getattr(self._widget, 'extension', None)
+        extension = extensionParam.value() if extensionParam is not None else None
         sourceSpec = preferred_source_spec(specs, extension)
+        selectedSpecs = specs
+        captionLabel = sourceSpec.label
+        if extension is None and self._needsSourceFamilyChoice(specs):
+            sourceSpec, selectedSpecs, captionLabel = self._requestSourceFamily(
+                specs,
+                caption_prefix=caption_prefix,
+            )
+            if sourceSpec is None:
+                return None
         if sourceSpec.locator == LOCATOR_DIRECTORY:
             return guitools.askForFolderPath(
                 self._widget,
-                caption=f'{caption_prefix} {sourceSpec.label}',
+                caption=f'{caption_prefix} {captionLabel}',
                 defaultFolder=self._dataFolder,
             )
         return guitools.askForFilePath(
             self._widget,
-            caption=f'{caption_prefix} {sourceSpec.label}',
+            caption=f'{caption_prefix} {captionLabel}',
             defaultFolder=self._dataFolder,
-            nameFilter=file_dialog_filter(specs),
+            nameFilter=file_dialog_filter(selectedSpecs),
         )
 
     def _activeSourceSpecs(self):
         active = getattr(self._main, '_activeReconstructor', None)
         specs = specs_for_reconstructor(active) if active is not None else []
         return specs or None
+
+    @staticmethod
+    def _needsSourceFamilyChoice(specs) -> bool:
+        if not specs:
+            return False
+        locators = {spec.locator for spec in specs}
+        return LOCATOR_DIRECTORY in locators and len(locators) > 1
+
+    def _requestSourceFamily(self, specs, *, caption_prefix: str):
+        fileSpecs = [spec for spec in specs if spec.locator != LOCATOR_DIRECTORY]
+        directorySpecs = [spec for spec in specs if spec.locator == LOCATOR_DIRECTORY]
+        choices = []
+        if fileSpecs:
+            fileLabels = " / ".join(spec.label for spec in fileSpecs)
+            choices.append((f'{fileLabels} file', fileSpecs[0], fileSpecs))
+        for spec in directorySpecs:
+            choices.append((f'{spec.label} folder', spec, [spec]))
+
+        labels = [label for label, _sourceSpec, _selectedSpecs in choices]
+        selected, accepted = QtWidgets.QInputDialog.getItem(
+            self._widget,
+            f'{caption_prefix} data source',
+            'Source type',
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return None, [], None
+        for label, sourceSpec, selectedSpecs in choices:
+            if label == selected:
+                return sourceSpec, selectedSpecs, label
+        return None, [], None
 
     def handleDroppedFiles(self, paths):
         """Process files dropped onto the main view via drag-and-drop.

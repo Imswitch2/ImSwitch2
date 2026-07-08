@@ -27,6 +27,7 @@ class MakeCompositeProcessor(Processor):
 
     name = "Make composite"
     id = "make-composite"
+    category = "Visualization"
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

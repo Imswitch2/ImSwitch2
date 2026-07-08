@@ -144,7 +144,10 @@ class ImProcessMainController(MainController):
         loaded = {processor.id for processor in loaded_processors}
         tool_specs = runtime_analysis_tool_specs()
         choices = []
-        for tool_id, spec in sorted(tool_specs.items()):
+        for tool_id, spec in sorted(
+            tool_specs.items(),
+            key=lambda item: (item[1].category, item[1].title, item[0]),
+        ):
             processor_loaded = (
                 spec.processor_id is None
                 or spec.processor_id in loaded
@@ -152,10 +155,23 @@ class ImProcessMainController(MainController):
             widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
             if processor_loaded and widget_loaded:
                 continue
-            choices.append((tool_id, spec.title))
+            choices.append((tool_id, _runtime_tool_display_title(spec)))
         self.__mainView.setAvailableRuntimeProcessors(choices)
         self.__mainView.setLoadedRuntimeProcessors(
-            [(processor.id, processor.name) for processor in loaded_processors]
+            [
+                (
+                    processor.id,
+                    f"{getattr(processor, 'category', 'Other')}: {processor.name}",
+                )
+                for processor in sorted(
+                    loaded_processors,
+                    key=lambda item: (
+                        getattr(item, 'category', 'Other'),
+                        item.name,
+                        item.id,
+                    ),
+                )
+            ]
         )
 
     def _restore_runtime_processor(self, processor_id: str) -> None:
@@ -384,6 +400,12 @@ class ImProcessMainController(MainController):
                     f'Failed to save ImProcess dock layout: {e}'
                 )
         self.__factory.closeAllCreatedControllers()
+
+
+def _runtime_tool_display_title(spec) -> str:
+    category = str(getattr(spec, "category", "") or "").strip()
+    title = str(getattr(spec, "title", "") or getattr(spec, "id", ""))
+    return f"{category}: {title}" if category else title
 
 
 class _GuiLayoutStateAdapter:

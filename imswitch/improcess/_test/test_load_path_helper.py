@@ -146,6 +146,8 @@ def _make_controller_stub():
     ctl._loadAsCurrent = FileIOController._loadAsCurrent.__get__(ctl)
     ctl._activeSourceSpecs = FileIOController._activeSourceSpecs.__get__(ctl)
     ctl._requestLoadPath = FileIOController._requestLoadPath.__get__(ctl)
+    ctl._needsSourceFamilyChoice = FileIOController._needsSourceFamilyChoice
+    ctl._requestSourceFamily = FileIOController._requestSourceFamily.__get__(ctl)
     ctl.quickLoadData = FileIOController.quickLoadData.__get__(ctl)
     ctl.quickLoadVirtualData = FileIOController.quickLoadVirtualData.__get__(ctl)
     return ctl
@@ -182,6 +184,35 @@ def test_quick_load_uses_folder_dialog_for_active_zarr_format(monkeypatch):
     ctl._main._activeReconstructor = SimpleNamespace(file_extensions=['hdf5', 'zarr'])
     ctl._widget.extension = SimpleNamespace(value=lambda: 'zarr')
 
+    monkeypatch.setattr(
+        'imswitch.improcess.controller.FileIOController.guitools.askForFolderPath',
+        lambda *args, **kwargs: '/picked/store.zarr',
+    )
+    monkeypatch.setattr(
+        'imswitch.improcess.controller.FileIOController.guitools.askForFilePath',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('file dialog used')),
+    )
+
+    ctl.quickLoadData()
+
+    assert ctl._main._currentDataObj.datasetName == 'APD'
+    assert ctl._main._currentDataObj.path == '/picked/store.zarr'
+    assert ctl._commChannel.emitted == [ctl._main._currentDataObj]
+    assert ctl.multiDataFrameController.added == []
+
+
+def test_quick_load_view_only_can_choose_zarr_without_extension_param(monkeypatch):
+    _FakeDataObj.install(monkeypatch, {'/picked/store.zarr': ['APD']})
+    ctl = _make_controller_stub()
+    ctl._main._activeReconstructor = SimpleNamespace(
+        file_extensions=['hdf5', 'tiff', 'zarr']
+    )
+    ctl._widget.extension = None
+
+    monkeypatch.setattr(
+        'imswitch.improcess.controller.FileIOController.QtWidgets.QInputDialog.getItem',
+        lambda *args, **kwargs: ('Zarr / OME-Zarr folder', True),
+    )
     monkeypatch.setattr(
         'imswitch.improcess.controller.FileIOController.guitools.askForFolderPath',
         lambda *args, **kwargs: '/picked/store.zarr',

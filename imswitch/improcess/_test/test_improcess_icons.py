@@ -1,10 +1,13 @@
 import os
+import builtins
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy import QtGui, QtWidgets
 
 from imswitch.improcess.model.runtime_tools import runtime_analysis_panel_shortcuts
+import imswitch.improcess.view.icons as icons_module
 from imswitch.improcess.view.icons import IMPROCESS_ICON_NAMES, improcessIcon
 
 
@@ -72,3 +75,29 @@ def test_improcess_unknown_icon_uses_fallback(qtbot):
     icon = improcessIcon("unknown-action", widget)
 
     assert isinstance(icon, QtGui.QIcon)
+
+
+def test_improcess_icon_warns_once_when_qtawesome_missing(monkeypatch, qtbot):
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+    warnings = []
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "qtawesome":
+            raise ImportError("missing in test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(icons_module, "_QTAWESOME_MISSING_WARNED", False)
+    monkeypatch.setattr(
+        icons_module,
+        "_iconsLogger",
+        lambda: SimpleNamespace(warning=lambda message: warnings.append(message)),
+    )
+
+    assert isinstance(improcessIcon("auto-contrast", widget), QtGui.QIcon)
+    assert isinstance(improcessIcon("auto-contrast", widget), QtGui.QIcon)
+
+    assert len(warnings) == 1
+    assert "qtawesome" in warnings[0]
