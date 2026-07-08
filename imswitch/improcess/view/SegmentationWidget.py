@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segment_image
 
@@ -15,11 +15,21 @@ from imswitch.improcess.analysis.segmentation import SegmentationAnalysis, segme
 class SegmentationWidget(QtWidgets.QWidget):
     """Threshold + connected-component segmentation for the active image layer."""
 
+    # Class attribute so layer-resolution helpers work even on partially
+    # constructed instances (unit tests build the widget via __new__).
+    _preview_layer_name = "Segmentation preview"
+
     def __init__(self, napariViewer, roiManagerWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._roiManagerWidget = roiManagerWidget
         self._last_analysis: SegmentationAnalysis | None = None
+        self._preview_timer = QtCore.QTimer()
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(350)
+        self._preview_timer.timeout.connect(self._update_preview)
+        self._dims_connection = None
+        self._layer_selection_connection = None
 
         self.methodCombo = QtWidgets.QComboBox()
         self.methodCombo.addItems(["otsu", "manual", "triangle", "yen", "local", "watershed"])
@@ -49,6 +59,7 @@ class SegmentationWidget(QtWidgets.QWidget):
 
         self.fillHolesCheck = QtWidgets.QCheckBox("Fill holes")
         self.clearBorderCheck = QtWidgets.QCheckBox("Clear border")
+        self.previewCheck = QtWidgets.QCheckBox("Preview")
 
         self.localBlockSpin = QtWidgets.QSpinBox()
         self.localBlockSpin.setRange(3, 9999)
@@ -90,6 +101,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         form.addRow("Local offset", self.localOffsetSpin)
         form.addRow("Watershed distance", self.watershedDistanceSpin)
         form.addRow("ROI prefix", self.prefixEdit)
+        form.addRow("", self.previewCheck)
 
         controls = QtWidgets.QHBoxLayout()
         controls.addLayout(form)
@@ -110,6 +122,20 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.exportCsvButton.clicked.connect(self.export_csv)
         self.exportJsonButton.clicked.connect(self.export_json)
         self.methodCombo.currentTextChanged.connect(self._update_manual_enabled)
+        self.previewCheck.toggled.connect(self._on_preview_toggled)
+        
+        self.methodCombo.currentTextChanged.connect(self._schedule_preview)
+        self.thresholdSpin.valueChanged.connect(self._schedule_preview)
+        self.minAreaSpin.valueChanged.connect(self._schedule_preview)
+        self.smoothSpin.valueChanged.connect(self._schedule_preview)
+        self.backgroundSpin.valueChanged.connect(self._schedule_preview)
+        self.morphologySpin.valueChanged.connect(self._schedule_preview)
+        self.fillHolesCheck.toggled.connect(self._schedule_preview)
+        self.clearBorderCheck.toggled.connect(self._schedule_preview)
+        self.localBlockSpin.valueChanged.connect(self._schedule_preview)
+        self.localOffsetSpin.valueChanged.connect(self._schedule_preview)
+        self.watershedDistanceSpin.valueChanged.connect(self._schedule_preview)
+        
         self._update_manual_enabled()
 
     def run(self) -> None:
@@ -227,6 +253,121 @@ class SegmentationWidget(QtWidgets.QWidget):
         self.localOffsetSpin.setEnabled(is_local)
         self.watershedDistanceSpin.setEnabled(method == "watershed")
 
+    def _schedule_preview(self) -> None:
+        if self.previewCheck.isChecked():
+            self._preview_timer.start()
+
+    def _on_preview_toggled(self, checked: bool) -> None:
+        if checked:
+            self._connect_viewer_events()
+            self._update_preview()
+        else:
+            self._disconnect_viewer_events()
+            self._preview_timer.stop()
+            self._remove_preview_layer()
+
+    def _update_preview(self) -> None:
+        layer = self._active_image_layer()
+        image = self._image_2d_from_layer(layer)
+        if image is None:
+            self.summaryLabel.setText("Preview: no image layer selected.")
+            return
+        try:
+            method = self.methodCombo.currentText()
+            analysis = segment_image(
+                image,
+                threshold_method=method,
+                threshold_value=self.thresholdSpin.value() if method == "manual" else None,
+                min_area=self.minAreaSpin.value(),
+                smooth_sigma=self.smoothSpin.value(),
+                background_radius=self.backgroundSpin.value(),
+                morphology_radius=self.morphologySpin.value(),
+                fill_holes=self.fillHolesCheck.isChecked(),
+                clear_border=self.clearBorderCheck.isChecked(),
+                local_block_size=self.localBlockSpin.value(),
+                local_offset=self.localOffsetSpin.value(),
+                watershed_min_distance=self.watershedDistanceSpin.value(),
+            )
+            preview_layer = self._get_preview_layer()
+            if preview_layer is None:
+                # napari activates freshly added layers; restore the previous
+                # active layer so the preview never becomes its own source.
+                try:
+                    prev_active = self._viewer.layers.selection.active
+                except Exception:
+                    prev_active = None
+                self._viewer.add_labels(
+                    analysis.labels,
+                    name=self._preview_layer_name,
+                    scale=self._spatial_layer_scale(layer),
+                    opacity=0.5,
+                    metadata={
+                        "axis_labels": ["Y", "X"],
+                        "scale_unit": self._layer_scale_unit(layer),
+                        "segmentation": analysis.metadata,
+                    },
+                )
+                if prev_active is not None:
+                    try:
+                        self._viewer.layers.selection.active = prev_active
+                    except Exception:
+                        pass
+            else:
+                preview_layer.data = analysis.labels
+                preview_layer.scale = self._spatial_layer_scale(layer)
+            self.summaryLabel.setText(
+                f"Preview: threshold {analysis.threshold:.6g}; {len(analysis.regions)} region(s)."
+            )
+        except Exception as exc:
+            self.summaryLabel.setText(str(exc))
+
+    def _connect_viewer_events(self) -> None:
+        try:
+            if self._dims_connection is None:
+                self._dims_connection = self._viewer.dims.events.current_step.connect(
+                    lambda _: self._schedule_preview()
+                )
+        except Exception:
+            pass
+        try:
+            if self._layer_selection_connection is None:
+                self._layer_selection_connection = self._viewer.layers.selection.events.active.connect(
+                    lambda _: self._schedule_preview()
+                )
+        except Exception:
+            pass
+
+    def _disconnect_viewer_events(self) -> None:
+        try:
+            if self._dims_connection is not None:
+                self._viewer.dims.events.current_step.disconnect(self._dims_connection)
+                self._dims_connection = None
+        except Exception:
+            pass
+        try:
+            if self._layer_selection_connection is not None:
+                self._viewer.layers.selection.events.active.disconnect(self._layer_selection_connection)
+                self._layer_selection_connection = None
+        except Exception:
+            pass
+
+    def _get_preview_layer(self):
+        try:
+            for layer in self._viewer.layers:
+                if getattr(layer, "name", "") == self._preview_layer_name:
+                    return layer
+        except Exception:
+            pass
+        return None
+
+    def _remove_preview_layer(self) -> None:
+        try:
+            preview_layer = self._get_preview_layer()
+            if preview_layer is not None:
+                self._viewer.layers.remove(preview_layer)
+        except Exception:
+            pass
+
     def _current_image_2d(self):
         layer = self._active_image_layer()
         return self._image_2d_from_layer(layer)
@@ -280,12 +421,16 @@ class SegmentationWidget(QtWidgets.QWidget):
             active = self._viewer.layers.selection.active
         except Exception:
             active = None
-        if self._is_image_layer(active):
+        if self._is_image_layer(active) and not self._is_preview_layer(active):
             return active
         for layer in self._viewer.layers:
-            if self._is_image_layer(layer):
+            if self._is_image_layer(layer) and not self._is_preview_layer(layer):
                 return layer
         return None
+
+    def _is_preview_layer(self, layer) -> bool:
+        """The preview layer must never be picked as a segmentation source."""
+        return str(getattr(layer, "name", "")) == self._preview_layer_name
 
     @staticmethod
     def _is_image_layer(layer) -> bool:

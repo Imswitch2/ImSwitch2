@@ -238,7 +238,11 @@ threshold and connected-component segmentation panel.  It runs on the active
 2D image plane, supports manual and Otsu thresholding, minimum-area filtering
 and optional Gaussian smoothing, adds a label layer to the viewer, exports
 region tables as CSV/JSON and can push exact segmented component masks into the
-ROI manager.
+ROI manager.  Enable the **Preview** checkbox to see a live, reused preview
+layer that updates when parameters change or when the viewer slice changes,
+making it easier to tune segmentation settings without committing multiple
+layers.  The preview layer is shown at 50% opacity to distinguish it from
+committed segmentations.
 
 PSF resolution panel
 ====================
