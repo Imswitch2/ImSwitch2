@@ -248,3 +248,32 @@ def test_result_save_rejects_unknown_format(tmp_path):
     result = LocalizationResult("x", _sample_locs(2), pixel_size_nm=100.0)
     with pytest.raises(ValueError):
         result.save(tmp_path / "x.tiff", "tiff")
+
+
+def test_nonempty_result_data_supports_viewer_transpose():
+    """Regression: the reconstruction viewer calls result.data.transpose(*mode)
+    on every result; the lazy histogram preview must support it (crashed with
+    AttributeError on the first non-empty LocalizationResult, 2026-07-08)."""
+    result = LocalizationResult("locs", _sample_locs(6), pixel_size_nm=100.0)
+    assert isinstance(result.data, _LazyHistogramPreview)
+
+    mode = result.view_modes[0]
+    im = result.data.transpose(*mode.transpose)
+    # Identity order stays lazy (no materialisation for the common case).
+    assert im is result.data
+
+    arr = np.asarray(im)
+    assert arr.shape == result.data.shape
+    assert arr.sum() == 6  # one count per localization
+
+
+def test_lazy_preview_transpose_materializes_for_swapped_axes():
+    result = LocalizationResult("locs", _sample_locs(5), pixel_size_nm=100.0)
+    height, width = result.data.shape
+
+    swapped = result.data.transpose(1, 0)
+    assert isinstance(swapped, np.ndarray)
+    assert swapped.shape == (width, height)
+
+    as_tuple = result.data.transpose((1, 0))
+    np.testing.assert_array_equal(swapped, as_tuple)

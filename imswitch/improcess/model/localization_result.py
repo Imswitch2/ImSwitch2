@@ -94,6 +94,19 @@ class _LazyHistogramPreview:
     def __getitem__(self, key: Any) -> np.ndarray:
         return self._materialize()[key]
 
+    def transpose(self, *axes: Any) -> "np.ndarray | _LazyHistogramPreview":
+        """ndarray-compatible transpose.
+
+        The viewer transposes every result's ``data`` by the active view
+        mode's axis order; for the identity order the preview stays lazy,
+        anything else falls back to the materialised array.
+        """
+        if len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+            axes = tuple(axes[0])
+        if axes in ((), (0, 1)):
+            return self
+        return self._materialize().transpose(*axes)
+
 
 class LocalizationResult(ProcessingResult):
     """A localization table presented as a first-class ImProcess result."""

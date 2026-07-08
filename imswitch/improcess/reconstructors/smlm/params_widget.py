@@ -57,10 +57,19 @@ class SmlmParamsWidget(QtWidgets.QWidget):
 
         self.p.sigTreeStateChanged.connect(self._onTreeChanged)
 
+        # Feedback line for the live preview: without it, "0 candidates at
+        # this threshold" is indistinguishable from "preview not working".
+        self.previewStatusLabel = QtWidgets.QLabel("")
+        self.previewStatusLabel.setStyleSheet(
+            'color: palette(mid); font-size: 9pt; padding: 0px 4px;'
+        )
+        self.previewStatusLabel.setWordWrap(True)
+
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tree)
         layout.addWidget(self.previewCheckbox)
+        layout.addWidget(self.previewStatusLabel)
         self.setLayout(layout)
 
     def _onTreeChanged(self, param, changes):
@@ -90,6 +99,10 @@ class SmlmParamsWidget(QtWidgets.QWidget):
             "sigma": float(detection.param("Smoothing sigma").value()),
             "roi": int(detection.param("ROI size").value()),
         }
+
+    def setPreviewStatus(self, text: str) -> None:
+        """Show live-preview feedback (candidate count / no-data hint)."""
+        self.previewStatusLabel.setText(str(text))
 
 
 __all__ = ["SmlmParamsWidget"]

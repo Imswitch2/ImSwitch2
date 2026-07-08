@@ -253,6 +253,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._commChannel.sigDetectionPreviewUpdated.emit(
                 np.array([]), np.array([])
             )
+            self._setSmlmPreviewStatus("")
+
+    def _setSmlmPreviewStatus(self, text):
+        widget = getattr(self, '_smlmPreviewWidget', None)
+        if widget is not None and hasattr(widget, 'setPreviewStatus'):
+            try:
+                widget.setPreviewStatus(text)
+            except Exception:
+                pass
 
     def _updateSmlmPreview(self):
         """Compute and emit SMLM detection preview for the currently displayed frame."""
@@ -274,6 +283,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 self._commChannel.sigDetectionPreviewUpdated.emit(
                     np.array([]), np.array([])
                 )
+                self._setSmlmPreviewStatus("Preview: no data loaded.")
                 return
 
             params = widget.get_detection_values()
@@ -288,6 +298,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
                 sigma=params['sigma'],
             )
             self._commChannel.sigDetectionPreviewUpdated.emit(x, y)
+            if len(x):
+                self._setSmlmPreviewStatus(
+                    f"Preview: {len(x)} candidate spot(s) on the displayed frame."
+                )
+            else:
+                self._setSmlmPreviewStatus(
+                    "Preview: 0 candidates — lower the net-gradient threshold "
+                    f"(now {params['threshold']:g})."
+                )
         except Exception as e:
             self._logger.debug(f"SMLM preview computation failed: {e}")
 
