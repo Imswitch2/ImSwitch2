@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Thorlabs Kinesis MLS203 stage managerProperties",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["snr"],
+  "properties": {
+    "snr": {
+      "type": "string",
+      "description": "Device serial number. Ignored (except for logging) when useMock is true."
+    },
+    "scale": {
+      "type": "string",
+      "default": "MLS203",
+      "description": "pylablib stage scale identifier."
+    },
+    "isRackSystem": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the device is a rack-mounted system."
+    },
+    "homeOnInit": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, home both axes when the manager initializes."
+    },
+    "useMock": {
+      "type": "boolean",
+      "default": false,
+      "description": "Force the mock driver (headless testing) regardless of whether pylablib/hardware is present."
+    },
+    "driverUnitsPerPositionUnit": {
+      "type": "number",
+      "default": 1.0,
+      "description": "Conversion factor between ImSwitch position units and the raw values the pylablib driver reports/accepts. Must be non-zero."
+    }
+  }
+}

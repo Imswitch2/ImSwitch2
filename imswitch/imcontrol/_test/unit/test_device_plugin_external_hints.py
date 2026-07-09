@@ -29,11 +29,30 @@ def test_lookup_known_and_unknown():
     assert lookup_external_hint("detector", "NoSuchManager") is None
 
 
+def test_thorlabs_package_backs_camera_and_stage_across_kinds():
+    """One plugin can provide managers of several device kinds; the camera
+    (detector) and Kinesis stage (positioner) resolve to the same package."""
+    camera = lookup_external_hint("detector", "thorlabs.tsi-camera")
+    stage = lookup_external_hint("positioner", "thorlabs.kinesis-stage")
+    assert camera is not None and stage is not None
+    assert camera.package == stage.package == "imswitch-device-thorlabs"
+    # Legacy in-tree class name resolves too.
+    assert lookup_external_hint("positioner", "KinesisStageManager") is stage
+    # Kind is part of the key: the stage name under the wrong kind misses.
+    assert lookup_external_hint("detector", "thorlabs.kinesis-stage") is None
+
+
 def test_resolution_error_includes_install_hint_for_known_external():
     registry = build_default_registry(discover=False)
     message = registry.format_resolution_error("detector", "zhinst.lockin-demod")
     assert "imswitch-zhinst-devices" in message
     assert "pip install imswitch-zhinst-devices[hardware]" in message
+
+
+def test_resolution_error_includes_install_hint_for_extracted_positioner():
+    registry = build_default_registry(discover=False)
+    message = registry.format_resolution_error("positioner", "KinesisStageManager")
+    assert "pip install imswitch-device-thorlabs[hardware]" in message
 
 
 def test_resolution_error_has_no_hint_for_unknown_manager():

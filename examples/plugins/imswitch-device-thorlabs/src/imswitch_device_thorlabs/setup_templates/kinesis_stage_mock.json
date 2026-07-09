@@ -1,0 +1,21 @@
+{
+  "positioners": {
+    "XY": {
+      "analogChannel": null,
+      "digitalLine": null,
+      "managerName": "thorlabs.kinesis-stage",
+      "managerProperties": {
+        "snr": "MOCK_MLS203",
+        "scale": "MLS203",
+        "isRackSystem": true,
+        "homeOnInit": false,
+        "useMock": true,
+        "driverUnitsPerPositionUnit": 1.0
+      },
+      "axes": ["X", "Y"],
+      "forPositioning": true,
+      "forScanning": false,
+      "resetOnClose": false
+    }
+  }
+}

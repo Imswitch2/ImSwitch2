@@ -49,16 +49,18 @@ _ZHINST = ExternalManagerHint(
 #: Keyed by ``(kind, managerName)``. The name matches a setup ``managerName`` —
 #: a plugin id, a legacy class name, or an alias. One hint may appear under
 #: several keys.
-# First extracted in-tree manager: Thorlabs TSI cameras moved to a plugin. The
-# in-tree manager still exists during the transition, so this hint is dormant
-# until the in-tree copy is removed; it then turns an old setup into a clear
-# "install the plugin" message.
+# Extracted in-tree managers: Thorlabs TSI cameras (detector) and Kinesis
+# MLS203 stages (positioner) moved to one plugin. The in-tree managers still
+# exist during the transition, so these hints are dormant until the in-tree
+# copies are removed; they then turn an old setup into a clear "install the
+# plugin" message. One package can back several device kinds.
 _THORLABS = ExternalManagerHint(
     package="imswitch-device-thorlabs",
     extra="hardware",
     note=(
-        "Thorlabs scientific camera (TSI); bundled under "
-        "examples/plugins/imswitch-device-thorlabs in the ImSwitch repository."
+        "Thorlabs device support (TSI scientific cameras, Kinesis MLS203 "
+        "stages); bundled under examples/plugins/imswitch-device-thorlabs in "
+        "the ImSwitch repository."
     ),
 )
 
@@ -68,6 +70,8 @@ KNOWN_EXTERNAL_MANAGERS: dict[tuple[str, str], ExternalManagerHint] = {
     ("detector", "ZurichLockinDetectorManager"): _ZHINST,
     ("detector", "thorlabs.tsi-camera"): _THORLABS,
     ("detector", "ThorCamTSIManager"): _THORLABS,
+    ("positioner", "thorlabs.kinesis-stage"): _THORLABS,
+    ("positioner", "KinesisStageManager"): _THORLABS,
 }
 
 

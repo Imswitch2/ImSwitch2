@@ -1,49 +1,53 @@
 # imswitch-device-thorlabs
 
-Thorlabs scientific camera (TSI SDK) support for ImSwitch2, as an external
-plugin. This is the first **extraction** of an in-tree ImSwitch device manager
-into a plugin package: the `ThorCamTSIManager` and its camera interface were
-moved out of the core tree behind the `imswitch.manifest` entry point.
+Thorlabs device support for ImSwitch2, as an external plugin. This package
+holds **extractions** of in-tree ImSwitch device managers, moved out of the
+core tree behind the `imswitch.manifest` entry point. It demonstrates that one
+plugin can provide managers of several device kinds from the same vendor.
 
-Supports Zelux, Kiralux, and Quantalux cameras via `thorlabs_tsi_sdk`.
+| Contribution id | Kind | Class | Vendor SDK |
+|---|---|---|---|
+| `thorlabs.tsi-camera` | detector | `ThorCamTSIManager` | `thorlabs-tsi-sdk` |
+| `thorlabs.kinesis-stage` | positioner | `KinesisStageManager` | `pylablib` |
 
-| Contribution id | Kind | Class |
-|---|---|---|
-| `thorlabs.tsi-camera` | detector | `ThorCamTSIManager` |
+Cameras: Zelux, Kiralux, and Quantalux via `thorlabs_tsi_sdk`. Stages: MLS203
+two-axis Kinesis motorized stages via `pylablib`.
 
-The legacy class name `ThorCamTSIManager` is kept as an alias, so existing setup
-files that use `"managerName": "ThorCamTSIManager"` resolve to this plugin
-unchanged once it is installed.
+The legacy class names (`ThorCamTSIManager`, `KinesisStageManager`) are kept as
+aliases, so existing setup files that use them as `managerName` resolve to this
+plugin unchanged once it is installed.
 
 ## Install
 
 ```bash
 python -m pip install imswitch-device-thorlabs            # mock-capable, no SDK
-python -m pip install "imswitch-device-thorlabs[hardware]" # + thorlabs_tsi_sdk
+python -m pip install "imswitch-device-thorlabs[hardware]" # + vendor SDKs
 ```
 
-The `hardware` extra pulls in `thorlabs-tsi-sdk`, which also needs the Thorlabs
-LabOne/ThorCam runtime and (on Windows) the ThorCam DLLs. The mock path needs
-none of that.
+The `hardware` extra pulls in `thorlabs-tsi-sdk` (camera) and `pylablib`
+(stage), which also need the corresponding Thorlabs runtimes and (on Windows)
+DLLs. The mock paths need none of that.
 
 ## Mock mode
 
-Set `cameraSerial` to a value starting with `MOCK_` (e.g. `"MOCK_KIRALUX"`) to
-load a deterministic mock camera that produces synthetic frames — useful for
-discovery, headless tests and CI without hardware. The manager also falls back
-to the mock automatically if the TSI SDK can't be imported or the camera can't
-be opened.
+- **Camera:** set `cameraSerial` to a value starting with `MOCK_` (e.g.
+  `"MOCK_KIRALUX"`) to load a deterministic mock camera producing synthetic
+  frames. It also falls back to the mock automatically if the TSI SDK can't be
+  imported or the camera can't be opened.
+- **Stage:** set `useMock: true` in `managerProperties` to force the simulated
+  stage. Without it, the manager tries the real driver first and falls back to
+  the mock when `pylablib`/hardware is unavailable.
 
-See `setup_templates/thorcam_tsi_mock.json` for a ready-to-use mock detector
-block, and `schemas/thorcam_tsi.schema.json` for all `managerProperties`.
+See `setup_templates/*.json` for ready-to-use mock blocks and `schemas/` for
+all `managerProperties`.
 
-## Migrating from the in-tree manager
+## Migrating from the in-tree managers
 
-During the transition the manager exists both in the ImSwitch core tree and
-here. Installing this plugin makes the registry resolve `ThorCamTSIManager`
-(and `thorlabs.tsi-camera`) to the plugin; uninstalling falls back to the
-in-tree copy. Once this package is published, the in-tree copy will be removed
-and ImSwitch will tell users to `pip install imswitch-device-thorlabs`.
+During the transition the managers exist both in the ImSwitch core tree and
+here. Installing this plugin makes the registry resolve the legacy class names
+(and the `thorlabs.*` ids) to the plugin; uninstalling falls back to the
+in-tree copies. Once this package is published, the in-tree copies will be
+removed and ImSwitch will tell users to `pip install imswitch-device-thorlabs`.
 
 ## License
 

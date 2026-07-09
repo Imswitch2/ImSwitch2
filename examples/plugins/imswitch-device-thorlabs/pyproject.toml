@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "imswitch-device-thorlabs"
-version = "0.1.0"
-description = "Thorlabs scientific camera (TSI) support for ImSwitch2, extracted from the ImSwitch core"
+version = "0.2.0"
+description = "Thorlabs device support (TSI cameras, Kinesis stages) for ImSwitch2, extracted from the ImSwitch core"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
-keywords = ["imswitch", "imswitch-plugin", "thorlabs", "camera"]
+keywords = ["imswitch", "imswitch-plugin", "thorlabs", "camera", "stage", "positioner"]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
@@ -21,9 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Vendor SDK — only needed to talk to real hardware. The mock path
-# (cameraSerial "MOCK_...") works without it.
-hardware = ["thorlabs-tsi-sdk"]
+# Vendor SDKs — only needed to talk to real hardware. The mock paths work
+# without them: TSI camera via cameraSerial "MOCK_...", Kinesis stage via
+# managerProperties useMock=true.
+hardware = ["thorlabs-tsi-sdk", "pylablib"]
 test = ["pytest", "jsonschema"]
 
 [project.entry-points."imswitch.manifest"]

@@ -16,6 +16,17 @@
         "setup_templates": ["setup_templates/thorcam_tsi_mock.json"],
         "docs_url": "https://github.com/Imswitch2/imswitch-device-thorlabs",
         "supported_platforms": ["linux", "win32", "darwin"]
+      },
+      {
+        "id": "thorlabs.kinesis-stage",
+        "kind": "positioner",
+        "display_name": "Thorlabs Kinesis MLS203 XY Stage",
+        "python_name": "imswitch_device_thorlabs.positioners:KinesisStageManager",
+        "manager_name_aliases": ["KinesisStageManager"],
+        "manager_properties_schema": "schemas/kinesis_stage.schema.json",
+        "setup_templates": ["setup_templates/kinesis_stage_mock.json"],
+        "docs_url": "https://github.com/Imswitch2/imswitch-device-thorlabs",
+        "supported_platforms": ["linux", "win32", "darwin"]
       }
     ]
   }
