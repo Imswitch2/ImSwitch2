@@ -70,7 +70,7 @@ class ImProcessMainController(MainController):
         # at shutdown. Failures here must never block ImProcess from coming up.
         self.__guiLayoutStateAdapter = None
         try:
-            from imswitch.imcontrol.model import getWidgetStatePersistence
+            from imswitch.imcommon.model import getWidgetStatePersistence
 
             self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(
                 self.__mainView, main_controller=self,
@@ -430,7 +430,7 @@ class ImProcessMainController(MainController):
         # so the next launch can restore it.
         if self.__guiLayoutStateAdapter is not None:
             try:
-                from imswitch.imcontrol.model import getWidgetStatePersistence
+                from imswitch.imcommon.model import getWidgetStatePersistence
 
                 getWidgetStatePersistence().saveWidgetState(
                     _GUI_LAYOUT_STATE_KEY, 'default'

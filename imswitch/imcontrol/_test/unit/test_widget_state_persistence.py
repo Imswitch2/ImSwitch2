@@ -6,7 +6,7 @@ import os
 import json
 import pytest
 from typing import Dict, Any
-from imswitch.imcontrol.model.WidgetStatePersistence import WidgetStatePersistence
+from imswitch.imcommon.model.WidgetStatePersistence import WidgetStatePersistence
 
 
 class MockController:
@@ -61,13 +61,13 @@ def persistence_service(tmp_path, monkeypatch):
     """Create a WidgetStatePersistence instance with temporary storage"""
     # Monkeypatch initLogger to avoid weak reference issues with pytest
     import logging
-    from imswitch.imcontrol.model import WidgetStatePersistence as WSP_module_file
+    from imswitch.imcommon.model import WidgetStatePersistence as WSP_module_file
     
     def mock_init_logger(obj, **kwargs):
         return logging.getLogger(obj.__class__.__name__ if not isinstance(obj, str) else obj)
     
     import sys
-    wsp_module = sys.modules['imswitch.imcontrol.model.WidgetStatePersistence']
+    wsp_module = sys.modules['imswitch.imcommon.model.WidgetStatePersistence']
     monkeypatch.setattr(wsp_module, 'initLogger', mock_init_logger)
     
     service = WidgetStatePersistence()
@@ -88,13 +88,13 @@ def test_persistence_initialization(tmp_path, monkeypatch):
     """Test that persistence service initializes correctly"""
     # Monkeypatch initLogger to avoid weak reference issues with pytest
     import logging
-    from imswitch.imcontrol.model import WidgetStatePersistence as WSP_module_file
+    from imswitch.imcommon.model import WidgetStatePersistence as WSP_module_file
     
     def mock_init_logger(obj, **kwargs):
         return logging.getLogger(obj.__class__.__name__ if not isinstance(obj, str) else obj)
     
     import sys
-    wsp_module = sys.modules['imswitch.imcontrol.model.WidgetStatePersistence']
+    wsp_module = sys.modules['imswitch.imcommon.model.WidgetStatePersistence']
     monkeypatch.setattr(wsp_module, 'initLogger', mock_init_logger)
     
     service = WidgetStatePersistence()
