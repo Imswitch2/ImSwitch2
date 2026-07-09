@@ -245,6 +245,10 @@ frc                     Processor      Fourier ring correlation and single-image
 multicolor-registration Processor      Three-color X-strip bead calibration and alignment HDF5 export
 multicolor-apply        Processor      Apply saved three-color X-strip alignment to deskewed sample volumes
 denoise                 Processor      UNet / UNet+RCAN neural-network denoising (requires torch)
+smlm-render             Processor      Render a localization table into a super-resolved image/volume
+smlm-filter             Processor      Filter localizations by photons, lateral sigma and frame range
+smlm-drift              Processor      Segment cross-correlation drift correction with drift trace plots
+smlm-group              Processor      Link blinking repeats into photon-weighted merged localizations
 ======================= ============== ====================================================
 
 Processor categories and compatibility
@@ -274,7 +278,8 @@ image.  The table below documents the shape/axis contracts as implemented by
 accept kind ``image`` unless noted; ``stack-subset``, ``projection``,
 ``stack-split``, ``channel-split``, ``make-rgb``, ``drift-correct`` and
 ``colocalization`` also accept ``composite`` (composite data is the source
-intensity stack), and ``smlm-render`` accepts only ``localization``.
+intensity stack), and the SMLM processors (``smlm-render``, ``smlm-filter``,
+``smlm-drift``, ``smlm-group``) accept only ``localization``.
 
 .. list-table::
    :header-rows: 1
@@ -377,6 +382,25 @@ intensity stack), and ``smlm-render`` accepts only ``localization``.
      - ``LocalizationResult`` only.
      - ``ArrayProcessingResult`` render with ``Y, X`` or ``Z, Y, X`` axes,
        nanometer axis scales and image display levels.
+   * - ``smlm-filter``
+     - Localization
+     - ``LocalizationResult`` only.  Bounds set to 0 are disabled; the
+       results-table histograms are the intended way to choose cutoffs.
+     - ``LocalizationResult`` with rows outside the photon/sigma/frame ranges
+       removed; kept/total counts recorded in name and metadata.  Chains with
+       ``smlm-drift``/``smlm-group``/``smlm-render``.
+   * - ``smlm-drift``
+     - Localization
+     - ``LocalizationResult`` only; needs a frame span of at least the
+       segment count and 2+ non-empty temporal segments.
+     - ``DriftCorrectedLocalizationResult`` with positions minus the
+       estimated per-frame drift, plus an X/Y drift-trace graph payload.
+   * - ``smlm-group``
+     - Localization
+     - ``LocalizationResult`` only.
+     - ``LocalizationResult`` with blinking repeats within the link radius
+       merged: photon-weighted mean position/sigmas, summed photons, first
+       frame; optional dark-frame gap tolerance.
 
 Remaining follow-ups
 --------------------

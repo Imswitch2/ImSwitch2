@@ -230,19 +230,30 @@ existing markers.
 **Exit criteria:** watch a super-resolved image build live during a STORM
 acquisition, using the same streaming infrastructure as live reconstruction.
 
-### Phase 6+ — Table processors *(future scope, named only)*
+### Phase 6 — Table processors *(core DONE 2026-07-08)*
 
 Each a `Processor` operating `LocalizationResult → LocalizationResult`,
-slotting into the existing processor chain:
+slotting into the existing processor chain. Pure-numpy cores live in
+`analysis/smlm_tables.py`; all three processors declare
+`kinds = ("localization",)` so the semantic-kind gate keeps them off image
+results and image processors off localization tables.
 
-- **Filtering** — by photons/sigma/frame/precision/ROI; the results-table
-  plotting work already gives histograms to choose cutoffs from.
-- **Grouping / linking** — merge localizations of the same emitter across
-  consecutive frames (blinking), with per-group statistics.
-- **COMET drift correction** — GPU-optional (import-guarded), CPU fallback;
-  the marquee future capability.
-- **3D fitting** — astigmatism / PSF-model z from `sigma_x`/`sigma_y`.
-- **Throughput localization** — vectorized/GPU detect+fit behind the same
+- ✅ **Filtering** (`smlm-filter`) — photons/sigma/frame ranges (0 = bound
+  disabled); the results-table plotting histograms are the intended cutoff
+  picker. Kept/total recorded in name + metadata.
+- ✅ **Grouping / linking** (`smlm-group`) — per-frame cKDTree matching
+  within a link radius with dark-frame gap tolerance; chains merge to
+  photon-weighted mean position/sigmas, summed photons, first frame.
+- ✅ **Drift correction** (`smlm-drift`) — segment cross-correlation:
+  temporal bins rendered on a shared histogram grid, FFT cross-correlation
+  against the first non-empty bin with parabolic subpixel peak refinement,
+  per-frame linear interpolation between segment centers.
+  `DriftCorrectedLocalizationResult` carries the drift trace as a graph
+  payload. Verified by synthetic-linear-drift recovery (rate within 15%,
+  corrected cloud >5x tighter). COMET/RCC all-pairs refinement and GPU
+  acceleration remain future upgrades behind the same params.
+- ⬜ **3D fitting** — astigmatism / PSF-model z from `sigma_x`/`sigma_y`.
+- ⬜ **Throughput localization** — vectorized/GPU detect+fit behind the same
   pure-function contract, swappable for the reference implementation.
 
 ## 5. File map (proposed)

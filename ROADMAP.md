@@ -390,12 +390,13 @@ initial scope.
   recarray (`model/localization_schema.py` / `localization_result.py`),
   with pixel-size/units metadata, a lazy histogram preview as the default
   viewable data, results-table/plot projections, and CSV/HDF5 persistence.
-- 🔄 **`Localizer` reconstructor** (batch ✅, streaming ⬜). Picasso-style
-  net-gradient `detect_spots` + centroid/MLE `fit_spots` as a
-  pure-function core behind `reconstructors/smlm/SmlmLocalizer`; the
-  `StreamingSession` that localizes per chunk (live SMLM via the M10
-  stack) is still open. A live detection-preview overlay for tuning the
-  threshold on raw frames is in progress (2026-07-08).
+- ✅ **`Localizer` reconstructor** (batch + streaming, 2026-07).
+  Picasso-style net-gradient `detect_spots` (box-integrated, fixed from the
+  single-pixel reference bug) + centroid/MLE `fit_spots` as a pure-function
+  core behind `reconstructors/smlm/SmlmLocalizer`; `SmlmLiveSession`
+  localizes per chunk during live recordings via the M10 streaming stack,
+  batch-equivalent by test. Live detection-preview overlay for threshold
+  tuning on raw frames included.
 - ✅ **In-house renderer** (2026-07). Pure-numpy histogram +
   fixed-Gaussian rendering (`analysis/smlm_render.py`) exposed as the
   `processors/smlm_render` processor producing an image
@@ -404,9 +405,16 @@ initial scope.
   the Picasso-format HDF5 that napari-storm's reader consumes
   (`LocalizationResult.save(fmt="picasso")`), so the premium renderer is
   one export away without a runtime dependency.
-- ⬜ **Future phases (out of initial scope):** COMET drift correction
-  (GPU-optional), grouping/linking, advanced filtering, 3D (astigmatism/PSF)
-  fitting, throughput-oriented (vectorized/GPU) localization.
+- ✅ **Table processors (Phase 6 core, 2026-07-08):** `smlm-filter`
+  (photons/sigma/frame ranges), `smlm-drift` (segment cross-correlation
+  drift correction with per-frame interpolation and drift-trace graph
+  payload) and `smlm-group` (frame-linking with photon-weighted merge and
+  dark-frame tolerance) — each a `Processor` on `LocalizationResult`
+  (`analysis/smlm_tables.py` pure-numpy core), gated by the `localization`
+  result kind.
+- ⬜ **Future phases (out of initial scope):** COMET/RCC all-pairs drift
+  refinement (GPU-optional), 3D (astigmatism/PSF) fitting,
+  throughput-oriented (vectorized/GPU) localization.
 
 ---
 

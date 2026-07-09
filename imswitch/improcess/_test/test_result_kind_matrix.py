@@ -113,9 +113,14 @@ def test_duck_typed_results_default_to_image_kind():
     assert result_kind(object()) == "image"
 
 
+#: Processors that operate on localization tables (LocalizationResult).
+LOCALIZATION_PROCESSOR_IDS = {"smlm-render", "smlm-filter", "smlm-drift", "smlm-group"}
+
+
 def test_non_image_results_are_never_offered_to_image_processors():
     """The load-bearing property: table/curve/labels/rgb results match no
-    processor, and localization results match only smlm-render."""
+    processor, and localization results match only the SMLM table/render
+    processors."""
     results = _representative_results()
     for processor in _all_processors():
         for kind_name in ("table", "curve", "labels", "rgb"):
@@ -123,7 +128,9 @@ def test_non_image_results_are_never_offered_to_image_processors():
                 f"{processor.id} must not accept {kind_name} results"
             )
         accepts_locs = processor.accepts(results["localization"])
-        assert accepts_locs == (processor.id == "smlm-render"), processor.id
+        assert accepts_locs == (
+            processor.id in LOCALIZATION_PROCESSOR_IDS
+        ), processor.id
 
 
 def test_kind_gate_is_transparent_for_image_results():
