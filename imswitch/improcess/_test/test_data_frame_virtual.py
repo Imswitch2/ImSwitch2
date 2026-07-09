@@ -33,12 +33,21 @@ class _VirtualDataObj:
         return np.mean(self.data_handle._data, axis=0)
 
 
+class _Signal:
+    def __init__(self, calls):
+        self._calls = calls
+
+    def emit(self):
+        self._calls.append(True)
+
+
 def _controller_stub():
     calls = SimpleNamespace(
         images=[],
         frames=[],
         names=[],
         datasets=[],
+        displayed_frames=[],
     )
     widget = SimpleNamespace(
         setImage=lambda image, autoLevels: calls.images.append((image, autoLevels)),
@@ -46,9 +55,13 @@ def _controller_stub():
         setDataName=lambda value: calls.names.append(value),
         setDatasetName=lambda value: calls.datasets.append(value),
     )
+    comm_channel = SimpleNamespace(
+        sigDisplayedFrameChanged=_Signal(calls.displayed_frames),
+    )
     controller = SimpleNamespace(
         _widget=widget,
         _logger=SimpleNamespace(debug=lambda *_: None),
+        _commChannel=comm_channel,
         _dataObj=None,
     )
     controller._currentDataArray = DataFrameController._currentDataArray.__get__(controller)
@@ -74,3 +87,4 @@ def test_current_data_panel_uses_virtual_handle_for_display():
     assert calls.frames == [3]
     assert calls.names == ["virtual"]
     assert calls.datasets == ["CAM"]
+    assert calls.displayed_frames == [True, True]

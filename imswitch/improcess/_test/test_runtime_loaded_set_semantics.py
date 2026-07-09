@@ -50,6 +50,25 @@ def test_runtime_set_starts_empty_with_config_only_panels():
     assert result == []
 
 
+def test_configured_startup_runtime_widgets_do_not_enter_runtime_set():
+    calls = []
+    view = SimpleNamespace(
+        startupRuntimeAnalysisToolIds=lambda: ['projection', 'frc'],
+        ensureRuntimeAnalysisWidget=lambda tool_id, *, runtime_loaded=True: (
+            calls.append((tool_id, runtime_loaded)) or tool_id
+        ),
+        _captureDefaultDockState=lambda: calls.append(('capture-default',)),
+    )
+
+    ImProcessMainView.createStartupRuntimeAnalysisWidgets(view)
+
+    assert calls == [
+        ('projection', False),
+        ('frc', False),
+        ('capture-default',),
+    ]
+
+
 def test_runtime_set_includes_only_explicitly_loaded_tools():
     stub = _stub_view()
     # Config-driven Segmentation dock + runtime-loaded FRC.

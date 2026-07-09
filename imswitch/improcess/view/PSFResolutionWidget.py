@@ -41,9 +41,16 @@ class PSFResolutionWidget(QtWidgets.QWidget):
         self.fitButton = QtWidgets.QPushButton("Fit")
         self.fitButton.setEnabled(False)
 
-        self.summaryLabel = QtWidgets.QLabel(
+        self._selectText = (
             "Select a result, then fit PSF resolution. "
             "The fits appear in the results list and table."
+        )
+        self._readyText = "Ready to fit PSF resolution."
+        self._incompatibleText = (
+            "Selected result is not compatible with PSF resolution."
+        )
+        self.summaryLabel = QtWidgets.QLabel(
+            self._selectText
         )
         self.summaryLabel.setWordWrap(True)
         self.summaryLabel.setStyleSheet("color:#888; font-size:8pt;")
@@ -73,6 +80,9 @@ class PSFResolutionWidget(QtWidgets.QWidget):
                 "No result selected. Load or create a result first."
             )
             return
+        if not self._acceptsResult(self._currentResult):
+            self.summaryLabel.setText(self._incompatibleText)
+            return
         try:
             self.sigRunRequested.emit(self._currentResult, self.parameterValues())
         except Exception as exc:
@@ -99,11 +109,14 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     def setCurrentResult(self, result) -> None:
         """Conform to result-processor widget contract: store the current result."""
         self._currentResult = result
-        has_image = (
-            result is not None
-            and getattr(result, "data", None) is not None
-        )
-        self.fitButton.setEnabled(has_image)
+        accepted = self._acceptsResult(result)
+        self.fitButton.setEnabled(accepted)
+        if result is None:
+            self.summaryLabel.setText(self._selectText)
+        elif accepted:
+            self.summaryLabel.setText(self._readyText)
+        else:
+            self.summaryLabel.setText(self._incompatibleText)
 
     def setStatusText(self, text: str) -> None:
         """Conform to result-processor widget contract: forward to summaryLabel."""
@@ -112,3 +125,11 @@ class PSFResolutionWidget(QtWidgets.QWidget):
     def setRoiManagerWidget(self, roiManagerWidget) -> None:
         """Wire (or rewire) the ROI Manager dependency at runtime."""
         self._roiManagerWidget = roiManagerWidget
+
+    def _acceptsResult(self, result) -> bool:
+        if result is None:
+            return False
+        try:
+            return bool(self.processor.accepts(result))
+        except Exception:
+            return False

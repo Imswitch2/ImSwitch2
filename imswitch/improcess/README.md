@@ -540,12 +540,17 @@ Rules:
   `["monalisa"]` (reconstructors) / `["drift-correct"]` (processors). Ids not in
   the corresponding `_AVAILABLE_*` dict raise a startup `KeyError` that lists
   the unknown IDs and available built-ins. Explicit list order is preserved, so
-  the first configured reconstructor is the initial active reconstructor.
+  the first configured reconstructor is the initial active reconstructor. This
+  is the initial registry population; runtime-loaded tools and registry-backed
+  startup panels may register their required processor later.
 - **Panel flags.** Each `is_*_panel_enabled()` getter reads its boolean key and
-  defaults to `false`, so omitted panels stay hidden. Panels are independent of
-  the processor that backs them: a panel flag toggles UI visibility, while the
-  `processors` list controls which processor plugins are registered (some
-  analysis tools, e.g. `roi-manager`, are panel-only with no processor).
+  defaults to `false`, so omitted panels stay hidden. Most panel flags only
+  toggle UI visibility. Registry-backed startup panels that need a processor
+  (currently `projectionPanel` and `frcPanel`) auto-register that processor if
+  it is not already present, so the panel is usable even when the processor id
+  is omitted from `processors`. Listing a processor explicitly still preloads it
+  without opening its panel. Some analysis tools, e.g. `roi-manager`, are
+  panel-only with no processor.
 - **Core GUI flags.** `parameterPanel`, `actionsPanel`, `fileWatcherPanel`,
   `multiDataPanel`, `currentDataPanel`, `resultsPanel`,
   `napariLayerControls`, and `reconstructionPanel` default to `true` to

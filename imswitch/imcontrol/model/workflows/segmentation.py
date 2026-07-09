@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from imswitch.improcess.analysis.segmentation import (
+from imswitch.imcommon.algorithms.segmentation import (
     otsu_threshold,
     prepare_segmentation_image,
     segment_image,

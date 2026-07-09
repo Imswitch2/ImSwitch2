@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,11 +12,12 @@ from imswitch.improcess.processors import (
     available_processor_specs,
     register_processor_by_id,
 )
+from imswitch.improcess.controller.ImProcessMainController import ImProcessMainController
 from imswitch.improcess.model.runtime_tools import (
     runtime_analysis_panel_shortcuts,
     runtime_analysis_tool_specs,
 )
-from imswitch.improcess.reconstructors.registry import PluginRegistry
+from imswitch.improcess.reconstructors.registry import PluginRegistry, get_registry
 from imswitch.improcess.view.ImProcessMainView import ImProcessMainView
 
 
@@ -25,6 +27,18 @@ class _Signal:
 
     def emit(self, *args):
         self.emitted.append(args)
+
+
+class _Logger:
+    def __init__(self):
+        self.info_messages = []
+        self.exceptions = []
+
+    def info(self, message):
+        self.info_messages.append(message)
+
+    def exception(self, message):
+        self.exceptions.append(message)
 
 
 @pytest.fixture(scope="module")
@@ -203,3 +217,20 @@ def test_register_processor_by_id_rejects_unknown_id():
 
     with pytest.raises(KeyError):
         register_processor_by_id(registry, "does-not-exist")
+
+
+def test_configured_runtime_panel_registers_required_processor():
+    registry = get_registry()
+    registry.clear()
+    view = SimpleNamespace(startupRuntimeAnalysisToolIds=lambda: ["frc"])
+    controller = SimpleNamespace(
+        _ImProcessMainController__mainView=view,
+        _ImProcessMainController__logger=_Logger(),
+    )
+
+    try:
+        ImProcessMainController._register_startup_runtime_processors(controller)
+
+        assert registry.get_processor("frc", raise_on_missing=False) is not None
+    finally:
+        registry.clear()

@@ -450,7 +450,9 @@ the reconstruction list.  The panel supports projection along ``T``, ``Z``, ``C`
 or another selected axis using max, mean, sum, median or standard-deviation modes.
 The projection panel uses the generic result-processor infrastructure — committed
 projections are published as ``ProcessingResult`` entries in the reconstruction
-list, not floating napari layers.
+list, not floating napari layers.  If the panel is enabled at startup, ImProcess
+auto-registers the ``projection`` processor when it is not already listed under
+``processing.processors``.
 
 FRC panel
 =========
@@ -464,7 +466,8 @@ with checkerboard / odd-even splitting are both supported; selecting the
 result shows the FRC curve, threshold curve and cutoff marker in the graph
 panel.  (The former custom FRC panel duplicated the processor's parameters
 and plotted only locally; it was retired in the result-unification tool
-audit.)
+audit.)  If the panel is enabled at startup, ImProcess auto-registers the
+``frc`` processor when it is not already listed under ``processing.processors``.
 
 ROI statistics panel
 ====================
@@ -815,8 +818,11 @@ read at all, e.g. in standalone mode) the registry falls back to::
     reconstructors: ["view-only"]
     processors:     ["drift-correct"]
 
-Only the plugin IDs you list are instantiated.  IDs not in the list
-are not registered, even if their code is present.
+Only the plugin IDs you list are instantiated during initial registry setup.
+Runtime-loaded tools, and registry-backed startup panels such as
+``projectionPanel`` and ``frcPanel``, may register their required processors
+later.  List processor IDs explicitly when you want them preloaded without
+opening the corresponding panel.
 
 Set ``"graphPanel": true`` in the ``processing`` block to show the optional
 graph panel.  When the key is absent, ImProcess keeps the panel hidden.

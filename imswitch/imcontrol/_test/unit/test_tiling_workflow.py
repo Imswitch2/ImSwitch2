@@ -601,10 +601,10 @@ class TestTilingWorkflow:
             ):
                 assert key in result
 
-    def test_segmenter_reuses_shared_improcess_kernel(self):
+    def test_segmenter_reuses_shared_segmentation_kernel(self):
         """Tiling Segmenter remains a wrapper around the shared kernel."""
         from imswitch.imcontrol.model.workflows.segmentation import Segmenter
-        from imswitch.improcess.analysis.segmentation import segment_image
+        from imswitch.imcommon.algorithms.segmentation import segment_image
 
         overview = np.zeros((64, 64), dtype=np.float32)
         overview[20:44, 20:44] = 0.8

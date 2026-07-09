@@ -36,10 +36,13 @@ Config:
 
 ```json
 "processing": {
-  "projectionPanel": true,
-  "processors": ["projection"]
+  "projectionPanel": true
 }
 ```
+
+Listing `"projection"` under `processors` still preloads the processor without
+opening the panel, but startup-enabled projection panels now auto-register their
+backing processor when needed.
 
 Likely files:
 

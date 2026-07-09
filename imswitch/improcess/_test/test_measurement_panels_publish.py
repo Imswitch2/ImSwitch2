@@ -67,6 +67,13 @@ def _coloc_result():
     )
 
 
+def _table_result():
+    return PSFResolutionProcessor().apply(
+        _psf_result(),
+        {"pixel_size": 1.0, "unit": "px"},
+    )
+
+
 def _roi_manager(rois):
     return SimpleNamespace(rois=lambda: rois)
 
@@ -141,6 +148,19 @@ def test_psf_panel_requires_selected_result(qtbot):
     assert not panel.fitButton.isEnabled()
 
 
+def test_psf_panel_rejects_incompatible_result_kind(qtbot):
+    panel = PSFResolutionWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    runs = _capture_runs(panel)
+
+    panel.setCurrentResult(_table_result())
+    panel.run()
+
+    assert runs == []
+    assert not panel.fitButton.isEnabled()
+    assert "not compatible" in panel.summaryLabel.text()
+
+
 # --- Colocalization panel ---
 
 
@@ -191,3 +211,16 @@ def test_coloc_panel_requires_selected_result(qtbot):
     assert runs == []
     assert "No result selected" in panel.summaryLabel.text()
     assert not panel.runButton.isEnabled()
+
+
+def test_coloc_panel_rejects_incompatible_result_kind(qtbot):
+    panel = ColocalizationWidget(napariViewer=None)
+    qtbot.addWidget(panel)
+    runs = _capture_runs(panel)
+
+    panel.setCurrentResult(_table_result())
+    panel.run()
+
+    assert runs == []
+    assert not panel.runButton.isEnabled()
+    assert "not compatible" in panel.summaryLabel.text()

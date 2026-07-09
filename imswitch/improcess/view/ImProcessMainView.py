@@ -237,11 +237,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showProfilePanel
             else None
         )
-        self.frcWidget = (
-            self._makeResultProcessorWidget('frc')
-            if showFRCPanel
-            else None
-        )
+        # Registry-backed startup panels are created by the controller after
+        # plugin registration. The view is constructed first, so building
+        # ResultProcessorWidget instances here would race an empty registry.
+        self._startupRuntimeAnalysisToolIds = []
+        self.frcWidget = None
         self.roiStatsWidget = (
             ROIStatsWidget(self.reconstructionWidget.napariViewer)
             if showROIStatsPanel
@@ -252,11 +252,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showROIManagerPanel
             else None
         )
-        self.projectionWidget = (
-            self._makeResultProcessorWidget('projection')
-            if showProjectionPanel
-            else None
-        )
+        self.projectionWidget = None
+        if showProjectionPanel:
+            self._startupRuntimeAnalysisToolIds.append('projection')
+        if showFRCPanel:
+            self._startupRuntimeAnalysisToolIds.append('frc')
         self.segmentationWidget = (
             SegmentationWidget(
                 self.reconstructionWidget.napariViewer,
@@ -436,11 +436,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         # Snapshot the default layout for the View > Reset layout action and
         # for callers that drop a corrupt persisted state.
-        self._defaultDockState = self.dockArea.saveState()
-        self._defaultDockVisibility = {
-            title: not dock.isHidden()
-            for title, dock in self.docks.items()
-        }
+        self._captureDefaultDockState()
 
         # --- View menu: toggle each dock + reset layout ---
         viewMenu = menuBar.addMenu('&View')
@@ -576,7 +572,28 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if processor_id:
             self.sigLoadProcessorRequested.emit(str(processor_id))
 
-    def ensureRuntimeAnalysisWidget(self, processor_id: str) -> str | None:
+    def startupRuntimeAnalysisToolIds(self) -> list[str]:
+        """Return registry-backed analysis panels requested at startup."""
+        return list(getattr(self, '_startupRuntimeAnalysisToolIds', ()))
+
+    def createStartupRuntimeAnalysisWidgets(self) -> None:
+        """Create configured registry-backed panels after plugins are loaded."""
+        created = False
+        for tool_id in self.startupRuntimeAnalysisToolIds():
+            title = self.ensureRuntimeAnalysisWidget(
+                tool_id,
+                runtime_loaded=False,
+            )
+            created = created or title is not None
+        if created:
+            self._captureDefaultDockState()
+
+    def ensureRuntimeAnalysisWidget(
+        self,
+        processor_id: str,
+        *,
+        runtime_loaded: bool = True,
+    ) -> str | None:
         """Create/show the matching analysis dock for a runtime-loaded processor.
 
         Returns the dock title on success, ``None`` when the request cannot be
@@ -624,11 +641,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 self.dockArea.addDock(dock, 'bottom', anchor)
             self.docks[title] = dock
             self._runtimeAnalysisDockAnchor = dock
-            # Mark this tool as runtime-loaded so getLayoutState only persists
-            # *user-added* panels.  Config-driven panels added in __init__
-            # never go through this path and therefore stay out of the
-            # persisted set.
-            self._runtimeAnalysisToolIds.add(processor_id)
+            # Mark only user-loaded tools for layout persistence. Config-driven
+            # startup panels use this same construction path after plugin
+            # registration, but must still stay out of the persisted runtime set.
+            if runtime_loaded:
+                self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
             if spec.widget_kind == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
@@ -660,6 +677,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             )
             return None
         return title
+
+    def _captureDefaultDockState(self) -> None:
+        self._defaultDockState = self.dockArea.saveState()
+        self._defaultDockVisibility = {
+            title: not dock.isHidden()
+            for title, dock in self.docks.items()
+        }
 
     def _showStatusMessage(self, message: str, timeout_ms: int = 4000) -> None:
         """Best-effort status-bar message for runtime-loader failures."""

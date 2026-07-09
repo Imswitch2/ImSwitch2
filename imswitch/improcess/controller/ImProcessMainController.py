@@ -35,6 +35,8 @@ class ImProcessMainController(MainController):
 
         # Initialize plugin registry
         self._initialize_plugins()
+        self._register_startup_runtime_processors()
+        self.__mainView.createStartupRuntimeAnalysisWidgets()
         self._refresh_runtime_processor_choices()
 
         # Init communication channel and master controller
@@ -140,6 +142,36 @@ class ImProcessMainController(MainController):
             f"{len(registry.reconstructors())} reconstructors, "
             f"{len(registry.processors())} processors"
         )
+
+    def _register_startup_runtime_processors(self) -> None:
+        """Register processors required by config-enabled runtime panels."""
+        from imswitch.improcess.model.runtime_tools import runtime_analysis_tool_specs
+        from imswitch.improcess.reconstructors.registry import get_registry
+        from imswitch.improcess.processors import register_processor_by_id
+
+        registry = get_registry()
+        specs = runtime_analysis_tool_specs()
+        for tool_id in self.__mainView.startupRuntimeAnalysisToolIds():
+            spec = specs.get(tool_id)
+            if spec is None or spec.processor_id is None:
+                continue
+            if (
+                registry.get_processor(spec.processor_id, raise_on_missing=False)
+                is not None
+            ):
+                continue
+            try:
+                plugin = register_processor_by_id(registry, spec.processor_id)
+            except Exception:
+                self.__logger.exception(
+                    f"Failed to register startup analysis processor "
+                    f"{spec.processor_id!r} for panel {tool_id!r}"
+                )
+                continue
+            self.__logger.info(
+                f"Registered startup analysis processor: "
+                f"{plugin.id} ({plugin.name})"
+            )
 
     def _refresh_runtime_processor_choices(self):
         from imswitch.improcess.reconstructors.registry import get_registry
