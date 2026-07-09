@@ -5,7 +5,8 @@ DAPI segmentation plus dominant coding-channel analysis pipeline.
 
 ## Output
 
-The simulated image is written as a BigTIFF/OME-TIFF stack with axes `ZCYX`.
+The simulated image is written as a BigTIFF/OME-TIFF time series with axes
+`TCYX`.
 The default channel order is:
 
 1. `dapi`
@@ -14,15 +15,20 @@ The default channel order is:
 4. `code3`
 5. `code4`
 
-The default stack size is 10 planes, 5 channels, and 5000 x 5000 pixels.
+The default stack size is 10 timepoints, 5 channels, and 5000 x 5000 pixels.
 
-## Cell geometry
+## Cell geometry and drift
 
-Each plane contains an independent set of circular nuclei. Nucleus diameter is
-drawn from a clipped normal distribution around a fixed nominal diameter. Cell
-centers are placed with rejection sampling so the disks do not substantially
-overlap. Each accepted cell gets a unique integer label in the optional ground
-truth label stack.
+A single base population of circular nuclei is generated once and reused across
+all timepoints. Nucleus diameter is drawn from a clipped normal distribution
+around a fixed nominal diameter. Cell centers are placed with rejection sampling
+so the disks do not substantially overlap.
+
+Each timepoint then applies a small global translation to the same cells, simulating
+stage/sample drift. The default drift is linear with a small random-walk term.
+The optional ground-truth label stack stores code-class labels shifted by the
+timepoint-specific drift: `0` for background, `1` for `code1`, `2` for `code2`,
+and so on.
 
 ## Channel assignment
 
@@ -49,8 +55,10 @@ background_counts[channel]
 ```
 
 Coding-channel signal amplitudes are drawn per cell from a truncated exponential
-distribution between 5 and 500 counts above background by default. DAPI signal
-uses the same model with brighter defaults.
+distribution. The default coding-channel settings are intentionally difficult:
+single timepoints are noisy, and cells should become reasonably apparent mainly
+in a maximum projection across the stack. DAPI signal uses the same model with
+much brighter defaults.
 
 The simulated photon count for each pixel is:
 
@@ -72,7 +80,9 @@ chosen integer dtype, normally `uint16`.
 The script writes sidecars next to the OME-TIFF:
 
 - `*_config.json`: all simulation parameters
-- `*_cells.csv`: one row per simulated cell, including active channels and
-  expected signal amplitudes
-- `*_labels.tif`: optional integer ground-truth label image with axes `ZYX`
-
+- `*_cells.csv`: one row per cell observation. The same `cell_id` appears once
+  per timepoint with its drifted position, active channels and expected signal
+  amplitudes. `label_value` matches the code-class value written into the label
+  image.
+- `*_labels.tif`: optional integer ground-truth code-class image with axes
+  `TYX`; doubles use their dominant simulated coding channel.

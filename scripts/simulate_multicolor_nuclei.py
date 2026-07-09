@@ -22,28 +22,30 @@ class SimulationParams:
     output_path: Path = Path("simulated_multicolor_stack.ome.tif")
     seed: int = 1
 
-    planes: int = 10
+    timepoints: int = 10
     height: int = 5000
     width: int = 5000
     channel_names: tuple[str, ...] = ("dapi", "code1", "code2", "code3", "code4")
 
     dtype: str = "uint16"
     camera_offset: float = 100.0
-    background_counts: tuple[float, ...] = (20.0, 5.0, 5.0, 5.0, 5.0)
+    background_counts: tuple[float, ...] = (20.0, 18.0, 18.0, 18.0, 18.0)
 
-    cells_per_plane: int = 2500
-    nucleus_diameter_px: float = 28.0
+    cells_per_timepoint: int = 2500
+    nucleus_diameter_px: float = 10.0
     nucleus_diameter_jitter_px: float = 3.0
     nucleus_edge_softness_px: float = 1.0
     minimum_gap_px: float = 2.0
     max_placement_attempts_per_cell: int = 500
+    drift_per_timepoint_yx: tuple[float, float] = (0.25, -0.15)
+    drift_random_walk_sigma_px: float = 0.05
 
     code_ratios: tuple[float, ...] = (0.40, 0.20, 0.20, 0.20)
     double_fraction: float = 0.02
 
-    code_signal_min: float = 5.0
-    code_signal_max: float = 500.0
-    code_signal_exponential_scale: float = 80.0
+    code_signal_min: float = 3.0
+    code_signal_max: float = 250.0
+    code_signal_exponential_scale: float = 20.0
 
     dapi_signal_min: float = 300.0
     dapi_signal_max: float = 4000.0
@@ -62,12 +64,13 @@ class SimulationResult:
     label_path: Path | None
     shape: tuple[int, int, int, int]
     cell_count: int
+    observation_count: int
 
 
 @dataclass(frozen=True)
 class SimulatedCell:
     cell_id: int
-    plane: int
+    timepoint: int
     y: float
     x: float
     radius: float
@@ -86,23 +89,25 @@ def main() -> SimulationResult:
     params = SimulationParams(
         output_path=Path("simulated_multicolor_stack.ome.tif"),
         seed=1,
-        planes=10,
+        timepoints=10,
         height=5000,
         width=5000,
         channel_names=("dapi", "code1", "code2", "code3", "code4"),
         dtype="uint16",
         camera_offset=100.0,
-        background_counts=(20.0, 5.0, 5.0, 5.0, 5.0),
-        cells_per_plane=2500,
-        nucleus_diameter_px=28.0,
+        background_counts=(20.0, 18.0, 18.0, 18.0, 18.0),
+        cells_per_timepoint=2500,
+        nucleus_diameter_px=10.0,
         nucleus_diameter_jitter_px=3.0,
         nucleus_edge_softness_px=1.0,
         minimum_gap_px=2.0,
+        drift_per_timepoint_yx=(0.25, -0.15),
+        drift_random_walk_sigma_px=0.05,
         code_ratios=(0.40, 0.20, 0.20, 0.20),
         double_fraction=0.02,
-        code_signal_min=5.0,
-        code_signal_max=500.0,
-        code_signal_exponential_scale=80.0,
+        code_signal_min=3.0,
+        code_signal_max=250.0,
+        code_signal_exponential_scale=20.0,
         dapi_signal_min=300.0,
         dapi_signal_max=4000.0,
         dapi_signal_exponential_scale=700.0,
@@ -129,9 +134,9 @@ def simulate_multicolor_nuclei(params: SimulationParams) -> SimulationResult:
     _prepare_output_paths(output_paths, overwrite=params.overwrite)
 
     dtype = np.dtype(params.dtype)
-    shape = (params.planes, len(params.channel_names), params.height, params.width)
+    shape = (params.timepoints, len(params.channel_names), params.height, params.width)
     metadata = {
-        "axes": "ZCYX",
+        "axes": "TCYX",
         "Channel": {"Name": list(params.channel_names)},
     }
     image_stack = tifffile.memmap(
@@ -147,55 +152,71 @@ def simulate_multicolor_nuclei(params: SimulationParams) -> SimulationResult:
     if label_path is not None:
         label_stack = tifffile.memmap(
             label_path,
-            shape=(params.planes, params.height, params.width),
+            shape=(params.timepoints, params.height, params.width),
             dtype=np.uint32,
             bigtiff=True,
             ome=True,
-            metadata={"axes": "ZYX"},
+            metadata={"axes": "TYX"},
         )
 
+    drift_offsets = _generate_drift_offsets(params, rng)
+    max_drift_y = max(abs(offset[0]) for offset in drift_offsets)
+    max_drift_x = max(abs(offset[1]) for offset in drift_offsets)
+    placement_margin_px = _max_radius(params) + max(max_drift_y, max_drift_x)
+    if params.height <= 2 * placement_margin_px or params.width <= 2 * placement_margin_px:
+        raise ValueError(
+            "image dimensions are too small for the requested nucleus size and drift range"
+        )
+    base_cells = _generate_base_cells(
+        params=params,
+        prepared=prepared,
+        rng=rng,
+        placement_margin_px=placement_margin_px,
+    )
     records: list[SimulatedCell] = []
-    next_cell_id = 1
     if params.print_progress:
         gib = np.prod(shape) * dtype.itemsize / 1024**3
         print(f"Writing {shape} {dtype} image stack to {image_path} ({gib:.2f} GiB)")
+        print(f"Generated {len(base_cells)} base cells reused across {params.timepoints} timepoints")
 
-    for plane_index in range(params.planes):
-        plane_cells = _generate_plane_cells(
-            params=params,
-            prepared=prepared,
-            rng=rng,
-            plane_index=plane_index,
-            first_cell_id=next_cell_id,
+    for timepoint_index in range(params.timepoints):
+        drift_y, drift_x = drift_offsets[timepoint_index]
+        timepoint_cells = _shift_cells(
+            base_cells,
+            timepoint_index=timepoint_index,
+            drift_y=drift_y,
+            drift_x=drift_x,
         )
-        records.extend(plane_cells)
-        next_cell_id += len(plane_cells)
+        records.extend(timepoint_cells)
 
         if params.print_progress:
-            print(f"Plane {plane_index + 1}/{params.planes}: {len(plane_cells)} cells")
+            print(
+                f"Timepoint {timepoint_index + 1}/{params.timepoints}: "
+                f"{len(timepoint_cells)} cells, drift=({drift_y:.2f}, {drift_x:.2f}) px"
+            )
 
         if label_stack is not None:
-            label_stack[plane_index] = _render_label_plane(
+            label_stack[timepoint_index] = _render_label_image(
                 params.height,
                 params.width,
-                plane_cells,
+                timepoint_cells,
             )
             label_stack.flush()
 
         for channel_index, background in enumerate(prepared["background_counts"]):
-            plane = rng.poisson(background, size=(params.height, params.width)).astype(
+            image = rng.poisson(background, size=(params.height, params.width)).astype(
                 np.uint32,
                 copy=False,
             )
             _add_cell_signals(
-                plane,
-                plane_cells,
+                image,
+                timepoint_cells,
                 channel_index=channel_index,
                 params=params,
                 rng=rng,
             )
-            image_stack[plane_index, channel_index] = _apply_camera_offset_and_clip(
-                plane,
+            image_stack[timepoint_index, channel_index] = _apply_camera_offset_and_clip(
+                image,
                 offset=params.camera_offset,
                 dtype=dtype,
             )
@@ -205,7 +226,14 @@ def simulate_multicolor_nuclei(params: SimulationParams) -> SimulationResult:
     if label_stack is not None:
         label_stack.flush()
 
-    _write_config(config_path, params, shape=shape, cell_count=len(records))
+    _write_config(
+        config_path,
+        params,
+        shape=shape,
+        cell_count=len(base_cells),
+        observation_count=len(records),
+        drift_offsets=drift_offsets,
+    )
     _write_cell_table(cell_table_path, records, params.channel_names)
 
     return SimulationResult(
@@ -214,7 +242,8 @@ def simulate_multicolor_nuclei(params: SimulationParams) -> SimulationResult:
         cell_table_path=cell_table_path,
         label_path=label_path,
         shape=shape,
-        cell_count=len(records),
+        cell_count=len(base_cells),
+        observation_count=len(records),
     )
 
 
@@ -224,10 +253,10 @@ def _validate_params(params: SimulationParams) -> dict[str, np.ndarray]:
         raise ValueError("channel_names must include DAPI plus at least one code channel")
     if params.channel_names[0].lower() != "dapi":
         raise ValueError("channel_names[0] must be 'dapi'")
-    if params.planes < 1 or params.height < 1 or params.width < 1:
-        raise ValueError("planes, height, and width must be positive")
-    if params.cells_per_plane < 0:
-        raise ValueError("cells_per_plane must be non-negative")
+    if params.timepoints < 1 or params.height < 1 or params.width < 1:
+        raise ValueError("timepoints, height, and width must be positive")
+    if params.cells_per_timepoint < 0:
+        raise ValueError("cells_per_timepoint must be non-negative")
     if params.camera_offset < 0:
         raise ValueError("camera_offset must be non-negative")
 
@@ -280,6 +309,12 @@ def _validate_params(params: SimulationParams) -> dict[str, np.ndarray]:
         raise ValueError("minimum_gap_px must be non-negative")
     if params.max_placement_attempts_per_cell < 1:
         raise ValueError("max_placement_attempts_per_cell must be positive")
+    if len(params.drift_per_timepoint_yx) != 2:
+        raise ValueError("drift_per_timepoint_yx must contain exactly two values")
+    if not np.all(np.isfinite(params.drift_per_timepoint_yx)):
+        raise ValueError("drift_per_timepoint_yx must contain finite values")
+    if params.drift_random_walk_sigma_px < 0:
+        raise ValueError("drift_random_walk_sigma_px must be non-negative")
 
     max_radius = _max_radius(params)
     if params.height <= 2 * max_radius or params.width <= 2 * max_radius:
@@ -313,15 +348,36 @@ def _prepare_output_paths(paths: list[Path | None], *, overwrite: bool) -> None:
             path.unlink()
 
 
-def _generate_plane_cells(
+def _generate_drift_offsets(
+    params: SimulationParams,
+    rng: np.random.Generator,
+) -> list[tuple[float, float]]:
+    linear_y, linear_x = params.drift_per_timepoint_yx
+    offsets = [(0.0, 0.0)]
+    random_y = 0.0
+    random_x = 0.0
+    for timepoint_index in range(1, params.timepoints):
+        if params.drift_random_walk_sigma_px > 0:
+            step = rng.normal(0.0, params.drift_random_walk_sigma_px, size=2)
+            random_y += float(step[0])
+            random_x += float(step[1])
+        offsets.append(
+            (
+                timepoint_index * linear_y + random_y,
+                timepoint_index * linear_x + random_x,
+            )
+        )
+    return offsets
+
+
+def _generate_base_cells(
     *,
     params: SimulationParams,
     prepared: dict[str, np.ndarray],
     rng: np.random.Generator,
-    plane_index: int,
-    first_cell_id: int,
+    placement_margin_px: float,
 ) -> list[SimulatedCell]:
-    geometries = _place_nuclei(params, rng)
+    geometries = _place_nuclei(params, rng, placement_margin_px=placement_margin_px)
     cells = []
     for local_index, (y, x, radius) in enumerate(geometries):
         primary = int(rng.choice(len(prepared["code_ratios"]), p=prepared["code_ratios"]))
@@ -350,8 +406,8 @@ def _generate_plane_cells(
 
         cells.append(
             SimulatedCell(
-                cell_id=first_cell_id + local_index,
-                plane=plane_index,
+                cell_id=local_index + 1,
+                timepoint=0,
                 y=y,
                 x=x,
                 radius=radius,
@@ -365,8 +421,37 @@ def _generate_plane_cells(
     return cells
 
 
-def _place_nuclei(params: SimulationParams, rng: np.random.Generator) -> list[tuple[float, float, float]]:
-    if params.cells_per_plane == 0:
+def _shift_cells(
+    cells: list[SimulatedCell],
+    *,
+    timepoint_index: int,
+    drift_y: float,
+    drift_x: float,
+) -> list[SimulatedCell]:
+    return [
+        SimulatedCell(
+            cell_id=cell.cell_id,
+            timepoint=timepoint_index,
+            y=cell.y + drift_y,
+            x=cell.x + drift_x,
+            radius=cell.radius,
+            primary_code_index=cell.primary_code_index,
+            secondary_code_index=cell.secondary_code_index,
+            dominant_code_index=cell.dominant_code_index,
+            dapi_signal=cell.dapi_signal,
+            code_signals=cell.code_signals,
+        )
+        for cell in cells
+    ]
+
+
+def _place_nuclei(
+    params: SimulationParams,
+    rng: np.random.Generator,
+    *,
+    placement_margin_px: float,
+) -> list[tuple[float, float, float]]:
+    if params.cells_per_timepoint == 0:
         return []
 
     max_radius = _max_radius(params)
@@ -374,12 +459,13 @@ def _place_nuclei(params: SimulationParams, rng: np.random.Generator) -> list[tu
     spatial_index: dict[tuple[int, int], list[int]] = {}
     placed: list[tuple[float, float, float]] = []
 
-    for _ in range(params.cells_per_plane):
+    for _ in range(params.cells_per_timepoint):
         accepted = False
         for _attempt in range(params.max_placement_attempts_per_cell):
             radius = _sample_radius(params, rng)
-            y = float(rng.uniform(radius, params.height - radius))
-            x = float(rng.uniform(radius, params.width - radius))
+            margin = max(radius, placement_margin_px)
+            y = float(rng.uniform(margin, params.height - margin))
+            x = float(rng.uniform(margin, params.width - margin))
             if _can_place(y, x, radius, placed, spatial_index, grid_size, params.minimum_gap_px):
                 placed.append((y, x, radius))
                 key = _grid_key(y, x, grid_size)
@@ -388,8 +474,8 @@ def _place_nuclei(params: SimulationParams, rng: np.random.Generator) -> list[tu
                 break
         if not accepted:
             raise RuntimeError(
-                f"Could place only {len(placed)} of {params.cells_per_plane} nuclei. "
-                "Reduce cells_per_plane, nucleus_diameter_px, or minimum_gap_px."
+                f"Could place only {len(placed)} of {params.cells_per_timepoint} nuclei. "
+                "Reduce cells_per_timepoint, nucleus_diameter_px, or minimum_gap_px."
             )
     return placed
 
@@ -460,7 +546,7 @@ def _truncated_exponential(
 
 
 def _add_cell_signals(
-    plane: np.ndarray,
+    image: np.ndarray,
     cells: list[SimulatedCell],
     *,
     channel_index: int,
@@ -480,7 +566,7 @@ def _add_cell_signals(
             params.nucleus_edge_softness_px,
         )
         counts = rng.poisson(signal * profile).astype(np.uint32, copy=False)
-        plane[y0:y1, x0:x1] += counts
+        image[y0:y1, x0:x1] += counts
 
 
 def _cell_signal_for_channel(cell: SimulatedCell, channel_index: int) -> float:
@@ -489,13 +575,14 @@ def _cell_signal_for_channel(cell: SimulatedCell, channel_index: int) -> float:
     return cell.code_signals[channel_index - 1]
 
 
-def _render_label_plane(
+def _render_label_image(
     height: int,
     width: int,
     cells: list[SimulatedCell],
 ) -> np.ndarray:
     labels = np.zeros((height, width), dtype=np.uint32)
     for cell in cells:
+        label_value = cell.dominant_code_index + 1
         y0, y1, x0, x1, profile = _nucleus_profile(
             cell.y,
             cell.x,
@@ -505,7 +592,7 @@ def _render_label_plane(
             edge_softness_px=0.0,
         )
         mask = profile > 0
-        labels[y0:y1, x0:x1][mask] = cell.cell_id
+        labels[y0:y1, x0:x1][mask] = label_value
     return labels
 
 
@@ -532,15 +619,15 @@ def _nucleus_profile(
 
 
 def _apply_camera_offset_and_clip(
-    plane: np.ndarray,
+    image: np.ndarray,
     *,
     offset: float,
     dtype: np.dtype,
 ) -> np.ndarray:
     dtype_info = np.iinfo(dtype)
     if offset:
-        plane = plane + np.uint32(round(offset))
-    return np.clip(plane, dtype_info.min, dtype_info.max).astype(dtype, copy=False)
+        image = image + np.uint32(round(offset))
+    return np.clip(image, dtype_info.min, dtype_info.max).astype(dtype, copy=False)
 
 
 def _write_config(
@@ -549,12 +636,17 @@ def _write_config(
     *,
     shape: tuple[int, int, int, int],
     cell_count: int,
+    observation_count: int,
+    drift_offsets: list[tuple[float, float]],
 ) -> None:
     payload = {
         "model": "simulated_multicolor_nuclei",
         "model_version": 1,
-        "shape_zcyx": shape,
+        "axis_order": "TCYX",
+        "shape_tcyx": shape,
         "cell_count": cell_count,
+        "observation_count": observation_count,
+        "drift_offsets_yx_per_timepoint": [[float(y), float(x)] for y, x in drift_offsets],
         "parameters": _jsonable(params),
     }
     with path.open("w", encoding="utf-8") as handle:
@@ -570,11 +662,12 @@ def _write_cell_table(
     code_names = channel_names[1:]
     fieldnames = [
         "cell_id",
-        "plane",
+        "timepoint",
         "y",
         "x",
         "radius",
         "is_double",
+        "label_value",
         "primary_channel",
         "secondary_channel",
         "dominant_channel",
@@ -589,11 +682,12 @@ def _write_cell_table(
             active_indices = [index for index, value in enumerate(cell.code_signals) if value > 0]
             row = {
                 "cell_id": cell.cell_id,
-                "plane": cell.plane,
+                "timepoint": cell.timepoint,
                 "y": f"{cell.y:.3f}",
                 "x": f"{cell.x:.3f}",
                 "radius": f"{cell.radius:.3f}",
                 "is_double": int(cell.is_double),
+                "label_value": cell.dominant_code_index + 1,
                 "primary_channel": code_names[cell.primary_code_index],
                 "secondary_channel": (
                     "" if cell.secondary_code_index is None else code_names[cell.secondary_code_index]
