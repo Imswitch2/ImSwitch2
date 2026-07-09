@@ -687,7 +687,7 @@ class HDF5Storer(Storer):
 
         # Dataset-level metadata
         dataset.attrs['detector_name'] = detectorName
-        dataset.attrs['element_size_um'] = self.detectorManager[detectorName].pixelSizeUm
+        dataset.attrs['element_size_um'] = self._elementSizeUm(detectorName, dataset.ndim)
 
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
         if maxshape is not None or recording_attrs:
@@ -730,11 +730,44 @@ class HDF5Storer(Storer):
 
         return dataset
 
+    def _elementSizeUm(self, detectorName, ndim) -> list:
+        """Fiji ``element_size_um`` = spatial ``[z, y, x]`` pixel sizes.
+
+        When OME metadata is available, spatial axes take their calibrated size
+        from it — crucially the scan Z *step* rather than the detector's static
+        Z pixel size, so a z-stack reads back with the right axial spacing. A
+        recording without a Z axis (snap/timelapse) keeps the detector's Z pixel
+        size in the leading slot; the time interval is a temporal quantity and
+        does not belong in the spatial ``element_size_um``.
+        """
+        detector_px = list(self.detectorManager[detectorName].pixelSizeUm)
+        while len(detector_px) < 3:
+            detector_px.insert(0, 1.0)
+        meta = (self.omeMeta or {}).get(detectorName)
+        if meta is None:
+            return detector_px
+        try:
+            padded = meta.padded_to(ndim)
+            by_name = {axis.name: scale for axis, scale in zip(padded.axes, padded.scale)}
+        except Exception:
+            return detector_px
+        return [
+            float(by_name.get('z', detector_px[0])),
+            float(by_name.get('y', detector_px[1])),
+            float(by_name.get('x', detector_px[2])),
+        ]
+
     def _embed_ome_xml(self, group, detectorName, shape) -> None:
         """Embed the shared OME model as OME-XML (``ome_xml`` group attr) for
         logical metadata parity with OME-TIFF/OME-NGFF. HDF5 has no OME container
         standard, so this is a best-effort payload alongside Fiji ``element_size_um``;
-        no reader auto-detects it."""
+        no reader auto-detects it.
+
+        Also records the axis order as an explicit ``axes`` attr on the ``data``
+        dataset (mirroring the Zarr storer and ImageJ/TIFF ``axes`` metadata).
+        This is what lets the reader label a timelapse's leading axis ``T``
+        instead of defaulting a 3D stack's first axis to ``C``.
+        """
         meta = (self.omeMeta or {}).get(detectorName)
         if meta is None:
             return
@@ -742,6 +775,12 @@ class HDF5Storer(Storer):
             group.attrs['ome_xml'] = _ome.build_ome_xml(meta.padded_to(len(shape)), shape)
         except Exception as e:
             logger.debug(f'Could not embed OME-XML for {detectorName}: {e}')
+        try:
+            data_node = group.get('data')
+            if data_node is not None:
+                data_node.attrs['axes'] = meta.padded_to(len(shape)).axes_string
+        except Exception as e:
+            logger.debug(f'Could not write HDF5 axes attr for {detectorName}: {e}')
 
     @staticmethod
     def _split_recording_attrs(attrs: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:

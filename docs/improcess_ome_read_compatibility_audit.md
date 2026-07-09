@@ -194,6 +194,11 @@ readable. Fixing F1 also removes that constraint.
    - Update View-only to use `DataObj` metadata.
    - Implemented for HDF5/Zarr/TIFF. View-only now propagates source labels/scales into
      `ProcessingResult` when dimensions match.
+   - HDF5 axis labels: our OME recordings now write an explicit `axes` attr on the
+     `data` array, read by `_axis_labels_from_hdf5_attrs`. Without it (pre-OME files)
+     the reader falls back to `default_axis_labels`, so a timelapse would otherwise
+     read as `C,Y,X`; new recordings read `T,Y,X`. Verified end-to-end by the
+     write→read sweep `test_ome_recording_roundtrip.py`.
 
 4. **OME-TIFF batch reader.** ✅ Implemented for series/full-resolution reads.
    - Enumerate TIFF series as logical datasets instead of hard-coded `default`.

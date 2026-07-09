@@ -149,15 +149,20 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             array=array,
             attrs=attrs,
             array_path=f"{dataset_name}/data",
+            axis_labels=_axis_labels_from_hdf5_attrs(attrs, array.ndim),
+            axis_scales=None,
+            scale_unit=None,
             source_format="hdf5",
         )
 
     if is_array_node(node):
+        attrs = dict(node.attrs)
         return ResolvedImage(
             name=dataset_name,
             array=node,
-            attrs=dict(node.attrs),
+            attrs=attrs,
             array_path=dataset_name,
+            axis_labels=_axis_labels_from_hdf5_attrs(attrs, node.ndim),
             source_format="hdf5",
         )
 
@@ -437,6 +442,34 @@ def _axis_labels_from_tiff_axes(axes: str | None) -> list[str] | None:
     if not axes:
         return None
     return [_canonical_axis_label(axis) for axis in str(axes)]
+
+
+def _axis_labels_from_hdf5_attrs(attrs: dict[str, Any], ndim: int) -> list[str] | None:
+    """Read axis labels from an ImSwitch/OME HDF5 ``axes`` attr.
+
+    The OME recording storer writes ``axes`` (e.g. ``"TYX"`` or ``["T","Y","X"]``)
+    alongside ``element_size_um``. Legacy pre-OME recordings have no such attr, so
+    this returns ``None`` and the reader falls back to ``default_axis_labels`` —
+    keeping old files loading exactly as before.
+    """
+    axes = attrs.get("axes")
+    if axes is None:
+        return None
+    if isinstance(axes, (bytes, bytearray)):
+        axes = axes.decode("utf-8", "ignore")
+    if isinstance(axes, str):
+        items = list(axes)
+    elif isinstance(axes, (list, tuple, np.ndarray)):
+        items = [
+            item.decode("utf-8", "ignore") if isinstance(item, (bytes, bytearray)) else str(item)
+            for item in axes
+        ]
+    else:
+        return None
+    labels = [_canonical_axis_label(str(item)) for item in items if str(item).strip()]
+    if len(labels) != ndim:
+        return None
+    return labels
 
 
 def _axis_scales_from_tiff_attrs(

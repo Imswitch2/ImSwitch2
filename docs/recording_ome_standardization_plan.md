@@ -183,9 +183,22 @@ This is a metadata-correctness win that OME standardization forces us to get rig
    keys; readers unchanged (back-compat by construction); `test_ome_zarr_storer.py`.
 4. **HDF5** — ✅ **DONE** (see §5c). Fiji `element_size_um` + embedded `ome_xml`;
    structured layout/SWMR unchanged; `test_ome_hdf5_storer.py`.
-5. **Reader back-compat sweep**: explicit tests loading pre-migration `data`-named files.
-6. **Docs**: update `docs/recording_dataflow_plan.md` + improcess README; note formats
-   in setup file `availableWidgets`/recording docs.
+5. **Reader back-compat sweep** — ✅ **DONE** (2026-07-09).
+   `test_ome_recording_roundtrip.py` chains each real storer (TIFF/HDF5/Zarr)
+   through `DataObj`: snap YX, streaming timelapse TYX, scan ZYX, plus
+   cross-format axis agreement and pre-OME (`data`-named / no-`axes`) fallback.
+   The sweep caught two write-side calibration bugs, now fixed:
+   - **HDF5 axis labels**: the reader defaulted a 3D stack's leading axis to
+     `C`, so a timelapse read back as N *channels*. The storer now writes an
+     explicit `axes` attr on `data` (mirroring Zarr / ImageJ) and the reader
+     (`image_sources._axis_labels_from_hdf5_attrs`) consumes it; legacy files
+     with no `axes` attr keep the historical fallback.
+   - **HDF5 scan Z scale**: `element_size_um` came from the detector's static
+     Z pixel (1.0 µm), not the scan Z *step*. `HDF5Storer._elementSizeUm` now
+     takes spatial sizes from the OME meta when present, so a z-stack reads
+     back with the correct axial spacing.
+6. **Docs** — ✅ **DONE** (2026-07-09). This plan + the read-compat audit
+   updated; the round-trip contract and the two fixes recorded above.
 
 ## 9. Companion change (chunk-key flattening) — ✅ **DONE**
 
