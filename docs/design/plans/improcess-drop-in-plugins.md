@@ -1,6 +1,6 @@
 # ImProcess drop-in analysis plugins (Picasso-style)
 
-Status: **Slices 1–2 done (2026-07-10).**
+Status: **Slices 1, 2, 4 done (2026-07-10); slice 3 (online store) remaining.**
 
 ## Motivation
 
@@ -145,8 +145,10 @@ view/ImProcessMainView.py              # "Analysis plugins" menu (slice 2)
   plugins` GitHub repo; a `PluginStoreDialog` (browse/install/update/uninstall)
   with `min_improcess_version` compat, `.installed.json` sidecar and the
   one-time trust warning. Directly ports Picasso's dialog.
-- **Slice 4: docs + example repo.** User guide in `docs/improcess.rst`; seed the
-  plugin repo with a couple of example plugins.
+- **Slice 4 (done): docs + examples.** "Drop-in analysis plugins" section in
+  `docs/improcess.rst`; ready-to-copy `examples/improcess_plugins/`
+  (`invert.py`, `gaussian_blur.py`) guarded by `test_example_plugins.py`. (The
+  *online* example repo waits for slice 3.)
 
 ## Security / trust
 
