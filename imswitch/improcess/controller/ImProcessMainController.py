@@ -32,6 +32,8 @@ class ImProcessMainController(MainController):
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigLoadProcessorRequested.connect(self._load_runtime_processor)
+        if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
+            self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
         # Initialize plugin registry
         self._initialize_plugins()
@@ -302,6 +304,39 @@ class ImProcessMainController(MainController):
         if dock_title is not None:
             self.__logger.info(f"Runtime-opened analysis tool: {dock_title}")
             self._wire_runtime_result_processor(processor_id)
+        self._refresh_runtime_processor_choices()
+
+    def _reload_user_plugins(self) -> None:
+        """Re-scan the drop-in plugins folder and refresh the tool list.
+
+        Newly added plugins appear in the 'Load tool' combo; removed ones drop
+        out. Re-registering with fresh instances means an edited plugin's new
+        code is used the next time its panel is opened (an already-open panel
+        keeps the instance it was built with until closed and reopened).
+        """
+        from imswitch.improcess.reconstructors.registry import get_registry
+        from imswitch.improcess.processors import (
+            load_user_plugins,
+            register_processor_by_id,
+        )
+
+        loaded, errors = load_user_plugins()
+        self.__logger.info(f"Reloaded drop-in analysis plugins: {loaded}")
+        for error in errors:
+            self.__logger.warning(
+                f"Skipped analysis plugin {error.path}: "
+                f"{error.message.splitlines()[-1]}"
+            )
+
+        registry = get_registry()
+        for processor_id in loaded:
+            try:
+                register_processor_by_id(registry, processor_id)
+            except Exception:
+                self.__logger.exception(
+                    f"Failed to (re)register plugin processor {processor_id!r}"
+                )
+
         self._refresh_runtime_processor_choices()
 
     def _wire_runtime_result_processor(self, processor_id: str) -> None:

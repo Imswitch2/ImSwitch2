@@ -1,6 +1,6 @@
 # ImProcess drop-in analysis plugins (Picasso-style)
 
-Status: **Slice 1 in progress (2026-07-10).**
+Status: **Slices 1–2 done (2026-07-10).**
 
 ## Motivation
 
@@ -133,9 +133,14 @@ view/ImProcessMainView.py              # "Analysis plugins" menu (slice 2)
 - **Slice 1 (this change): local discovery + registry integration + template +
   tests.** Drop a `.py` → restart → the processor appears as a fully-integrated
   analysis tool. No network. Fully unit-testable.
-- **Slice 2: menu + hot reload.** "Analysis plugins → Open plugins folder… /
-  Reload plugins" in `ImProcessMainView`; reload re-discovers, re-registers and
-  refreshes the runtime-tool combo without a restart.
+- **Slice 2 (done): menu + hot reload.** A "Drop-in plugins" submenu under
+  &Analyze with "Open plugins folder…" (`QDesktopServices` →
+  `user_plugins_directory`) and "Reload plugins"
+  (`sigReloadPluginsRequested`). The controller's `_reload_user_plugins`
+  re-discovers, re-registers current plugins with fresh instances (edited code
+  takes effect on the next panel open) and refreshes the runtime-tool combo —
+  no restart. An already-open panel keeps its instance until closed and
+  reopened.
 - **Slice 3: online store.** `index.json` manifest in an `imswitch_improcess_
   plugins` GitHub repo; a `PluginStoreDialog` (browse/install/update/uninstall)
   with `min_improcess_version` compat, `.installed.json` sidecar and the

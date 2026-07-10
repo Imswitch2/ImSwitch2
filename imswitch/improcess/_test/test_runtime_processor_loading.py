@@ -165,6 +165,21 @@ def test_build_analysis_panel_shortcuts_adds_all_actions(qapp):
     )
 
 
+def test_analysis_plugin_menu_actions_and_reload_signal(qapp):
+    view = QtWidgets.QMainWindow()
+    view._analysisMenu = QtWidgets.QMenu()
+    view.sigReloadPluginsRequested = _Signal()
+
+    ImProcessMainView._buildAnalysisPluginMenu(view)
+
+    assert set(view._pluginMenuActions) == {"open-folder", "reload"}
+    assert view._pluginMenuActions["open-folder"].text() == "Open plugins folder..."
+
+    # Triggering "Reload plugins" asks the controller to re-scan the folder.
+    view._pluginMenuActions["reload"].trigger()
+    assert view.sigReloadPluginsRequested.emitted == [()]
+
+
 def test_analysis_results_shortcut_raises_results_dock(qapp):
     class _Dock:
         def __init__(self):
