@@ -106,11 +106,28 @@ class ImProcessMainController(MainController):
         """
         from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.reconstructors import register_default_reconstructors
-        from imswitch.improcess.processors import register_default_processors
-        
+        from imswitch.improcess.processors import (
+            load_user_plugins,
+            register_default_processors,
+        )
+
         registry = get_registry()
         registry.clear()
-        
+
+        # Discover user drop-in analysis plugins first, so they are available to
+        # register_default_processors and every enumeration below. Tolerant: a
+        # broken plugin is logged and skipped, never blocking startup.
+        loaded_plugins, plugin_errors = load_user_plugins()
+        if loaded_plugins:
+            self.__logger.info(
+                f"Discovered {len(loaded_plugins)} user analysis plugin(s): "
+                f"{loaded_plugins}"
+            )
+        for error in plugin_errors:
+            self.__logger.warning(
+                f"Skipped analysis plugin {error.path}: {error.message.splitlines()[-1]}"
+            )
+
         # Check if we have a setup configuration.
         #
         # The `processing` block is an ImProcess-specific addition. It is not a
