@@ -579,6 +579,16 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._analysisMenu.addSeparator()
         submenu = self._analysisMenu.addMenu('Drop-in plugins')
 
+        store_action = submenu.addAction('Browse online plugins...')
+        store_action.setStatusTip(
+            'Install, update or remove analysis plugins from the online registry'
+        )
+        store_action.triggered.connect(
+            lambda _checked=False: self._openPluginStore()
+        )
+        self._pluginMenuActions['browse-online'] = store_action
+        submenu.addSeparator()
+
         open_action = submenu.addAction('Open plugins folder...')
         open_action.setStatusTip(
             'Open the folder where drop-in analysis plugins (.py) are discovered'
@@ -603,6 +613,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         directory = user_plugins_directory(create=True)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(directory))
+
+    def _openPluginStore(self) -> None:
+        """Open the online plugin store; reload plugins after any change."""
+        from imswitch.improcess.view.PluginStoreDialog import PluginStoreDialog
+
+        dialog = PluginStoreDialog(
+            self, on_change=self.sigReloadPluginsRequested.emit
+        )
+        dialog.exec_()
 
     def _on_load_processor_combo_activated(self, index: int) -> None:
         combo = self._loadProcessorCombo

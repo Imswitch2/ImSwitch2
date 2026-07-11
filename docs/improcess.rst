@@ -1091,6 +1091,21 @@ immediately.  An edited plugin's new code is used the next time its panel is
 opened (an already-open panel keeps the version it was built with until it is
 closed and reopened).
 
+Installing from the online store
+--------------------------------
+
+**Analyze → Drop-in plugins → Browse online plugins…** opens a store that lists
+plugins from the `Improcess-plugins
+<https://github.com/Imswitch2/Improcess-plugins>`_ registry.  Each entry can be
+installed, updated (when the registry offers a newer version) or uninstalled;
+installing downloads the plugin's ``.py`` into the plugins folder and records
+the version in a hidden ``.installed.json`` sidecar.  A one-time confirmation
+precedes the first install, because installed plugins run arbitrary Python at
+ImProcess startup — install only plugins you trust.  Plugins that require a
+newer ImProcess than you are running are shown but not installable.  The store
+re-scans the folder after any change, so an installed plugin is available
+immediately.
+
 Writing a plugin
 ----------------
 

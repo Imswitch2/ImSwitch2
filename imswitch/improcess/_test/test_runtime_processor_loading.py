@@ -172,8 +172,9 @@ def test_analysis_plugin_menu_actions_and_reload_signal(qapp):
 
     ImProcessMainView._buildAnalysisPluginMenu(view)
 
-    assert set(view._pluginMenuActions) == {"open-folder", "reload"}
+    assert set(view._pluginMenuActions) == {"browse-online", "open-folder", "reload"}
     assert view._pluginMenuActions["open-folder"].text() == "Open plugins folder..."
+    assert view._pluginMenuActions["browse-online"].text() == "Browse online plugins..."
 
     # Triggering "Reload plugins" asks the controller to re-scan the folder.
     view._pluginMenuActions["reload"].trigger()

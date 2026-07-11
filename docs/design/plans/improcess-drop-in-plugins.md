@@ -1,6 +1,8 @@
 # ImProcess drop-in analysis plugins (Picasso-style)
 
-Status: **Slices 1, 2, 4 done (2026-07-10); slice 3 (online store) remaining.**
+Status: **All four slices done (2026-07-10 / 07-11).**  Registry repo:
+`Imswitch2/Improcess-plugins` (must be made **public** for the store's anonymous
+fetch to work).
 
 ## Motivation
 
@@ -141,10 +143,14 @@ view/ImProcessMainView.py              # "Analysis plugins" menu (slice 2)
   takes effect on the next panel open) and refreshes the runtime-tool combo —
   no restart. An already-open panel keeps its instance until closed and
   reopened.
-- **Slice 3: online store.** `index.json` manifest in an `imswitch_improcess_
-  plugins` GitHub repo; a `PluginStoreDialog` (browse/install/update/uninstall)
-  with `min_improcess_version` compat, `.installed.json` sidecar and the
-  one-time trust warning. Directly ports Picasso's dialog.
+- **Slice 3 (done): online store.** `index.json` manifest in the
+  `Imswitch2/Improcess-plugins` GitHub repo (filled with 4 example plugins);
+  `plugins/plugin_store.py` (Qt-free: manifest fetch, version compat,
+  `.installed.json` sidecar, install/uninstall, status model) +
+  `view/PluginStoreDialog.py` (browse/install/update/uninstall, one-time trust
+  warning), wired as "Browse online plugins…" which reloads on change. Ports
+  Picasso's store. **The registry repo must be public** for the anonymous
+  `raw.githubusercontent.com` fetch to work.
 - **Slice 4 (done): docs + examples.** "Drop-in analysis plugins" section in
   `docs/improcess.rst`; ready-to-copy `examples/improcess_plugins/`
   (`invert.py`, `gaussian_blur.py`) guarded by `test_example_plugins.py`. (The
