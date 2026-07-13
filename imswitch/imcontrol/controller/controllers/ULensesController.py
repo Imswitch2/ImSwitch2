@@ -9,6 +9,12 @@ class ULensesController(ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # Register the grid overlay with the image viewbox (like the other
+        # overlays) so it is tracked in the viewbox's overlay list and receives
+        # the detector pixel-scale broadcast, keeping the grid aligned to the
+        # image napari draws scaled by the detector pixel size.
+        self._commChannel.sigAddItemToVb.emit(self._widget.getPlotGraphicsItem())
+
         # Connect ULensesWidget signals
         self._widget.sigULensesClicked.connect(self.updateGrid)
         self._widget.sigUShowLensesChanged.connect(self.toggleULenses)
