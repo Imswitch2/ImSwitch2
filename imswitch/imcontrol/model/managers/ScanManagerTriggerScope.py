@@ -213,7 +213,8 @@ class ScanManagerTriggerScope(SuperScanManager):
         self._logger.debug('Parameters set')
         self._send('LS-XY-RESOLFT_SCAN')
         self._ts.sigScanStarted.emit()
-        self._logger.debug(params.get('scanParameters'), params.get('deviceParameters'))
+        self._logger.debug('LSXYR scanParameters=%s deviceParameters=%s',
+                           params.get('scanParameters'), params.get('deviceParameters'))
 
 
 # Copyright (C) 2020-2021 ImSwitch developers
