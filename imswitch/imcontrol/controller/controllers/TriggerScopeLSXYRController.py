@@ -305,7 +305,11 @@ class TriggerScopeLSXYRController(StatefulComponentMixin, ScanLifecycleMixin, Im
         self._deviceParameterDict['offLaser'] = self._widget.getOffLaser()
         self._deviceParameterDict['roLaser'] = self._widget.getRoLaser()
         self._deviceParameterDict['roScanDevice'] = self._widget.getRoScanDevice()
-        self._deviceParameterDict['cycleScanDevice'] = self._widget.getCycleScanDevice()
+        # Cycle scan reuses the RO device (widget selector is disabled and
+        # labelled "hard coded same as RO-device"); force it to the RO selection
+        # rather than the disabled combo, which defaulted to positioner 0 and
+        # diverged from RO whenever RO wasn't positioner 0.
+        self._deviceParameterDict['cycleScanDevice'] = self._widget.getRoScanDevice()
         self._deviceParameterDict['CameraTTL'] = self._widget.getCameraTTL()
         self._deviceParameterDict['rasterXScanDevice'] = self._widget.getRasterXScanDevice()
         self._deviceParameterDict['rasterYScanDevice'] = self._widget.getRasterYScanDevice()

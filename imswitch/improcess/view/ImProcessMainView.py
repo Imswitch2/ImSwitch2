@@ -2,7 +2,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.dockarea import Dock, DockArea
 from pyqtgraph.parametertree import Parameter, ParameterTree
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view import PickDatasetsDialog
@@ -61,6 +61,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     # dock header. Carries the plugin id (e.g. "view-only", "monalisa").
     sigActiveReconstructorChanged = QtCore.Signal(str)
     sigLoadProcessorRequested = QtCore.Signal(str)
+    # Emitted when the user asks to re-scan the drop-in analysis plugins folder.
+    sigReloadPluginsRequested = QtCore.Signal()
 
     sigImageAutoContrastRequested = QtCore.Signal()
     sigImageResetContrastRequested = QtCore.Signal()
@@ -215,6 +217,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
         self._buildAnalysisToolShortcuts()
+        self._buildAnalysisPluginMenu()
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
@@ -564,6 +567,61 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._analysisMenu.addAction(action)
         self._analysisToolActions[str(action_id)] = action
         return action
+
+    def _buildAnalysisPluginMenu(self) -> None:
+        """Add a 'Drop-in plugins' submenu to the Analyze menu.
+
+        Mirrors Picasso: a folder-opener so users can find where to drop their
+        ``.py`` files, and a reload action so newly-added plugins appear without
+        restarting ImProcess.
+        """
+        self._pluginMenuActions: dict[str, QtWidgets.QAction] = {}
+        self._analysisMenu.addSeparator()
+        submenu = self._analysisMenu.addMenu('Drop-in plugins')
+
+        store_action = submenu.addAction('Browse online plugins...')
+        store_action.setStatusTip(
+            'Install, update or remove analysis plugins from the online registry'
+        )
+        store_action.triggered.connect(
+            lambda _checked=False: self._openPluginStore()
+        )
+        self._pluginMenuActions['browse-online'] = store_action
+        submenu.addSeparator()
+
+        open_action = submenu.addAction('Open plugins folder...')
+        open_action.setStatusTip(
+            'Open the folder where drop-in analysis plugins (.py) are discovered'
+        )
+        open_action.triggered.connect(
+            lambda _checked=False: self._openUserPluginsFolder()
+        )
+        self._pluginMenuActions['open-folder'] = open_action
+
+        reload_action = submenu.addAction('Reload plugins')
+        reload_action.setStatusTip(
+            'Re-scan the plugins folder for newly added or removed analysis tools'
+        )
+        reload_action.triggered.connect(
+            lambda _checked=False: self.sigReloadPluginsRequested.emit()
+        )
+        self._pluginMenuActions['reload'] = reload_action
+
+    def _openUserPluginsFolder(self) -> None:
+        """Open the drop-in plugins directory in the system file browser."""
+        from imswitch.improcess.plugins import user_plugins_directory
+
+        directory = user_plugins_directory(create=True)
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(directory))
+
+    def _openPluginStore(self) -> None:
+        """Open the online plugin store; reload plugins after any change."""
+        from imswitch.improcess.view.PluginStoreDialog import PluginStoreDialog
+
+        dialog = PluginStoreDialog(
+            self, on_change=self.sigReloadPluginsRequested.emit
+        )
+        dialog.exec_()
 
     def _on_load_processor_combo_activated(self, index: int) -> None:
         combo = self._loadProcessorCombo

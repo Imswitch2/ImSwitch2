@@ -1,4 +1,16 @@
-"""Helpers for reading ImProcess-specific setup configuration."""
+"""Helpers for reading ImProcess-specific setup configuration.
+
+``load_processing_config`` is the one intentional improcess -> imcontrol edge:
+improcess reads the ``processing`` block from the shared ImSwitch setup file,
+whose format and selection are owned by imcontrol's config system
+(``configfiletools`` / ``SetupInfo``). The import is deliberately kept lazy and
+guarded so improcess stays import-time independent of imcontrol and degrades to
+standalone defaults when no setup is available (e.g. ``python -m
+imswitch.improcess``). Fully inverting this would mean relocating the ImSwitch
+config system to imcommon or injecting the parsed block from the launcher; both
+are out of scope for the layering pass. The layering guard test allowlists this
+module for that reason.
+"""
 
 from typing import Any
 

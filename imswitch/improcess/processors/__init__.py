@@ -49,38 +49,91 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'stack-subset': StackSubsetProcessor,
 }
 
+# User drop-in analysis plugins discovered from the plugins directory
+# (imswitch/improcess/plugins). Populated at ImProcess startup by
+# load_user_plugins(); empty until then, so importing this package never runs
+# user code. Built-in ids always win a collision (enforced at load time), so a
+# stray file cannot shadow a core processor.
+_USER_PROCESSOR_CLASSES: dict[str, type] = {}
+
+
+def _all_processor_classes() -> dict[str, type]:
+    """Built-in processor classes plus discovered user drop-in plugins."""
+    return {**_AVAILABLE_PROCESSOR_CLASSES, **_USER_PROCESSOR_CLASSES}
+
+
+def load_user_plugins(directory: str | None = None) -> tuple[list[str], list]:
+    """Discover user drop-in processor plugins and register them for use.
+
+    Populates the module-level user-plugin table so discovered processors show
+    up in every enumeration (runtime tool loader, config validation) and can be
+    instantiated by id like a built-in. Built-in ids take precedence: a user
+    plugin that reuses a built-in id is rejected with a logged error.
+
+    Returns ``(loaded_ids, errors)``. Never raises — discovery is tolerant.
+    """
+    from imswitch.improcess.plugins.user_plugins import (
+        PluginLoadError,
+        discover_processor_plugins,
+    )
+
+    classes, errors = discover_processor_plugins(directory)
+    errors = list(errors)
+    _USER_PROCESSOR_CLASSES.clear()
+    loaded: list[str] = []
+    for processor_id, processor_cls in classes.items():
+        if processor_id in _AVAILABLE_PROCESSOR_CLASSES:
+            errors.append(
+                PluginLoadError(
+                    path=getattr(processor_cls, "__module__", processor_id),
+                    message=(
+                        f"Plugin processor id {processor_id!r} collides with a "
+                        f"built-in; the built-in is kept."
+                    ),
+                )
+            )
+            continue
+        _USER_PROCESSOR_CLASSES[processor_id] = processor_cls
+        loaded.append(processor_id)
+    return loaded, errors
+
+
+def clear_user_plugins() -> None:
+    """Forget all discovered user plugins (test/reset helper)."""
+    _USER_PROCESSOR_CLASSES.clear()
+
 
 def available_processor_ids() -> list[str]:
-    """Return built-in processor IDs accepted by setup processing config."""
-    return sorted(_AVAILABLE_PROCESSOR_CLASSES)
+    """Return processor IDs (built-in + user plugins) accepted by config."""
+    return sorted(_all_processor_classes())
 
 
 def available_processor_choices() -> list[tuple[str, str]]:
-    """Return built-in processor ids and display names."""
+    """Return processor ids and display names (built-in + user plugins)."""
     return sorted(
         (processor_id, plugin_cls.name)
-        for processor_id, plugin_cls in _AVAILABLE_PROCESSOR_CLASSES.items()
+        for processor_id, plugin_cls in _all_processor_classes().items()
     )
 
 
 def available_processor_specs() -> list[tuple[str, str, str]]:
-    """Return built-in processor ids, display names and categories."""
+    """Return processor ids, display names and categories (built-in + user)."""
     return sorted(
         (
             processor_id,
             plugin_cls.name,
             getattr(plugin_cls, "category", "Other"),
         )
-        for processor_id, plugin_cls in _AVAILABLE_PROCESSOR_CLASSES.items()
+        for processor_id, plugin_cls in _all_processor_classes().items()
     )
 
 
 def register_processor_by_id(registry, processor_id: str) -> Processor:
-    """Instantiate and register one built-in processor by id."""
+    """Instantiate and register one processor (built-in or user plugin) by id."""
     try:
-        plugin_cls = _AVAILABLE_PROCESSOR_CLASSES[processor_id]
+        plugin_cls = _all_processor_classes()[processor_id]
     except KeyError as exc:
-        raise KeyError(f"Unknown built-in processor id: {processor_id!r}") from exc
+        raise KeyError(f"Unknown processor id: {processor_id!r}") from exc
     plugin = plugin_cls()
     registry.register_processor(plugin)
     return plugin
@@ -88,26 +141,38 @@ def register_processor_by_id(registry, processor_id: str) -> Processor:
 
 def register_default_processors(registry, filter_ids: list[str] | None = None) -> None:
     """
-    Register built-in processors.
+    Register built-in processors plus all discovered user drop-in plugins.
+
+    Built-ins are gated by config (``filter_ids``); user plugins are gated by
+    their presence on disk, so a dropped-in plugin is always active.
 
     Args:
         registry: Plugin registry to populate.
-        filter_ids: Optional list of processor ids to register. None registers all.
+        filter_ids: Optional list of built-in processor ids to register. None
+            registers all built-ins.
     """
     if filter_ids is None:
-        to_register = _AVAILABLE_PROCESSOR_CLASSES.items()
+        to_register = list(_AVAILABLE_PROCESSOR_CLASSES.items())
     else:
-        unknown = [pid for pid in filter_ids if pid not in _AVAILABLE_PROCESSOR_CLASSES]
+        all_classes = _all_processor_classes()
+        unknown = [pid for pid in filter_ids if pid not in all_classes]
         if unknown:
             raise KeyError(
-                f"Unknown built-in processor id(s): {unknown}. "
+                f"Unknown processor id(s): {unknown}. "
                 f"Available processors: {available_processor_ids()}"
             )
-        to_register = [
-            (pid, _AVAILABLE_PROCESSOR_CLASSES[pid])
-            for pid in filter_ids
-        ]
-    for _pid, plugin_cls in to_register:
+        to_register = [(pid, all_classes[pid]) for pid in filter_ids]
+
+    registered_ids = set()
+    for pid, plugin_cls in to_register:
+        registry.register_processor(plugin_cls())
+        registered_ids.add(pid)
+
+    # User drop-in plugins: active whenever present, regardless of the built-in
+    # filter (unless already registered via an explicit filter id).
+    for pid, plugin_cls in _USER_PROCESSOR_CLASSES.items():
+        if pid in registered_ids:
+            continue
         registry.register_processor(plugin_cls())
 
 
@@ -137,6 +202,8 @@ __all__ = [
     "available_processor_specs",
     "register_processor_by_id",
     "register_default_processors",
+    "load_user_plugins",
+    "clear_user_plugins",
 ]
 
 

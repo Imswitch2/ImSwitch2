@@ -11,6 +11,11 @@ WIDGET_PATH = ROOT / "imswitch" / "imcontrol" / "view" / "widgets" / "ScanWidget
 CONTROLLER_PATH = (
     ROOT / "imswitch" / "imcontrol" / "controller" / "controllers" / "ScanControllerAdvanced.py"
 )
+# The UI-state <-> scan-dict translation moved to this controller-free service
+# (audit 07). Widget-access assertions live there now.
+SERIALIZER_PATH = (
+    ROOT / "imswitch" / "imcontrol" / "model" / "scan_parameters.py"
+)
 
 
 def _method_body(source: str, name: str) -> str:
@@ -33,7 +38,8 @@ def test_line_program_checkbox_only_changes_visibility():
 
 
 def test_sequence_builder_state_keys_are_saved_and_restored():
-    source = CONTROLLER_PATH.read_text()
+    # The serializer owns the widget <-> dict translation for these keys.
+    source = SERIALIZER_PATH.read_text()
 
     for key in (
         "advanced_program_mode",
@@ -44,9 +50,9 @@ def test_sequence_builder_state_keys_are_saved_and_restored():
     ):
         assert key in source
 
-    assert "self._widget.getAdvancedSequenceRows()" in source
-    assert "self._widget.setAdvancedSequenceRows(" in source
-    assert "self._widget.setLineProgramDevicesMode(" in source
+    assert "widget.getAdvancedSequenceRows()" in source
+    assert "widget.setAdvancedSequenceRows(" in source
+    assert "widget.setLineProgramDevicesMode(" in source
 
 
 def test_sequence_builder_start_delay_allows_negative_offsets():

@@ -1,6 +1,9 @@
 from qtpy import QtCore, QtWidgets
 
-from imswitch.imcontrol.view import guitools
+# guitools widgets used here (BetterPushButton, askForFolderPath) are shared
+# imcommon widgets; import them from imcommon directly rather than through
+# imcontrol's re-export, so improcess does not depend on imcontrol.
+from imswitch.imcommon.view import guitools
 import os
 
 

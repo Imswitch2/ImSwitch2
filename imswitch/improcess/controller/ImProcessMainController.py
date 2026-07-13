@@ -32,6 +32,8 @@ class ImProcessMainController(MainController):
         # Connect view signals
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigLoadProcessorRequested.connect(self._load_runtime_processor)
+        if hasattr(self.__mainView, 'sigReloadPluginsRequested'):
+            self.__mainView.sigReloadPluginsRequested.connect(self._reload_user_plugins)
 
         # Initialize plugin registry
         self._initialize_plugins()
@@ -70,7 +72,7 @@ class ImProcessMainController(MainController):
         # at shutdown. Failures here must never block ImProcess from coming up.
         self.__guiLayoutStateAdapter = None
         try:
-            from imswitch.imcontrol.model import getWidgetStatePersistence
+            from imswitch.imcommon.model import getWidgetStatePersistence
 
             self.__guiLayoutStateAdapter = _GuiLayoutStateAdapter(
                 self.__mainView, main_controller=self,
@@ -106,11 +108,28 @@ class ImProcessMainController(MainController):
         """
         from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.reconstructors import register_default_reconstructors
-        from imswitch.improcess.processors import register_default_processors
-        
+        from imswitch.improcess.processors import (
+            load_user_plugins,
+            register_default_processors,
+        )
+
         registry = get_registry()
         registry.clear()
-        
+
+        # Discover user drop-in analysis plugins first, so they are available to
+        # register_default_processors and every enumeration below. Tolerant: a
+        # broken plugin is logged and skipped, never blocking startup.
+        loaded_plugins, plugin_errors = load_user_plugins()
+        if loaded_plugins:
+            self.__logger.info(
+                f"Discovered {len(loaded_plugins)} user analysis plugin(s): "
+                f"{loaded_plugins}"
+            )
+        for error in plugin_errors:
+            self.__logger.warning(
+                f"Skipped analysis plugin {error.path}: {error.message.splitlines()[-1]}"
+            )
+
         # Check if we have a setup configuration.
         #
         # The `processing` block is an ImProcess-specific addition. It is not a
@@ -287,6 +306,39 @@ class ImProcessMainController(MainController):
             self._wire_runtime_result_processor(processor_id)
         self._refresh_runtime_processor_choices()
 
+    def _reload_user_plugins(self) -> None:
+        """Re-scan the drop-in plugins folder and refresh the tool list.
+
+        Newly added plugins appear in the 'Load tool' combo; removed ones drop
+        out. Re-registering with fresh instances means an edited plugin's new
+        code is used the next time its panel is opened (an already-open panel
+        keeps the instance it was built with until closed and reopened).
+        """
+        from imswitch.improcess.reconstructors.registry import get_registry
+        from imswitch.improcess.processors import (
+            load_user_plugins,
+            register_processor_by_id,
+        )
+
+        loaded, errors = load_user_plugins()
+        self.__logger.info(f"Reloaded drop-in analysis plugins: {loaded}")
+        for error in errors:
+            self.__logger.warning(
+                f"Skipped analysis plugin {error.path}: "
+                f"{error.message.splitlines()[-1]}"
+            )
+
+        registry = get_registry()
+        for processor_id in loaded:
+            try:
+                register_processor_by_id(registry, processor_id)
+            except Exception:
+                self.__logger.exception(
+                    f"Failed to (re)register plugin processor {processor_id!r}"
+                )
+
+        self._refresh_runtime_processor_choices()
+
     def _wire_runtime_result_processor(self, processor_id: str) -> None:
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
         if widget is None:
@@ -430,7 +482,7 @@ class ImProcessMainController(MainController):
         # so the next launch can restore it.
         if self.__guiLayoutStateAdapter is not None:
             try:
-                from imswitch.imcontrol.model import getWidgetStatePersistence
+                from imswitch.imcommon.model import getWidgetStatePersistence
 
                 getWidgetStatePersistence().saveWidgetState(
                     _GUI_LAYOUT_STATE_KEY, 'default'

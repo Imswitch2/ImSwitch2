@@ -1,13 +1,13 @@
 import json
 import traceback
 import configparser
-from math import ceil
 from typing import Dict, Any
 import numpy as np
 from imswitch.imcommon.model import APIExport
 from ast import literal_eval
 
 from ..basecontrollers import SuperScanController, ComponentStateApplyMode
+from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
 from imswitch.imcommon.view.guitools import colorutils
 from PyQt5.QtCore import QTimer
 import copy
@@ -62,9 +62,11 @@ class ScanControllerMoNaLISA(SuperScanController):
         lengths = self._analogParameterDict['axis_length']
         stepSizes = self._analogParameterDict['axis_step_size']
 
-        x = ceil(lengths[0] / stepSizes[0]) if stepSizes[0]!=0 else 0
-        y = ceil(lengths[1] / stepSizes[1]) if stepSizes[1]!=0 else 0
-        z = ceil(lengths[2] / stepSizes[2]) if stepSizes[2]!=0 else 0
+        # round(len/step) via the shared helper (0 = inactive axis), matching the
+        # scan designers, the widget pixel display, and the recorded OME dims.
+        x = pixels_for_length_step(lengths[0], stepSizes[0]) if stepSizes[0]!=0 else 0
+        y = pixels_for_length_step(lengths[1], stepSizes[1]) if stepSizes[1]!=0 else 0
+        z = pixels_for_length_step(lengths[2], stepSizes[2]) if stepSizes[2]!=0 else 0
 
         return x, y, z
 

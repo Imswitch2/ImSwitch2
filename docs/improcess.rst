@@ -1058,6 +1058,104 @@ To publish plots in the graph panel, implement ``plot_payloads()`` on the
 returned ``ProcessingResult`` and return ``PlotPayload`` objects from
 ``imswitch.improcess.model``.
 
+Drop-in analysis plugins
+========================
+
+Adding a processor by editing the ImProcess source tree is fine for built-ins,
+but ImProcess also supports **Picasso-style drop-in plugins**: a single ``.py``
+file dropped into a user folder is discovered at startup and becomes a fully
+integrated analysis tool — parameter panel, result-kind gating and
+results-table / graph integration — with no packaging and no UI code.
+
+This is deliberately separate from the *device* plugin system
+(:doc:`devices/plugins`), which uses pip-installed packages and entry points for
+hardware.  Analysis processors are the low-friction case and get a low-friction
+path.
+
+Using a plugin
+--------------
+
+#. In any ImProcess window, choose **Analyze → Drop-in plugins → Open plugins
+   folder…**.  The folder is ``~/.imswitch/improcess_plugins/`` and is created
+   on first use with an inert ``_example_plugin.py`` template (underscore-
+   prefixed files are ignored by discovery).
+#. Drop a ``.py`` file that defines one or more ``Processor`` subclasses into
+   that folder.  Ready-to-copy examples live in
+   ``examples/improcess_plugins/`` (``invert.py``, ``gaussian_blur.py``).
+#. Choose **Analyze → Drop-in plugins → Reload plugins** (or restart ImProcess).
+   The processor appears in the **Load tool** dropdown in the analysis toolbar;
+   load it, select a compatible result and run it.
+
+Reloading re-scans the folder, so newly added or removed plugins take effect
+immediately.  An edited plugin's new code is used the next time its panel is
+opened (an already-open panel keeps the version it was built with until it is
+closed and reopened).
+
+Installing from the online store
+--------------------------------
+
+**Analyze → Drop-in plugins → Browse online plugins…** opens a store that lists
+plugins from the `Improcess-plugins
+<https://github.com/Imswitch2/Improcess-plugins>`_ registry.  Each entry can be
+installed, updated (when the registry offers a newer version) or uninstalled;
+installing downloads the plugin's ``.py`` into the plugins folder and records
+the version in a hidden ``.installed.json`` sidecar.  A one-time confirmation
+precedes the first install, because installed plugins run arbitrary Python at
+ImProcess startup — install only plugins you trust.  Plugins that require a
+newer ImProcess than you are running are shown but not installable.  The store
+re-scans the folder after any change, so an installed plugin is available
+immediately.
+
+Writing a plugin
+----------------
+
+A plugin file defines an ordinary ``Processor`` subclass:
+
+.. code-block:: python
+
+    from imswitch.improcess.processors.base import Processor
+    from imswitch.improcess.model.array_result import ArrayProcessingResult
+
+
+    class InvertProcessor(Processor):
+        name = "Invert"
+        id = "example.invert"        # unique, dotted, user-namespaced
+        category = "User"
+        kinds = ("image",)           # result kinds this accepts
+
+        @property
+        def applies_to(self):
+            return lambda result: getattr(result.data, "ndim", 0) >= 2
+
+        def make_param_widget(self, parent):
+            from qtpy import QtWidgets
+
+            widget = QtWidgets.QWidget(parent)
+            widget.get_values = lambda: {}       # -> params passed to apply()
+            return widget
+
+        def apply(self, result, params):
+            data = result.data
+            return ArrayProcessingResult(
+                name=f"{result.name} (inverted)",
+                data=data.max() - data,
+                axis_labels=list(result.axis_labels),
+            )
+
+The contract is the same as a built-in processor: a unique dotted ``id``,
+``kinds`` (one or more of ``image``, ``labels``, ``table``, ``curve``,
+``localization``, ``rgb``, ``composite``), an ``applies_to`` shape/axis gate,
+``make_param_widget`` returning a widget with ``get_values() -> dict``, and a
+pure ``apply(result, params)`` returning a new ``ProcessingResult``.  Built-in
+ids always win a collision, so a stray file cannot shadow a core processor.
+
+.. warning::
+
+   Drop-in plugins run arbitrary Python at ImProcess startup.  Only add files
+   from sources you trust.  Loading is tolerant — a broken plugin is logged and
+   skipped, never blocking startup — but a malicious plugin has full access to
+   your machine, exactly as any Python you run.
+
 See also
 ========
 

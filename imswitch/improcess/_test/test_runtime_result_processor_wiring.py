@@ -83,3 +83,60 @@ def test_startup_wires_producing_panels_without_saved_layout():
     source = inspect.getsource(ImProcessMainController.__init__)
 
     assert "self._wire_runtime_result_processors()" in source
+
+
+_PLUGIN_SOURCE = """
+from imswitch.improcess.processors.base import Processor
+from imswitch.improcess.model.array_result import ArrayProcessingResult
+
+class InvertProcessor(Processor):
+    name = "Invert"
+    id = "user.invert"
+    category = "User"
+    kinds = ("image",)
+    @property
+    def applies_to(self):
+        return lambda result: getattr(result.data, "ndim", 0) >= 2
+    def make_param_widget(self, parent):
+        return None
+    def apply(self, result, params):
+        return ArrayProcessingResult(
+            name=result.name, data=result.data, axis_labels=list(result.axis_labels)
+        )
+"""
+
+
+def test_reload_user_plugins_rediscovers_and_refreshes(tmp_path, monkeypatch):
+    """The 'Reload plugins' handler re-scans the folder: a newly dropped plugin
+    appears in the enumeration and registry, and the tool combo is refreshed."""
+    import imswitch.improcess.plugins.user_plugins as up
+    import imswitch.improcess.processors as processors
+    import imswitch.improcess.reconstructors.registry as registry_module
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+
+    plugin_dir = tmp_path / "improcess_plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "invert.py").write_text(_PLUGIN_SOURCE, encoding="utf-8")
+    monkeypatch.setattr(up.dirtools.UserFileDirs, "Root", str(tmp_path))
+
+    registry = PluginRegistry()
+    monkeypatch.setattr(registry_module, "get_registry", lambda: registry)
+    processors.clear_user_plugins()
+
+    controller = ImProcessMainController.__new__(ImProcessMainController)
+    controller._ImProcessMainController__logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+    )
+    refreshed = []
+    controller._refresh_runtime_processor_choices = lambda: refreshed.append(True)
+
+    try:
+        controller._reload_user_plugins()
+
+        assert "user.invert" in processors.available_processor_ids()
+        assert registry.get_processor("user.invert", raise_on_missing=False) is not None
+        assert refreshed == [True]
+    finally:
+        processors.clear_user_plugins()

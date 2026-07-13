@@ -7,6 +7,10 @@ from typing import Dict, Any
 import numpy as np
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.scan_parameters import (
+    AdvancedScanParameterSerializer,
+    pixels_for_length_step,
+)
 from ..basecontrollers import SuperScanController
 
 # Optional: only if you want wavelength-based colors like MoNaLISA
@@ -38,6 +42,10 @@ class ScanControllerAdvanced(SuperScanController):
         # Snapshot of the parameters that produced the cached signalDict, so
         # repeated scan frames can skip regenerating an identical signal.
         self._lastBuiltParams = None
+
+        # Widget-state <-> scan-dict translation lives in a controller-free,
+        # unit-testable serializer (audit 07). The controller binds widgets to it.
+        self._scanParams = AdvancedScanParameterSerializer()
 
         # ---- widget init ----
         # Keep PointScan signature (pos, TTL devices)
@@ -367,7 +375,9 @@ class ScanControllerAdvanced(SuperScanController):
         dims = []
         for i in range(min(3, len(lengths))):
             step = stepSizes[i] if i < len(stepSizes) else 0
-            dims.append(int(lengths[i] / step) if step != 0 else 0)
+            # round(len/step) via the canonical helper (0 = inactive axis) so the
+            # recorded OME dims match the GUI count and the real scanned lines.
+            dims.append(pixels_for_length_step(lengths[i], step) if step != 0 else 0)
         # pad to 3 elements
         while len(dims) < 3:
             dims.append(0)
@@ -412,235 +422,17 @@ class ScanControllerAdvanced(SuperScanController):
 
     def _buildAnalogParameterDict(self):
         """Serialize PointScan-compatible analog scan parameters from the widget."""
-        analogParameterDict = {
-            "target_device": [],
-            "axis_length": [],
-            "axis_step_size": [],
-            "axis_centerpos": [],
-            "axis_startpos": [],
-        }
-
-        positionersScan = [
-            self._widget.getScanDim(i) for i in range(len(self.positioners))
-        ]
-        analogParameterDict["scan_dim_target_device"] = list(positionersScan)
-
-        for positionerName in positionersScan:
-            if positionerName == "None":
-                continue
-
-            size = self._widget.getScanSize(positionerName)
-            stepSize = self._widget.getScanStepSize(positionerName)
-            center = self._widget.getScanCenterPos(positionerName)
-
-            analogParameterDict["target_device"].append(positionerName)
-            analogParameterDict["axis_length"].append(size)
-            analogParameterDict["axis_step_size"].append(stepSize)
-            analogParameterDict["axis_centerpos"].append(center)
-            analogParameterDict["axis_startpos"].append([center])
-
-        # Add non-scan axes as dummy entries to keep older scan designers happy.
-        for positionerName in self.positioners:
-            if positionerName not in positionersScan:
-                center = self._widget.getScanCenterPos(positionerName)
-                analogParameterDict["target_device"].append(positionerName)
-                analogParameterDict["axis_length"].append(1.0)
-                analogParameterDict["axis_step_size"].append(1.0)
-                analogParameterDict["axis_centerpos"].append(center)
-                analogParameterDict["axis_startpos"].append([center])
-
-        seq_time = self._widget.getSeqTimePar()
-        analogParameterDict["sequence_time"] = seq_time
-        try:
-            analogParameterDict["phase_delay"] = self._widget.getPhaseDelayPar()
-        except Exception:
-            analogParameterDict["phase_delay"] = 0
-        try:
-            analogParameterDict["d3step_delay"] = self._widget.getd3StepDelayPar()
-        except Exception:
-            analogParameterDict["d3step_delay"] = 0
-
-        return analogParameterDict, positionersScan
+        return self._scanParams.build_analog(self._widget, self.positioners)
 
     def _pixelsForScanDevice(self, analogParameterDict, deviceName: str) -> int:
         """Return pixel count for a selected scan device from analog params."""
-        if deviceName is None or deviceName == "None":
-            return 1
-        try:
-            idx = analogParameterDict["target_device"].index(deviceName)
-        except ValueError:
-            return 1
-        step = float(analogParameterDict["axis_step_size"][idx])
-        if step == 0:
-            return 1
-        length = float(analogParameterDict["axis_length"][idx])
-        return max(1, int(round(length / step)))
+        return self._scanParams.pixels_for_scan_device(analogParameterDict, deviceName)
 
     def _buildDigitalParameterDict(self, analogParameterDict):
         """Serialize advanced TTL and line-step parameters from the widget."""
-        seq_time = analogParameterDict["sequence_time"]
-        x_dev = self._widget.getScanDim(0)
-        y_dev = self._widget.getScanDim(1)
-        Nx = self._pixelsForScanDevice(analogParameterDict, x_dev)
-        Ny = self._pixelsForScanDevice(analogParameterDict, y_dev)
-
-        try:
-            self._widget.commitAdvancedProgramEdits()
-        except Exception:
-            pass
-
-        try:
-            S = int(self._widget.getNumLineSteps())
-        except Exception:
-            S = 1
-
-        try:
-            advanced_mode = bool(self._widget.isAdvancedTTLMode())
-        except Exception:
-            advanced_mode = False
-        try:
-            advanced_program_mode = self._widget.getAdvancedProgramMode()
-        except Exception:
-            advanced_program_mode = "timing"
-        sequence_mode = advanced_mode and advanced_program_mode == "sequence"
-
-        included_devices = []
-        linestep_enable = {}
-        pulse_starts_s = {}
-        pulse_ends_s = {}
-
-        for deviceName in self.TTLDevices.keys():
-            # IMPORTANT:
-            # linestep_enable must be length S (per linestep), NOT Ny*S.
-            # The TTL designer (and scanInfoDict) currently operate with img_dims[1] = Ny (not expanded),
-            # and the designer maps expanded_line_idx -> s via (idx % S).
-            try:
-                enable_vec = [bool(self._widget.getLineStepEnabled(deviceName, s)) for s in range(S)]
-            except Exception:
-                enable_vec = [bool(self._widget.getTTLIncluded(deviceName))] + [False] * (S - 1)
-
-            starts_steps = [[] for _ in range(S)]
-            ends_steps = [[] for _ in range(S)]
-
-            if advanced_mode:
-                for s in range(S):
-                    try:
-                        segments = self._widget.getPulseSegmentsOrFull(deviceName, s)
-                        if segments is None:
-                            starts_steps[s] = []
-                            ends_steps[s] = []
-                        else:
-                            starts_steps[s] = [t0 for t0, _ in segments]
-                            ends_steps[s] = [t1 for _, t1 in segments]
-                    except Exception:
-                        starts_steps[s] = []
-                        ends_steps[s] = []
-
-                    if sequence_mode and starts_steps[s] and ends_steps[s]:
-                        enable_vec[s] = True
-
-            # Include device if any step enabled OR any pulses specified
-            any_pulses = any(len(starts_steps[s]) or len(ends_steps[s]) for s in range(S))
-            if any(enable_vec) or any_pulses:
-                included_devices.append(deviceName)
-                linestep_enable[deviceName] = enable_vec
-                pulse_starts_s[deviceName] = starts_steps
-                pulse_ends_s[deviceName] = ends_steps
-
-        # Per-device per-linestep power (%) for AO-capable lasers
-        linestep_power_percent = {}
-        for deviceName in self.TTLDevices.keys():
-            try:
-                vec = [float(self._widget.getLineStepPowerPercent(deviceName, s)) for s in range(S)]
-                vec = [max(0.0, min(100.0, v)) for v in vec]
-                linestep_power_percent[deviceName] = vec
-            except Exception:
-                pass
-
-        # Intra-pixel positioner movement metadata travels with the advanced
-        # UI state, but only scan designers that understand these keys consume it.
-        try:
-            intra_pixel_positioner_movement = bool(self._widget.isIntraPixelPositionersMode())
-        except Exception:
-            intra_pixel_positioner_movement = False
-
-        positioner_target_device = []
-        positioner_linestep_enable = {}
-        positioner_movement_starts_s = {}
-        positioner_movement_ends_s = {}
-        positioner_step_size_um = {}
-
-        if advanced_mode and intra_pixel_positioner_movement:
-            for positionerName in self.positioners.keys():
-                starts_steps = [[] for _ in range(S)]
-                ends_steps = [[] for _ in range(S)]
-                step_sizes = [[] for _ in range(S)]
-                enable_vec = [False for _ in range(S)]
-
-                for s in range(S):
-                    try:
-                        starts_steps[s] = list(self._widget.getPulseStarts(positionerName, s) or [])
-                    except Exception:
-                        starts_steps[s] = []
-
-                    try:
-                        ends_steps[s] = list(self._widget.getPulseEnds(positionerName, s) or [])
-                    except Exception:
-                        ends_steps[s] = []
-
-                    try:
-                        step_sizes[s] = list(self._widget.getLineStepPositionerStepUm(positionerName, s) or [])
-                    except Exception:
-                        step_sizes[s] = []
-
-                    enable_vec[s] = bool(starts_steps[s] and ends_steps[s])
-
-                if any(enable_vec):
-                    positioner_target_device.append(positionerName)
-                    positioner_linestep_enable[positionerName] = enable_vec
-                    positioner_movement_starts_s[positionerName] = starts_steps
-                    positioner_movement_ends_s[positionerName] = ends_steps
-                    positioner_step_size_um[positionerName] = step_sizes
-
-        digitalParameterDict = {
-            "target_device": included_devices,
-            "n_linesteps": S,
-            "Nx": Nx,
-            "Ny": Ny,
-            "linestep_enable": linestep_enable,
-            "pulse_starts_s": pulse_starts_s,
-            "pulse_ends_s": pulse_ends_s,
-            "sequence_time": seq_time,
-            "advanced_mode": advanced_mode,
-            "linestep_power_percent": linestep_power_percent,
-            "intra_pixel_positioner_movement": intra_pixel_positioner_movement,
-            "positioner_target_device": positioner_target_device,
-            "positioner_linestep_enable": positioner_linestep_enable,
-            "positioner_movement_starts_s": positioner_movement_starts_s,
-            "positioner_movement_ends_s": positioner_movement_ends_s,
-            "positioner_step_size_um": positioner_step_size_um,
-        }
-
-        try:
-            digitalParameterDict["advanced_program_mode"] = (
-                self._widget.getAdvancedProgramMode()
-            )
-            digitalParameterDict["advanced_sequence_rows"] = (
-                self._widget.getAdvancedSequenceRows()
-            )
-            digitalParameterDict["line_program_devices_enabled"] = (
-                self._widget.isLineProgramDevicesMode()
-            )
-            digitalParameterDict["advanced_device_lock_master"] = (
-                self._widget.getAdvancedDeviceLockMaster()
-            )
-            digitalParameterDict["advanced_device_lock_target"] = (
-                self._widget.getAdvancedDeviceLockTarget()
-            )
-        except Exception:
-            pass
-
-        return digitalParameterDict
+        return self._scanParams.build_digital(
+            self._widget, analogParameterDict, self.positioners, self.TTLDevices
+        )
 
     # ---------------------------------------------------------------------
     # Parameters: dicts -> UI (used by loadScan)
@@ -649,133 +441,13 @@ class ScanControllerAdvanced(SuperScanController):
     def setParameters(self):
         self.settingParameters = True
         try:
-            # --- analog back into widget (like PointScan) ---
-            for i, scanDimName in enumerate(self._analogParameterDict.get("scan_dim_target_device", [])):
-                try:
-                    self._widget.setScanDim(i, scanDimName)
-                except Exception:
-                    pass
-
-            for i in range(len(self._analogParameterDict.get("target_device", []))):
-                positionerName = self._analogParameterDict["target_device"][i]
-                if positionerName == "None":
-                    continue
-                try:
-                    self._widget.setScanSize(positionerName, self._analogParameterDict["axis_length"][i])
-                    self._widget.setScanStepSize(positionerName, self._analogParameterDict["axis_step_size"][i])
-                    self._widget.setScanCenterPos(positionerName, self._analogParameterDict["axis_centerpos"][i])
-                except Exception:
-                    pass
-
-            # timing
-            if "sequence_time" in self._digitalParameterDict:
-                try:
-                    self._widget.setSeqTimePar(self._digitalParameterDict["sequence_time"])
-                except Exception:
-                    pass
-            dig = self._digitalParameterDict or {}
-
-            try:
-                self._widget.setAdvancedTTLMode(bool(dig.get("advanced_mode", False)))
-            except Exception:
-                pass
-
-            try:
-                self._widget.setLineProgramDevicesMode(
-                    bool(dig.get("line_program_devices_enabled", False))
-                )
-            except Exception:
-                pass
-
-            try:
-                self._widget.setNumLineSteps(int(dig.get("n_linesteps", 1)))
-            except Exception:
-                pass
-
-            S = int(dig.get("n_linesteps", 1))
-            linestep_enable = dig.get("linestep_enable", {}) or {}
-            pulse_starts_s = dig.get("pulse_starts_s", {}) or {}
-            pulse_ends_s = dig.get("pulse_ends_s", {}) or {}
-
-            linestep_power_percent = dig.get("linestep_power_percent", {}) or {}
-            for dev, vec in linestep_power_percent.items():
-                try:
-                    for s in range(min(S, len(vec))):
-                        self._widget.setLineStepPowerPercent(dev, s, float(vec[s]))
-                except Exception:
-                    pass
-
-            try:
-                self._widget.setIntraPixelPositionersMode(
-                    bool(dig.get("intra_pixel_positioner_movement", False))
-                )
-            except Exception:
-                pass
-
-            try:
-                self._widget.setAdvancedDeviceLockState(
-                    dig.get("advanced_device_lock_master", {}) or {},
-                    dig.get("advanced_device_lock_target", {}) or {},
-                )
-            except Exception:
-                pass
-
-            positioner_starts_s = dig.get("positioner_movement_starts_s", {}) or {}
-            positioner_ends_s = dig.get("positioner_movement_ends_s", {}) or {}
-            positioner_step_size_um = dig.get("positioner_step_size_um", {}) or {}
-            for dev in self.positioners.keys():
-                starts_steps = positioner_starts_s.get(dev, None)
-                ends_steps = positioner_ends_s.get(dev, None)
-                if starts_steps is not None:
-                    for s in range(min(S, len(starts_steps))):
-                        try:
-                            ends = ends_steps[s] if ends_steps is not None and s < len(ends_steps) else []
-                            self._widget.setPulseTimes(dev, s, starts_steps[s], ends)
-                        except Exception:
-                            pass
-
-                steps = positioner_step_size_um.get(dev, None)
-                if steps is not None:
-                    for s in range(min(S, len(steps))):
-                        try:
-                            self._widget.setLineStepPositionerStepUm(dev, s, steps[s])
-                        except Exception:
-                            pass
-
-            for dev in self.TTLDevices.keys():
-                enable_vec = linestep_enable.get(dev, None)
-                if enable_vec is not None:
-                    for s in range(min(S, len(enable_vec))):
-                        try:
-                            self._widget.setLineStepEnabled(dev, s, bool(enable_vec[s]))
-                        except Exception:
-                            pass
-
-                # pulses only matter if advanced_mode, but restoring them always is fine
-                starts_steps = pulse_starts_s.get(dev, None)
-                ends_steps = pulse_ends_s.get(dev, None)
-                if starts_steps is not None and ends_steps is not None:
-                    for s in range(min(S, len(starts_steps), len(ends_steps))):
-                        try:
-                            self._widget.setPulseTimes(dev, s, starts_steps[s], ends_steps[s])
-                        except Exception:
-                            pass
-
-            try:
-                self._widget.setAdvancedProgramMode(
-                    dig.get("advanced_program_mode", "timing")
-                )
-                self._widget.setAdvancedSequenceRows(
-                    dig.get("advanced_sequence_rows", []) or []
-                )
-            except Exception:
-                pass
-
-            # ensure the advanced panel reflects the stored model
-            try:
-                self._widget._syncPulseEditsFromModel()
-            except Exception:
-                pass
+            self._scanParams.apply(
+                self._widget,
+                self._analogParameterDict,
+                self._digitalParameterDict,
+                self.positioners,
+                self.TTLDevices,
+            )
         finally:
             self.settingParameters = False
             try:
@@ -884,7 +556,7 @@ class ScanControllerAdvanced(SuperScanController):
                 step = float(self._analogParameterDict["axis_step_size"][index])
                 if step != 0:
                     length = float(self._analogParameterDict["axis_length"][index])
-                    pixels = round(length / step)
+                    pixels = pixels_for_length_step(length, step)
                     self._widget.setScanPixels(positionerName, pixels)
         except Exception:
             self._logger.debug("updatePixels failed:\n%s", traceback.format_exc())

@@ -205,11 +205,18 @@ class TestTriggerScopePLSRController:
         widget.getStepsY = Mock(return_value=100)
         widget.getLaser1 = Mock(return_value='Laser1')
         widget.getLaser2 = Mock(return_value='Laser2')
+        # on/off/ro lasers are what the controller actually reads (getOnLaser etc.)
+        widget.getOnLaser = Mock(return_value='Laser1')
+        widget.getOffLaser = Mock(return_value='Laser2')
+        widget.getRoLaser = Mock(return_value='Laser1')
         widget.getCameraTTL = Mock(return_value='')
         widget.getStageDevice1 = Mock(return_value='X')
         widget.getStageDevice2 = Mock(return_value='Y')
         widget.getRoScanDevice = Mock(return_value='X')
-        widget.getCycleScanDevice = Mock(return_value='Z')
+        # Cycle device follows RO (widget selector is disabled/"hard coded same as
+        # RO-device"); the controller reads getRoScanDevice for cycle, so this
+        # value is unused but kept == RO to reflect the real behaviour.
+        widget.getCycleScanDevice = Mock(return_value='X')
         
         # Setters
         widget.setSequenceTime = Mock()
@@ -320,11 +327,18 @@ class TestTriggerScopePLSRMulticolorController:
         widget.getLaser1 = Mock(return_value='Laser1')
         widget.getLaser2 = Mock(return_value='Laser2')
         widget.getLaser3 = Mock(return_value='Laser3')
+        # on/off/ro lasers are what the controller actually reads (getOnLaser etc.)
+        widget.getOnLaser = Mock(return_value='Laser1')
+        widget.getOffLaser = Mock(return_value='Laser2')
+        widget.getRoLaser = Mock(return_value='Laser1')
         widget.getCameraTTL = Mock(return_value='')
         widget.getStageDevice1 = Mock(return_value='X')
         widget.getStageDevice2 = Mock(return_value='Y')
         widget.getRoScanDevice = Mock(return_value='X')
-        widget.getCycleScanDevice = Mock(return_value='Z')
+        # Cycle device follows RO (widget selector is disabled/"hard coded same as
+        # RO-device"); the controller reads getRoScanDevice for cycle, so this
+        # value is unused but kept == RO to reflect the real behaviour.
+        widget.getCycleScanDevice = Mock(return_value='X')
         widget.getMulticolorScanDevice = Mock(return_value='Y')
         widget.getLaser1OnMs = Mock(return_value=10)
         widget.getLaser2OnMs = Mock(return_value=10)
