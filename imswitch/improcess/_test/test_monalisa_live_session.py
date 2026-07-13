@@ -398,7 +398,7 @@ def test_live_session_begin_splits_oversized_initial_chunk(synthetic_stack):
 
 
 def test_live_session_bleaching_correction_uses_first_frame_energy(synthetic_stack):
-    """Fast-Gauss live reconstruction uses the same 4th-power energy correction."""
+    """Fast-Gauss live reconstruction uses the same power-1 energy correction."""
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
     chunk = stack[:3].astype(np.float32)
     chunk *= np.array([1.0, 0.8, 0.6], dtype=np.float32)[:, np.newaxis, np.newaxis]
@@ -407,7 +407,7 @@ def test_live_session_bleaching_correction_uses_first_frame_energy(synthetic_sta
     corrected = session._apply_bleaching_correction(chunk)
 
     energies = np.sum(chunk, axis=(1, 2), dtype=np.float64)
-    expected_scale = ((energies[0] / energies) ** 4).astype(np.float32)
+    expected_scale = (energies[0] / energies).astype(np.float32)
     expected = chunk * expected_scale[:, np.newaxis, np.newaxis]
 
     assert session._bleach_reference_energy == pytest.approx(float(energies[0]))

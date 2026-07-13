@@ -228,7 +228,10 @@ class MoNaLISAController(ImProcessWidgetController):
         correctedData = data.copy()
         energy = np.sum(data, axis=(1, 2))
         for i in range(data.shape[0]):
-            c = (energy[0] / energy[i]) ** 4
+            # Power-1 energy normalization: scale each frame so its total energy
+            # matches the reference frame (sum -> energy[0]). (Was **4, which
+            # over-corrected to energy[0]**4 / energy[i]**3.)
+            c = energy[0] / energy[i]
             correctedData[i, :, :] = data[i, :, :] * c
         return correctedData
 

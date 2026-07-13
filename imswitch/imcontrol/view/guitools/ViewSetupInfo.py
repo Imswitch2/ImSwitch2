@@ -96,7 +96,7 @@ class ViewSetupInfo(SetupInfo):
     - ``AlignAverage`` (axial alignment tool widget)
     - ``AlignXY`` (rotation alignment tool widget)
     - ``AlignmentLine`` (line alignment tool widget)
-    - ``uLenses`` (uLenses tool widget; requires ``Image`` widget)
+    - ``ULenses`` (uLenses tool widget; requires ``Image`` widget)
     - ``FFT`` (FFT tool widget)
     - ``FLIMHist`` (FLIM per-pixel lifetime histogram widget; requires a
       detector that emits fluorescence-lifetime images, e.g. the

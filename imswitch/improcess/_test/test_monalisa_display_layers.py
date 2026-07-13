@@ -79,6 +79,22 @@ def test_display_layers_names_additional_bases():
     assert layers[3].name == "multi_base_base_3"
 
 
+def test_display_layers_only_signal_visible_by_default():
+    """Only the signal (base 0) is visible by default, so a fresh reconstruction
+    shows the reconstruction rather than the background layer sitting on top."""
+    data = np.random.rand(1, 3, 1, 1, 4, 4).astype(np.float32)
+
+    result = MonalisaProcessingResult(
+        name="vis",
+        data=data,
+        scan_params=_make_scan_params(),
+    )
+
+    layers = result.display_layers()
+    assert layers[0].visible is True                    # signal
+    assert all(not layer.visible for layer in layers[1:])  # background + others
+
+
 def test_display_layers_slices_out_base_axis():
     """Each layer should have Base axis removed and correct data slice."""
     data = np.zeros((1, 2, 1, 1, 3, 3), dtype=np.float32)

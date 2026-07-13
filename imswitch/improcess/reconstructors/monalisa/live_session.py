@@ -576,8 +576,8 @@ class MonalisaLiveSession(StreamingSession):
         """
         Apply the MoNaLISA frame-energy bleaching correction to live frames.
 
-        This mirrors the offline reconstructor's 4th-power normalization,
-        ``(E_0 / E_i) ** 4``, while keeping the first frame's raw energy as the
+        This mirrors the offline reconstructor's power-1 energy normalization,
+        ``E_0 / E_i``, while keeping the first frame's raw energy as the
         reference across later live chunks.
         """
         corrected = chunk.astype(np.float32, copy=True)
@@ -593,7 +593,7 @@ class MonalisaLiveSession(StreamingSession):
             return corrected
 
         safe_energies = np.where(energies > 0, energies, reference_energy)
-        scale = (reference_energy / safe_energies) ** 4
+        scale = reference_energy / safe_energies
         return corrected * scale[:, np.newaxis, np.newaxis].astype(np.float32)
 
     def result(self) -> MonalisaProcessingResult:

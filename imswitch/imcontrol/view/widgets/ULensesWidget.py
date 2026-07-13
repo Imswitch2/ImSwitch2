@@ -21,10 +21,13 @@ class ULensesWidget(NapariHybridWidget):
         self.upxEdit = QtWidgets.QLineEdit('1182')
         self.upyEdit = QtWidgets.QLineEdit('1182')
 
-        # Vispy visual to render in napari
+        # Vispy visual to render in napari. Registered with the image viewbox by
+        # ULensesController via sigAddItemToVb (like the other overlays) so it
+        # receives the detector pixel-scale broadcast and stays aligned to the
+        # scaled image -- rather than self-adding via addItemToViewer, which
+        # bypassed that registration and left the grid unscaled.
         self.ulensesPlot = naparitools.VispyScatterVisual(color='red', symbol='x')
         self.ulensesPlot.hide()
-        self.addItemToViewer(self.ulensesPlot)
 
         # Add elements to GridLayout
         ulensesLayout = QtWidgets.QGridLayout()

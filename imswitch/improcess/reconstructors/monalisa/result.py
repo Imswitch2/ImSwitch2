@@ -256,6 +256,10 @@ class MonalisaProcessingResult(ProcessingResult):
                 display_levels=(float(vmin), float(vmax)),
                 axis_scales=layer_axis_scales,
                 scale_unit=self.scale_unit,
+                # Show the reconstruction (signal, base 0) by default; hide the
+                # background/other bases so the first thing seen after a recon is
+                # the reconstruction, not the background layer sitting on top.
+                visible=(base_idx == 0),
                 metadata={
                     "source_result": self.name,
                     "component": component_name,

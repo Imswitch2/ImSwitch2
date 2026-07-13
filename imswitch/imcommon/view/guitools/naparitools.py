@@ -1176,12 +1176,14 @@ class VispyScatterVisual(VispyBaseVisual):
         self._color = Color(color)
         self._symbol = symbol
         self._markers_data = -1e8 * np.ones((1, 2))
+        self._pixel_scale = (1.0, 1.0)
 
     def attach(self, viewer, view, canvas, parent=None, order=0):
         super().attach(viewer, view, canvas, parent, order)
 
         self.node = Markers(pos=self._markers_data, parent=parent)
         self.node.transform = STTransform()
+        self.node.transform.scale = [self._pixel_scale[0], self._pixel_scale[1], 1, 1]
         self.node.order = order
 
         self._nodes = [self.node]
@@ -1189,6 +1191,21 @@ class VispyScatterVisual(VispyBaseVisual):
         self._viewer.dims.events.ndisplay.connect(self._on_data_change)
 
         self._on_data_change(None)
+
+    def setPixelScale(self, scale):
+        """Scale the scatter to the image layer's detector pixel size so the grid
+        (computed in data-pixel units) stays aligned when napari draws the image
+        scaled by the pixel size -- matching the ROI overlays. ``scale`` is
+        (x, y) world-units/pixel. Ignores invalid values."""
+        if scale is None or len(scale) < 2:
+            return
+        sx, sy = float(scale[0]), float(scale[1])
+        if not (sx > 0 and sy > 0):
+            return
+        self._pixel_scale = (sx, sy)
+        node = getattr(self, 'node', None)
+        if node is not None:
+            node.transform.scale = [sx, sy, 1, 1]
 
     def setVisible(self, value):
         super().setVisible(value)
