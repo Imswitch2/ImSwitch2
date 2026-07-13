@@ -38,13 +38,18 @@ def test_scan_signals():
     for device in fullsig['TTLCycleSignalsDict']:
         assert len(fullsig['TTLCycleSignalsDict'][device]) == 65000
 
-    # Basic stage signal checks
-    assert fullsig['scanSignalsDict']['X'].min() == 0.0
-    assert fullsig['scanSignalsDict']['Y'].min() == 0.0
-    assert fullsig['scanSignalsDict']['Z'].min() == 0.0
-    assert fullsig['scanSignalsDict']['X'].max() \
-           == fullsig['scanSignalsDict']['Y'].max()
-    assert fullsig['scanSignalsDict']['Z'].max() == 0.5
+    # Basic stage signal checks. center=0 -> each stage signal is now symmetric
+    # about 0: the scan is centered on the ROI center (Center moves the scan) with
+    # a truthful per-pixel step (pitch == step, span (N-1)*step). Previously it ran
+    # [0, extent] from the voltage rail, ignoring Center. See
+    # scan-beta-center-ignored / scan-realized-step-spacing.
+    for dev in ('X', 'Y', 'Z'):
+        s = fullsig['scanSignalsDict'][dev]
+        assert np.isclose(s.min(), -s.max())   # symmetric about center 0
+        assert s.max() > 0
+    # X and Y share a convFactor -> identical span
+    assert np.isclose(fullsig['scanSignalsDict']['X'].max(),
+                      fullsig['scanSignalsDict']['Y'].max())
 
     # Basic TTL signal checks
     assert np.count_nonzero(fullsig['TTLCycleSignalsDict']['405']) == 30000

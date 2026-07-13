@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import BPoly
 
 from .basesignaldesigners import ScanDesigner, ScanInfoContract
+from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
 
@@ -31,7 +32,7 @@ class GalvoScanDesigner(ScanDesigner):
         the acceptable scanner voltages."""
         for i in range(len(scanParameters['target_device'])):
             if scanParameters['target_device'][i] != 'None' and "Mock" not in scanParameters['target_device'][i]:
-                if np.ceil(scanParameters['axis_length'][i]/scanParameters['axis_step_size'][i]) > 1:
+                if pixels_for_length_step(scanParameters['axis_length'][i], scanParameters['axis_step_size'][i]) > 1:
                     positioner = setupInfo.positioners[scanParameters['target_device'][i]]
                     minv = positioner.managerProperties['minVolt']
                     maxv = positioner.managerProperties['maxVolt']
@@ -52,8 +53,8 @@ class GalvoScanDesigner(ScanDesigner):
         axis_length = [scanParameters['axis_length'][i] for i in active]
         axis_count_scan = len(axis_length)
         axis_step_size = [scanParameters['axis_step_size'][i] for i in active]
-        # get list of number of axis steps
-        n_steps_dx = [int(axis_length[i] / axis_step_size[i]) for i in range(axis_count_scan)]
+        # get list of number of axis steps (round(len/step); see pixels_for_length_step)
+        n_steps_dx = [pixels_for_length_step(axis_length[i], axis_step_size[i]) for i in range(axis_count_scan)]
         # TODO: Update these limits, arbitrarly 
         scan_steps = np.prod(n_steps_dx)
         min_scan_time = scan_steps * scanParameters['sequence_time'] * 2
@@ -82,6 +83,24 @@ class GalvoScanDesigner(ScanDesigner):
         positionerNames = [positioner for positioner in setupInfo.positioners
                            if setupInfo.positioners[positioner].forScanning]
         positionersProps = [positioner.managerProperties for positioner in positioners]
+
+        # Real (non-mock) galvo axes need vel_max/acc_max for the smooth-scan
+        # spline. The old ``else 1e6`` fallback silently accepted a missing limit
+        # and then produced degenerate spline knots + an opaque BPoly crash mid
+        # build. Require them explicitly so a misconfigured setup fails early with
+        # an actionable message. (Mock/alignment axes are non-smooth and exempt.)
+        missing = [
+            name for name, props in zip(positionerNames, positionersProps)
+            if 'mock' not in name.lower()
+            and ('vel_max' not in props or 'acc_max' not in props)
+        ]
+        if missing:
+            raise ValueError(
+                "GalvoScanDesigner requires 'vel_max' (µm/µs) and 'acc_max' "
+                f"(µm/µs^2) in managerProperties for scanning positioner(s) {missing}. "
+                "Add realistic values (example_sted uses vel_max=0.1, acc_max=0.0001); "
+                "without them the smooth-scan spline degenerates."
+            )
 
         device_count = len(positioners)
         # convert vel_max from µm/µs to V/µs
@@ -132,17 +151,18 @@ class GalvoScanDesigner(ScanDesigner):
 
         axis_count_scan = len(self.axis_devs_order)
 
-        # get list of number of axis steps
-        n_steps_dx = [int(self.axis_length[i] / self.axis_step_size[i]) for i in range(axis_count_scan)]
+        # get list of number of axis steps (round(len/step); see pixels_for_length_step)
+        n_steps_dx = [pixels_for_length_step(self.axis_length[i], self.axis_step_size[i]) for i in range(axis_count_scan)]
         # get list of number of axis scan samples, for first two axes initially
         n_scan_samples_dx = [int(round(parameterDict['sequence_time'] * 1e6 / self.__timestep))]
         n_scan_samples_dx.append(int(round(n_steps_dx[0] * parameterDict['sequence_time'] * 1e6 / self.__timestep)))
         pixel_sizes = [parameterDict['axis_step_size'][i] for i in range(axis_count_scan)]
 
         # get list of d1 positions for each active axis
-        axis_positions = []
-        for i in range(axis_count_scan):
-            axis_positions.append(int(np.ceil(self.axis_length[i] / self.axis_step_size[i])))
+        # (must match n_steps_dx / img_dims -- previously this used ceil while
+        # img_dims used int(), so the returned positions disagreed with the
+        # generated waveform for non-divisible ratios)
+        axis_positions = list(n_steps_dx)
 
         # get parameter for which axes should be smooth
         self.__smooth_axis = [False if 'mock' in axis_name.lower() else True for axis_name in self.axis_devs_order]
@@ -241,7 +261,7 @@ class GalvoScanDesigner(ScanDesigner):
     def _active_axis_indices(axis_lengths, axis_step_sizes, device_count):
         """Return indices of axes with more than 1 scan step."""
         return [i for i in range(device_count)
-                if np.ceil(axis_lengths[i] / axis_step_sizes[i]) > 1]
+                if pixels_for_length_step(axis_lengths[i], axis_step_sizes[i]) > 1]
 
     def __calc_settling_time(self, axis_length, axis_centerpos, vel_max, acc_max):
         """ Calculate settling time based on all axis parameters. """
@@ -281,8 +301,13 @@ class GalvoScanDesigner(ScanDesigner):
         n_axis = int(n_axis)
 
         # --- physical positions (do NOT bake linesteps into spacing) ---
-        positions_phys = (np.linspace(l_scan / n_axis, l_scan, n_axis) -
-                          l_scan / (n_axis * 2) - l_scan / 2 + c_scan)
+        # Pixels spaced exactly one step, centered on c_scan (span (N-1)*step), so
+        # the realized pitch equals the reported step -- matching the fast axis
+        # (constant velocity = step/dwell). Previously used linspace over the full
+        # l_scan -> pitch l_scan/n_axis, which disagreed with the fast axis and
+        # anisotropically distorted pixels. See scan-realized-step-spacing.
+        step_axis = self.axis_step_size[dim]
+        positions_phys = axis_pixel_positions(n_axis, step_axis, center=c_scan)
 
         # Expand Y positions into linestep blocks if dim==1
         if dim == 1 and n_linesteps > 1:
@@ -377,6 +402,30 @@ class GalvoScanDesigner(ScanDesigner):
         # concatenate all repetition lengths
         return np.concatenate((first_d2, rest_d2s))
 
+    @staticmethod
+    def _smooth_scan_bpoly(time, yder):
+        """``BPoly.from_derivatives`` with an actionable error on degenerate knots.
+
+        The smooth-scan knot times are cumulative segment durations (accel,
+        constant-velocity, flyback, jerk-transition). When ``vel_max``/``acc_max``
+        are far too large for the scan velocity -- most importantly the ``1e6``
+        fallback used when a scanning positioner omits ``vel_max``/``acc_max`` --
+        the flyback/settling segments collapse below the jerk-transition time and
+        the knot times stop being strictly increasing. ``BPoly`` then raises an
+        opaque ``"x must be strictly increasing"``. Fail with a message that points
+        at the real cause instead.
+        """
+        t = np.asarray(time, dtype=float)
+        if t.size < 2 or not np.all(np.diff(t) > 0):
+            raise ValueError(
+                "GalvoScanDesigner smooth-scan spline has non-increasing time knots "
+                f"({list(t)}). This happens when vel_max/acc_max are too large for the "
+                "scan velocity -- notably the 1e6 fallback used when a scanning "
+                "positioner omits vel_max/acc_max. Set realistic vel_max (µm/µs) and "
+                "acc_max (µm/µs^2) in the scanning positioners' managerProperties."
+            )
+        return BPoly.from_derivatives(t, yder)
+
     def __d2scan_poly(self, parameterDict, v_max, a_max):
         """ Generate a Bernstein piecewise polynomial for a smooth one-d2-step
         scanning curve, from the acquisition parameter settings, using
@@ -452,7 +501,7 @@ class GalvoScanDesigner(ScanDesigner):
         # give positions, velocity, acceleration, and time of fixed points
         yder = np.array([pos, vel, acc]).T.tolist()
 
-        bpoly = BPoly.from_derivatives(time, yder)  # bpoly time unit: µs
+        bpoly = self._smooth_scan_bpoly(time, yder)  # bpoly time unit: µs
         # return polynomial, that can be evaluated at any timepoints you want
         # return fixed points position and time
         return bpoly, time, pos
@@ -532,7 +581,7 @@ class GalvoScanDesigner(ScanDesigner):
         # generate Bernstein polynomial with piecewise spline interpolation with the fixed points
         # give positions, velocity, acceleration, and time of fixed points
         yder = np.array([pos, vel, acc]).T.tolist()
-        bpoly = BPoly.from_derivatives(time, yder)  # bpoly time unit: µs
+        bpoly = self._smooth_scan_bpoly(time, yder)  # bpoly time unit: µs
 
         # get number of evaluation points
         n_eval = int(time[-1] / self.__timestep)
@@ -604,7 +653,7 @@ class GalvoScanDesigner(ScanDesigner):
         # generate Bernstein polynomial with piecewise spline interpolation with the fixed points
         # give positions, velocity, acceleration, and time of fixed points
         yder = np.array([pos, vel, acc]).T.tolist()
-        bpoly = BPoly.from_derivatives(time, yder)  # bpoly time unit: µs
+        bpoly = self._smooth_scan_bpoly(time, yder)  # bpoly time unit: µs
 
         # get number of evaluation points
         n_eval = int(time[-1] / self.__timestep)

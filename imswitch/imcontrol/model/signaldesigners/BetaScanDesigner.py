@@ -1,6 +1,7 @@
 import numpy as np
 
 from .basesignaldesigners import ScanDesigner, ScanInfoContract
+from ..scan_parameters import pixels_for_length_step, axis_pixel_positions
 from imswitch.imcommon.model import initLogger
 
 class BetaScanDesigner(ScanDesigner):
@@ -57,24 +58,30 @@ class BetaScanDesigner(ScanDesigner):
         [fast_axis_step_size, middle_axis_step_size, slow_axis_step_size] = \
             [(parameterDict['axis_step_size'][i] / convFactors[i]) for i in range(3)]
 
-        # Retrieve starting position
-        [fast_axis_start, middle_axis_start, slow_axis_start] = \
-            [(parameterDict['axis_startpos'][i][0] / convFactors[i]) for i in range(3)]
-        
-        # Retrieve center positions and deduce new starting positions
+        # Retrieve center positions. The scan is centered on axis_centerpos (like
+        # GalvoScanDesigner) so the ROI 'Center' actually moves stage scans;
+        # previously fast_axis_start = startpos - center = 0 made Center inert and
+        # every scan ran from 0 (see scan-beta-center-ignored).
         [fast_axis_center, middle_axis_center, slow_axis_center] = \
             [(parameterDict['axis_centerpos'][i] / convFactors[i]) for i in range(3)]
-        
-        fast_axis_start = fast_axis_start - fast_axis_center
-        middle_axis_start = middle_axis_start - middle_axis_center
-        slow_axis_start = slow_axis_start - slow_axis_center
 
-        fast_axis_positions = 1 if fast_axis_size == 0 or fast_axis_step_size == 0 else \
-            int(np.ceil(fast_axis_size / fast_axis_step_size)) # Removed 1 + to make it compatible with new scan designer, to be checked!
-        middle_axis_positions = 1 if middle_axis_size == 0 or middle_axis_step_size == 0 else \
-            int(np.ceil(middle_axis_size / middle_axis_step_size))
-        slow_axis_positions = 1 if slow_axis_size == 0 or slow_axis_step_size == 0 else \
-            int(np.ceil(slow_axis_size / slow_axis_step_size))
+        # Canonical pixel count = round(size / step) via the shared helper, so the
+        # number of scanned lines matches the GUI "Pixels (#)" display and the
+        # recorded OME dimensions (previously this used ceil while the GUI used
+        # round -- the off-by-one for non-divisible ratios).
+        fast_axis_positions = 1 if fast_axis_size == 0 else \
+            pixels_for_length_step(fast_axis_size, fast_axis_step_size)
+        middle_axis_positions = 1 if middle_axis_size == 0 else \
+            pixels_for_length_step(middle_axis_size, middle_axis_step_size)
+        slow_axis_positions = 1 if slow_axis_size == 0 else \
+            pixels_for_length_step(slow_axis_size, slow_axis_step_size)
+
+        # First-pixel position of each axis so the N pixels (pitch = step) are
+        # centered on the axis center. Downstream ramp/flyback/wrap logic is
+        # start-anchored on these, so centering happens purely here.
+        fast_axis_start = fast_axis_center - (fast_axis_positions - 1) * fast_axis_step_size / 2.0
+        middle_axis_start = middle_axis_center - (middle_axis_positions - 1) * middle_axis_step_size / 2.0
+        slow_axis_start = slow_axis_center - (slow_axis_positions - 1) * slow_axis_step_size / 2.0
 
         sampleRate = setupInfo.scan.sampleRate
         sequenceSamples = parameterDict['sequence_time'] * sampleRate
@@ -91,7 +98,11 @@ class BetaScanDesigner(ScanDesigner):
         lineSamples = rampSamples + returnSamples
         rampSignal = np.zeros(rampSamples)
         self._logger.debug(fast_axis_positions)
-        rampValues = self.__makeRamp(fast_axis_start, fast_axis_size, fast_axis_positions)
+        # Pixels spaced exactly one step (realized pitch == reported step); the
+        # first pixel stays at fast_axis_start so the scan's start corner does
+        # not move. See axis_pixel_positions / scan-realized-step-spacing.
+        rampValues = axis_pixel_positions(
+            fast_axis_positions, fast_axis_step_size, start=fast_axis_start)
         self._logger.debug(rampValues)
         for s in range(fast_axis_positions):
             start = s * sequenceSamples
@@ -104,14 +115,16 @@ class BetaScanDesigner(ScanDesigner):
                     rampSignal[end - smooth - settling: end - settling] = self.__smoothRamp(rampValues[s], rampValues[s + 1], smooth)
                     rampSignal[end - settling:end] = rampValues[s + 1]
 
-        #rampSignal = self.__makeRamp(fast_axis_start, fast_axis_size, rampSamples)
-        returnRamp = self.__smoothRamp(fast_axis_size+fast_axis_start, fast_axis_start, returnSamples)
+        # return from the LAST visited pixel (not fast_axis_start+size: the last
+        # pixel is now fast_axis_start + (N-1)*step, one step short of the ROI end)
+        returnRamp = self.__smoothRamp(rampValues[-1], rampValues[0], returnSamples)
         fullLineSignal = np.concatenate((rampSignal, returnRamp))
 
         fastAxisSignal = np.tile(fullLineSignal, middle_axis_positions * n_linesteps * slow_axis_positions)
 
         # Make middle axis signal
-        colValues = self.__makeRamp(middle_axis_start, middle_axis_size, middle_axis_positions)
+        colValues = axis_pixel_positions(
+            middle_axis_positions, middle_axis_step_size, start=middle_axis_start)
 
         colSamples = middle_axis_positions * n_linesteps * lineSamples
         fullSquareSignal = np.zeros(colSamples)
@@ -138,7 +151,8 @@ class BetaScanDesigner(ScanDesigner):
 
         # Make slow axis signal
         sliceSamples = slow_axis_positions * colSamples
-        sliceValues = self.__makeRamp(slow_axis_start, slow_axis_size, slow_axis_positions)
+        sliceValues = axis_pixel_positions(
+            slow_axis_positions, slow_axis_step_size, start=slow_axis_start)
         self._logger.debug(sliceValues)
         fullCubeSignal = np.zeros(sliceSamples)
         for s in range(slow_axis_positions):
@@ -199,11 +213,6 @@ class BetaScanDesigner(ScanDesigner):
         self.__plot_curves(plot=False, signals=[fastAxisSignal, middleAxisSignal, slowAxisSignal])
 
         return sig_dict, positions, scanInfoDict
-
-    def __makeRamp(self, start, size, samples):
-        #return np.linspace(start, end, num=samples)
-        end = start + size
-        return np.linspace(float(start), float(end), num=samples)
 
     def __smoothRamp(self, start, end, samples):
         start = float(start)

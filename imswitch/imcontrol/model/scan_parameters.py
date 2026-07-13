@@ -27,6 +27,49 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
+
+def pixels_for_length_step(length, step) -> int:
+    """Canonical pixel/step count for one scan axis: ``round(length / step)``.
+
+    Single source of truth for ``pixels = axis_length / axis_step_size`` so the
+    GUI display, ``getDimsScan()``, the digital ``Nx``/``Ny``, and the scan
+    signal designers cannot drift onto different rounding rules again (they
+    previously used a mix of ``round`` / ``int`` / ``ceil``, so the GUI pixel
+    count, the recorded OME dimensions, and the real number of scanned lines all
+    disagreed for non-divisible ratios). Returns at least 1 for any active axis
+    (``step != 0``), matching the designers' "always run one position" guard.
+    """
+    step = float(step)
+    if step == 0:
+        return 1
+    return max(1, int(round(float(length) / step)))
+
+
+def axis_pixel_positions(n_pixels, step, *, center=None, start=0.0):
+    """Physical positions of ``n_pixels`` scan pixels spaced *exactly* ``step``.
+
+    Convention A (see the ``scan-realized-step-spacing`` audit): the requested
+    step size IS the realized pixel pitch, so the scan visits pixels ``step``
+    apart and the reported ``pixel_sizes`` / OME ``PhysicalSize`` are truthful.
+    Previously the designers spread ``n`` pixels across the full ROI with
+    ``linspace`` (endpoint-inclusive), giving a pitch of ``length/(n-1)`` (Beta,
+    up to 100% off) or ``length/n`` (Galvo step axis) that did not equal the
+    reported step.
+
+    Anchoring (each designer keeps its existing convention so absolute scan
+    positions do not move):
+      * ``center`` given -- positions centered on it, spanning ``(n-1)*step``.
+      * else ``start``   -- first pixel at ``start``, each next pixel ``+step``.
+    Returns a float ndarray of length ``max(1, n_pixels)``.
+    """
+    n = max(1, int(n_pixels))
+    offsets = np.arange(n, dtype=float) * float(step)
+    if center is not None:
+        return float(center) + offsets - (n - 1) / 2.0 * float(step)
+    return float(start) + offsets
+
 
 class AdvancedScanParameterSerializer:
     """Round-trips ``ScanWidgetAdvanced`` UI state <-> analog/digital scan dicts."""
@@ -93,11 +136,10 @@ class AdvancedScanParameterSerializer:
             idx = analogParameterDict["target_device"].index(deviceName)
         except ValueError:
             return 1
-        step = float(analogParameterDict["axis_step_size"][idx])
-        if step == 0:
-            return 1
-        length = float(analogParameterDict["axis_length"][idx])
-        return max(1, int(round(length / step)))
+        return pixels_for_length_step(
+            analogParameterDict["axis_length"][idx],
+            analogParameterDict["axis_step_size"][idx],
+        )
 
     def build_digital(self, widget, analogParameterDict, positioners, ttl_devices) -> dict:
         """Serialize advanced TTL and line-step parameters from the widget."""

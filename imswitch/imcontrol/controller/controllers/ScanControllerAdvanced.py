@@ -7,7 +7,10 @@ from typing import Dict, Any
 import numpy as np
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
-from imswitch.imcontrol.model.scan_parameters import AdvancedScanParameterSerializer
+from imswitch.imcontrol.model.scan_parameters import (
+    AdvancedScanParameterSerializer,
+    pixels_for_length_step,
+)
 from ..basecontrollers import SuperScanController
 
 # Optional: only if you want wavelength-based colors like MoNaLISA
@@ -372,7 +375,9 @@ class ScanControllerAdvanced(SuperScanController):
         dims = []
         for i in range(min(3, len(lengths))):
             step = stepSizes[i] if i < len(stepSizes) else 0
-            dims.append(int(lengths[i] / step) if step != 0 else 0)
+            # round(len/step) via the canonical helper (0 = inactive axis) so the
+            # recorded OME dims match the GUI count and the real scanned lines.
+            dims.append(pixels_for_length_step(lengths[i], step) if step != 0 else 0)
         # pad to 3 elements
         while len(dims) < 3:
             dims.append(0)
@@ -551,7 +556,7 @@ class ScanControllerAdvanced(SuperScanController):
                 step = float(self._analogParameterDict["axis_step_size"][index])
                 if step != 0:
                     length = float(self._analogParameterDict["axis_length"][index])
-                    pixels = round(length / step)
+                    pixels = pixels_for_length_step(length, step)
                     self._widget.setScanPixels(positionerName, pixels)
         except Exception:
             self._logger.debug("updatePixels failed:\n%s", traceback.format_exc())
