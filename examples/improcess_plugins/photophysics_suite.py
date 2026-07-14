@@ -107,6 +107,110 @@ def analyze_fatigue(profile, *, background="tail_mean", bkg_value=0.0, tail=500,
     }
 
 
+def _r_squared(y, y_fit):
+    y = np.asarray(y, dtype=float)
+    ss_res = float(np.sum((y - y_fit) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    return 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+
+def _fit_exp(time, y, n_exp):
+    """Fit a 1- or 2-exponential decay to a normalized [0,1] curve.
+
+    1-exp: ``k + a*exp(-x/b)`` (offFit.m opts1); 2-exp:
+    ``k + a*exp(-x/b) + c*exp(-x/d)`` (opts2). Returns a dict with params, R²
+    and the fitted curve, or ``None`` if the fit fails.
+    """
+    from scipy.optimize import curve_fit
+
+    time = np.asarray(time, dtype=float)
+    y = np.asarray(y, dtype=float)
+    below_half = np.where(y < 0.5)[0]
+    t_half = float(time[below_half[0]]) if below_half.size else float(time[len(time) // 2])
+    t_half = max(t_half, float(time[1]) if time.size > 1 else 1.0)
+
+    if n_exp == 1:
+        def model(x, a, b, k):
+            return k + a * np.exp(-x / b)
+        p0 = [1.0, t_half, float(y[-1])]
+        bounds = ([0.0, 1e-9, -np.inf], [1.0, 1000.0, np.inf])
+    else:
+        def model(x, a, b, c, d, k):
+            return k + a * np.exp(-x / b) + c * np.exp(-x / d)
+        p0 = [1.0, t_half, 0.0, t_half / 10.0, float(y[-1])]
+        bounds = ([0.0, 1e-9, 0.0, 1e-9, -np.inf], [1.0, 1000.0, 1.0, 1000.0, np.inf])
+
+    try:
+        popt, _ = curve_fit(model, time, y, p0=p0, bounds=bounds, maxfev=10000)
+    except Exception:
+        return None
+    y_fit = model(time, *popt)
+    out = {"r2": _r_squared(y, y_fit), "curve": y_fit}
+    if n_exp == 1:
+        out.update(a=float(popt[0]), tau_ms=float(popt[1]), y0=float(popt[2]))
+    else:
+        out.update(a1=float(popt[0]), tau1_ms=float(popt[1]),
+                   a2=float(popt[2]), tau2_ms=float(popt[3]), y0=float(popt[4]))
+    return out
+
+
+def _find_cycle_peaks(profile, min_height_frac=0.15, min_distance=1):
+    from scipy.signal import find_peaks
+
+    profile = np.asarray(profile, dtype=float)
+    height = float(np.max(profile)) * float(min_height_frac)
+    peaks, _ = find_peaks(profile, height=height, distance=max(1, int(min_distance)))
+    return peaks
+
+
+def analyze_off(profile, *, time_unit_ms=1.0, window=200, n_cycles=None,
+                background="tail_mean", bkg_value=0.0, tail=500,
+                peak_min_height_frac=0.15, do_fit=True):
+    """Off-switching kinetics (OFF_g.m / offFit.m).
+
+    Detect per-cycle peaks, cut ``window``-frame decays after each, average over
+    cycles, and report characteristic times (t½/t80/t_end) + optional 1-/2-exp
+    fits. ``time_unit_ms`` is the camera exposure (frame period). The first
+    detected peak is skipped (as in OFF_g.m).
+    """
+    profile_bkg, bkg = subtract_background(profile, background, bkg_value, tail)
+    window = int(window)
+    peaks = _find_cycle_peaks(profile_bkg, peak_min_height_frac, window)
+
+    cuts = []
+    limit = len(peaks) if n_cycles is None else min(int(n_cycles), len(peaks))
+    for i in range(1, limit):  # skip the first detected peak (OFF_g.m: i = 2:...)
+        start = int(peaks[i])
+        if start + window <= profile_bkg.size:
+            cuts.append(profile_bkg[start:start + window])
+    if not cuts:
+        raise ValueError(
+            "No complete off-switch cycles found — check the window length, "
+            "peak-height fraction, and that the recording has cycles."
+        )
+
+    stack = np.column_stack(cuts)                 # (window, n_cuts)
+    time = np.arange(1, window + 1, dtype=float) * float(time_unit_ms)
+    mean = stack.mean(axis=1)
+    std = stack.std(axis=1)
+    denom = (mean.max() - mean.min()) or 1.0
+    norm01 = (mean - mean.min()) / denom
+
+    def _t_at(frac):
+        below = np.where(norm01 < frac)[0]
+        return float(time[below[0]]) if below.size else float("nan")
+
+    out = {
+        "time": time, "mean": mean, "std": std, "normalized": norm01,
+        "n_cycles": stack.shape[1], "background": bkg,
+        "t_half_ms": _t_at(0.5), "t80_ms": _t_at(0.2), "t_end_ms": _t_at(0.01),
+    }
+    if do_fit:
+        out["fit1"] = _fit_exp(time, norm01, 1)
+        out["fit2"] = _fit_exp(time, norm01, 2)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Curve result
 # ---------------------------------------------------------------------------
@@ -192,12 +296,41 @@ class PhotophysicsProcessor(Processor):
         layout.addRow("Background value", bkg_value)
         layout.addRow("Normalize", normalize)
 
+        # Off-switching-specific parameters, shown only for that mode.
+        off_group = QtWidgets.QGroupBox("Off-switching")
+        off_form = QtWidgets.QFormLayout(off_group)
+        time_unit = QtWidgets.QDoubleSpinBox()
+        time_unit.setRange(1e-6, 1e6); time_unit.setDecimals(4); time_unit.setValue(1.0)
+        off_window = QtWidgets.QSpinBox()
+        off_window.setRange(2, 100000); off_window.setValue(200)
+        n_cycles = QtWidgets.QSpinBox()
+        n_cycles.setRange(0, 100000); n_cycles.setValue(0)  # 0 = all
+        peak_frac = QtWidgets.QDoubleSpinBox()
+        peak_frac.setRange(0.0, 1.0); peak_frac.setSingleStep(0.05); peak_frac.setValue(0.15)
+        do_fit = QtWidgets.QCheckBox("1-/2-exp fit"); do_fit.setChecked(True)
+        off_form.addRow("Exposure / frame (ms)", time_unit)
+        off_form.addRow("Window Dt (frames)", off_window)
+        off_form.addRow("Cycles to avg (0=all)", n_cycles)
+        off_form.addRow("Peak height frac", peak_frac)
+        off_form.addRow(do_fit)
+        layout.addRow(off_group)
+
+        def _update_visibility():
+            off_group.setVisible(mode.currentText() == "off")
+        mode.currentTextChanged.connect(lambda _t: _update_visibility())
+        _update_visibility()
+
         widget.get_values = lambda: {
             "mode": mode.currentText(),
             "reduce": reduce_box.currentText(),
             "background": background.currentText(),
             "bkg_value": float(bkg_value.value()),
             "normalize": normalize.currentText(),
+            "time_unit_ms": float(time_unit.value()),
+            "window": int(off_window.value()),
+            "n_cycles": int(n_cycles.value()),
+            "peak_min_height_frac": float(peak_frac.value()),
+            "do_fit": bool(do_fit.isChecked()),
         }
         return widget
 
@@ -232,7 +365,48 @@ class PhotophysicsProcessor(Processor):
                 scalars={"background": out["background"]},
             )
 
+        if mode == "off":
+            out = analyze_off(
+                profile,
+                time_unit_ms=params.get("time_unit_ms", 1.0),
+                window=params.get("window", 200),
+                n_cycles=params.get("n_cycles") or None,
+                background=params.get("background", "tail_mean"),
+                bkg_value=params.get("bkg_value", 0.0),
+                tail=params.get("tail", 500),
+                peak_min_height_frac=params.get("peak_min_height_frac", 0.15),
+                do_fit=params.get("do_fit", True),
+            )
+            columns = ["time_ms", "mean", "std", "normalized"]
+            table = np.column_stack(
+                [out["time"], out["mean"], out["std"], out["normalized"]]
+            )
+            series = [("Averaged decay", out["time"], out["normalized"], {})]
+            scalars = {
+                "n_cycles": out["n_cycles"], "background": out["background"],
+                "t_half_ms": out["t_half_ms"], "t80_ms": out["t80_ms"],
+                "t_end_ms": out["t_end_ms"],
+            }
+            for label, key in (("1-exp", "fit1"), ("2-exp", "fit2")):
+                fit = out.get(key)
+                if fit:
+                    series.append((f"{label} fit", out["time"], fit["curve"], {}))
+                    scalars.update(
+                        {f"{key}_{k}": v for k, v in fit.items() if k != "curve"}
+                    )
+            return PhotophysicsResult(
+                name=f"{result.name} (off-switch)",
+                mode="off",
+                columns=columns,
+                table=table,
+                title="Off-switching kinetics",
+                x_label="time (ms)",
+                y_label="Norm. fluorescence",
+                series=series,
+                scalars=scalars,
+            )
+
         raise NotImplementedError(
             f"Photophysics mode {mode!r} is not implemented yet "
-            "(fatigue is available; off/on land in P1/P2)."
+            "(fatigue and off are available; on lands in P2)."
         )

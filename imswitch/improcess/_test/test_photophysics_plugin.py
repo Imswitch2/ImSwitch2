@@ -108,10 +108,46 @@ def test_curve_result_plot_payload_and_save(plugin, tmp_path):
     assert np.allclose(loaded, out.data)
 
 
-def test_processor_off_on_not_yet_implemented(plugin):
-    stack = _decaying_stack()
-    result = types.SimpleNamespace(name="rec", data=stack, axis_labels=["T", "Y", "X"])
-    proc = plugin.PhotophysicsProcessor()
-    for mode in ("off", "on"):
-        with pytest.raises(NotImplementedError):
-            proc.apply(result, {"mode": mode})
+def _off_stack(n_cycles=6, window=50, tau=15.0, peak=1000.0, bkg=10.0,
+               Y=3, X=3, dark_tail=60):
+    """Tiled exponential off-switch cycles + a dark tail (baseline)."""
+    cycle = peak * np.exp(-np.arange(window) / tau) + bkg
+    prof = np.concatenate([np.tile(cycle, n_cycles), np.full(dark_tail, bkg)])
+    return prof[:, None, None] * np.ones((prof.size, Y, X), dtype=float)
+
+
+def test_analyze_off_recovers_kinetics(plugin):
+    tau, window = 15.0, 50
+    profile = plugin.frame_profile(_off_stack(tau=tau, window=window), reduce="sum")
+    out = plugin.analyze_off(profile, time_unit_ms=1.0, window=window,
+                             background="tail_mean", tail=30, do_fit=True)
+    assert out["n_cycles"] >= 3                      # several cycles averaged
+    assert out["normalized"][0] == pytest.approx(1.0)
+    assert out["normalized"][-1] < 0.1               # decays to ~0
+    assert 10.0 <= out["t_half_ms"] <= 14.0          # ~ tau*ln2 + 1 frame
+    assert out["fit1"] is not None
+    assert out["fit1"]["tau_ms"] == pytest.approx(tau, abs=3.0)
+    assert out["fit1"]["r2"] > 0.99
+    assert out["fit2"] is not None                   # 2-exp also converges
+
+
+def test_processor_apply_off_produces_curve_with_fits(plugin):
+    result = types.SimpleNamespace(name="rec", data=_off_stack(), axis_labels=["T", "Y", "X"])
+    out = plugin.PhotophysicsProcessor().apply(
+        result, {"mode": "off", "time_unit_ms": 1.0, "window": 50,
+                 "background": "tail_mean", "tail": 30, "do_fit": True}
+    )
+    assert out.kind == "curve"
+    assert out.name == "rec (off-switch)"
+    assert out.columns == ["time_ms", "mean", "std", "normalized"]
+    assert "t_half_ms" in out.scalars and "fit1_tau_ms" in out.scalars
+    # payload has the averaged decay plus the two fit series
+    payload = out.plot_payloads()[0]
+    assert payload.x_label == "time (ms)"
+    assert len(payload.series) == 3
+
+
+def test_processor_on_not_yet_implemented(plugin):
+    result = types.SimpleNamespace(name="rec", data=_decaying_stack(), axis_labels=["T", "Y", "X"])
+    with pytest.raises(NotImplementedError):
+        plugin.PhotophysicsProcessor().apply(result, {"mode": "on"})
