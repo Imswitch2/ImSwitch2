@@ -147,7 +147,51 @@ def test_processor_apply_off_produces_curve_with_fits(plugin):
     assert len(payload.series) == 3
 
 
-def test_processor_on_not_yet_implemented(plugin):
+def _on_stack(powers, step_len=30, Y=3, X=3):
+    """Step-like activation: a step_len-frame plateau per power, level == power."""
+    prof = np.concatenate([np.full(step_len, float(p)) for p in powers])
+    return prof[:, None, None] * np.ones((prof.size, Y, X), dtype=float)
+
+
+def test_parse_power_sequence(plugin):
+    assert plugin.parse_power_sequence("0, 10, 25, 50") == [0.0, 10.0, 25.0, 50.0]
+    assert plugin.parse_power_sequence("0 10  x 25") == [0.0, 10.0, 25.0]  # skips junk
+    assert plugin.parse_power_sequence("") == []
+
+
+def test_analyze_on_auto_and_manual_agree(plugin):
+    powers = [0, 10, 25, 50, 100, 200]
+    profile = plugin.frame_profile(_on_stack(powers, step_len=30), reduce="sum")
+
+    auto = plugin.analyze_on(profile, powers, auto_detect=True, dpnts=10, background="none")
+    assert auto["activation"].shape == (6,)
+    # activation ∝ power (level==power, summed over 9 px)
+    assert np.allclose(auto["activation"], 9.0 * np.array(powers, dtype=float))
+    assert auto["normalized"][-1] == pytest.approx(1.0)      # norm to max (last)
+    assert np.all(np.diff(auto["normalized"]) >= -1e-9)      # monotonically increasing
+
+    manual = plugin.analyze_on(profile, powers, auto_detect=False,
+                               offset=15, jump=30, dpnts=8, background="none")
+    assert np.allclose(manual["activation"], auto["activation"])
+
+
+def test_processor_apply_on_produces_curve_result(plugin):
+    powers = [0, 10, 25, 50, 100, 200]
+    result = types.SimpleNamespace(name="rec", data=_on_stack(powers), axis_labels=["T", "Y", "X"])
+    out = plugin.PhotophysicsProcessor().apply(
+        result, {"mode": "on", "powers": powers, "auto_detect": True,
+                 "dpnts": 10, "background": "none", "normalize": "max"}
+    )
+    assert out.kind == "curve"
+    assert out.name == "rec (photo-activation)"
+    assert out.columns == ["power", "activation", "error", "normalized"]
+    assert out.data.shape == (6, 4)
+    assert np.allclose(out.data[:, 0], powers)               # power column
+    payload = out.plot_payloads()[0]
+    assert payload.x_label == "activation power"
+
+
+def test_processor_unknown_mode_raises(plugin):
     result = types.SimpleNamespace(name="rec", data=_decaying_stack(), axis_labels=["T", "Y", "X"])
-    with pytest.raises(NotImplementedError):
-        plugin.PhotophysicsProcessor().apply(result, {"mode": "on"})
+    with pytest.raises(ValueError):
+        plugin.PhotophysicsProcessor().apply(result, {"mode": "bogus"})

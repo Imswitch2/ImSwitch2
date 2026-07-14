@@ -77,6 +77,20 @@ def subtract_background(profile, mode="tail_mean", value=0.0, tail=500):
     return p - bkg, bkg
 
 
+def parse_power_sequence(text):
+    """Parse a comma/whitespace-separated activation-power list into floats."""
+    if text is None:
+        return []
+    tokens = str(text).replace(",", " ").split()
+    out = []
+    for token in tokens:
+        try:
+            out.append(float(token))
+        except ValueError:
+            continue
+    return out
+
+
 def _normalize(values, mode):
     v = np.asarray(values, dtype=float)
     if mode == "first":
@@ -211,6 +225,52 @@ def analyze_off(profile, *, time_unit_ms=1.0, window=200, n_cycles=None,
     return out
 
 
+def analyze_on(profile, powers, *, auto_detect=True, offset=10, jump=35, dpnts=10,
+               background="none", bkg_value=0.0, tail=500, normalize="max"):
+    """Photo-activation curve (ON.m).
+
+    Integrate the fluorescence plateau of each activation-power step and return
+    the activation value vs. power. ``powers`` is the activation-power sequence
+    (one per step). With ``auto_detect`` the steps are assumed evenly spaced and
+    inferred from ``len(powers)`` (the plateau = the tail ``dpnts`` frames of each
+    segment); otherwise the fixed ``offset``/``jump``/``dpnts`` timing from ON.m
+    is used.
+    """
+    profile_bkg, bkg = subtract_background(profile, background, bkg_value, tail)
+    powers = np.asarray(powers, dtype=float)
+    n = powers.size
+    if n == 0:
+        raise ValueError("The activation-power list is empty")
+
+    activation = np.zeros(n, dtype=float)
+    error = np.zeros(n, dtype=float)
+    if auto_detect:
+        step_len = profile_bkg.size // n
+        if step_len < 1:
+            raise ValueError(f"More power steps ({n}) than frames ({profile_bkg.size})")
+        d = int(min(max(dpnts, 1), step_len))
+        for k in range(n):
+            seg = profile_bkg[(k + 1) * step_len - d:(k + 1) * step_len]
+            activation[k] = float(np.mean(seg))
+            error[k] = float(np.std(seg))
+    else:
+        pos = int(offset)
+        d = int(max(dpnts, 1))
+        for k in range(n):
+            seg = profile_bkg[pos:pos + d]
+            if seg.size == 0:
+                raise ValueError("Manual step timing runs past the end of the recording")
+            activation[k] = float(np.mean(seg))
+            error[k] = float(np.std(seg))
+            pos += int(jump)
+
+    normalized = _normalize(activation, normalize)
+    return {
+        "powers": powers, "activation": activation, "error": error,
+        "normalized": normalized, "background": bkg,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Curve result
 # ---------------------------------------------------------------------------
@@ -315,8 +375,25 @@ class PhotophysicsProcessor(Processor):
         off_form.addRow(do_fit)
         layout.addRow(off_group)
 
+        # Photo-activation-specific parameters, shown only for that mode.
+        on_group = QtWidgets.QGroupBox("Photo-activation")
+        on_form = QtWidgets.QFormLayout(on_group)
+        powers_edit = QtWidgets.QLineEdit("0, 10, 25, 50, 100, 200")
+        auto_detect = QtWidgets.QCheckBox("Auto-detect steps"); auto_detect.setChecked(True)
+        on_offset = QtWidgets.QSpinBox(); on_offset.setRange(0, 100000); on_offset.setValue(10)
+        on_jump = QtWidgets.QSpinBox(); on_jump.setRange(1, 100000); on_jump.setValue(35)
+        on_dpnts = QtWidgets.QSpinBox(); on_dpnts.setRange(1, 100000); on_dpnts.setValue(10)
+        on_form.addRow("Power sequence", powers_edit)
+        on_form.addRow(auto_detect)
+        on_form.addRow("Offset (manual)", on_offset)
+        on_form.addRow("Jump (manual)", on_jump)
+        on_form.addRow("Plateau pts (Dpnts)", on_dpnts)
+        layout.addRow(on_group)
+
         def _update_visibility():
-            off_group.setVisible(mode.currentText() == "off")
+            current = mode.currentText()
+            off_group.setVisible(current == "off")
+            on_group.setVisible(current == "on")
         mode.currentTextChanged.connect(lambda _t: _update_visibility())
         _update_visibility()
 
@@ -331,6 +408,11 @@ class PhotophysicsProcessor(Processor):
             "n_cycles": int(n_cycles.value()),
             "peak_min_height_frac": float(peak_frac.value()),
             "do_fit": bool(do_fit.isChecked()),
+            "powers": parse_power_sequence(powers_edit.text()),
+            "auto_detect": bool(auto_detect.isChecked()),
+            "offset": int(on_offset.value()),
+            "jump": int(on_jump.value()),
+            "dpnts": int(on_dpnts.value()),
         }
         return widget
 
@@ -406,7 +488,35 @@ class PhotophysicsProcessor(Processor):
                 scalars=scalars,
             )
 
-        raise NotImplementedError(
-            f"Photophysics mode {mode!r} is not implemented yet "
-            "(fatigue and off are available; on lands in P2)."
-        )
+        if mode == "on":
+            out = analyze_on(
+                profile,
+                params.get("powers") or [],
+                auto_detect=params.get("auto_detect", True),
+                offset=params.get("offset", 10),
+                jump=params.get("jump", 35),
+                dpnts=params.get("dpnts", 10),
+                background=params.get("background", "none"),
+                bkg_value=params.get("bkg_value", 0.0),
+                tail=params.get("tail", 500),
+                normalize=params.get("normalize", "max"),
+            )
+            columns = ["power", "activation", "error", "normalized"]
+            table = np.column_stack(
+                [out["powers"], out["activation"], out["error"], out["normalized"]]
+            )
+            series = [("Activation", out["powers"], out["normalized"],
+                       {"symbol": "o"})]
+            return PhotophysicsResult(
+                name=f"{result.name} (photo-activation)",
+                mode="on",
+                columns=columns,
+                table=table,
+                title="Photo-activation",
+                x_label="activation power",
+                y_label="Rel. fluorescence",
+                series=series,
+                scalars={"background": out["background"]},
+            )
+
+        raise ValueError(f"Unknown photophysics mode {mode!r}; expected one of {_MODES}")
