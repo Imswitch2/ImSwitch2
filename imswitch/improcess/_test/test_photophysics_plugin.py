@@ -5,6 +5,7 @@ imported in isolation — and exercises the analysis core, the Processor, the
 curve result's plot payload, and ascii save.
 """
 import importlib.util
+import json
 import types
 from pathlib import Path
 
@@ -195,3 +196,43 @@ def test_processor_unknown_mode_raises(plugin):
     result = types.SimpleNamespace(name="rec", data=_decaying_stack(), axis_labels=["T", "Y", "X"])
     with pytest.raises(ValueError):
         plugin.PhotophysicsProcessor().apply(result, {"mode": "bogus"})
+
+
+def test_end_to_end_store_install_discover_run(tmp_path, monkeypatch):
+    """The real plugin file installs via the online store, is discovered by the
+    drop-in loader, and runs — the whole packaging chain, network mocked."""
+    from imswitch.improcess.plugins import plugin_store as store
+    from imswitch.improcess.plugins import user_plugins
+
+    monkeypatch.setattr(user_plugins.dirtools.UserFileDirs, "Root", str(tmp_path))
+    plugin_body = _PLUGIN_PATH.read_bytes()
+    manifest = {"plugins": [{
+        "id": "photophysics_suite",
+        "file": "plugins/photophysics_suite.py",
+        "version": "0.1.0",
+        "display_name": "Photophysics suite",
+    }]}
+
+    def fake_get(url):
+        if url == store.MANIFEST_URL:
+            return json.dumps(manifest).encode("utf-8")
+        return plugin_body
+
+    monkeypatch.setattr(store, "_get", fake_get)
+
+    entries = store.fetch_manifest()
+    state = store.load_state()
+    store.install(entries[0], state)
+
+    classes, errors = user_plugins.discover_processor_plugins(
+        store.user_plugins_directory()
+    )
+    assert errors == []
+    assert "photophysics_suite" in classes
+
+    proc = classes["photophysics_suite"]()
+    result = proc.apply(
+        types.SimpleNamespace(name="rec", data=_decaying_stack(), axis_labels=["T", "Y", "X"]),
+        {"mode": "fatigue", "tail": 3},
+    )
+    assert result.kind == "curve"

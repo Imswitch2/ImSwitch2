@@ -324,7 +324,7 @@ _MODES = ("fatigue", "off", "on")
 
 class PhotophysicsProcessor(Processor):
     name = "Photophysics suite"
-    id = "user.photophysics-suite"
+    id = "photophysics_suite"
     category = "Photophysics"
     kinds = ("image",)
 
