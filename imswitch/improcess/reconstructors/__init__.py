@@ -18,6 +18,7 @@ from .view_only import ViewOnlyReconstructor
 from .snouty_projections import SnoutyProjectionsReconstructor
 from .widefield_starss import WidefieldStarssReconstructor
 from .smlm import SmlmLocalizer
+from .beadrec import BeadRecReconstructor
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -27,6 +28,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'snouty-projections': SnoutyProjectionsReconstructor,
     'widefield-starss': WidefieldStarssReconstructor,
     'smlm-localizer': SmlmLocalizer,
+    'beadrec': BeadRecReconstructor,
 }
 
 
