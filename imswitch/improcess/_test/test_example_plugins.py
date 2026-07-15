@@ -25,13 +25,18 @@ def test_examples_directory_exists():
     assert _EXAMPLES_DIR.is_dir()
     assert (_EXAMPLES_DIR / "invert.py").exists()
     assert (_EXAMPLES_DIR / "gaussian_blur.py").exists()
+    assert (_EXAMPLES_DIR / "photophysics_suite.py").exists()
 
 
 def test_example_plugins_are_discoverable_processors():
     classes, errors = discover_processor_plugins(str(_EXAMPLES_DIR))
 
     assert errors == []
-    assert set(classes) == {"example.invert", "example.gaussian-blur"}
+    assert set(classes) == {
+        "example.invert",
+        "example.gaussian-blur",
+        "photophysics_suite",
+    }
     for processor_cls in classes.values():
         assert issubclass(processor_cls, Processor)
         assert processor_cls.kinds == ("image",)
