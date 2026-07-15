@@ -47,6 +47,7 @@ class _View:
         self.sigImageSplitStackRequested = _Signal()
         self.sigImageSplitChannelsRequested = _Signal()
         self.sigImageMergeChannelsRequested = _Signal()
+        self.sigImageStackCombineRequested = _Signal()
         self.sigImageMakeCompositeRequested = _Signal()
         self.sigImageMakeRgbRequested = _Signal()
         self.enabled_states = []

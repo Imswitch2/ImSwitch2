@@ -9,6 +9,7 @@ from .base import Processor
 from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
 from .colocalization import ColocalizationProcessor
+from .combine import StackCombineProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
 from .frc import FRCProcessor
@@ -45,6 +46,7 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'smlm-filter': SmlmFilterProcessor,
     'smlm-group': SmlmGroupProcessor,
     'smlm-render': SmlmRenderProcessor,
+    'stack-combine': StackCombineProcessor,
     'stack-split': StackSplitProcessor,
     'stack-subset': StackSubsetProcessor,
 }
@@ -195,6 +197,7 @@ __all__ = [
     "SmlmFilterProcessor",
     "SmlmGroupProcessor",
     "SmlmRenderProcessor",
+    "StackCombineProcessor",
     "StackSplitProcessor",
     "StackSubsetProcessor",
     "available_processor_choices",

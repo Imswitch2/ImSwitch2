@@ -76,6 +76,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageSplitStackRequested = QtCore.Signal()
     sigImageSplitChannelsRequested = QtCore.Signal()
     sigImageMergeChannelsRequested = QtCore.Signal()
+    sigImageStackCombineRequested = QtCore.Signal()
     sigImageMakeCompositeRequested = QtCore.Signal()
     sigImageMakeRgbRequested = QtCore.Signal()
 
@@ -824,6 +825,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Merge selected compatible results into a C-axis channel stack',
             improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
+        )
+        self._addImageAction(
+            'stack-combine',
+            'Stack/Combine...',
+            'Stack or concatenate the selected results into one output',
+            improcessIcon('stack-combine', self),
+            self.sigImageStackCombineRequested,
         )
         self._addImageAction(
             'make-composite',
