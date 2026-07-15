@@ -206,7 +206,12 @@ class ImageToolbarController:
         if not self._resultHasImage(result):
             return
         try:
-            params = StackSubsetDialog.get_params(result, parent=self._view)
+            napari_viewer = getattr(
+                getattr(self._view, "reconstructionWidget", None), "napariViewer", None
+            )
+            params = StackSubsetDialog.get_params(
+                result, parent=self._view, napari_viewer=napari_viewer
+            )
         except Exception:
             self._logger.exception("Could not collect crop/substack parameters")
             return

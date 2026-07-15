@@ -136,14 +136,22 @@ def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
 
 
 def runtime_analysis_tool_choices() -> list[tuple[str, str]]:
-    """Return ``(tool_id, title)`` choices for the runtime-loader combo."""
-    return [
-        (spec.id, spec.title)
-        for spec in sorted(
-            runtime_analysis_tool_specs().values(),
-            key=lambda item: (item.category, item.title, item.id),
-        )
-    ]
+    """Return ``(tool_id, title)`` choices for the runtime-loader combo.
+
+    Tools that share one widget (e.g. multicolor registration + apply both open
+    the Multicolor panel) collapse to a single entry; the first (sorted) id wins.
+    """
+    choices: list[tuple[str, str]] = []
+    seen_widgets: set[str] = set()
+    for spec in sorted(
+        runtime_analysis_tool_specs().values(),
+        key=lambda item: (item.category, item.title, item.id),
+    ):
+        if spec.attribute in seen_widgets:
+            continue
+        seen_widgets.add(spec.attribute)
+        choices.append((spec.id, spec.title))
+    return choices
 
 
 def runtime_analysis_panel_shortcuts() -> list[RuntimeAnalysisPanelShortcut]:

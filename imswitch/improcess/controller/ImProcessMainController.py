@@ -203,10 +203,17 @@ class ImProcessMainController(MainController):
         loaded = {processor.id for processor in loaded_processors}
         tool_specs = runtime_analysis_tool_specs()
         choices = []
+        seen_widgets = set()
         for tool_id, spec in sorted(
             tool_specs.items(),
             key=lambda item: (item[1].category, item[1].title, item[0]),
         ):
+            # Collapse tools that share one widget into a single entry: the
+            # multicolor registration + apply processors both open the Multicolor
+            # panel, so without this they show up twice. First (sorted) id wins.
+            if spec.attribute in seen_widgets:
+                continue
+            seen_widgets.add(spec.attribute)
             processor_loaded = (
                 spec.processor_id is None
                 or spec.processor_id in loaded

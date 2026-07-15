@@ -97,6 +97,8 @@ def test_only_allowlisted_view_modules_create_napari_layers():
       - MulticolorWidget: ephemeral split-boundary shapes + detected-bead
         points only; Register/Apply publish Multicolor*Results. add_image is
         deliberately NOT allowed here anymore.
+      - StackSubsetDialog: ephemeral X/Y crop-rectangle preview only, removed
+        when the dialog closes; the crop itself publishes via StackSubsetProcessor.
     """
     view_dir = Path(__file__).resolve().parent.parent / "view"
     markers = ("add_image(", "add_labels(", "add_points(", "add_shapes(")
@@ -104,6 +106,7 @@ def test_only_allowlisted_view_modules_create_napari_layers():
         "ReconstructionView.py": set(markers),
         "SegmentationWidget.py": {"add_image(", "add_labels("},
         "MulticolorWidget.py": {"add_points(", "add_shapes("},
+        "StackSubsetDialog.py": {"add_shapes("},
     }
 
     offenders = []
