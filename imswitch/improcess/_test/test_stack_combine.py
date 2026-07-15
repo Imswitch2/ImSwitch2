@@ -10,14 +10,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qtpy import QtWidgets
 
 from imswitch.improcess.model.array_result import ArrayProcessingResult
+from imswitch.improcess.model.result import DisplayLayerSpec
 from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.combine import (
     StackCombineProcessor,
     combine_compatibility,
     concatenate_results,
+    default_stack_axis_label,
     stack_results,
 )
-from imswitch.improcess.view.StackCombineDialog import StackCombineDialog
+from imswitch.improcess.view.StackCombineDialog import (
+    StackCombineDialog,
+    expand_input_choices,
+)
 
 
 def _image(shape, labels, name="img", scales=None):
@@ -136,6 +141,65 @@ def test_mismatched_labels_and_scales_are_rejected():
     assert not ok
 
 
+def test_mismatched_scale_unit_is_rejected_in_both_modes():
+    """Same-shaped px + um inputs must not silently become one calibrated stack."""
+    a = _image((8, 10), ["Y", "X"], "a", scales=[0.5, 0.5])  # um
+    b = _image((8, 10), ["Y", "X"], "b", scales=[0.5, 0.5])
+    b.scale_unit = "px"  # same numeric scales, different physical unit
+
+    ok, reason = combine_compatibility([a, b], mode="stack")
+    assert not ok
+    assert "unit" in reason
+    ok, reason = combine_compatibility([a, b], mode="concatenate", join_axis=0)
+    assert not ok
+    assert "unit" in reason
+
+
+def test_new_axis_label_colliding_with_existing_labels_is_rejected():
+    a = _image((3, 8, 10), ["Z", "Y", "X"], "a")
+    b = _image((3, 8, 10), ["Z", "Y", "X"], "b")
+
+    ok, reason = combine_compatibility([a, b], mode="stack", new_axis_label="Z")
+    assert not ok
+    assert "'Z'" in reason
+    with pytest.raises(ValueError):
+        stack_results([a, b], axis_label="Z")
+    # A non-colliding label still works.
+    assert stack_results([a, b], axis_label="T").axis_labels == ["T", "Z", "Y", "X"]
+
+
+def test_default_stack_axis_label_skips_collisions():
+    assert default_stack_axis_label(["Y", "X"]) == "Z"
+    assert default_stack_axis_label(["Z", "Y", "X"]) == "T"
+    assert default_stack_axis_label(["T", "Z", "Y", "X"]) == "C"
+    assert default_stack_axis_label(["C", "T", "Z", "Y", "X"]) == "S"
+
+
+class _ShapeOnlyArray:
+    """Lazy stand-in: shape metadata only, materialization is an error."""
+
+    def __init__(self, shape):
+        self.shape = tuple(shape)
+        self.ndim = len(shape)
+
+    def __array__(self, dtype=None):
+        raise AssertionError("compatibility checks must not materialize data")
+
+
+def test_compatibility_check_does_not_materialize_lazy_data():
+    a = ArrayProcessingResult(
+        name="a", data=_ShapeOnlyArray((3, 8, 10)), axis_labels=["Z", "Y", "X"]
+    )
+    b = ArrayProcessingResult(
+        name="b", data=_ShapeOnlyArray((3, 8, 10)), axis_labels=["Z", "Y", "X"]
+    )
+
+    ok, _ = combine_compatibility([a, b], mode="stack", new_axis_label="T")
+    assert ok
+    ok, _ = combine_compatibility([a, b], mode="concatenate", join_axis=0)
+    assert ok
+
+
 # -- processor contract --------------------------------------------------------
 
 def test_stack_combine_is_registered():
@@ -214,3 +278,79 @@ def test_dialog_disables_ok_and_shows_reason_when_incompatible(qapp):
 
     assert not dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
     assert dialog.statusLabel.text()  # the reason is shown, not a silent no
+
+
+def test_dialog_default_axis_label_avoids_collision(qapp):
+    a = _image((3, 8, 10), ["Z", "Y", "X"], "a")
+    b = _image((3, 8, 10), ["Z", "Y", "X"], "b")
+    dialog = StackCombineDialog([a, b])
+
+    assert dialog.selected_params()["axis_label"] == "T"
+    assert dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+
+    # Forcing the colliding label surfaces the reason and disables OK.
+    dialog.axisLabelCombo.setCurrentText("Z")
+    assert not dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+    assert "'Z'" in dialog.statusLabel.text()
+
+
+class _MultiLayerResult(ArrayProcessingResult):
+    """Result whose canonical data groups two heterogeneous components."""
+
+    def display_layers(self):
+        return [
+            DisplayLayerSpec(
+                name="mean",
+                data=np.zeros((8, 10), np.float32),
+                axis_labels=["Y", "X"],
+                component="mean",
+            ),
+            DisplayLayerSpec(
+                name="source",
+                data=np.zeros((8, 10), np.float32),
+                axis_labels=["Y", "X"],
+                component="source",
+                role="context",
+            ),
+        ]
+
+
+def test_multilayer_results_are_expanded_into_components(qapp):
+    multi = _MultiLayerResult(
+        name="multi",
+        data=np.zeros((2, 8, 10), np.float32),
+        axis_labels=["C", "Y", "X"],
+    )
+    plain = _image((8, 10), ["Y", "X"], "plain")
+
+    inputs = expand_input_choices([multi, plain])
+
+    labels = [label for label, _result, _checked in inputs]
+    assert labels == ["multi", "multi › mean", "plain"]  # context layer excluded
+    checked = [checked for _label, _result, checked in inputs]
+    assert checked == [True, False, True]  # whole results checked, components not
+
+
+def test_dialog_combines_checked_component_with_plain_result(qapp):
+    multi = _MultiLayerResult(
+        name="multi",
+        data=np.zeros((2, 8, 10), np.float32),
+        axis_labels=["C", "Y", "X"],
+    )
+    plain = _image((8, 10), ["Y", "X"], "plain")
+    dialog = StackCombineDialog([multi, plain])
+
+    # Uncheck the (C, Y, X) whole result, check its (Y, X) mean component.
+    from qtpy import QtCore
+    dialog.inputList.item(0).setCheckState(QtCore.Qt.Unchecked)
+    dialog.inputList.item(1).setCheckState(QtCore.Qt.Checked)
+
+    params = dialog.selected_params()
+    assert [getattr(r, "name", "") for r in params["results"]] == [
+        "multi_mean",
+        "plain",
+    ]
+    assert dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+    out = StackCombineProcessor().apply(params["results"][0], params)
+    assert out.data.shape == (2, 8, 10)
+    assert out.axis_labels == ["Z", "Y", "X"]

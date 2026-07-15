@@ -80,11 +80,17 @@ def combine_compatibility(
     results: Sequence[ProcessingResult],
     mode: str = "stack",
     join_axis: int = 0,
+    new_axis_label: str | None = None,
 ) -> tuple[bool, str]:
     """Return ``(ok, reason)`` for combining ``results`` without reading pixels.
 
     The reason string is user-facing: the combine dialog shows it instead of
-    presenting a silently disabled OK button.
+    presenting a silently disabled OK button. Metadata must match across ALL
+    inputs — axis labels, axis scales (including the join axis) and
+    ``scale_unit`` — so same-shaped but physically different arrays can never
+    silently become one calibrated stack. This check must stay
+    metadata-only: it uses the shape/labels/scales accessors and never
+    materializes lazy pixel data.
     """
     results = list(results or [])
     if len(results) < 2:
@@ -96,9 +102,19 @@ def combine_compatibility(
         scales = axis_scales_for_result(results[0])
     except Exception:
         return False, "Could not read the shape of the first input"
+    unit = getattr(results[0], "scale_unit", "px")
 
     if mode == "concatenate" and not (0 <= join_axis < len(shape)):
         return False, f"Join axis {join_axis} is out of range for {len(shape)}D data"
+
+    # A duplicate axis label would break every label-driven axis lookup
+    # downstream (resolve_axis takes the FIRST match), so [Z, Z, Y, X] is
+    # blocked here rather than handled ad hoc by each consumer.
+    if mode == "stack" and new_axis_label is not None and new_axis_label in labels:
+        return False, (
+            f"Axis label '{new_axis_label}' already exists in the inputs "
+            f"({labels}); pick a label that is not already used"
+        )
 
     first_name = getattr(results[0], "name", "input 1")
     for index, result in enumerate(results[1:], start=2):
@@ -139,7 +155,24 @@ def combine_compatibility(
             return False, (
                 f"'{result_name}' pixel scales do not match '{first_name}'"
             )
+        other_unit = getattr(result, "scale_unit", "px")
+        if other_unit != unit:
+            return False, (
+                f"'{result_name}' scale unit '{other_unit}' does not match "
+                f"'{first_name}' unit '{unit}'"
+            )
     return True, ""
+
+
+def default_stack_axis_label(labels: Sequence[str]) -> str:
+    """Return the first common stack label not colliding with ``labels``."""
+    for candidate in (*STACK_AXIS_LABELS, "S"):
+        if candidate not in labels:
+            return candidate
+    index = 0
+    while f"S{index}" in labels:
+        index += 1
+    return f"S{index}"
 
 
 def stack_results(
@@ -150,7 +183,7 @@ def stack_results(
 ) -> ArrayProcessingResult:
     """Stack same-shaped results along a new leading ``axis_label`` axis."""
     results = list(results or [])
-    ok, reason = combine_compatibility(results, mode="stack")
+    ok, reason = combine_compatibility(results, mode="stack", new_axis_label=axis_label)
     if not ok:
         raise ValueError(reason)
 
@@ -226,5 +259,6 @@ __all__ = [
     "STACK_AXIS_LABELS",
     "combine_compatibility",
     "concatenate_results",
+    "default_stack_axis_label",
     "stack_results",
 ]

@@ -5,6 +5,7 @@ from .processor import (
     StackCombineProcessor,
     combine_compatibility,
     concatenate_results,
+    default_stack_axis_label,
     stack_results,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "StackCombineProcessor",
     "combine_compatibility",
     "concatenate_results",
+    "default_stack_axis_label",
     "stack_results",
 ]
