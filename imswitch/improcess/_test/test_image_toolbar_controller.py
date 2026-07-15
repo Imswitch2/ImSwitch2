@@ -334,7 +334,7 @@ def test_crop_substack_publishes_subset_result(monkeypatch):
         toolbar_module.StackSubsetDialog,
         "get_params",
         staticmethod(
-            lambda _result, parent=None: {
+            lambda _result, parent=None, napari_viewer=None: {
                 "ranges": [{"axis": "Z", "start": 1, "stop": 3}],
                 "copy": False,
             }

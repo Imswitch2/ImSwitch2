@@ -4,9 +4,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.processors._axis_split import axis_labels_for_result, shape_for_result
+
+
+def crop_preview_rectangle(labels, first_last_by_axis):
+    """Return napari rectangle corners for the X/Y crop, or ``None``.
+
+    Only the spatial X/Y ranges map to a rectangle overlay (Z/T/C ranges have no
+    spatial extent to preview). ``labels`` are the axis labels in data order;
+    ``first_last_by_axis`` maps an axis index to its ``(first, last)`` 1-based
+    spinbox values. Returns the four corner ``[row(Y), col(X)]`` points (0-based,
+    inclusive edges) that napari's ``add_shapes(shape_type="rectangle")`` expects,
+    or ``None`` when the result has no X/Y axes.
+    """
+    try:
+        x_axis = list(labels).index("X")
+        y_axis = list(labels).index("Y")
+    except ValueError:
+        return None
+    if x_axis not in first_last_by_axis or y_axis not in first_last_by_axis:
+        return None
+    x_first, x_last = first_last_by_axis[x_axis]
+    y_first, y_last = first_last_by_axis[y_axis]
+    x0, x1 = int(x_first) - 1, int(x_last)
+    y0, y1 = int(y_first) - 1, int(y_last)
+    return [[y0, x0], [y0, x1], [y1, x1], [y1, x0]]
 
 
 @dataclass
@@ -21,7 +46,7 @@ class _AxisRangeRow:
 class StackSubsetDialog(QtWidgets.QDialog):
     """Select first/last/step ranges for a stack subset."""
 
-    def __init__(self, result, parent=None):
+    def __init__(self, result, parent=None, napari_viewer=None):
         super().__init__(parent)
         self.setWindowTitle("Crop/Substack")
         self.setMinimumWidth(460)
@@ -29,6 +54,10 @@ class StackSubsetDialog(QtWidgets.QDialog):
         self._shape = shape_for_result(result)
         self._labels = axis_labels_for_result(result)
         self._rows: list[_AxisRangeRow] = []
+        # Optional live X/Y crop-rectangle preview drawn into the reconstruction
+        # viewer while the dialog is open (removed on close).
+        self._viewer = napari_viewer
+        self._preview_layer = None
 
         self.table = QtWidgets.QTableWidget(len(self._shape), 5)
         self.table.setHorizontalHeaderLabels(["Axis", "Size", "First", "Last", "Step"])
@@ -65,6 +94,8 @@ class StackSubsetDialog(QtWidgets.QDialog):
         layout.addWidget(self.table)
         layout.addLayout(bottom)
 
+        self._update_crop_preview()
+
     def selected_params(self) -> dict:
         ranges = []
         for row in self._rows:
@@ -96,11 +127,63 @@ class StackSubsetDialog(QtWidgets.QDialog):
             self._updating = False
 
     @classmethod
-    def get_params(cls, result, parent=None) -> dict | None:
-        dialog = cls(result, parent=parent)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return None
-        return dialog.selected_params()
+    def get_params(cls, result, parent=None, napari_viewer=None) -> dict | None:
+        dialog = cls(result, parent=parent, napari_viewer=napari_viewer)
+        try:
+            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                return None
+            return dialog.selected_params()
+        finally:
+            dialog._remove_crop_preview()
+
+    # -- live crop-rectangle preview -------------------------------------
+
+    def _update_crop_preview(self) -> None:
+        """Draw/update the X/Y crop rectangle in the viewer (no-op without one)."""
+        if self._viewer is None:
+            return
+        rect = crop_preview_rectangle(
+            self._labels,
+            {row.axis: (row.firstSpin.value(), row.lastSpin.value()) for row in self._rows},
+        )
+        if rect is None:
+            return
+        data = [np.array(rect, dtype=float)]
+        try:
+            if self._preview_layer is not None and self._preview_layer in self._viewer.layers:
+                self._preview_layer.data = data
+            else:
+                self._preview_layer = self._viewer.add_shapes(
+                    data,
+                    shape_type="rectangle",
+                    name="Crop preview",
+                    edge_color="yellow",
+                    face_color=[1.0, 1.0, 0.0, 0.10],
+                    edge_width=2,
+                )
+        except Exception:
+            # Never let a preview-drawing hiccup block the crop dialog itself.
+            self._preview_layer = None
+
+    def _remove_crop_preview(self) -> None:
+        if self._preview_layer is not None and self._viewer is not None:
+            try:
+                self._viewer.layers.remove(self._preview_layer)
+            except Exception:
+                pass
+        self._preview_layer = None
+
+    def accept(self) -> None:
+        self._remove_crop_preview()
+        super().accept()
+
+    def reject(self) -> None:
+        self._remove_crop_preview()
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        self._remove_crop_preview()
+        super().closeEvent(event)
 
     def _add_axis_row(self, axis: int, label: str, size: int) -> None:
         label_item = QtWidgets.QTableWidgetItem(str(label))
@@ -131,6 +214,8 @@ class StackSubsetDialog(QtWidgets.QDialog):
 
         first_spin.valueChanged.connect(lambda _value, range_row=row: self._sync_row(range_row))
         last_spin.valueChanged.connect(lambda _value, range_row=row: self._sync_row(range_row))
+        first_spin.valueChanged.connect(lambda _value: self._update_crop_preview())
+        last_spin.valueChanged.connect(lambda _value: self._update_crop_preview())
 
         self.table.setCellWidget(axis, 2, first_spin)
         self.table.setCellWidget(axis, 3, last_spin)
