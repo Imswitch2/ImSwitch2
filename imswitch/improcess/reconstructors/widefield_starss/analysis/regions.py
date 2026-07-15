@@ -3,7 +3,11 @@ Region-wise pooling and summary statistics.
 """
 import numpy as np
 import pandas as pd
-from skimage.measure import regionprops
+
+from imswitch.imcommon.algorithms.fast_regionprops import (
+    region_shape_descriptors,
+    regionprops_table_fast,
+)
 
 from .anisotropy import (
     anisotropy_from_x,
@@ -100,49 +104,80 @@ def mean_region_value(values, region_mask):
     return float(np.mean(vals[valid]))
 
 
-def region_geometry(mask, label, pixel_scale=1):
+def _empty_geometry():
+    return {
+        "area_pixels": 0,
+        "centroid_y": np.nan,
+        "centroid_x": np.nan,
+        "bbox_min_y": np.nan,
+        "bbox_min_x": np.nan,
+        "bbox_max_y": np.nan,
+        "bbox_max_x": np.nan,
+        "width_pixels": np.nan,
+        "height_pixels": np.nan,
+        "ellipticity": np.nan,
+    }
+
+
+def region_geometry_table(mask, pixel_scale=1):
     """
-    Basic cell geometry on the label mask.
+    Basic per-label cell geometry for every region in ``mask``, in one pass.
+
+    Vectorized replacement for calling :func:`region_geometry` once per label:
+    a single ``regionprops_table_fast`` scatter pass over ``mask`` instead of a
+    full-image ``regionprops`` per region (the old O(#regions x image) path).
+    Returns ``{label: geometry-dict}`` with exactly the keys and units that
+    :func:`region_geometry` produces (``ellipticity`` from the inertia-tensor
+    major/minor axes, matching skimage).
 
     ``pixel_scale`` converts mask-grid coordinates to source-image pixels.  In
     polarization-mosaic mode each mask pixel is one 2x2 source-image superpixel.
     """
-    props = regionprops((mask == label).astype(np.uint8))
-    if not props:
-        return {
-            "area_pixels": 0,
-            "centroid_y": np.nan,
-            "centroid_x": np.nan,
-            "bbox_min_y": np.nan,
-            "bbox_min_x": np.nan,
-            "bbox_max_y": np.nan,
-            "bbox_max_x": np.nan,
-            "width_pixels": np.nan,
-            "height_pixels": np.nan,
-            "ellipticity": np.nan,
+    mask = np.asarray(mask)
+    if mask.dtype == bool:  # fast core rejects bool as ambiguous
+        mask = mask.astype(np.uint8)
+
+    table = regionprops_table_fast(
+        mask, properties=("label", "area", "centroid", "bbox", "inertia_tensor")
+    )
+    descriptors = region_shape_descriptors(table)
+    major = descriptors["axis_major_length"]
+    minor = descriptors["axis_minor_length"]
+
+    geometry = {}
+    for i, label in enumerate(table["label"]):
+        maj = float(major[i])
+        ellipticity = np.nan if maj <= 0 else 1.0 - (float(minor[i]) / maj)
+        min_y, min_x = table["bbox-0"][i], table["bbox-1"][i]
+        max_y, max_x = table["bbox-2"][i], table["bbox-3"][i]
+        geometry[int(label)] = {
+            "area_pixels": int(table["area"][i] * pixel_scale * pixel_scale),
+            "centroid_y": float(table["centroid-0"][i] * pixel_scale),
+            "centroid_x": float(table["centroid-1"][i] * pixel_scale),
+            "bbox_min_y": int(min_y * pixel_scale),
+            "bbox_min_x": int(min_x * pixel_scale),
+            "bbox_max_y": int(max_y * pixel_scale),
+            "bbox_max_x": int(max_x * pixel_scale),
+            "width_pixels": int((max_x - min_x) * pixel_scale),
+            "height_pixels": int((max_y - min_y) * pixel_scale),
+            "ellipticity": ellipticity,
         }
+    return geometry
 
-    prop = props[0]
-    min_y, min_x, max_y, max_x = prop.bbox
-    major_attr = "axis_major_length" if hasattr(prop, "axis_major_length") else "major_axis_length"
-    minor_attr = "axis_minor_length" if hasattr(prop, "axis_minor_length") else "minor_axis_length"
-    major = float(getattr(prop, major_attr))
-    minor = float(getattr(prop, minor_attr))
-    ellipticity = np.nan if major <= 0 else 1.0 - (minor / major)
-    centroid_y, centroid_x = prop.centroid
 
-    return {
-        "area_pixels": int(prop.area * pixel_scale * pixel_scale),
-        "centroid_y": float(centroid_y * pixel_scale),
-        "centroid_x": float(centroid_x * pixel_scale),
-        "bbox_min_y": int(min_y * pixel_scale),
-        "bbox_min_x": int(min_x * pixel_scale),
-        "bbox_max_y": int(max_y * pixel_scale),
-        "bbox_max_x": int(max_x * pixel_scale),
-        "width_pixels": int((max_x - min_x) * pixel_scale),
-        "height_pixels": int((max_y - min_y) * pixel_scale),
-        "ellipticity": ellipticity,
-    }
+def region_geometry(mask, label, pixel_scale=1):
+    """
+    Basic cell geometry for a single ``label`` in the mask.
+
+    ``pixel_scale`` converts mask-grid coordinates to source-image pixels.  In
+    polarization-mosaic mode each mask pixel is one 2x2 source-image superpixel.
+
+    When measuring every region, prefer :func:`region_geometry_table`, which
+    computes all labels in a single vectorized pass.
+    """
+    return region_geometry_table(mask, pixel_scale=pixel_scale).get(
+        int(label), _empty_geometry()
+    )
 
 
 def region_channel_stats(prefix, stats, region_mask):
@@ -210,11 +245,13 @@ def analyze_regions(stats_h, stats_v, anis_maps, mask, anisotropy_mode="stokes")
     labels = np.unique(mask)
     labels = labels[labels > 0]
 
+    geometry_table = region_geometry_table(mask, pixel_scale=2)
+
     results = []
 
     for label in labels:
         region_mask = (mask == label)
-        geometry = region_geometry(mask, label, pixel_scale=2)
+        geometry = geometry_table.get(int(label), _empty_geometry())
 
         pooled_h = pool_region_polarization(stats_h, region_mask)
         pooled_v = pool_region_polarization(stats_v, region_mask)
@@ -441,11 +478,13 @@ def analyze_regions_split_detection(
     labels = np.unique(mask)
     labels = labels[labels > 0]
 
+    geometry_table = region_geometry_table(mask, pixel_scale=1)
+
     results = []
 
     for label in labels:
         region_mask = (mask == label)
-        geometry = region_geometry(mask, label, pixel_scale=1)
+        geometry = geometry_table.get(int(label), _empty_geometry())
 
         ihh, sigma_hh, _ = weighted_pool(ihh_map, ihh_var, region_mask)
         ihv, sigma_hv, _ = weighted_pool(ihv_map, ihv_var, region_mask)
