@@ -201,28 +201,45 @@ class ImProcessMainController(MainController):
         registry = get_registry()
         loaded_processors = registry.processors()
         loaded = {processor.id for processor in loaded_processors}
-        tool_specs = runtime_analysis_tool_specs()
-        choices = []
-        seen_widgets = set()
-        for tool_id, spec in sorted(
-            tool_specs.items(),
-            key=lambda item: (item[1].category, item[1].title, item[0]),
-        ):
-            # Collapse tools that share one widget into a single entry: the
-            # multicolor registration + apply processors both open the Multicolor
-            # panel, so without this they show up twice. First (sorted) id wins.
-            if spec.attribute in seen_widgets:
-                continue
-            seen_widgets.add(spec.attribute)
-            processor_loaded = (
-                spec.processor_id is None
-                or spec.processor_id in loaded
+
+        def loadable_choices(tool_specs):
+            choices = []
+            seen_widgets = set()
+            for tool_id, spec in sorted(
+                tool_specs.items(),
+                key=lambda item: (item[1].category, item[1].title, item[0]),
+            ):
+                # Collapse tools that share one widget into a single entry: the
+                # multicolor registration + apply processors both open the
+                # Multicolor panel, so without this they show up twice. First
+                # (sorted) id wins.
+                if spec.attribute in seen_widgets:
+                    continue
+                seen_widgets.add(spec.attribute)
+                processor_loaded = (
+                    spec.processor_id is None
+                    or spec.processor_id in loaded
+                )
+                widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
+                if processor_loaded and widget_loaded:
+                    continue
+                choices.append((tool_id, _runtime_tool_display_title(spec)))
+            return choices
+
+        # Origin-split combos: built-in tools stay in the Tools toolbar, drop-in
+        # plugins get the Plugins toolbar. This method is the single refresh
+        # path for both (startup wiring and the plugin-reload handler call it).
+        self.__mainView.setAvailableRuntimeProcessors(
+            loadable_choices(runtime_analysis_tool_specs(origin="builtin"))
+        )
+        if hasattr(self.__mainView, 'setAvailablePluginTools'):
+            user_specs = runtime_analysis_tool_specs(origin="user")
+            self.__mainView.setAvailablePluginTools(
+                loadable_choices(user_specs),
+                placeholder=(
+                    'All plugins loaded' if user_specs else 'No plugins installed'
+                ),
             )
-            widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
-            if processor_loaded and widget_loaded:
-                continue
-            choices.append((tool_id, _runtime_tool_display_title(spec)))
-        self.__mainView.setAvailableRuntimeProcessors(choices)
         self.__mainView.setLoadedRuntimeProcessors(
             [
                 (

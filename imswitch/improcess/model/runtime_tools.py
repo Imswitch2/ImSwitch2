@@ -109,12 +109,20 @@ _PANEL_SHORTCUTS = (
 )
 
 
-def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
-    """Return all built-in runtime-loadable analysis tool descriptors."""
+def runtime_analysis_tool_specs(origin: str = "all") -> dict[str, RuntimeAnalysisToolSpec]:
+    """Return runtime-loadable analysis tool descriptors.
+
+    ``origin`` mirrors ``available_processor_specs``: ``"builtin"`` for shipped
+    tools, ``"user"`` for drop-in plugins, ``"all"`` for both. The
+    non-processor panels (Graph/Profile/ROI) are built-in, so they are absent
+    from the ``"user"`` view.
+    """
     from imswitch.improcess.processors import available_processor_specs
 
     specs: dict[str, RuntimeAnalysisToolSpec] = {}
-    for processor_id, processor_name, processor_category in available_processor_specs():
+    for processor_id, processor_name, processor_category in available_processor_specs(
+        origin=origin
+    ):
         title, attribute, widget_kind = _PROCESSOR_WIDGET_SPECS.get(
             processor_id,
             (
@@ -131,12 +139,13 @@ def runtime_analysis_tool_specs() -> dict[str, RuntimeAnalysisToolSpec]:
             processor_id=processor_id,
             category=str(processor_category or "Other"),
         )
-    specs.update(_NON_PROCESSOR_TOOL_SPECS)
+    if origin in ("all", "builtin"):
+        specs.update(_NON_PROCESSOR_TOOL_SPECS)
     return specs
 
 
-def runtime_analysis_tool_choices() -> list[tuple[str, str]]:
-    """Return ``(tool_id, title)`` choices for the runtime-loader combo.
+def runtime_analysis_tool_choices(origin: str = "all") -> list[tuple[str, str]]:
+    """Return ``(tool_id, title)`` choices for the runtime-loader combos.
 
     Tools that share one widget (e.g. multicolor registration + apply both open
     the Multicolor panel) collapse to a single entry; the first (sorted) id wins.
@@ -144,7 +153,7 @@ def runtime_analysis_tool_choices() -> list[tuple[str, str]]:
     choices: list[tuple[str, str]] = []
     seen_widgets: set[str] = set()
     for spec in sorted(
-        runtime_analysis_tool_specs().values(),
+        runtime_analysis_tool_specs(origin=origin).values(),
         key=lambda item: (item.category, item.title, item.id),
     ):
         if spec.attribute in seen_widgets:

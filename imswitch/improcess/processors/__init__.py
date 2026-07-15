@@ -118,15 +118,29 @@ def available_processor_choices() -> list[tuple[str, str]]:
     )
 
 
-def available_processor_specs() -> list[tuple[str, str, str]]:
-    """Return processor ids, display names and categories (built-in + user)."""
+def available_processor_specs(origin: str = "all") -> list[tuple[str, str, str]]:
+    """Return processor ids, display names and categories.
+
+    ``origin`` selects the source table: ``"builtin"`` for the shipped
+    processors, ``"user"`` for discovered drop-in plugins, ``"all"`` (default)
+    for both merged. The UI uses the split origins to keep built-in tools and
+    drop-in plugins in separate toolbars.
+    """
+    if origin == "builtin":
+        classes = dict(_AVAILABLE_PROCESSOR_CLASSES)
+    elif origin == "user":
+        classes = dict(_USER_PROCESSOR_CLASSES)
+    elif origin == "all":
+        classes = _all_processor_classes()
+    else:
+        raise ValueError(f"Unknown processor origin: {origin!r}")
     return sorted(
         (
             processor_id,
             plugin_cls.name,
             getattr(plugin_cls, "category", "Other"),
         )
-        for processor_id, plugin_cls in _all_processor_classes().items()
+        for processor_id, plugin_cls in classes.items()
     )
 
 

@@ -32,6 +32,9 @@ IMPROCESS_ICON_NAMES = {
     "projection": "mdi6.axis-arrow",
     "segmentation": "ph.user-rectangle-fill",
     "results-table": "fa6s.rectangle-list",
+    "plugin-store": "mdi6.storefront-outline",
+    "plugin-folder": "mdi6.folder-open-outline",
+    "plugin-reload": "mdi6.reload",
 }
 
 _FALLBACK_STANDARDS = {
@@ -59,6 +62,9 @@ _FALLBACK_STANDARDS = {
     "projection": QtWidgets.QStyle.SP_ArrowDown,
     "segmentation": QtWidgets.QStyle.SP_DialogApplyButton,
     "results-table": QtWidgets.QStyle.SP_FileDialogDetailedView,
+    "plugin-store": QtWidgets.QStyle.SP_DialogOpenButton,
+    "plugin-folder": QtWidgets.QStyle.SP_DirOpenIcon,
+    "plugin-reload": QtWidgets.QStyle.SP_BrowserReload,
 }
 
 _QTAWESOME_MISSING_WARNED = False
