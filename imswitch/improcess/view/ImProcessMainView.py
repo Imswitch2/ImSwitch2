@@ -77,6 +77,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageSplitChannelsRequested = QtCore.Signal()
     sigImageMergeChannelsRequested = QtCore.Signal()
     sigImageStackCombineRequested = QtCore.Signal()
+    sigImageCalculatorRequested = QtCore.Signal()
     sigImageMakeCompositeRequested = QtCore.Signal()
     sigImageMakeRgbRequested = QtCore.Signal()
 
@@ -915,6 +916,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Stack or concatenate the selected results into one output',
             improcessIcon('stack-combine', self),
             self.sigImageStackCombineRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
+        )
+        self._addImageAction(
+            'image-calculator',
+            'Image calculator...',
+            'Pixel-wise arithmetic between two loaded results',
+            improcessIcon('image-calculator', self),
+            self.sigImageCalculatorRequested,
             toolbar=self._imageOpsToolbar,
             menu=self._imageOpsMenu,
         )

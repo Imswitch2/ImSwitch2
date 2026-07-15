@@ -15,6 +15,7 @@ from imswitch.improcess.processors.channel_merge import (
 )
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.combine import StackCombineProcessor
+from imswitch.improcess.processors.image_calculator import ImageCalculatorProcessor
 from imswitch.improcess.processors.make_composite import MakeCompositeProcessor
 from imswitch.improcess.processors.make_rgb import MakeRGBProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
@@ -24,6 +25,7 @@ from imswitch.improcess.processors._axis_split import resolve_axis, shape_for_re
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.ChannelPickerDialog import ChannelPickerDialog
+from imswitch.improcess.view.ImageCalculatorDialog import ImageCalculatorDialog
 from imswitch.improcess.view.StackCombineDialog import StackCombineDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
@@ -55,6 +57,7 @@ class ImageToolbarController:
         mainView.sigImageSplitChannelsRequested.connect(self.splitChannels)
         mainView.sigImageMergeChannelsRequested.connect(self.mergeChannels)
         mainView.sigImageStackCombineRequested.connect(self.stackCombine)
+        mainView.sigImageCalculatorRequested.connect(self.imageCalculator)
         mainView.sigImageMakeCompositeRequested.connect(self.makeComposite)
         mainView.sigImageMakeRgbRequested.connect(self.makeRgb)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
@@ -93,6 +96,10 @@ class ImageToolbarController:
             self._view.setImageActionEnabled(
                 "stack-combine",
                 has_image and len(self._selectedProcessingResults()) >= 2,
+            )
+            self._view.setImageActionEnabled(
+                "image-calculator",
+                has_image,
             )
             self._view.setImageActionEnabled(
                 "make-composite",
@@ -271,6 +278,30 @@ class ImageToolbarController:
             results = normalize_processor_output(output)
         except Exception:
             self._logger.exception("Could not stack/combine selected results")
+            return
+        self._publishResults(results)
+
+    def imageCalculator(self) -> None:
+        # ImageJ-style: pick any two loaded results, not just the selection.
+        loaded = [
+            result
+            for _name, result in self._reconstructionController.getAllResults()
+            if self._resultHasImage(result)
+        ]
+        if not loaded:
+            return
+        params = ImageCalculatorDialog.get_params(
+            loaded,
+            parent=self._view,
+            active_result=self._reconstructionController.getActiveResult(),
+        )
+        if params is None:
+            return
+        try:
+            output = ImageCalculatorProcessor().apply(params["results"][0], params)
+            results = normalize_processor_output(output)
+        except Exception:
+            self._logger.exception("Could not run the image calculator")
             return
         self._publishResults(results)
 

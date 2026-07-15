@@ -115,18 +115,24 @@ def test_duck_typed_results_default_to_image_kind():
 
 #: Processors that operate on localization tables (LocalizationResult).
 LOCALIZATION_PROCESSOR_IDS = {"smlm-render", "smlm-filter", "smlm-drift", "smlm-group"}
+#: Processors that operate on label masks (segmentation output).
+LABELS_PROCESSOR_IDS = {"label-morphology"}
 
 
 def test_non_image_results_are_never_offered_to_image_processors():
-    """The load-bearing property: table/curve/labels/rgb results match no
-    processor, and localization results match only the SMLM table/render
-    processors."""
+    """The load-bearing property: table/curve/rgb results match no processor;
+    labels results match only the morphology post-processing, and
+    localization results match only the SMLM table/render processors."""
     results = _representative_results()
     for processor in _all_processors():
-        for kind_name in ("table", "curve", "labels", "rgb"):
+        for kind_name in ("table", "curve", "rgb"):
             assert not processor.accepts(results[kind_name]), (
                 f"{processor.id} must not accept {kind_name} results"
             )
+        accepts_labels = processor.accepts(results["labels"])
+        assert accepts_labels == (
+            processor.id in LABELS_PROCESSOR_IDS
+        ), f"{processor.id} on labels"
         accepts_locs = processor.accepts(results["localization"])
         assert accepts_locs == (
             processor.id in LOCALIZATION_PROCESSOR_IDS
@@ -134,13 +140,20 @@ def test_non_image_results_are_never_offered_to_image_processors():
 
 
 def test_kind_gate_is_transparent_for_image_results():
-    """For plain image results, accepts() must equal the shape gate — the
-    kind check may not change which processors apply to images."""
+    """For plain image results, accepts() must equal the shape gate for every
+    image-kind processor — the kind check may not change which processors
+    apply to images. Non-image processors (labels/localization consumers) are
+    exactly the ones the kind gate must hide from images."""
     for image in (_image_2d(), _image_t_stack(), _image_c_stack()):
         for processor in _all_processors():
-            assert processor.accepts(image) == bool(processor.applies_to(image)), (
-                f"{processor.id} on {image.name}"
-            )
+            if "image" in processor.kinds:
+                assert processor.accepts(image) == bool(processor.applies_to(image)), (
+                    f"{processor.id} on {image.name}"
+                )
+            else:
+                assert not processor.accepts(image), (
+                    f"{processor.id} must not accept plain images"
+                )
 
 
 def test_composite_results_accepted_by_stack_and_channel_processors():

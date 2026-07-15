@@ -6,20 +6,27 @@ in the global registry alongside reconstructors.
 """
 
 from .base import Processor
+from .background import SubtractBackgroundProcessor
 from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
 from .colocalization import ColocalizationProcessor
 from .combine import StackCombineProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
+from .filters import FilterProcessor
 from .frc import FRCProcessor
+from .image_calculator import ImageCalculatorProcessor
+from .label_morphology import LabelMorphologyProcessor
 from .make_composite import MakeCompositeProcessor
 from .make_rgb import MakeRGBProcessor
+from .math_ops import MathProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
 from .psf_resolution import PSFResolutionProcessor
+from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
+from .transform import TransformProcessor
 from .smlm_drift import SmlmDriftProcessor
 from .smlm_filter import SmlmFilterProcessor
 from .smlm_group import SmlmGroupProcessor
@@ -32,16 +39,24 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'channel-merge': ChannelMergeProcessor,
     'channel-split': ChannelSplitProcessor,
     'colocalization': ColocalizationProcessor,
+    'convert-type': ConvertTypeProcessor,
     'drift-correct': DriftCorrectProcessor,
+    'filter': FilterProcessor,
     'frc': FRCProcessor,
+    'image-calculator': ImageCalculatorProcessor,
+    'label-morphology': LabelMorphologyProcessor,
     'make-composite': MakeCompositeProcessor,
     'make-rgb': MakeRGBProcessor,
+    'math': MathProcessor,
     'multicolor-apply': MulticolorApplyProcessor,
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
     'projection': ProjectionProcessor,
     'psf-resolution': PSFResolutionProcessor,
+    'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
+    'subtract-background': SubtractBackgroundProcessor,
+    'transform': TransformProcessor,
     'smlm-drift': SmlmDriftProcessor,
     'smlm-filter': SmlmFilterProcessor,
     'smlm-group': SmlmGroupProcessor,
@@ -197,16 +212,24 @@ __all__ = [
     "ChannelMergeProcessor",
     "ChannelSplitProcessor",
     "ColocalizationProcessor",
+    "ConvertTypeProcessor",
     "DriftCorrectProcessor",
+    "FilterProcessor",
     "FRCProcessor",
+    "ImageCalculatorProcessor",
+    "LabelMorphologyProcessor",
     "MakeCompositeProcessor",
     "MakeRGBProcessor",
+    "MathProcessor",
     "MulticolorApplyProcessor",
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
     "ProjectionProcessor",
     "PSFResolutionProcessor",
+    "ResizeProcessor",
     "SegmentationProcessor",
+    "SubtractBackgroundProcessor",
+    "TransformProcessor",
     "SmlmDriftProcessor",
     "SmlmFilterProcessor",
     "SmlmGroupProcessor",

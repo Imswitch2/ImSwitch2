@@ -157,6 +157,7 @@ def test_image_ops_toolbar_holds_result_producing_actions(qapp):
         "split-channels",
         "merge-channels",
         "stack-combine",
+        "image-calculator",
         "make-composite",
         "make-rgb",
     ]
