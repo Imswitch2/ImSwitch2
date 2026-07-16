@@ -180,6 +180,15 @@ class ImConMainController(MainController):
         # Update File menu to show effective shortcuts
         self.__mainView.updateMenuActionShortcuts(self.__shortcutManager.getEffectiveBindings())
 
+        # Only the visible module tab's shortcut set may be live: all module
+        # tabs share one top-level window, so Window/Application-scoped
+        # bindings from a hidden tab would collide with the visible module's.
+        if hasattr(self.__mainView, 'sigModuleVisibilityChanged'):
+            self.__mainView.sigModuleVisibilityChanged.connect(
+                self.__shortcutManager.setBindingsEnabled
+            )
+            self.__shortcutManager.setBindingsEnabled(self.__mainView.isVisible())
+
         # Inject ShortcutManager into SetupModesController (Phase 3d)
         if 'SetupModes' in self.controllers:
             self.controllers['SetupModes'].setShortcutManager(

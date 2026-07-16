@@ -82,6 +82,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageMakeRgbRequested = QtCore.Signal()
 
     sigConfigureShortcuts = QtCore.Signal()
+    # Emitted on show/hide (i.e. module tab switches in the multi-module
+    # window) so the ShortcutManager only keeps the visible module's set live.
+    sigModuleVisibilityChanged = QtCore.Signal(bool)
 
     sigClosing = QtCore.Signal()
 
@@ -1625,6 +1628,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.sigClosing.emit()
         event.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sigModuleVisibilityChanged.emit(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.sigModuleVisibilityChanged.emit(False)
 
     def dragEnterEvent(self, event):
         """Accept drag events containing file URLs."""

@@ -220,6 +220,14 @@ class ImProcessMainController(MainController):
             self._shortcutManager.getEffectiveBindings()
         )
         self.__mainView.sigConfigureShortcuts.connect(self._openShortcutEditor)
+        # Only the visible module tab's shortcut set may be live: all tabs
+        # share one top-level window, so a hidden module's Window-scoped
+        # bindings would otherwise stay active and collide with ours.
+        if hasattr(self.__mainView, 'sigModuleVisibilityChanged'):
+            self.__mainView.sigModuleVisibilityChanged.connect(
+                self._shortcutManager.setBindingsEnabled
+            )
+            self._shortcutManager.setBindingsEnabled(self.__mainView.isVisible())
 
     def _openShortcutEditor(self) -> None:
         from imswitch.imcommon.view.ShortcutEditorDialog import ShortcutEditorDialog

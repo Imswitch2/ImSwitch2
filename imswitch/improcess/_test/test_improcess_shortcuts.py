@@ -179,6 +179,58 @@ def test_editor_persists_through_callback(qapp):
     assert "image.crop-substack" not in saved[0]
 
 
+# -- module isolation: only the visible tab's set is live ----------------------------
+
+def _built_qt_actions(manager):
+    return [obj for objs in manager._qtObjects.values() for obj in objs]
+
+
+def test_bindings_toggle_with_module_visibility(qapp):
+    view = _stub_view()
+    window = QtWidgets.QMainWindow()
+    window.shortcutsMenu = QtWidgets.QMenu("&Shortcuts", window)
+    manager = ShortcutManager()
+    register_improcess_shortcuts(manager, view)
+    manager.computeEffectiveBindings()
+    manager.build(window.shortcutsMenu, window)
+
+    built = _built_qt_actions(manager)
+    assert built and all(action.isEnabled() for action in built)
+
+    manager.setBindingsEnabled(False)  # tab hidden
+    assert all(not action.isEnabled() for action in built)
+    manager.setBindingsEnabled(True)  # tab shown again
+    assert all(action.isEnabled() for action in built)
+
+
+def test_disabled_state_survives_a_rebuild(qapp):
+    """The editor's Apply rebuilds all bindings; a hidden module must stay off."""
+    view = _stub_view()
+    window = QtWidgets.QMainWindow()
+    window.shortcutsMenu = QtWidgets.QMenu("&Shortcuts", window)
+    manager = ShortcutManager()
+    register_improcess_shortcuts(manager, view)
+    manager.computeEffectiveBindings()
+    manager.setBindingsEnabled(False)
+
+    manager.build(window.shortcutsMenu, window)
+
+    built = _built_qt_actions(manager)
+    assert built and all(not action.isEnabled() for action in built)
+
+
+def test_view_show_hide_emits_visibility_signal(qapp):
+    view = ImProcessMainView.__new__(ImProcessMainView)
+    QtWidgets.QMainWindow.__init__(view)
+    states = []
+    view.sigModuleVisibilityChanged.connect(states.append)
+
+    view.show()
+    view.hide()
+
+    assert states == [True, False]
+
+
 # -- preferences menu placement -----------------------------------------------------------
 
 def test_module_settings_live_in_preferences_menu_not_tools(qapp):

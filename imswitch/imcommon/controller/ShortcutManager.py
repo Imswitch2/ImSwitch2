@@ -80,6 +80,28 @@ class ShortcutManager:
         self._effectiveBindings = {}  # actionId -> (keySequence | list[keySequence] | None)
         self._qtObjects = {}  # actionId -> list of QShortcut or QAction
         self._conflictWarnings = []  # List of conflict messages
+        # Multi-module isolation: each module gates its manager on its tab
+        # visibility so only the visible module's shortcut set is live.
+        self._bindingsEnabled = True
+
+    def setBindingsEnabled(self, enabled: bool) -> None:
+        """Enable/disable every built binding (module tab shown/hidden).
+
+        All module tabs share one top-level window, so Window/Application
+        scoped bindings from a hidden tab would otherwise stay active and
+        collide with the visible module's set. The flag persists across
+        ``build()`` calls (e.g. after the editor rebinds).
+        """
+        self._bindingsEnabled = bool(enabled)
+        for objs in self._qtObjects.values():
+            for obj in objs:
+                try:
+                    obj.setEnabled(self._bindingsEnabled)
+                except (AttributeError, RuntimeError):
+                    pass  # Object may already be deleted
+        self.__logger.debug(
+            f'Shortcut bindings {"enabled" if enabled else "disabled"}'
+        )
         
     def collect(self, catalog: Dict[str, ShortcutAction]) -> None:
         """Collect action catalog from decorated methods.
@@ -302,6 +324,7 @@ class ShortcutManager:
         # Create QAction for menu entry
         qtAction = QtWidgets.QAction(action.displayName, parent)
         qtAction.setShortcut(keySeq)
+        qtAction.setEnabled(self._bindingsEnabled)
         qtAction.triggered.connect(lambda checked=False, callback=action.callback: callback())
         
         # Add to menu
