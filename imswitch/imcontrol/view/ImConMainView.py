@@ -17,6 +17,9 @@ class ImConMainView(QtWidgets.QMainWindow):
     sigSaveWidgetState = QtCore.Signal()
     sigLoadWidgetState = QtCore.Signal()
     sigOpenShortcutEditor = QtCore.Signal()
+    # Emitted on show/hide (i.e. module tab switches in the multi-module
+    # window) so the ShortcutManager only keeps the visible module's set live.
+    sigModuleVisibilityChanged = QtCore.Signal(bool)
 
     def __init__(self, options, viewSetupInfo, *args, **kwargs):
         self.__logger = initLogger(self)
@@ -206,6 +209,14 @@ class ImConMainView(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.sigClosing.emit()
         event.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sigModuleVisibilityChanged.emit(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.sigModuleVisibilityChanged.emit(False)
 
     def _addDocks(self, dockInfoDict, dockArea, position):
         docks = []

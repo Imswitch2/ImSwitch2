@@ -624,6 +624,46 @@ def test_snap_hdf5_structured_layout(tmp_path):
         assert meta_group.attrs['uncategorized_key'] == 'value'
 
 
+def test_snap_hdf5_existing_file_uses_numbered_name(tmp_path):
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    detectorName = list(detectorInfosBasic.keys())[0]
+    savepath = str(tmp_path / 'specified_snap')
+    existing_file = f'{savepath}_{detectorName}.h5'
+
+    with h5py.File(existing_file, 'w') as file:
+        file.attrs['sentinel'] = 'keep'
+
+    image = np.zeros((1, 8, 8), dtype=np.uint16)
+    recordingManager.snapImagePrev(
+        detectorName,
+        savepath,
+        SaveFormat.HDF5,
+        image,
+        {detectorName: {}},
+    )
+
+    numbered_file = f'{savepath}_1_{detectorName}.h5'
+    assert os.path.exists(existing_file)
+    assert os.path.exists(numbered_file)
+
+    with h5py.File(existing_file, 'r') as file:
+        assert file.attrs['sentinel'] == 'keep'
+    with h5py.File(numbered_file, 'r') as file:
+        np.testing.assert_array_equal(file[detectorName]['data'][:], image)
+
+
+def test_recording_path_existing_file_uses_numbered_suffix(tmp_path):
+    recordingManager = RecordingManager(_OmeMetaDetectors())
+    path = tmp_path / 'specified_rec_CAM.hdf5'
+    path.touch()
+    (tmp_path / 'specified_rec_CAM_1.hdf5').touch()
+
+    assert recordingManager.getSaveFilePath(str(path)) == str(
+        tmp_path / 'specified_rec_CAM_2.hdf5'
+    )
+
+
 def test_snap_axis_ordering():
     """Test that snapshots use (T, Y, X) axis convention without reversal."""
     from imswitch.imcontrol.model import DetectorsManager, RecordingManager

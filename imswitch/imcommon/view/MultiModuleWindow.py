@@ -109,31 +109,33 @@ class MultiModuleWindow(QtWidgets.QMainWindow):
     def addItemsToMenuBar(self, menuBar):
         menuChildren = menuBar.findChildren(QtWidgets.QMenu, None, QtCore.Qt.FindDirectChildrenOnly)
 
-        toolsMenu = None
+        # Application-level settings live in a Preferences menu, not in the
+        # module's Tools menu (which carries the module's own tooling).
+        preferencesMenu = None
         helpMenu = None
         for menuChild in menuChildren:
-            if menuChild.title() == '&Tools':
-                toolsMenu = menuChild
+            if menuChild.title() == '&Preferences':
+                preferencesMenu = menuChild
             if menuChild.title() == '&Help':
                 helpMenu = menuChild
 
-        if toolsMenu is None:
-            toolsMenu = menuBar.addMenu('&Tools')
+        if preferencesMenu is None:
+            preferencesMenu = menuBar.addMenu('&Preferences')
         if helpMenu is None:
             helpMenu = menuBar.addMenu('&Help')
 
-        if not toolsMenu.isEmpty():
-            toolsMenu.addSeparator()
+        if not preferencesMenu.isEmpty():
+            preferencesMenu.addSeparator()
         if not helpMenu.isEmpty():
             helpMenu.addSeparator()
 
         pickModulesAction = QtWidgets.QAction('Set active modules…', self)
         pickModulesAction.triggered.connect(self.sigPickModules)
-        toolsMenu.addAction(pickModulesAction)
+        preferencesMenu.addAction(pickModulesAction)
 
         openUserDirAction = QtWidgets.QAction('Open user files folder', self)
         openUserDirAction.triggered.connect(self.sigOpenUserDir)
-        toolsMenu.addAction(openUserDirAction)
+        preferencesMenu.addAction(openUserDirAction)
 
         showDocsAction = QtWidgets.QAction('Documentation', self)
         showDocsAction.triggered.connect(self.sigShowDocs)

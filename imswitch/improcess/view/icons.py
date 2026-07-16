@@ -21,6 +21,8 @@ IMPROCESS_ICON_NAMES = {
     "split-stack": "mdi.arrow-split-horizontal",
     "split-channels": "mdi6.arrow-split-vertical",
     "merge-channels": "mdi.arrow-collapse-vertical",
+    "stack-combine": "mdi6.layers-triple-outline",
+    "image-calculator": "mdi6.calculator-variant-outline",
     "make-composite": "mdi6.layers-edit",
     "make-rgb": "mdi6.google-circles-communities",
     "reset-view": "ph.arrows-out-thin",
@@ -31,6 +33,9 @@ IMPROCESS_ICON_NAMES = {
     "projection": "mdi6.axis-arrow",
     "segmentation": "ph.user-rectangle-fill",
     "results-table": "fa6s.rectangle-list",
+    "plugin-store": "mdi6.storefront-outline",
+    "plugin-folder": "mdi6.folder-open-outline",
+    "plugin-reload": "mdi6.reload",
 }
 
 _FALLBACK_STANDARDS = {
@@ -47,6 +52,8 @@ _FALLBACK_STANDARDS = {
     "split-stack": QtWidgets.QStyle.SP_FileDialogListView,
     "split-channels": QtWidgets.QStyle.SP_DirIcon,
     "merge-channels": QtWidgets.QStyle.SP_DialogOpenButton,
+    "stack-combine": QtWidgets.QStyle.SP_FileDialogNewFolder,
+    "image-calculator": QtWidgets.QStyle.SP_FileDialogContentsView,
     "make-composite": QtWidgets.QStyle.SP_FileDialogContentsView,
     "make-rgb": QtWidgets.QStyle.SP_DriveHDIcon,
     "reset-view": QtWidgets.QStyle.SP_ComputerIcon,
@@ -57,6 +64,9 @@ _FALLBACK_STANDARDS = {
     "projection": QtWidgets.QStyle.SP_ArrowDown,
     "segmentation": QtWidgets.QStyle.SP_DialogApplyButton,
     "results-table": QtWidgets.QStyle.SP_FileDialogDetailedView,
+    "plugin-store": QtWidgets.QStyle.SP_DialogOpenButton,
+    "plugin-folder": QtWidgets.QStyle.SP_DirOpenIcon,
+    "plugin-reload": QtWidgets.QStyle.SP_BrowserReload,
 }
 
 _QTAWESOME_MISSING_WARNED = False

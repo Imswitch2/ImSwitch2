@@ -76,8 +76,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageSplitStackRequested = QtCore.Signal()
     sigImageSplitChannelsRequested = QtCore.Signal()
     sigImageMergeChannelsRequested = QtCore.Signal()
+    sigImageStackCombineRequested = QtCore.Signal()
+    sigImageCalculatorRequested = QtCore.Signal()
     sigImageMakeCompositeRequested = QtCore.Signal()
     sigImageMakeRgbRequested = QtCore.Signal()
+
+    sigConfigureShortcuts = QtCore.Signal()
+    # Emitted on show/hide (i.e. module tab switches in the multi-module
+    # window) so the ShortcutManager only keeps the visible module's set live.
+    sigModuleVisibilityChanged = QtCore.Signal(bool)
 
     sigClosing = QtCore.Signal()
 
@@ -126,16 +133,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._fileToolbar.setObjectName('ImProcessFileToolsToolbar')
         self._fileToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
 
+        # Keyboard bindings for these actions are owned by the ShortcutManager
+        # (configurable, Fiji-parity defaults); actions carry no hard-coded
+        # setShortcut so a binding is never registered twice. The effective
+        # keys are displayed via updateActionShortcutDisplays().
+        self._shortcutActions: dict[str, QtWidgets.QAction] = {}
+
         quickLoadAction = QtWidgets.QAction(
             improcessIcon('quick-load-data', self),
             'Quick load data…',
             self,
         )
-        quickLoadAction.setShortcut('Ctrl+T')
         quickLoadAction.triggered.connect(self.sigQuickLoadData)
         quickLoadAction.setToolTip('Load data as current data')
         quickLoadAction.setStatusTip('Load data as current data')
         file.addAction(quickLoadAction)
+        self._shortcutActions['file.quick-load'] = quickLoadAction
         self._addFileToolAction('quick-load-data', quickLoadAction)
 
         quickLoadVirtualAction = QtWidgets.QAction(
@@ -143,11 +156,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Virtual load data…',
             self,
         )
-        quickLoadVirtualAction.setShortcut('Ctrl+Shift+T')
         quickLoadVirtualAction.setToolTip('Open data as a lazy virtual stack')
         quickLoadVirtualAction.setStatusTip('Open data as a lazy virtual stack')
         quickLoadVirtualAction.triggered.connect(self.sigQuickLoadVirtualData)
         file.addAction(quickLoadVirtualAction)
+        self._shortcutActions['file.quick-load-virtual'] = quickLoadVirtualAction
         self._addFileToolAction('quick-load-virtual-data', quickLoadVirtualAction)
 
         file.addSeparator()
@@ -157,24 +170,24 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Save reconstruction…',
             self,
         )
-        saveReconAction.setShortcut('Ctrl+D')
         saveReconAction.triggered.connect(self.sigSaveReconstruction)
         saveReconAction.setToolTip('Save the active reconstruction')
         saveReconAction.setStatusTip('Save the active reconstruction')
         file.addAction(saveReconAction)
+        self._shortcutActions['file.save-reconstruction'] = saveReconAction
         self._addFileToolAction('save-reconstruction', saveReconAction)
         saveReconAllAction = QtWidgets.QAction('Save all reconstructions…', self)
-        saveReconAllAction.setShortcut('Ctrl+Shift+D')
         saveReconAllAction.triggered.connect(self.sigSaveReconstructionAll)
         file.addAction(saveReconAllAction)
+        self._shortcutActions['file.save-reconstruction-all'] = saveReconAllAction
         saveCoeffsAction = QtWidgets.QAction('Save coefficients of reconstruction…', self)
-        saveCoeffsAction.setShortcut('Ctrl+A')
         saveCoeffsAction.triggered.connect(self.sigSaveCoeffs)
         file.addAction(saveCoeffsAction)
+        self._shortcutActions['file.save-coeffs'] = saveCoeffsAction
         saveCoeffsAllAction = QtWidgets.QAction('Save all coefficients…', self)
-        saveCoeffsAllAction.setShortcut('Ctrl+Shift+A')
         saveCoeffsAllAction.triggered.connect(self.sigSaveCoeffsAll)
         file.addAction(saveCoeffsAllAction)
+        self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
         file.addSeparator()
 
@@ -186,19 +199,29 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         setSaveFolder.triggered.connect(self.sigSetSaveFolder)
         file.addAction(setSaveFolder)
 
+        # Toolbars split along the result-unification invariant: Image holds
+        # display-only actions (never publish a result), Image operations
+        # holds result-producing ones; Tools carries the built-in panels and
+        # Plugins the drop-in analysis plugins.
         self._imageActions: dict[str, QtWidgets.QAction] = {}
         self._imageLutActions: dict[str, QtWidgets.QAction] = {}
         self._imageMenu = menuBar.addMenu('&Image')
-        self._analysisMenu = menuBar.addMenu('&Analyze')
-        self._imageToolbar = self.addToolBar('Image tools')
-        self._imageToolbar.setObjectName('ImProcessImageToolsToolbar')
+        self._imageOpsMenu = menuBar.addMenu('&Operations')
+        self._analysisMenu = menuBar.addMenu('&Tools')
+        self._pluginsMenu = menuBar.addMenu('&Plugins')
+        self._imageToolbar = self.addToolBar('Image')
+        self._imageToolbar.setObjectName('ImProcessImageDisplayToolbar')
         self._imageToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self._imageOpsToolbar = self.addToolBar('Image operations')
+        self._imageOpsToolbar.setObjectName('ImProcessImageOperationsToolbar')
+        self._imageOpsToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self._buildImageToolbar()
+        self._buildImageOpsToolbar()
         self.setImageActionsEnabled(False)
 
         self._analysisToolActions: dict[str, QtWidgets.QAction] = {}
-        self._processorToolbar = self.addToolBar('Analysis tools')
-        self._processorToolbar.setObjectName('ImProcessAnalysisToolsToolbar')
+        self._processorToolbar = self.addToolBar('Tools')
+        self._processorToolbar.setObjectName('ImProcessToolsToolbar')
         self._processorToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self._loadProcessorCombo = QtWidgets.QComboBox()
         self._loadProcessorCombo.setMinimumContentsLength(18)
@@ -217,7 +240,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addSeparator()
         self._processorToolbar.addWidget(QtWidgets.QLabel('Panels: '))
         self._buildAnalysisToolShortcuts()
-        self._buildAnalysisPluginMenu()
+
+        self._pluginsToolbar = self.addToolBar('Plugins')
+        self._pluginsToolbar.setObjectName('ImProcessPluginsToolbar')
+        self._pluginsToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self._loadPluginCombo = QtWidgets.QComboBox()
+        self._loadPluginCombo.setMinimumContentsLength(18)
+        self._loadPluginCombo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self._loadPluginCombo.setToolTip('Load an installed drop-in analysis plugin at runtime')
+        self._pluginsToolbar.addWidget(QtWidgets.QLabel('Load plugin: '))
+        self._pluginsToolbar.addWidget(self._loadPluginCombo)
+        self._loadPluginCombo.activated.connect(self._on_load_plugin_combo_activated)
+        self._buildPluginsMenu()
+
+        # Shortcuts menu: the configure entry opens the shared editor; the
+        # ShortcutManager fills the rest with the effective bindings.
+        self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
+        configureShortcutsAction = QtWidgets.QAction('Configure shortcuts…', self)
+        configureShortcutsAction.triggered.connect(self.sigConfigureShortcuts)
+        self.shortcutsMenu.addAction(configureShortcutsAction)
+        self.shortcutsMenu.addSeparator()
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
@@ -494,6 +536,21 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
+    def setAvailablePluginTools(
+        self,
+        choices: list[tuple[str, str]],
+        placeholder: str = 'All plugins loaded',
+    ) -> None:
+        combo = self._loadPluginCombo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(placeholder, userData=None)
+        for plugin_id, plugin_name in choices:
+            combo.addItem(str(plugin_name or plugin_id), userData=plugin_id)
+        combo.setEnabled(bool(choices))
+        combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
     def setLoadedRuntimeProcessors(self, choices: list[tuple[str, str]]) -> None:
         combo = self._loadedProcessorCombo
         combo.blockSignals(True)
@@ -548,6 +605,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addAction(action)
         self._analysisMenu.addAction(action)
         self._analysisToolActions[str(tool_id)] = action
+        self._shortcutActions[f'panel.{tool_id}'] = action
         return action
 
     def _addAnalysisDockAction(
@@ -566,46 +624,84 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addAction(action)
         self._analysisMenu.addAction(action)
         self._analysisToolActions[str(action_id)] = action
+        self._shortcutActions[f'panel.{action_id}'] = action
         return action
 
-    def _buildAnalysisPluginMenu(self) -> None:
-        """Add a 'Drop-in plugins' submenu to the Analyze menu.
+    def updateActionShortcutDisplays(self, effectiveBindings: dict) -> None:
+        """Show effective shortcut keys on the menu/toolbar actions.
+
+        Display-only (``text\\tKey``): the actual keyboard bindings are owned
+        by the ShortcutManager, so setting QAction shortcuts here would
+        register every key twice and make them ambiguous.
+        """
+        for action_id, action in self._shortcutActions.items():
+            base_text = action.property('shortcutBaseText')
+            if base_text is None:
+                base_text = action.text()
+                action.setProperty('shortcutBaseText', base_text)
+            key = effectiveBindings.get(action_id)
+            if isinstance(key, list):
+                key = key[0] if key else None
+            action.setText(f'{base_text}\t{key}' if key else base_text)
+            tooltip = action.property('shortcutBaseTooltip')
+            if tooltip is None:
+                tooltip = action.toolTip()
+                action.setProperty('shortcutBaseTooltip', tooltip)
+            action.setToolTip(f'{tooltip} ({key})' if key else tooltip)
+
+    def _buildPluginsMenu(self) -> None:
+        """Populate the top-level Plugins menu and toolbar actions.
 
         Mirrors Picasso: a folder-opener so users can find where to drop their
         ``.py`` files, and a reload action so newly-added plugins appear without
-        restarting ImProcess.
+        restarting ImProcess. The store and reload actions are also placed on
+        the Plugins toolbar next to the plugin-loader combo.
         """
         self._pluginMenuActions: dict[str, QtWidgets.QAction] = {}
-        self._analysisMenu.addSeparator()
-        submenu = self._analysisMenu.addMenu('Drop-in plugins')
 
-        store_action = submenu.addAction('Browse online plugins...')
-        store_action.setStatusTip(
+        store_action = QtWidgets.QAction(
+            improcessIcon('plugin-store', self), 'Browse online plugins...', self
+        )
+        store_action.setToolTip(
             'Install, update or remove analysis plugins from the online registry'
         )
+        store_action.setStatusTip(store_action.toolTip())
         store_action.triggered.connect(
             lambda _checked=False: self._openPluginStore()
         )
+        self._pluginsMenu.addAction(store_action)
         self._pluginMenuActions['browse-online'] = store_action
-        submenu.addSeparator()
+        self._pluginsMenu.addSeparator()
 
-        open_action = submenu.addAction('Open plugins folder...')
-        open_action.setStatusTip(
+        open_action = QtWidgets.QAction(
+            improcessIcon('plugin-folder', self), 'Open plugins folder...', self
+        )
+        open_action.setToolTip(
             'Open the folder where drop-in analysis plugins (.py) are discovered'
         )
+        open_action.setStatusTip(open_action.toolTip())
         open_action.triggered.connect(
             lambda _checked=False: self._openUserPluginsFolder()
         )
+        self._pluginsMenu.addAction(open_action)
         self._pluginMenuActions['open-folder'] = open_action
 
-        reload_action = submenu.addAction('Reload plugins')
-        reload_action.setStatusTip(
+        reload_action = QtWidgets.QAction(
+            improcessIcon('plugin-reload', self), 'Reload plugins', self
+        )
+        reload_action.setToolTip(
             'Re-scan the plugins folder for newly added or removed analysis tools'
         )
+        reload_action.setStatusTip(reload_action.toolTip())
         reload_action.triggered.connect(
             lambda _checked=False: self.sigReloadPluginsRequested.emit()
         )
+        self._pluginsMenu.addAction(reload_action)
         self._pluginMenuActions['reload'] = reload_action
+
+        self._pluginsToolbar.addSeparator()
+        self._pluginsToolbar.addAction(store_action)
+        self._pluginsToolbar.addAction(reload_action)
 
     def _openUserPluginsFolder(self) -> None:
         """Open the drop-in plugins directory in the system file browser."""
@@ -629,6 +725,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         combo.setCurrentIndex(0)
         if processor_id:
             self.sigLoadProcessorRequested.emit(str(processor_id))
+
+    def _on_load_plugin_combo_activated(self, index: int) -> None:
+        combo = self._loadPluginCombo
+        plugin_id = combo.itemData(index) if 0 <= index < combo.count() else None
+        combo.setCurrentIndex(0)
+        if plugin_id:
+            # Plugin panels load through the same runtime-tool path as
+            # built-ins; only the combo they are listed in differs.
+            self.sigLoadProcessorRequested.emit(str(plugin_id))
 
     def startupRuntimeAnalysisToolIds(self) -> list[str]:
         """Return registry-backed analysis panels requested at startup."""
@@ -751,6 +856,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             pass
 
     def _buildImageToolbar(self) -> None:
+        """Display-only actions: adjust how the active result is shown."""
         self._addImageAction(
             'auto-contrast',
             'Auto contrast',
@@ -764,7 +870,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Open the brightness and contrast min/max dialog',
             improcessIcon('brightness-contrast', self),
             self.sigImageContrastDialogRequested,
-            shortcut='Ctrl+Shift+C',
         )
         self._addImageAction(
             'reset-contrast',
@@ -784,11 +889,23 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._imageToolbar.addSeparator()
         self._imageMenu.addSeparator()
         self._addImageAction(
+            'reset-view',
+            'Reset view',
+            'Reset the reconstruction viewer camera',
+            improcessIcon('reset-view', self),
+            self.sigImageResetViewRequested,
+        )
+
+    def _buildImageOpsToolbar(self) -> None:
+        """Result-producing operations: each publishes a new ProcessingResult."""
+        self._addImageAction(
             'duplicate',
             'Duplicate',
             'Duplicate the active result',
             improcessIcon('duplicate', self),
             self.sigImageDuplicateRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'crop-substack',
@@ -796,6 +913,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Create a cropped or ranged substack from the active result',
             improcessIcon('crop-substack', self),
             self.sigImageCropSubstackRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'max-projection',
@@ -803,6 +922,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Create a max projection of the active result along the default stack axis',
             improcessIcon('max-projection', self),
             self.sigImageMaxProjectionRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'split-stack',
@@ -810,6 +931,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Split the active stack into one result per plane',
             improcessIcon('split-stack', self),
             self.sigImageSplitStackRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'split-channels',
@@ -817,6 +940,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Split a C, Channel or Base axis into one result per channel',
             improcessIcon('split-channels', self),
             self.sigImageSplitChannelsRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'merge-channels',
@@ -824,6 +949,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Merge selected compatible results into a C-axis channel stack',
             improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
+        )
+        self._addImageAction(
+            'stack-combine',
+            'Stack/Combine...',
+            'Stack or concatenate the selected results into one output',
+            improcessIcon('stack-combine', self),
+            self.sigImageStackCombineRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
+        )
+        self._addImageAction(
+            'image-calculator',
+            'Image calculator...',
+            'Pixel-wise arithmetic between two loaded results',
+            improcessIcon('image-calculator', self),
+            self.sigImageCalculatorRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'make-composite',
@@ -831,6 +976,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Render a C, Channel or Base axis as colored display layers',
             improcessIcon('make-composite', self),
             self.sigImageMakeCompositeRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
         self._addImageAction(
             'make-rgb',
@@ -838,15 +985,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Bake a C, Channel or Base axis into an RGB visualization result',
             improcessIcon('make-rgb', self),
             self.sigImageMakeRgbRequested,
-        )
-        self._imageToolbar.addSeparator()
-        self._imageMenu.addSeparator()
-        self._addImageAction(
-            'reset-view',
-            'Reset view',
-            'Reset the reconstruction viewer camera',
-            improcessIcon('reset-view', self),
-            self.sigImageResetViewRequested,
+            toolbar=self._imageOpsToolbar,
+            menu=self._imageOpsMenu,
         )
 
     def _addImageAction(
@@ -858,6 +998,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         signal,
         *,
         shortcut: str | None = None,
+        toolbar: QtWidgets.QToolBar | None = None,
+        menu: QtWidgets.QMenu | None = None,
     ) -> QtWidgets.QAction:
         action = QtWidgets.QAction(icon, text, self)
         action.setToolTip(tooltip)
@@ -865,9 +1007,10 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if shortcut:
             action.setShortcut(shortcut)
         action.triggered.connect(lambda _checked=False, sig=signal: sig.emit())
-        self._imageToolbar.addAction(action)
-        self._imageMenu.addAction(action)
+        (toolbar if toolbar is not None else self._imageToolbar).addAction(action)
+        (menu if menu is not None else self._imageMenu).addAction(action)
         self._imageActions[action_id] = action
+        self._shortcutActions[f'image.{action_id}'] = action
         return action
 
     def _addImageLutSelector(self) -> None:
@@ -1486,6 +1629,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.sigClosing.emit()
         event.accept()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sigModuleVisibilityChanged.emit(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.sigModuleVisibilityChanged.emit(False)
+
     def dragEnterEvent(self, event):
         """Accept drag events containing file URLs."""
         if event.mimeData().hasUrls():
@@ -1540,12 +1691,12 @@ class ReconParTree(ParameterTree):
         params = [
             {'name': 'Pixel size', 'type': 'float', 'value': 77, 'suffix': 'nm'},
             {'name': 'Reconstruction method', 'type': 'list',
-             'value': 'MoNaLISA',
-             'values': ['MoNaLISA', 'Fast Gauss MoNaLISA'],
+             'value': 'Fast Gauss MoNaLISA',
+             'values': ['Fast Gauss MoNaLISA', 'MoNaLISA'],
              'tip': (
-                 'MoNaLISA runs the full post-acquisition SignalExtractor path. '
-                 'Fast Gauss MoNaLISA uses the low-latency Gaussian reassignment '
-                 'path that live reconstruction always uses.'
+                 'Fast Gauss MoNaLISA (default) uses the low-latency Gaussian '
+                 'reassignment path that live reconstruction always uses. '
+                 'MoNaLISA runs the full post-acquisition SignalExtractor path.'
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [

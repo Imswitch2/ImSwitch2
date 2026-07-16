@@ -121,6 +121,7 @@ def test_analysis_panel_shortcut_action_emits_runtime_tool_id(qapp):
     view._processorToolbar = QtWidgets.QToolBar()
     view._analysisMenu = QtWidgets.QMenu()
     view._analysisToolActions = {}
+    view._shortcutActions = {}
     view.sigLoadProcessorRequested = _Signal()
 
     icon = qapp.style().standardIcon(QtWidgets.QStyle.SP_FileDialogListView)
@@ -144,6 +145,7 @@ def test_build_analysis_panel_shortcuts_adds_all_actions(qapp):
     view._processorToolbar = QtWidgets.QToolBar()
     view._analysisMenu = QtWidgets.QMenu()
     view._analysisToolActions = {}
+    view._shortcutActions = {}
     view.sigLoadProcessorRequested = _Signal()
     view._addAnalysisToolAction = (
         lambda *args: ImProcessMainView._addAnalysisToolAction(view, *args)
@@ -165,16 +167,22 @@ def test_build_analysis_panel_shortcuts_adds_all_actions(qapp):
     )
 
 
-def test_analysis_plugin_menu_actions_and_reload_signal(qapp):
+def test_plugins_menu_actions_and_reload_signal(qapp):
     view = QtWidgets.QMainWindow()
-    view._analysisMenu = QtWidgets.QMenu()
+    view._pluginsMenu = QtWidgets.QMenu()
+    view._pluginsToolbar = QtWidgets.QToolBar()
     view.sigReloadPluginsRequested = _Signal()
 
-    ImProcessMainView._buildAnalysisPluginMenu(view)
+    ImProcessMainView._buildPluginsMenu(view)
 
     assert set(view._pluginMenuActions) == {"browse-online", "open-folder", "reload"}
     assert view._pluginMenuActions["open-folder"].text() == "Open plugins folder..."
     assert view._pluginMenuActions["browse-online"].text() == "Browse online plugins..."
+    # Store and reload live on the Plugins toolbar too (folder is menu-only).
+    toolbar_actions = view._pluginsToolbar.actions()
+    assert view._pluginMenuActions["browse-online"] in toolbar_actions
+    assert view._pluginMenuActions["reload"] in toolbar_actions
+    assert view._pluginMenuActions["open-folder"] not in toolbar_actions
 
     # Triggering "Reload plugins" asks the controller to re-scan the folder.
     view._pluginMenuActions["reload"].trigger()
@@ -193,6 +201,7 @@ def test_analysis_results_shortcut_raises_results_dock(qapp):
     view._processorToolbar = QtWidgets.QToolBar()
     view._analysisMenu = QtWidgets.QMenu()
     view._analysisToolActions = {}
+    view._shortcutActions = {}
     dock = _Dock()
     view.docks = {"Results": dock}
     view._safeRaiseDock = lambda current_dock: setattr(

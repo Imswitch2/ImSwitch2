@@ -31,11 +31,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         params = [
             {'name': 'Pixel size', 'type': 'float', 'value': 77, 'suffix': 'nm'},
             {'name': 'Reconstruction method', 'type': 'list',
-             'values': ['MoNaLISA', 'Fast Gauss MoNaLISA'],
+             'value': 'Fast Gauss MoNaLISA',
+             'values': ['Fast Gauss MoNaLISA', 'MoNaLISA'],
              'tip': (
-                 'MoNaLISA runs the full post-acquisition SignalExtractor path. '
-                 'Fast Gauss MoNaLISA uses the low-latency Gaussian reassignment '
-                 'path that live reconstruction always uses.'
+                 'Fast Gauss MoNaLISA (default) uses the low-latency Gaussian '
+                 'reassignment path that live reconstruction always uses. '
+                 'MoNaLISA runs the full post-acquisition SignalExtractor path.'
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [

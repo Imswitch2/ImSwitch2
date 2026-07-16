@@ -67,6 +67,15 @@ class ImProcessMainController(MainController):
         # channel once. Tracks which panels have had that bridge connected.
         self._panelResultBridges = set()
 
+        # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
+        # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
+        # wiring block ImProcess startup.
+        self._shortcutManager = None
+        try:
+            self._setup_shortcuts()
+        except Exception:
+            self.__logger.exception("Could not set up keyboard shortcuts")
+
         # Register the view's dock layout with the shared widget-state
         # persistence service so it is auto-restored at startup and auto-saved
         # at shutdown. Failures here must never block ImProcess from coming up.
@@ -192,6 +201,50 @@ class ImProcessMainController(MainController):
                 f"{plugin.id} ({plugin.name})"
             )
 
+    def _setup_shortcuts(self) -> None:
+        """Wire configurable keyboard shortcuts (same machinery as imcontrol)."""
+        from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
+        from imswitch.improcess.controller.shortcuts import (
+            load_shortcut_overrides,
+            register_improcess_shortcuts,
+        )
+
+        if not hasattr(self.__mainView, 'shortcutsMenu'):
+            return
+        self._shortcutManager = ShortcutManager()
+        register_improcess_shortcuts(self._shortcutManager, self.__mainView)
+        self._shortcutManager.loadConfigOverrides(load_shortcut_overrides())
+        self._shortcutManager.computeEffectiveBindings()
+        self._shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
+        self.__mainView.updateActionShortcutDisplays(
+            self._shortcutManager.getEffectiveBindings()
+        )
+        self.__mainView.sigConfigureShortcuts.connect(self._openShortcutEditor)
+        # Only the visible module tab's shortcut set may be live: all tabs
+        # share one top-level window, so a hidden module's Window-scoped
+        # bindings would otherwise stay active and collide with ours.
+        if hasattr(self.__mainView, 'sigModuleVisibilityChanged'):
+            self.__mainView.sigModuleVisibilityChanged.connect(
+                self._shortcutManager.setBindingsEnabled
+            )
+            self._shortcutManager.setBindingsEnabled(self.__mainView.isVisible())
+
+    def _openShortcutEditor(self) -> None:
+        from imswitch.imcommon.view.ShortcutEditorDialog import ShortcutEditorDialog
+        from imswitch.improcess.controller.shortcuts import save_shortcut_overrides
+
+        if self._shortcutManager is None:
+            return
+        dialog = ShortcutEditorDialog(
+            self.__mainView,
+            self._shortcutManager,
+            persistCallback=save_shortcut_overrides,
+        )
+        dialog.exec_()
+        self.__mainView.updateActionShortcutDisplays(
+            self._shortcutManager.getEffectiveBindings()
+        )
+
     def _refresh_runtime_processor_choices(self):
         from imswitch.improcess.reconstructors.registry import get_registry
         from imswitch.improcess.model.runtime_tools import (
@@ -201,28 +254,45 @@ class ImProcessMainController(MainController):
         registry = get_registry()
         loaded_processors = registry.processors()
         loaded = {processor.id for processor in loaded_processors}
-        tool_specs = runtime_analysis_tool_specs()
-        choices = []
-        seen_widgets = set()
-        for tool_id, spec in sorted(
-            tool_specs.items(),
-            key=lambda item: (item[1].category, item[1].title, item[0]),
-        ):
-            # Collapse tools that share one widget into a single entry: the
-            # multicolor registration + apply processors both open the Multicolor
-            # panel, so without this they show up twice. First (sorted) id wins.
-            if spec.attribute in seen_widgets:
-                continue
-            seen_widgets.add(spec.attribute)
-            processor_loaded = (
-                spec.processor_id is None
-                or spec.processor_id in loaded
+
+        def loadable_choices(tool_specs):
+            choices = []
+            seen_widgets = set()
+            for tool_id, spec in sorted(
+                tool_specs.items(),
+                key=lambda item: (item[1].category, item[1].title, item[0]),
+            ):
+                # Collapse tools that share one widget into a single entry: the
+                # multicolor registration + apply processors both open the
+                # Multicolor panel, so without this they show up twice. First
+                # (sorted) id wins.
+                if spec.attribute in seen_widgets:
+                    continue
+                seen_widgets.add(spec.attribute)
+                processor_loaded = (
+                    spec.processor_id is None
+                    or spec.processor_id in loaded
+                )
+                widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
+                if processor_loaded and widget_loaded:
+                    continue
+                choices.append((tool_id, _runtime_tool_display_title(spec)))
+            return choices
+
+        # Origin-split combos: built-in tools stay in the Tools toolbar, drop-in
+        # plugins get the Plugins toolbar. This method is the single refresh
+        # path for both (startup wiring and the plugin-reload handler call it).
+        self.__mainView.setAvailableRuntimeProcessors(
+            loadable_choices(runtime_analysis_tool_specs(origin="builtin"))
+        )
+        if hasattr(self.__mainView, 'setAvailablePluginTools'):
+            user_specs = runtime_analysis_tool_specs(origin="user")
+            self.__mainView.setAvailablePluginTools(
+                loadable_choices(user_specs),
+                placeholder=(
+                    'All plugins loaded' if user_specs else 'No plugins installed'
+                ),
             )
-            widget_loaded = self.__mainView.isRuntimeAnalysisToolLoaded(tool_id)
-            if processor_loaded and widget_loaded:
-                continue
-            choices.append((tool_id, _runtime_tool_display_title(spec)))
-        self.__mainView.setAvailableRuntimeProcessors(choices)
         self.__mainView.setLoadedRuntimeProcessors(
             [
                 (

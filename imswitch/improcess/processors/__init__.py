@@ -6,19 +6,27 @@ in the global registry alongside reconstructors.
 """
 
 from .base import Processor
+from .background import SubtractBackgroundProcessor
 from .channel_merge import ChannelMergeProcessor
 from .channel_split import ChannelSplitProcessor
 from .colocalization import ColocalizationProcessor
+from .combine import StackCombineProcessor
 from .denoise import DenoiseProcessor
 from .drift_correct import DriftCorrectProcessor
+from .filters import FilterProcessor
 from .frc import FRCProcessor
+from .image_calculator import ImageCalculatorProcessor
+from .label_morphology import LabelMorphologyProcessor
 from .make_composite import MakeCompositeProcessor
 from .make_rgb import MakeRGBProcessor
+from .math_ops import MathProcessor
 from .multicolor_apply import MulticolorApplyProcessor
 from .multicolor_registration import MulticolorRegistrationProcessor
 from .projection import ProjectionProcessor
 from .psf_resolution import PSFResolutionProcessor
+from .scale_type import ConvertTypeProcessor, ResizeProcessor
 from .segmentation import SegmentationProcessor
+from .transform import TransformProcessor
 from .smlm_drift import SmlmDriftProcessor
 from .smlm_filter import SmlmFilterProcessor
 from .smlm_group import SmlmGroupProcessor
@@ -31,20 +39,29 @@ _AVAILABLE_PROCESSOR_CLASSES = {
     'channel-merge': ChannelMergeProcessor,
     'channel-split': ChannelSplitProcessor,
     'colocalization': ColocalizationProcessor,
+    'convert-type': ConvertTypeProcessor,
     'drift-correct': DriftCorrectProcessor,
+    'filter': FilterProcessor,
     'frc': FRCProcessor,
+    'image-calculator': ImageCalculatorProcessor,
+    'label-morphology': LabelMorphologyProcessor,
     'make-composite': MakeCompositeProcessor,
     'make-rgb': MakeRGBProcessor,
+    'math': MathProcessor,
     'multicolor-apply': MulticolorApplyProcessor,
     'multicolor-registration': MulticolorRegistrationProcessor,
     'denoise': DenoiseProcessor,
     'projection': ProjectionProcessor,
     'psf-resolution': PSFResolutionProcessor,
+    'resize': ResizeProcessor,
     'segmentation': SegmentationProcessor,
+    'subtract-background': SubtractBackgroundProcessor,
+    'transform': TransformProcessor,
     'smlm-drift': SmlmDriftProcessor,
     'smlm-filter': SmlmFilterProcessor,
     'smlm-group': SmlmGroupProcessor,
     'smlm-render': SmlmRenderProcessor,
+    'stack-combine': StackCombineProcessor,
     'stack-split': StackSplitProcessor,
     'stack-subset': StackSubsetProcessor,
 }
@@ -116,15 +133,29 @@ def available_processor_choices() -> list[tuple[str, str]]:
     )
 
 
-def available_processor_specs() -> list[tuple[str, str, str]]:
-    """Return processor ids, display names and categories (built-in + user)."""
+def available_processor_specs(origin: str = "all") -> list[tuple[str, str, str]]:
+    """Return processor ids, display names and categories.
+
+    ``origin`` selects the source table: ``"builtin"`` for the shipped
+    processors, ``"user"`` for discovered drop-in plugins, ``"all"`` (default)
+    for both merged. The UI uses the split origins to keep built-in tools and
+    drop-in plugins in separate toolbars.
+    """
+    if origin == "builtin":
+        classes = dict(_AVAILABLE_PROCESSOR_CLASSES)
+    elif origin == "user":
+        classes = dict(_USER_PROCESSOR_CLASSES)
+    elif origin == "all":
+        classes = _all_processor_classes()
+    else:
+        raise ValueError(f"Unknown processor origin: {origin!r}")
     return sorted(
         (
             processor_id,
             plugin_cls.name,
             getattr(plugin_cls, "category", "Other"),
         )
-        for processor_id, plugin_cls in _all_processor_classes().items()
+        for processor_id, plugin_cls in classes.items()
     )
 
 
@@ -181,20 +212,29 @@ __all__ = [
     "ChannelMergeProcessor",
     "ChannelSplitProcessor",
     "ColocalizationProcessor",
+    "ConvertTypeProcessor",
     "DriftCorrectProcessor",
+    "FilterProcessor",
     "FRCProcessor",
+    "ImageCalculatorProcessor",
+    "LabelMorphologyProcessor",
     "MakeCompositeProcessor",
     "MakeRGBProcessor",
+    "MathProcessor",
     "MulticolorApplyProcessor",
     "MulticolorRegistrationProcessor",
     "DenoiseProcessor",
     "ProjectionProcessor",
     "PSFResolutionProcessor",
+    "ResizeProcessor",
     "SegmentationProcessor",
+    "SubtractBackgroundProcessor",
+    "TransformProcessor",
     "SmlmDriftProcessor",
     "SmlmFilterProcessor",
     "SmlmGroupProcessor",
     "SmlmRenderProcessor",
+    "StackCombineProcessor",
     "StackSplitProcessor",
     "StackSubsetProcessor",
     "available_processor_choices",

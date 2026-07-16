@@ -14,6 +14,8 @@ from imswitch.improcess.processors.channel_merge import (
     can_merge_results,
 )
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
+from imswitch.improcess.processors.combine import StackCombineProcessor
+from imswitch.improcess.processors.image_calculator import ImageCalculatorProcessor
 from imswitch.improcess.processors.make_composite import MakeCompositeProcessor
 from imswitch.improcess.processors.make_rgb import MakeRGBProcessor
 from imswitch.improcess.processors.projection.processor import ProjectionProcessor
@@ -23,6 +25,9 @@ from imswitch.improcess.processors._axis_split import resolve_axis, shape_for_re
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.ChannelPickerDialog import ChannelPickerDialog
+from imswitch.improcess.view.bulk_confirm import confirm_bulk_publish
+from imswitch.improcess.view.ImageCalculatorDialog import ImageCalculatorDialog
+from imswitch.improcess.view.StackCombineDialog import StackCombineDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
 
@@ -52,6 +57,8 @@ class ImageToolbarController:
         mainView.sigImageSplitStackRequested.connect(self.splitStack)
         mainView.sigImageSplitChannelsRequested.connect(self.splitChannels)
         mainView.sigImageMergeChannelsRequested.connect(self.mergeChannels)
+        mainView.sigImageStackCombineRequested.connect(self.stackCombine)
+        mainView.sigImageCalculatorRequested.connect(self.imageCalculator)
         mainView.sigImageMakeCompositeRequested.connect(self.makeComposite)
         mainView.sigImageMakeRgbRequested.connect(self.makeRgb)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
@@ -86,6 +93,14 @@ class ImageToolbarController:
             self._view.setImageActionEnabled(
                 "merge-channels",
                 has_image and self._canMergeSelectedResults(),
+            )
+            self._view.setImageActionEnabled(
+                "stack-combine",
+                has_image and len(self._selectedProcessingResults()) >= 2,
+            )
+            self._view.setImageActionEnabled(
+                "image-calculator",
+                has_image,
             )
             self._view.setImageActionEnabled(
                 "make-composite",
@@ -252,6 +267,45 @@ class ImageToolbarController:
             return
         self._publishResults(results)
 
+    def stackCombine(self) -> None:
+        selected = self._selectedProcessingResults()
+        if len(selected) < 2:
+            return
+        params = StackCombineDialog.get_params(selected, parent=self._view)
+        if params is None:
+            return
+        try:
+            output = StackCombineProcessor().apply(params["results"][0], params)
+            results = normalize_processor_output(output)
+        except Exception:
+            self._logger.exception("Could not stack/combine selected results")
+            return
+        self._publishResults(results)
+
+    def imageCalculator(self) -> None:
+        # ImageJ-style: pick any two loaded results, not just the selection.
+        loaded = [
+            result
+            for _name, result in self._reconstructionController.getAllResults()
+            if self._resultHasImage(result)
+        ]
+        if not loaded:
+            return
+        params = ImageCalculatorDialog.get_params(
+            loaded,
+            parent=self._view,
+            active_result=self._reconstructionController.getActiveResult(),
+        )
+        if params is None:
+            return
+        try:
+            output = ImageCalculatorProcessor().apply(params["results"][0], params)
+            results = normalize_processor_output(output)
+        except Exception:
+            self._logger.exception("Could not run the image calculator")
+            return
+        self._publishResults(results)
+
     def makeComposite(self) -> None:
         result = self._reconstructionController.getActiveResult()
         if not self._resultHasImage(result):
@@ -397,6 +451,11 @@ class ImageToolbarController:
         self._publishResults((result,))
 
     def _publishResults(self, results) -> None:
+        results = list(results)
+        # Safety valve: Split stack / Make composite on the wrong axis can
+        # mean hundreds of napari layers from one click — ask first.
+        if not confirm_bulk_publish(self._view, results):
+            return
         last_result = None
         for result in results:
             display_name = getattr(result, "name", "") or "Image result"

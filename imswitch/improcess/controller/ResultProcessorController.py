@@ -2,6 +2,7 @@
 
 from .basecontrollers import ImProcessWidgetController
 from imswitch.improcess.processors.base import normalize_processor_output
+from imswitch.improcess.view.bulk_confirm import confirm_bulk_publish
 
 
 class ResultProcessorController(ImProcessWidgetController):
@@ -24,6 +25,14 @@ class ResultProcessorController(ImProcessWidgetController):
                 getattr(input_result, "name", type(input_result).__name__),
             )
             self._widget.setStatusText(str(exc))
+            return
+
+        # Safety valve: any processor (built-in or drop-in plugin) producing a
+        # flood of results/layers must be confirmed before it hits napari.
+        if not confirm_bulk_publish(self._widget, results):
+            self._widget.setStatusText(
+                f"Cancelled: would have created {len(results)} results."
+            )
             return
 
         last_result = None

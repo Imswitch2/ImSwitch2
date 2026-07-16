@@ -47,6 +47,8 @@ class _View:
         self.sigImageSplitStackRequested = _Signal()
         self.sigImageSplitChannelsRequested = _Signal()
         self.sigImageMergeChannelsRequested = _Signal()
+        self.sigImageStackCombineRequested = _Signal()
+        self.sigImageCalculatorRequested = _Signal()
         self.sigImageMakeCompositeRequested = _Signal()
         self.sigImageMakeRgbRequested = _Signal()
         self.enabled_states = []
@@ -108,6 +110,9 @@ class _ReconstructionController:
             (getattr(result, "name", f"result_{index}"), result)
             for index, result in enumerate(self.selected_results)
         ]
+
+    def getAllResults(self):
+        return self.getSelectedResults()
 
     def getActiveImage(self):
         return self.result.data
