@@ -41,7 +41,7 @@ class PositionerWidget(Widget):
         # create and add check box
         self.joystickCheck = QtWidgets.QCheckBox('Enable Joystick')
         self.joystickCheck.setCheckable(True)
-        self.grid.addWidget(self.joystickCheck, 0, 0)
+        self.grid.addWidget(self.joystickCheck, self.numPositioners, 0, 1, 7)
         # connect checkbox signal
         self.joystickCheck.clicked.connect(
             lambda state: self.sigJoystickToggled.emit(state, pName)

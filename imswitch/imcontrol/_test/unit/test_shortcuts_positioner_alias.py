@@ -79,6 +79,21 @@ def test_shortcut_modifier_ctrl_expansion(qtbot):
     assert catalog['positioner.Stage.Z.minus'].defaultKeySequence == 'Ctrl+A'
 
 
+def test_joystick_checkbox_uses_separate_grid_row(qtbot):
+    widget = PositionerWidget({})
+    qtbot.addWidget(widget)
+
+    widget.addJoystick('Stage')
+    widget.addPositioner('Stage', ['X'], speed=False, joystick=True)
+
+    checkbox_row, _, _, _ = widget.grid.getItemPosition(widget.grid.indexOf(widget.joystickCheck))
+    label = widget.pars['LabelStage--X']
+    label_row, _, _, _ = widget.grid.getItemPosition(widget.grid.indexOf(label))
+
+    assert checkbox_row != label_row
+    assert checkbox_row < label_row
+
+
 def test_shortcut_modifier_ctrl_shift_expansion(qtbot):
     """Test that shortcutModifier='ctrl-shift' expands to Ctrl+Shift+Arrow/Y/A keys."""
     widget = PositionerWidget({})

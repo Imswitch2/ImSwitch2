@@ -1421,6 +1421,7 @@ class RecordingManager(SignalInterface):
                 storer = self.__storerMap[saveFormat]
 
                 if saveMode == SaveMode.Disk or saveMode == SaveMode.DiskAndRAM:
+                    savename = self.getSaveSnapName(savename, saveFormat, detectorNames)
                     # Save images to disk
                     store = storer(savename, self.__detectorsManager)
                     store.omeMeta = {
@@ -1456,6 +1457,7 @@ class RecordingManager(SignalInterface):
             attrs: Dict mapping detector name to flat metadata dict
         """
         storer = self.__storerMap[saveFormat]
+        savename = self.getSaveSnapName(savename, saveFormat, [detectorName])
         store = storer(savename, self.__detectorsManager)
 
         # Wrap single detector in dict for storer interface
@@ -1537,6 +1539,33 @@ class RecordingManager(SignalInterface):
             pathWithoutExt, pathExt = os.path.splitext(path)
             newPath = f'{pathWithoutExt}_{numExisting}{pathExt}'
         return newPath
+
+    def getSaveSnapName(self, savename, saveFormat, detectorNames):
+        """Return a snapshot basename whose final output path(s) do not exist."""
+        detectorNames = tuple(detectorNames)
+        newSavename = savename
+        numExisting = 0
+
+        def existingSnapPath(saveNameToCheck):
+            for pathToCheck in self._snapSavePaths(saveNameToCheck, saveFormat, detectorNames):
+                if os.path.exists(pathToCheck):
+                    return True
+            return False
+
+        while existingSnapPath(newSavename):
+            numExisting += 1
+            newSavename = f'{savename}_{numExisting}'
+        return newSavename
+
+    @staticmethod
+    def _snapSavePaths(savename, saveFormat, detectorNames):
+        if saveFormat == SaveFormat.ZARR:
+            return [f'{savename}.zarr']
+        if saveFormat == SaveFormat.HDF5:
+            return [f'{savename}_{detectorName}.h5' for detectorName in detectorNames]
+        if saveFormat == SaveFormat.TIFF:
+            return [f'{savename}_{detectorName}.ome.tiff' for detectorName in detectorNames]
+        raise ValueError(f'Unsupported save format: {saveFormat}')
 
 
 class WriterThread(threading.Thread):
