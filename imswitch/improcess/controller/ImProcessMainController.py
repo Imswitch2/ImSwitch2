@@ -67,6 +67,15 @@ class ImProcessMainController(MainController):
         # channel once. Tracks which panels have had that bridge connected.
         self._panelResultBridges = set()
 
+        # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
+        # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
+        # wiring block ImProcess startup.
+        self._shortcutManager = None
+        try:
+            self._setup_shortcuts()
+        except Exception:
+            self.__logger.exception("Could not set up keyboard shortcuts")
+
         # Register the view's dock layout with the shared widget-state
         # persistence service so it is auto-restored at startup and auto-saved
         # at shutdown. Failures here must never block ImProcess from coming up.
@@ -191,6 +200,42 @@ class ImProcessMainController(MainController):
                 f"Registered startup analysis processor: "
                 f"{plugin.id} ({plugin.name})"
             )
+
+    def _setup_shortcuts(self) -> None:
+        """Wire configurable keyboard shortcuts (same machinery as imcontrol)."""
+        from imswitch.imcommon.controller.ShortcutManager import ShortcutManager
+        from imswitch.improcess.controller.shortcuts import (
+            load_shortcut_overrides,
+            register_improcess_shortcuts,
+        )
+
+        if not hasattr(self.__mainView, 'shortcutsMenu'):
+            return
+        self._shortcutManager = ShortcutManager()
+        register_improcess_shortcuts(self._shortcutManager, self.__mainView)
+        self._shortcutManager.loadConfigOverrides(load_shortcut_overrides())
+        self._shortcutManager.computeEffectiveBindings()
+        self._shortcutManager.build(self.__mainView.shortcutsMenu, self.__mainView)
+        self.__mainView.updateActionShortcutDisplays(
+            self._shortcutManager.getEffectiveBindings()
+        )
+        self.__mainView.sigConfigureShortcuts.connect(self._openShortcutEditor)
+
+    def _openShortcutEditor(self) -> None:
+        from imswitch.imcommon.view.ShortcutEditorDialog import ShortcutEditorDialog
+        from imswitch.improcess.controller.shortcuts import save_shortcut_overrides
+
+        if self._shortcutManager is None:
+            return
+        dialog = ShortcutEditorDialog(
+            self.__mainView,
+            self._shortcutManager,
+            persistCallback=save_shortcut_overrides,
+        )
+        dialog.exec_()
+        self.__mainView.updateActionShortcutDisplays(
+            self._shortcutManager.getEffectiveBindings()
+        )
 
     def _refresh_runtime_processor_choices(self):
         from imswitch.improcess.reconstructors.registry import get_registry

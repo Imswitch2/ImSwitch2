@@ -81,6 +81,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigImageMakeCompositeRequested = QtCore.Signal()
     sigImageMakeRgbRequested = QtCore.Signal()
 
+    sigConfigureShortcuts = QtCore.Signal()
+
     sigClosing = QtCore.Signal()
 
     def __init__(
@@ -128,16 +130,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._fileToolbar.setObjectName('ImProcessFileToolsToolbar')
         self._fileToolbar.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
 
+        # Keyboard bindings for these actions are owned by the ShortcutManager
+        # (configurable, Fiji-parity defaults); actions carry no hard-coded
+        # setShortcut so a binding is never registered twice. The effective
+        # keys are displayed via updateActionShortcutDisplays().
+        self._shortcutActions: dict[str, QtWidgets.QAction] = {}
+
         quickLoadAction = QtWidgets.QAction(
             improcessIcon('quick-load-data', self),
             'Quick load data…',
             self,
         )
-        quickLoadAction.setShortcut('Ctrl+T')
         quickLoadAction.triggered.connect(self.sigQuickLoadData)
         quickLoadAction.setToolTip('Load data as current data')
         quickLoadAction.setStatusTip('Load data as current data')
         file.addAction(quickLoadAction)
+        self._shortcutActions['file.quick-load'] = quickLoadAction
         self._addFileToolAction('quick-load-data', quickLoadAction)
 
         quickLoadVirtualAction = QtWidgets.QAction(
@@ -145,11 +153,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Virtual load data…',
             self,
         )
-        quickLoadVirtualAction.setShortcut('Ctrl+Shift+T')
         quickLoadVirtualAction.setToolTip('Open data as a lazy virtual stack')
         quickLoadVirtualAction.setStatusTip('Open data as a lazy virtual stack')
         quickLoadVirtualAction.triggered.connect(self.sigQuickLoadVirtualData)
         file.addAction(quickLoadVirtualAction)
+        self._shortcutActions['file.quick-load-virtual'] = quickLoadVirtualAction
         self._addFileToolAction('quick-load-virtual-data', quickLoadVirtualAction)
 
         file.addSeparator()
@@ -159,24 +167,24 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Save reconstruction…',
             self,
         )
-        saveReconAction.setShortcut('Ctrl+D')
         saveReconAction.triggered.connect(self.sigSaveReconstruction)
         saveReconAction.setToolTip('Save the active reconstruction')
         saveReconAction.setStatusTip('Save the active reconstruction')
         file.addAction(saveReconAction)
+        self._shortcutActions['file.save-reconstruction'] = saveReconAction
         self._addFileToolAction('save-reconstruction', saveReconAction)
         saveReconAllAction = QtWidgets.QAction('Save all reconstructions…', self)
-        saveReconAllAction.setShortcut('Ctrl+Shift+D')
         saveReconAllAction.triggered.connect(self.sigSaveReconstructionAll)
         file.addAction(saveReconAllAction)
+        self._shortcutActions['file.save-reconstruction-all'] = saveReconAllAction
         saveCoeffsAction = QtWidgets.QAction('Save coefficients of reconstruction…', self)
-        saveCoeffsAction.setShortcut('Ctrl+A')
         saveCoeffsAction.triggered.connect(self.sigSaveCoeffs)
         file.addAction(saveCoeffsAction)
+        self._shortcutActions['file.save-coeffs'] = saveCoeffsAction
         saveCoeffsAllAction = QtWidgets.QAction('Save all coefficients…', self)
-        saveCoeffsAllAction.setShortcut('Ctrl+Shift+A')
         saveCoeffsAllAction.triggered.connect(self.sigSaveCoeffsAll)
         file.addAction(saveCoeffsAllAction)
+        self._shortcutActions['file.save-coeffs-all'] = saveCoeffsAllAction
 
         file.addSeparator()
 
@@ -241,6 +249,14 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._pluginsToolbar.addWidget(self._loadPluginCombo)
         self._loadPluginCombo.activated.connect(self._on_load_plugin_combo_activated)
         self._buildPluginsMenu()
+
+        # Shortcuts menu: the configure entry opens the shared editor; the
+        # ShortcutManager fills the rest with the effective bindings.
+        self.shortcutsMenu = menuBar.addMenu('&Shortcuts')
+        configureShortcutsAction = QtWidgets.QAction('Configure shortcuts…', self)
+        configureShortcutsAction.triggered.connect(self.sigConfigureShortcuts)
+        self.shortcutsMenu.addAction(configureShortcutsAction)
+        self.shortcutsMenu.addSeparator()
 
         self.dataFrame = DataFrame()
         self.multiDataFrame = MultiDataFrame()
@@ -586,6 +602,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addAction(action)
         self._analysisMenu.addAction(action)
         self._analysisToolActions[str(tool_id)] = action
+        self._shortcutActions[f'panel.{tool_id}'] = action
         return action
 
     def _addAnalysisDockAction(
@@ -604,7 +621,30 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._processorToolbar.addAction(action)
         self._analysisMenu.addAction(action)
         self._analysisToolActions[str(action_id)] = action
+        self._shortcutActions[f'panel.{action_id}'] = action
         return action
+
+    def updateActionShortcutDisplays(self, effectiveBindings: dict) -> None:
+        """Show effective shortcut keys on the menu/toolbar actions.
+
+        Display-only (``text\\tKey``): the actual keyboard bindings are owned
+        by the ShortcutManager, so setting QAction shortcuts here would
+        register every key twice and make them ambiguous.
+        """
+        for action_id, action in self._shortcutActions.items():
+            base_text = action.property('shortcutBaseText')
+            if base_text is None:
+                base_text = action.text()
+                action.setProperty('shortcutBaseText', base_text)
+            key = effectiveBindings.get(action_id)
+            if isinstance(key, list):
+                key = key[0] if key else None
+            action.setText(f'{base_text}\t{key}' if key else base_text)
+            tooltip = action.property('shortcutBaseTooltip')
+            if tooltip is None:
+                tooltip = action.toolTip()
+                action.setProperty('shortcutBaseTooltip', tooltip)
+            action.setToolTip(f'{tooltip} ({key})' if key else tooltip)
 
     def _buildPluginsMenu(self) -> None:
         """Populate the top-level Plugins menu and toolbar actions.
@@ -827,7 +867,6 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             'Open the brightness and contrast min/max dialog',
             improcessIcon('brightness-contrast', self),
             self.sigImageContrastDialogRequested,
-            shortcut='Ctrl+Shift+C',
         )
         self._addImageAction(
             'reset-contrast',
@@ -968,6 +1007,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         (toolbar if toolbar is not None else self._imageToolbar).addAction(action)
         (menu if menu is not None else self._imageMenu).addAction(action)
         self._imageActions[action_id] = action
+        self._shortcutActions[f'image.{action_id}'] = action
         return action
 
     def _addImageLutSelector(self) -> None:

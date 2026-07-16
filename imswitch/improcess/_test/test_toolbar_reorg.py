@@ -167,6 +167,7 @@ def test_ops_actions_land_on_the_ops_toolbar_and_menu(qapp):
     """The split is real: ops actions go to the ops toolbar/menu, not Image."""
     view = QtWidgets.QMainWindow()
     view._imageActions = {}
+    view._shortcutActions = {}
     view._imageToolbar = QtWidgets.QToolBar()
     view._imageOpsToolbar = QtWidgets.QToolBar()
     view._imageMenu = QtWidgets.QMenu()

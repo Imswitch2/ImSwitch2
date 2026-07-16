@@ -121,6 +121,7 @@ def test_analysis_panel_shortcut_action_emits_runtime_tool_id(qapp):
     view._processorToolbar = QtWidgets.QToolBar()
     view._analysisMenu = QtWidgets.QMenu()
     view._analysisToolActions = {}
+    view._shortcutActions = {}
     view.sigLoadProcessorRequested = _Signal()
 
     icon = qapp.style().standardIcon(QtWidgets.QStyle.SP_FileDialogListView)
@@ -144,6 +145,7 @@ def test_build_analysis_panel_shortcuts_adds_all_actions(qapp):
     view._processorToolbar = QtWidgets.QToolBar()
     view._analysisMenu = QtWidgets.QMenu()
     view._analysisToolActions = {}
+    view._shortcutActions = {}
     view.sigLoadProcessorRequested = _Signal()
     view._addAnalysisToolAction = (
         lambda *args: ImProcessMainView._addAnalysisToolAction(view, *args)
@@ -199,6 +201,7 @@ def test_analysis_results_shortcut_raises_results_dock(qapp):
     view._processorToolbar = QtWidgets.QToolBar()
     view._analysisMenu = QtWidgets.QMenu()
     view._analysisToolActions = {}
+    view._shortcutActions = {}
     dock = _Dock()
     view.docks = {"Results": dock}
     view._safeRaiseDock = lambda current_dock: setattr(
