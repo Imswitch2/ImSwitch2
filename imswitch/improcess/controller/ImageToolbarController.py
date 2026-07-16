@@ -25,6 +25,7 @@ from imswitch.improcess.processors._axis_split import resolve_axis, shape_for_re
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
 from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.ChannelPickerDialog import ChannelPickerDialog
+from imswitch.improcess.view.bulk_confirm import confirm_bulk_publish
 from imswitch.improcess.view.ImageCalculatorDialog import ImageCalculatorDialog
 from imswitch.improcess.view.StackCombineDialog import StackCombineDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
@@ -450,6 +451,11 @@ class ImageToolbarController:
         self._publishResults((result,))
 
     def _publishResults(self, results) -> None:
+        results = list(results)
+        # Safety valve: Split stack / Make composite on the wrong axis can
+        # mean hundreds of napari layers from one click — ask first.
+        if not confirm_bulk_publish(self._view, results):
+            return
         last_result = None
         for result in results:
             display_name = getattr(result, "name", "") or "Image result"
