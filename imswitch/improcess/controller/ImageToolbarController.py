@@ -62,6 +62,12 @@ class ImageToolbarController:
         mainView.sigImageMakeCompositeRequested.connect(self.makeComposite)
         mainView.sigImageMakeRgbRequested.connect(self.makeRgb)
         commChannel.sigCurrentResultChanged.connect(self.currentResultChanged)
+        # Multi-input actions gate on the reconstruction-list selection, which
+        # can change without the current item moving (Ctrl+A, Ctrl-click
+        # deselect) — so track it separately from sigCurrentResultChanged.
+        reconWidget = getattr(mainView, "reconstructionWidget", None)
+        if reconWidget is not None and hasattr(reconWidget, "sigSelectionChanged"):
+            reconWidget.sigSelectionChanged.connect(self.selectionChanged)
         self.currentResultChanged(reconstructionController.getActiveResult())
 
     def currentResultChanged(self, result) -> None:
@@ -90,14 +96,7 @@ class ImageToolbarController:
                 "split-channels",
                 has_image and ChannelSplitProcessor().accepts(result),
             )
-            self._view.setImageActionEnabled(
-                "merge-channels",
-                has_image and self._canMergeSelectedResults(),
-            )
-            self._view.setImageActionEnabled(
-                "stack-combine",
-                has_image and len(self._selectedProcessingResults()) >= 2,
-            )
+            self._updateMultiInputActions()
             self._view.setImageActionEnabled(
                 "image-calculator",
                 has_image,
@@ -120,6 +119,28 @@ class ImageToolbarController:
             except Exception:
                 self._logger.debug("Could not sync image LUT selector", exc_info=True)
         self._refreshChannelDialog()
+
+    def selectionChanged(self) -> None:
+        self._updateMultiInputActions()
+
+    def _updateMultiInputActions(self) -> None:
+        """Enable merge-channels / stack-combine from the list selection.
+
+        Deliberately independent of the *current* item: two selected images
+        are combinable even while a table or curve result happens to be the
+        active one.
+        """
+        if not hasattr(self._view, "setImageActionEnabled"):
+            return
+        selected = self._selectedProcessingResults()
+        self._view.setImageActionEnabled(
+            "merge-channels",
+            can_merge_results(selected),
+        )
+        self._view.setImageActionEnabled(
+            "stack-combine",
+            len(selected) >= 2,
+        )
 
     def autoContrast(self, saturated_percent: float = 0.35) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -483,9 +504,6 @@ class ImageToolbarController:
                 return selected
         active = self._reconstructionController.getActiveResult()
         return [active] if self._resultHasImage(active) else []
-
-    def _canMergeSelectedResults(self) -> bool:
-        return can_merge_results(self._selectedProcessingResults())
 
 
 __all__ = ["ImageToolbarController"]

@@ -294,6 +294,35 @@ def test_dialog_default_axis_label_avoids_collision(qapp):
     assert "'Z'" in dialog.statusLabel.text()
 
 
+def test_dialog_can_switch_existing_axis_collision_to_concatenate(qapp):
+    a = _image((1, 8, 10), ["Z", "Y", "X"], "a")
+    b = _image((1, 8, 10), ["Z", "Y", "X"], "b")
+    dialog = StackCombineDialog([a, b])
+
+    dialog.axisLabelCombo.setCurrentText("Z")
+
+    assert not dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+    assert not dialog.switchToConcatenateButton.isHidden()
+
+    dialog.switchToConcatenateButton.click()
+    params = dialog.selected_params()
+
+    assert params["mode"] == "concatenate"
+    assert params["join_axis"] == 0
+    assert dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+
+
+def test_dialog_hides_existing_axis_redirect_when_concatenate_would_fail(qapp):
+    a = _image((1, 8, 10), ["Z", "Y", "X"], "a")
+    b = _image((1, 9, 10), ["Z", "Y", "X"], "b")
+    dialog = StackCombineDialog([a, b])
+
+    dialog.axisLabelCombo.setCurrentText("Z")
+
+    assert not dialog.buttons.button(QtWidgets.QDialogButtonBox.Ok).isEnabled()
+    assert dialog.switchToConcatenateButton.isHidden()
+
+
 class _MultiLayerResult(ArrayProcessingResult):
     """Result whose canonical data groups two heterogeneous components."""
 

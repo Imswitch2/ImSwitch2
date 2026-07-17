@@ -114,15 +114,31 @@ class ReconstructorManagerController(ImProcessWidgetController):
         #   auto-routes the data to the viewer in that case.
         # - 'Update reconstruction' re-applies MoNaLISA scan parameters and
         #   only makes sense for the MoNaLISA plugin.
+        # - The multidata button stays visible for every plugin. Pass-through
+        #   plugins get it relabeled as a batch 'load to viewer' action with
+        #   the consolidate entry hidden; plugins without consolidation
+        #   support keep the entry visible but disabled, so a multidata run
+        #   never silently degrades to individual processing.
         # NOTE: Special-case by ID retained because update_reconstruction is a
         # MoNaLISA-specific UI action that cannot be expressed through the
         # plugin registry's current API.
         is_pass_through = bool(getattr(reconstructor, 'is_pass_through', False))
+        supports_consolidation = bool(
+            getattr(reconstructor, 'supports_consolidation', False)
+        )
         try:
             self._widget.setReconstructionActionsVisible(
                 reconstruct_current=not is_pass_through,
                 update_reconstruction=(reconstructor.id == 'monalisa'),
-                reconstruct_multidata=not is_pass_through,
+                reconstruct_multidata=True,
+                multidata_consolidate=(
+                    'hidden' if is_pass_through
+                    else ('enabled' if supports_consolidation else 'disabled')
+                ),
+                multidata_labels=(
+                    ('Load multidata', 'Load data items to viewer')
+                    if is_pass_through else None
+                ),
             )
         except Exception:
             pass
@@ -205,43 +221,71 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._main.monalisaController.runLegacyReconstruct(dataObjs, consolidate)
 
     def _reconstruct_with_plugin(self, dataObjs, consolidate):
-        if self._main._activeReconstructor is None:
+        reconstructor = self._main._activeReconstructor
+        if reconstructor is None:
             return
-        if consolidate:
+        if consolidate and not getattr(reconstructor, 'supports_consolidation', False):
+            # The UI disables the consolidate action for these plugins; this
+            # guard keeps scripted callers on the individual path instead of
+            # failing.
             self._logger.warning(
-                f"{self._main._activeReconstructor.name} does not support consolidated "
-                "multi-data reconstruction yet; processing items individually."
+                f"{reconstructor.name} does not support consolidated "
+                "multi-data reconstruction; processing items individually."
             )
+            consolidate = False
+
+        collected = []
         for dataObj in dataObjs:
             params = self._widget.getReconstructionParams()
-            if self._main._activeReconstructor.id == "monalisa":
+            if reconstructor.id == "monalisa":
                 params = dict(params)
                 params['scan_params'] = copy.deepcopy(
                     self._main.monalisaController._scanParDict
                 )
             self._logger.info(
-                f"Running {self._main._activeReconstructor.id} reconstruction for {dataObj.name}"
+                f"Running {reconstructor.id} reconstruction for {dataObj.name}"
             )
-            result = self._main._activeReconstructor.process(dataObj, params)
-            self._commChannel.sigResultProduced.emit(result, result.name)
-            self._commChannel.sigCurrentResultChanged.emit(result)
-            # NOTE: Special-case by ID retained because widefield-starss batch result
-            # collection is plugin-specific and not part of the generic plugin API.
-            if self._main._activeReconstructor.id == "widefield-starss":
-                self._main.wfsBatchController.appendSingleResult(result)
-            # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
-            # output pixel size) back into the active parameter widget so
-            # the user sees up-to-date numbers without flipping to napari's
-            # scale bar.  Best-effort: silently no-ops on plugins / widgets
-            # that don't expose setOutputPixelSize.
-            output_pixel_size_nm = getattr(result, 'output_pixel_size_nm', None)
-            par_tree = getattr(self._widget, 'parTree', None)
-            setter = getattr(par_tree, 'setOutputPixelSize', None)
-            if callable(setter):
-                try:
-                    setter(output_pixel_size_nm)
-                except Exception:
-                    pass
+            result = reconstructor.process(dataObj, params)
+            if consolidate:
+                collected.append(result)
+            else:
+                self._publishPluginResult(result, result.name)
+
+        if not consolidate or not collected:
+            return
+        try:
+            merged = reconstructor.consolidate(collected)
+        except Exception:
+            # Keep the per-file work: publish the individual results so a
+            # failed merge (e.g. mismatched scan geometry) loses nothing.
+            self._logger.exception(
+                "Consolidation failed; publishing the individual results instead"
+            )
+            for result in collected:
+                self._publishPluginResult(result, result.name)
+            return
+        self._publishPluginResult(merged, f'{merged.name}_multi')
+
+    def _publishPluginResult(self, result, displayName):
+        self._commChannel.sigResultProduced.emit(result, displayName)
+        self._commChannel.sigCurrentResultChanged.emit(result)
+        # NOTE: Special-case by ID retained because widefield-starss batch result
+        # collection is plugin-specific and not part of the generic plugin API.
+        if self._main._activeReconstructor.id == "widefield-starss":
+            self._main.wfsBatchController.appendSingleResult(result)
+        # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
+        # output pixel size) back into the active parameter widget so
+        # the user sees up-to-date numbers without flipping to napari's
+        # scale bar.  Best-effort: silently no-ops on plugins / widgets
+        # that don't expose setOutputPixelSize.
+        output_pixel_size_nm = getattr(result, 'output_pixel_size_nm', None)
+        par_tree = getattr(self._widget, 'parTree', None)
+        setter = getattr(par_tree, 'setOutputPixelSize', None)
+        if callable(setter):
+            try:
+                setter(output_pixel_size_nm)
+            except Exception:
+                pass
 
     def _handleSmlmPreviewToggled(self, enabled):
         """Handle SMLM preview checkbox toggle."""

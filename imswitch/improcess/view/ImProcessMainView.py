@@ -946,7 +946,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'merge-channels',
             'Merge channels',
-            'Merge selected compatible results into a C-axis channel stack',
+            'Merge compatible results into a C-axis channel stack '
+            '(select two or more in the reconstructions list)',
             improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -955,7 +956,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'stack-combine',
             'Stack/Combine...',
-            'Stack or concatenate the selected results into one output',
+            'Stack or concatenate results into one output '
+            '(select two or more in the reconstructions list)',
             improcessIcon('stack-combine', self),
             self.sigImageStackCombineRequested,
             toolbar=self._imageOpsToolbar,
@@ -1278,6 +1280,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         reconstruct_current: bool = True,
         update_reconstruction: bool = True,
         reconstruct_multidata: bool = True,
+        multidata_consolidate: str = 'enabled',
+        multidata_labels: tuple[str, str] | None = None,
     ) -> None:
         """Show or hide the modality-specific Actions buttons.
 
@@ -1286,10 +1290,13 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         - update_reconstruction: hide for non-MoNaLISA plugins. The 'Update
           reconstruction' button re-applies MoNaLISA scan parameters and is
           meaningless elsewhere.
-        - reconstruct_multidata: hide for pass-through plugins too — there is
-          no real reconstruction to batch.  Hiding it also collapses the
-          row 1 grid so the remaining buttons don't render with an empty
-          left cell.
+        - reconstruct_multidata: show/hide the whole multidata button.
+        - multidata_consolidate: 'enabled', 'disabled' (visible but greyed,
+          with a tooltip saying the active plugin cannot consolidate) or
+          'hidden' (pass-through plugins, where consolidation has no meaning).
+        - multidata_labels: optional ``(button_text, individual_action_text)``
+          override so pass-through plugins can present the batch action as
+          'load to viewer' instead of 'reconstruct'; None restores defaults.
         """
         btnFrame = getattr(self, '_btnFrame', None)
         if btnFrame is None:
@@ -1300,6 +1307,26 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             btnFrame.updateBtn.setVisible(bool(update_reconstruction))
         if hasattr(btnFrame, 'reconMultiBtn'):
             btnFrame.reconMultiBtn.setVisible(bool(reconstruct_multidata))
+            button_text, individual_text = (
+                multidata_labels
+                if multidata_labels is not None
+                else ('Reconstruct multidata', 'Reconstruct data items individually')
+            )
+            btnFrame.reconMultiBtn.setText(button_text)
+            if hasattr(btnFrame, 'reconMultiIndividual'):
+                btnFrame.reconMultiIndividual.setText(individual_text)
+            if hasattr(btnFrame, 'reconMultiConsolidated'):
+                consolidated = btnFrame.reconMultiConsolidated
+                consolidated.setVisible(multidata_consolidate != 'hidden')
+                consolidated.setEnabled(multidata_consolidate == 'enabled')
+                tooltip = (
+                    '' if multidata_consolidate == 'enabled'
+                    else 'The active reconstructor cannot merge multiple data '
+                         'items into one reconstruction; items can only be '
+                         'processed individually.'
+                )
+                consolidated.setToolTip(tooltip)
+                consolidated.setStatusTip(tooltip)
 
     def setReconstructorChoices(
         self,
@@ -1793,12 +1820,19 @@ class BtnFrame(QtWidgets.QFrame):
         )
         self.reconMultiBtn.setText('Reconstruct multidata')
         self.reconMultiBtn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.reconMultiConsolidated = QtWidgets.QAction('Consolidate into a single reconstruction')
+        # Explicit menu (rather than QToolButton.addAction) so a disabled
+        # 'Consolidate' entry can explain itself through its tooltip.
+        self.reconMultiMenu = QtWidgets.QMenu(self.reconMultiBtn)
+        self.reconMultiMenu.setToolTipsVisible(True)
+        self.reconMultiConsolidated = self.reconMultiMenu.addAction(
+            'Consolidate into a single reconstruction'
+        )
         self.reconMultiConsolidated.triggered.connect(self.sigReconstructMultiConsolidated)
-        self.reconMultiBtn.addAction(self.reconMultiConsolidated)
-        self.reconMultiIndividual = QtWidgets.QAction('Reconstruct data items individually')
+        self.reconMultiIndividual = self.reconMultiMenu.addAction(
+            'Reconstruct data items individually'
+        )
         self.reconMultiIndividual.triggered.connect(self.sigReconstructMultiIndividual)
-        self.reconMultiBtn.addAction(self.reconMultiIndividual)
+        self.reconMultiBtn.setMenu(self.reconMultiMenu)
 
         layout = QtWidgets.QGridLayout()
         self.setLayout(layout)

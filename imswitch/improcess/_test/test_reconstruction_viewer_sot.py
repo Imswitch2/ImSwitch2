@@ -79,9 +79,12 @@ class _FakeReconstructionView:
         self._reconList = []
         self._currentIndex = None
         self._activations = []  # Track re-activations
+        self.set_image_calls = 0
+        self.clear_image_calls = 0
 
     def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
         # Simplified version of the actual setImage logic
+        self.set_image_calls += 1
         if name is not None:
             self.imgLayer.name = str(name)
             self.imgLayer.metadata["source_result"] = str(name)
@@ -96,6 +99,7 @@ class _FakeReconstructionView:
         self.napariViewer.dims.axis_labels = tuple(axisLabels)
 
     def clearImage(self):
+        self.clear_image_calls += 1
         self.imgLayer.name = 'Reconstruction'
         self.imgLayer.metadata.pop("source_result", None)
         self.imgLayer.data = np.zeros((1, 1))
@@ -140,6 +144,10 @@ class _FakeResult(ProcessingResult):
 
     def save(self, path, fmt="tiff"):
         pass  # Not needed for these tests
+
+
+class _FakeCurveResult(_FakeResult):
+    kind = "curve"
 
 
 class _FakeCommChannel:
@@ -232,6 +240,31 @@ def test_controller_reactivates_main_layer_after_setImage():
     
     # After setImage, the imgLayer should be re-activated
     assert view.napariViewer.layers.selection.active is view.imgLayer
+
+
+def test_controller_does_not_render_curve_result_as_image():
+    """Curve/table results should be routed to graph/table UI, not napari images."""
+    view = _FakeReconstructionView()
+    controller = ReconstructionViewController.__new__(ReconstructionViewController)
+    controller._widget = view
+    controller._logger = SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)
+    controller._transposeOrder = [0, 1]
+    controller._displayedAxisLabels = []
+
+    result = _FakeCurveResult(
+        "off_switching",
+        np.ones((20, 4), dtype=np.float32),
+        axis_labels=["Point", "Column"],
+    )
+
+    controller._setProcessingResultSlice(result)
+
+    assert view.set_image_calls == 0
+    assert view.clear_image_calls == 1
+    assert view.imgLayer.name == "Reconstruction"
+    assert view.imgLayer.data.shape == (1, 1)
+    assert controller._transposeOrder == []
+    assert controller._displayedAxisLabels == []
 
 
 def test_controller_persistence_roundtrips_with_renamed_layer():

@@ -822,16 +822,22 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                     
                     # Restore detector-specific parameters
                     parameters_state = detector_state.get('parameters', {})
+                    detectorParametersChanged = False
                     for paramName, value in parameters_state.items():
                         try:
                             if hasattr(detector, 'parameters') and paramName in detector.parameters:
                                 parameter = detector.parameters[paramName]
                                 paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
-                                paramInWidget.setValue(value)
+                                detector.setParameter(paramName, value)
+                                paramInWidget.setValue(detector.parameters[paramName].value, blockSignal=True)
+                                detectorParametersChanged = True
                         except Exception as e:
                             warnings.append(
                                 f'Could not restore parameter {paramName} for {detectorName}: {e}'
                             )
+
+                    if detectorParametersChanged:
+                        self.updateSharedAttrs()
                     
                 except Exception as e:
                     warnings.append(f'Failed to restore state for detector {detectorName}: {e}')

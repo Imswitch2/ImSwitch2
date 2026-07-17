@@ -40,7 +40,8 @@ def _main_controller_with_current_result(result, widget):
     view = SimpleNamespace(getRuntimeAnalysisWidget=lambda _processor_id: widget)
     reconstruction = SimpleNamespace(getActiveResult=lambda: result)
     controller.mainViewController = SimpleNamespace(
-        reconstructionController=reconstruction
+        reconstructionController=reconstruction,
+        graphController=None,
     )
     controller._resultProcessorControllers = {}
     controller._ImProcessMainController__factory = factory
@@ -72,6 +73,18 @@ def test_runtime_result_processor_widget_is_reseeded_when_already_wired():
 
     assert factory.created == []
     assert widget.current_results == [current_result]
+
+
+def test_runtime_graph_widget_gets_graph_controller():
+    widget = SimpleNamespace()
+    controller, factory = _main_controller_with_current_result(object(), widget)
+
+    controller._wire_runtime_result_processor("graph")
+
+    assert factory.created
+    assert factory.created[0][0].__name__ == "GraphController"
+    assert factory.created[0][1] is widget
+    assert controller.mainViewController.graphController is not None
 
 
 def test_startup_wires_producing_panels_without_saved_layout():

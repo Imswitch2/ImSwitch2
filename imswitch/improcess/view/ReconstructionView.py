@@ -32,6 +32,7 @@ class ReconstructionView(QtWidgets.QFrame):
 
     # Signals
     sigItemSelected = QtCore.Signal()
+    sigSelectionChanged = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
 
@@ -83,6 +84,10 @@ class ReconstructionView(QtWidgets.QFrame):
         # List for storing sevral data sets
         self.reconList = QtWidgets.QListWidget()
         self.reconList.currentItemChanged.connect(self.sigItemSelected)
+        # Selection can change without the current item moving (Ctrl+A,
+        # Ctrl-click deselect), and multi-input toolbar actions gate on the
+        # selection — so it needs its own signal.
+        self.reconList.itemSelectionChanged.connect(self.sigSelectionChanged)
         self.reconList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         removeReconBtn = guitools.BetterPushButton('Remove current')
         removeReconBtn.clicked.connect(self.removeRecon)
