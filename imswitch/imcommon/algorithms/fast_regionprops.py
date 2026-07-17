@@ -16,6 +16,11 @@ The core (:func:`regionprops_table_fast` and its helpers, down to the
     https://github.com/maweigert/fast-regionprops
     commit 89c6741 (2026-06-18)
 
+The BSD-3-Clause terms are reproduced in
+``licenses/fast-regionprops-BSD-3-Clause.txt``. NOTE: upstream declares the
+licence in ``pyproject.toml`` but ships no LICENSE file, so no upstream
+copyright line exists to reproduce verbatim — see that file for details.
+
 It is vendored rather than taken as a PyPI dependency because it is a single
 self-contained module (numpy + scipy only, both already core deps) still at
 ``0.1.0``; vendoring pins the exact code and avoids a pre-1.0 supply-chain

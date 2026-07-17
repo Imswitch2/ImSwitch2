@@ -1,0 +1,44 @@
+fast-regionprops — https://github.com/maweigert/fast-regionprops
+
+Upstream declares BSD-3-Clause in its ``pyproject.toml``
+(``license = { text = "BSD-3-Clause" }``, ``authors = [{ name = "Martin
+Weigert" }]``) but ships no LICENSE file, so there is no upstream copyright
+line to reproduce verbatim. The standard BSD-3-Clause text is reproduced
+below with the author named in the project metadata. If the upstream author
+publishes a LICENSE file with a different copyright line or terms, replace
+this file with that text.
+
+Vendored into: imswitch/imcommon/algorithms/fast_regionprops.py
+(upstream commit 89c6741, 2026-06-18 — verified to exist upstream).
+
+----------------------------------------------------------------------
+
+BSD 3-Clause License
+
+Copyright (c) Martin Weigert
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
