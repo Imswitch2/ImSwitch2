@@ -349,7 +349,7 @@ dependency).
 blinking image stack, localize single emitters into a coordinate table with
 properties, process that table (drift correction, grouping, filtering), and
 render it in-house — while treating the external
-[napari-storm](https://github.com/super-resolution/napari-storm) plugin as the
+[napari-storm](https://github.com/napari-storm/napari-storm) plugin as the
 premium GPU point-cloud renderer via a clean data handoff, not a dependency.
 
 **Detailed plan:**

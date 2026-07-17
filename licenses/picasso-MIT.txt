@@ -1,3 +1,18 @@
+Picasso — https://github.com/jungmannlab/picasso — Jungmann Lab, MPI of Biochemistry
+
+Imswitch2 does NOT vendor or copy Picasso source code. Our SMLM detection and
+fitting (imswitch/improcess/reconstructors/smlm/) are independent
+implementations of the published Picasso approach (Schnitzbauer et al., Nat
+Protoc 12, 1198-1228, 2017), written against numpy/scipy.
+
+Picasso's licence is reproduced here anyway, because our implementation
+follows their method closely enough that we would rather ship their terms
+beside the acknowledgment than not. If anything here does turn out to be
+derived from Picasso code rather than the published method, contact us and we
+will attribute, relicense or remove it — see ACKNOWLEDGMENTS.md.
+
+----------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2016-2026 Jungmann Lab, MPI of Biochemistry (jungmannlab.org)

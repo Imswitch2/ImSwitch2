@@ -2,12 +2,10 @@
 
 Provenance
 ----------
-Ported from **napari-storm** (https://github.com/napari-storm/napari-storm,
-``picasso_localization/picasso_localiztion.py``), BSD-3-Clause,
-Copyright (c) 2022 Mark Bates and Lenny Reinkensmeier — see
-``licenses/napari-storm-BSD-3-Clause.txt``. napari-storm in turn implements
-the localization approach of Picasso (Jungmann Lab, MIT); see
-``ACKNOWLEDGMENTS.md``.
+Carried over from the maintainer's own earlier SMLM work; no third-party code
+is copied here. The *approach* follows Picasso (Jungmann Lab) — see
+``ACKNOWLEDGMENTS.md`` and cite Schnitzbauer et al., Nat Protoc 12,
+1198-1228 (2017) if you use this in published work.
 
 Two methods, both numpy/scipy only:
 

@@ -25,7 +25,6 @@ texts live in [`licenses/`](licenses/).
 | Component | Upstream | Licence | Where it lives |
 |---|---|---|---|
 | Fast region properties | [fast-regionprops](https://github.com/maweigert/fast-regionprops) — Martin Weigert | BSD-3-Clause ([text](licenses/fast-regionprops-BSD-3-Clause.txt)) | `imswitch/imcommon/algorithms/fast_regionprops.py` — core vendored verbatim (upstream commit `89c6741`); the `ImSwitch2 extensions` section below the divider is ours |
-| SMLM single-spot fitting | [napari-storm](https://github.com/napari-storm/napari-storm) — Mark Bates and Lenny Reinkensmeier | BSD-3-Clause ([text](licenses/napari-storm-BSD-3-Clause.txt)) | `imswitch/improcess/reconstructors/smlm/fitting.py` — ported |
 | ROI/plot GUI tools | [Tormenta](https://github.com/fedebarabas/tormenta) — Federico Barabas | GPL-3.0 (same as this project; notices inline) | `imswitch/imcommon/view/guitools/pyqtgraphtools.py`, `imagetools.py` |
 | Pyro5 serialisation helpers | Talley Lambert | BSD-3-Clause (notice inline in file) | `imswitch/imcontrol/controller/server/_serialize.py` |
 | Contrast auto-scaling | ImageJ 1.x `ContrastEnhancer` routine | Public domain | `imswitch/imcommon/view/guitools/imagetools.py` |
@@ -68,14 +67,19 @@ No code copied — but these shaped how Imswitch2 works, and deserve credit.
   reimplemented on numpy/scipy/scikit-image — what we took is *behaviour*,
   which is exactly what makes a tool feel familiar.
 - **[Picasso](https://github.com/jungmannlab/picasso)** (Jungmann Lab, MIT) —
-  the model for our SMLM pipeline: the net-gradient spot detector, the
-  localize → filter → render flow, and the drop-in plugin ergonomics that
-  inspired ImProcess's `.py` plugin folder.
+  the model for our whole SMLM pipeline. Our spot detection
+  (`smlm/detection.py`) and single-spot fitting (`smlm/fitting.py`) are
+  independent implementations of the Picasso approach — the net-gradient
+  detector, and the localize → filter → render flow — written against
+  numpy/scipy from the published method (Schnitzbauer et al. 2017), not
+  copied from Picasso source. Picasso's drop-in plugin ergonomics also
+  inspired ImProcess's `.py` plugin folder. We reproduce their licence in
+  [`licenses/picasso-MIT.txt`](licenses/picasso-MIT.txt) even though no code
+  is vendored, because our implementation follows their method closely.
+  **If any of it is closer to Picasso's code than we believe, tell us** — see
+  [Corrections & contact](#corrections--contact).
 - **[napari](https://napari.org/)** — the viewer Imswitch2 embeds, and the
   source of our layer/display-model thinking.
-- **[napari-storm](https://github.com/napari-storm/napari-storm)** — the SMLM
-  visualisation approach behind our localization result handling (also a
-  code source, see tier 1).
 
 ---
 

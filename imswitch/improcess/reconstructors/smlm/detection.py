@@ -1,6 +1,10 @@
 """Net-gradient spot detection — pure-function core.
 
-Implements the Picasso (jungmannlab) net-gradient detector: for every pixel,
+Independent implementation of the Picasso (Jungmann Lab) net-gradient
+detector, written from the published method (Schnitzbauer et al., Nat Protoc
+12, 1198-1228, 2017); no Picasso code is copied. See ``ACKNOWLEDGMENTS.md``.
+
+For every pixel,
 the local image gradient is projected onto the *inward* radial direction and
 summed over a small box. A real emitter's PSF slopes all point toward its
 centre, so the projections add up to a large positive value; uncorrelated
@@ -11,7 +15,7 @@ its flanks still slope inward).
 
 .. note::
 
-   Earlier revisions (ported verbatim from ``napari-storm``) scored each pixel
+   Earlier revisions of this code scored each pixel
    by ``up + down + left + right`` — a single-pixel discrete Laplacian, not a
    net gradient. That measure is noise-dominated and, worse, vanishes on broad
    or saturated peaks, so bright beads were missed while noise spikes were
