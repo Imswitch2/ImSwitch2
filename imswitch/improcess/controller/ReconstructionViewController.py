@@ -1,6 +1,7 @@
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.result import result_kind
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -88,6 +89,12 @@ class ReconstructionViewController(ImProcessWidgetController):
             # shared sliced axis, so there is no "Base" axis to rescale against.
             self._displayedAxisLabels = list(display_layers[0].axis_labels)
             self._widget.setDisplayLayers(display_layers)
+            return
+
+        if result_kind(result) in ("curve", "table"):
+            self._transposeOrder = []
+            self._displayedAxisLabels = []
+            self._widget.clearImage()
             return
 
         mode = self._processingViewMode(result)

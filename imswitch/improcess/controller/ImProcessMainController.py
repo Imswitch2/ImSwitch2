@@ -10,6 +10,7 @@ from imswitch.improcess.model.processing_config import (
     plugin_ids_from_config,
 )
 from .CommunicationChannel import CommunicationChannel
+from .GraphController import GraphController
 from .ImageToolbarController import ImageToolbarController
 from .ImProcessMainViewController import ImProcessMainViewController
 from .ResultProcessorController import ResultProcessorController
@@ -419,6 +420,13 @@ class ImProcessMainController(MainController):
     def _wire_runtime_result_processor(self, processor_id: str) -> None:
         widget = self.__mainView.getRuntimeAnalysisWidget(processor_id)
         if widget is None:
+            return
+        if processor_id == "graph":
+            if self.mainViewController.graphController is None:
+                self.mainViewController.graphController = self.__factory.createController(
+                    GraphController,
+                    widget,
+                )
             return
         # Single-processor panels (generic ResultProcessorWidget, and custom
         # panels like Segmentation that conform to the contract) run one

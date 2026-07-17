@@ -48,6 +48,15 @@ class Reconstructor(ABC):
     unchanged for plugins that don't override.
     """
 
+    supports_consolidation: bool = False
+    """Set ``True`` when :meth:`consolidate` can merge per-item results.
+
+    The multidata action 'Consolidate into a single reconstruction' is only
+    enabled for plugins that opt in; for the others the action stays visible
+    but disabled, so a multidata run never silently degrades to individual
+    processing.
+    """
+
 
     @abstractmethod
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -92,6 +101,19 @@ class Reconstructor(ABC):
         """
         ...
     
+    def consolidate(self, results: list[ProcessingResult]) -> ProcessingResult:
+        """Merge the per-item results of one multidata run into a single result.
+
+        Called by the reconstruction manager after every item was processed
+        individually with :meth:`process`; only invoked when
+        ``supports_consolidation`` is True. Implementations should raise
+        ``ValueError`` with a user-readable message when the results cannot be
+        merged (e.g. differing scan geometry).
+        """
+        raise NotImplementedError(
+            f'{self.name} does not support consolidated multi-data reconstruction'
+        )
+
     def make_overlay(self, data_obj: DataObj, params: dict) -> Any | None:
         """
         Optional: provide a viewer overlay for the raw data view (DataFrame).

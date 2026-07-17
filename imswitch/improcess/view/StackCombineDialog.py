@@ -112,6 +112,16 @@ class StackCombineDialog(QtWidgets.QDialog):
         self.statusLabel = QtWidgets.QLabel()
         self.statusLabel.setWordWrap(True)
 
+        # One-click escape hatch for the most common dead end: stacking along
+        # a label the inputs already carry (e.g. Z on results with a singleton
+        # Z axis), where appending along that existing axis is what the user
+        # almost certainly wants.
+        self.switchToConcatenateButton = QtWidgets.QPushButton()
+        self.switchToConcatenateButton.setVisible(False)
+        self.switchToConcatenateButton.clicked.connect(
+            self._switch_to_concatenate_along_existing
+        )
+
         self.buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -123,6 +133,7 @@ class StackCombineDialog(QtWidgets.QDialog):
         layout.addLayout(inputRow)
         layout.addLayout(form)
         layout.addWidget(self.statusLabel)
+        layout.addWidget(self.switchToConcatenateButton)
         layout.addWidget(self.buttons)
 
         self.modeCombo.currentIndexChanged.connect(self._refresh)
@@ -241,6 +252,56 @@ class StackCombineDialog(QtWidgets.QDialog):
         )
         self.statusLabel.setText(reason if not ok else "")
         self.buttons.button(QtWidgets.QDialogButtonBox.Ok).setEnabled(ok)
+
+        redirect = self._existing_axis_redirect(ok, mode, new_axis_label, checked)
+        if redirect is None:
+            self.switchToConcatenateButton.setVisible(False)
+        else:
+            self.switchToConcatenateButton.setText(
+                f"Concatenate along the existing {redirect[0]} axis instead"
+            )
+            self.switchToConcatenateButton.setVisible(True)
+
+    @staticmethod
+    def _existing_axis_redirect(
+        ok: bool, mode: str, new_axis_label: str | None, checked: list
+    ) -> tuple[str, int] | None:
+        """Return ``(label, axis)`` when stack mode is blocked by a duplicate
+        axis label and concatenate along that existing axis is valid."""
+        if ok or mode != _MODE_STACK or not new_axis_label or len(checked) < 2:
+            return None
+        try:
+            labels = axis_labels_for_result(checked[0])
+        except Exception:
+            return None
+        if new_axis_label not in labels:
+            return None
+        axis = labels.index(new_axis_label)
+        concat_ok, _reason = combine_compatibility(
+            checked,
+            mode=_MODE_CONCATENATE,
+            join_axis=axis,
+        )
+        if not concat_ok:
+            return None
+        return new_axis_label, axis
+
+    def _switch_to_concatenate_along_existing(self) -> None:
+        redirect = self._existing_axis_redirect(
+            False,
+            _MODE_STACK,
+            self.axisLabelCombo.currentText().strip() or None,
+            self.checked_results(),
+        )
+        if redirect is None:
+            return
+        _label, axis = redirect
+        mode_index = self.modeCombo.findData(_MODE_CONCATENATE)
+        if mode_index >= 0:
+            self.modeCombo.setCurrentIndex(mode_index)
+        join_index = self.joinAxisCombo.findData(axis)
+        if join_index >= 0:
+            self.joinAxisCombo.setCurrentIndex(join_index)
 
 
 __all__ = ["StackCombineDialog", "expand_input_choices"]

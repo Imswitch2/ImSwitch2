@@ -16,6 +16,7 @@ from unittest.mock import Mock, MagicMock, patch
 
 from imswitch.imcontrol.controller.controllers.SettingsController import SettingsController
 from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
+from imswitch.imcontrol.model.managers.detectors.DetectorManager import CAMERA_PIXEL_SIZE_PARAM
 
 
 @pytest.fixture
@@ -40,10 +41,18 @@ def mock_detector_manager():
     param_gain = Mock()
     param_gain.value = 1.0
     param_gain.group = "Acquisition"
+    param_pixel_size = Mock()
+    param_pixel_size.value = 0.15
+    param_pixel_size.group = "Miscellaneous"
     detector_cam1.parameters = {
         'Exposure time': param_exposure,
-        'Gain': param_gain
+        'Gain': param_gain,
+        CAMERA_PIXEL_SIZE_PARAM: param_pixel_size,
     }
+    def set_parameter(name, value):
+        detector_cam1.parameters[name].value = value
+        return detector_cam1.parameters
+    detector_cam1.setParameter = Mock(side_effect=set_parameter)
     
     # Make manager iterable
     manager.__iter__ = Mock(return_value=iter([('Camera1', detector_cam1)]))
@@ -104,22 +113,30 @@ def mock_widget_tree():
         'Acquisition': Mock()
     }[name])
     
-    # Mock Acquisition group parameters
+    # Mock detector-specific parameter groups
     acquisition_param = Mock()
+    misc_param = Mock()
     exposure_param_widget = Mock()
     exposure_param_widget.value = Mock(return_value=100.0)
     exposure_param_widget.setValue = Mock()
     gain_param_widget = Mock()
     gain_param_widget.value = Mock(return_value=1.0)
     gain_param_widget.setValue = Mock()
+    pixel_size_param_widget = Mock()
+    pixel_size_param_widget.value = Mock(return_value=0.15)
+    pixel_size_param_widget.setValue = Mock()
     acquisition_param.param = Mock(side_effect=lambda name: {
         'Exposure time': exposure_param_widget,
-        'Gain': gain_param_widget
+        'Gain': gain_param_widget,
+    }.get(name))
+    misc_param.param = Mock(side_effect=lambda name: {
+        CAMERA_PIXEL_SIZE_PARAM: pixel_size_param_widget,
     }.get(name))
     root_param.param = Mock(side_effect=lambda name: {
         'Model': Mock(),
         'Image frame': image_frame_param,
-        'Acquisition': acquisition_param
+        'Acquisition': acquisition_param,
+        'Miscellaneous': misc_param
     }[name])
     
     tree.p = root_param
@@ -306,6 +323,7 @@ def test_get_component_state(settings_controller, mock_widget_tree, mock_setting
     assert detector_state['width'] == 512
     assert detector_state['height'] == 512
     assert 'parameters' in detector_state
+    assert detector_state['parameters'][CAMERA_PIXEL_SIZE_PARAM] == 0.15
 
 
 def test_apply_component_state_startup_restore_no_acquisition(settings_controller, mock_settings_controller_params):
@@ -339,6 +357,49 @@ def test_apply_component_state_startup_restore_no_acquisition(settings_controlle
     
     # No acquisition should be started (verified by lack of startAcquisition/startLive calls)
     # We assert this implicitly - if methods were called on non-mocked objects, test would fail
+
+
+def test_apply_component_state_restores_detector_parameters_to_manager(
+    settings_controller,
+    mock_widget_tree,
+):
+    """Detector parameters must not depend on Qt signal delivery during startup restore."""
+    state = {
+        'detectors': {
+            'Camera1': {
+                'binning': 1,
+                'frame_mode': 'Full chip',
+                'x0': 0,
+                'y0': 0,
+                'width': 512,
+                'height': 512,
+                'parameters': {
+                    'Exposure time': 50.0,
+                    CAMERA_PIXEL_SIZE_PARAM: 0.108,
+                }
+            }
+        }
+    }
+    detector = settings_controller._master.detectorsManager['Camera1']
+    settings_controller.updateSharedAttrs = Mock()
+
+    warnings = settings_controller.applyComponentState(
+        state,
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    assert warnings == []
+    detector.setParameter.assert_any_call('Exposure time', 50.0)
+    detector.setParameter.assert_any_call(CAMERA_PIXEL_SIZE_PARAM, 0.108)
+    mock_widget_tree.p.param('Acquisition').param('Exposure time').setValue.assert_called_with(
+        50.0,
+        blockSignal=True,
+    )
+    mock_widget_tree.p.param('Miscellaneous').param(CAMERA_PIXEL_SIZE_PARAM).setValue.assert_called_with(
+        0.108,
+        blockSignal=True,
+    )
+    settings_controller.updateSharedAttrs.assert_called()
 
 
 def test_apply_component_state_setup_mode_no_acquisition(settings_controller, mock_settings_controller_params):

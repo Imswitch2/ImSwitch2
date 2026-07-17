@@ -1,5 +1,6 @@
 """MoNaLISA SIM reconstructor plugin."""
 
+import copy
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -41,7 +42,8 @@ class MonalisaReconstructor(StreamingReconstructor):
     file_extensions = ["hdf5", "zarr"]
     description = "Point-scanning SIM reconstruction with pattern-based signal extraction"
     supports_streaming = True
-    
+    supports_consolidation = True
+
     def __init__(self):
         self._logger = initLogger('MonalisaReconstructor')
         self._pattern_finder = PatternFinder()
@@ -231,7 +233,62 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         self._logger.info(f'Reconstruction complete: shape {result.data.shape}')
         return result
-    
+
+    def consolidate(
+        self, results: list[MonalisaProcessingResult]
+    ) -> MonalisaProcessingResult:
+        """Merge per-file reconstruction results along the leading Dataset axis.
+
+        Equivalent to the legacy consolidated workflow: per-dataset slices are
+        reconstructed independently (``reconstruct_images_from_coeffs`` loops
+        over the Dataset axis), so concatenating per-file 6D data matches
+        stacking the coefficients first and reconstructing once. Coefficients
+        are carried over only when every input retained them (the classic
+        method does, Fast Gauss does not), keeping 'Update reconstruction'
+        working on merged classic results.
+        """
+        results = list(results)
+        if not results:
+            raise ValueError('No results to consolidate')
+        if len(results) == 1:
+            return results[0]
+
+        first = results[0]
+        for other in results[1:]:
+            if other.data.shape[1:] != first.data.shape[1:]:
+                raise ValueError(
+                    f"Cannot consolidate '{other.name}' into '{first.name}': "
+                    f'per-dataset shape {tuple(other.data.shape[1:])} does not '
+                    f'match {tuple(first.data.shape[1:])} — were these files '
+                    'acquired with the same scan geometry?'
+                )
+
+        data = np.concatenate([result.data for result in results], axis=0)
+        coeffs_list = [getattr(result, 'coeffs', None) for result in results]
+        coeffs = None
+        if all(c is not None for c in coeffs_list) and all(
+            c.shape[1:] == coeffs_list[0].shape[1:] for c in coeffs_list[1:]
+        ):
+            coeffs = np.concatenate(coeffs_list, axis=0)
+
+        finite = data[np.isfinite(data)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)),
+                float(np.percentile(finite, 99.9)),
+            )
+
+        return MonalisaProcessingResult(
+            name=first.name,
+            data=data,
+            scan_params=copy.deepcopy(first.scan_params),
+            display_levels=display_levels,
+            output_pixel_size_nm=first.output_pixel_size_nm,
+            coeffs=coeffs,
+            axis_label_map=dict(first.axis_label_map),
+        )
+
     def make_session(self) -> MonalisaLiveSession:
         """
         Create a fresh streaming session for live reconstruction.
