@@ -1,8 +1,13 @@
 """Single-spot sub-pixel fitting — pure-function core.
 
-Ported from napari-storm (``super-resolution/napari-storm``,
-``picasso_localization/picasso_localiztion.py``). Two methods, both
-numpy/scipy only:
+Provenance
+----------
+Carried over from the maintainer's own earlier SMLM work; no third-party code
+is copied here. The *approach* follows Picasso (Jungmann Lab) — see
+``ACKNOWLEDGMENTS.md`` and cite Schnitzbauer et al., Nat Protoc 12,
+1198-1228 (2017) if you use this in published work.
+
+Two methods, both numpy/scipy only:
 
 * ``"gausslq"`` — background-subtracted centroid + second-moment sigmas. Fast,
   no optimiser, robust starting point.

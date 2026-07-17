@@ -1,6 +1,6 @@
 """Export a LocalizationResult to the napari-storm (Picasso) HDF5 format.
 
-napari-storm (``super-resolution/napari-storm``) ingests Picasso-style HDF5
+napari-storm (``napari-storm/napari-storm``) ingests Picasso-style HDF5
 files through ``StormDataClass.load_locs`` / ``load_hdf5``: an HDF5 dataset
 named ``"locs"`` holding a structured array whose fields are read *by name*
 (``frame``, ``x``, ``y``, optional ``z``, ``lpx``/``lpy``/``lpz``, ``photons``),

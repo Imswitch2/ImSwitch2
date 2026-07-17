@@ -1,0 +1,36 @@
+Picasso — https://github.com/jungmannlab/picasso — Jungmann Lab, MPI of Biochemistry
+
+Imswitch2 does NOT vendor or copy Picasso source code. Our SMLM detection and
+fitting (imswitch/improcess/reconstructors/smlm/) are independent
+implementations of the published Picasso approach (Schnitzbauer et al., Nat
+Protoc 12, 1198-1228, 2017), written against numpy/scipy.
+
+Picasso's licence is reproduced here anyway, because our implementation
+follows their method closely enough that we would rather ship their terms
+beside the acknowledgment than not. If anything here does turn out to be
+derived from Picasso code rather than the published method, contact us and we
+will attribute, relicense or remove it — see ACKNOWLEDGMENTS.md.
+
+----------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2016-2026 Jungmann Lab, MPI of Biochemistry (jungmannlab.org)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

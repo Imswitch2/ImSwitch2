@@ -14,7 +14,7 @@ Take a blinking image stack and:
 2. **represent** that table as a first-class ImProcess result,
 3. **render** it in-house (histogram / Gaussian) for immediate 2D/3D viewing,
 4. **hand off** the same table to the external
-   [napari-storm](https://github.com/super-resolution/napari-storm) plugin for
+   [napari-storm](https://github.com/napari-storm/napari-storm) plugin for
    premium GPU point-cloud visualization.
 
 Non-goals for now: drift correction, grouping/linking, astigmatism 3D

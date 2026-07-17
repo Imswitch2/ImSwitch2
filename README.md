@@ -328,6 +328,29 @@ If you use Imswitch2 in your research, please cite the original ImSwitch JOSS pa
 
 ---
 
+## Acknowledgments & third-party code
+
+Imswitch2 is a fork of [ImSwitch](https://github.com/ImSwitch/ImSwitch), and
+builds on a lot of other people's work — vendored code (with its licences),
+projects we modelled our behaviour on (Fiji/ImageJ, Picasso, napari), and the
+papers behind the methods we implement.
+
+**See [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md)** for the full list, and
+[`licenses/`](licenses/) for third-party licence texts.
+
+Parts of Imswitch2 were written with AI assistance, and standard
+image-processing routines have a limited number of sensible implementations —
+so some code may resemble other projects' even where it was written
+independently. **If you believe your project is an uncredited source, please
+[open an issue](https://github.com/Imswitch2/Imswitch2/issues).** We will add
+the attribution, or relicense or remove the code if there is a licence
+conflict.
+
+---
+
 ## License
 
 GNU General Public License v3.0 — see [`LICENSE`](LICENSE).
+
+Third-party components retain their own licences — see
+[`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md) and [`licenses/`](licenses/).
