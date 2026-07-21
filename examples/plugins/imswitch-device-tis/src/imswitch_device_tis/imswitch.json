@@ -1,0 +1,22 @@
+{
+  "name": "imswitch-device-tis",
+  "display_name": "The Imaging Source Device Support (IC4)",
+  "schema_version": "0.1",
+  "imswitch_min_version": "0.1",
+  "license": "GPL-3.0-or-later",
+  "contributions": {
+    "device_managers": [
+      {
+        "id": "tis.camera-ic4",
+        "kind": "detector",
+        "display_name": "The Imaging Source camera (IC Imaging Control 4)",
+        "python_name": "imswitch_device_tis.detectors:TISCameraIC4Manager",
+        "manager_name_aliases": [],
+        "manager_properties_schema": "schemas/tis_camera_ic4.schema.json",
+        "setup_templates": ["setup_templates/tis_camera_ic4_mock.json"],
+        "docs_url": "https://github.com/Imswitch2/imswitch-device-tis",
+        "supported_platforms": ["linux", "win32"]
+      }
+    ]
+  }
+}

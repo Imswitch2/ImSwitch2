@@ -1,0 +1,22 @@
+{
+  "detectors": {
+    "TISCam": {
+      "analogChannel": null,
+      "digitalLine": null,
+      "managerName": "tis.camera-ic4",
+      "managerProperties": {
+        "cameraSerial": "MOCK_TIS_33UX250",
+        "cameraPixelSizeUm": 0.15,
+        "maxQueuedFrames": 256,
+        "pixelFormat": "Mono16",
+        "defaults": {
+          "exposure_us": 5000,
+          "gain": 0,
+          "trigger_mode": "Off",
+          "trigger_source": null
+        }
+      },
+      "forAcquisition": true
+    }
+  }
+}

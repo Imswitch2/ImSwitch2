@@ -64,6 +64,22 @@ _THORLABS = ExternalManagerHint(
     ),
 )
 
+# The Imaging Source cameras on IC Imaging Control 4. Unlike the entries above
+# this is not an extraction: the in-tree TISManager (legacy pyicic/IC3) stays put
+# and keeps its name. The plugin is a rewrite onto a different SDK under a new
+# id, so only that new id is hinted here — a setup naming `TISManager` must keep
+# resolving to the in-tree manager, not be redirected at the plugin.
+_TIS = ExternalManagerHint(
+    package="imswitch-device-tis",
+    extra="hardware",
+    note=(
+        "The Imaging Source camera support built on IC Imaging Control 4; "
+        "bundled under examples/plugins/imswitch-device-tis in the ImSwitch "
+        "repository. The hardware extra also requires the IC4 GenTL Producer "
+        "(USB3 Vision) to be installed separately."
+    ),
+)
+
 KNOWN_EXTERNAL_MANAGERS: dict[tuple[str, str], ExternalManagerHint] = {
     ("detector", "zhinst.lockin-demod"): _ZHINST,
     ("detector", "ZhinstLockinDetectorManager"): _ZHINST,
@@ -72,6 +88,7 @@ KNOWN_EXTERNAL_MANAGERS: dict[tuple[str, str], ExternalManagerHint] = {
     ("detector", "ThorCamTSIManager"): _THORLABS,
     ("positioner", "thorlabs.kinesis-stage"): _THORLABS,
     ("positioner", "KinesisStageManager"): _THORLABS,
+    ("detector", "tis.camera-ic4"): _TIS,
 }
 
 
