@@ -219,6 +219,28 @@ class ProcessingResult(ABC):
         """Return optional graph payloads for the ImProcess graph widget."""
         return []
 
+    def table_columns(self) -> list[str]:
+        """Return the column order for the shared results table.
+
+        Third rendering channel alongside :meth:`display_layers` (napari) and
+        :meth:`plot_payloads` (graph panel): results whose values are rows of
+        named metrics expose them here instead of leaving the numbers locked
+        inside ``data``. Empty (the default) means the result has no tabular
+        view.
+        """
+        return []
+
+    def table_records(self) -> list[dict[str, Any]]:
+        """Return one dict per row, keyed by :meth:`table_columns`.
+
+        Shaped for ``ResultsTableWidget.append_records(columns, records)``.
+        Results with ``kind == "table"`` are appended to the shared Results
+        dock automatically when produced; other kinds (e.g. ``"localization"``,
+        whose row count can reach six figures) expose records here for
+        explicit export or opt-in display, not for automatic rendering.
+        """
+        return []
+
     def display_layers(self) -> list[DisplayLayerSpec]:
         """Return optional independently-scaled viewer layers.
 
