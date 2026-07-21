@@ -1,7 +1,7 @@
 # TIS Camera → IC Imaging Control 4 (IC4) Migration — Plan
 
 **Status:** Phases 1–3 implemented as the `imswitch-device-tis` **plugin**
-(mock-complete, 22 tests green); the real IC4 path is written but **gated on the
+(mock-complete, 39 tests green); the real IC4 path is written but **gated on the
 Phase 0 rig probe**. In-tree `TISManager` untouched.
 **Date:** 2026-07-21 (revised same day after source + vendor-API verification;
 re-scoped to a plugin later the same day).
@@ -203,6 +203,30 @@ Signature confirmed from the API reference:
 `stream_setup(sink=None, display=None, setup_option=StreamSetupOption.ACQUISITION_START)`,
 with `ACQUISITION_START = 1` and `DEFER_ACQUISITION_START = 0`.
 
+### Verified against the wheel's own source
+
+Because the real path cannot run on a dev box (no macOS wheel, and a GenTL
+producer is required besides), every name it uses was checked against the
+`imagingcontrol4` 1.5.3.3316 sources rather than trusted:
+
+- All 15 `PropId` constants used exist, including `WIDTH_MAX` / `HEIGHT_MAX`,
+  which appear nowhere in the vendor's examples.
+- `QueueSinkListener` has exactly two abstract methods — `sink_connected` and
+  `frames_queued`. `sink_disconnected` is commented out as abstract, so not
+  implementing it is safe.
+- `pop_output_buffer()` **raises `IC4Exception`** when the queue is empty; it
+  never returns `None`. A drain loop must treat the exception as the terminator.
+- A popped buffer returns to the sink's free queue only when released or
+  deleted, so `ImageBuffer.release()` is called explicitly rather than leaving it
+  to refcount timing.
+- **`Library.init()` is not idempotent** — it raises
+  `RuntimeError("Library.init was already called")`, and there is no public
+  predicate for "already initialized". Genuine load failures raise
+  `FileNotFoundError`, so the already-initialized case can be caught precisely.
+  This matters directly: `example_sted.json` declares two TIS detectors.
+- `PropInteger` exposes `minimum` / `maximum` / `increment`, so ROI values can be
+  fitted to the sensor's step instead of being rejected.
+
 ---
 
 ## 4. Prerequisites & unknowns
@@ -293,7 +317,7 @@ examples/plugins/imswitch-device-tis/
 │   ├── detectors/tis_camera_ic4.py# TISCameraIC4Manager
 │   ├── schemas/…                  # managerProperties JSON schema
 │   └── setup_templates/…          # runnable mock setup
-└── tests/                         # 22 tests, no hardware
+└── tests/                         # 39 tests, no hardware
 ```
 
 Real and mock drivers share `FrameQueue`, so the mock-backed tests exercise the

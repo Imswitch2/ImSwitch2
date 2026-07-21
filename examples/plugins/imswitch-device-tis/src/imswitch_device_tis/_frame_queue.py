@@ -37,6 +37,9 @@ class FrameQueue:
         self._logger = logger
         self._dropped = 0
         self._warned = False
+        # Most recent frame seen, retained independently of the drain queue —
+        # see latest().
+        self._last = None
 
     @property
     def maxlen(self) -> int:
@@ -72,6 +75,7 @@ class FrameQueue:
                             f"further drops will not be logged."
                         )
             self._frames.append(frame)
+            self._last = frame
 
     def drain(self) -> list:
         """Remove and return every queued frame, oldest first."""
@@ -81,14 +85,21 @@ class FrameQueue:
             return frames
 
     def latest(self):
-        """Return the newest frame without draining, or None if empty.
+        """Return the most recent frame seen, or None if there has been none.
 
-        Non-destructive on purpose: live view calls this on a timer and must not
-        steal frames from a concurrent recording.
+        Deliberately *not* read off the pending deque. Live view polls this on a
+        timer while a recording drains through getChunk, so reading the deque
+        would return None for every poll that lands after a drain — the live
+        view would flicker to black exactly while a recording is running.
+
+        Survives drain() and is cleared only by clear(), which is what crop()
+        calls: a retained frame with the pre-crop geometry would otherwise be
+        handed out at the wrong shape.
         """
         with self._lock:
-            return self._frames[-1] if self._frames else None
+            return self._last
 
     def clear(self) -> None:
         with self._lock:
             self._frames.clear()
+            self._last = None

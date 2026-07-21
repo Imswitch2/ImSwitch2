@@ -35,6 +35,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPOSURE_US = 5000.0
 
 
+def ensure_library_initialized(ic4) -> None:
+    """Initialize the IC4 library exactly once per process.
+
+    ``Library.init()`` is *not* idempotent — it raises
+    ``RuntimeError("Library.init was already called")`` when the library is
+    already up, and exposes no public predicate to test for that. A setup with
+    two TIS cameras constructs this driver twice in one process, so calling it
+    unguarded makes the second camera fail to open.
+
+    That failure is especially nasty here because the manager's constructor
+    falls back to the mock on RuntimeError: the second camera would come up
+    silently showing synthetic frames. Swallow only the already-initialized
+    case; a genuine failure to load the native library raises FileNotFoundError
+    and must still propagate.
+    """
+    try:
+        ic4.Library.init()
+    except RuntimeError:
+        logger.debug("IC4 library was already initialized by another component")
+
+
 def dtype_for_pixel_format(pixel_format) -> np.dtype:
     """Map a GenICam PixelFormat name to the numpy dtype frames arrive in.
 
@@ -80,9 +101,7 @@ class IC4Camera:
             ) from e
 
         self._ic4 = ic4
-        # Idempotent by design in IC4; safe when another component already
-        # initialized the library in this process.
-        ic4.Library.init()
+        ensure_library_initialized(ic4)
 
         devices = ic4.DeviceEnum.devices()
         if not devices:
@@ -187,17 +206,46 @@ class IC4Camera:
     def get_gain(self) -> float:
         return float(self._pm.get_value_float(self._ic4.PropId.GAIN))
 
+    def _fit_to_property(self, prop_id, value) -> int:
+        """Clamp ``value`` into a GenICam integer property's legal range/step.
+
+        Sensors constrain Width/Height/OffsetX/OffsetY to a minimum, a maximum
+        and an *increment* (commonly 4 or 8 px). ImSwitch's ROI selector hands
+        over arbitrary pixel counts, and IC4 raises on a value that violates any
+        of those — which would surface as an exception thrown out of the GUI's
+        crop path. Rounding down to the increment keeps the ROI inside what the
+        user selected.
+
+        Falls back to the raw value if the property does not expose these
+        attributes, so an unexpected SDK shape degrades to previous behaviour
+        rather than breaking.
+        """
+        value = int(value)
+        try:
+            prop = self._pm.find_integer(prop_id)
+            minimum, maximum = int(prop.minimum), int(prop.maximum)
+            increment = int(prop.increment) or 1
+        except Exception as e:
+            logger.debug(f"Could not read constraints for {prop_id}: {e}")
+            return value
+
+        value = max(minimum, min(value, maximum))
+        if increment > 1:
+            value -= (value - minimum) % increment
+        return value
+
     def set_roi(self, x0, y0, width, height) -> None:
         """Set the readout region. Requires the stream to be stopped."""
         pm, pid = self._pm, self._ic4.PropId
-        # Offsets first to zero, so a larger width/height is never rejected for
-        # overflowing the sensor while an old offset is still applied.
+        # Offsets to zero first, so a larger width/height is never rejected for
+        # overflowing the sensor while an old offset is still applied. The
+        # size constraints are read in that state for the same reason.
         pm.set_value(pid.OFFSET_X, 0)
         pm.set_value(pid.OFFSET_Y, 0)
-        pm.set_value(pid.WIDTH, int(width))
-        pm.set_value(pid.HEIGHT, int(height))
-        pm.set_value(pid.OFFSET_X, int(x0))
-        pm.set_value(pid.OFFSET_Y, int(y0))
+        pm.set_value(pid.WIDTH, self._fit_to_property(pid.WIDTH, width))
+        pm.set_value(pid.HEIGHT, self._fit_to_property(pid.HEIGHT, height))
+        pm.set_value(pid.OFFSET_X, self._fit_to_property(pid.OFFSET_X, x0))
+        pm.set_value(pid.OFFSET_Y, self._fit_to_property(pid.OFFSET_Y, y0))
 
     # -- trigger ----------------------------------------------------------
 
@@ -328,18 +376,35 @@ class _QueueListener(_make_listener_base()):
     def frames_queued(self, sink) -> None:
         # Drain the sink fully: the SDK may deliver several buffers per
         # notification, and anything left behind is a leaked frame.
+        #
+        # This runs on the SDK's stream thread. Letting an exception escape into
+        # native code is undefined behaviour, so everything is handled here.
         while True:
             try:
                 buffer = sink.pop_output_buffer()
+            except Exception as e:
+                # pop_output_buffer raises rather than returning None once the
+                # output queue is empty, which is the documented way to discover
+                # there is nothing left. Anything else is a real error and must
+                # not be silently swallowed.
+                if type(e).__name__ != "IC4Exception":
+                    logger.exception("Unexpected error draining the IC4 sink")
+                return
+            try:
+                # numpy_copy, NOT numpy_wrap: the wrap is a view onto a buffer
+                # the SDK recycles the moment we return.
+                self._queue.push(buffer.numpy_copy())
             except Exception:
-                # Raised when the output queue is empty — the documented way to
-                # discover there is nothing left.
+                logger.exception("Could not copy an IC4 frame out of its buffer")
                 return
-            if buffer is None:
-                return
-            # numpy_copy, NOT numpy_wrap: the wrap is a view onto a buffer the
-            # SDK recycles the moment we return.
-            self._queue.push(buffer.numpy_copy())
+            finally:
+                # Documented contract: a popped buffer returns to the sink's
+                # free queue when released or deleted. Explicit beats relying on
+                # refcount timing in a hot acquisition loop.
+                try:
+                    buffer.release()
+                except Exception:
+                    pass
 
 
 class MockIC4Camera:

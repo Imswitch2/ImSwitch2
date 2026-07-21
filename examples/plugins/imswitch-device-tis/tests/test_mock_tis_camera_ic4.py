@@ -102,6 +102,33 @@ def test_get_latest_frame_does_not_drain(manager):
     assert manager.getChunk().shape[0] == 2, 'getLatestFrame consumed frames'
 
 
+def test_live_view_survives_a_concurrent_recording_drain(manager):
+    """Live view polls getLatestFrame on a timer while a recording drains
+    through readChunk. Reading 'latest' off the pending queue made every poll
+    that landed after a drain return black — the live view flickered to black
+    for exactly as long as a recording was running."""
+    manager.startAcquisition()
+    manager._camera.simulate_hardware_trigger(3)
+    before = manager.getLatestFrame()
+
+    assert manager.readChunk('recording') != []
+
+    after = manager.getLatestFrame()
+    assert after.max() > 0, 'live view went black after the recording drained'
+    assert np.array_equal(before, after)
+
+
+def test_crop_invalidates_the_retained_live_frame(manager):
+    """The retained frame has the pre-crop geometry, so it must not outlive a
+    crop — handing it to the viewer would report the wrong shape."""
+    manager.startAcquisition()
+    manager._camera.simulate_hardware_trigger(1)
+
+    manager.crop(0, 0, 512, 256)
+
+    assert manager.getLatestFrame().shape == (256, 512)
+
+
 def test_no_frames_produced_while_not_streaming(manager):
     """Triggers arriving before startAcquisition must not queue frames."""
     manager._camera.simulate_hardware_trigger(3)

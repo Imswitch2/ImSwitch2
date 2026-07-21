@@ -118,10 +118,15 @@ pip install -e ".[test]"
 pytest tests/
 ```
 
-22 tests, no hardware required. The two that matter most —
-`test_each_trigger_yields_a_distinct_frame` and `test_get_chunk_is_3d` — were
-verified by mutation: reintroducing the duplicate-frame bug fails the first, and
-returning a 2-D chunk fails seven tests including the `readChunk` fan-out.
+39 tests, no hardware required. The load-bearing ones were verified by mutation
+rather than assumed: reintroducing the duplicate-frame bug fails
+`test_each_trigger_yields_a_distinct_frame`, returning a 2-D chunk fails seven
+tests including the `readChunk` fan-out, and reverting any of the driver fixes
+(library-init guard, retained live frame, ROI clamping) fails its own test.
+
+`test_ic4_driver_contracts.py` covers the parts of the real IC4 path that do not
+need the SDK, using fakes shaped like the API surface verified against the
+vendor's own sources.
 
 ## License
 
