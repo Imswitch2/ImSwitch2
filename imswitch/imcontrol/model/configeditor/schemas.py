@@ -141,11 +141,21 @@ def _template_field_to_spec(
 def _infer_type_from_schema(prop_schema: dict) -> str:
     """Infer editor field type from JSON Schema property definition."""
     schema_type = prop_schema.get("type")
-    
+
     # Check for enum first (becomes select)
     if "enum" in prop_schema:
         return "select"
-    
+
+    # ``["string", "null"]`` is the standard way to say "a string, or unset",
+    # and both bundled device plugins use it for cameraSerial. Treating it as
+    # an unrepresentable union would demote an ordinary text box to a raw JSON
+    # editor, forcing the user to type quotes around a serial number. A single
+    # non-null member is just that type; a genuine multi-type union still
+    # falls through to JSON below.
+    if isinstance(schema_type, list):
+        non_null = [t for t in schema_type if t != "null"]
+        schema_type = non_null[0] if len(non_null) == 1 else None
+
     # Map JSON Schema types to editor types
     if schema_type == "integer":
         return "int"
