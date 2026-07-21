@@ -8,37 +8,15 @@ from pathlib import Path
 
 from .manifest import DeviceManagerContribution
 from .registry import DevicePluginRegistry
+from .setup_metadata import (
+    KIND_METADATA,
+    daq_device_categories,
+    setup_section_to_kind,
+)
 
-
-# Inverse of MultiManager's map: kind -> subpackage name
-KIND_TO_SUBMANAGERS_PACKAGE: dict[str, str] = {
-    "detector": "detectors",
-    "laser": "lasers",
-    "positioner": "positioners",
-    "rotator": "rotators",
-    "rs232": "rs232",
-    "flip_mirror": "flipMirrors",
-    "slm": "slms",
-    "stand": "stands",
-}
-
-# Setup JSON section name -> device kind
-SETUP_SECTION_TO_KIND: dict[str, str] = {
-    "detectors": "detector",
-    "lasers": "laser",
-    "positioners": "positioner",
-    "rotators": "rotator",
-    "rs232devices": "rs232",
-    "slms": "slm",
-    "flipMirrors": "flip_mirror",
-    "microscopeStand": "stand",
-}
-
-# Device categories that may have DAQ channels
-DAQ_DEVICE_CATEGORIES = [
-    "detectors", "lasers", "positioners", "rotators", "rs232devices", 
-    "slms", "flipMirrors", "pulsegen", "stands"
-]
+# Compatibility exports.  Setup-kind metadata owns these mappings.
+SETUP_SECTION_TO_KIND: dict[str, str] = setup_section_to_kind()
+DAQ_DEVICE_CATEGORIES = list(daq_device_categories())
 
 
 def legacy_manager_exists(kind: str, manager_name: str) -> bool:
@@ -51,11 +29,14 @@ def legacy_manager_exists(kind: str, manager_name: str) -> bool:
     Returns:
         True if the module exists, False otherwise.
     """
-    subpackage = KIND_TO_SUBMANAGERS_PACKAGE.get(kind)
-    if subpackage is None:
+    metadata = KIND_METADATA.get(kind)
+    if metadata is None:
         return False
-    
-    module_path = f"imswitch.imcontrol.model.managers.{subpackage}.{manager_name}"
+
+    module_path = (
+        "imswitch.imcontrol.model.managers."
+        f"{metadata.legacy_manager_directory}.{manager_name}"
+    )
     
     try:
         spec = importlib.util.find_spec(module_path)

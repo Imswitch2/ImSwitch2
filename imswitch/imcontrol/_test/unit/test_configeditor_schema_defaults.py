@@ -22,6 +22,7 @@ from imswitch.imcontrol.model.configeditor.catalog import (
 )
 from imswitch.imcontrol.model.configeditor.schemas import (
     FieldSpec,
+    materialize_device_schema,
     normalized_fields,
 )
 from imswitch.imcontrol.model.configeditor.defaults import (
@@ -355,6 +356,67 @@ class TestConfigEditorSchemaDefaults:
         
         # User's edit to unknownField should be preserved (not overwritten)
         assert result["managerProperties"]["unknownField"] == "edited"
+
+    def test_merge_preserves_new_nested_setting(self):
+        """A template must not drop settings added inside a known nested dict."""
+        original = {
+            "managerName": "TestManager",
+            "managerProperties": {
+                "driver": {"known": 1, "introducedByNewPlugin": "keep me"},
+            },
+        }
+        edited = {
+            "managerName": "TestManager",
+            "managerProperties": {"driver": {"known": 2}},
+        }
+
+        result = merge_preserving_unknown(
+            original,
+            edited,
+            schema_top_keys=set(),
+            schema_prop_keys={"driver"},
+            schema_nested_prop_keys={"driver": {"known"}},
+        )
+
+        assert result["managerProperties"]["driver"] == {
+            "known": 2,
+            "introducedByNewPlugin": "keep me",
+        }
+
+    def test_materialize_device_schema_adds_plugin_fields(self):
+        """Schema-only plugin fields become template-shaped editor fields."""
+        template = {
+            "top": [],
+            "props": [{"key": "legacy", "req": False, "type": "text"}],
+            "nested": {},
+        }
+        plugin_schema = {
+            "properties": {
+                "legacy": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["safe", "fast"],
+                    "default": "safe",
+                },
+                "calibration": {"type": "object", "default": {"gain": 1}},
+            },
+            "required": ["legacy", "mode"],
+        }
+
+        result = materialize_device_schema(
+            template=template, json_schema=plugin_schema
+        )
+
+        assert result["props"][0]["req"] is True
+        mode = next(field for field in result["props"] if field["key"] == "mode")
+        assert mode["type"] == "select"
+        assert mode["opts"] == ["safe", "fast"]
+        calibration = next(
+            field for field in result["props"] if field["key"] == "calibration"
+        )
+        assert calibration["type"] == "json"
+        # Inputs are cached by the editor and must never be changed in place.
+        assert template["props"] == [{"key": "legacy", "req": False, "type": "text"}]
     
     def test_normalized_fields_template_only(self):
         """Test normalized_fields with template only (no schema)."""

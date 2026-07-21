@@ -94,6 +94,27 @@ def load_plugin_templates(
                         message="Template dict missing required 'managerName' field"
                     ))
                     continue
+
+                # A contribution owns only templates for itself (aliases are
+                # accepted through the catalog).  Without this check a typo
+                # in a plugin resource can insert a device into the owning
+                # category even though its manager belongs elsewhere.
+                template_manager = catalog.get(str(template_data["managerName"]))
+                if (
+                    template_manager is None
+                    or template_manager.manager_name != manager_info.manager_name
+                ):
+                    errors.append(PluginTemplateError(
+                        manager_name=manager_info.manager_name,
+                        plugin_name=manager_info.plugin_name,
+                        source_package=manager_info.source_package,
+                        resource=resource_path,
+                        message=(
+                            "Template managerName does not resolve to the "
+                            f"declaring manager '{manager_info.manager_name}'"
+                        ),
+                    ))
+                    continue
                 
                 # Determine display name: use a metadata "name" field if present,
                 # else the file stem. When "name" is used as the label it is

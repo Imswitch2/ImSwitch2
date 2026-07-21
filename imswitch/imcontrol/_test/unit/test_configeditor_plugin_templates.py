@@ -143,6 +143,32 @@ class TestPluginTemplateLoader:
         assert len(templates) == 1
         assert len(errors) == 0
         assert templates[0].name == "My Custom Device"
+
+    def test_template_for_different_manager_produces_error(self, temp_package):
+        """A plugin cannot place another manager's device in its category."""
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "wrong-manager.json").write_text(json.dumps({
+            "managerName": "OtherManager", "managerProperties": {}
+        }))
+        manager = ManagerInfo(
+            manager_name="TestManager", category="detectors", kind="detector",
+            display_name="Test Detector", aliases=(), plugin_name="test-plugin",
+            source_package=pkg_name, docs_url=None, supported_platforms=(),
+            setup_templates=("templates/wrong-manager.json",), is_builtin=False,
+            from_registry=True,
+        )
+        other = ManagerInfo(
+            manager_name="OtherManager", category="lasers", kind="laser",
+            display_name="Other Laser", aliases=(), plugin_name="other-plugin",
+            source_package=pkg_name, docs_url=None, supported_platforms=(),
+            setup_templates=(), is_builtin=False, from_registry=True,
+        )
+
+        templates, errors = load_plugin_templates(ManagerCatalog([manager, other]))
+
+        assert templates == []
+        assert len(errors) == 1
+        assert "does not resolve" in errors[0].message
     
     def test_multiple_templates_multiple_managers(self, temp_package):
         """Test loading multiple templates from multiple managers."""
