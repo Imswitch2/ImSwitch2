@@ -91,3 +91,25 @@ def test_stand_manager_legacy_leica_name_falls_back_to_mock(
     assert manager.mocker is True
     assert "Stand manager 'LeicaDMIManager' is unavailable" in caplog.text
     assert "Loading mock manager 'LeicaDMIManager_mock'" in caplog.text
+
+
+def test_unknown_namespaced_stand_id_gives_the_actionable_diagnostic():
+    """A hyphenated plugin id is not a legal module path, so joinModulePath
+    rejects it with ValueError. Letting that escape replaced the "install this
+    package" diagnostic — which is keyed by exactly these namespaced ids in
+    external.py — with an opaque "invalid characters" message.
+
+    Same defect as MultiManager had; StandManager is the other loader that
+    falls back to a legacy in-tree import.
+    """
+    import logging
+
+    with pytest.raises(ImportError) as excinfo:
+        StandManager._resolveStandManagerClass(
+            "imswitch.imcontrol.model.managers",
+            "vendor.stand-x",
+            logging.getLogger("test"),
+        )
+
+    assert not isinstance(excinfo.value, ValueError)
+    assert "vendor.stand-x" in str(excinfo.value)
