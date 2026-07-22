@@ -115,3 +115,30 @@ def test_core_manager_registry_coverage_is_an_explicit_inventory():
         ("pulse_generator", "PulseStreamerManager"),
         ("pulse_generator", "TeensyPulseManager"),
     }
+
+
+def test_registry_backed_kinds_match_the_named_loader_subsets():
+    """The derived kind set and the hand-written loader subsets must agree.
+
+    REGISTRY_BACKED_KINDS is now derived from setup_metadata's
+    supports_external_plugins flag, while MULTIMANAGER_BACKED_KINDS and
+    STANDALONE_REGISTRY_BACKED_KINDS remain as documentation of *which* loader
+    handles each kind. Nothing recomputes one from the other, so they can drift:
+    flipping supports_external_plugins on a kind with no loader would let a
+    manifest declare it and then fail at runtime. That drift is exactly what
+    consolidating onto setup_metadata was meant to prevent, so assert it.
+    """
+    from imswitch.imcontrol.model.plugins.manifest import (
+        BESPOKE_LOADER_KINDS,
+        MULTIMANAGER_BACKED_KINDS,
+        REGISTRY_BACKED_KINDS,
+        STANDALONE_REGISTRY_BACKED_KINDS,
+        ALL_VALID_KINDS,
+    )
+
+    assert (
+        MULTIMANAGER_BACKED_KINDS | STANDALONE_REGISTRY_BACKED_KINDS
+        == REGISTRY_BACKED_KINDS
+    )
+    assert REGISTRY_BACKED_KINDS | BESPOKE_LOADER_KINDS == ALL_VALID_KINDS
+    assert not (REGISTRY_BACKED_KINDS & BESPOKE_LOADER_KINDS)
