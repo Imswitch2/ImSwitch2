@@ -56,6 +56,25 @@ def ensure_library_initialized(ic4) -> None:
         logger.debug("IC4 library was already initialized by another component")
 
 
+def normalize_frame(frame: np.ndarray) -> np.ndarray:
+    """Drop the trailing singleton channel axis IC4 returns for mono formats.
+
+    ``ImageBuffer.numpy_copy()`` yields **(H, W, 1)** for Mono8/Mono16 — measured
+    on a DMK 33UX250, not assumed. That extra axis has to come off here:
+
+    - ``DetectorManager.getLatestFrame`` is contracted to return (H, W);
+    - ``readChunk`` does ``list.extend`` over a chunk, which iterates axis 0, so
+      a (N, H, W, 1) chunk would hand the recorder 3-D "frames" and corrupt the
+      saved file exactly the way a 2-D chunk did on ThorCam TSI.
+
+    Real and mock frames both pass through this, so the mock cannot drift back to
+    a shape the hardware never produces — which is what let this reach a commit.
+    """
+    if frame.ndim == 3 and frame.shape[2] == 1:
+        return frame[:, :, 0]
+    return frame
+
+
 def dtype_for_pixel_format(pixel_format) -> np.dtype:
     """Map a GenICam PixelFormat name to the numpy dtype frames arrive in.
 
@@ -249,12 +268,18 @@ class IC4Camera:
 
     # -- trigger ----------------------------------------------------------
 
-    def set_trigger_enabled(self, enabled: bool, source=None) -> None:
+    def set_trigger_enabled(self, enabled: bool, source=None, activation=None) -> None:
         """Arm or disarm the hardware trigger in software.
 
         The legacy path could not do this — ``pyicic``'s ``enable_trigger`` was
         called once with ``False`` at init and swallowed its own error return, so
         arming was a manual step in the vendor's properties dialog.
+
+        ``activation`` selects the edge (``RisingEdge`` / ``FallingEdge``). The
+        DMK 33UX250 was found sitting on ``FallingEdge`` out of the box, which
+        latches on the *trailing* edge of a TriggerScope pulse — frames still
+        arrive, delayed by the pulse width, which is a subtle way to get skewed
+        timing rather than an obvious failure.
         """
         pm, pid = self._pm, self._ic4.PropId
         # TriggerSelector must be set before TriggerMode on models that expose
@@ -263,6 +288,8 @@ class IC4Camera:
         pm.set_value(pid.TRIGGER_MODE, "On" if enabled else "Off")
         if enabled and source is not None:
             pm.set_value(pid.TRIGGER_SOURCE, str(source))
+        if enabled and activation is not None:
+            pm.try_set_value(pid.TRIGGER_ACTIVATION, str(activation))
 
     def is_trigger_enabled(self) -> bool:
         return self._pm.get_value_str(self._ic4.PropId.TRIGGER_MODE) == "On"
@@ -367,10 +394,26 @@ class _QueueListener(_make_listener_base()):
         super().__init__()
         self._queue = queue
 
+    #: Buffers to allocate beyond the SDK's stated minimum. The sink allocates
+    #: the minimum itself if we don't, but headroom absorbs a consumer that
+    #: stalls briefly — a 5 MP sensor at 75 fps fills the minimum quickly.
+    EXTRA_BUFFERS = 8
+
     def sink_connected(self, sink, image_type, min_buffers_required) -> bool:
         # Required by the SDK and must return True, or the stream never
         # connects. Accepting whatever the device offers is correct here: the
         # image type is already pinned via PixelFormat at open time.
+        try:
+            sink.alloc_and_queue_buffers(
+                max(int(min_buffers_required), self.EXTRA_BUFFERS)
+            )
+        except Exception:
+            # Not fatal: the sink falls back to allocating the minimum itself.
+            logger.warning(
+                "Could not pre-allocate IC4 buffers; the sink will allocate the "
+                "minimum, which leaves no headroom if a consumer stalls.",
+                exc_info=True,
+            )
         return True
 
     def frames_queued(self, sink) -> None:
@@ -381,19 +424,16 @@ class _QueueListener(_make_listener_base()):
         # native code is undefined behaviour, so everything is handled here.
         while True:
             try:
-                buffer = sink.pop_output_buffer()
-            except Exception as e:
-                # pop_output_buffer raises rather than returning None once the
-                # output queue is empty, which is the documented way to discover
-                # there is nothing left. Anything else is a real error and must
-                # not be silently swallowed.
-                if type(e).__name__ != "IC4Exception":
-                    logger.exception("Unexpected error draining the IC4 sink")
+                buffer = sink.try_pop_output_buffer()
+            except Exception:
+                logger.exception("Unexpected error draining the IC4 sink")
                 return
+            if buffer is None:
+                return  # output queue empty
             try:
                 # numpy_copy, NOT numpy_wrap: the wrap is a view onto a buffer
                 # the SDK recycles the moment we return.
-                self._queue.push(buffer.numpy_copy())
+                self._queue.push(normalize_frame(buffer.numpy_copy()))
             except Exception:
                 logger.exception("Could not copy an IC4 frame out of its buffer")
                 return
@@ -434,6 +474,7 @@ class MockIC4Camera:
         self._gain = 0.0
         self._trigger_enabled = False
         self._trigger_source = None
+        self._trigger_activation = None
         self._streaming = False
         self._frame_count = 0
         self._dtype = dtype_for_pixel_format(pixel_format)
@@ -488,10 +529,12 @@ class MockIC4Camera:
     def set_roi(self, x0, y0, width, height) -> None:
         self._roi = (int(x0), int(y0), int(width), int(height))
 
-    def set_trigger_enabled(self, enabled: bool, source=None) -> None:
+    def set_trigger_enabled(self, enabled: bool, source=None, activation=None) -> None:
         self._trigger_enabled = bool(enabled)
         if enabled and source is not None:
             self._trigger_source = source
+        if enabled and activation is not None:
+            self._trigger_activation = activation
 
     def is_trigger_enabled(self) -> bool:
         return self._trigger_enabled
@@ -516,7 +559,12 @@ class MockIC4Camera:
         offset = (self._frame_count * 97) % 4096
         y = np.linspace(0, 1024, h, dtype=np.float32)[:, None]
         x = np.linspace(0, 1024, w, dtype=np.float32)[None, :]
-        self._queue.push(((y + x) / 2 + offset).astype(self._dtype))
+        raw = ((y + x) / 2 + offset).astype(self._dtype)
+        # Mimic ImageBuffer.numpy_copy(), which returns (H, W, 1) for mono
+        # formats, and push it through the same normalization the real listener
+        # uses. A mock that emitted a clean (H, W) would silently pass tests the
+        # hardware fails — which is exactly what happened before the rig probe.
+        self._queue.push(normalize_frame(raw[:, :, None]))
 
     def start_stream(self) -> None:
         self._streaming = True

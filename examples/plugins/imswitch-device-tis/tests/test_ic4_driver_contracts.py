@@ -11,7 +11,7 @@ import pytest
 
 from imswitch_device_tis._frame_queue import FrameQueue
 from imswitch_device_tis._ic4_driver import (
-    dtype_for_pixel_format, ensure_library_initialized,
+    dtype_for_pixel_format, ensure_library_initialized, normalize_frame,
 )
 
 
@@ -140,3 +140,49 @@ def test_frame_queue_latest_survives_drain_but_not_clear():
 
     q.clear()
     assert q.latest() is None, 'crop must invalidate the retained frame'
+
+
+# --- Frame shape ------------------------------------------------------------
+#
+# Measured on a DMK 33UX250: ImageBuffer.numpy_copy() returns (2048, 2448, 1)
+# uint8 for Mono8 — a trailing channel axis. The mock originally produced a
+# clean (H, W), so the whole suite passed against a shape the hardware never
+# emits, and getChunk would have stacked (N, H, W, 1) into the recorder.
+
+
+def test_mono_channel_axis_is_dropped():
+    frame = np.zeros((2048, 2448, 1), dtype=np.uint8)
+
+    assert normalize_frame(frame).shape == (2048, 2448)
+
+
+def test_two_dimensional_frames_pass_through_unchanged():
+    frame = np.zeros((48, 64), dtype=np.uint16)
+
+    assert normalize_frame(frame) is frame
+
+
+def test_multi_channel_frames_are_left_alone():
+    """Only a *singleton* channel axis is squeezed; a real colour frame must
+    keep its channels rather than being silently mangled."""
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+
+    assert normalize_frame(frame).shape == (48, 64, 3)
+
+
+def test_mock_emits_the_shape_hardware_emits():
+    """The mock must go through the same normalization as the real listener.
+
+    If it fabricated a clean (H, W) directly, it would keep passing tests that
+    the camera fails — which is exactly how the channel axis reached a commit.
+    """
+    from imswitch_device_tis._ic4_driver import MockIC4Camera
+
+    camera = MockIC4Camera(serial="MOCK_X", pixel_format="Mono8")
+    camera.start_stream()
+    camera.simulate_hardware_trigger(1)
+
+    frame = camera.pop_frames()[0]
+
+    assert frame.ndim == 2
+    assert frame.dtype == np.uint8

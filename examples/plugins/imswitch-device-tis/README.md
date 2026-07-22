@@ -29,11 +29,36 @@ Full rationale, the verified vendor-API details, and the rig-validation plan:
 
 ## Status
 
-**The mock path is complete and tested. The real IC4 path is written but has not
-run against hardware yet** — it is gated on the Phase 0 rig probe in the plan
-(does the camera enumerate under the IC4 GenTL producer, and does one TTL pulse
-yield exactly one frame). Do not remove the in-tree `TISManager` before that
-passes.
+**Phase 0 passed on a DMK 33UX250 (serial 43710086) on 2026-07-22:** 10 software
+triggers produced 10 frames, all 10 distinct. That validates the premise — IC4's
+QueueSink delivers one distinct frame per trigger, which the legacy poll-based
+path could not.
+
+Still outstanding: the same test driven by **external TTL** from the TriggerScope,
+and the in-app tests (Phases 1-3 of the test plan). Do not remove the in-tree
+`TISManager` before those pass.
+
+### Measured on the DMK 33UX250
+
+These came off the camera, not the datasheet, and the driver is written against
+them:
+
+| Property | Values | Note |
+|---|---|---|
+| `PixelFormat` | `Mono8`, `Mono16` | ships on **Mono8** |
+| `TriggerSelector` | `FrameStart`, `ExposureActive` | driver sets `FrameStart` |
+| `TriggerSource` | `Line1`, `Software`, `Any` | ships on `Any`; use **`Line1`** for TriggerScope TTL |
+| `TriggerActivation` | `RisingEdge`, `FallingEdge` | ships on **`FallingEdge`** — see below |
+| Full frame | 2448 x 2048 | min sink buffers: 6 |
+
+Two of these bit us:
+
+- `numpy_copy()` returns **(H, W, 1)** for mono formats, not (H, W). The driver
+  squeezes the channel axis; without that, `getChunk` stacks to (N, H, W, 1) and
+  `readChunk` hands the recorder 3-D "frames".
+- The camera ships on **`FallingEdge`**, so it latches on the *trailing* edge of
+  a TriggerScope pulse. Frames still arrive, delayed by the pulse width — skewed
+  timing rather than an obvious failure. Set `trigger_activation` explicitly.
 
 ## This plugin does not claim the name `TISManager`
 
@@ -89,6 +114,37 @@ index (as the legacy `cameraListIndex` did), because an index silently rebinds t
 a different camera when USB enumeration order changes. `null` opens the first
 device found.
 
+### Real hardware, TriggerScope-triggered
+
+Values below are the ones measured on the DMK 33UX250; substitute your own
+serial. `trigger_activation` matters — the camera does *not* default to
+`RisingEdge`.
+
+```json
+{
+  "detectors": {
+    "TISCam": {
+      "managerName": "tis.camera-ic4",
+      "managerProperties": {
+        "cameraSerial": "43710086",
+        "cameraPixelSizeUm": 0.15,
+        "pixelFormat": "Mono16",
+        "defaults": {
+          "exposure_us": 5000,
+          "trigger_mode": "Off",
+          "trigger_source": "Line1",
+          "trigger_activation": "RisingEdge"
+        }
+      },
+      "forAcquisition": true
+    }
+  }
+}
+```
+
+Leave `trigger_mode` on `"Off"` for first light — switch to `Hardware` from the
+detector settings once a free-running image looks right.
+
 ### Headless / no hardware
 
 Set `cameraSerial` to any string starting with `MOCK_` to load `MockIC4Camera`,
@@ -118,11 +174,12 @@ pip install -e ".[test]"
 pytest tests/
 ```
 
-39 tests, no hardware required. The load-bearing ones were verified by mutation
+46 tests, no hardware required. The load-bearing ones were verified by mutation
 rather than assumed: reintroducing the duplicate-frame bug fails
 `test_each_trigger_yields_a_distinct_frame`, returning a 2-D chunk fails seven
-tests including the `readChunk` fan-out, and reverting any of the driver fixes
-(library-init guard, retained live frame, ROI clamping) fails its own test.
+tests including the `readChunk` fan-out, dropping the channel-axis squeeze fails
+six (`getChunk` goes 4-D), and reverting any of the driver fixes (library-init
+guard, retained live frame, ROI clamping) fails its own test.
 
 `test_ic4_driver_contracts.py` covers the parts of the real IC4 path that do not
 need the SDK, using fakes shaped like the API surface verified against the

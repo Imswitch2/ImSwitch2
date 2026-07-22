@@ -67,6 +67,7 @@ class TISCameraIC4Manager(DetectorManager):
 
         self._camera = self._initCamera(serial, maxQueued, pixelFormat)
         self._triggerSource = defaults.get('trigger_source', None)
+        self._triggerActivation = defaults.get('trigger_activation', None)
 
         fullShape = (
             self._camera.sensor_width_pixels,
@@ -209,7 +210,11 @@ class TISCameraIC4Manager(DetectorManager):
         bead scan and disarm afterwards, replacing the manual step in the
         vendor's properties dialog that the legacy IC3 path required.
         """
-        self._camera.set_trigger_enabled(enabled, source=self._triggerSource)
+        self._camera.set_trigger_enabled(
+            enabled,
+            source=self._triggerSource,
+            activation=self._triggerActivation,
+        )
         self.parameters['Trigger Mode'].value = 'Hardware' if enabled else 'Off'
 
     # -- acquisition ------------------------------------------------------

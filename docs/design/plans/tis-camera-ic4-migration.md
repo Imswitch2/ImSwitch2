@@ -1,8 +1,9 @@
 # TIS Camera → IC Imaging Control 4 (IC4) Migration — Plan
 
 **Status:** Phases 1–3 implemented as the `imswitch-device-tis` **plugin**
-(mock-complete, 39 tests green); the real IC4 path is written but **gated on the
-Phase 0 rig probe**. In-tree `TISManager` untouched.
+(46 tests green). **Phase 0 passed on the rig 2026-07-22** — see §4a. Remaining:
+the external-TTL half of Phase 0, then in-app validation. In-tree `TISManager`
+untouched.
 **Date:** 2026-07-21 (revised same day after source + vendor-API verification;
 re-scoped to a plugin later the same day).
 **Scope:** Replace the vendored `pyicic` ctypes wrapper for The Imaging Source
@@ -241,6 +242,54 @@ producer is required besides), every name it uses was checked against the
 Splitting 3 matters: 3a exercises the entire sink/queue/copy path and fails loudly
 on any API misuse, leaving 3b to test only the physical wiring and trigger source.
 A failure after 3a passes is a wiring or `TriggerSource` problem, not a code problem.
+
+## 4a. Phase 0 result (rig, 2026-07-22)
+
+**PASS.** DMK 33UX250, serial 43710086. Ten software triggers produced ten
+frames, all ten distinct, at 56–65 ms intervals. Unknowns 1, 2 and 3a are
+closed: the wheel installs, the camera enumerates under the IC4 GenTL USB3
+Vision producer, and `QueueSink` delivers one distinct frame per trigger. **The
+premise of this plan is confirmed** — 3b (external TTL) is the only part left.
+
+Getting there took two things worth recording:
+
+1. The GenTL producer is **two separate downloads**. Installing the IC4 SDK gives
+   the GigE producer; the *USB3 Vision* producer is its own package. Until it was
+   installed, `DeviceEnum.interfaces()` listed only an Ethernet interface, so a
+   USB3 Vision camera could never appear regardless of driver state.
+2. Its installer sets the GenICam search path, which **already-running processes
+   do not see**. A reboot (or at minimum a new shell, and a restarted IDE) is
+   required before the interface shows up.
+
+`DeviceEnum.interfaces()` is the diagnostic that separates these: no interfaces
+at all means no producer loaded; a GigE-only list means the wrong producer; a
+USB3 Vision interface with zero devices means the producer is fine and the camera
+is not bound to it.
+
+### Measured device properties
+
+Recorded here because the driver is written against them, and two caused real
+defects:
+
+| Property | Values | Ships as |
+|---|---|---|
+| `PixelFormat` | `Mono8`, `Mono16` | `Mono8` |
+| `TriggerSelector` | `FrameStart`, `ExposureActive` | `FrameStart` |
+| `TriggerSource` | `Line1`, `Software`, `Any` | `Any` |
+| `TriggerActivation` | `RisingEdge`, `FallingEdge` | **`FallingEdge`** |
+| Frame | 2448 x 2048, min 6 sink buffers | |
+
+- **`numpy_copy()` returns (H, W, 1)**, not (H, W). Caught only because the probe
+  printed the shape. The mock had been emitting a clean 2-D frame, so 42 tests
+  passed against a shape the hardware never produces, and `getChunk` would have
+  stacked (N, H, W, 1) into the recorder — the same corruption class as the
+  ThorCam TSI 2-D bug. Both real and mock frames now pass through one
+  `normalize_frame()`, so the mock cannot drift from the hardware again.
+- **`FallingEdge` by default** latches on the trailing edge of a TriggerScope
+  pulse: frames still arrive, delayed by the pulse width. Skewed timing rather
+  than a visible failure, so `trigger_activation` is now an explicit setting.
+
+---
 
 ### De-risking step (do first, before touching ImSwitch)
 

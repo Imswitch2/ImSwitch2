@@ -40,7 +40,13 @@
         "trigger_source": {
           "type": ["string", "null"],
           "default": null,
-          "description": "GenICam TriggerSource, e.g. 'Line1'. null leaves the device default. Confirm the wired line on the rig."
+          "description": "GenICam TriggerSource. The DMK 33UX250 offers 'Line1', 'Software' and 'Any'; use 'Line1' for a TriggerScope TTL. null leaves the device default."
+        },
+        "trigger_activation": {
+          "type": ["string", "null"],
+          "enum": ["RisingEdge", "FallingEdge", null],
+          "default": null,
+          "description": "Edge the camera latches on. The DMK 33UX250 ships set to FallingEdge, which fires on the trailing edge of a pulse; use 'RisingEdge' for a TriggerScope. null leaves the device default."
         }
       }
     }
