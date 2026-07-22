@@ -11,8 +11,40 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from imswitch.imcontrol.model.plugins.setup_metadata import setup_section_to_kind
+
 if TYPE_CHECKING:
     from .catalog import ManagerCatalog
+
+
+def _device_dicts_from_template(template_data: dict) -> list[tuple[str | None, dict]]:
+    """Return the ``(device name, device dict)`` pairs a template resource holds.
+
+    Two shapes are accepted:
+
+    - a **bare device dict**, with ``managerName`` at the top level;
+    - a **setup-file fragment**, ``{section: {deviceName: deviceDict}}``.
+
+    The second shape is what every bundled plugin actually ships, because the
+    same file doubles as a runnable hardware-free setup that the plugin's README
+    points users at and its own tests validate against the schema. Accepting only
+    the first shape meant no shipped plugin template ever loaded.
+
+    Returns an empty list when neither shape is present, which the caller reports
+    as an error.
+    """
+    if "managerName" in template_data:
+        return [(None, template_data)]
+
+    sections = setup_section_to_kind()
+    devices: list[tuple[str | None, dict]] = []
+    for section, entries in template_data.items():
+        if section not in sections or not isinstance(entries, dict):
+            continue
+        for device_name, device in entries.items():
+            if isinstance(device, dict) and "managerName" in device:
+                devices.append((str(device_name), device))
+    return devices
 
 
 @dataclass(frozen=True)
@@ -85,7 +117,8 @@ def load_plugin_templates(
                     ))
                     continue
                 
-                if "managerName" not in template_data:
+                declared_devices = _device_dicts_from_template(template_data)
+                if not declared_devices:
                     errors.append(PluginTemplateError(
                         manager_name=manager_info.manager_name,
                         plugin_name=manager_info.plugin_name,
@@ -95,53 +128,56 @@ def load_plugin_templates(
                     ))
                     continue
 
-                # A contribution owns only templates for itself (aliases are
-                # accepted through the catalog).  Without this check a typo
-                # in a plugin resource can insert a device into the owning
-                # category even though its manager belongs elsewhere.
-                template_manager = catalog.get(str(template_data["managerName"]))
-                if (
-                    template_manager is None
-                    or template_manager.manager_name != manager_info.manager_name
-                ):
-                    errors.append(PluginTemplateError(
+                for device_name, device in declared_devices:
+                    # A contribution owns only templates for itself (aliases are
+                    # accepted through the catalog).  Without this check a typo
+                    # in a plugin resource can insert a device into the owning
+                    # category even though its manager belongs elsewhere.
+                    template_manager = catalog.get(str(device["managerName"]))
+                    if (
+                        template_manager is None
+                        or template_manager.manager_name != manager_info.manager_name
+                    ):
+                        errors.append(PluginTemplateError(
+                            manager_name=manager_info.manager_name,
+                            plugin_name=manager_info.plugin_name,
+                            source_package=manager_info.source_package,
+                            resource=resource_path,
+                            message=(
+                                "Template managerName does not resolve to the "
+                                f"declaring manager '{manager_info.manager_name}'"
+                            ),
+                        ))
+                        continue
+
+                    # Determine display name: a metadata "name" field if present,
+                    # else the file stem. When "name" is used as the label it is
+                    # metadata, not a device field, so drop it from the device
+                    # dict that gets instantiated into the config.
+                    if "name" in device and isinstance(device["name"], str):
+                        display_name = device["name"]
+                        device = {k: v for k, v in device.items() if k != "name"}
+                    else:
+                        display_name = Path(resource_path).stem
+                        # One resource can declare several devices; qualify the
+                        # label so they stay distinguishable in the browser.
+                        if device_name is not None and len(declared_devices) > 1:
+                            display_name = f"{display_name} ({device_name})"
+
+                    # Successfully loaded
+                    templates.append(PluginTemplate(
+                        name=display_name,
+                        category=manager_info.category,
                         manager_name=manager_info.manager_name,
-                        plugin_name=manager_info.plugin_name,
+                        plugin_name=manager_info.plugin_name or "unknown",
                         source_package=manager_info.source_package,
                         resource=resource_path,
-                        message=(
-                            "Template managerName does not resolve to the "
-                            f"declaring manager '{manager_info.manager_name}'"
-                        ),
+                        device=device
                     ))
-                    continue
-                
-                # Determine display name: use a metadata "name" field if present,
-                # else the file stem. When "name" is used as the label it is
-                # metadata, not a device field, so drop it from the device dict
-                # that gets instantiated into the config.
-                device = template_data
-                if "name" in template_data and isinstance(template_data["name"], str):
-                    display_name = template_data["name"]
-                    device = {k: v for k, v in template_data.items() if k != "name"}
-                else:
-                    # Use file stem as display name
-                    display_name = Path(resource_path).stem
-
-                # Successfully loaded
-                templates.append(PluginTemplate(
-                    name=display_name,
-                    category=manager_info.category,
-                    manager_name=manager_info.manager_name,
-                    plugin_name=manager_info.plugin_name or "unknown",
-                    source_package=manager_info.source_package,
-                    resource=resource_path,
-                    device=device
-                ))
-                logger.debug(
-                    f"Loaded template '{display_name}' from {manager_info.plugin_name} "
-                    f"({resource_path})"
-                )
+                    logger.debug(
+                        f"Loaded template '{display_name}' from "
+                        f"{manager_info.plugin_name} ({resource_path})"
+                    )
                 
             except FileNotFoundError:
                 errors.append(PluginTemplateError(
