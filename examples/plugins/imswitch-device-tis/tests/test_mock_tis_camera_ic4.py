@@ -204,6 +204,18 @@ def test_exposure_and_gain_reach_the_camera(manager):
     assert manager._camera.get_gain() == 7
 
 
+def test_blank_camera_serial_means_first_available():
+    """The config editor saves a cleared text box as "", not null. Treating that
+    as a literal serial would send us looking for a camera whose serial is the
+    empty string instead of opening the first one."""
+    mgr = _makeManager(cameraSerial='')
+    try:
+        # Reached the mock without treating "" as a serial to match.
+        assert mgr._camera.serial is not None
+    finally:
+        mgr.finalize()
+
+
 def test_defaults_are_applied_at_construction():
     mgr = _makeManager(defaults={'exposure_us': 2500, 'gain': 3,
                                  'trigger_mode': 'Hardware'})

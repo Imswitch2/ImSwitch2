@@ -57,7 +57,10 @@ class TISCameraIC4Manager(DetectorManager):
         self.__logger = initLogger(self, instanceName=name)
 
         props = detectorInfo.managerProperties
-        serial = props.get('cameraSerial', None)
+        # An empty string means the user cleared the field: the config editor
+        # saves a blank text box as "", not null. Read that as "first available
+        # camera" rather than hunting for a camera whose serial is empty.
+        serial = props.get('cameraSerial') or None
         maxQueued = int(props.get('maxQueuedFrames', 256))
         pixelFormat = props.get('pixelFormat', None)
         defaults = props.get('defaults', {})
