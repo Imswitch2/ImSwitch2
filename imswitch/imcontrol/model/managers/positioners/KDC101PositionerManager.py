@@ -182,7 +182,12 @@ class KDC101PositionerManager(PositionerManager):
             self.__logger.info('Initialized KDC101 positioner on %s', port)
             return device
         except Exception:
-            self.__logger.error('Failed to initialize KDC101 positioner on %s', port)
+            self.__logger.error(
+                'Failed to initialize KDC101 positioner on %s. If the port is '
+                'denied, check that no other manager in the setup file (or a '
+                'second ImSwitch instance, or Kinesis) already holds it.', port,
+                exc_info=True
+            )
             return None
 
 

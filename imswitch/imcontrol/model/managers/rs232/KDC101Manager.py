@@ -44,7 +44,12 @@ class KDC101Manager:
             self._device = KDC101(serial_port=self._port)
             self.device_active = True
         except Exception:
-            self.__logger.error('Failed to initialize KDC101, check connection and port')
+            self.__logger.error(
+                'Failed to initialize KDC101 on %s, check connection and port. '
+                'If the port is denied, another manager in the setup file may '
+                'already hold it.', self._port,
+                exc_info=True
+            )
             self._posConvFac = self._velConvFac = self._accConvFac = 1
             return
         self._posConvFac = rs232Info.managerProperties['posConvFac']
