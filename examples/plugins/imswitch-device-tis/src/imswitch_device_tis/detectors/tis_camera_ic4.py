@@ -117,9 +117,19 @@ class TISCameraIC4Manager(DetectorManager):
                     max_queued_frames=maxQueued,
                     pixel_format=pixelFormat,
                 )
-            except (ImportError, RuntimeError, ValueError) as e:
+            except Exception as e:
+                # Deliberately broad. The SDK signals *every* device-level
+                # failure as ``IC4Exception``, which derives straight from
+                # Exception — including 'permission denied', raised whenever
+                # another process (a second ImSwitch, IC Capture) holds the
+                # camera. Enumerating exception types here previously let that
+                # case escape the constructor and take the detector down at
+                # startup, which is precisely what the mock fallback exists to
+                # prevent. exc_info because the message alone rarely says which
+                # of those it was.
                 self.__logger.warning(
-                    f'Failed to initialize IC4 TIS camera: {e}. Loading mock camera.'
+                    f'Failed to initialize IC4 TIS camera: {e}. Loading mock '
+                    f'camera — frames will be synthetic.', exc_info=True
                 )
 
         return MockIC4Camera(

@@ -147,9 +147,16 @@ class IC4Camera:
         self._model = dev_info.model_name
 
         if reset_to_default:
-            # try_set_value: not every model supports user sets.
+            # try_set_value: not every model supports user sets. On a command
+            # node (which UserSetLoad is) IC4 executes the command when the
+            # value is 1 — see PropertyMap.try_set_value's documented dispatch.
             self._pm.try_set_value(ic4.PropId.USER_SET_SELECTOR, "Default")
             self._pm.try_set_value(ic4.PropId.USER_SET_LOAD, 1)
+
+        # Order matters: both of these undo state the user set above just
+        # restored, so they cannot run before it.
+        self._ensure_manual_exposure_and_gain()
+        self._disarm_all_triggers()
 
         if pixel_format is not None:
             self._pm.set_value(ic4.PropId.PIXEL_FORMAT, pixel_format)
@@ -169,6 +176,7 @@ class IC4Camera:
         self._streaming = False
 
         logger.info(f"Opened IC4 camera: {self._model} ({self._serial})")
+        self._log_state("after open")
 
     # -- identity ---------------------------------------------------------
 
@@ -213,14 +221,62 @@ class IC4Camera:
     def image_height_pixels(self) -> int:
         return int(self._pm.get_value_int(self._ic4.PropId.HEIGHT))
 
+    def _ensure_manual_exposure_and_gain(self) -> None:
+        """Switch ``ExposureAuto`` and ``GainAuto`` off.
+
+        Without this the camera silently ignores every exposure and gain value
+        ImSwitch writes: the device's auto algorithm owns ``ExposureTime`` and
+        ``Gain`` while it is running, and re-derives them from scene brightness
+        within a frame or two. On the DMK 33UX250 that lands at 1/30 s and rails
+        the gain at 48 dB, which is exactly the "it resets itself" symptom.
+
+        This is not a leftover-configuration problem, so it is not enough to fix
+        it once by hand in the vendor GUI: the ``Default`` user set loaded in
+        ``__init__`` has both autos set to ``Continuous``, so *opening the
+        camera is what turns them back on*. Hence this runs right after the user
+        set is loaded, and again before every exposure/gain write — the vendor
+        GUI can be opened alongside ImSwitch and re-enable them mid-session.
+        """
+        pm, pid = self._pm, self._ic4.PropId
+        for prop_id, label in ((pid.EXPOSURE_AUTO, "ExposureAuto"),
+                               (pid.GAIN_AUTO, "GainAuto")):
+            # try_set_value: a model without the property is fine — it has no
+            # auto algorithm to fight with.
+            if not pm.try_set_value(prop_id, "Off"):
+                logger.warning(
+                    f"Could not set {label}=Off. If exposure or gain will not "
+                    f"hold a value, this is why."
+                )
+
+    def _warn_if_not_applied(self, label, requested, actual) -> None:
+        """Warn when the device did not take a value we asked for.
+
+        Silent clamping is normal and fine (asking for 1 µs on a sensor with a
+        20 µs floor), so the tolerance is generous; the point is to catch the
+        case where a value is ignored outright and the log still reads as if it
+        had been applied.
+        """
+        if requested and abs(actual - requested) / abs(requested) > 0.05:
+            logger.warning(
+                f"{label}: requested {requested:g}, device reports {actual:g}. "
+                f"The value was clamped to the device's legal range, or an auto "
+                f"feature is overriding it."
+            )
+
     def set_exposure_us(self, exposure_us) -> None:
+        self._ensure_manual_exposure_and_gain()
         self._pm.set_value(self._ic4.PropId.EXPOSURE_TIME, float(exposure_us))
+        self._warn_if_not_applied(
+            "ExposureTime", float(exposure_us), self.get_exposure_us()
+        )
 
     def get_exposure_us(self) -> float:
         return float(self._pm.get_value_float(self._ic4.PropId.EXPOSURE_TIME))
 
     def set_gain(self, gain) -> None:
+        self._ensure_manual_exposure_and_gain()
         self._pm.set_value(self._ic4.PropId.GAIN, float(gain))
+        self._warn_if_not_applied("Gain", float(gain), self.get_gain())
 
     def get_gain(self) -> float:
         return float(self._pm.get_value_float(self._ic4.PropId.GAIN))
@@ -290,6 +346,75 @@ class IC4Camera:
             pm.set_value(pid.TRIGGER_SOURCE, str(source))
         if enabled and activation is not None:
             pm.try_set_value(pid.TRIGGER_ACTIVATION, str(activation))
+
+        # Read back: an armed trigger the software believes is disarmed looks
+        # exactly like a dead camera — the stream connects, no frames ever
+        # arrive, and nothing in the log says why.
+        expected = "On" if enabled else "Off"
+        actual = pm.get_value_str(pid.TRIGGER_MODE)
+        if actual != expected:
+            logger.warning(
+                f"TriggerMode reads {actual!r} after setting it to {expected!r}."
+            )
+
+    def _disarm_all_triggers(self) -> None:
+        """Set ``TriggerMode=Off`` for *every* ``TriggerSelector`` entry.
+
+        ``TriggerMode`` is per-selector in GenICam: the value read back depends
+        on which ``TriggerSelector`` is active. Disarming only ``FrameStart``
+        therefore leaves any other armed trigger — ``AcquisitionStart`` and
+        ``ExposureStart`` are the ones models in this family expose — still
+        holding the stream, while every reachable read says ``Off``.
+
+        A trigger left armed by a previous session survives in device state
+        (``dispose`` disarms, but a crash or a kill skips it), which is the
+        shape of "live view is dead until I toggle the trigger once".
+
+        Best-effort throughout: a model with no selector still gets the plain
+        ``TriggerMode=Off`` write in the fallback.
+        """
+        pm, pid = self._pm, self._ic4.PropId
+        try:
+            selector = pm.find_enumeration(pid.TRIGGER_SELECTOR)
+            entries = [entry.name for entry in selector.entries]
+        except Exception as e:
+            logger.debug(f"No TriggerSelector to enumerate ({e}); disarming directly")
+            pm.try_set_value(pid.TRIGGER_MODE, "Off")
+            return
+
+        for name in entries:
+            if not pm.try_set_value(pid.TRIGGER_SELECTOR, name):
+                continue
+            was_on = pm.try_set_value(pid.TRIGGER_MODE, "Off")
+            if was_on:
+                logger.debug(f"Disarmed TriggerSelector={name}")
+
+        # Leave the selector on FrameStart: that is the one set_trigger_enabled
+        # arms, and the one a scan expects to be current.
+        pm.try_set_value(pid.TRIGGER_SELECTOR, "FrameStart")
+
+    def _log_state(self, when: str) -> None:
+        """Log the properties that decide whether frames flow and how bright.
+
+        These four have each already cost a debugging session on this rig, and
+        every one of them can be changed behind ImSwitch's back by the vendor
+        GUI or by a previous run. One line at open turns "the camera is acting
+        up again" into a fact.
+        """
+        pid = self._ic4.PropId
+        fields = []
+        for label, prop_id, getter in (
+            ("TriggerMode", pid.TRIGGER_MODE, "get_value_str"),
+            ("ExposureAuto", pid.EXPOSURE_AUTO, "get_value_str"),
+            ("ExposureTime", pid.EXPOSURE_TIME, "get_value_float"),
+            ("GainAuto", pid.GAIN_AUTO, "get_value_str"),
+            ("Gain", pid.GAIN, "get_value_float"),
+        ):
+            try:
+                fields.append(f"{label}={getattr(self._pm, getter)(prop_id)}")
+            except Exception:
+                fields.append(f"{label}=<unavailable>")
+        logger.info(f"IC4 camera state {when}: {', '.join(fields)}")
 
     def is_trigger_enabled(self) -> bool:
         return self._pm.get_value_str(self._ic4.PropId.TRIGGER_MODE) == "On"
@@ -470,8 +595,14 @@ class MockIC4Camera:
         self._sensor_height = 2048
         self._roi = (0, 0, self._sensor_width, self._sensor_height)
 
+        # 'Continuous', not 'Off', because that is what loading the Default user
+        # set leaves behind on the real camera — the mock has to start in the
+        # broken state or it cannot show the fix working.
+        self._exposure_auto = "Continuous"
+        self._gain_auto = "Continuous"
         self._exposure_us = DEFAULT_EXPOSURE_US
         self._gain = 0.0
+        self._ensure_manual_exposure_and_gain()
         self._trigger_enabled = False
         self._trigger_source = None
         self._trigger_activation = None
@@ -514,16 +645,34 @@ class MockIC4Camera:
     def image_height_pixels(self) -> int:
         return self._roi[3]
 
+    #: What the DMK 33UX250's auto algorithm settles on: 1/30 s, gain railed.
+    #: Reproduced so a test can assert the *observed* failure, not a stand-in.
+    AUTO_EXPOSURE_US = 33333.0
+    AUTO_GAIN_DB = 48.0
+
+    def _ensure_manual_exposure_and_gain(self) -> None:
+        self._exposure_auto = "Off"
+        self._gain_auto = "Off"
+
     def set_exposure_us(self, exposure_us) -> None:
+        self._ensure_manual_exposure_and_gain()
         self._exposure_us = float(exposure_us)
 
     def get_exposure_us(self) -> float:
+        # Mirrors the device: while the auto algorithm owns the property, what
+        # was written to it is irrelevant. A mock that echoed the written value
+        # back would pass every test the hardware fails.
+        if self._exposure_auto != "Off":
+            return self.AUTO_EXPOSURE_US
         return self._exposure_us
 
     def set_gain(self, gain) -> None:
+        self._ensure_manual_exposure_and_gain()
         self._gain = float(gain)
 
     def get_gain(self) -> float:
+        if self._gain_auto != "Off":
+            return self.AUTO_GAIN_DB
         return self._gain
 
     def set_roi(self, x0, y0, width, height) -> None:
@@ -546,6 +695,16 @@ class MockIC4Camera:
         """Test helper: fire ``n`` external triggers."""
         for _ in range(n):
             self._emit_frame()
+
+    def simulate_auto_reenabled(self) -> None:
+        """Test helper: put the autos back on, as the vendor GUI does.
+
+        IC Capture can be opened alongside ImSwitch and will happily re-tick the
+        auto checkboxes on a camera ImSwitch has open, so recovering from this
+        state is a runtime requirement, not just an open-time one.
+        """
+        self._exposure_auto = "Continuous"
+        self._gain_auto = "Continuous"
 
     def _emit_frame(self) -> None:
         """Produce one distinct frame, exactly as a real trigger would."""
