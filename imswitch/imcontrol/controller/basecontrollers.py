@@ -13,6 +13,9 @@ from imswitch.imcommon.controller.basecontrollers import (
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import InvalidChildClassError
+from imswitch.imcontrol.model.managers._scan_execution import (
+    FINISH_ABORT, FINISH_GRACEFUL, ScanExecutionCoordinator,
+)
 from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 
@@ -265,12 +268,34 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         if not os.path.exists(self.scanDir):
             os.makedirs(self.scanDir)
 
+        # Owns this controller's scan-iteration detector lifecycle: participant
+        # snapshot, SCAN lease, lifecycle token, finishScan. Shared with the
+        # other NI-DAQ scan entry points (see ScanExecutionCoordinator).
+        self._scanCoordinator = ScanExecutionCoordinator(
+            self._master.detectorsManager,
+            self._master.nidaqManager,
+            logger=self._logger,
+        )
+
         # Connect NidaqManager signals
         self._master.nidaqManager.sigScanBuilt.connect(
             lambda _, __, deviceList: self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
         )
         self._master.nidaqManager.sigScanStarted.connect(
             lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
+        )
+        # Resolve the iteration BEFORE the controller's own handlers run — these
+        # are connected first so the lease is released and the participants have
+        # had their final read by the time scanDone re-arms a repeat frame.
+        # NI-DAQ is authoritative: abortScan() does not stop a running scan, so
+        # ownership is released here (sigScanDone) rather than at the user's
+        # abort click. Controllers that did not arm hold no token, so their
+        # resolveActive is a harmless no-op.
+        self._master.nidaqManager.sigScanDone.connect(
+            lambda: self._scanCoordinator.resolveActive(FINISH_GRACEFUL)
+        )
+        self._master.nidaqManager.sigScanBuildFailed.connect(
+            lambda: self._scanCoordinator.resolveActive(FINISH_ABORT)
         )
         self._master.nidaqManager.sigScanDone.connect(self.scanDone)
         self._master.nidaqManager.sigScanBuildFailed.connect(self.scanFailed)

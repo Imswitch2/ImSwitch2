@@ -137,7 +137,7 @@ class ScanControllerMoNaLISA(SuperScanController):
                     self._master.positionersManager[positionerName].setPosition(position, 0)
                     self._logger.debug(f'set {positionerName} center to {position} before scan')
             # run scan
-            self._master.nidaqManager.runScan(self.signalDict, self.scanInfoDict)
+            self._scanCoordinator.arm(self.signalDict, self.scanInfoDict)
         except Exception:
             self._logger.error(traceback.format_exc())
             self.isRunning = False

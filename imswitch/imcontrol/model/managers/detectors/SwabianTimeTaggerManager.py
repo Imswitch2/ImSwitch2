@@ -617,6 +617,10 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     # ------------------------------------------------------------------ #
 
     @property
+    def isScanDriven(self):
+        return True
+
+    @property
     def pixelSizeUm(self):
         return [1, *self.__pixel_sizes]
 

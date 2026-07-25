@@ -518,7 +518,7 @@ class ScanControllerAdvanced(SuperScanController):
                         self._logger.warning("Failed to set %s to center:\n%s",
                                              positionerName, traceback.format_exc())
 
-            self._master.nidaqManager.runScan(self.signalDict, self.scanInfoDict)
+            self._scanCoordinator.arm(self.signalDict, self.scanInfoDict)
 
         except Exception:
             self._logger.error(traceback.format_exc())

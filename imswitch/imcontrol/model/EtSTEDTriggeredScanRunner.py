@@ -3,6 +3,8 @@ from typing import Callable
 
 import numpy as np
 
+from imswitch.imcontrol.model.managers.NidaqManager import ScanBusyError
+
 
 @dataclass
 class EtSTEDTriggeredScanResult:
@@ -79,14 +81,30 @@ class EtSTEDTriggeredScanRunner:
         scan_info_dict=None,
         comm_channel=None,
         scan_workflow=None,
+        scan_coordinator=None,
     ) -> EtSTEDTriggeredScanResult:
-        """Trigger a previously prepared slow scan."""
+        """Trigger a previously prepared slow scan.
+
+        When a ``scan_coordinator`` is supplied the scan is armed through it,
+        so this entry point gets the same participant snapshot / SCAN lease /
+        exactly-once completion as the scan-widget controllers. Without one it
+        falls back to calling runScan directly.
+        """
         if scan_initiation_mode == self.scan_widget_mode:
-            if nidaq_manager is None:
+            if nidaq_manager is None and scan_coordinator is None:
                 return EtSTEDTriggeredScanResult(False, 'ScanWidget trigger requires a nidaq manager.')
             if signal_dict is None or scan_info_dict is None:
                 return EtSTEDTriggeredScanResult(False, 'ScanWidget trigger requires prepared scan signals.')
-            nidaq_manager.runScan(signal_dict, scan_info_dict)
+            try:
+                if scan_coordinator is not None:
+                    scan_coordinator.arm(signal_dict, scan_info_dict)
+                else:
+                    nidaq_manager.runScan(signal_dict, scan_info_dict)
+            except ScanBusyError as e:
+                # A scan was already in flight, so nothing was armed and no
+                # scan-lifecycle signal will follow. Report it as a failed
+                # trigger rather than letting it escape into the event loop.
+                return EtSTEDTriggeredScanResult(False, str(e))
             return EtSTEDTriggeredScanResult(True)
 
         if scan_initiation_mode == self.recording_widget_mode:

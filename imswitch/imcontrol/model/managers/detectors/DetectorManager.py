@@ -257,6 +257,20 @@ class DetectorManager(SignalInterface):
         return self.__forFocusLock
 
     @property
+    def isScanDriven(self) -> bool:
+        """ Whether this detector is driven by the scan clock and produces its
+        image *as* the scan runs (APD, PMT, TimeTagger), as opposed to a
+        free-running detector that produces frames on its own schedule.
+
+        This is the OWNERSHIP axis, and it is not the same question as how the
+        frame clock is wired: a camera set to an external/scan trigger is still
+        free-running by this definition (``isScanDriven=False``) — its frame
+        clock changed, not who owns its acquisition. Only scan-driven detectors
+        take part in the scan participant snapshot.
+        """
+        return False
+
+    @property
     def acquisitionLeased(self) -> bool:
         """ Whether this detector holds at least one acquisition lease.
         Written only by the DetectorsManager lease table. """

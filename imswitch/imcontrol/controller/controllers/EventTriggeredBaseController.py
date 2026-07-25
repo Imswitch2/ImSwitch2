@@ -56,6 +56,9 @@ from imswitch.imcontrol.model.EtSTEDAutoCalibration import (
 from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
 from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
+from imswitch.imcontrol.model.managers._scan_execution import (
+    FINISH_ABORT, FINISH_GRACEFUL, ScanExecutionCoordinator,
+)
 from imswitch.imcontrol.model.EventTriggeredSession import (
     EventRunMode as RunMode,
     EventScanInitiationMode as ScanInitiationMode,
@@ -162,6 +165,23 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._transformService = EtSTEDTransformService()
         self._triggeredScanRunner = EtSTEDTriggeredScanRunner()
         self._smartModeService = None
+
+        # The fifth NI-DAQ scan entry point: an etSTED-triggered slow scan
+        # calls runScan directly, bypassing every SuperScanController, so it
+        # needs its own scan-iteration lifecycle. NI-DAQ stays authoritative
+        # for completion; a coordinator holding no token no-ops, so this
+        # coexists with the scan controllers listening to the same signals.
+        self._scanCoordinator = ScanExecutionCoordinator(
+            self._master.detectorsManager,
+            self._master.nidaqManager,
+            logger=self._logger,
+        )
+        self._master.nidaqManager.sigScanDone.connect(
+            lambda: self._scanCoordinator.resolveActive(FINISH_GRACEFUL)
+        )
+        self._master.nidaqManager.sigScanBuildFailed.connect(
+            lambda: self._scanCoordinator.resolveActive(FINISH_ABORT)
+        )
 
         # Helper for the coordinate-transform calibration sub-window.
         self._coordTransformHelper = EventTriggeredCoordTransformHelper(
@@ -741,6 +761,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             signal_dict=self.signalDic,
             scan_info_dict=self.scanInfoDict,
             comm_channel=self._commChannel,
+            scan_coordinator=self._scanCoordinator,
         )
         if not result.success:
             self._logger.error(result.message)

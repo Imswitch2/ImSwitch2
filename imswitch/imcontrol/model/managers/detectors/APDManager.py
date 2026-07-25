@@ -396,6 +396,10 @@ class APDManager(DetectorManager):
         self.__shape = tuple(img_dims)
 
     @property
+    def isScanDriven(self):
+        return True
+
+    @property
     def scale(self):
         return self.__pixel_sizes[::-1]
 

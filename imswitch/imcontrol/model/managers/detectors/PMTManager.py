@@ -127,6 +127,10 @@ class PMTManager(DetectorManager):
             super().__del__()
 
     @property
+    def isScanDriven(self):
+        return True
+
+    @property
     def pixelSizeUm(self):
         # return [t, y, x] scale style
         return [1, self.__pixel_sizes[1], self.__pixel_sizes[0]]
