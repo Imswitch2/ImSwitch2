@@ -21,6 +21,7 @@ import logging
 
 import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
+from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.managers import recording_metadata as _ome
 from imswitch.imcommon.model.zarr_compat import (
     install_zarr_create_array_compat,
@@ -1407,7 +1408,15 @@ class RecordingManager(SignalInterface):
         """ Saves an image with the specified detectors to a file
         with the specified name prefix, save mode, file format and attributes
         to save to the capture per detector. """
-        acqHandle = self.__detectorsManager.startAcquisition()
+        # Phase 2 migrates the purpose only; the SCOPE stays all-forAcquisition
+        # exactly as the legacy shim did. Narrowing this to `detectorNames`
+        # (today a subset snap still arms every detector) is a behaviour fix
+        # and belongs in Phase 4, not here.
+        acqHandle = self.__detectorsManager.acquire(
+            self.__detectorsManager.getAllDeviceNames(
+                condition=lambda c: c.forAcquisition),
+            LeasePurpose.SNAP,
+        )
 
         try:
             images = {}
@@ -1438,7 +1447,7 @@ class RecordingManager(SignalInterface):
                         self.sigMemorySnapAvailable.emit(name, image, savename, saveMode == SaveMode.DiskAndRAM)
 
         finally:
-            self.__detectorsManager.stopAcquisition(acqHandle)
+            self.__detectorsManager.release(acqHandle)
             if saveMode == SaveMode.Numpy:
                 return images
 
@@ -1793,12 +1802,20 @@ class RecordingWorker(Worker):
             writerThread.abort()
 
     def run(self):
-        acqHandle = self.__recordingManager.detectorsManager.startAcquisition()
+        detectorsManager = self.__recordingManager.detectorsManager
+        # Purpose only in Phase 2; the all-forAcquisition scope is unchanged
+        # from the legacy shim. Narrowing to the recorded detectors is a
+        # Phase 4 behaviour fix.
+        acqHandle = detectorsManager.acquire(
+            detectorsManager.getAllDeviceNames(
+                condition=lambda c: c.forAcquisition),
+            LeasePurpose.RECORDING,
+        )
         try:
             self._record()
 
         finally:
-            self.__recordingManager.detectorsManager.stopAcquisition(acqHandle)
+            detectorsManager.release(acqHandle)
     
     def _getFileDests(self):
         """Prepare file destinations and paths for streaming."""

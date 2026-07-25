@@ -1914,14 +1914,14 @@ def test_waitForAcquisitionStarted_blocks_until_armed(qtbot):
     recordingManager = RecordingManager(detectorsManager)
     
     block_event = threading.Event()
-    original_startAcquisition = detectorsManager.startAcquisition
-    
-    def blocking_startAcquisition():
+    original_acquire = detectorsManager.acquire
+
+    def blocking_acquire(detectorNames, purpose):
         block_event.wait()
-        return original_startAcquisition()
-    
+        return original_acquire(detectorNames, purpose)
+
     try:
-        with patch.object(detectorsManager, 'startAcquisition', side_effect=blocking_startAcquisition):
+        with patch.object(detectorsManager, 'acquire', side_effect=blocking_acquire):
             recordingManager.startRecording(
                 detectorNames=list(detectorInfosBasic.keys()),
                 recMode=RecMode.SpecFrames,
@@ -2032,11 +2032,16 @@ def test_abortRecording_releases_open_writer_without_frames():
                 return {"Empty": func(self.detector)}
             return {}
 
-        def startAcquisition(self, liveView=False):
+        def getAllDeviceNames(self, condition=None):
+            if condition is None or condition(self.detector):
+                return ["Empty"]
+            return []
+
+        def acquire(self, detectorNames, purpose):
             self.detector.startAcquisition()
             return object()
 
-        def stopAcquisition(self, handle, liveView=False):
+        def release(self, handle):
             self.detector.stopAcquisition()
 
     class NoopStorer:
@@ -2107,14 +2112,14 @@ def test_waitForAcquisitionStarted_timeout(qtbot):
     recordingManager = RecordingManager(detectorsManager)
     
     block_event = threading.Event()
-    original_startAcquisition = detectorsManager.startAcquisition
-    
-    def never_finishing_startAcquisition():
+    original_acquire = detectorsManager.acquire
+
+    def never_finishing_acquire(detectorNames, purpose):
         block_event.wait()
-        return original_startAcquisition()
-    
+        return original_acquire(detectorNames, purpose)
+
     try:
-        with patch.object(detectorsManager, 'startAcquisition', side_effect=never_finishing_startAcquisition):
+        with patch.object(detectorsManager, 'acquire', side_effect=never_finishing_acquire):
             recordingManager.startRecording(
                 detectorNames=list(detectorInfosBasic.keys()),
                 recMode=RecMode.SpecFrames,

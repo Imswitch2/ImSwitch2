@@ -2,13 +2,17 @@ from time import sleep
 
 import numpy as np
 
-from imswitch.imcommon.framework import Mutex, Signal, SignalInterface, Thread, Timer, Worker
+from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
+from ._acquisition_leases import (AcquisitionLeaseTable, DetectorFaultedError,
+                                  LeaseHandle, LeasePurpose)
 from .MultiManager import MultiManager
 
 
 class DetectorsManager(MultiManager, SignalInterface):
     """ DetectorsManager is an interface for dealing with DetectorManagers. It
-    is a MultiManager for detectors. """
+    is a MultiManager for detectors, and the sole authority over which
+    detectors participate in ImSwitch-managed acquisition: a detector is armed
+    iff it holds at least one acquisition lease (see _acquisition_leases). """
 
     sigAcquisitionStarted = Signal()
     sigAcquisitionStopped = Signal()
@@ -22,9 +26,12 @@ class DetectorsManager(MultiManager, SignalInterface):
         MultiManager.__init__(self, detectorInfos, 'detectors', **lowLevelManagers)
         SignalInterface.__init__(self)
 
-        self._activeAcqHandles = []
-        self._activeAcqLVHandles = []
-        self._activeAcqsMutex = Mutex()
+        self._leaseTable = AcquisitionLeaseTable(
+            startDetector=lambda name: self._subManagers[name].startAcquisition(),
+            stopDetector=lambda name: self._subManagers[name].stopAcquisition(),
+            onStateChanged=self.__onLeaseStateChanged,
+            onBeforeStops=self.__onLeaseHardwareStopping,
+        )
 
         self._currentDetectorName = None
         for detectorName, detectorInfo in detectorInfos.items():
@@ -90,67 +97,96 @@ class DetectorsManager(MultiManager, SignalInterface):
 
         return self.execOn(self._currentDetectorName, func)
 
-    def startAcquisition(self, liveView=False):
-        """ Starts detector acquisition if it is not already started. If
-        liveView is True, sigImageUpdated will be emitted for every new frame.
-        Returns a handle that can be passed to stopAcquisition when the
-        detector data is no longer needed. """
+    def acquire(self, detectorNames, purpose: LeasePurpose) -> LeaseHandle:
+        """ Takes an acquisition lease on the given detectors with the given
+        purpose, arming any detector that is not already armed. An explicit
+        empty iterable is rejected (never silently "all detectors"); acquiring
+        a FAULTED detector raises DetectorFaultedError. Returns a handle to
+        pass to release(). """
+        names = list(dict.fromkeys(detectorNames))
+        for detectorName in names:
+            self._validateManagedDeviceName(detectorName)
+        return self.__acquireImpl(names, purpose, allowEmpty=False)
 
-        self._activeAcqsMutex.lock()
-        try:
-            # Generate handle that will be used to stop acquisition
-            handle = np.random.randint(2 ** 31)
+    def release(self, handle: LeaseHandle) -> None:
+        """ Releases an acquisition lease; any detector whose last lease this
+        was is stopped. A detector whose stop fails is marked FAULTED and
+        quarantined until retryStop() succeeds. """
+        transition = self._leaseTable.release(handle)
+        self.__emitTransitionSignals(transition)
 
-            # Add to handle list and set enable acquisition/LV flags if not already enabled
-            if not liveView:
-                self._activeAcqHandles.append(handle)
-                enableLV = False
-            else:
-                self._activeAcqLVHandles.append(handle)
-                enableLV = len(self._activeAcqLVHandles) == 1
-            enableAcq = len(self._activeAcqHandles) + len(self._activeAcqLVHandles) == 1
-        finally:
-            self._activeAcqsMutex.unlock()
+    def retryStop(self, detectorName: str) -> None:
+        """ Explicit recovery for a FAULTED detector: retries the hardware
+        stop. On success the fault is cleared; on failure the stop exception
+        propagates and the detector stays quarantined. """
+        self._validateManagedDeviceName(detectorName)
+        self._leaseTable.retryStop(detectorName)
 
-        # Do actual enabling
-        if enableAcq:
-            self.execOnAll(lambda c: c.startAcquisition(), condition=lambda c: c.forAcquisition)
-            self.sigAcquisitionStarted.emit()
-        if enableLV:
-            sleep(0.3)
-            self._thread.start()
+    def isDetectorLeased(self, detectorName: str) -> bool:
+        """ Whether the detector holds at least one acquisition lease. """
+        return self._leaseTable.isLeased(detectorName)
 
-        return handle
+    def isDetectorFaulted(self, detectorName: str) -> bool:
+        """ Whether the detector is quarantined by a failed hardware stop. """
+        return self._leaseTable.isFaulted(detectorName)
+
+    def startAcquisition(self, liveView=False, *, detectorNames=None):
+        """ Legacy compat shim over acquire(). When detectorNames is None
+        (identity check — an explicit empty iterable is a caller error, never
+        "all"), leases all forAcquisition detectors, preserving the historical
+        all-or-nothing behaviour. If liveView is True, sigImageUpdated will be
+        emitted for every new frame. Returns a handle that can be passed to
+        stopAcquisition when the detector data is no longer needed. """
+        if detectorNames is None:
+            names = self.getAllDeviceNames(condition=lambda c: c.forAcquisition)
+            allowEmpty = True  # legacy: no forAcquisition detectors was valid
+        else:
+            names = list(dict.fromkeys(detectorNames))
+            for detectorName in names:
+                self._validateManagedDeviceName(detectorName)
+            allowEmpty = False
+        purpose = LeasePurpose.LIVE_VIEW if liveView else LeasePurpose.GENERIC
+        return self.__acquireImpl(names, purpose, allowEmpty=allowEmpty)
 
     def stopAcquisition(self, handle, liveView=False):
-        """ Stops detector acquisition if it is not already stopped and no
-        other handle is active. """
+        """ Legacy compat shim over release(). The liveView argument is
+        ignored — the handle knows its own purpose. """
+        self.release(handle)
 
-        self._activeAcqsMutex.lock()
-        try:
-            # Remove from handle list and set disable acquisition/LV flags if not already disabled
-            if not liveView:
-                if handle not in self._activeAcqHandles:
-                    raise ValueError('Invalid or already used handle')
+    def __acquireImpl(self, names, purpose, *, allowEmpty):
+        handle, transition = self._leaseTable.acquire(
+            names, purpose, allowEmpty=allowEmpty
+        )
+        # Outside the lease lock, in the legacy order: global signal first,
+        # then bring up the live-view poll thread.
+        self.__emitTransitionSignals(transition)
+        if transition.liveViewFirst:
+            sleep(0.3)
+            self._thread.start()
+        return handle
 
-                self._activeAcqHandles.remove(handle)
-                disableLV = False
-            else:
-                if handle not in self._activeAcqLVHandles:
-                    raise ValueError('Invalid or already used handle')
+    def __onLeaseStateChanged(self, detectorName, leased, faulted):
+        # Mirror lease/fault state onto read-only base attributes; managers
+        # never read the lease table itself.
+        manager = self._subManagers[detectorName]
+        manager._acquisitionLeased = leased
+        manager._hardwareFaulted = faulted
 
-                self._activeAcqLVHandles.remove(handle)
-                disableLV = len(self._activeAcqLVHandles) < 1
-            disableAcq = len(self._activeAcqHandles) < 1 and len(self._activeAcqLVHandles) < 1
-        finally:
-            self._activeAcqsMutex.unlock()
-
-        # Do actual disabling
-        if disableLV:
+    def __onLeaseHardwareStopping(self, transition):
+        # Runs under the lease lock, before any hardware stop: take down the
+        # live-view poll thread first (legacy disable order), so the poller
+        # never reads a detector that is being stopped. Safe to join here —
+        # the poll loop never re-enters the lease table.
+        if transition.liveViewLast:
             self._thread.quit()
             self._thread.wait()
-        if disableAcq:
-            self.execOnAll(lambda c: c.stopAcquisition(), condition=lambda c: c.forAcquisition)
+
+    def __emitTransitionSignals(self, transition):
+        # Emitted outside the lease lock: synchronously-connected slots may
+        # call back into acquire()/release().
+        if transition.nonFocusFirst:
+            self.sigAcquisitionStarted.emit()
+        if transition.nonFocusLast:
             self.sigAcquisitionStopped.emit()
 
     def setUpdatePeriod(self, updatePeriod):

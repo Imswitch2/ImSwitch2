@@ -5,6 +5,7 @@ import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model.managers import LeasePurpose
 from ..basecontrollers import ImConWidgetController
 
 _Z_AXIS = 'Z'
@@ -19,6 +20,8 @@ class AutofocusController(ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self._focusAcqHandle = None
+
         if self._setupInfo.autofocus is None:
             return
 
@@ -26,10 +29,22 @@ class AutofocusController(ImConWidgetController):
         self.positioner = self._setupInfo.autofocus.positioner
         self._focusing = False
 
-        self._master.detectorsManager[self.camera].startAcquisition()
+        # FOCUS lease instead of reaching past the DetectorsManager to the
+        # sub-manager: the camera is now refcounted, so an unrelated global
+        # stop can no longer disarm it underneath us. FOCUS leases are
+        # excluded from the user-visible acquisition signals.
+        self._focusAcqHandle = self._master.detectorsManager.acquire(
+            [self.camera], LeasePurpose.FOCUS
+        )
 
         self._widget.focusButton.clicked.connect(self._onFocusButton)
         self.sigFocusDone.connect(self._onFocusDone)
+
+    def closeEvent(self):
+        if self._focusAcqHandle is not None:
+            self._master.detectorsManager.release(self._focusAcqHandle)
+            self._focusAcqHandle = None
+        super().closeEvent()
 
     def _onFocusButton(self):
         try:

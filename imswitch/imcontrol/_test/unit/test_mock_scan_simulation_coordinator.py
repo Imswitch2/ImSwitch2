@@ -112,7 +112,13 @@ class _ManualDetectorsManager:
             if condition(detector)
         }
 
-    def startAcquisition(self, liveView=False):
+    def getAllDeviceNames(self, condition=None):
+        if condition is None:
+            condition = lambda detector: True
+        return [name for name, detector in self._detectors.items()
+                if condition(detector)]
+
+    def acquire(self, detectorNames, purpose):
         if not self._active:
             self.execOnAll(
                 lambda detector: detector.startAcquisition(),
@@ -121,7 +127,7 @@ class _ManualDetectorsManager:
             self._active = True
         return object()
 
-    def stopAcquisition(self, handle, liveView=False):
+    def release(self, handle):
         if self._active:
             self.execOnAll(
                 lambda detector: detector.stopAcquisition(),

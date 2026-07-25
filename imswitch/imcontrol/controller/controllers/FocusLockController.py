@@ -7,6 +7,7 @@ from skimage.feature import peak_local_max
 
 from imswitch.imcommon.framework import Thread, Timer
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.managers import LeasePurpose
 from ..basecontrollers import ImConWidgetController
 
 
@@ -16,6 +17,8 @@ class FocusLockController(ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
+
+        self._focusAcqHandle = None
 
         if self._setupInfo.focusLock is None:
             return
@@ -64,7 +67,13 @@ class FocusLockController(ImConWidgetController):
         self.setPointData = np.zeros(self.buffer)
         self.timeData = np.zeros(self.buffer)
 
-        self._master.detectorsManager[self.camera].startAcquisition()
+        # FOCUS lease instead of reaching past the DetectorsManager to the
+        # sub-manager: the camera is now refcounted, so an unrelated global
+        # stop can no longer disarm it underneath the focus lock. FOCUS leases
+        # are excluded from the user-visible acquisition signals.
+        self._focusAcqHandle = self._master.detectorsManager.acquire(
+            [self.camera], LeasePurpose.FOCUS
+        )
         self.__processDataThread = ProcessDataThread(self)
         self.__focusCalibThread = FocusCalibThread(self)
 
@@ -81,6 +90,11 @@ class FocusLockController(ImConWidgetController):
         if hasattr(super(), '__del__'):
             super().__del__()
 
+    def closeEvent(self):
+        if self._focusAcqHandle is not None:
+            self._master.detectorsManager.release(self._focusAcqHandle)
+            self._focusAcqHandle = None
+        super().closeEvent()
 
     def scanUnlockFocus(self):
         # print('unlock')

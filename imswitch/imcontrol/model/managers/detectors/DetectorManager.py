@@ -152,6 +152,13 @@ class DetectorManager(SignalInterface):
             raise ValueError('At least one of forAcquisition and forFocusLock must be set in'
                              ' DetectorInfo.')
 
+        # Acquisition-ownership mirrors — read-only for managers, written ONLY
+        # by the DetectorsManager lease table (never conflate the two: leased
+        # is bookkeeping, faulted is uncertain hardware state after a failed
+        # stop).
+        self._acquisitionLeased = False
+        self._hardwareFaulted = False
+
         self.setBinning(supportedBinnings[0])
 
     def updateLatestFrame(self, init):
@@ -248,6 +255,19 @@ class DetectorManager(SignalInterface):
     def forFocusLock(self) -> bool:
         """ Whether the detector is used for focus lock. """
         return self.__forFocusLock
+
+    @property
+    def acquisitionLeased(self) -> bool:
+        """ Whether this detector holds at least one acquisition lease.
+        Written only by the DetectorsManager lease table. """
+        return self._acquisitionLeased
+
+    @property
+    def hardwareFaulted(self) -> bool:
+        """ Whether this detector is quarantined because a hardware stop
+        failed (uncertain hardware state — distinct from lease bookkeeping).
+        Written only by the DetectorsManager lease table. """
+        return self._hardwareFaulted
 
     @property
     def scale(self) -> List[float]:
@@ -376,7 +396,25 @@ class DetectorManager(SignalInterface):
 
     @abstractmethod
     def stopAcquisition(self) -> None:
-        """ Stops image acquisition. """
+        """ Stops image acquisition.
+
+        Detector stop contract: teardown MUST raise on failure (logging first
+        is fine, swallowing is not) — the DetectorsManager is the only catcher
+        and records a failure as a hardware fault that quarantines the
+        detector. """
+        pass
+
+    def finishScan(self, mode: str) -> None:
+        """ Graceful-finish contract hook, called by the scan-execution
+        coordinator for every scan participant on every scan-iteration
+        termination, regardless of lease refcounts (a detector that keeps
+        other leases still needs its end-of-scan handling).
+
+        ``mode`` is ``'graceful'`` (normal completion — e.g. the TimeTagger
+        signals done and produces its final read/fit/emit) or ``'abort'``
+        (abrupt termination). Distinct from stopAcquisition(), which is
+        hardware teardown and only happens when the last lease is released.
+        Default: no-op; scan-driven managers override. """
         pass
 
     def finalize(self) -> None:

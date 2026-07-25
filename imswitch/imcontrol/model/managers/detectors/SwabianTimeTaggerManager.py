@@ -657,8 +657,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         try:
             self._teardownScanThread()
         except Exception as e:
+            # Detector stop contract: teardown failure must reach the
+            # DetectorsManager, which quarantines this detector as FAULTED.
             self._logger.warning(f'Failed to stop scan thread: {e}')
-        self._newFrameReady = True
+            raise
+        finally:
+            self._newFrameReady = True
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #

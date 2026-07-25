@@ -6,6 +6,7 @@ import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
 from ..basecontrollers import ImConWidgetController
@@ -120,6 +121,7 @@ class TilingController(ImConWidgetController):
         blend_overlaps: bool,
         intensity_correction: bool,
     ) -> None:
+        acqHandle = None
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -129,6 +131,15 @@ class TilingController(ImConWidgetController):
                       if tilingInfo.camera
                       else self._defaultCamera())
             detector = self._master.detectorsManager[camera]
+
+            # Tiling used to arm nothing at all and silently depend on live
+            # view being on: with live view off, getLatestFrame() below
+            # returned stale or empty frames. A WORKFLOW lease over the whole
+            # loop arms the camera for the scan's duration and releases it in
+            # the finally, whatever path the loop exits by.
+            acqHandle = self._master.detectorsManager.acquire(
+                [camera], LeasePurpose.WORKFLOW
+            )
 
             # Record starting position as grid origin (0, 0)
             start_pos = positioner.position
@@ -180,6 +191,14 @@ class TilingController(ImConWidgetController):
         except Exception as e:
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
         finally:
+            if acqHandle is not None:
+                try:
+                    self._master.detectorsManager.release(acqHandle)
+                except Exception as e:
+                    self._logger.error(
+                        f'Failed to release tiling detector lease: {e}',
+                        exc_info=True,
+                    )
             self._scanning = False
             # Cross-thread emit — Qt's AutoConnection becomes QueuedConnection
             # because the sender (this background thread) lives in a different

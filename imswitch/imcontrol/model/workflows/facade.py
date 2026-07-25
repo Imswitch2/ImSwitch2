@@ -31,6 +31,7 @@ from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.timeresolved import (
     TimeResolvedScanConfig,
     TimeResolvedScanProducts,
@@ -123,11 +124,41 @@ class CamFacade:
     / ``getLatestFrame`` / ``getChunk`` and the ``Exposure`` parameter.
     """
 
-    def __init__(self, detector) -> None:
+    def __init__(self, detector, detectorsManager=None, detectorName=None) -> None:
         self._detector = detector
         self._n_planned: Optional[int] = None
+        # When the DetectorsManager is supplied, the camera is held through a
+        # WORKFLOW lease instead of raw start/stop on the sub-manager, so a
+        # workflow can no longer disarm a detector another consumer is using
+        # (and vice versa). Without it we fall back to the legacy raw calls.
+        # Both are needed to lease; the detector's own name is deliberately
+        # NOT read here — construction must not touch the detector object.
+        self._detectorsManager = detectorsManager
+        self._detectorName = detectorName
+        self._acqHandle = None
 
     # Acquisition lifecycle ------------------------------------------------
+
+    @property
+    def _leases(self) -> bool:
+        return self._detectorsManager is not None and self._detectorName is not None
+
+    def _arm(self) -> None:
+        if not self._leases:
+            self._detector.startAcquisition()
+            return
+        if self._acqHandle is None:  # idempotent: workflows re-arm per plane
+            self._acqHandle = self._detectorsManager.acquire(
+                [self._detectorName], LeasePurpose.WORKFLOW
+            )
+
+    def _disarm(self) -> None:
+        if not self._leases:
+            self._detector.stopAcquisition()
+            return
+        if self._acqHandle is not None:
+            self._detectorsManager.release(self._acqHandle)
+            self._acqHandle = None
 
     def prepare_acquisition(self, n_frames: int) -> None:
         self._n_planned = int(n_frames)
@@ -135,10 +166,10 @@ class CamFacade:
         self._detector.releaseChunkConsumer(_WORKFLOW_CHUNK_CONSUMER)
 
     def start_acquisition(self) -> None:
-        self._detector.startAcquisition()
+        self._arm()
 
     def stop_acquisition(self) -> None:
-        self._detector.stopAcquisition()
+        self._disarm()
         self._n_planned = None
 
     def prepare_live(self) -> None:
@@ -146,10 +177,10 @@ class CamFacade:
         self._detector.releaseChunkConsumer(_WORKFLOW_CHUNK_CONSUMER)
 
     def start_live(self) -> None:
-        self._detector.startAcquisition()
+        self._arm()
 
     def stop_live(self) -> None:
-        self._detector.stopAcquisition()
+        self._disarm()
 
     # Data ----------------------------------------------------------------
 
@@ -824,7 +855,11 @@ def build_facade_from_master(
         facade.laser_con = LaserConFacade(lasers)
 
     if detector_name is not None:
-        facade.cam = CamFacade(master.detectorsManager[detector_name])
+        facade.cam = CamFacade(
+            master.detectorsManager[detector_name],
+            detectorsManager=master.detectorsManager,
+            detectorName=detector_name,
+        )
 
     if time_resolved_detector_name is not None:
         facade.time_resolved = TimeResolvedDetectorFacade(

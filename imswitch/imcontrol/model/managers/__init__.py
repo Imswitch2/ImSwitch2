@@ -1,4 +1,5 @@
-from .DetectorsManager import DetectorsManager, NoDetectorsError
+from .DetectorsManager import (DetectorsManager, DetectorFaultedError,
+                               LeasePurpose, NoDetectorsError)
 from .FlipMirrorsManager import FlipMirrorsManager
 from .LasersManager import LasersManager
 from .MultiManager import MultiManager
@@ -17,7 +18,8 @@ from .StandManager import StandManager
 from .RotatorsManager import RotatorsManager
 
 __all__ = [
-    'DetectorsManager', 'NoDetectorsError',
+    'DetectorsManager', 'DetectorFaultedError', 'LeasePurpose',
+    'NoDetectorsError',
     'FlipMirrorsManager',
     'LasersManager',
     'MultiManager',
