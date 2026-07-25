@@ -103,7 +103,12 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
                 self._widget.setScanButtonChecked(False)
                 self.emitScanSignal(self._commChannel.sigScanEnded)
         else:
-            self.runScanAdvanced(sigScanStartingEmitted=True)
+            # Defer the re-arm so the finished scan's NI-DAQ tasks and detector
+            # threads tear down before the next frame starts (see _armRepeatScan).
+            self._armRepeatScan()
+
+    def _shouldContinueRepeat(self) -> bool:
+        return self._widget.isContLaserMode() or self._widget.repeatEnabled()
 
     def getParameters(self):
         if self.settingParameters:

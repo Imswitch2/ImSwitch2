@@ -172,7 +172,12 @@ class ScanControllerMoNaLISA(SuperScanController):
                     self._widget.setScanButtonChecked(False)
                     self.emitScanSignal(self._commChannel.sigScanEnded)
             else:
-                self.runScanAdvanced(sigScanStartingEmitted=True)
+                # Defer the re-arm so the finished scan's NI-DAQ tasks and
+                # detector threads tear down first (see _armRepeatScan).
+                self._armRepeatScan()
+
+    def _shouldContinueRepeat(self) -> bool:
+        return self._widget.isContLaserMode() or self._widget.repeatEnabled()
 
     def getCenterCoord(self):
         if self.centerSearchMode == "Manual":

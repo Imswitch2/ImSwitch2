@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
 from .DetectorManager import DetectorManager
+from ._live_display import LiveDisplayThrottle
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 
@@ -66,6 +67,16 @@ class APDManager(DetectorManager):
         self.__newFrameReady = False
         self._ttlmultiplying = False
         self.acquisition = True
+        # Deterministic rate limiter for the in-progress live preview. Caps
+        # full-image napari redraws at a fixed rate (default 20 Hz) instead of
+        # the old shape-dependent random gate that flooded the GUI on fast
+        # scans. Tunable per rig via the ``liveUpdateIntervalMs`` config prop.
+        self._liveThrottle = LiveDisplayThrottle(
+            min_interval_s=max(
+                0.0,
+                float(manager_props.get("liveUpdateIntervalMs", 50.0)) / 1000.0,
+            )
+        )
         self._debug_mode = False  # run mode for plotting detected samples
         # Generate detected samples instead of reading the NI-DAQ counter input.
         # Forced on whenever the NI-DAQ itself is simulating: with no hardware
@@ -97,6 +108,8 @@ class APDManager(DetectorManager):
 
     def initiateScan(self, scanInfoDict, signalDict):
         if self.acquisition:
+            # Fresh scan: let the first line refresh the preview immediately.
+            self._liveThrottle.reset()
             self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
             self._scanThread = Thread()
             self._scanWorker.moveToThread(self._scanThread)
@@ -168,7 +181,10 @@ class APDManager(DetectorManager):
             # _image_display is unchanged by this stop, so re-flagging causes
             # getChunk() to return the same frame twice (phantom duplicate).
         except Exception as e:
+            # Detector stop contract: teardown failure must reach the
+            # DetectorsManager, which quarantines this detector as FAULTED.
             self.__logger.warning(f'Failed to stop acquisition cleanly: {e}')
+            raise
 
     def stopAcquisitionLocal(self):
         try:
@@ -272,7 +288,9 @@ class APDManager(DetectorManager):
             # leading singleton axis and raise IndexError for y >= 1.
             self._image[..., y, :n] = converted
             self.__currSlice = (y_expanded,)
-            if np.random.rand()<np.min((500/np.sum(self._image.shape), UpdateRateInPixels)): # update oa every Xth pixel, less for big datasets
+            # Time-throttled live preview: bound the redraw rate deterministically
+            # instead of gating on image size with a random draw per line.
+            if self._liveThrottle.due():
                 self.sigImageUpdated.emit(self._image, True, self.scale)
             return
 

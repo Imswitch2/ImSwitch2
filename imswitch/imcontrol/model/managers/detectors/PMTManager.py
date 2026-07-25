@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
 from .DetectorManager import DetectorManager
+from ._live_display import LiveDisplayThrottle
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
 
@@ -63,6 +64,17 @@ class PMTManager(DetectorManager):
 
         self._scanWorker = None
         self._scanThread = None
+
+        # Deterministic rate limiter for the in-progress live preview (see
+        # APDManager): caps full-image napari redraws at a fixed rate instead
+        # of the old shape-dependent random gate. Tunable per rig via the
+        # ``liveUpdateIntervalMs`` config property (default 50 ms = 20 Hz).
+        self._liveThrottle = LiveDisplayThrottle(
+            min_interval_s=max(
+                0.0,
+                float(manager_props.get("liveUpdateIntervalMs", 50.0)) / 1000.0,
+            )
+        )
 
         self._ttlmultiplying = False
         # Generate detected samples instead of reading the NI-DAQ analog input.
@@ -135,6 +147,8 @@ class PMTManager(DetectorManager):
         if not self.acquisition:
             return
 
+        # Fresh scan: let the first line refresh the preview immediately.
+        self._liveThrottle.reset()
         self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
 
         self._scanThread = Thread()
@@ -189,9 +203,22 @@ class PMTManager(DetectorManager):
         self.__newFrameReady = False
 
     def stopAcquisition(self):
-        self.stopAcquisitionLocal()
+        # Detector stop contract: teardown failure must reach the
+        # DetectorsManager, which quarantines this detector as FAULTED.
+        self._teardownScan()
 
     def stopAcquisitionLocal(self):
+        # Internal worker-completion path (ScanWorker.acqDoneSignal): no lease
+        # operation is in flight to report a fault to, so this one still
+        # swallows and logs.
+        try:
+            self._teardownScan()
+        except Exception:
+            self.__logger.exception("Error stopping PMT acquisition")
+
+    def _teardownScan(self):
+        """ Tear down the scan worker/thread. Raises on failure — see the
+        detector stop contract in DetectorManager.stopAcquisition. """
         try:
             worker = self._scanWorker
             thread = self._scanThread
@@ -219,8 +246,6 @@ class PMTManager(DetectorManager):
             # getChunk() to deliver the last frame a second time (phantom
             # duplicate in the recorded file).
 
-        except Exception:
-            self.__logger.exception("Error stopping PMT acquisition")
         finally:
             if self._debug_mode:
                 try:
@@ -295,7 +320,9 @@ class PMTManager(DetectorManager):
             # leading singleton axis and raise IndexError for y >= 1.
             self._image[..., y, :n] = pixels[:n]
             self.__currSlice = (y_expanded,)
-            if np.random.rand()<np.min((500/np.sum(self._image.shape), UpdateRateInPixels)): # update oa every Xth pixel, less for big datasets
+            # Time-throttled live preview: bound the redraw rate deterministically
+            # instead of gating on image size with a random draw per line.
+            if self._liveThrottle.due():
                 self.sigImageUpdated.emit(self._image, True, self.scale)
             return
 

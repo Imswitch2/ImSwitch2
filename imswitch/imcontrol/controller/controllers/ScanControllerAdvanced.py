@@ -540,7 +540,9 @@ class ScanControllerAdvanced(SuperScanController):
             except Exception:
                 self._logger.warning("Failed to reset positioners after scan:\n%s", traceback.format_exc())
         else:
-            self.runScanAdvanced(sigScanStartingEmitted=True)
+            # Defer the re-arm so the finished scan's NI-DAQ tasks and detector
+            # threads tear down before the next frame starts (see _armRepeatScan).
+            self._armRepeatScan()
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)

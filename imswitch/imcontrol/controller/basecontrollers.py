@@ -6,6 +6,8 @@ import traceback
 
 from abc import abstractmethod
 
+from qtpy import QtCore
+
 from imswitch.imcommon.controller.basecontrollers import (
     WidgetController,
     WidgetControllerFactory,
@@ -249,6 +251,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self.scanInfoDict = None
         self.isRunning = False
         self.doingNonFinalPartOfSequence = False
+        # True between a repeat-scan frame finishing and the next frame arming.
+        # See _armRepeatScan for why the re-arm is deferred.
+        self._repeatPending = False
 
         self.positioners = {
             pName: pManager for pName, pManager in self._setupInfo.positioners.items()
@@ -429,6 +434,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def abortScan(self):
         """ Abort scan. """
+        self._repeatPending = False  # Cancel any pending repeat re-arm
         self.doingNonFinalPartOfSequence = False  # So that sigScanEnded is emitted
         if not self.isRunning:
             self.scanFailed()
@@ -436,10 +442,52 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def scanFailed(self):
         """ Called when scan failed. """
         self._logger.error('Scan failed')
+        self._repeatPending = False  # Cancel any pending repeat re-arm
         self.isRunning = False
         self.doingNonFinalPartOfSequence = False
         self._widget.setScanButtonChecked(False)
         self.emitScanSignal(self._commChannel.sigScanEnded)
+
+    def _armRepeatScan(self):
+        """Schedule the next repeat-scan frame on the next event-loop turn.
+
+        ``scanDone`` runs inside the NidaqManager ``sigScanDone`` handler, which
+        itself fires from the just-finished scan's task-completion slot. Calling
+        ``runScanAdvanced`` (and therefore ``nidaqManager.runScan``) directly
+        from there re-enters the scan machinery while the previous scan's NI-DAQ
+        tasks, WaitThreads and per-detector scan QThreads are still tearing down.
+        On real hardware that recreates/reassigns those objects while the old
+        ones are mid-shutdown — a QThread destroyed while still running — which
+        crashes the GUI when 'Repeat' is enabled.
+
+        Deferring the re-arm with a zero-delay timer lets the current signal
+        chain unwind and the previous scan fully release its resources before
+        the next frame arms. ``_repeatPending`` is cleared by ``abortScan`` /
+        ``scanFailed`` so a stop/abort in the gap cancels the pending frame.
+        """
+        self._repeatPending = True
+        QtCore.QTimer.singleShot(0, self._fireRepeatScan)
+
+    def _fireRepeatScan(self):
+        """Deferred continuation of a repeat scan (see _armRepeatScan)."""
+        if not self._repeatPending:
+            return  # Aborted or superseded while the re-arm was pending
+        self._repeatPending = False
+        if self.isRunning:
+            return  # A scan is already running; don't stack another
+        if not self._shouldContinueRepeat():
+            return  # User unchecked 'Repeat' / left continuous mode during the gap
+        self.runScanAdvanced(sigScanStartingEmitted=True)
+
+    def _shouldContinueRepeat(self) -> bool:
+        """Whether a deferred repeat frame should still fire when it comes due.
+
+        Default: only while the widget's 'Repeat' box is checked. Controllers
+        that also loop in continuous-laser mode override this to keep looping
+        there too.
+        """
+        repeatEnabled = getattr(self._widget, 'repeatEnabled', None)
+        return bool(repeatEnabled()) if callable(repeatEnabled) else False
 
     def setCenterParameters(self, devices, centers):
         """ Set center parameter for all axes. """
