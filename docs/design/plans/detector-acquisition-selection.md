@@ -311,6 +311,17 @@ Lifecycle:
    (currently all scan-driven → no change); `finishScan` split; async barrier
    feeding the deferred re-arm; token; **`runScan` busy-refusal → arm failure**
    (R7-1); NI-DAQ-authoritative release.
+
+   **Status: DONE (commit `abe8a4a3`).** `_scan_execution.py` holds the
+   framework-free coordinator (`ScanIterationToken`, `PARTICIPANTS_KEY`,
+   `arm`/`resolve`/`resolveActive`); `ScanBusyError` makes refusal observable
+   and `NidaqManagerError` now populates `str(exc)`; `isScanDriven` added to
+   `DetectorManager` (True on APD/PMT/TimeTagger). All five entry points arm
+   through the coordinator, with resolvers connected *before* each controller's
+   `scanDone`/`scanFailed` so the lease is released and final reads are done
+   before a repeat frame re-arms. 22 tests incl. a source-level guard against a
+   sixth direct `runScan` caller. The point-detector gate is intentionally
+   absent (Phase 5), leaving this change behaviourally inert.
 4. **Frame delivery + recording scope + sim.** `LVWorker` polls
    `frameStreamMembership` (LIVE_VIEW ∪ EVENT_STREAM); **migrate
    `ViewController` to explicit LIVE_VIEW**; `setUpdatePeriod` becomes
