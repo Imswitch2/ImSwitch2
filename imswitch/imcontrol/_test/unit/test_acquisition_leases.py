@@ -326,17 +326,55 @@ def test_permanent_focus_lease_does_not_keep_signals_asserted():
     assert transition.nonFocusLast  # stopped, despite the FOCUS lease
 
 
-def test_live_view_first_and_last_track_the_poll_thread():
+def test_frame_stream_first_and_last_track_the_poll_thread():
     hw = _Hardware()
     table, _ = makeTable(hw)
 
     first, t1 = table.acquire(['A'], LeasePurpose.LIVE_VIEW)
-    assert t1.liveViewFirst
+    assert t1.frameStreamFirst
     second, t2 = table.acquire(['B'], LeasePurpose.LIVE_VIEW)
-    assert not t2.liveViewFirst
+    assert not t2.frameStreamFirst
 
-    assert not table.release(second).liveViewLast
-    assert table.release(first).liveViewLast
+    assert not table.release(second).frameStreamLast
+    assert table.release(first).frameStreamLast
+
+
+def test_event_stream_lease_keeps_the_poll_thread_running():
+    """R6-1: with live view off, an EVENT_STREAM lease must keep the poll
+    thread alive — otherwise the detector is armed but never read and the
+    event-detection loop stalls."""
+    hw = _Hardware()
+    table, _ = makeTable(hw)
+
+    live, _ = table.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    _, eventTransition = table.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+    assert not eventTransition.frameStreamFirst  # already streaming
+
+    # Live view off, event loop still running: the thread must NOT stop.
+    assert not table.release(live).frameStreamLast
+
+
+def test_event_stream_alone_starts_the_poll_thread():
+    hw = _Hardware()
+    table, _ = makeTable(hw)
+
+    handle, transition = table.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+
+    assert transition.frameStreamFirst
+    assert table.release(handle).frameStreamLast
+
+
+def test_non_streaming_purposes_do_not_drive_the_poll_thread():
+    """EVENT_DIRECT reads frames itself; SCAN/RECORDING detectors are armed
+    but not polled into sigImageUpdated."""
+    hw = _Hardware()
+    table, _ = makeTable(hw)
+
+    for purpose in (LeasePurpose.EVENT_DIRECT, LeasePurpose.SCAN,
+                    LeasePurpose.RECORDING, LeasePurpose.FOCUS):
+        handle, transition = table.acquire(['D'], purpose)
+        assert not transition.frameStreamFirst, purpose
+        assert not table.release(handle).frameStreamLast, purpose
 
 
 def test_frame_stream_membership_is_live_view_union_event_stream():
@@ -360,7 +398,7 @@ def test_before_stops_hook_runs_before_any_hardware_stop():
     order = []
 
     def onBeforeStops(transition):
-        order.append(('hook', transition.liveViewLast))
+        order.append(('hook', transition.frameStreamLast))
 
     def stop(name):
         order.append(('stop', name))

@@ -56,6 +56,7 @@ from imswitch.imcontrol.model.EtSTEDAutoCalibration import (
 from imswitch.imcontrol.model.EtSTEDPipelineRunner import EtSTEDPipelineRunner
 from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformService
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
+from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers._scan_execution import (
     FINISH_ABORT, FINISH_GRACEFUL, ScanExecutionCoordinator,
 )
@@ -165,6 +166,10 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._transformService = EtSTEDTransformService()
         self._triggeredScanRunner = EtSTEDTriggeredScanRunner()
         self._smartModeService = None
+
+        # EVENT_STREAM lease on detectorFast, held for the detection loop's
+        # lifetime (see _acquireDetectorFastStream).
+        self._detectorFastHandle = None
 
         # The fifth NI-DAQ scan entry point: an etSTED-triggered slow scan
         # calls runScan directly, bypassing every SuperScanController, so it
@@ -377,6 +382,12 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def _connectRunSignals(self) -> None:
         if not self._state.imageSignalConnected:
+            # EVENT_STREAM, not a plain arming lease: the detection loop feeds
+            # off sigUpdateImage, which only fires for detectors in the
+            # frame-stream membership. Without this the loop silently stalls
+            # whenever live view is off — detectorFast would be armed but
+            # never polled.
+            self._acquireDetectorFastStream()
             self._commChannel.sigUpdateImage.connect(self.runPipeline)
             self._state.imageSignalConnected = True
         if not self._state.scanEndSignalConnected:
@@ -391,6 +402,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         if self._state.imageSignalConnected:
             self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
             self._state.imageSignalConnected = False
+            self._releaseDetectorFastStream()
         if self._state.scanEndSignalConnected:
             if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
                 self._commChannel.sigToggleBlockScanWidget.emit(True)
@@ -405,6 +417,39 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             signal.disconnect(slot)
         except (TypeError, RuntimeError):
             pass
+
+    def _acquireDetectorFastStream(self) -> None:
+        """Hold detectorFast for the detection loop's lifetime."""
+        if self._detectorFastHandle is not None:
+            return
+        detectorFast = self._state.detectorFast
+        if not detectorFast:
+            return
+        try:
+            self._detectorFastHandle = self._master.detectorsManager.acquire(
+                [detectorFast], LeasePurpose.EVENT_STREAM
+            )
+        except Exception as e:
+            # Surface it: without the lease the loop runs but never sees a
+            # frame, which is far harder to diagnose than a failed start.
+            self._logger.error(
+                f'Failed to lease detector "{detectorFast}" for the '
+                f'{self.MODALITY_LABEL} detection loop: {e}', exc_info=True
+            )
+            raise
+
+    def _releaseDetectorFastStream(self) -> None:
+        if self._detectorFastHandle is None:
+            return
+        try:
+            self._master.detectorsManager.release(self._detectorFastHandle)
+        except Exception as e:
+            self._logger.error(
+                f'Failed to release the {self.MODALITY_LABEL} detection-loop '
+                f'detector lease: {e}', exc_info=True
+            )
+        finally:
+            self._detectorFastHandle = None
 
     def _setFastLaserEnabled(self, enabled: bool, *, require_success: bool = False) -> None:
         if self._state.laserFast is None:

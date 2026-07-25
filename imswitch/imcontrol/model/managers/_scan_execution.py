@@ -28,6 +28,14 @@ from ._acquisition_leases import LeasePurpose
 #: is what preserves behaviour for any entry point not yet routed through here.
 PARTICIPANTS_KEY = 'participants'
 
+#: ``scanInfoDict`` key listing scan-driven detectors deliberately EXCLUDED
+#: from this scan. Consumers that cannot themselves tell a scan-driven detector
+#: from a free-running one — notably the scan simulator, which is built from
+#: setupInfo alone and has no DetectorsManager — use this to skip detectors
+#: that will produce nothing, without having to reason about the ownership
+#: axis. Empty until selection lands in Phase 5.
+EXCLUDED_KEY = 'excludedDetectors'
+
 FINISH_GRACEFUL = 'graceful'
 FINISH_ABORT = 'abort'
 
@@ -74,6 +82,12 @@ class ScanExecutionCoordinator:
     # Participant composition                                            #
     # ------------------------------------------------------------------ #
 
+    def scanDrivenDetectors(self):
+        """Every scan-driven detector, participating or not."""
+        return self._detectorsManager.getAllDeviceNames(
+            condition=lambda detector: getattr(detector, 'isScanDriven', False)
+        )
+
     def composeParticipants(self):
         """Scan-driven detectors taking part in the next iteration.
 
@@ -83,10 +97,7 @@ class ScanExecutionCoordinator:
         WORKFLOW / EVENT_* / GENERIC leases)``. Faulted detectors are excluded
         here and always: a detector whose stop failed must not rejoin a scan.
         """
-        names = self._detectorsManager.getAllDeviceNames(
-            condition=lambda detector: getattr(detector, 'isScanDriven', False)
-        )
-        return [name for name in names
+        return [name for name in self.scanDrivenDetectors()
                 if not self._detectorsManager.isDetectorFaulted(name)]
 
     # ------------------------------------------------------------------ #
@@ -113,6 +124,11 @@ class ScanExecutionCoordinator:
             # sigScanBuilt already carries, so there is no mirror to go stale
             # between iterations.
             scanInfoDict[PARTICIPANTS_KEY] = list(participants)
+            participantSet = set(participants)
+            scanInfoDict[EXCLUDED_KEY] = [
+                name for name in self.scanDrivenDetectors()
+                if name not in participantSet
+            ]
             self._activeToken = token
             self._nidaqManager.runScan(signalDict, scanInfoDict)
         except BaseException:

@@ -1408,15 +1408,11 @@ class RecordingManager(SignalInterface):
         """ Saves an image with the specified detectors to a file
         with the specified name prefix, save mode, file format and attributes
         to save to the capture per detector. """
-        # Phase 2 migrates the purpose only; the SCOPE stays all-forAcquisition
-        # exactly as the legacy shim did. Narrowing this to `detectorNames`
-        # (today a subset snap still arms every detector) is a behaviour fix
-        # and belongs in Phase 4, not here.
-        acqHandle = self.__detectorsManager.acquire(
-            self.__detectorsManager.getAllDeviceNames(
-                condition=lambda c: c.forAcquisition),
-            LeasePurpose.SNAP,
-        )
+        # Lease exactly what is being snapped. This used to arm every
+        # forAcquisition detector for a subset snap, spinning up hardware
+        # nobody asked for.
+        acqHandle = self.__detectorsManager.acquire(detectorNames,
+                                                    LeasePurpose.SNAP)
 
         try:
             images = {}
@@ -1803,19 +1799,23 @@ class RecordingWorker(Worker):
 
     def run(self):
         detectorsManager = self.__recordingManager.detectorsManager
-        # Purpose only in Phase 2; the all-forAcquisition scope is unchanged
-        # from the legacy shim. Narrowing to the recorded detectors is a
-        # Phase 4 behaviour fix.
-        acqHandle = detectorsManager.acquire(
-            detectorsManager.getAllDeviceNames(
-                condition=lambda c: c.forAcquisition),
-            LeasePurpose.RECORDING,
-        )
+        # Lease exactly the detectors being recorded, not every
+        # forAcquisition detector. Scan-driven participants are additionally
+        # held by the scan's own SCAN lease, so a recording that names one
+        # keeps it armed across the whole recording rather than only for the
+        # scan iteration.
+        detectorNames = list(getattr(self, 'detectorNames', None) or [])
+        # acquire() rejects an empty selection by design; _record already
+        # reports the no-detectors case itself, so let it do that.
+        acqHandle = (detectorsManager.acquire(detectorNames,
+                                              LeasePurpose.RECORDING)
+                     if detectorNames else None)
         try:
             self._record()
 
         finally:
-            detectorsManager.release(acqHandle)
+            if acqHandle is not None:
+                detectorsManager.release(acqHandle)
     
     def _getFileDests(self):
         """Prepare file destinations and paths for streaming."""

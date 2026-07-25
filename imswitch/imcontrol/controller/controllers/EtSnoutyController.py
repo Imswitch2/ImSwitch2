@@ -8,6 +8,7 @@ import sys
 import time
 from ast import literal_eval
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 from inspect import signature
 
@@ -21,6 +22,7 @@ from qtpy.QtWidgets import QMessageBox
 from ..basecontrollers import ImConWidgetController
 from imswitch.imcommon.model import initLogger
 from imswitch.imcontrol.model.EtSnoutyPaths import getEtSnoutyPath
+from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.view import guitools
 
 from .SmartModeRoleMixin import SmartModeRoleMixin
@@ -63,6 +65,10 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.__logger = initLogger(self, instanceName='EtSnoutyController')
+
+        # EVENT_DIRECT lease held for the duration of a run; see
+        # _acquireDetectorFastDirect.
+        self._detectorFastHandle = None
 
         self._widget.setFastDetectorList(
             self._master.detectorsManager.execOnAll(
@@ -214,6 +220,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             self.detectorFast_controller = (
                 self._master.detectorsManager.getDevice(self.detectorFast)
             )
+            self._acquireDetectorFastDirect()
 
             if self._widget.setUpdatePeriodCheck.isChecked():
                 self.ClockWidefield = False
@@ -443,6 +450,74 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self.__clock_busy = False
         self.__prevFrames.clear()
         self.__prevAnaFrames.clear()
+        # Every start and every exit path (normal stop, early return, smart-mode
+        # failure) funnels through here, so this is where the run's detector
+        # lease is guaranteed to be given back.
+        self._releaseDetectorFastDirect()
+
+    # ------------------------------------------------------------------
+    # Detector ownership
+    # ------------------------------------------------------------------
+
+    def _acquireDetectorFastDirect(self):
+        """EVENT_DIRECT lease for the run.
+
+        EtSnouty reads frames itself via ``wait_and_get_NewFrame`` rather than
+        off ``sigUpdateImage``, so it needs the detector ARMED but must stay
+        out of the frame-stream poll set — polling it here would steal the
+        frames the run is waiting on.
+        """
+        if self._detectorFastHandle is not None or not self.detectorFast:
+            return
+        self._detectorFastHandle = self._master.detectorsManager.acquire(
+            [self.detectorFast], LeasePurpose.EVENT_DIRECT
+        )
+
+    def _releaseDetectorFastDirect(self):
+        handle = getattr(self, '_detectorFastHandle', None)
+        if handle is None:
+            return
+        try:
+            self._master.detectorsManager.release(handle)
+        except Exception as e:
+            self.__logger.error(
+                f'Failed to release the EtSnouty detector lease: {e}',
+                exc_info=True,
+            )
+        finally:
+            self._detectorFastHandle = None
+
+    @contextmanager
+    def _temporaryDetectorRead(self, detectorName):
+        """Arm a detector just long enough for a one-shot read.
+
+        The mask/preview paths call ``getLatestFrame()`` after a fixed sleep,
+        which returns a stale or empty frame when nothing else happens to have
+        the detector armed. A short SNAP lease makes that read well-defined,
+        and it is released even if the read or the dialog raises.
+        """
+        handle = None
+        if detectorName and not self._master.detectorsManager.isDetectorLeased(
+                detectorName):
+            try:
+                handle = self._master.detectorsManager.acquire(
+                    [detectorName], LeasePurpose.SNAP
+                )
+            except Exception as e:
+                self.__logger.warning(
+                    f'Could not arm "{detectorName}" for a preview read: {e}'
+                )
+        try:
+            yield
+        finally:
+            if handle is not None:
+                try:
+                    self._master.detectorsManager.release(handle)
+                except Exception as e:
+                    self.__logger.error(
+                        f'Failed to release the preview detector lease: {e}',
+                        exc_info=True,
+                    )
 
     # ------------------------------------------------------------------
     # Image pipeline
@@ -660,8 +735,9 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self.detectorFast_controller = (
             self._master.detectorsManager.getDevice(self.detectorFast)
         )
-        time.sleep(1)
-        self.latest_image = self.detectorFast_controller.getLatestFrame()
+        with self._temporaryDetectorRead(self.detectorFast):
+            time.sleep(1)
+            self.latest_image = self.detectorFast_controller.getLatestFrame()
 
         self.roi_win = pg.GraphicsLayoutWidget(title='Define ROI for mask')
         self.view = self.roi_win.addViewBox()
@@ -720,8 +796,9 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self.detectorFast_controller = (
             self._master.detectorsManager.getDevice(self.detectorFast)
         )
-        time.sleep(1)
-        img = self.detectorFast_controller.getLatestFrame()
+        with self._temporaryDetectorRead(self.detectorFast):
+            time.sleep(1)
+            img = self.detectorFast_controller.getLatestFrame()
 
         self.roi_win = pg.GraphicsLayoutWidget(title='Actual Binary Mask')
         self.view = self.roi_win.addViewBox()

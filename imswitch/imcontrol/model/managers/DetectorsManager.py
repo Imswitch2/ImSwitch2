@@ -3,8 +3,8 @@ from time import sleep
 import numpy as np
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
-from ._acquisition_leases import (AcquisitionLeaseTable, DetectorFaultedError,
-                                  LeaseHandle, LeasePurpose)
+from ._acquisition_leases import (FRAME_STREAM_PURPOSES, AcquisitionLeaseTable,
+                                  DetectorFaultedError, LeaseHandle, LeasePurpose)
 from .MultiManager import MultiManager
 
 
@@ -130,6 +130,13 @@ class DetectorsManager(MultiManager, SignalInterface):
         """ Whether the detector is quarantined by a failed hardware stop. """
         return self._leaseTable.isFaulted(detectorName)
 
+    def frameStreamMembership(self):
+        """ Detectors whose frames must be polled into sigImageUpdated:
+        LIVE_VIEW union EVENT_STREAM. Arming and delivery are different
+        questions — an event-detection loop holds an EVENT_STREAM lease so its
+        detector keeps being polled with live view off. """
+        return self._leaseTable.leasedDetectorNames(FRAME_STREAM_PURPOSES)
+
     def startAcquisition(self, liveView=False, *, detectorNames=None):
         """ Legacy compat shim over acquire(). When detectorNames is None
         (identity check — an explicit empty iterable is a caller error, never
@@ -158,10 +165,11 @@ class DetectorsManager(MultiManager, SignalInterface):
             names, purpose, allowEmpty=allowEmpty
         )
         # Outside the lease lock, in the legacy order: global signal first,
-        # then bring up the live-view poll thread.
+        # then bring up the frame-stream poll thread. The settling delay that
+        # used to block here now happens inside LVWorker.run, on the worker's
+        # own thread, so arming no longer freezes the UI for 300 ms.
         self.__emitTransitionSignals(transition)
-        if transition.liveViewFirst:
-            sleep(0.3)
+        if transition.frameStreamFirst:
             self._thread.start()
         return handle
 
@@ -174,10 +182,10 @@ class DetectorsManager(MultiManager, SignalInterface):
 
     def __onLeaseHardwareStopping(self, transition):
         # Runs under the lease lock, before any hardware stop: take down the
-        # live-view poll thread first (legacy disable order), so the poller
+        # frame-stream poll thread first (legacy disable order), so the poller
         # never reads a detector that is being stopped. Safe to join here —
         # the poll loop never re-enters the lease table.
-        if transition.liveViewLast:
+        if transition.frameStreamLast:
             self._thread.quit()
             self._thread.wait()
 
@@ -190,13 +198,29 @@ class DetectorsManager(MultiManager, SignalInterface):
             self.sigAcquisitionStopped.emit()
 
     def setUpdatePeriod(self, updatePeriod):
+        """ Changes the frame-stream poll period, restarting the poll thread
+        only if it is actually running — this used to quit and start it
+        unconditionally, which resurrected a poll thread with no members when
+        nothing was streaming. """
         self._lvWorker.setUpdatePeriod(updatePeriod)
+        if not self._thread.isRunning():
+            return
         self._thread.quit()
         self._thread.wait()
         self._thread.start()
 
 
 class LVWorker(Worker):
+    """ Polls exactly the frame-stream membership (LIVE_VIEW | EVENT_STREAM)
+    into sigImageUpdated. Membership is re-read every tick, so a lease taken or
+    released mid-flight takes effect on the next poll without restarting the
+    thread. """
+
+    #: Settling delay before the first poll of a freshly armed detector. Runs
+    #: on the worker thread — it must never move back onto the caller's thread,
+    #: where it blocked the UI for 300 ms on every live-view start.
+    _INITIAL_SETTLE_S = 0.3
+
     def __init__(self, detectorsManager, updatePeriod):
         super().__init__()
         self._detectorsManager = detectorsManager
@@ -204,14 +228,22 @@ class LVWorker(Worker):
         self._vtimer = None
 
     def run(self):
-        self._detectorsManager.execOnAll(lambda c: c.updateLatestFrame(False),
-                                         condition=lambda c: c.forAcquisition)
+        sleep(self._INITIAL_SETTLE_S)
+        self._pollFrameStream(init=False)
         self._vtimer = Timer()
-        self._vtimer.timeout.connect(
-            lambda: self._detectorsManager.execOnAll(lambda c: c.updateLatestFrame(True),
-                                                     condition=lambda c: c.forAcquisition)
-        )
+        self._vtimer.timeout.connect(lambda: self._pollFrameStream(init=True))
         self._vtimer.start(self._updatePeriod)
+
+    def _pollFrameStream(self, init):
+        for detectorName in self._detectorsManager.frameStreamMembership():
+            try:
+                self._detectorsManager.execOn(
+                    detectorName, lambda detector: detector.updateLatestFrame(init)
+                )
+            except Exception:
+                # A detector released mid-tick (or otherwise unavailable) must
+                # not kill the poll loop for everyone else.
+                pass
 
     def stop(self):
         if self._vtimer is not None:

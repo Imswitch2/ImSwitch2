@@ -1,4 +1,5 @@
 from imswitch.imcommon.model import APIExport
+from imswitch.imcontrol.model.managers import LeasePurpose
 from ..basecontrollers import ImConWidgetController
 
 
@@ -11,17 +12,39 @@ class ViewController(ImConWidgetController):
 
         self._widget.sigLiveviewToggled.connect(self.liveview)
 
+    def _liveViewDetectors(self):
+        """ Free-running detectors only.
+
+        Live view used to lease every ``forAcquisition`` detector, scan-driven
+        ones included, so APD/PMT/TimeTagger were armed by the live-view
+        toggle and a scan silently depended on live view being on to produce
+        data at all. Scan-driven detectors are armed by the scan's own SCAN
+        lease now (see ScanExecutionCoordinator), so live view leases only what
+        it actually streams. Phase 5 narrows this further to the user's
+        selection.
+        """
+        return self._master.detectorsManager.getAllDeviceNames(
+            condition=lambda detector: (detector.forAcquisition
+                                        and not detector.isScanDriven)
+        )
+
     def liveview(self, enabled):
         """ Start liveview and activate detector acquisition. """
         if enabled and self._acqHandle is None:
-            self._acqHandle = self._master.detectorsManager.startAcquisition(liveView=True)
+            detectorNames = self._liveViewDetectors()
+            if not detectorNames:
+                return  # nothing free-running to stream; acquire rejects empty
+            self._acqHandle = self._master.detectorsManager.acquire(
+                detectorNames, LeasePurpose.LIVE_VIEW
+            )
         elif not enabled and self._acqHandle is not None:
-            self._master.detectorsManager.stopAcquisition(self._acqHandle, liveView=True)
+            self._master.detectorsManager.release(self._acqHandle)
             self._acqHandle = None
 
     def closeEvent(self):
         if self._acqHandle is not None:
-            self._master.detectorsManager.stopAcquisition(self._acqHandle, liveView=True)
+            self._master.detectorsManager.release(self._acqHandle)
+            self._acqHandle = None
 
     def get_image(self, detectorName):
         if detectorName is None:

@@ -14,6 +14,7 @@ from ..display_transform import (
 from tifffile import imwrite, imread
 from imswitch.imcontrol.view import guitools
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.bead_recognition import (
     analyze_donut,
     BeadAcquisitionConfig,
@@ -71,6 +72,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # frame exists. Consuming on the early flag pulled the pre-scan camera
         # backlog into the reconstruction, shifting and inflating it.
         self._scanArmed = False
+        # Pre-arm lease + the detector name captured for this scan; see
+        # onScanStarting.
+        self._scanDetectorHandle = None
+        self._scanDetectorName = None
         self._drainingEndedScan = False
         self._scanEndDrainDeadline = None
         self._scanEndDrainTimer = Timer()
@@ -123,6 +128,13 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._widget.sigOrientationChanged.connect(self._onOrientationChanged)
 
         # Connect comm channel signals
+        # Pre-arm: sigScanStarting fires BEFORE the scan is built and before
+        # any TTL output, whereas sigScanStarted is already too late — a
+        # trigger-driven camera would miss the first pulses. Note this is an
+        # ARMING requirement, not snapshot membership: BeadRec's camera is
+        # free-running/trigger-driven and never joins the scan-driven
+        # participant snapshot.
+        self._commChannel.sigScanStarting.connect(self.onScanStarting)
         self._commChannel.sigScanStarted.connect(self.updateParameters)
         self._commChannel.sigScanStarted.connect(self.onNewScan)
         self._commChannel.sigScanStarted.connect(self.OngoingScanStatus)
@@ -151,9 +163,23 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
     # readChunk distributes every frame to both consumers.
     _CHUNK_CONSUMER = 'BeadRec'
 
+    def _reconstructionDetectorName(self):
+        """The detector this scan reconstructs from.
+
+        Pinned at pre-arm (onScanStarting) and held for the whole scan:
+        resolving the *current* detector per chunk means switching the view's
+        detector mid-scan silently switches the reconstruction source, mixing
+        two cameras' frames into one reconstruction. Falls back to the current
+        detector outside a scan.
+        """
+        if self._scanDetectorName is not None:
+            return self._scanDetectorName
+        return self._master.detectorsManager.getCurrentDetectorName()
+
     def _getCurrentDetectorChunk(self) -> Sequence[np.ndarray]:
-        chunk = self._master.detectorsManager.execOnCurrent(
-            lambda c: c.readChunk(self._CHUNK_CONSUMER)
+        chunk = self._master.detectorsManager.execOn(
+            self._reconstructionDetectorName(),
+            lambda c: c.readChunk(self._CHUNK_CONSUMER),
         )
         # The ROI is drawn on the DISPLAYED image (rotated/flipped per the
         # detector's display transform), but readChunk returns raw frames.
@@ -164,7 +190,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
     def _currentDisplayTransform(self) -> DisplayTransform:
         try:
-            name = self._master.detectorsManager.getCurrentDetectorName()
+            # Same pinned detector as the frames themselves, so the transform
+            # can never be read off a different camera than the one supplying
+            # the chunk.
+            name = self._reconstructionDetectorName()
             info = self._setupInfo.detectors.get(name)
         except Exception:
             return DisplayTransform()
@@ -186,6 +215,52 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._master.detectorsManager.execOnAll(
             lambda c: c.releaseChunkConsumer(self._CHUNK_CONSUMER)
         )
+
+    def onScanStarting(self) -> None:
+        """Pre-arm the reconstruction camera, before the scan is built.
+
+        Declared here rather than at sigScanStarted so the detector is armed
+        before any TTL output: a trigger-driven camera armed at scan start has
+        already missed the first pulses, which shows up as a reconstruction
+        short by a few frames or shifted by one.
+
+        The detector name is captured ONCE per scan and held for the whole
+        run. Reading ``execOnCurrent`` per frame instead would silently switch
+        reconstruction sources mid-scan if the user changed the current
+        detector in the view.
+        """
+        if not self._widget.runButton.isChecked():
+            return
+        self._releaseScanDetectorLease()
+        try:
+            detectorName = self._master.detectorsManager.getCurrentDetectorName()
+        except Exception:
+            return
+        self._scanDetectorName = detectorName
+        try:
+            self._scanDetectorHandle = self._master.detectorsManager.acquire(
+                [detectorName], LeasePurpose.WORKFLOW
+            )
+        except Exception as e:
+            self._logger.error(
+                f'BeadRec could not arm detector "{detectorName}" for the '
+                f'scan: {e}', exc_info=True
+            )
+            self._scanDetectorName = None
+
+    def _releaseScanDetectorLease(self) -> None:
+        handle = getattr(self, '_scanDetectorHandle', None)
+        if handle is None:
+            return
+        try:
+            self._master.detectorsManager.release(handle)
+        except Exception as e:
+            self._logger.error(
+                f'BeadRec failed to release its scan detector lease: {e}',
+                exc_info=True,
+            )
+        finally:
+            self._scanDetectorHandle = None
 
     def _scanFramesReady(self) -> bool:
         """Whether the worker may consume detector frames as scan pixels.
@@ -662,6 +737,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # the scan ends must not bleed into the finished reconstruction.
         self._scanArmed = False
         self._releaseDetectorChunkConsumer()
+        self._releaseScanDetectorLease()
         received = self._receivedScanFrames()
         if self.running and received == 0:
             msg = ('BeadRec: 0 detector frames received during the scan — '

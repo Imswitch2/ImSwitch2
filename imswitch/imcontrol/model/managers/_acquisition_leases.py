@@ -34,6 +34,16 @@ class LeasePurpose(Enum):
     GENERIC = 'generic'
 
 
+#: Purposes whose detectors must be POLLED into sigImageUpdated. Arming a
+#: detector is not the same as delivering its frames: an event-detection loop
+#: with live view off holds an EVENT_STREAM lease so the poll thread keeps
+#: running for it, which is what stops etSTED/EtMonalisa stalling on an armed
+#: but never-read detectorFast. EVENT_DIRECT consumers read frames themselves
+#: and are deliberately absent.
+FRAME_STREAM_PURPOSES = frozenset({LeasePurpose.LIVE_VIEW,
+                                   LeasePurpose.EVENT_STREAM})
+
+
 class DetectorFaultedError(RuntimeError):
     """ Raised when acquiring a detector that is quarantined because a previous
     hardware stop failed. Recovery is an explicit retryStop(), never a natural
@@ -58,11 +68,11 @@ class LeaseHandle:
 class LeaseTransition:
     """ What one acquire/release changed, for the DetectorsManager to react to
     outside the lease lock (global signals) or in the under-lock hooks
-    (live-view poll thread lifecycle). """
+    (frame-stream poll thread lifecycle). """
 
     __slots__ = ('started', 'stopped', 'newlyFaulted',
                  'nonFocusFirst', 'nonFocusLast',
-                 'liveViewFirst', 'liveViewLast')
+                 'frameStreamFirst', 'frameStreamLast')
 
     def __init__(self):
         self.started: List[str] = []       # detectors armed 0 -> 1
@@ -70,8 +80,8 @@ class LeaseTransition:
         self.newlyFaulted: List[str] = []  # detectors whose stop failed
         self.nonFocusFirst = False         # first active non-FOCUS lease
         self.nonFocusLast = False          # last active non-FOCUS lease gone
-        self.liveViewFirst = False         # first active LIVE_VIEW lease
-        self.liveViewLast = False          # last active LIVE_VIEW lease gone
+        self.frameStreamFirst = False      # first frame-stream lease (start poll)
+        self.frameStreamLast = False       # last frame-stream lease gone (stop poll)
 
 
 class AcquisitionLeaseTable:
@@ -165,9 +175,8 @@ class AcquisitionLeaseTable:
             if purpose is not LeasePurpose.FOCUS:
                 transition.nonFocusFirst = self._purposeCount(
                     LeasePurpose.FOCUS, invert=True) == 1
-            if purpose is LeasePurpose.LIVE_VIEW:
-                transition.liveViewFirst = self._purposeCount(
-                    LeasePurpose.LIVE_VIEW) == 1
+            if purpose in FRAME_STREAM_PURPOSES:
+                transition.frameStreamFirst = self._frameStreamLeaseCount() == 1
         return handle, transition
 
     def release(self, handle: LeaseHandle) -> LeaseTransition:
@@ -184,9 +193,8 @@ class AcquisitionLeaseTable:
             if handle.purpose is not LeasePurpose.FOCUS:
                 transition.nonFocusLast = self._purposeCount(
                     LeasePurpose.FOCUS, invert=True) == 0
-            if handle.purpose is LeasePurpose.LIVE_VIEW:
-                transition.liveViewLast = self._purposeCount(
-                    LeasePurpose.LIVE_VIEW) == 0
+            if handle.purpose in FRAME_STREAM_PURPOSES:
+                transition.frameStreamLast = self._frameStreamLeaseCount() == 0
             if self._onBeforeStops is not None:
                 self._onBeforeStops(transition)
 
@@ -278,6 +286,10 @@ class AcquisitionLeaseTable:
     def _markFaulted(self, name: str) -> None:
         self._faulted.add(name)
         self._notifyState(name)
+
+    def _frameStreamLeaseCount(self) -> int:
+        return sum(1 for handle in self._handles
+                   if handle.purpose in FRAME_STREAM_PURPOSES)
 
     def _purposeCount(self, purpose: LeasePurpose, *, invert: bool = False) -> int:
         return sum(1 for handle in self._handles

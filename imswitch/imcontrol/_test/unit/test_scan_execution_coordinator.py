@@ -12,7 +12,8 @@ import pytest
 
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.managers._scan_execution import (
-    FINISH_ABORT, FINISH_GRACEFUL, PARTICIPANTS_KEY, ScanExecutionCoordinator,
+    EXCLUDED_KEY, FINISH_ABORT, FINISH_GRACEFUL, PARTICIPANTS_KEY,
+    ScanExecutionCoordinator,
 )
 from imswitch.imcontrol.model.managers.NidaqManager import ScanBusyError
 
@@ -122,6 +123,28 @@ def test_arm_injects_participants_into_scan_info_before_running():
     assert scanInfoDict[PARTICIPANTS_KEY] == ['APD', 'TimeTagger']
     _, seenScanInfo = nidaq.calls[0]
     assert seenScanInfo[PARTICIPANTS_KEY] == ['APD', 'TimeTagger']
+
+
+def test_arm_publishes_excluded_scan_driven_detectors_for_the_simulator():
+    """The simulator is built from setupInfo alone and cannot tell a
+    scan-driven detector from a camera, so the exclusion list is published
+    explicitly rather than derived."""
+    coordinator, _, _ = _setup(faulted=['APD'])
+    scanInfoDict = {}
+
+    coordinator.arm({}, scanInfoDict)
+
+    assert scanInfoDict[PARTICIPANTS_KEY] == ['TimeTagger']
+    assert scanInfoDict[EXCLUDED_KEY] == ['APD']
+
+
+def test_nothing_is_excluded_when_every_scan_driven_detector_participates():
+    coordinator, _, _ = _setup()
+    scanInfoDict = {}
+
+    coordinator.arm({}, scanInfoDict)
+
+    assert scanInfoDict[EXCLUDED_KEY] == []
 
 
 def test_arm_with_no_participants_takes_no_lease():

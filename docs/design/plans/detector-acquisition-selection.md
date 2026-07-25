@@ -330,6 +330,50 @@ Lifecycle:
    the LV start path; **narrow RecordingManager leases to the actual
    recorded/snapped detectors (all modes)**; Tiling/BeadRec/EtSnouty scoped
    leases; simulation snapshot = the exact participant snapshot.
+
+   **Status: DONE except the simulator's camera half (see R7-s8).**
+   `FRAME_STREAM_PURPOSES` drives both the poll thread's lifecycle
+   (`frameStreamFirst/Last`, replacing `liveViewFirst/Last`) and exactly which
+   detectors it reads, re-read every tick so a mid-flight lease needs no thread
+   restart. `ViewController` leases only free-running detectors — scan-driven
+   ones are armed by the SCAN lease now, which removes the old hidden
+   dependency where a scan needed live view on to produce data at all.
+   `setUpdatePeriod` no longer resurrects an idle poll thread; the 300 ms
+   settle moved into `LVWorker.run` (worker thread) so arming no longer freezes
+   the UI. RecordingManager leases exactly what it records/snaps.
+   etSTED/EtMonalisa hold EVENT_STREAM on `detectorFast` for the detection
+   loop's lifetime (fixing the live-view-off stall); EtSnouty holds
+   EVENT_DIRECT for its run plus a temporary SNAP lease around its
+   mask/preview reads; BeadRec pre-arms on `sigScanStarting` and pins its
+   reconstruction detector for the whole scan. 22 tests.
+
+### R7-s8 — acceptance #8 is under-specified (found during Phase 4)
+"Simulation receives exactly the hardware participant snapshot" cannot be taken
+literally: the participant snapshot is **scan-driven only**, while the
+simulator generates **camera** frame triggers. Wiring the snapshot in directly
+would stop simulated scans producing any camera frames. For a camera the real
+question is *"would this camera be armed for this scan"* — lease state, not
+snapshot membership — and answering it needs a runtime lease-state provider
+inside `ScanSimulationCoordinator`, which `NidaqManager` constructs before
+`DetectorsManager` exists (the long-standing construction-order issue).
+
+Implemented now (safe half): the coordinator publishes `EXCLUDED_KEY`
+(`excludedDetectors`) beside the participants, and the simulator skips those —
+simulating frames for a deliberately excluded detector would feed the recorder
+data real hardware would never produce. Empty until Phase 5, so inert today.
+The list is published explicitly rather than derived because the simulator is
+built from `setupInfo` alone and cannot tell a scan-driven detector from a
+camera.
+
+**Open decision for the camera half:** (a) wire a lease-state provider
+(correct, needs the construction-order fix), or (b) keep cameras always
+simulated and narrow acceptance #8 to scan-driven detectors (simpler; an
+unarmed camera in simulation just produces frames nobody reads). Recommend (b)
+unless simulation/hardware divergence has actually bitten.
+
+**Also still open from Phase 2:** `TimeResolvedScanWorkflow` is unmigrated. Like
+Tiling it currently arms nothing, so its WORKFLOW lease is another intentional
+behaviour change rather than bookkeeping.
 5. **Enable selection (perf win), feature-gated.** Selection default =
    `forAcquisition`; snapshot from selection ∪ explicit-lease overrides (incl.
    GENERIC); point-detector gate on `scanInfoDict['participants']`; TimeTagger

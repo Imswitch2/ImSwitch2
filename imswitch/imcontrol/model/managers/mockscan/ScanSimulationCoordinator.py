@@ -28,9 +28,18 @@ class SimulatedScanPlan:
         sampleRate = float(getattr(setupInfo.scan, 'sampleRate', 0) or 0)
         duration = samplesTotal / sampleRate if sampleRate > 0 else 0.0
 
+        # Detectors the scan coordinator deliberately left out of this scan.
+        # Simulating frames for them would hand the recorder data that real
+        # hardware would never produce, which is exactly the divergence the
+        # mock setup exists to avoid. Absent key = legacy scan = nothing
+        # excluded.
+        excluded = set((scanInfoDict or {}).get('excludedDetectors', []) or [])
+
         frameCounts = {}
         for detectorName, detectorInfo in (setupInfo.detectors or {}).items():
             if not getattr(detectorInfo, 'forAcquisition', True):
+                continue
+            if detectorName in excluded:
                 continue
 
             nFrames = cls._countRisingEdges(ttlDict.get(detectorName))
