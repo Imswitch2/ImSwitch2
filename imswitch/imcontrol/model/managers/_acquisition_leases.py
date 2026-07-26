@@ -72,7 +72,7 @@ class LeaseTransition:
 
     __slots__ = ('started', 'stopped', 'newlyFaulted',
                  'nonFocusFirst', 'nonFocusLast',
-                 'frameStreamFirst', 'frameStreamLast')
+                 'frameStreamFirst')
 
     def __init__(self):
         self.started: List[str] = []       # detectors armed 0 -> 1
@@ -80,8 +80,12 @@ class LeaseTransition:
         self.newlyFaulted: List[str] = []  # detectors whose stop failed
         self.nonFocusFirst = False         # first active non-FOCUS lease
         self.nonFocusLast = False          # last active non-FOCUS lease gone
-        self.frameStreamFirst = False      # first frame-stream lease (start poll)
-        self.frameStreamLast = False       # last frame-stream lease gone (stop poll)
+        # First frame-stream lease: the caller starts the poll thread, OUTSIDE
+        # the lock. There is deliberately no matching "last" flag — shutdown
+        # must join the poll thread BEFORE taking the lock (see
+        # frameStreamHandles), and a transition field would invite doing it
+        # from inside release() again, which is the deadlock this had.
+        self.frameStreamFirst = False
 
 
 class AcquisitionLeaseTable:
@@ -191,8 +195,6 @@ class AcquisitionLeaseTable:
             if handle.purpose is not LeasePurpose.FOCUS:
                 transition.nonFocusLast = self._purposeCount(
                     LeasePurpose.FOCUS, invert=True) == 0
-            if handle.purpose in FRAME_STREAM_PURPOSES:
-                transition.frameStreamLast = self._frameStreamLeaseCount() == 0
 
             for name in handle.detectorNames:
                 newCount = self._refcounts.get(name, 0) - 1

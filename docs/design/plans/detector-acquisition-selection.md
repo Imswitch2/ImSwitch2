@@ -419,6 +419,47 @@ behaviour change rather than bookkeeping.
 | R8-3 | **Wrong lease purpose for signal-driven EtSnouty.** It always took EVENT_DIRECT, but its `ClockWidefield=False` branch consumes `sigUpdateImage` and so needs EVENT_STREAM; with live view off that mode would arm the detector and stall. A second bug underneath: the lease was acquired *before* `ClockWidefield` was assigned. | Purpose follows the clock mode; acquisition moved after the branch; method renamed `_acquireDetectorFastLease`; source-ordering guard test so it cannot drift back. |
 | R8-4 | **Paused EVENT_STREAM lease leaked.** `pauseFastModality` clears `imageSignalConnected` while deliberately keeping the lease, so a release guarded on that flag skipped a paused run and leaked the handle for the session. | Release is unconditional in `_disconnectRunSignals` (the terminal path). Verified the resume path no-ops when the handle is already held, so pause/resume keeps exactly one lease. |
 
+## Pre-hardware audit (software sanity pass)
+
+Checked beyond the unit suite, before any rig time:
+
+- **Contract conformance across every real manager.** Every `DetectorManager`
+  subclass is enumerated and its `finishScan` signature verified — no manager
+  is left on the old one-argument form, and only the coordinator calls it.
+- **End-to-end with real managers** (`mixed_hamamatsu_apd_mock_scan_setup`, real
+  `NidaqManager` + `DetectorsManager` + `APDManager`): `isScanDriven` correct;
+  participants = `['APD']` only; the SCAN lease arms APD and *not* the camera;
+  `APD.acquisition` is True **before** `runScan` (so the `sigScanBuilt` →
+  `initiateScan` gate sees it); mirror agrees; participants/excluded reach
+  `scanInfoDict`; frame-stream membership empty during a scan; barrier
+  resolves, lease released, repeat gets a fresh token; live-view membership is
+  the camera alone.
+- **Concurrency under real threads** (`test_acquisition_concurrency.py`, all
+  deadline-guarded so a deadlock fails rather than hangs): poll loop hammering
+  membership against 200 acquire/release cycles; four threads churning one
+  detector; off-thread acknowledgements; 50 iterations of ack-racing-timeout.
+- **Non-NI-DAQ backends.** TriggerScope controllers do **not** subclass
+  `SuperScanController` (they use `ScanLifecycleMixin`), so they never arm
+  through the coordinator. Verified no TriggerScope setup contains a
+  scan-driven detector — the only two setups with APD/PMT/TimeTagger
+  (`mixed_hamamatsu_apd_mock_scan_setup`, `example_sted`) are both NI-DAQ. The
+  `ViewController` narrowing therefore strands nothing.
+- **Import smoke** across all touched managers and controllers.
+- **Dead state removed.** `LeaseTransition.frameStreamLast` was computed and
+  read by nothing after the deadlock fix; it is deleted rather than left as an
+  invitation to wire poll-thread shutdown back into `release()`.
+
+### Known landmine for Phase 5 (not a defect today)
+`APDManager` and `PMTManager` **never reset `self.acquisition = False`** in
+`stopAcquisition`, yet `initiateScan` gates on that flag (`SwabianTimeTagger`
+does reset it). Today participants = every scan-driven detector, so nothing
+observable follows. But the flag and `_acquisitionLeased` drift apart the
+moment a scan releases the lease, so **Phase 5's point-detector gate must key
+on `scanInfoDict[PARTICIPANTS_KEY]`, not on `self.acquisition`**, and resetting
+the flag in `stopAcquisition` should be a deliberate, separately-validated
+change — it converts a fail-open path into a fail-closed one, which is not
+something to hand to a rig unannounced.
+
 ## Review-response matrix
 
 Rounds 1–5 resolved as previously recorded; rounds 6–7 below.

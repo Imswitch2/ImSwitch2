@@ -326,7 +326,10 @@ def test_permanent_focus_lease_does_not_keep_signals_asserted():
     assert transition.nonFocusLast  # stopped, despite the FOCUS lease
 
 
-def test_frame_stream_first_and_last_track_the_poll_thread():
+def test_frame_stream_first_marks_poll_thread_startup():
+    """Only a 'first' flag exists: shutdown is decided by the caller from
+    frameStreamHandles() before it takes the lock, never from a transition
+    handed back by release()."""
     hw = _Hardware()
     table, _ = makeTable(hw)
 
@@ -335,8 +338,10 @@ def test_frame_stream_first_and_last_track_the_poll_thread():
     second, t2 = table.acquire(['B'], LeasePurpose.LIVE_VIEW)
     assert not t2.frameStreamFirst
 
-    assert not table.release(second).frameStreamLast
-    assert table.release(first).frameStreamLast
+    table.release(second)
+    assert len(table.frameStreamHandles()) == 1   # still streaming
+    table.release(first)
+    assert table.frameStreamHandles() == []       # caller may stop the thread
 
 
 def test_event_stream_lease_keeps_the_poll_thread_running():
@@ -351,7 +356,8 @@ def test_event_stream_lease_keeps_the_poll_thread_running():
     assert not eventTransition.frameStreamFirst  # already streaming
 
     # Live view off, event loop still running: the thread must NOT stop.
-    assert not table.release(live).frameStreamLast
+    table.release(live)
+    assert len(table.frameStreamHandles()) == 1
 
 
 def test_event_stream_alone_starts_the_poll_thread():
@@ -361,7 +367,8 @@ def test_event_stream_alone_starts_the_poll_thread():
     handle, transition = table.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
 
     assert transition.frameStreamFirst
-    assert table.release(handle).frameStreamLast
+    table.release(handle)
+    assert table.frameStreamHandles() == []
 
 
 def test_non_streaming_purposes_do_not_drive_the_poll_thread():
@@ -374,7 +381,8 @@ def test_non_streaming_purposes_do_not_drive_the_poll_thread():
                     LeasePurpose.RECORDING, LeasePurpose.FOCUS):
         handle, transition = table.acquire(['D'], purpose)
         assert not transition.frameStreamFirst, purpose
-        assert not table.release(handle).frameStreamLast, purpose
+        assert table.frameStreamHandles() == [], purpose
+        table.release(handle)
 
 
 def test_frame_stream_membership_is_live_view_union_event_stream():
