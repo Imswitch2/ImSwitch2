@@ -418,7 +418,7 @@ class DetectorManager(SignalInterface):
         detector. """
         pass
 
-    def finishScan(self, mode: str) -> None:
+    def finishScan(self, mode: str, acknowledge) -> None:
         """ Graceful-finish contract hook, called by the scan-execution
         coordinator for every scan participant on every scan-iteration
         termination, regardless of lease refcounts (a detector that keeps
@@ -428,8 +428,15 @@ class DetectorManager(SignalInterface):
         signals done and produces its final read/fit/emit) or ``'abort'``
         (abrupt termination). Distinct from stopAcquisition(), which is
         hardware teardown and only happens when the last lease is released.
-        Default: no-op; scan-driven managers override. """
-        pass
+
+        ``acknowledge`` is a zero-argument callable that MUST be invoked once
+        this detector's end-of-scan work is complete — possibly later, from
+        another thread. The coordinator holds the scan lease open until every
+        participant acknowledges, so hardware teardown and the next repeat
+        iteration cannot race a final read that is still in flight. A manager
+        with nothing asynchronous to do simply acknowledges immediately, which
+        is what this default does. """
+        acknowledge()
 
     def finalize(self) -> None:
         """ Close/cleanup detector. """

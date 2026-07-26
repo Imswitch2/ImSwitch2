@@ -275,6 +275,9 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self._master.detectorsManager,
             self._master.nidaqManager,
             logger=self._logger,
+            scheduleTimeout=lambda delayS, callback: QtCore.QTimer.singleShot(
+                int(delayS * 1000), callback
+            ),
         )
 
         # Connect NidaqManager signals
@@ -284,21 +287,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._master.nidaqManager.sigScanStarted.connect(
             lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
         )
-        # Resolve the iteration BEFORE the controller's own handlers run — these
-        # are connected first so the lease is released and the participants have
-        # had their final read by the time scanDone re-arms a repeat frame.
         # NI-DAQ is authoritative: abortScan() does not stop a running scan, so
-        # ownership is released here (sigScanDone) rather than at the user's
-        # abort click. Controllers that did not arm hold no token, so their
-        # resolveActive is a harmless no-op.
-        self._master.nidaqManager.sigScanDone.connect(
-            lambda: self._scanCoordinator.resolveActive(FINISH_GRACEFUL)
-        )
+        # ownership is released on sigScanDone rather than at the user's abort
+        # click.
+        self._master.nidaqManager.sigScanDone.connect(self.__onNidaqScanDone)
         self._master.nidaqManager.sigScanBuildFailed.connect(
-            lambda: self._scanCoordinator.resolveActive(FINISH_ABORT)
+            self.__onNidaqScanBuildFailed
         )
-        self._master.nidaqManager.sigScanDone.connect(self.scanDone)
-        self._master.nidaqManager.sigScanBuildFailed.connect(self.scanFailed)
 
         # Connect CommunicationChannel signals
         self._commChannel.sigRunScan.connect(self.runScanExternal)
@@ -472,6 +467,39 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self.doingNonFinalPartOfSequence = False
         self._widget.setScanButtonChecked(False)
         self.emitScanSignal(self._commChannel.sigScanEnded)
+
+    def __onNidaqScanDone(self):
+        """NI-DAQ finished a scan iteration.
+
+        For the controller that armed it, ``scanDone`` — which ends the scan
+        for the UI and arms the next repeat frame — is held back until every
+        participant has acknowledged its end-of-scan work. Releasing the lease
+        and re-arming while a detector is still reading out its final frame
+        tears the worker down mid-read and loses that frame.
+
+        Other scan controllers hold no token; they run ``scanDone`` directly,
+        exactly as before.
+        """
+        if self._scanCoordinator.activeToken is None:
+            self.scanDone()
+            return
+        self._scanCoordinator.resolveActive(
+            FINISH_GRACEFUL, onComplete=self.__afterScanFinishBarrier
+        )
+
+    def __onNidaqScanBuildFailed(self):
+        if self._scanCoordinator.activeToken is None:
+            self.scanFailed()
+            return
+        self._scanCoordinator.resolveActive(
+            FINISH_ABORT,
+            onComplete=lambda: QtCore.QTimer.singleShot(0, self.scanFailed),
+        )
+
+    def __afterScanFinishBarrier(self):
+        # The last acknowledgement may arrive on a detector's worker thread;
+        # hop back to the event loop before touching the widget or re-arming.
+        QtCore.QTimer.singleShot(0, self.scanDone)
 
     def _armRepeatScan(self):
         """Schedule the next repeat-scan frame on the next event-loop turn.

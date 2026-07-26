@@ -66,8 +66,8 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         super().__init__(*args, **kwargs)
         self.__logger = initLogger(self, instanceName='EtSnoutyController')
 
-        # EVENT_DIRECT lease held for the duration of a run; see
-        # _acquireDetectorFastDirect.
+        # Detector lease held for the duration of a run; its purpose depends
+        # on the clock mode — see _acquireDetectorFastLease.
         self._detectorFastHandle = None
 
         self._widget.setFastDetectorList(
@@ -220,13 +220,15 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             self.detectorFast_controller = (
                 self._master.detectorsManager.getDevice(self.detectorFast)
             )
-            self._acquireDetectorFastDirect()
 
             if self._widget.setUpdatePeriodCheck.isChecked():
                 self.ClockWidefield = False
             else:
                 self.ClockWidefield = True
                 self.setUpdatePeriod()
+
+            # After ClockWidefield is decided: the lease purpose depends on it.
+            self._acquireDetectorFastLease()
 
             if self.__runMode in (RunMode.Validate, RunMode.Visualize):
                 self.launchHelpWidget()
@@ -453,27 +455,36 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         # Every start and every exit path (normal stop, early return, smart-mode
         # failure) funnels through here, so this is where the run's detector
         # lease is guaranteed to be given back.
-        self._releaseDetectorFastDirect()
+        self._releaseDetectorFastLease()
 
     # ------------------------------------------------------------------
     # Detector ownership
     # ------------------------------------------------------------------
 
-    def _acquireDetectorFastDirect(self):
-        """EVENT_DIRECT lease for the run.
+    def _acquireDetectorFastLease(self):
+        """Lease the fast detector for the run, with the purpose its clock
+        mode actually needs.
 
-        EtSnouty reads frames itself via ``wait_and_get_NewFrame`` rather than
-        off ``sigUpdateImage``, so it needs the detector ARMED but must stay
-        out of the frame-stream poll set — polling it here would steal the
-        frames the run is waiting on.
+        EtSnouty has two modes and they consume frames differently:
+
+        - ``ClockWidefield`` (its own clock): it drives reads itself via
+          ``wait_and_get_NewFrame``, so it needs the detector ARMED but
+          deliberately OUT of the frame-stream poll set — polling would steal
+          the frames it is waiting on. That is EVENT_DIRECT.
+        - otherwise it subscribes to ``sigUpdateImage``, which only fires for
+          detectors in the frame-stream membership. That is EVENT_STREAM;
+          leasing EVENT_DIRECT here would arm the detector but never start the
+          poller, and the mode would stall whenever live view is off.
         """
         if self._detectorFastHandle is not None or not self.detectorFast:
             return
+        purpose = (LeasePurpose.EVENT_DIRECT if self.ClockWidefield
+                   else LeasePurpose.EVENT_STREAM)
         self._detectorFastHandle = self._master.detectorsManager.acquire(
-            [self.detectorFast], LeasePurpose.EVENT_DIRECT
+            [self.detectorFast], purpose
         )
 
-    def _releaseDetectorFastDirect(self):
+    def _releaseDetectorFastLease(self):
         handle = getattr(self, '_detectorFastHandle', None)
         if handle is None:
             return

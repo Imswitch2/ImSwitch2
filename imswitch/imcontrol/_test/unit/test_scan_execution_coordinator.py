@@ -23,9 +23,17 @@ class _Detector:
         self.name = name
         self.isScanDriven = isScanDriven
         self.finishCalls = []
+        # Real scan-driven managers finish asynchronously; flip this to model
+        # a detector whose final read is still in flight.
+        self.autoAcknowledge = True
+        self.pendingAck = None
 
-    def finishScan(self, mode):
+    def finishScan(self, mode, acknowledge):
         self.finishCalls.append(mode)
+        if self.autoAcknowledge:
+            acknowledge()
+        else:
+            self.pendingAck = acknowledge
 
 
 class _DetectorsManager:
@@ -333,6 +341,136 @@ def test_every_nidaq_scan_entry_point_is_routed_through_the_coordinator():
         'snapshot, no SCAN lease and no exactly-once completion: '
         + ', '.join(offenders)
     )
+
+
+# --------------------------------------------------------------------------- #
+# Asynchronous finish barrier                                                  #
+# --------------------------------------------------------------------------- #
+
+def test_lease_is_held_until_every_participant_acknowledges():
+    """The barrier: releasing while a detector is still reading out its final
+    frame lets hardware teardown destroy the worker mid-read."""
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+
+    coordinator.resolve(token)
+
+    assert manager.released == []          # TimeTagger has not finished
+    assert token.finishing is True
+    assert token.resolved is False
+    assert coordinator.activeToken is token
+
+    manager['TimeTagger'].pendingAck()
+
+    assert manager.released == ['lease-1']
+    assert token.resolved is True
+    assert coordinator.activeToken is None
+
+
+def test_completion_callback_fires_only_after_the_barrier_clears():
+    """Repeat re-arm hangs off this, so the next frame cannot start while the
+    previous frame's data is still being read out."""
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+    completed = []
+
+    coordinator.resolve(token, onComplete=lambda: completed.append(True))
+    assert completed == []
+
+    manager['TimeTagger'].pendingAck()
+    assert completed == [True]
+
+
+def test_resolve_does_not_block_waiting_for_acknowledgements():
+    coordinator, manager, _ = _setup()
+    manager['APD'].autoAcknowledge = False
+    manager['TimeTagger'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+
+    assert coordinator.resolve(token) is True  # returns immediately
+
+
+def test_a_second_resolve_while_finishing_is_rejected():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+
+    assert coordinator.resolve(token) is True
+    assert coordinator.resolve(token, FINISH_ABORT) is False
+    assert manager['TimeTagger'].finishCalls == [FINISH_GRACEFUL]
+
+
+def test_acknowledging_twice_does_not_double_release():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+    coordinator.resolve(token)
+
+    ack = manager['TimeTagger'].pendingAck
+    ack()
+    ack()
+
+    assert manager.released == ['lease-1']
+
+
+def test_a_detector_that_never_acknowledges_is_timed_out():
+    """A manager that never acks (mock mode, dead worker) must not wedge
+    scanning forever — losing a final frame beats a stuck GUI."""
+    scheduled = []
+    detectors = [_Detector('APD', isScanDriven=True)]
+    manager = _DetectorsManager(detectors)
+    coordinator = ScanExecutionCoordinator(
+        manager, _Nidaq(),
+        scheduleTimeout=lambda delayS, cb: scheduled.append((delayS, cb)),
+    )
+    manager['APD'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+    completed = []
+
+    coordinator.resolve(token, onComplete=lambda: completed.append(True))
+    assert manager.released == []
+    assert len(scheduled) == 1
+
+    scheduled[0][1]()  # deadline fires
+
+    assert token.timedOut is True
+    assert manager.released == ['lease-1']
+    assert completed == [True]
+
+
+def test_a_late_acknowledgement_after_timeout_is_harmless():
+    scheduled = []
+    detectors = [_Detector('APD', isScanDriven=True)]
+    manager = _DetectorsManager(detectors)
+    coordinator = ScanExecutionCoordinator(
+        manager, _Nidaq(),
+        scheduleTimeout=lambda delayS, cb: scheduled.append((delayS, cb)),
+    )
+    manager['APD'].autoAcknowledge = False
+    token = coordinator.arm({}, {})
+    coordinator.resolve(token)
+    scheduled[0][1]()
+
+    manager['APD'].pendingAck()  # detector finally finishes
+
+    assert manager.released == ['lease-1']  # not released twice
+
+
+def test_a_manager_that_cannot_be_asked_does_not_hold_the_barrier():
+    coordinator, manager, _ = _setup()
+
+    def explode(mode, acknowledge):
+        raise RuntimeError('finishScan blew up')
+
+    manager['APD'].finishScan = explode
+    token = coordinator.arm({}, {})
+
+    coordinator.resolve(token)
+
+    assert manager.released == ['lease-1']
+    assert token.resolved is True
 
 
 def test_repeat_iterations_get_independent_tokens_and_leases():

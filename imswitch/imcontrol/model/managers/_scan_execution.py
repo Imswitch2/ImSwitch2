@@ -21,7 +21,15 @@ busy refusal, build failure, arm exception, normal completion and abort.
 Design reference: docs/design/plans/detector-acquisition-selection.md.
 """
 
+import threading
+
 from ._acquisition_leases import LeasePurpose
+
+#: How long to wait for a participant to acknowledge its end-of-scan work
+#: before giving up on it and releasing the lease anyway. A manager that never
+#: acknowledges (mock mode, a worker that died) must not wedge scanning
+#: forever; losing one final frame is strictly better than a stuck GUI.
+DEFAULT_FINISH_TIMEOUT_S = 5.0
 
 #: ``scanInfoDict`` key carrying the participant snapshot to the detectors.
 #: Absent means "legacy scan" — every scan-driven detector participates, which
@@ -44,19 +52,33 @@ class ScanIterationToken:
     """Idempotent per-iteration lifecycle handle.
 
     Held by whoever armed the iteration; ``resolve`` is safe to call from any
-    number of termination paths and does its work at most once.
+    number of termination paths and starts the finish sequence at most once.
+
+    An iteration passes through three states: in flight -> *finishing* (every
+    participant asked to finish, waiting on their acknowledgements) ->
+    *resolved* (lease released, next iteration may arm). The middle state is
+    the barrier: without it the SCAN lease is released while a detector's
+    final read is still running, and hardware teardown or the next repeat
+    frame destroys the worker mid-read.
     """
 
-    __slots__ = ('participants', 'leaseHandle', 'resolved')
+    __slots__ = ('participants', 'leaseHandle', 'resolved', 'finishing',
+                 'pending', 'onComplete', 'timedOut', '_lock')
 
     def __init__(self, participants):
         self.participants = tuple(participants)
         self.leaseHandle = None
         self.resolved = False
+        self.finishing = False
+        self.pending = set()
+        self.onComplete = None
+        self.timedOut = False
+        self._lock = threading.Lock()
 
     def __repr__(self):
         return (f'ScanIterationToken(participants={list(self.participants)},'
-                f' resolved={self.resolved})')
+                f' finishing={self.finishing}, resolved={self.resolved},'
+                f' pending={sorted(self.pending)})')
 
 
 class ScanExecutionCoordinator:
@@ -67,10 +89,16 @@ class ScanExecutionCoordinator:
     a wait.
     """
 
-    def __init__(self, detectorsManager, nidaqManager, logger=None):
+    def __init__(self, detectorsManager, nidaqManager, logger=None,
+                 scheduleTimeout=None):
         self._detectorsManager = detectorsManager
         self._nidaqManager = nidaqManager
         self._logger = logger
+        # ``scheduleTimeout(delaySeconds, callback)`` arms a non-blocking
+        # deadline for the finish barrier. Injected (QTimer.singleShot in the
+        # GUI) so this class stays framework-free; without it the barrier has
+        # no deadline and tests drive it explicitly.
+        self._scheduleTimeout = scheduleTimeout
         self._activeToken = None
 
     @property
@@ -132,48 +160,123 @@ class ScanExecutionCoordinator:
             self._activeToken = token
             self._nidaqManager.runScan(signalDict, scanInfoDict)
         except BaseException:
-            self.resolve(token, FINISH_ABORT)
+            # Nothing ran, so no participant has async work outstanding: no
+            # timeout needed, the barrier clears immediately.
+            self.resolve(token, FINISH_ABORT, timeoutS=None)
             raise
         return token
 
-    def resolve(self, token, mode=FINISH_GRACEFUL):
-        """Finish an iteration exactly once: ``finishScan`` every participant,
-        then release the SCAN lease.
+    def resolve(self, token, mode=FINISH_GRACEFUL, onComplete=None,
+                timeoutS=DEFAULT_FINISH_TIMEOUT_S):
+        """Begin finishing an iteration exactly once.
 
-        ``finishScan`` runs for every participant regardless of refcount — a
+        Asks every participant to finish and then WAITS for their
+        acknowledgements before releasing the SCAN lease. The wait is
+        asynchronous — this call never blocks — so the UI thread is free while
+        a detector completes its final read.
+
+        ``finishScan`` runs for every participant regardless of refcount: a
         TimeTagger that also holds a WORKFLOW lease goes 2->1, so no hardware
         stop happens, but it still needs its final read. General hardware stop
-        happens only at aggregate zero, via the lease release below.
+        happens only at aggregate zero, via the lease release once the barrier
+        clears.
 
-        Returns True if this call did the work, False if it was already done.
+        ``onComplete`` fires when the barrier clears, on whichever thread
+        acknowledged last. Repeat re-arm hangs off this, so the next frame
+        cannot start while the previous frame's data is still being read out.
+
+        Returns True if this call started the finish, False if it was already
+        started or done.
         """
-        if token is None or token.resolved:
+        if token is None:
             return False
-        token.resolved = True
+        with token._lock:
+            if token.finishing or token.resolved:
+                return False
+            token.finishing = True
+            token.onComplete = onComplete
+            token.pending = set(token.participants)
+            hasPending = bool(token.pending)
 
-        for name in token.participants:
+        if not hasPending:
+            self._completeToken(token)
+            return True
+
+        if timeoutS and self._scheduleTimeout is not None:
+            self._scheduleTimeout(
+                timeoutS, lambda: self._onFinishTimeout(token)
+            )
+
+        for name in tuple(token.participants):
             try:
                 self._detectorsManager.execOn(
-                    name, lambda detector: detector.finishScan(mode)
+                    name,
+                    lambda detector, n=name: detector.finishScan(
+                        mode, lambda n=n: self._acknowledge(token, n)
+                    ),
                 )
             except Exception:
+                # A manager that could not even be asked must not hold the
+                # barrier open.
                 self._log(f'finishScan({mode}) failed for detector "{name}"')
+                self._acknowledge(token, name)
+        return True
 
-        if token.leaseHandle is not None:
+    def _acknowledge(self, token, detectorName):
+        """Called by a participant when its end-of-scan work is done. Safe
+        from any thread and safe to call more than once."""
+        with token._lock:
+            if token.resolved:
+                return
+            token.pending.discard(detectorName)
+            if token.pending:
+                return
+        self._completeToken(token)
+
+    def _onFinishTimeout(self, token):
+        with token._lock:
+            if token.resolved or not token.pending:
+                return
+            stuck = sorted(token.pending)
+            token.timedOut = True
+            token.pending.clear()
+        self._log(
+            f'Timed out waiting for end-of-scan acknowledgement from '
+            f'{stuck}; releasing the scan lease anyway. Their final frame for '
+            f'this iteration may be missing.'
+        )
+        self._completeToken(token)
+
+    def _completeToken(self, token):
+        """Barrier cleared: release the lease and let the next iteration arm."""
+        with token._lock:
+            if token.resolved:
+                return
+            token.resolved = True
+            handle, token.leaseHandle = token.leaseHandle, None
+            onComplete = token.onComplete
+
+        if handle is not None:
             try:
-                self._detectorsManager.release(token.leaseHandle)
+                self._detectorsManager.release(handle)
             except Exception:
                 self._log('Failed to release the scan detector lease')
-            token.leaseHandle = None
 
         if self._activeToken is token:
             self._activeToken = None
-        return True
 
-    def resolveActive(self, mode=FINISH_GRACEFUL):
+        if onComplete is not None:
+            try:
+                onComplete()
+            except Exception:
+                self._log('Scan-completion callback failed')
+
+    def resolveActive(self, mode=FINISH_GRACEFUL, onComplete=None,
+                      timeoutS=DEFAULT_FINISH_TIMEOUT_S):
         """Resolve whichever iteration is in flight — the completion path for
         callers that only see a signal (``sigScanDone``) and not the token."""
-        return self.resolve(self._activeToken, mode)
+        return self.resolve(self._activeToken, mode, onComplete=onComplete,
+                            timeoutS=timeoutS)
 
     def _log(self, message):
         if self._logger is not None:

@@ -93,7 +93,6 @@ def manager(monkeypatch):
         startDetector=lambda name: detectors[name].startAcquisition(),
         stopDetector=lambda name: detectors[name].stopAcquisition(),
         onStateChanged=mgr._DetectorsManager__onLeaseStateChanged,
-        onBeforeStops=mgr._DetectorsManager__onLeaseHardwareStopping,
     )
     return mgr
 

@@ -393,27 +393,35 @@ def test_frame_stream_membership_is_live_view_union_event_stream():
     assert table.leasedDetectorNames() == {'CAM', 'FAST', 'APD', 'DIRECT'}
 
 
-def test_before_stops_hook_runs_before_any_hardware_stop():
+def test_frame_stream_handles_are_queryable_for_thread_lifecycle():
+    """Callers decide poll-thread lifecycle OUTSIDE the lock using this — the
+    poll loop takes the same lock, so joining the thread while holding it
+    deadlocks."""
     hw = _Hardware()
-    order = []
+    table, _ = makeTable(hw)
 
-    def onBeforeStops(transition):
-        order.append(('hook', transition.frameStreamLast))
+    table.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    table.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+    table.acquire(['APD'], LeasePurpose.SCAN)
 
-    def stop(name):
-        order.append(('stop', name))
-        hw.stop(name)
+    assert len(table.frameStreamHandles()) == 2
 
-    table = AcquisitionLeaseTable(
-        startDetector=hw.start,
-        stopDetector=stop,
-        onBeforeStops=onBeforeStops,
-    )
 
-    handle, _ = table.acquire(['A'], LeasePurpose.LIVE_VIEW)
-    table.release(handle)
+def test_table_exposes_no_hook_that_runs_under_the_lock_besides_mirroring():
+    """The 'before stops' hook is gone on purpose.
 
-    assert order == [('hook', True), ('stop', 'A')]
+    The DetectorsManager used it to join the frame-stream poll thread, which
+    deadlocked once the poll loop started reading membership from this table:
+    the joiner held the lock the poll was blocked on. Only onStateChanged —
+    which just writes two attributes — may run under the lock.
+    """
+    import inspect
+
+    params = inspect.signature(AcquisitionLeaseTable.__init__).parameters
+    assert 'onBeforeStops' not in params
+    assert set(params) - {'self'} == {
+        'startDetector', 'stopDetector', 'onStateChanged'
+    }
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

@@ -98,29 +98,27 @@ class AcquisitionLeaseTable:
     - Acquire is transactional: on failure every detector this call incremented
       is decremented again, and only detectors this call started are stopped.
 
-    Hooks (optional, invoked under the lock — they must not call back into
-    this table):
+    One hook, ``onStateChanged(name, leased, faulted)``, fires whenever a
+    detector's lease/fault state changes — the DetectorsManager mirrors these
+    onto the read-only ``_acquisitionLeased`` / ``_hardwareFaulted`` base
+    attributes. It runs UNDER the lock and must not call back into this table.
 
-    - ``onStateChanged(name, leased, faulted)`` fires whenever a detector's
-      lease/fault state changes — the DetectorsManager mirrors these onto the
-      read-only ``_acquisitionLeased`` / ``_hardwareFaulted`` base attributes.
-    - ``onBeforeStops(transition)`` fires during release before any hardware
-      stop, so the live-view poll thread can be taken down first and never
-      reads a detector that is being stopped.
-
-    Start-side reactions (poll thread bring-up, global signals) are driven by
-    the returned :class:`LeaseTransition` *after* the lock is dropped.
+    There is deliberately no general "before stops" hook. One existed, and the
+    DetectorsManager used it to join the frame-stream poll thread before
+    hardware teardown — which deadlocked once the poll loop began reading
+    membership from this table, because the joiner held the lock the poll was
+    blocked on. Thread lifecycle is now decided by the caller *outside* the
+    lock (see ``frameStreamHandles``), and reactions to a completed
+    acquire/release are driven by the returned :class:`LeaseTransition`.
     """
 
     def __init__(self,
                  startDetector: Callable[[str], None],
                  stopDetector: Callable[[str], None],
-                 onStateChanged: Optional[Callable[[str, bool, bool], None]] = None,
-                 onBeforeStops: Optional[Callable[[LeaseTransition], None]] = None):
+                 onStateChanged: Optional[Callable[[str, bool, bool], None]] = None):
         self._startDetector = startDetector
         self._stopDetector = stopDetector
         self._onStateChanged = onStateChanged
-        self._onBeforeStops = onBeforeStops
 
         self._lock = threading.Lock()
         self._refcounts: Dict[str, int] = {}
@@ -195,8 +193,6 @@ class AcquisitionLeaseTable:
                     LeasePurpose.FOCUS, invert=True) == 0
             if handle.purpose in FRAME_STREAM_PURPOSES:
                 transition.frameStreamLast = self._frameStreamLeaseCount() == 0
-            if self._onBeforeStops is not None:
-                self._onBeforeStops(transition)
 
             for name in handle.detectorNames:
                 newCount = self._refcounts.get(name, 0) - 1
@@ -246,6 +242,14 @@ class AcquisitionLeaseTable:
     def activeLeases(self) -> List[LeaseHandle]:
         with self._lock:
             return list(self._handles)
+
+    def frameStreamHandles(self) -> List[LeaseHandle]:
+        """ Active leases whose detectors must be polled. Callers use this to
+        decide poll-thread lifecycle *outside* the lock — the poll loop itself
+        takes this lock, so joining the thread while holding it deadlocks. """
+        with self._lock:
+            return [handle for handle in self._handles
+                    if handle.purpose in FRAME_STREAM_PURPOSES]
 
     def leasedDetectorNames(
             self, purposes: Optional[Iterable[LeasePurpose]] = None

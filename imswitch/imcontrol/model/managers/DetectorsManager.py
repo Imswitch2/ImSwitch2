@@ -30,7 +30,6 @@ class DetectorsManager(MultiManager, SignalInterface):
             startDetector=lambda name: self._subManagers[name].startAcquisition(),
             stopDetector=lambda name: self._subManagers[name].stopAcquisition(),
             onStateChanged=self.__onLeaseStateChanged,
-            onBeforeStops=self.__onLeaseHardwareStopping,
         )
 
         self._currentDetectorName = None
@@ -112,8 +111,31 @@ class DetectorsManager(MultiManager, SignalInterface):
         """ Releases an acquisition lease; any detector whose last lease this
         was is stopped. A detector whose stop fails is marked FAULTED and
         quarantined until retryStop() succeeds. """
+        # The poll thread must be joined BEFORE the lease lock is taken, never
+        # under it: the poll loop calls frameStreamMembership(), which needs
+        # that same lock, so joining while a poll is mid-tick deadlocks
+        # (the joiner holds the lock the pollee is blocked on).
+        self.__stopPollThreadIfLastStreamer(handle)
         transition = self._leaseTable.release(handle)
         self.__emitTransitionSignals(transition)
+
+    def __stopPollThreadIfLastStreamer(self, handle: LeaseHandle) -> None:
+        """ Take down the poll thread if this release retires the last
+        frame-stream lease, so the poller never reads a detector that is about
+        to be stopped.
+
+        Deliberately outside the lease lock. The check-then-act is not atomic,
+        but the race is benign and self-correcting: a frame-stream lease
+        acquired in the gap restarts the thread through the normal
+        frameStreamFirst path, and membership is re-read every tick, so at
+        worst a poll is skipped.
+        """
+        if handle.purpose not in FRAME_STREAM_PURPOSES:
+            return
+        if len(self._leaseTable.frameStreamHandles()) != 1:
+            return  # other streamers remain; keep polling
+        self._thread.quit()
+        self._thread.wait()
 
     def retryStop(self, detectorName: str) -> None:
         """ Explicit recovery for a FAULTED detector: retries the hardware
@@ -179,15 +201,6 @@ class DetectorsManager(MultiManager, SignalInterface):
         manager = self._subManagers[detectorName]
         manager._acquisitionLeased = leased
         manager._hardwareFaulted = faulted
-
-    def __onLeaseHardwareStopping(self, transition):
-        # Runs under the lease lock, before any hardware stop: take down the
-        # frame-stream poll thread first (legacy disable order), so the poller
-        # never reads a detector that is being stopped. Safe to join here —
-        # the poll loop never re-enters the lease table.
-        if transition.frameStreamLast:
-            self._thread.quit()
-            self._thread.wait()
 
     def __emitTransitionSignals(self, transition):
         # Emitted outside the lease lock: synchronously-connected slots may

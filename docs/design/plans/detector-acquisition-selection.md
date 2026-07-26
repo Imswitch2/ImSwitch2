@@ -312,14 +312,13 @@ Lifecycle:
    feeding the deferred re-arm; token; **`runScan` busy-refusal → arm failure**
    (R7-1); NI-DAQ-authoritative release.
 
-   **Status: DONE (commit `abe8a4a3`).** `_scan_execution.py` holds the
-   framework-free coordinator (`ScanIterationToken`, `PARTICIPANTS_KEY`,
+   **Status: DONE (`abe8a4a3`), with the finish barrier completed later in
+   round 8 — see R8-1.** `_scan_execution.py` holds the framework-free
+   coordinator (`ScanIterationToken`, `PARTICIPANTS_KEY`,
    `arm`/`resolve`/`resolveActive`); `ScanBusyError` makes refusal observable
    and `NidaqManagerError` now populates `str(exc)`; `isScanDriven` added to
    `DetectorManager` (True on APD/PMT/TimeTagger). All five entry points arm
-   through the coordinator, with resolvers connected *before* each controller's
-   `scanDone`/`scanFailed` so the lease is released and final reads are done
-   before a repeat frame re-arms. 22 tests incl. a source-level guard against a
+   through the coordinator. 22 tests incl. a source-level guard against a
    sixth direct `runScan` caller. The point-detector gate is intentionally
    absent (Phase 5), leaving this change behaviourally inert.
 4. **Frame delivery + recording scope + sim.** `LVWorker` polls
@@ -410,6 +409,15 @@ behaviour change rather than bookkeeping.
 15. MoNaLISA `autoAxial` follow-up and `isNonFinalPartOfSequence` sequence part:
     `finishScan(graceful)` runs per iteration; `sigScanEnded` and pre-arm lease
     release happen once, at run end (R7-4).
+
+## Round 8 — review of the implementation (all four confirmed in code)
+
+| # | Finding | Resolution |
+|---|---------|-----------|
+| R8-1 | **Missing async finish barrier.** `resolve()` called `finishScan` synchronously and released the SCAN lease immediately; worse, *no manager overrode `finishScan`* — Phase 3 shipped it as a declared-but-unimplemented hook while claiming the split was done. TimeTagger's final read was therefore never awaited before teardown or repeat re-arm. | `finishScan(mode, acknowledge)`: the token enters a *finishing* state and the lease is held until every participant acknowledges. `SwabianTimeTaggerManager` overrides it, hooking the ack to `sigFrameReady(is_final=True)` — the async path that already existed but nothing waited on. Repeat re-arm gated by deferring `scanDone` until the barrier clears. A **timeout** (default 5 s, injected scheduler) releases anyway rather than wedging the GUI, and a manager that cannot be asked acknowledges at once. |
+| R8-2 | **Poll-thread shutdown deadlock.** `onBeforeStops` joined the poll thread while holding the lease lock; since Phase 4 the poll loop calls `frameStreamMembership()`, which needs that same lock. The in-code comment claimed this was safe — true in Phase 1, false from Phase 4, never revisited. | Join moved *before* the lock via `frameStreamHandles()`. The `onBeforeStops` hook is **deleted**, not merely unused: any hook running under the lock is the same trap. Check-then-act is now non-atomic but benign — a lease taken in the gap restarts the thread normally, and membership is re-read each tick. |
+| R8-3 | **Wrong lease purpose for signal-driven EtSnouty.** It always took EVENT_DIRECT, but its `ClockWidefield=False` branch consumes `sigUpdateImage` and so needs EVENT_STREAM; with live view off that mode would arm the detector and stall. A second bug underneath: the lease was acquired *before* `ClockWidefield` was assigned. | Purpose follows the clock mode; acquisition moved after the branch; method renamed `_acquireDetectorFastLease`; source-ordering guard test so it cannot drift back. |
+| R8-4 | **Paused EVENT_STREAM lease leaked.** `pauseFastModality` clears `imageSignalConnected` while deliberately keeping the lease, so a release guarded on that flag skipped a paused run and leaked the handle for the session. | Release is unconditional in `_disconnectRunSignals` (the terminal path). Verified the resume path no-ops when the handle is already held, so pause/resume keeps exactly one lease. |
 
 ## Review-response matrix
 

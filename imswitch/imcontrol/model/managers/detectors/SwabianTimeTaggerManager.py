@@ -140,6 +140,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._tt = None
         self._flim = None
         self._flim_lock = threading.Lock()
+        # Set while the scan coordinator is waiting for this detector's final
+        # frame; see finishScan.
+        self._finalFrameAck = None
         self._ev_pix_begin = None
         self._ev_pix_end = None
         self._scan = {}
@@ -418,6 +421,41 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             except RuntimeError:
                 pass  # worker already cleaned up
 
+    def finishScan(self, mode, acknowledge):
+        """Hold the scan lease open until the final FLIM frame has landed.
+
+        The final read is asynchronous: signal_done() wakes the worker, which
+        emits sigFrameReady(is_final=True) some time later. Acknowledging
+        immediately would let the coordinator release the lease, tear the
+        worker down and arm the next repeat frame while that read is still in
+        flight — losing the last frame of every scan.
+
+        On abort, or with no worker/data to wait for, there is nothing to wait
+        on and we acknowledge at once.
+        """
+        if mode != 'graceful' or self._scanWorker is None:
+            acknowledge()
+            return
+
+        with self._flim_lock:
+            haveFlim = self._flim is not None
+        if not haveFlim:
+            acknowledge()  # mock mode / setup failed: no final frame is coming
+            return
+
+        self._finalFrameAck = acknowledge
+        self.acquisition = False
+        try:
+            self._scanWorker.signal_done()
+        except RuntimeError:
+            self._fireFinalFrameAck()  # worker already gone
+
+    def _fireFinalFrameAck(self):
+        """Release the coordinator's barrier once, whoever gets here first."""
+        acknowledge, self._finalFrameAck = self._finalFrameAck, None
+        if acknowledge is not None:
+            acknowledge()
+
     def _on_frame_ready(self, intensity_img, lifetime_img, is_final: bool,
                         decay_counts, t_axis_ns, global_tau_ns: float):
         self._image_intensity[0] = intensity_img
@@ -447,6 +485,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._newFrameReady = True
         self.updateLatestFrame(True)
         self.sigNewFrame.emit()
+
+        if is_final:
+            # The scan's last frame is committed and published — the
+            # coordinator may now release the lease and let the next
+            # iteration arm.
+            self._fireFinalFrameAck()
 
     # ------------------------------------------------------------------ #
     # Generic time-resolved detector contract                              #

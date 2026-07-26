@@ -402,7 +402,12 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         if self._state.imageSignalConnected:
             self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
             self._state.imageSignalConnected = False
-            self._releaseDetectorFastStream()
+        # Unconditional: pauseFastModality() disconnects the image signal while
+        # deliberately KEEPING the lease, so a release guarded by
+        # imageSignalConnected would skip a paused run and leak the handle for
+        # the rest of the session. This is the terminal cleanup path — the
+        # detector goes back whatever state the run was left in.
+        self._releaseDetectorFastStream()
         if self._state.scanEndSignalConnected:
             if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
                 self._commChannel.sigToggleBlockScanWidget.emit(True)
