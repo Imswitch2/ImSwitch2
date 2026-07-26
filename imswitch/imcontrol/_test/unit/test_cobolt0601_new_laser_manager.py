@@ -26,7 +26,8 @@ import pytest
 from imswitch.imcontrol.model.managers.lasers.Cobolt0601NewLaserManager import (
     Cobolt0601NewLaserManager,
 )
-from imswitch.imcontrol.model.managers.lasers._cobolt_protocol import (
+from imswitch.imcontrol.model.managers.lasers.cobolt0601_protocols import (
+    build_profiles,
     classify_reply,
     send_command,
 )
@@ -36,6 +37,7 @@ from imswitch.imcontrol.model.managers.lasers._protocol import (
     DeviceInitializationError,
     TransportFailure,
     UnexpectedReply,
+    UnsupportedOperation,
 )
 
 
@@ -118,11 +120,13 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._scpi = None
     m._pause_mode = pause_mode
     m._emission_control = 'pause' if pause_mode else 'master'
+    m._protocol_profile = None
+    m._profiles = build_profiles('mw')
+    m._profile = None
     m._scpi_power_unit = 'mw'
     m._firmware_version = None
     m._serial_number = None
     m._model_number = None
-    m._command_variant_cache = {}
     m._last_failure = None
     m._simulation = False
     # Real manager uses name-mangled logger; tests don't need its output.
@@ -147,7 +151,8 @@ def test_detect_firmware_records_identity():
         'firmware': '1.2.3.4',
         'serial': 'SN12345',
         'model': '0561-06-01-0100-C',
-        'commandSet': 'SCPI',
+        'profileId': 'cobolt.scpi-compatible',
+        'requestedProtocolProfile': 'auto',
         'requestedEmissionControl': 'master',
         'resolvedEmissionControl': 'master',
         'emissionControl': 'master',
@@ -632,6 +637,127 @@ def test_mock_cobolt06_send_cmd_records_and_rejects_scpi_by_default():
     assert mock.send_cmd('l0') == 'OK'
     assert 'illegal command' in mock.send_cmd('LASer:RUNMode?').lower()
     assert mock.cmds == ['l0', 'LASer:RUNMode?']
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — protocol profile selection
+# ---------------------------------------------------------------------------
+
+
+def test_omitted_protocol_profile_discovers_like_before():
+    """The compatibility contract: no existing setup file has the key, so
+    omission must reproduce the previous detection behavior exactly."""
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._protocol_profile = None
+    m._detect_firmware()
+
+    assert m._profile.profile_id == 'cobolt.scpi-compatible'
+    assert m._scpi is True
+
+
+def test_auto_prefers_scpi_over_overlapping_legacy_replies():
+    """Modern controllers still answer 'l?', so both probes match. Documented
+    precedence resolves it rather than treating overlap as an error."""
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser)
+    m._protocol_profile = 'auto'
+    m._detect_firmware()
+
+    assert m._profile.profile_id == 'cobolt.scpi-compatible'
+    assert 'l?' in laser.cmds          # legacy probe did match too
+
+
+def test_explicit_profile_is_loaded_and_validated():
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser)
+    m._protocol_profile = 'cobolt.legacy'
+    m._detect_firmware()
+
+    assert m._profile.profile_id == 'cobolt.legacy'
+    # Only the requested profile's probe ran, not the SCPI one.
+    assert 'LASer:RUNMode?' not in laser.cmds
+
+
+def test_explicit_profile_contradicted_by_hardware_is_refused():
+    """A legacy controller asked to run the SCPI profile must fail, not be
+    silently switched to a profile the operator did not request."""
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser)
+    m._protocol_profile = 'cobolt.scpi-compatible'
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        m._detect_firmware()
+    assert 'does not behave like' in str(excinfo.value)
+
+
+def test_unknown_profile_id_is_rejected_with_available_names():
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser)
+    m._protocol_profile = 'cobolt.nonexistent'
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        m._detect_firmware()
+    assert 'cobolt.legacy' in str(excinfo.value)
+
+
+def test_pause_emission_control_against_legacy_profile_fails_at_startup():
+    """Configuration and profile are each valid but mutually incompatible.
+    Catching it at startup reports a configuration error instead of a failed
+    emission transition at the first enable."""
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser, pause_mode=True)
+    m._protocol_profile = 'cobolt.legacy'
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        m._detect_firmware()
+    assert 'emissionControl' in str(excinfo.value)
+
+
+def test_legacy_profile_reports_pause_as_unsupported():
+    from imswitch.imcontrol.model.managers.lasers.cobolt0601_protocols.legacy \
+        import LegacyProfile
+
+    with pytest.raises(UnsupportedOperation):
+        LegacyProfile().pause(FakeLaser())
+
+
+def test_manager_builds_no_vendor_command_strings():
+    """Structural guard for the Definition of Done: the ImSwitch-facing
+    manager must not construct raw vendor commands. If a command string
+    reappears here, it belongs in a profile instead."""
+    import ast
+    import inspect
+
+    from imswitch.imcontrol.model.managers.lasers import (
+        Cobolt0601NewLaserManager as module,
+    )
+
+    tree = ast.parse(inspect.getsource(module))
+
+    # Comments never reach the AST; docstrings do, and the safety rationale
+    # legitimately names the commands it is explaining. Only executable string
+    # literals count as command construction.
+    docstring_ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if (isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                docstring_ids.add(id(first.value))
+
+    literals = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstring_ids
+    }
+
+    vendor_commands = {'l0', 'l1', 'cp', 'em', 'las:paus 1', 'las:paus 0',
+                       '@cobas 0', 'sdmes 1', 'glmp?', 'l?', 'gam?'}
+    leaked = vendor_commands & literals
+    assert not leaked, (
+        f'{sorted(leaked)} are vendor commands and belong in a profile file'
+    )
 
 
 # ---------------------------------------------------------------------------
