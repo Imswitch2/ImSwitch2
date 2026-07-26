@@ -26,6 +26,17 @@ import pytest
 from imswitch.imcontrol.model.managers.lasers.Cobolt0601NewLaserManager import (
     Cobolt0601NewLaserManager,
 )
+from imswitch.imcontrol.model.managers.lasers._cobolt_protocol import (
+    classify_reply,
+    send_command,
+)
+from imswitch.imcontrol.model.managers.lasers._protocol import (
+    CommandRejected,
+    CommandTimeout,
+    DeviceInitializationError,
+    TransportFailure,
+    UnexpectedReply,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,19 +45,38 @@ from imswitch.imcontrol.model.managers.lasers.Cobolt0601NewLaserManager import (
 
 
 class FakeLaser:
-    """Records every send_cmd call. Replies based on `firmware` attribute."""
+    """Records every send_cmd call. Replies based on `firmware` attribute.
 
-    def __init__(self, firmware: str = 'legacy', failed_cmds: set = None):
+    Three independent failure channels, because the manager must tell them
+    apart:
+
+    - ``failed_cmds``  -> an explicit vendor rejection (command did NOT run)
+    - ``raise_cmds``   -> a transport exception (outcome UNKNOWN)
+    - ``empty_cmds``   -> an empty reply (outcome UNKNOWN)
+    """
+
+    def __init__(self, firmware: str = 'legacy', failed_cmds: set = None,
+                 raise_cmds: dict = None, empty_cmds: set = None):
         self.firmware = firmware                  # 'legacy' or 'scpi'
         self.cmds: list = []
         self.failed_cmds: set = set(failed_cmds or ())
+        self.raise_cmds: dict = dict(raise_cmds or {})
+        self.empty_cmds: set = set(empty_cmds or ())
         self.serialnumber = 'SN12345'
         self.modelnumber = '0561-06-01-0100-C'
         self.firmware_version = '1.2.3.4'
+        self.disconnected = False
         # Used by test_critical_off_failure to simulate a stuck controller.
+
+    def disconnect(self):
+        self.disconnected = True
 
     def send_cmd(self, command: str) -> str:
         self.cmds.append(command)
+        if command in self.raise_cmds:
+            raise self.raise_cmds[command]
+        if command in self.empty_cmds:
+            return ''
         if command in self.failed_cmds:
             return 'Syntax error: illegal command'
         cl = command.lower().strip()
@@ -93,6 +123,8 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._serial_number = None
     m._model_number = None
     m._command_variant_cache = {}
+    m._last_failure = None
+    m._simulation = False
     # Real manager uses name-mangled logger; tests don't need its output.
     import logging
     m._Cobolt0601NewLaserManager__logger = logging.getLogger(
@@ -600,6 +632,283 @@ def test_mock_cobolt06_send_cmd_records_and_rejects_scpi_by_default():
     assert mock.send_cmd('l0') == 'OK'
     assert 'illegal command' in mock.send_cmd('LASer:RUNMode?').lower()
     assert mock.cmds == ['l0', 'LASer:RUNMode?']
+
+
+# ---------------------------------------------------------------------------
+# Phase 1A — reply classifier (the single source of truth for "did it work?")
+# ---------------------------------------------------------------------------
+
+
+def test_classifier_maps_lost_reply_to_command_timeout():
+    """PyCoboltManager reports a lost reply as RuntimeError('Syntax Error: No
+    response on ...'). Despite the wording that is a TIMEOUT, not a device
+    rejection — the command may already have reached the laser."""
+    laser = FakeLaser(raise_cmds={
+        'l0': RuntimeError('Syntax Error: No response on l0\r')
+    })
+    with pytest.raises(CommandTimeout):
+        send_command(laser, 'l0')
+
+
+def test_classifier_maps_other_connection_error_to_transport_failure():
+    laser = FakeLaser(raise_cmds={'l0': OSError('port disappeared')})
+    with pytest.raises(TransportFailure) as excinfo:
+        send_command(laser, 'l0')
+    assert not isinstance(excinfo.value, CommandTimeout)
+
+
+def test_classifier_maps_empty_reply_to_unexpected_reply():
+    laser = FakeLaser(empty_cmds={'l0'})
+    with pytest.raises(UnexpectedReply):
+        send_command(laser, 'l0')
+
+
+def test_classifier_maps_rejection_to_command_rejected():
+    laser = FakeLaser(failed_cmds={'l0'})
+    with pytest.raises(CommandRejected) as excinfo:
+        send_command(laser, 'l0')
+    assert 'illegal command' in excinfo.value.reply.lower()
+
+
+def test_classifier_maps_permission_denied_to_command_rejected():
+    """OEM-locked firmware answers '@cobas 0' with a permission error. The
+    command did not execute, so this is a rejection rather than a transport
+    problem."""
+    laser = FakeLaser()
+    with pytest.raises(CommandRejected):
+        classify_reply('@cobas 0', 'Permission denied')
+
+
+# ---------------------------------------------------------------------------
+# Phase 1A — empty replies are failures, not successes
+# ---------------------------------------------------------------------------
+
+
+def test_empty_reply_fails_closed_on_enable():
+    """An empty reply used to count as success, so a half-open port could
+    report a laser as enabled without any acknowledgement."""
+    laser = FakeLaser(firmware='legacy', empty_cmds={'l1'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert m._enabled is False
+    assert 'l0' in laser.cmds      # reverted to the safe state
+
+
+def test_empty_reply_on_master_off_keeps_enabled_true():
+    laser = FakeLaser(firmware='legacy', empty_cmds={'l0'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._enabled = True
+    m.setEnabled(False)
+
+    assert m._enabled is True      # off-transition did not take effect
+
+
+# ---------------------------------------------------------------------------
+# Phase 1A — fallback only after an explicit rejection
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_does_not_trigger_command_fallback():
+    """The core safety rule: after a timeout the first command may already
+    have reached the device, so the fallback variant must NOT be sent."""
+    laser = FakeLaser(
+        firmware='scpi',
+        raise_cmds={
+            'LASer:CP:POWer:SETPoint 50.0':
+                RuntimeError('Syntax Error: No response on ...')
+        },
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+
+    assert m._set_cw_power_mw(50) is False
+    assert 'LASer:CP:POWer:SETPoint 50.0' in laser.cmds
+    assert 'p 0.050000' not in laser.cmds      # fallback must not be tried
+
+
+def test_transport_failure_does_not_trigger_command_fallback():
+    laser = FakeLaser(
+        firmware='scpi',
+        raise_cmds={'LASer:CP:POWer:SETPoint 50.0': OSError('port gone')},
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+
+    assert m._set_cw_power_mw(50) is False
+    assert 'p 0.050000' not in laser.cmds
+
+
+def test_empty_reply_does_not_trigger_command_fallback():
+    laser = FakeLaser(
+        firmware='scpi', empty_cmds={'LASer:CP:POWer:SETPoint 50.0'},
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+
+    assert m._set_cw_power_mw(50) is False
+    assert 'p 0.050000' not in laser.cmds
+
+
+def test_explicit_rejection_still_triggers_command_fallback():
+    """The contrast case: a rejected command provably did not execute, so
+    trying the documented alternative is safe and must still happen."""
+    laser = FakeLaser(
+        firmware='scpi', failed_cmds={'LASer:CP:POWer:SETPoint 50.0'},
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+
+    assert m._set_cw_power_mw(50) is True
+    assert 'p 0.050000' in laser.cmds
+
+
+def test_timeout_on_cached_variant_does_not_try_other_variants():
+    """Once a variant is cached, a later timeout on it must not silently
+    re-open the search and send a different mutating command."""
+    laser = FakeLaser(
+        firmware='scpi', failed_cmds={'LASer:CP:POWer:SETPoint 50.0'},
+    )
+    m = _build_manager(laser)
+    m._scpi = True
+    assert m._set_cw_power_mw(50) is True       # caches the 'p ...' variant
+
+    laser.cmds.clear()
+    laser.raise_cmds = {'p 0.075000': RuntimeError('timed out')}
+    assert m._set_cw_power_mw(75) is False
+    assert laser.cmds == ['p 0.075000']         # no other variant attempted
+
+
+# ---------------------------------------------------------------------------
+# Phase 1A — unidentified device is not guessed at
+# ---------------------------------------------------------------------------
+
+
+def test_detect_firmware_all_probes_fail_raises():
+    """Previously defaulted to the legacy command set. Guessing a dialect for
+    an unidentified laser is exactly the silent assumption to avoid."""
+    laser = FakeLaser(
+        firmware='legacy',
+        failed_cmds={'LASer:RUNMode?', 'LASer:POWer:SETPoint?',
+                     'LASer:CP:POWer:SETPoint?',
+                     'LASer:PowerModulation:POWer:SETPoint?', 'l?', 'gam?'},
+    )
+    m = _build_manager(laser)
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        m._detect_firmware()
+    assert 'simulation' in str(excinfo.value)
+
+
+def test_init_safe_state_raises_when_master_off_fails():
+    laser = FakeLaser(firmware='legacy', failed_cmds={'l0'})
+    m = _build_manager(laser)
+    m._scpi = False
+    with pytest.raises(DeviceInitializationError):
+        m._init_safe_state()
+
+
+def test_init_safe_state_raises_when_pause_fails():
+    laser = FakeLaser(firmware='scpi', failed_cmds={'las:paus 1'})
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    with pytest.raises(DeviceInitializationError):
+        m._init_safe_state()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1A — finalization releases the port
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_closes_the_connection():
+    laser = FakeLaser(firmware='legacy')
+    m = _build_manager(laser)
+    m._scpi = False
+    m.finalize()
+
+    assert laser.cmds == ['l0']
+    assert laser.disconnected is True
+
+
+def test_finalize_closes_the_connection_even_if_safe_off_fails():
+    """A laser that will not go dark must still release the port, or the next
+    session cannot reconnect to diagnose it."""
+    laser = FakeLaser(
+        firmware='legacy', raise_cmds={'l0': OSError('port gone')},
+    )
+    m = _build_manager(laser)
+    m._scpi = False
+    m.finalize()
+
+    assert laser.disconnected is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 1A — simulation is explicit
+# ---------------------------------------------------------------------------
+
+
+class FakeLaserInfo:
+    """Minimal stand-in for the LaserInfo dataclass."""
+
+    def __init__(self, **managerProperties):
+        self.managerProperties = managerProperties
+        self.wavelength = 488
+        self.valueRangeMin = 0
+        self.valueRangeMax = 100
+        self.valueRangeStep = 1
+
+
+def test_simulation_true_uses_mock_without_opening_the_port():
+    info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'], simulation=True)
+    m = Cobolt0601NewLaserManager(info, 'simulated')
+
+    assert m._simulation is True
+    assert m._real_hw is False
+    assert m._laser.cmds[-1] == 'l0'        # reached the safe state
+    assert m._enabled is False
+
+
+def test_absent_simulation_key_defaults_to_false_and_raises():
+    """The migration-critical case: no existing setup file has a simulation
+    key, and a missing device must fail loudly instead of loading a mock that
+    looks like a working laser."""
+    info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'])
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        Cobolt0601NewLaserManager(info, 'real')
+
+    message = str(excinfo.value)
+    assert 'COM_DOES_NOT_EXIST' in message
+    assert 'simulation' in message          # tells the operator the way out
+
+
+def test_simulation_false_raises_rather_than_loading_mock():
+    info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'], simulation=False)
+    with pytest.raises(DeviceInitializationError):
+        Cobolt0601NewLaserManager(info, 'real')
+
+
+def test_shipped_example_setup_declares_simulation():
+    """example_kiralux_teensy.json is built by the example-setup UI test on
+    machines that cannot have COM17/COM4, so it must declare simulation
+    rather than rely on a silent mock fallback."""
+    import json
+    import os
+    from imswitch.imcommon.model.dirtools import DataFileDirs
+
+    path = os.path.join(DataFileDirs.UserDefaults, 'imcontrol_setups',
+                        'example_kiralux_teensy.json')
+    with open(path) as handle:
+        setup = json.load(handle)
+
+    cobolts = [laser for laser in setup['lasers'].values()
+               if laser['managerName'] == 'Cobolt0601NewLaserManager']
+    assert cobolts
+    for laser in cobolts:
+        assert laser['managerProperties'].get('simulation') is True
 
 
 def test_mock_cobolt06_send_cmd_scpi_mode_accepts_scpi():
