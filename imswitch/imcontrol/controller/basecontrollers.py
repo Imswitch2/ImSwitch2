@@ -1262,6 +1262,33 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             )
             self._scanCompletionPublishing = False
 
+    def _armScanIteration(self, signalDict, scanInfoDict):
+        """Publish the participating device list, then arm the iteration.
+
+        The publication has to happen HERE, before ``arm``. ``runScan`` marks
+        the NI-DAQ manager busy and only then emits ``sigScanBuilt``, so any
+        consumer that must issue a one-shot DAQ write in response to scan
+        membership — laser arming above all — is already too late by the time
+        ``sigScanBuilt`` arrives and its write is refused. Publishing first
+        gives those consumers a window while the DAQ is still free.
+
+        A failure to resolve the device list must not block the scan: the scan
+        itself does not depend on this, only the consumers do.
+        """
+        try:
+            devices = self._master.nidaqManager.resolveScanDevices(signalDict)
+        except Exception:
+            self._logger.error(
+                'Could not resolve the scan device list; lasers and other '
+                f'membership consumers are not being notified:\n'
+                f'{traceback.format_exc()}'
+            )
+        else:
+            self.emitScanSignal(
+                self._commChannel.sigScanDevicesResolved, devices
+            )
+        return self._scanCoordinator.arm(signalDict, scanInfoDict, owner=self)
+
     def __onNidaqScanDone(self):
         """NI-DAQ finished a scan iteration.
 

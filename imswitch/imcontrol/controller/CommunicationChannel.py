@@ -78,6 +78,12 @@ class CommunicationChannel(SignalInterface):
     sigRunScan = Signal(bool, bool)  # (recalculateSignals, isNonFinalPartOfSequence)
     sigAbortScan = Signal()
     sigScanStarting = Signal()
+    # (deviceList) — the devices the imminent scan will drive, published while
+    # the DAQ is still free. Consumers that must issue a one-shot DAQ write in
+    # response to scan membership (laser arming) have to use this, not
+    # sigScanBuilt: by the time the scan is built the manager is busy and every
+    # one-shot output is refused.
+    sigScanDevicesResolved = Signal(object)
     sigScanBuilt = Signal(object)  # (deviceList)
     sigScanStarted = Signal()
     sigScanDone = Signal()
@@ -173,6 +179,7 @@ class CommunicationChannel(SignalInterface):
             'runScan': self.sigRunScan,
             'abortScan': self.sigAbortScan,
             'scanStarting': self.sigScanStarting,
+            'scanDevicesResolved': self.sigScanDevicesResolved,
             'scanBuilt': self.sigScanBuilt,
             'scanStarted': self.sigScanStarted,
             'scanDone': self.sigScanDone,

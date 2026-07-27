@@ -129,6 +129,12 @@
     "args": []
   },
   {
+    "name": "sigScanDevicesResolved",
+    "args": [
+      "object"
+    ]
+  },
+  {
     "name": "sigScanBuilt",
     "args": [
       "object"

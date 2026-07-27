@@ -226,20 +226,18 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.scanDims.append("None")
 
         # --- Top row: buttons ---
-        self.grid.addWidget(self.loadScanBtn, currentRow, 0)
-        self.grid.addWidget(self.saveScanBtn, currentRow, 1)
+        # Run first (with its Repeat modifier), then the file actions, and the
+        # plotting controls pushed to the far right.
+        self.grid.addWidget(self.scanButton, currentRow, 0)
+        self.grid.addWidget(self.repeatBox, currentRow, 1)
+        self.grid.addWidget(self.loadScanBtn, currentRow, 2)
+        self.grid.addWidget(self.saveScanBtn, currentRow, 3)
         self.grid.addItem(
             QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum),
-            currentRow, 2, 1, 1
+            currentRow, 4, 1, 2
         )
-        self.grid.addWidget(self.plotScanButton, currentRow, 3)
-        self.grid.addWidget(self.plotIncludeTTLBox, currentRow, 4)
-        self.grid.addItem(
-            QtWidgets.QSpacerItem(20, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum),
-            currentRow, 5, 1, 1
-        )
-        self.grid.addWidget(self.repeatBox, currentRow, 6)
-        self.grid.addWidget(self.scanButton, currentRow, 7)
+        self.grid.addWidget(self.plotScanButton, currentRow, 6)
+        self.grid.addWidget(self.plotIncludeTTLBox, currentRow, 7)
         currentRow += 1
 
         # spacer
@@ -262,7 +260,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(sizeLabel, currentRow, 1)
         self.grid.addWidget(stepLabel, currentRow, 2)
         self.grid.addWidget(pixelsLabel, currentRow, 3)
-        self.grid.addWidget(centerLabel, currentRow, 4)
+        self.grid.addWidget(centerLabel, currentRow, 4, 1, 2)
         self.grid.addWidget(scandimLabel, currentRow, 7)
         currentRow += 1
 
@@ -301,9 +299,9 @@ class ScanWidgetAdvanced(SuperScanWidget):
             self.grid.addWidget(sizePar, currentRow, 1)
             self.grid.addWidget(stepSizePar, currentRow, 2)
             self.grid.addWidget(numPixelsPar, currentRow, 3)
-            self.grid.addWidget(centerPar, currentRow, 4)
+            self.grid.addWidget(centerPar, currentRow, 4, 1, 2)
 
-            dimlabel = QtWidgets.QLabel(f"{index+1}{guitools.ordinalSuffix(index+1)} dimension:")
+            dimlabel = QtWidgets.QLabel(f"dim {index + 1}:")
             dimlabel.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             self.grid.addWidget(dimlabel, currentRow, 6)
             scanDimPar = QtWidgets.QComboBox()

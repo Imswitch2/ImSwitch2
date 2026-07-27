@@ -90,9 +90,7 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
                     self._master.positionersManager[positionerName].setPosition(position, 0)
                     self._logger.debug(f'set {positionerName} center to {position} before scan')
             # run scan
-            self._scanCoordinator.arm(
-                self.signalDict, self.scanInfoDict, owner=self
-            )
+            self._armScanIteration(self.signalDict, self.scanInfoDict)
         except Exception:
             self._logger.error(traceback.format_exc())
             self.scanFailed()

@@ -27,9 +27,10 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         self.settingAttr = False
         self.is_scanning = False
-        # scanBuilt fires every repeated scan frame; the force-off only needs
-        # to run once per scan sequence. This guards against re-issuing
-        # blocking serial laser commands on every frame.
+        # Scan membership is published once per iteration, including every
+        # repeat frame; the arming/force-off only needs to run once per scan
+        # sequence. This guards against re-issuing blocking serial laser
+        # commands on every frame. Cleared in scanChanged(False).
         self._scanBuiltApplied = False
 
         # Set up lasers
@@ -71,6 +72,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
         self._commChannel.sigScanStarting.connect(lambda: self.scanChanged(True))
+        # Hardware arming runs on scanDevicesResolved (DAQ still free);
+        # sigScanBuilt arrives after the manager is busy and is UI-only.
+        self._commChannel.sigScanDevicesResolved.connect(self.scanDevicesResolved)
         self._commChannel.sigScanBuilt.connect(self.scanBuilt)
         self._commChannel.sigScanEnded.connect(lambda: self.scanChanged(False))
 
@@ -258,10 +262,28 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 self._master.lasersManager[lName].setScanModeActive(False)
 
     def scanBuilt(self, deviceList):
-        """ Arm exactly the lasers participating in the scan.
+        """ Refresh laser UI editability for the built scan.
 
-        The scan module's device list (delivered via sigScanBuilt) is the sole
-        authority for which lasers emit:
+        Hardware arming deliberately does NOT happen here. sigScanBuilt is
+        emitted from inside runScan, after the NI-DAQ manager has marked itself
+        busy, so every one-shot digital/analog write this used to perform was
+        refused — silently before the DAQ manager was hardened, and as a
+        logged error afterwards. The consequence was real: a laser outside the
+        scan's device list was never actually forced off and stayed on for the
+        whole scan. Arming moved to scanDevicesResolved, which fires while the
+        DAQ is still free.
+        """
+        for lName, _ in self._master.lasersManager:
+            self._widget.setLaserEditable(lName, lName not in deviceList)
+
+    def scanDevicesResolved(self, deviceList):
+        """ Arm exactly the lasers participating in the imminent scan.
+
+        Runs before the scan claims the DAQ, so the one-shot writes below
+        actually reach the hardware.
+
+        The scan module's device list is the sole authority for which lasers
+        emit:
 
         - Lasers in the list are armed for TTL-gated emission at their current
           widget power (``setScanModeActive(True)``).
@@ -273,13 +295,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         The blocking hardware commands run once per scan sequence (guarded by
         ``_scanBuiltApplied``) so serial commands are not re-issued on every
-        repeated scan frame; UI editability is refreshed cheaply every call. """
+        repeated scan frame. """
+        if self._scanBuiltApplied:
+            return
         for lName, _ in self._master.lasersManager:
             inScan = lName in deviceList
-            # Cheap UI update — safe to repeat on every frame.
-            self._widget.setLaserEditable(lName, not inScan)
-            if self._scanBuiltApplied:
-                continue
             if inScan:
                 # Arm: scan/digital-modulation mode at the laser's current
                 # widget power. Emission stays gated by the scanner's TTL line.

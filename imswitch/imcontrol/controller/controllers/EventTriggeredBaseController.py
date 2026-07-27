@@ -1183,6 +1183,20 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def runSlowScan(self) -> bool:
         self._state.detLog['scan_start'] = _now_us_tag()
+        # Publish scan membership while the DAQ is still free — see
+        # SuperScanController._armScanIteration. This is the fifth NI-DAQ entry
+        # point and needs the same window, or lasers here are armed by a
+        # sigScanBuilt handler whose one-shot writes are already refused.
+        try:
+            devices = self._master.nidaqManager.resolveScanDevices(self.signalDic)
+        except Exception as e:
+            self._logger.error(
+                f'Could not resolve the scan device list for the '
+                f'{self.MODALITY_LABEL} slow scan; membership consumers are '
+                f'not being notified: {e}', exc_info=True
+            )
+        else:
+            self._commChannel.sigScanDevicesResolved.emit(devices)
         result = self._triggeredScanRunner.trigger(
             self._state.scanInitiationMode.name,
             nidaq_manager=self._master.nidaqManager,

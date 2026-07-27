@@ -854,6 +854,41 @@ class NidaqManager(SignalInterface):
                 )
             )
 
+    def resolveScanDevices(self, signalDic):
+        """Devices this scan will drive, without touching hardware.
+
+        Same rule ``runScan`` applies when it builds its AO/DO tasks, exposed
+        so consumers can learn the participating device list BEFORE the scan
+        claims the DAQ. Anything needing a one-shot DAQ write in response to
+        scan membership (laser arming, most notably) has to run at that point:
+        once ``runScan`` marks the manager busy, every one-shot output is
+        refused, and ``sigScanBuilt`` is already inside that window.
+
+        Kept next to the arming logic on purpose — if the two ever disagree,
+        lasers get armed against a device list the scan does not honour.
+        """
+        stageDic = (signalDic or {}).get('scanSignalsDict', {}) or {}
+        ttlDic = (signalDic or {}).get('TTLCycleSignalsDict', {}) or {}
+
+        devices = [
+            device
+            for device, _channel in self.__makeSortedTargets('getAnalogChannel')
+            if device in stageDic
+        ]
+        devices += [
+            device
+            for device, line in self.__makeSortedTargets('getDigitalLine')
+            if device in ttlDic and 'Dev' in line
+        ]
+        for line, name in (
+            (self.__setupInfo.scan.lineClockLine, 'LineClock'),
+            (self.__setupInfo.scan.frameStartClockLine, 'FrameStartClock'),
+            (self.__setupInfo.scan.frameEndClockLine, 'FrameEndClock'),
+        ):
+            if line:
+                devices.append(name)
+        return devices
+
     def _reserveOneShotTask(self, taskName, createTask):
         """Create and register one short output task before native I/O.
 
