@@ -3,11 +3,18 @@ from scipy.interpolate import interp1d
 
 from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager
+from .aa_aotf_protocols import DEFAULT_PROFILE_ID, build_profiles
+from ._protocol import DeviceInitializationError, ProtocolError
 
 
 class AAAOTFLaserManager(LaserManager):
     """ LaserManager for controlling one channel of an AA Opto-Electronic
     acousto-optic modulator/tunable filter through RS232 communication.
+
+    Vendor command strings live in ``aa_aotf_protocols``. This manager owns
+    configuration, the calibration lookup, the ImSwitch value conversion, and
+    the internal/external control policy, and drives the channel through named
+    profile operations rather than command strings.
 
     Manager properties:
 
@@ -15,6 +22,9 @@ class AAAOTFLaserManager(LaserManager):
       through which the communication should take place
     - ``channel`` -- index of the channel in the acousto-optic device that
       should be controlled (indexing starts at 1)
+    - ``protocolProfile`` -- command profile to use. Omitted means
+      ``"aa.compatibility"``, the field-proven behavior; the AA controller has
+      no safe read-only dialect query, so nothing is auto-discovered
     - ``toggleTrueExternal`` -- bool describing if the channel setting
       should use internal (False) or external (True) setting to be able
       to modify the laser power through ImSwitch. Default: False/null
@@ -25,10 +35,23 @@ class AAAOTFLaserManager(LaserManager):
 
     def __init__(self, laserInfo, name, **lowLevelManagers):
         self.__logger = initLogger(self, instanceName=name)
-        self._channel = int(laserInfo.managerProperties['channel'])
+        self._channel = self._parse_channel(
+            laserInfo.managerProperties['channel'], name
+        )
         self._rs232manager = lowLevelManagers['rs232sManager'][
             laserInfo.managerProperties['rs232device']
         ]
+
+        self._profiles = build_profiles()
+        requested = laserInfo.managerProperties.get('protocolProfile')
+        requested = str(requested).strip() if requested else DEFAULT_PROFILE_ID
+        self._protocol_profile = requested
+        self._profile = self._profiles.get(requested)
+        if self._profile is None:
+            raise DeviceInitializationError(
+                f'AA laser {name!r}: unknown protocolProfile {requested!r}. '
+                f'Available profiles: {", ".join(sorted(self._profiles))}.'
+            )
         if 'toggleTrueExternal' in laserInfo.managerProperties:
             self._toggleTrueExternal = laserInfo.managerProperties['toggleTrueExternal']
         else:
@@ -68,46 +91,113 @@ class AAAOTFLaserManager(LaserManager):
 
         super().__init__(laserInfo, name, isBinary=False, valueUnits=self._value_units, valueDecimals=0)
 
+    @staticmethod
+    def _parse_channel(value, name):
+        """Validate the configured channel index at construction time."""
+        try:
+            channel = int(value)
+        except (TypeError, ValueError):
+            raise DeviceInitializationError(
+                f'AA laser {name!r}: channel must be an integer, got '
+                f'{value!r}.'
+            ) from None
+        if channel < 1:
+            raise DeviceInitializationError(
+                f'AA laser {name!r}: channel indexing starts at 1, got '
+                f'{channel}.'
+            )
+        return channel
+
+    def _run(self, operation_name: str, *args) -> bool:
+        """Invoke a profile operation and report success as a bool.
+
+        Transport failures are logged and then propagated, preserving the
+        manager's existing behavior: the old direct ``query()`` calls also
+        surfaced connection exceptions to their caller. Swallowing one here
+        would let a failed hardware command look successful to the GUI.
+        """
+        operation = getattr(self._profile, operation_name, None)
+        if operation is None:
+            self.__logger.error(
+                f'AA profile {self._profile.profile_id} does not implement '
+                f'{operation_name}.'
+            )
+            return False
+        try:
+            operation(self._rs232manager, self._channel, *args)
+        except ProtocolError as exc:
+            self.__logger.error(
+                f'AA channel {self._channel}: {operation_name} failed '
+                f'({type(exc).__name__}): {exc.message}'
+            )
+            raise
+        except ValueError as exc:
+            self.__logger.error(
+                f'AA channel {self._channel}: refusing {operation_name} with '
+                f'an invalid value: {exc}'
+            )
+            return False
+        return True
+
+    def _apply_ttl_control_mode(self, *, before_command: bool) -> None:
+        """Switch control mode around a write, when ``ttlToggling`` is set.
+
+        The channel is put into the mode ImSwitch needs to issue the command,
+        then returned to the opposite mode so an external TTL source can drive
+        it. A no-op when ``ttlToggling`` is off.
+        """
+        if not self._ttlToggling:
+            return
+        use_external = (self._toggleTrueExternal if before_command
+                        else not self._toggleTrueExternal)
+        if use_external:
+            self.externalControl()
+        else:
+            self.internalControl()
+
     def setEnabled(self, enabled):
         """Turn on (1) or off (0) laser emission"""
-        if enabled:
-            value = 1
-        else:
-            value = 0
-        cmd = 'L' + str(self._channel) + 'O' + str(value)
-        if self._ttlToggling:
-            if self._toggleTrueExternal:
-                self.externalControl()
-            else:
-                self.internalControl()
-        _ = self._rs232manager.query(cmd)
-        if self._ttlToggling:
-            if self._toggleTrueExternal:
-                self.internalControl()
-            else:
-                self.externalControl()
+        self._apply_ttl_control_mode(before_command=True)
+        self._run('set_channel_enabled', bool(enabled))
+        self._apply_ttl_control_mode(before_command=False)
 
     def setValue(self, power):
         """Handles output power.
         Sends a RS232 command to the laser specifying the new intensity.
         """
+        amplitude = self._amplitude_for(power)
+        if amplitude is None:
+            return
+        self._apply_ttl_control_mode(before_command=True)
+        self._run('set_channel_amplitude', amplitude)
+        self._apply_ttl_control_mode(before_command=False)
 
-        if self._lut is not None:
-            valueaotf = int(self._lut(power))
-        else:
-            valueaotf = round(power)
-        cmd = 'L' + str(self._channel) + 'P' + str(valueaotf)
-        if self._ttlToggling:
-            if self._toggleTrueExternal:
-                self.externalControl()
-            else:
-                self.internalControl()
-        _ = self._rs232manager.query(cmd)
-        if self._ttlToggling:
-            if self._toggleTrueExternal:
-                self.internalControl()
-            else:
-                self.externalControl()
+    def _amplitude_for(self, power):
+        """Convert an ImSwitch value to a raw AOTF amplitude.
+
+        Returns None when the value cannot be converted, in which case nothing
+        is sent. Requests outside the calibrated range are rejected rather than
+        clamped: silently turning an excessive request into the maximum measured
+        amplitude would be an unsafe behavior change.
+        """
+        try:
+            if self._lut is not None:
+                converted = float(self._lut(power))
+                if np.isnan(converted):
+                    self.__logger.error(
+                        f'AA channel {self._channel}: calibration lookup '
+                        f'produced no value for {power!r}; not sending an '
+                        f'amplitude.'
+                    )
+                    return None
+                return int(converted)
+            return int(round(float(power)))
+        except (TypeError, ValueError) as exc:
+            self.__logger.error(
+                f'AA channel {self._channel}: cannot convert value '
+                f'{power!r} to an amplitude: {exc}'
+            )
+            return None
 
     #def blankingOnInternal(self):
     #    """Switch on the blanking of the channel, internal"""
@@ -138,15 +228,19 @@ class AAAOTFLaserManager(LaserManager):
 
     def internalControl(self):
         """Switch the channel to internal control"""
-        cmd = 'L' + str(self._channel) + 'I1' + 'O0'
-        _ = self._rs232manager.query(cmd)
+        self._run('select_internal_control')
 
     def externalControl(self):
         """Switch the channel to external control"""
-        cmd = 'L' + str(self._channel) + 'I0'
-        _ = self._rs232manager.query(cmd)
+        self._run('select_external_control')
 
     def create_lut_from_calib(self, calib_csv_path):
+        """Build the percentage-to-amplitude lookup from a calibration file.
+
+        The measured output is normalized to a 0-100 % input span. Requests
+        outside that span produce NaN, which :meth:`_amplitude_for` rejects
+        without sending a command.
+        """
         data = np.loadtxt(calib_csv_path)
         data[:, 1] -= data[:, 1].min()
         data[:, 1] /= data[:, 1].max() * 0.01 # convert to %

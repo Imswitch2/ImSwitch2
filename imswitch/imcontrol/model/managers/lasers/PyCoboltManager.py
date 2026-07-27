@@ -1,3 +1,18 @@
+"""Cobolt serial connection (vendored from Cobolt's ``pycobolt``).
+
+FROZEN, except as a transport. ``Cobolt0601NewLaserManager`` treats this module
+as a dumb connection and uses only ``send_cmd``, the stored identity fields,
+and ``disconnect``. The high-level command helpers below (``constant_power``,
+``set_power``, the modulation-mode methods, ``pause_emission`` /
+``resume_emission``) and the model-regex subclass classification in
+``_classify_`` are a parallel implementation of the same dialects that now live
+in ``cobolt0601_protocols``.
+
+Do not add command logic here, and do not call these helpers from the manager:
+the profile files are the single source of truth for commands ImSwitch sends.
+They are deprecated pending removal once nothing else depends on them.
+"""
+
 import time
 import sys
 import re
