@@ -30,10 +30,7 @@ class BSC203StageManager(PositionerManager):
         self._invertJogAxes = set(props.get('invertJogAxes', []))
 
         try:
-            from thorlabs_apt_device.devices.bsc import BSC
-            from serial.serialutil import SerialException
-            self.dev = BSC(serial_port=port, vid=None, pid=None, manufacturer=None, product=None, serial_number=None,
-                           location=None, home=home, x=3, invert_direction_logic=False, swap_limit_switches=True)
+            self.dev = self._createDevice(port, home)
         except ImportError as e:
             self.__logger.warning(
                 f'Failed to import thorlabs_apt_device: {e}. '
@@ -53,6 +50,23 @@ class BSC203StageManager(PositionerManager):
         # home this reads ~0 (the end-stop); without a home it recovers the
         # retained encoder position so positions survive an ImSwitch restart.
         self._syncPositionFromController()
+
+    def _createDevice(self, port, home):
+        """Import and construct the vendor BSC device.
+
+        Isolated behind a method (mirroring
+        ``KDC101PositionerManager._getDeviceObj``) for one reason: the import is
+        deferred, so a machine without ``thorlabs_apt_device`` — CI, or any dev
+        box without the vendor library — still loads this module, and a test can
+        substitute a fake device by patching this method instead of importing
+        the real vendor package to monkeypatch it.
+        """
+        from thorlabs_apt_device.devices.bsc import BSC
+        return BSC(
+            serial_port=port, vid=None, pid=None, manufacturer=None,
+            product=None, serial_number=None, location=None, home=home, x=3,
+            invert_direction_logic=False, swap_limit_switches=True,
+        )
 
     def _syncPositionFromController(self, timeout=3.0):
         """Set ``self._position`` from the controller's reported encoder position.

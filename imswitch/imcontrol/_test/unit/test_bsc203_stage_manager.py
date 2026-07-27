@@ -18,7 +18,6 @@ The tests run with a fake device (no hardware, no serial port).
 import pytest
 
 from imswitch.imcontrol.model.SetupInfo import PositionerInfo
-import imswitch.imcontrol.model.managers.positioners.BSC203StageManager as bsc_mod
 from imswitch.imcontrol.model.managers.positioners.BSC203StageManager import (
     BSC203StageManager,
     STEPS_PER_REV,
@@ -85,11 +84,14 @@ class FakeBSC:
 
 
 def _make_manager(monkeypatch, *, home=False, properties=None):
-    monkeypatch.setattr(bsc_mod, 'BSC', FakeBSC, raising=False)
-    # The manager also does `from thorlabs_apt_device.devices.bsc import BSC`
-    # inside __init__; patch the source module so the import picks up the fake.
-    import thorlabs_apt_device.devices.bsc as real_bsc
-    monkeypatch.setattr(real_bsc, 'BSC', FakeBSC, raising=False)
+    # Patch the device-creation seam rather than the vendor module: CI has no
+    # thorlabs_apt_device installed, so importing it here (as this test used to)
+    # fails at collection. The manager defers the real import into _createDevice
+    # exactly so it can be substituted without the vendor package present.
+    monkeypatch.setattr(
+        BSC203StageManager, '_createDevice',
+        lambda self, port, home: FakeBSC(serial_port=port, home=home),
+    )
 
     props = {'home': home}
     if properties:
