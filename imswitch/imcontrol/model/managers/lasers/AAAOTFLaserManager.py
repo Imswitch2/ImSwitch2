@@ -111,9 +111,10 @@ class AAAOTFLaserManager(LaserManager):
     def _run(self, operation_name: str, *args) -> bool:
         """Invoke a profile operation and report success as a bool.
 
-        Transport failures are reported rather than raised, matching how this
-        manager has always behaved towards the GUI, but they are no longer
-        invisible: previously every reply and every failure mode was discarded.
+        Transport failures are logged and then propagated, preserving the
+        manager's existing behavior: the old direct ``query()`` calls also
+        surfaced connection exceptions to their caller. Swallowing one here
+        would let a failed hardware command look successful to the GUI.
         """
         operation = getattr(self._profile, operation_name, None)
         if operation is None:
@@ -129,7 +130,7 @@ class AAAOTFLaserManager(LaserManager):
                 f'AA channel {self._channel}: {operation_name} failed '
                 f'({type(exc).__name__}): {exc.message}'
             )
-            return False
+            raise
         except ValueError as exc:
             self.__logger.error(
                 f'AA channel {self._channel}: refusing {operation_name} with '
@@ -175,8 +176,9 @@ class AAAOTFLaserManager(LaserManager):
         """Convert an ImSwitch value to a raw AOTF amplitude.
 
         Returns None when the value cannot be converted, in which case nothing
-        is sent. The calibration lookup clamps out-of-range requests to the
-        measured endpoints rather than producing NaN.
+        is sent. Requests outside the calibrated range are rejected rather than
+        clamped: silently turning an excessive request into the maximum measured
+        amplitude would be an unsafe behavior change.
         """
         try:
             if self._lut is not None:
@@ -235,25 +237,14 @@ class AAAOTFLaserManager(LaserManager):
     def create_lut_from_calib(self, calib_csv_path):
         """Build the percentage-to-amplitude lookup from a calibration file.
 
-        Out-of-range requests clamp to the measured endpoints. Without an
-        explicit ``fill_value`` SciPy fills with NaN, and the caller's
-        ``int(...)`` then raised ``ValueError`` for any value outside the
-        calibrated span — so a laser calibrated over 5-95 % crashed at 100 %.
+        The measured output is normalized to a 0-100 % input span. Requests
+        outside that span produce NaN, which :meth:`_amplitude_for` rejects
+        without sending a command.
         """
         data = np.loadtxt(calib_csv_path)
         data[:, 1] -= data[:, 1].min()
         data[:, 1] /= data[:, 1].max() * 0.01 # convert to %
-        percentages = data[:, 1]
-        amplitudes = data[:, 0]
-        self._lut = interp1d(
-            percentages,
-            amplitudes,
-            bounds_error=False,
-            fill_value=(
-                float(amplitudes[np.argmin(percentages)]),
-                float(amplitudes[np.argmax(percentages)]),
-            ),
-        )
+        self._lut = interp1d(data[:, 1], data[:, 0], bounds_error=False)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

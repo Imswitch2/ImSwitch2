@@ -256,20 +256,19 @@ def test_calibration_converts_percentage_to_amplitude(calib_csv):
     assert rs232.cmds == ['L1P500']
 
 
-def test_calibration_clamps_above_range_instead_of_crashing(calib_csv):
-    """interp1d(bounds_error=False) fills with NaN, and int(NaN) raises. A
-    laser calibrated over part of the span must not crash at the extremes."""
+def test_calibration_rejects_above_range_without_sending(calib_csv):
+    """An excessive request must not be converted into maximum output."""
     m, rs232 = _build(calibCsvPath=calib_csv)
     rs232.cmds.clear()
     m.setValue(150)
-    assert rs232.cmds == ['L1P1000']
+    assert rs232.cmds == []
 
 
-def test_calibration_clamps_below_range_instead_of_crashing(calib_csv):
+def test_calibration_rejects_below_range_without_sending(calib_csv):
     m, rs232 = _build(calibCsvPath=calib_csv)
     rs232.cmds.clear()
     m.setValue(-10)
-    assert rs232.cmds == ['L1P0']
+    assert rs232.cmds == []
 
 
 def test_missing_calibration_leaves_arbitrary_units():
@@ -323,10 +322,13 @@ def test_empty_reply_is_not_treated_as_failure():
     assert m._run('set_channel_enabled', True) is True
 
 
-def test_transport_failure_is_reported_not_raised():
+def test_transport_failure_propagates_from_manager():
     rs232 = FakeRS232(raise_cmds={'L1O1': OSError('port gone')})
     m, _ = _build(rs232=rs232)
-    assert m._run('set_channel_enabled', True) is False
+    rs232.cmds.clear()
+    with pytest.raises(TransportFailure):
+        m.setEnabled(True)
+    assert rs232.cmds == ['L1O1']
 
 
 def test_transport_exceptions_map_to_the_shared_taxonomy():
