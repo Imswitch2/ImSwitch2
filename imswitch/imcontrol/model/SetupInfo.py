@@ -72,6 +72,20 @@ class LaserInfo(DeviceInfo):
     """ The default step size of the value range that the laser can be set to.
     """
 
+    powerDevice: Optional[str] = None
+    """ Name of the laser device that sets this one's emission power, when the
+    two are separate hardware.
+
+    Some beam paths split one physical laser across two entries: this one owns
+    the TTL line the scan gates (often a bare digital-line placeholder with no
+    power of its own), while an attenuator such as an AOTF channel sets the
+    power over a serial link. Naming that partner here lets a scan switch the
+    power device on for the duration, instead of the laser emitting only when
+    the user happens to have enabled it by hand.
+
+    Leave ``null`` when one entry owns both gate and power (an AOM with its own
+    analog channel and digital line, for instance). """
+
 
 @dataclass(frozen=True, kw_only=True)
 class PositionerInfo(DeviceInfo):
