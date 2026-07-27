@@ -33,6 +33,11 @@ class MultiManager(ABC):
     def __init__(self, managedDeviceInfos, subManagersPackage, **lowLevelManagers):
         #self.__logger = initLogger(self, instanceName='MultiManager')
         self._subManagers = {}
+        # Keep successful sub-manager objects alive for the remainder of the
+        # shutdown sequence. Identity-scoped bookkeeping lets a failed device
+        # retry without finalizing already-closed peers again, while a device
+        # object replaced under the same name is still finalized.
+        self._shutdownFinalizedSubManagerObjects = []
         currentPackage = '.'.join(__name__.split('.')[:-1])
         kind = SUBMANAGERS_PACKAGE_TO_KIND.get(subManagersPackage)
         if managedDeviceInfos:
@@ -148,10 +153,47 @@ class MultiManager(ABC):
                 if condition(subManager)}
 
     def finalize(self):
-        """ Close/cleanup sub-managers. """
-        for subManager in self._subManagers.values():
-            if hasattr(subManager, 'finalize') and callable(subManager.finalize):
-                subManager.finalize()
+        """Close every pending sub-manager and aggregate explicit failures."""
+        success = True
+        logger = logging.getLogger(
+            f'{__name__}.{self.__class__.__name__}'
+        )
+        completed = self.__dict__.setdefault(
+            '_shutdownFinalizedSubManagerObjects', []
+        )
+        attempted = []
+        for managedDeviceName, subManager in self._subManagers.items():
+            if any(candidate is subManager for candidate in completed):
+                continue
+            # A malformed/out-of-tree group can alias one concrete manager
+            # under multiple names. It still gets at most one attempt per
+            # finalize call; a failure remains pending for the next retry.
+            if any(candidate is subManager for candidate in attempted):
+                continue
+            attempted.append(subManager)
+            finalize = getattr(subManager, 'finalize', None)
+            if not callable(finalize):
+                continue
+            try:
+                result = finalize()
+            except Exception:
+                success = False
+                logger.exception(
+                    'Failed to finalize managed device %r',
+                    managedDeviceName,
+                )
+            else:
+                if result is False:
+                    success = False
+                    logger.error(
+                        'Managed device %r reported incomplete finalization',
+                        managedDeviceName,
+                    )
+                elif not any(
+                    candidate is subManager for candidate in completed
+                ):
+                    completed.append(subManager)
+        return success
 
     def _validateManagedDeviceName(self, managedDeviceName):
         """ Raises an error if the specified device is not managed by this

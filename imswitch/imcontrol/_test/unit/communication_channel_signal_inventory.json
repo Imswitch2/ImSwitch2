@@ -79,6 +79,12 @@
     "args": []
   },
   {
+    "name": "sigRecordingFailed",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigUpdateRecFrameNum",
     "args": [
       "int"

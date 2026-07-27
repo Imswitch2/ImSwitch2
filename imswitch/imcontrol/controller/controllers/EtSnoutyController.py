@@ -69,6 +69,13 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         # Detector lease held for the duration of a run; its purpose depends
         # on the clock mode — see _acquireDetectorFastLease.
         self._detectorFastHandle = None
+        self._detectorFastReleasePending = False
+        self._closed = False
+        self._experimentActive = False
+        self._stopRequested = False
+        self._triggeredScanInFlight = False
+        self._triggeredScanSource = None
+        self._triggeredScanSourceObservedRunning = False
 
         self._widget.setFastDetectorList(
             self._master.detectorsManager.execOnAll(
@@ -182,7 +189,13 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
 
     def initiate(self):
         """Start or stop an EtSnouty experiment."""
-        if not self.__running:
+        if not (
+            self.__dict__.get('_experimentActive', False)
+            or self.__running
+        ):
+            if self.__dict__.get('_closed', False):
+                return
+            self._stopRequested = False
             self.resetParamVals()
             self.resetRunParams()
 
@@ -228,7 +241,17 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 self.setUpdatePeriod()
 
             # After ClockWidefield is decided: the lease purpose depends on it.
-            self._acquireDetectorFastLease()
+            try:
+                self._acquireDetectorFastLease()
+            except Exception as e:
+                self.__logger.error(
+                    f'Could not arm EtSnouty detector "{self.detectorFast}": {e}',
+                    exc_info=True,
+                )
+                self._commChannel.sigInitiateEtSnouty.emit(False)
+                self._recoverSmartModeFailure()
+                self.resetRunParams()
+                return
 
             if self.__runMode in (RunMode.Validate, RunMode.Visualize):
                 self.launchHelpWidget()
@@ -239,12 +262,22 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 self._commChannel.sigUpdateImage.connect(self.runPipeline)
 
             self._commChannel.sigToggleBlockScanWidget.emit(False)
+            scanStartingSignal = getattr(
+                self._commChannel, 'sigScanStarting', None
+            )
+            if hasattr(scanStartingSignal, 'connect'):
+                scanStartingSignal.connect(
+                    self._onTriggeredScanStarting
+                )
             self._commChannel.sigScanEnded.connect(self.scanEnded)
 
             self._widget.initiateButton.setText('Stop')
+            self._experimentActive = True
             self.__running = True
 
         else:
+            self._stopRequested = True
+            self._experimentActive = False
             self._commChannel.sigInitiateEtSnouty.emit(False)
 
             if self.ClockWidefield:
@@ -255,6 +288,14 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                 self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
 
             self._commChannel.sigToggleBlockScanWidget.emit(True)
+            scanStartingSignal = getattr(
+                self._commChannel, 'sigScanStarting', None
+            )
+            if scanStartingSignal is not None:
+                self._safeDisconnect(
+                    scanStartingSignal,
+                    self._onTriggeredScanStarting,
+                )
             self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
 
             self._master.lasersManager.execOn(
@@ -313,6 +354,8 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self._applySmartModeRoleIfConfigured('idle')
 
     def _stopAfterSmartModeFailure(self):
+        self._stopRequested = True
+        self._experimentActive = False
         self._commChannel.sigInitiateEtSnouty.emit(False)
         if self.ClockWidefield:
             self._safeDisconnect(
@@ -321,24 +364,55 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         else:
             self._safeDisconnect(self._commChannel.sigUpdateImage, self.runPipeline)
         self._commChannel.sigToggleBlockScanWidget.emit(True)
+        scanStartingSignal = getattr(
+            self._commChannel, 'sigScanStarting', None
+        )
+        if scanStartingSignal is not None:
+            self._safeDisconnect(
+                scanStartingSignal,
+                self._onTriggeredScanStarting,
+            )
         self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
         self._widget.initiateButton.setText('Initiate')
-        self.__running = False
         self.resetParamVals()
+        self.resetRunParams()
 
     def scanEnded(self):
-        self.setDetLogLine('scan_end', datetime.now().strftime('%Ss%fus'))
-        self._commChannel.sigSnapImg.emit()
+        if not self._acceptTriggeredScanEnded():
+            return
+        if (
+            self.__dict__.get('_closed', False)
+            or self.__dict__.get('_stopRequested', False)
+            or not self.__dict__.get('_experimentActive', True)
+        ):
+            self.__frame = 0
+            return
         try:
-            total_scan_time = self.scanInfoDict['scan_samples_total'] * 10e-6
-            self.setDetLogLine('total_scan_time', total_scan_time)
-        except Exception:
-            self.__logger.info(
-                "Scan 'total_scan_time' not saved — 'scan_samples_total' unavailable."
+            self.setDetLogLine(
+                'scan_end', datetime.now().strftime('%Ss%fus')
             )
-        self.endRecording()
-        self.continueFastModality()
-        self.__frame = 0
+            self._commChannel.sigSnapImg.emit()
+            try:
+                total_scan_time = (
+                    self.scanInfoDict['scan_samples_total'] * 10e-6
+                )
+                self.setDetLogLine(
+                    'total_scan_time', total_scan_time
+                )
+            except Exception:
+                self.__logger.info(
+                    "Scan 'total_scan_time' not saved — "
+                    "'scan_samples_total' unavailable."
+                )
+            self.endRecording()
+        except Exception:
+            self.__logger.error(
+                'EtSnouty terminal bookkeeping failed.',
+                exc_info=True,
+            )
+        finally:
+            self.__frame = 0
+            self.continueFastModality()
 
     def setDetLogLine(self, key, val, *args):
         if args:
@@ -347,13 +421,144 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             self.__detLog[key] = val
 
     def runSlowScan(self):
+        if self.__dict__.get('_triggeredScanInFlight', False):
+            self.__logger.warning(
+                'Ignoring duplicate EtSnouty slow-scan trigger.'
+            )
+            return False
+        getActiveSource = getattr(
+            self._commChannel, 'getActiveScanSource', None
+        )
+        if callable(getActiveSource):
+            try:
+                if getActiveSource() is not None:
+                    self.__logger.warning(
+                        'Cannot trigger EtSnouty while another scan source '
+                        'is active.'
+                    )
+                    return False
+            except Exception:
+                self.__logger.error(
+                    'Could not verify the active scan source.',
+                    exc_info=True,
+                )
+                return False
+
         self.__detLog['scan_start'] = datetime.now().strftime('%Ss%fus')
         if not self.setConfig(widefield=False):
             self._stopAfterSmartModeFailure()
             return False
         self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
-        self._commChannel.sigRunScanTriggerScopePLSRMulticolor.emit()
+        self._triggeredScanInFlight = True
+        self._triggeredScanSource = None
+        self._triggeredScanSourceObservedRunning = False
+        try:
+            self._commChannel.sigRunScanTriggerScopePLSRMulticolor.emit()
+        except Exception:
+            self._resetTriggeredScanIdentity()
+            self.__logger.error(
+                'Failed to dispatch the EtSnouty slow scan.',
+                exc_info=True,
+            )
+            return False
+
+        # Some third-party scan sources do not publish sigScanStarting. Capture
+        # the active source after the synchronous dispatch as a fallback.
+        self._captureTriggeredScanSource()
+        if not self.__dict__.get('_triggeredScanInFlight', False):
+            # A synchronous test/adapter can publish its exact terminal inside
+            # the dispatch itself.
+            return True
+        source = self.__dict__.get('_triggeredScanSource')
+        if callable(getActiveSource) and source is None:
+            self._resetTriggeredScanIdentity()
+            self.__logger.error(
+                'The EtSnouty scan trigger was not accepted by a scan source.'
+            )
+            return False
+        if source is not None:
+            try:
+                sourceRunning = bool(getattr(source, 'isRunning', False))
+            except Exception:
+                sourceRunning = False
+            if not sourceRunning:
+                self._resetTriggeredScanIdentity()
+                self.__logger.error(
+                    'The EtSnouty scan source did not retain the triggered run.'
+                )
+                return False
         return True
+
+    def _onTriggeredScanStarting(self):
+        """Pin the source that accepted this controller's exact trigger."""
+        if not self.__dict__.get('_triggeredScanInFlight', False):
+            return
+        self._captureTriggeredScanSource()
+
+    def _captureTriggeredScanSource(self):
+        if self.__dict__.get('_triggeredScanSource') is not None:
+            return
+        getActiveSource = getattr(
+            self.__dict__.get('_commChannel'),
+            'getActiveScanSource',
+            None,
+        )
+        if not callable(getActiveSource):
+            return
+        try:
+            source = getActiveSource()
+        except Exception:
+            return
+        if source is None:
+            return
+        self._triggeredScanSource = source
+        try:
+            if bool(getattr(source, 'isRunning', False)):
+                self._triggeredScanSourceObservedRunning = True
+        except Exception:
+            # An unreadable source cannot authorize a later global terminal.
+            self._triggeredScanSourceObservedRunning = False
+
+    def _acceptTriggeredScanEnded(self):
+        """Attribute the global end signal to the exact source we triggered."""
+        if not self.__dict__.get('_triggeredScanInFlight', False):
+            return False
+        source = self.__dict__.get('_triggeredScanSource')
+        getActiveSource = getattr(
+            self.__dict__.get('_commChannel'),
+            'getActiveScanSource',
+            None,
+        )
+        if source is None:
+            # Production CommunicationChannel exposes source identity. If it
+            # does, an unpinned end is stale/foreign. Retain the no-getter path
+            # only for legacy adapters that have no identity surface at all.
+            if callable(getActiveSource):
+                return False
+        else:
+            if callable(getActiveSource):
+                try:
+                    if getActiveSource() is not None:
+                        return False
+                except Exception:
+                    return False
+            try:
+                if bool(getattr(source, 'isRunning', False)):
+                    self._triggeredScanSourceObservedRunning = True
+                    return False
+            except Exception:
+                return False
+            if not self.__dict__.get(
+                '_triggeredScanSourceObservedRunning', False
+            ):
+                return False
+        self._resetTriggeredScanIdentity()
+        return True
+
+    def _resetTriggeredScanIdentity(self):
+        self._triggeredScanInFlight = False
+        self._triggeredScanSource = None
+        self._triggeredScanSourceObservedRunning = False
 
     def endRecording(self):
         self.setDetLogLine('pipeline', self.getPipelineName())
@@ -392,6 +597,13 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self._commChannel.sigRequestScanParameters.emit()
 
     def continueFastModality(self):
+        if (
+            self.__dict__.get('_closed', False)
+            or self.__dict__.get('_stopRequested', False)
+            or not self.__dict__.get('_experimentActive', True)
+        ):
+            self.__running = False
+            return
         if self._widget.endlessScanCheck.isChecked() and not self.__running:
             if not self.setConfig(widefield=True, role=self._resumeSmartModeRole()):
                 self._stopAfterSmartModeFailure()
@@ -410,12 +622,22 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             self.__running = True
 
         elif not self._widget.endlessScanCheck.isChecked():
+            self._stopRequested = True
+            self._experimentActive = False
             self.updateScatter([], clear=True)
             self._widget.initiateButton.setText('Initiate')
             self._commChannel.sigToggleBlockScanWidget.emit(True)
+            scanStartingSignal = getattr(
+                self._commChannel, 'sigScanStarting', None
+            )
+            if scanStartingSignal is not None:
+                self._safeDisconnect(
+                    scanStartingSignal,
+                    self._onTriggeredScanStarting,
+                )
             self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
-            self.__running = False
             self.resetParamVals()
+            self.resetRunParams()
 
     def setBusyFalse(self):
         self.__logger.debug('setBusyFalse')
@@ -450,8 +672,20 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         self.__maxAnaImgVal = 0
         self.__busy = False
         self.__clock_busy = False
-        self.__prevFrames.clear()
-        self.__prevAnaFrames.clear()
+        prevFrames = self.__dict__.get('_EtSnoutyController__prevFrames')
+        if prevFrames is not None:
+            prevFrames.clear()
+        prevAnaFrames = self.__dict__.get('_EtSnoutyController__prevAnaFrames')
+        if prevAnaFrames is not None:
+            prevAnaFrames.clear()
+        emitter = self.__dict__.get('emitter')
+        if emitter is not None:
+            try:
+                emitter.stop()
+            except Exception:
+                pass
+            self.emitter = None
+        self._resetTriggeredScanIdentity()
         # Every start and every exit path (normal stop, early return, smart-mode
         # failure) funnels through here, so this is where the run's detector
         # lease is guaranteed to be given back.
@@ -476,27 +710,43 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
           leasing EVENT_DIRECT here would arm the detector but never start the
           poller, and the mode would stall whenever live view is off.
         """
-        if self._detectorFastHandle is not None or not self.detectorFast:
+        if self.__dict__.get('_detectorFastHandle') is not None:
+            if not self.__dict__.get(
+                '_detectorFastReleasePending', False
+            ):
+                return
+            if not self._releaseDetectorFastLease():
+                raise RuntimeError(
+                    'The previous EtSnouty detector lease is still stopping.'
+                )
+        if not self.detectorFast:
             return
         purpose = (LeasePurpose.EVENT_DIRECT if self.ClockWidefield
                    else LeasePurpose.EVENT_STREAM)
         self._detectorFastHandle = self._master.detectorsManager.acquire(
             [self.detectorFast], purpose
         )
+        self._detectorFastReleasePending = False
 
     def _releaseDetectorFastLease(self):
-        handle = getattr(self, '_detectorFastHandle', None)
+        handle = self.__dict__.get('_detectorFastHandle')
         if handle is None:
-            return
+            return True
         try:
             self._master.detectorsManager.release(handle)
         except Exception as e:
+            self._detectorFastReleasePending = True
             self.__logger.error(
                 f'Failed to release the EtSnouty detector lease: {e}',
                 exc_info=True,
             )
-        finally:
+            # A last EVENT_STREAM release may time out before the manager
+            # consumes the handle. Keep the exact token for a close-time retry.
+            return False
+        if self.__dict__.get('_detectorFastHandle') is handle:
             self._detectorFastHandle = None
+        self._detectorFastReleasePending = False
+        return True
 
     @contextmanager
     def _temporaryDetectorRead(self, detectorName):
@@ -507,28 +757,31 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         the detector armed. A short SNAP lease makes that read well-defined,
         and it is released even if the read or the dialog raises.
         """
-        handle = None
-        if detectorName and not self._master.detectorsManager.isDetectorLeased(
-                detectorName):
-            try:
-                handle = self._master.detectorsManager.acquire(
-                    [detectorName], LeasePurpose.SNAP
-                )
-            except Exception as e:
-                self.__logger.warning(
-                    f'Could not arm "{detectorName}" for a preview read: {e}'
-                )
+        if not detectorName:
+            raise ValueError('A detector is required for a preview read')
+
+        # Always take our own reference, even if another owner currently has
+        # the detector armed. Checking global membership and borrowing somebody
+        # else's lease races that owner releasing while this read is sleeping.
+        try:
+            handle = self._master.detectorsManager.acquire(
+                [detectorName], LeasePurpose.SNAP
+            )
+        except Exception as e:
+            self.__logger.warning(
+                f'Could not arm "{detectorName}" for a preview read: {e}'
+            )
+            raise
         try:
             yield
         finally:
-            if handle is not None:
-                try:
-                    self._master.detectorsManager.release(handle)
-                except Exception as e:
-                    self.__logger.error(
-                        f'Failed to release the preview detector lease: {e}',
-                        exc_info=True,
-                    )
+            try:
+                self._master.detectorsManager.release(handle)
+            except Exception as e:
+                self.__logger.error(
+                    f'Failed to release the preview detector lease: {e}',
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # Image pipeline
@@ -613,7 +866,10 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
                         for i in range(np.size(coords_detected, 0)):
                             self.setDetLogLine('det_coord_x_', coords_wf[0], i)
                             self.setDetLogLine('det_coord_y_', coords_wf[1], i)
-                    self.runSlowScan()
+                    if not self.runSlowScan():
+                        self.__frame = 0
+                        self.continueFastModality()
+                        return
                     self.updateScatter(coords_detected, clear=True)
                     self.__prevFrames.append(img)
                     self.__busy = False
@@ -664,11 +920,68 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
             return
         self.__clock_busy = True
         self.__logger.debug('clockWidefield_fct')
-        self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(True))
-        time.sleep(0.5)
-        img = self.detectorFast_controller.wait_and_get_NewFrame(True)
-        self._master.lasersManager.execOn(self.laserFast, lambda l: l.setEnabled(False))
-        self.runPipeline(self.detectorFast, img)
+        try:
+            self._master.lasersManager.execOn(
+                self.laserFast, lambda l: l.setEnabled(True)
+            )
+            time.sleep(0.5)
+            img = self.detectorFast_controller.wait_and_get_NewFrame(True)
+            self.runPipeline(self.detectorFast, img)
+        finally:
+            try:
+                self._master.lasersManager.execOn(
+                    self.laserFast, lambda l: l.setEnabled(False)
+                )
+            finally:
+                # runPipeline normally clears this itself; this guard covers a
+                # camera/laser/pipeline exception before it gets that far.
+                self.__clock_busy = False
+
+    def closeEvent(self):
+        """Stop timers/signals and give back detector ownership on widget close."""
+        self._closed = True
+        self._stopRequested = True
+        self._experimentActive = False
+        commChannel = self.__dict__.get('_commChannel')
+        if commChannel is not None:
+            if self.__dict__.get('ClockWidefield', False):
+                self._safeDisconnect(
+                    commChannel.sigClockWidefield, self.clockWidefield_fct
+                )
+            else:
+                self._safeDisconnect(commChannel.sigUpdateImage, self.runPipeline)
+            scanStartingSignal = getattr(
+                commChannel, 'sigScanStarting', None
+            )
+            if scanStartingSignal is not None:
+                self._safeDisconnect(
+                    scanStartingSignal,
+                    self._onTriggeredScanStarting,
+                )
+            self._safeDisconnect(commChannel.sigScanEnded, self.scanEnded)
+
+        master = self.__dict__.get('_master')
+        laserFast = self.__dict__.get('laserFast')
+        if master is not None and laserFast is not None:
+            try:
+                master.lasersManager.execOn(
+                    laserFast, lambda l: l.setEnabled(False)
+                )
+            except Exception:
+                pass
+
+        if '_EtSnoutyController__prevFrames' in self.__dict__:
+            self.resetRunParams()
+        else:
+            self._releaseDetectorFastLease()
+        super().closeEvent()
+        return self.shutdownComplete()
+
+    def shutdownComplete(self):
+        """Retry and report the run detector's exact lease release."""
+        if self.__dict__.get('_closed', False):
+            self._releaseDetectorFastLease()
+        return self.__dict__.get('_detectorFastHandle') is None
 
     # ------------------------------------------------------------------
     # Analysis help widget
@@ -748,7 +1061,9 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         )
         with self._temporaryDetectorRead(self.detectorFast):
             time.sleep(1)
-            self.latest_image = self.detectorFast_controller.getLatestFrame()
+            self.latest_image = (
+                self.detectorFast_controller.getLatestFrameShared()
+            )
 
         self.roi_win = pg.GraphicsLayoutWidget(title='Define ROI for mask')
         self.view = self.roi_win.addViewBox()
@@ -809,7 +1124,7 @@ class EtSnoutyController(SmartModeRoleMixin, ImConWidgetController):
         )
         with self._temporaryDetectorRead(self.detectorFast):
             time.sleep(1)
-            img = self.detectorFast_controller.getLatestFrame()
+            img = self.detectorFast_controller.getLatestFrameShared()
 
         self.roi_win = pg.GraphicsLayoutWidget(title='Actual Binary Mask')
         self.view = self.roi_win.addViewBox()

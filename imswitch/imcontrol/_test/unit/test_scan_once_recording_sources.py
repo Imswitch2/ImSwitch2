@@ -14,8 +14,14 @@ Pins the fixes for the June 2026 Snouty bug set:
 """
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from imswitch.imcontrol.controller.basecontrollers import SuperScanController
+from imswitch.imcontrol.controller.CommunicationChannel import (
+    CommunicationChannel,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -48,6 +54,56 @@ def test_channel_resolves_recording_accessors_without_scan_widget():
     assert 'len(matches) > 1' in resolver
 
 
+def _recording_source():
+    return SimpleNamespace(
+        runScanExternal=lambda *_args: None,
+        abortScan=lambda: None,
+        getNumScanPositions=lambda: 1,
+        getNumCamTTL=lambda: {},
+    )
+
+
+def test_channel_resolves_exact_recording_scan_source():
+    canonical = _recording_source()
+    standalone = _recording_source()
+    shell = SimpleNamespace(
+        _CommunicationChannel__main=SimpleNamespace(
+            controllers={
+                'Scan': canonical,
+                'TriggerScopeRaster': standalone,
+            }
+        )
+    )
+
+    assert (
+        CommunicationChannel.getRecordingScanSource(shell) is canonical
+    )
+
+    shell._CommunicationChannel__main.controllers = {
+        'TriggerScopeRaster': standalone,
+        'Other': SimpleNamespace(runScanExternal=lambda *_args: None),
+    }
+    assert (
+        CommunicationChannel.getRecordingScanSource(shell) is standalone
+    )
+
+
+@pytest.mark.parametrize("controllers", [{}, {
+    'RasterA': _recording_source(),
+    'RasterB': _recording_source(),
+}])
+def test_channel_refuses_missing_or_ambiguous_recording_scan_source(
+        controllers):
+    shell = SimpleNamespace(
+        _CommunicationChannel__main=SimpleNamespace(
+            controllers=controllers
+        )
+    )
+
+    with pytest.raises(RuntimeError, match='Cannot automate scan-lapse'):
+        CommunicationChannel.getRecordingScanSource(shell)
+
+
 def test_raster_controller_provides_recording_accessors():
     source = (CONTROLLERS / 'TriggerScopeRasterController.py').read_text(encoding='utf-8')
 
@@ -71,7 +127,8 @@ def test_recording_controller_does_not_broadcast_run_scan_without_scan_widget():
     scanOnce = scanOnce[:scanOnce.index('elif self.recMode == RecMode.ScanLapse:')]
 
     assert 'if self._commChannel.hasScanWidget():' in scanOnce
-    assert 'self._commChannel.scanWorkflow.run_scan(True, False)' in scanOnce
+    assert 'self._commChannel.getRecordingScanSource()' in source
+    assert 'self._requestScanStart(True, False)' in scanOnce
     assert 'Recording armed (scan-once)' in scanOnce
 
 

@@ -1,8 +1,10 @@
 import time
 import os
+import sip
 import numpy as np
 from collections.abc import Callable, Sequence
 from threading import Lock
+from qtpy import QtCore
 
 from imswitch.imcommon.framework import Thread, Timer, Worker, Signal
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
@@ -33,6 +35,7 @@ from imswitch.imcontrol.model.bead_recognition import (
 
 _SCAN_END_DRAIN_TIMEOUT_S = 0.5
 _SCAN_END_DRAIN_CHECK_MS = 10
+_CLOSE_WAIT_TIMEOUT_MS = 2000
 
 
 class BeadRecController(ImConWidgetController, StatefulComponentMixin):
@@ -76,10 +79,19 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         # onScanStarting.
         self._scanDetectorHandle = None
         self._scanDetectorName = None
+        self._scanDetectorGeneration = None
+        self._scanGeneration = 0
+        self._chunkConsumerDetectorName = None
+        self._chunkConsumerGeneration = None
+        self._beadResourceLock = Lock()
+        self._beadWorkerGeneration = 0
+        self._activeBeadWorkerGeneration = None
+        self._beadWorkerStopping = False
         self._drainingEndedScan = False
+        self._scanEndDrainGeneration = None
         self._scanEndDrainDeadline = None
-        self._scanEndDrainTimer = Timer()
-        self._scanEndDrainTimer.timeout.connect(self._finishEndedScanIfReady)
+        self._scanEndDrainCallback = None
+        self._scanEndDrainTimer = Timer(singleShot=True)
         self.beadWorker = BeadWorker(
             isScanRunning=self._scanFramesReady,
             getFrames=self._getCurrentDetectorChunk,
@@ -92,6 +104,10 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self.thread = Thread()
         self.beadWorker.moveToThread(self.thread)
         self.thread.started.connect(self.beadWorker.run)
+        self.thread.finished.connect(
+            self._onBeadWorkerThreadFinished,
+            QtCore.Qt.DirectConnection,
+        )
 
         self.yCenter = None
         self.xCenter = None
@@ -147,16 +163,223 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         getWidgetStatePersistence().register('BeadRec', self)
         
 
+    def _shutdown(self) -> None:
+        """Idempotently stop background work and release scan ownership.
+
+        ``__del__`` can run for a partially initialized controller, so every
+        object accessed here is optional. Keeping the actual cleanup in this
+        method also lets ``closeEvent`` perform it deterministically instead of
+        relying on garbage collection.
+        """
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        self._shutdownComplete = True
+        self._disconnectExternalSignals()
+        with self._resourceLock():
+            self._scanGeneration = (
+                self.__dict__.get('_scanGeneration', 0) + 1
+            )
+            activeWorkerGeneration = self.__dict__.get(
+                '_activeBeadWorkerGeneration'
+            )
+            if activeWorkerGeneration is not None:
+                self._beadWorkerStopping = True
+
+        timer = self.__dict__.get('_scanEndDrainTimer')
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+
+        worker = self.__dict__.get('beadWorker')
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception:
+                pass
+
+        thread = self.__dict__.get('thread')
+        workerStopped = True
+        if thread is not None:
+            try:
+                thread.quit()
+                workerStopped = self._waitForWorkerThread(thread)
+            except Exception:
+                workerStopped = False
+
+        if workerStopped:
+            self._onBeadWorkerThreadFinished(activeWorkerGeneration)
+            # A partially initialized controller may never have started a
+            # worker generation, but can still own a pre-arm lease.
+            self._releaseBeadDetectorResources()
+        else:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.warning(
+                    'BeadRec worker is still stopping after widget close; '
+                    'its detector resources will be released when the worker '
+                    'exits.'
+                )
+
+    def _waitForWorkerThread(self, thread) -> bool:
+        """Bound GUI waits while retaining resources for a late worker exit."""
+        if isinstance(thread, QtCore.QThread):
+            if sip.isdeleted(thread):
+                return True
+            try:
+                return bool(
+                    QtCore.QThread.wait(thread, _CLOSE_WAIT_TIMEOUT_MS)
+                )
+            except RuntimeError:
+                if sip.isdeleted(thread):
+                    return True
+                raise
+        # Lightweight test/fallback thread implementations are expected to
+        # provide a synchronous wait.
+        result = thread.wait()
+        return True if result is None else bool(result)
+
+    def _resourceLock(self):
+        lock = self.__dict__.get('_beadResourceLock')
+        if lock is None:
+            lock = Lock()
+            self._beadResourceLock = lock
+        return lock
+
+    @staticmethod
+    def _workerThreadIsRunning(thread) -> bool:
+        if thread is None:
+            return False
+        if isinstance(thread, QtCore.QThread):
+            if sip.isdeleted(thread):
+                return False
+            try:
+                return bool(thread.isRunning())
+            except RuntimeError:
+                return not sip.isdeleted(thread)
+        isAlive = getattr(thread, 'is_alive', None)
+        if isAlive is not None:
+            return bool(isAlive())
+        isRunning = getattr(thread, 'isRunning', None)
+        if isRunning is not None:
+            return bool(isRunning())
+        return False
+
+    def shutdownComplete(self) -> bool:
+        """Return whether close-time worker/resource cleanup has finished."""
+        with self._resourceLock():
+            stopping = self.__dict__.get('_beadWorkerStopping', False)
+            handle = self.__dict__.get('_scanDetectorHandle')
+        return (
+            not stopping
+            and handle is None
+            and not self._workerThreadIsRunning(self.__dict__.get('thread'))
+        )
+
+    def _onBeadWorkerThreadFinished(self, expectedGeneration=None) -> None:
+        """Finalize only the worker generation that actually stopped."""
+        with self._resourceLock():
+            activeGeneration = self.__dict__.get(
+                '_activeBeadWorkerGeneration'
+            )
+            if (
+                expectedGeneration is not None
+                and activeGeneration is not None
+                and expectedGeneration != activeGeneration
+            ):
+                return
+            if activeGeneration is not None:
+                self._activeBeadWorkerGeneration = None
+            self._beadWorkerStopping = False
+            scanGeneration = self.__dict__.get('_scanDetectorGeneration')
+        self._releaseBeadDetectorResources(scanGeneration)
+
+    def _releaseBeadDetectorResources(self, expectedGeneration=None) -> None:
+        """Release resources only after the frame-reading worker has stopped."""
+        try:
+            self._releaseDetectorChunkConsumer(expectedGeneration)
+        except Exception as e:
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                logger.error(
+                    f'BeadRec failed to release its detector frame queue: {e}',
+                    exc_info=True,
+                )
+        self._releaseScanDetectorLease(expectedGeneration)
+
+    @staticmethod
+    def _disconnectSignal(signal, slot) -> None:
+        if signal is None:
+            return
+        try:
+            signal.disconnect(slot)
+        except Exception:
+            # Qt raises when a slot was never connected or its owner was
+            # already destroyed. Both are safe during idempotent teardown.
+            pass
+
+    def _disconnectExternalSignals(self) -> None:
+        """Prevent global/timer/worker callbacks after widget teardown."""
+        comm = self.__dict__.get('_commChannel')
+        if comm is not None:
+            for signalName, slot in (
+                ('sigUpdateImage', self._onLiveImage),
+                ('sigScanStarting', self.onScanStarting),
+                ('sigScanStarted', self.updateParameters),
+                ('sigScanStarted', self.onNewScan),
+                ('sigScanStarted', self.OngoingScanStatus),
+                ('sigScanEnded', self.onEndedScan),
+                ('sigQueryCenterCoord', self.centerCoordQuery),
+                ('sigUpdateBeadRecCenter', self.updateCenterCross),
+                ('sigShowBeadRecCenterCross', self.showStateChanged),
+                ('sigAutoAxialToggled', self.onAutoAxialToggled),
+                ('sigNewAxialListBuffer', self.onNewAxialListBuffer),
+            ):
+                self._disconnectSignal(getattr(comm, signalName, None), slot)
+
+        timer = self.__dict__.get('_scanEndDrainTimer')
+        if timer is not None:
+            callback = self.__dict__.get('_scanEndDrainCallback')
+            self._disconnectSignal(
+                getattr(timer, 'timeout', None), callback
+            )
+
+        worker = self.__dict__.get('beadWorker')
+        if worker is not None:
+            self._disconnectSignal(
+                getattr(worker, 'sigNewChunk', None), self.update
+            )
+            logger = self.__dict__.get('_logger')
+            if logger is not None:
+                self._disconnectSignal(
+                    getattr(worker, 'sigWarning', None), logger.warning
+                )
+            widget = self.__dict__.get('_widget')
+            if widget is not None:
+                self._disconnectSignal(
+                    getattr(worker, 'sigWarning', None), widget.setStatusText
+                )
+            self._disconnectSignal(
+                getattr(worker, 'sigProgress', None), self._updateProgress
+            )
+
+    def closeEvent(self) -> bool:
+        self._shutdown()
+        super().closeEvent()
+        return self.shutdownComplete()
+
     def __del__(self) -> None:
         try:
-            self._scanEndDrainTimer.stop()
+            self._shutdown()
         except Exception:
             pass
-        self.beadWorker.stop()
-        self.thread.quit()
-        self.thread.wait()
-        if hasattr(super(), '__del__'):
-            super().__del__()
+        try:
+            parentDel = getattr(super(), '__del__', None)
+            if parentDel is not None:
+                parentDel()
+        except Exception:
+            pass
 
     # readChunk consumer key — getChunk() is a destructive read, and the
     # RecordingManager polls the same detector during scan-once recordings;
@@ -172,15 +395,33 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         two cameras' frames into one reconstruction. Falls back to the current
         detector outside a scan.
         """
-        if self._scanDetectorName is not None:
-            return self._scanDetectorName
+        with self._resourceLock():
+            detectorName = self.__dict__.get('_scanDetectorName')
+        if detectorName is not None:
+            return detectorName
         return self._master.detectorsManager.getCurrentDetectorName()
 
     def _getCurrentDetectorChunk(self) -> Sequence[np.ndarray]:
-        chunk = self._master.detectorsManager.execOn(
-            self._reconstructionDetectorName(),
-            lambda c: c.readChunk(self._CHUNK_CONSUMER),
-        )
+        with self._resourceLock():
+            detectorName = self.__dict__.get('_scanDetectorName')
+            detectorGeneration = self.__dict__.get(
+                '_scanDetectorGeneration'
+            )
+            if (
+                detectorName is None
+                or self.__dict__.get('_scanDetectorHandle') is None
+            ):
+                return []
+            self._chunkConsumerDetectorName = detectorName
+            self._chunkConsumerGeneration = detectorGeneration
+            # Keep resource cleanup out until the destructive hardware drain
+            # has completed. Otherwise cleanup can release the last detector
+            # lease in this gap and this call would re-register a consumer on
+            # already-stopped hardware.
+            chunk = self._master.detectorsManager.execOn(
+                detectorName,
+                lambda c: c.readChunk(self._CHUNK_CONSUMER),
+            )
         # The ROI is drawn on the DISPLAYED image (rotated/flipped per the
         # detector's display transform), but readChunk returns raw frames.
         # Apply the same transform so the ROI bounds index the region the user
@@ -210,10 +451,24 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             for f in frames
         ]
 
-    def _releaseDetectorChunkConsumer(self) -> None:
-        """Stop retaining frames for BeadRec on every detector."""
-        self._master.detectorsManager.execOnAll(
-            lambda c: c.releaseChunkConsumer(self._CHUNK_CONSUMER)
+    def _releaseDetectorChunkConsumer(self, expectedGeneration=None) -> None:
+        """Release BeadRec's queue only on the detector it consumed from."""
+        with self._resourceLock():
+            generation = self.__dict__.get('_chunkConsumerGeneration')
+            if (
+                expectedGeneration is not None
+                and generation is not None
+                and generation != expectedGeneration
+            ):
+                return
+            detectorName = self.__dict__.get('_chunkConsumerDetectorName')
+            self._chunkConsumerDetectorName = None
+            self._chunkConsumerGeneration = None
+        if detectorName is None:
+            return
+        self._master.detectorsManager.execOn(
+            detectorName,
+            lambda c: c.releaseChunkConsumer(self._CHUNK_CONSUMER),
         )
 
     def onScanStarting(self) -> None:
@@ -229,16 +484,27 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         reconstruction sources mid-scan if the user changed the current
         detector in the view.
         """
-        if not self._widget.runButton.isChecked():
+        if (
+            self.__dict__.get('_shutdownComplete', False)
+            or not self._widget.runButton.isChecked()
+        ):
             return
-        self._releaseScanDetectorLease()
+        self._cancelScanEndDrain()
+        self._scanArmed = False
+        self._releaseBeadDetectorResources()
+        with self._resourceLock():
+            generation = self.__dict__.get('_scanGeneration', 0) + 1
+            self._scanGeneration = generation
         try:
             detectorName = self._master.detectorsManager.getCurrentDetectorName()
-        except Exception:
+        except Exception as e:
+            self._logger.error(
+                f'BeadRec could not select a detector for the scan: {e}',
+                exc_info=True,
+            )
             return
-        self._scanDetectorName = detectorName
         try:
-            self._scanDetectorHandle = self._master.detectorsManager.acquire(
+            handle = self._master.detectorsManager.acquire(
                 [detectorName], LeasePurpose.WORKFLOW
             )
         except Exception as e:
@@ -246,10 +512,49 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 f'BeadRec could not arm detector "{detectorName}" for the '
                 f'scan: {e}', exc_info=True
             )
-            self._scanDetectorName = None
+            try:
+                self._widget.setStatusText(
+                    f'BeadRec could not arm "{detectorName}"; '
+                    'this scan will not be reconstructed'
+                )
+            except Exception:
+                pass
+            return
 
-    def _releaseScanDetectorLease(self) -> None:
-        handle = getattr(self, '_scanDetectorHandle', None)
+        stale = False
+        with self._resourceLock():
+            if (
+                self.__dict__.get('_scanGeneration') != generation
+                or self.__dict__.get('_shutdownComplete', False)
+                or not self._widget.runButton.isChecked()
+            ):
+                stale = True
+            else:
+                self._scanDetectorHandle = handle
+                self._scanDetectorName = detectorName
+                self._scanDetectorGeneration = generation
+        if stale:
+            try:
+                self._master.detectorsManager.release(handle)
+            except Exception as e:
+                self._logger.error(
+                    f'BeadRec failed to release a stale detector lease: {e}',
+                    exc_info=True,
+                )
+
+    def _releaseScanDetectorLease(self, expectedGeneration=None) -> None:
+        with self._resourceLock():
+            generation = self.__dict__.get('_scanDetectorGeneration')
+            if (
+                expectedGeneration is not None
+                and generation is not None
+                and generation != expectedGeneration
+            ):
+                return
+            handle = self.__dict__.get('_scanDetectorHandle')
+            self._scanDetectorHandle = None
+            self._scanDetectorName = None
+            self._scanDetectorGeneration = None
         if handle is None:
             return
         try:
@@ -259,8 +564,15 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
                 f'BeadRec failed to release its scan detector lease: {e}',
                 exc_info=True,
             )
-        finally:
-            self._scanDetectorHandle = None
+
+    def _hasScanDetectorLease(self) -> bool:
+        with self._resourceLock():
+            return (
+                self.__dict__.get('_scanDetectorHandle') is not None
+                and self.__dict__.get('_scanDetectorName') is not None
+                and self.__dict__.get('_scanDetectorGeneration')
+                == self.__dict__.get('_scanGeneration')
+            )
 
     def _scanFramesReady(self) -> bool:
         """Whether the worker may consume detector frames as scan pixels.
@@ -270,7 +582,7 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         insufficient: it turns True while the scan signals are still being
         armed, before any scan frame exists.
         """
-        if not self._scanArmed:
+        if self.__dict__.get('_shutdownComplete', False) or not self._scanArmed:
             return False
         if self._commChannel.isScanRunning():
             return True
@@ -306,11 +618,55 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             int(filled_pixels or 0),
         )
 
-    def _discardBufferedFrames(self) -> None:
-        """Drop any frames buffered before the scan started, so reconstruction
-        begins exactly at the first real scan frame (no pre-scan shift)."""
-        self._master.detectorsManager.execOnAll(lambda c: c.flushBuffers())
-        self._releaseDetectorChunkConsumer()
+    def _discardBufferedFrames(self) -> bool:
+        """Start BeadRec at an atomic post-boundary frame position.
+
+        The detector drains its pre-boundary hardware chunk once and preserves
+        it for consumers that were already registered (notably Recording).
+        A global flush here would silently discard another owner's data.
+        """
+        with self._resourceLock():
+            detectorName = self.__dict__.get('_scanDetectorName')
+            generation = self.__dict__.get('_scanDetectorGeneration')
+            handle = self.__dict__.get('_scanDetectorHandle')
+        if detectorName is None or handle is None:
+            return False
+        self._master.detectorsManager.execOn(
+            detectorName,
+            lambda c: c.startChunkConsumer(self._CHUNK_CONSUMER),
+        )
+        with self._resourceLock():
+            self._chunkConsumerDetectorName = detectorName
+            self._chunkConsumerGeneration = generation
+        return True
+
+    def _cancelScanEndDrain(self) -> None:
+        timer = self.__dict__.get('_scanEndDrainTimer')
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            callback = self.__dict__.get('_scanEndDrainCallback')
+            self._disconnectSignal(getattr(timer, 'timeout', None), callback)
+        self._scanEndDrainCallback = None
+        self._scanEndDrainGeneration = None
+        self._drainingEndedScan = False
+        self._scanEndDrainDeadline = None
+
+    def _startScanEndDrain(self, generation: int) -> None:
+        self._cancelScanEndDrain()
+        timer = Timer(singleShot=True)
+        callback = lambda: self._finishEndedScanIfReady(generation, timer)
+        timer.timeout.connect(callback)
+        self._scanEndDrainTimer = timer
+        self._scanEndDrainCallback = callback
+        self._scanEndDrainGeneration = generation
+        self._drainingEndedScan = True
+        self._scanEndDrainDeadline = (
+            time.monotonic() + _SCAN_END_DRAIN_TIMEOUT_S
+        )
+        timer.start(_SCAN_END_DRAIN_CHECK_MS)
 
     def _getBeadRoiBounds(self) -> Sequence[int]:
         return self._widget.getROIGraphicsItem().bounds
@@ -331,6 +687,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         return BeadAcquisitionConfig.from_scan_dims(self.dims, frames_per_pixel=self.framesPerPixel)
 
     def _updateProgress(self, current: int, total: int) -> None:
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self._widget.updateProgress(current, total)
 
     def clearList(self):
@@ -583,12 +941,14 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
     def _onLiveImage(self, detectorName, image, init, scale, isCurrentDetector):
         """Cache the current detector's latest frame for the ROI crop preview."""
-        if not isCurrentDetector:
+        if self.__dict__.get('_shutdownComplete', False) or not isCurrentDetector:
             return
         self._lastLiveFrame = np.asarray(image)
         self._updateRoiCropPreview()
 
     def _onRoiChanged(self, position=None, size=None):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self._updateRoiCropPreview()
 
     def _updateRoiCropPreview(self):
@@ -628,64 +988,175 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             self.roiAdded = True
 
     def run(self):
-        # if not self.running:
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         if self._widget.runButton.isChecked():
-            self._scanEndDrainTimer.stop()
-            self._drainingEndedScan = False
-            self._scanEndDrainDeadline = None
-            self.updateParameters()
-            config = self._createAcquisitionConfig()
+            with self._resourceLock():
+                workerStopping = self.__dict__.get(
+                    '_beadWorkerStopping', False
+                )
+            if workerStopping or self._workerThreadIsRunning(self.thread):
+                self._rejectRunStart(
+                    'Bead reconstruction is still stopping; wait for it to '
+                    'finish before starting again'
+                )
+                return
+
+            self._cancelScanEndDrain()
+            self._scanArmed = False
+            try:
+                self.updateParameters()
+                config = self._createAcquisitionConfig()
+                scanAlreadyRunning = self._commChannel.isScanRunning()
+                if scanAlreadyRunning:
+                    # The normal signal already passed, so take the same
+                    # detector ownership explicitly before allowing reads.
+                    self.onScanStarting()
+                    if not self._hasScanDetectorLease():
+                        self._rejectRunStart(
+                            'Bead reconstruction could not arm the active '
+                            'scan detector'
+                        )
+                        return
+                    if not self._discardBufferedFrames():
+                        self._rejectRunStart(
+                            'Bead reconstruction has no armed scan detector'
+                        )
+                        return
+                    self._scanArmed = True
+
+                self.beadWorker.start(config)
+                with self._resourceLock():
+                    generation = (
+                        self.__dict__.get('_beadWorkerGeneration', 0) + 1
+                    )
+                    self._beadWorkerGeneration = generation
+                    self._activeBeadWorkerGeneration = generation
+                    self._beadWorkerStopping = False
+                self.thread.start()
+            except Exception as e:
+                try:
+                    self.beadWorker.stop()
+                except Exception:
+                    pass
+                with self._resourceLock():
+                    self._activeBeadWorkerGeneration = None
+                    self._beadWorkerStopping = False
+                self._scanArmed = False
+                self._releaseBeadDetectorResources()
+                self._logger.error(
+                    f'Bead reconstruction could not start: {e}',
+                    exc_info=True,
+                )
+                self._rejectRunStart(
+                    f'Bead reconstruction could not start: {e}'
+                )
+                return
+
             self.running = True
-            self._master.detectorsManager.execOnAll(lambda c: c.flushBuffers())
-            self._releaseDetectorChunkConsumer()  # start with a fresh queue
-            self.beadWorker.start(config)
             self._widget.setStatusText("Bead reconstruction running")
             self._widget.updateProgress(0, config.total_pixels)
-            self.thread.start()
-            # Only consume immediately if a scan is already mid-flight when Run
-            # is enabled; the normal "Run, then scan" flow arms in onNewScan.
-            self._scanArmed = self._commChannel.isScanRunning()
             if self.ongoingScan:
                 self.addCurrentToWidgetList()
         else:
             self.running = False
             self._scanArmed = False
-            self._drainingEndedScan = False
-            self._scanEndDrainDeadline = None
-            self._scanEndDrainTimer.stop()
-            self.beadWorker.stop()
-            self._widget.setStatusText("Bead reconstruction stopped")
-            self.thread.quit()
-            self.thread.wait()
-            self._releaseDetectorChunkConsumer()
+            self._cancelScanEndDrain()
+            workerStopped = False
+            with self._resourceLock():
+                self._scanGeneration = (
+                    self.__dict__.get('_scanGeneration', 0) + 1
+                )
+                activeWorkerGeneration = self.__dict__.get(
+                    '_activeBeadWorkerGeneration'
+                )
+                if activeWorkerGeneration is not None:
+                    self._beadWorkerStopping = True
+            try:
+                self.beadWorker.stop()
+            except Exception:
+                pass
+            try:
+                self._widget.setStatusText("Bead reconstruction stopped")
+            except Exception:
+                pass
+            try:
+                self.thread.quit()
+                workerStopped = self._waitForWorkerThread(self.thread)
+            finally:
+                # Run-off is a terminal path for the current reconstruction. A
+                # pre-arm acquired by sigScanStarting must not survive if the
+                # user toggles Run off before sigScanEnded arrives. If the
+                # worker is still inside a hardware read, its DirectConnection
+                # finished callback performs this cleanup later.
+                if workerStopped:
+                    self._onBeadWorkerThreadFinished(
+                        activeWorkerGeneration
+                    )
+                    if activeWorkerGeneration is None:
+                        self._releaseBeadDetectorResources()
+
+    def _rejectRunStart(self, message: str) -> None:
+        self.running = False
+        self._scanArmed = False
+        try:
+            self._widget.runButton.setChecked(False)
+        except Exception:
+            pass
+        try:
+            self._widget.setStatusText(message)
+        except Exception:
+            pass
+        self._logger.warning(message)
 
     def onNewScan(self):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self.newScan = True
         self.framesReceivedThisScan = 0
-        self._scanEndDrainTimer.stop()
-        self._drainingEndedScan = False
-        self._scanEndDrainDeadline = None
+        self._cancelScanEndDrain()
         if self.autoAxial:
             self.axialName = self._commChannel.getNextAxial()
         else:
             self.axialName = "XY"
 
         if self._widget.runButton.isChecked():
-            # Flush the pre-scan camera backlog and reset the reconstruction
-            # buffer, THEN arm consumption. Order matters: arming after the flush
-            # guarantees the worker's first readChunk returns only frames
-            # produced after the scan actually started (no shift, correct count).
-            self._discardBufferedFrames()
-            self.beadWorker.configure(self._createAcquisitionConfig())
+            if not self._hasScanDetectorLease():
+                self._scanArmed = False
+                message = (
+                    'BeadRec was not pre-armed for this scan; reconstruction '
+                    'is disabled to avoid an unowned detector read'
+                )
+                self._logger.error(message)
+                self._widget.setStatusText(message)
+                return
+            # Establish BeadRec's own post-start consumer boundary without
+            # flushing frames retained for Recording, then reset/configure the
+            # reconstruction buffer.
+            try:
+                if not self._discardBufferedFrames():
+                    raise RuntimeError('no armed detector is available')
+                self.beadWorker.configure(self._createAcquisitionConfig())
+            except Exception as e:
+                self._scanArmed = False
+                self._logger.error(
+                    f'BeadRec could not prepare its armed detector: {e}',
+                    exc_info=True,
+                )
+                self._widget.setStatusText(
+                    f'BeadRec could not prepare its armed detector: {e}'
+                )
+                self._releaseBeadDetectorResources()
+                return
             self._scanArmed = True
             self.addCurrentToWidgetList() # in case "clear all" made it disappear
             # BeadRec reconstructs from the CURRENT detector (execOnCurrent);
             # surface which one that is, since picking the wrong camera in
             # the view silently yields an empty/garbage reconstruction.
             try:
-                detectorName = self._master.detectorsManager.getCurrentDetectorName()
+                detectorName = self._reconstructionDetectorName()
                 self._logger.info(
-                    f'BeadRec scan started: reconstructing from current '
+                    f'BeadRec scan started: reconstructing from pinned '
                     f'detector "{detectorName}"'
                 )
                 self._widget.setStatusText(
@@ -696,9 +1167,13 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
     
     def OngoingScanStatus(self):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self.ongoingScan = True
 
     def onEndedScan(self):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self.ongoingScan=False
         # If self.framesReceivedThisScan == 0 after the short drain below,
         # _completeEndedScan reports "0 detector frames received" loudly.
@@ -712,32 +1187,60 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             # detector frames have been delivered to the chunk buffer. The
             # RecordingManager avoids this by polling until its expected frame
             # count is reached; mirror that behavior briefly for BeadRec.
-            self._drainingEndedScan = True
             self._scanArmed = True
-            self._scanEndDrainDeadline = time.monotonic() + _SCAN_END_DRAIN_TIMEOUT_S
-            self._scanEndDrainTimer.start(_SCAN_END_DRAIN_CHECK_MS)
+            with self._resourceLock():
+                generation = self.__dict__.get('_scanDetectorGeneration')
+            if generation is None:
+                self._scanArmed = False
+                self._completeEndedScan()
+                return
+            self._startScanEndDrain(generation)
             return
         self._completeEndedScan()
 
-    def _finishEndedScanIfReady(self) -> None:
+    def _finishEndedScanIfReady(
+        self, generation=None, sourceTimer=None
+    ) -> None:
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        if (
+            not self.__dict__.get('_drainingEndedScan', False)
+            or generation != self.__dict__.get('_scanEndDrainGeneration')
+            or (
+                sourceTimer is not None
+                and sourceTimer is not self.__dict__.get(
+                    '_scanEndDrainTimer'
+                )
+            )
+        ):
+            return
         deadline = self._scanEndDrainDeadline
         if (
             self._hasExpectedScanFrames()
             or deadline is None
             or time.monotonic() >= deadline
         ):
-            self._completeEndedScan()
+            self._completeEndedScan(generation)
+        else:
+            self._scanEndDrainTimer.start(_SCAN_END_DRAIN_CHECK_MS)
 
-    def _completeEndedScan(self) -> None:
-        self._scanEndDrainTimer.stop()
-        self._drainingEndedScan = False
-        self._scanEndDrainDeadline = None
+    def _completeEndedScan(self, expectedGeneration=None) -> None:
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        with self._resourceLock():
+            generation = self.__dict__.get('_scanDetectorGeneration')
+        if (
+            expectedGeneration is not None
+            and generation is not None
+            and generation != expectedGeneration
+        ):
+            return
+        self._cancelScanEndDrain()
         self._syncReconstructionFromWorker()
         # Stop consuming: frames the free-running camera keeps producing after
         # the scan ends must not bleed into the finished reconstruction.
         self._scanArmed = False
-        self._releaseDetectorChunkConsumer()
-        self._releaseScanDetectorLease()
+        self._releaseBeadDetectorResources(generation)
         received = self._receivedScanFrames()
         if self.running and received == 0:
             msg = ('BeadRec: 0 detector frames received during the scan — '
@@ -771,6 +1274,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
         self._widget.updateProgress(self.recIm.size, self.recIm.size)
     
     def onAutoAxialToggled(self,state:bool = False):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         if state:
             self.autoAxial=True
         else:
@@ -778,10 +1283,14 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
     
     def onNewAxialListBuffer(self, axialList:list):
         """ clean up self.currentRunImgs to not keep previous XZ/YZ and widget list """
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self.currentRunImgs={}
         self._widget.removeCurrentRunItems()
 
     def updateParameters(self):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         try:
             dims = np.array(self._commChannel.getDimsScan()).astype(int)
             stepSizes = np.array(self._commChannel.getScanStepSizes(), dtype=float)
@@ -850,6 +1359,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
     def _onOrientationChanged(self):
         """Re-render the current reconstruction with the new orientation."""
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self._orientation = DisplayTransform(*self._toTransformArgs())
         if self._orientBase is not None:
             self.imDisplay = self._applyOrientation(self._orientBase)
@@ -888,6 +1399,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
     
     def update(self, recIm=None):
         """"Updates image display with current recorded image self.recIm"""
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         if isinstance(recIm, BeadWorkerUpdate):
             self._updateProgress(recIm.filled_pixels, recIm.total_pixels)
             self.framesReceivedThisScan += recIm.frames_written
@@ -903,6 +1416,8 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
 
 
     def centerCoordQuery(self, mode):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         coord = None
         if self.imDisplay is not None:
             model_key = "gaussian2d" if mode == "Maxima" else "donut_r2_gaussian"
@@ -920,11 +1435,15 @@ class BeadRecController(ImConWidgetController, StatefulComponentMixin):
             self._logger.warning(f"Center search with '{mode}' method failed. Try manual coordinate")
 
     def updateCenterCross(self,y,x):    
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self.yCenter = y
         self.xCenter = x
         self.updateCenterCrossWidget()
     
     def showStateChanged(self,state:bool):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         self.showCenterState = state
         self.updateCenterCrossWidget()
 

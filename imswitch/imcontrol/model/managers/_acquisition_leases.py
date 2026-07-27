@@ -11,6 +11,7 @@ Design reference: docs/design/plans/detector-acquisition-selection.md.
 """
 
 import threading
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
@@ -50,15 +51,17 @@ class DetectorFaultedError(RuntimeError):
     refcount transition. """
 
 
+@dataclass(frozen=True, slots=True, eq=False)
 class LeaseHandle:
     """ Opaque token identifying one acquisition lease. Compared by identity;
     the detector set and purpose are fixed at acquire time. """
 
-    __slots__ = ('purpose', 'detectorNames')
+    purpose: LeasePurpose
+    detectorNames: tuple
 
     def __init__(self, purpose: LeasePurpose, detectorNames: Iterable[str]):
-        self.purpose = purpose
-        self.detectorNames = tuple(detectorNames)
+        object.__setattr__(self, 'purpose', purpose)
+        object.__setattr__(self, 'detectorNames', tuple(detectorNames))
 
     def __repr__(self):
         return (f'LeaseHandle(purpose={self.purpose.name},'
@@ -100,7 +103,8 @@ class AcquisitionLeaseTable:
       FAULTED and quarantines it (acquire rejected, no further stop attempts)
       until ``retryStop`` succeeds.
     - Acquire is transactional: on failure every detector this call incremented
-      is decremented again, and only detectors this call started are stopped.
+      is decremented again, and every 0 -> 1 start this call attempted receives
+      a compensating stop (because a start that raises may be partially armed).
 
     One hook, ``onStateChanged(name, leased, faulted)``, fires whenever a
     detector's lease/fault state changes — the DetectorsManager mirrors these
@@ -159,6 +163,7 @@ class AcquisitionLeaseTable:
 
             transition = LeaseTransition()
             incremented: List[str] = []
+            startAttempted: List[str] = []
             try:
                 for name in names:
                     newCount = self._refcounts.get(name, 0) + 1
@@ -166,10 +171,16 @@ class AcquisitionLeaseTable:
                     incremented.append(name)
                     if newCount == 1:
                         self._notifyState(name)
+                        # A start call that raises may nevertheless have
+                        # partially armed hardware. Record the attempt before
+                        # calling it so rollback always performs a compensating
+                        # stop (and quarantines the detector if that stop
+                        # cannot establish a known-off state).
+                        startAttempted.append(name)
                         self._startDetector(name)
                         transition.started.append(name)
             except Exception:
-                self._rollbackAcquire(incremented, transition)
+                self._rollbackAcquire(incremented, startAttempted)
                 raise
 
             handle = LeaseHandle(purpose, names)
@@ -245,6 +256,16 @@ class AcquisitionLeaseTable:
         with self._lock:
             return list(self._handles)
 
+    def isActiveHandle(self, handle: LeaseHandle) -> bool:
+        """Whether ``handle`` is an active token, using identity semantics.
+
+        DetectorsManager uses this read-only check before poll-thread side
+        effects. It still calls :meth:`release`, which validates again while
+        mutating the table.
+        """
+        with self._lock:
+            return any(existing is handle for existing in self._handles)
+
     def frameStreamHandles(self) -> List[LeaseHandle]:
         """ Active leases whose detectors must be polled. Callers use this to
         decide poll-thread lifecycle *outside* the lock — the poll loop itself
@@ -272,10 +293,12 @@ class AcquisitionLeaseTable:
     # ------------------------------------------------------------------ #
 
     def _rollbackAcquire(self, incremented: List[str],
-                         transition: LeaseTransition) -> None:
+                         startAttempted: List[str]) -> None:
         """ Undo every increment this acquire performed; stop only detectors
-        this acquire started (0 -> 1). A rollback stop that itself fails
-        faults that detector, and the original acquire error still
+        for which this acquire attempted the 0 -> 1 hardware start. The
+        failing start itself is included because hardware may have been
+        partially armed before it raised. A compensating stop that itself
+        fails faults that detector, and the original acquire error still
         propagates. """
         for name in reversed(incremented):
             newCount = self._refcounts.get(name, 0) - 1
@@ -283,7 +306,7 @@ class AcquisitionLeaseTable:
             if newCount != 0:
                 continue
             self._notifyState(name)
-            if name in transition.started:
+            if name in startAttempted:
                 try:
                     self._stopDetector(name)
                 except Exception:

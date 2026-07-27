@@ -23,16 +23,35 @@ from imswitch.imcontrol.model.managers.detectors.PMTManager import PMTManager
 from imswitch.imcontrol.model.managers.detectors.SwabianTimeTaggerManager import (
     SwabianTimeTaggerManager,
 )
+from imswitch.imcontrol.model.managers.detectors.AVManager import AVManager
+from imswitch.imcontrol.model.managers.detectors.BaslerManager import (
+    BaslerManager,
+)
+from imswitch.imcontrol.model.managers.detectors.ESP32CamManager import (
+    ESP32CamManager,
+)
+from imswitch.imcontrol.model.managers.detectors.GXPIPYManager import (
+    GXPIPYManager,
+)
+from imswitch.imcontrol.model.managers.detectors.JetsonCamManager import (
+    JetsonCamManager,
+)
+from imswitch.imcontrol.model.managers.detectors.PiCamManager import PiCamManager
+from imswitch.imcontrol.model.managers.detectors.TISManager import TISManager
 
 
 class _ExplodingThread:
     """A scan thread whose teardown fails, like a QThread that won't join."""
 
+    def __init__(self):
+        self.waitTimeouts = []
+
     def quit(self):
         raise RuntimeError('thread refused to quit')
 
-    def wait(self):
-        pass
+    def wait(self, timeout):
+        self.waitTimeouts.append(timeout)
+        return False
 
     def isRunning(self):
         return True
@@ -41,23 +60,55 @@ class _ExplodingThread:
 class _CleanThread:
     def __init__(self):
         self.quitCalls = 0
+        self.running = True
+        self.waitTimeouts = []
 
     def quit(self):
         self.quitCalls += 1
 
-    def wait(self):
-        pass
+    def wait(self, timeout):
+        self.waitTimeouts.append(timeout)
+        self.running = False
+        return True
 
     def isRunning(self):
-        return True
+        return self.running
+
+
+class _StuckThread(_CleanThread):
+    def wait(self, timeout):
+        self.waitTimeouts.append(timeout)
+        return False
+
+
+class _FrameworkThread:
+    """Matches framework.Thread, whose wait() has no timeout parameter."""
+
+    def __init__(self):
+        self.quitCalls = 0
+        self.waitCalls = 0
+        self.running = True
+
+    def quit(self):
+        self.quitCalls += 1
+        self.running = False
+
+    def wait(self):
+        self.waitCalls += 1
+
+    def isRunning(self):
+        return self.running
 
 
 class _Worker:
-    def __init__(self):
+    def __init__(self, *, failClose=False):
         self.scanning = True
         self.closed = False
+        self.failClose = failClose
 
     def close(self):
+        if self.failClose:
+            raise RuntimeError('input task close failed')
         self.closed = True
 
     def stop(self):
@@ -84,9 +135,22 @@ class _Logger:
         pass
 
 
-def _makeAPD(thread):
+class _RetryableCamera:
+    def __init__(self):
+        self.stopCalls = 0
+
+    def suspend_live(self):
+        self.stopCalls += 1
+        if self.stopCalls == 1:
+            raise RuntimeError('SDK stop failed')
+
+    def close(self):
+        pass
+
+
+def _makeAPD(thread, *, worker=None):
     apd = APDManager.__new__(APDManager)
-    apd._scanWorker = _Worker()
+    apd._scanWorker = worker or _Worker()
     apd._scanThread = thread
     apd._APDManager__logger = _Logger()
     apd._APDManager__currSlice = (0, 0)
@@ -96,9 +160,9 @@ def _makeAPD(thread):
     return apd
 
 
-def _makePMT(thread):
+def _makePMT(thread, *, worker=None):
     pmt = PMTManager.__new__(PMTManager)
-    pmt._scanWorker = _Worker()
+    pmt._scanWorker = worker or _Worker()
     pmt._scanThread = thread
     pmt._PMTManager__logger = _Logger()
     pmt._PMTManager__newFrameReady = False
@@ -142,6 +206,7 @@ def test_apd_stop_succeeds_normally():
     apd.stopAcquisition()
 
     assert thread.quitCalls == 1
+    assert thread.waitTimeouts == [2000]
     assert apd._scanWorker is None
     assert apd._scanThread is None
 
@@ -181,6 +246,7 @@ def test_pmt_stop_succeeds_normally():
     pmt.stopAcquisition()
 
     assert thread.quitCalls == 1
+    assert thread.waitTimeouts == [2000]
     assert pmt._scanWorker is None
     assert pmt._scanThread is None
 
@@ -191,6 +257,93 @@ def test_pmt_internal_completion_path_still_swallows():
     pmt.stopAcquisitionLocal()  # must not raise
 
     assert pmt._PMTManager__logger.messages
+
+
+@pytest.mark.parametrize(
+    ('managerClass', 'loggerAttribute'),
+    [
+        (AVManager, '_AVManager__logger'),
+        (BaslerManager, '_BaslerManager__logger'),
+        (ESP32CamManager, '_ESP32CamManager__logger'),
+        (GXPIPYManager, '_GXPIPYManager__logger'),
+        (JetsonCamManager, '_JetsonCamManager__logger'),
+        (PiCamManager, '_PiCamManager__logger'),
+        (TISManager, '_TISManager__logger'),
+    ],
+)
+def test_camera_stop_failure_retains_running_state_for_retry(
+        managerClass, loggerAttribute):
+    manager = managerClass.__new__(managerClass)
+    manager._running = True
+    manager._camera = _RetryableCamera()
+    setattr(manager, loggerAttribute, _Logger())
+
+    with pytest.raises(RuntimeError, match='SDK stop failed'):
+        manager.stopAcquisition()
+    assert manager._running is True
+
+    manager.stopAcquisition()
+    assert manager._camera.stopCalls == 2
+    assert manager._running is False
+
+
+@pytest.mark.parametrize('factory', [_makeAPD, _makePMT])
+def test_point_detector_input_close_failure_uses_bounded_join_and_retains_thread(
+        factory):
+    thread = _StuckThread()
+    worker = _Worker(failClose=True)
+    worker.scanGeneration = 12
+    manager = factory(thread, worker=worker)
+    manager._preparedScanGeneration = 12
+    manager._activeScanGeneration = 12
+
+    with pytest.raises(RuntimeError, match='input task close failed'):
+        manager.stopAcquisition()
+
+    # Closing the NI task failed, so waiting forever would deadlock shutdown.
+    # The bounded attempt is recorded and the live objects stay strongly held
+    # for an explicit retry rather than being destroyed while still running.
+    assert thread.waitTimeouts == [2000]
+    assert manager._scanWorker is worker
+    assert manager._scanThread is thread
+    assert manager._preparedScanGeneration == 12
+    assert manager._activeScanGeneration == 12
+
+    # Avoid a destructor retry against the deliberately stuck test double.
+    manager._scanWorker = None
+    manager._scanThread = None
+
+
+@pytest.mark.parametrize('factory', [_makeAPD, _makePMT])
+def test_point_detector_abort_acknowledges_after_bounded_cleanup_failure(factory):
+    thread = _StuckThread()
+    worker = _Worker(failClose=True)
+    worker.scanGeneration = 13
+    manager = factory(thread, worker=worker)
+    manager._activeScanGeneration = 13
+    acknowledgements = []
+
+    manager.finishScan('abort', lambda: acknowledgements.append(True))
+
+    assert acknowledgements == [True]
+    assert manager._scanWorker is worker
+    assert manager._scanThread is thread
+
+    manager._scanWorker = None
+    manager._scanThread = None
+
+
+@pytest.mark.parametrize('factory', [_makeAPD, _makePMT])
+def test_point_detector_teardown_supports_framework_thread_wait(factory):
+    thread = _FrameworkThread()
+    manager = factory(thread)
+
+    manager.stopAcquisition()
+
+    assert thread.quitCalls == 1
+    assert thread.waitCalls == 1
+    assert manager._scanWorker is None
+    assert manager._scanThread is None
 
 
 # --------------------------------------------------------------------------- #

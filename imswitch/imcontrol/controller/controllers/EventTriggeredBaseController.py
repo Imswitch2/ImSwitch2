@@ -35,6 +35,7 @@ from __future__ import annotations
 import csv
 import os
 import sys
+import threading
 import time
 import traceback
 from collections import deque
@@ -58,7 +59,7 @@ from imswitch.imcontrol.model.EtSTEDTransformService import EtSTEDTransformServi
 from imswitch.imcontrol.model.EtSTEDTriggeredScanRunner import EtSTEDTriggeredScanRunner
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers._scan_execution import (
-    FINISH_ABORT, FINISH_GRACEFUL, ScanExecutionCoordinator,
+    FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
 )
 from imswitch.imcontrol.model.EventTriggeredSession import (
     EventRunMode as RunMode,
@@ -119,6 +120,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     LOGS_SUBFOLDER: str = 'logs_event_triggered'
     MODALITY_LABEL: str = 'event-triggered'
     BINARY_FRAMES: int = 10
+    BINARY_MASK_TIMEOUT_MS: int = 10_000
     INIT_FRAMES: int = 5
     VALIDATION_FRAMES_LIMIT: int = 5
     FLIP_WF_CALIB: bool = True
@@ -170,23 +172,29 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         # EVENT_STREAM lease on detectorFast, held for the detection loop's
         # lifetime (see _acquireDetectorFastStream).
         self._detectorFastHandle = None
+        self._detectorFastReleasePending = False
+        self._binaryMaskHandle = None
+        self._binaryMaskGeneration = 0
+        self._binaryMaskFrameSlot = None
 
-        # The fifth NI-DAQ scan entry point: an etSTED-triggered slow scan
-        # calls runScan directly, bypassing every SuperScanController, so it
-        # needs its own scan-iteration lifecycle. NI-DAQ stays authoritative
-        # for completion; a coordinator holding no token no-ops, so this
-        # coexists with the scan controllers listening to the same signals.
-        self._scanCoordinator = ScanExecutionCoordinator(
+        # The fifth NI-DAQ entry point shares the same global iteration owner as
+        # the scan widget. Its token is tagged with this controller as owner, so
+        # only this completion path may resume the event modality.
+        self._scanCoordinator = getSharedScanExecutionCoordinator(
             self._master.detectorsManager,
             self._master.nidaqManager,
             logger=self._logger,
+            scheduleTimeout=lambda delayS, callback: QtCore.QTimer.singleShot(
+                int(delayS * 1000), callback
+            ),
         )
         self._master.nidaqManager.sigScanDone.connect(
-            lambda: self._scanCoordinator.resolveActive(FINISH_GRACEFUL)
+            self._onTriggeredNidaqScanDone
         )
         self._master.nidaqManager.sigScanBuildFailed.connect(
-            lambda: self._scanCoordinator.resolveActive(FINISH_ABORT)
+            self._onTriggeredNidaqScanBuildFailed
         )
+        self._nidaqCompletionSignalsConnected = True
 
         # Helper for the coordinate-transform calibration sub-window.
         self._coordTransformHelper = EventTriggeredCoordTransformHelper(
@@ -225,6 +233,32 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._updatePeriod: Optional[int] = None
         self.signalDic = None
         self.scanInfoDict = None
+        # ``_state.running`` means the fast modality is currently producing
+        # frames, so it becomes False while a slow scan is in progress. Keep a
+        # separate session lifetime flag so Stop during that pause cannot be
+        # mistaken for a new Initiate click.
+        self._experimentActive = False
+        self._stopRequested = False
+        self._closed = False
+        # Only direct ScanWidget slow scans publish/own this lifecycle.
+        # RecordingWidget keeps its existing RecordingController ownership.
+        self._triggeredScanRunToken = None
+        self._triggeredScanStartingPublished = False
+        self._triggeredScanCompletionPublishing = False
+        # RecordingWidget owns its scan lifecycle, so no coordinator token can
+        # distinguish an unrelated recording signal from this controller's
+        # triggered recording. Keep an explicit operation gate instead.
+        self._triggeredRecordingInFlight = False
+        self._triggeredRecordingGeneration = None
+        self._recordingGenerationBeforeTrigger = None
+        self._triggeredRecordingManagerTerminal = False
+        self._triggeredRecordingLifecycleEnded = False
+        self._triggeredRecordingFailureMessage = None
+        self._triggeredRecordingCaptured = False
+        self._triggeredRecordingScanSource = None
+        self._triggeredRecordingRunToken = None
+        self._triggeredRecordingSourceObservedRunning = False
+        self._usesDetailedTriggeredRecordingSignals = False
 
     # ``setSmartModeService`` is provided by SmartModeRoleMixin.
 
@@ -263,10 +297,14 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def initiate(self) -> None:
         """Start (or stop) an event-triggered experiment."""
-        if self._state.running:
+        if (self.__dict__.get('_experimentActive', False)
+                or self._state.running):
             self.stopExperiment(resetParams=True)
             return
+        if self.__dict__.get('_closed', False):
+            return
 
+        self._stopRequested = False
         os.makedirs(self._logsDir, exist_ok=True)
         self._set_status('arming')
 
@@ -292,6 +330,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self._widget.initiateButton.setText('Stop')
             self._set_controls_armed(True)
             self._set_status('detecting')
+            self._experimentActive = True
             self._state.running = True
         except Exception as e:
             self._logger.error(
@@ -303,6 +342,8 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     def stopExperiment(self, resetParams: bool = False) -> None:
         """Best-effort stop path that leaves lasers and scan UI in a safe state."""
+        self._stopRequested = True
+        self._experimentActive = False
         self._disconnectRunSignals()
         try:
             self._setFastLaserEnabled(False)
@@ -320,12 +361,61 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             if resetParams:
                 self._set_status('idle')
             self._post_stop_hook(reset_params=resetParams)
+            # A direct slow scan retains its run reservation until NI-DAQ and
+            # detector finish barriers are actually complete. If none is in
+            # flight, terminal cleanup can happen now.
+            self._finishTriggeredScanRunIfIdle()
 
-    def closeEvent(self) -> None:
+    def closeEvent(self) -> bool:
+        """Stop safely and report whether the owned scan barrier has drained."""
+        self._closed = True
         self.stopExperiment(resetParams=True)
         # Disconnect the comm-channel slots wired in __init__.
         self._safeDisconnect(self._commChannel.sigSendScanParameters, self.assignScanParameters)
         self._safeDisconnect(self._commChannel.sigSendScanFreq, self.logScanFreq)
+        self._disconnectNidaqCompletionSignalsIfIdle()
+        return self.shutdownComplete()
+
+    def shutdownComplete(self) -> bool:
+        """Whether close-time scan ownership and completion wiring are gone."""
+        if self.__dict__.get('_closed', False):
+            # A last EVENT_STREAM release can fail before consuming its handle
+            # when the frame poller misses its bounded stop deadline. Keep the
+            # exact handles and retry while the factory pumps close-time events;
+            # otherwise a later-stopped poller would leave an ownerless lease.
+            self._releaseDetectorFastStream()
+            self._releaseBinaryMaskLease()
+
+        coordinator = self.__dict__.get('_scanCoordinator')
+        if coordinator is not None:
+            if (
+                coordinator.tokenForOwner(self) is not None
+                or coordinator.runForOwner(self) is not None
+            ):
+                return False
+
+        if self.__dict__.get('_closed', False):
+            self._disconnectNidaqCompletionSignalsIfIdle()
+
+        state = self.__dict__.get('_state')
+        return (
+            self.__dict__.get('_detectorFastHandle') is None
+            and self.__dict__.get('_binaryMaskHandle') is None
+            and not self.__dict__.get('_triggeredRecordingInFlight', False)
+            and not self.__dict__.get(
+                '_triggeredScanCompletionPublishing', False
+            )
+            and not self.__dict__.get(
+                '_triggeredScanStartingPublished', False
+            )
+            and not bool(getattr(state, 'running', False))
+            and (
+                not self.__dict__.get('_closed', False)
+                or not self.__dict__.get(
+                    '_nidaqCompletionSignalsConnected', False
+                )
+            )
+        )
 
     # ── Experiment preparation ───────────────────────────────────────────── #
 
@@ -393,9 +483,52 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         if not self._state.scanEndSignalConnected:
             if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
                 self._commChannel.sigToggleBlockScanWidget.emit(False)
-                self._commChannel.sigScanEnded.connect(self.scanEnded)
             elif self._state.scanInitiationMode == ScanInitiationMode.RecordingWidget:
-                self._commChannel.sigRecordingEnded.connect(self.scanEnded)
+                recordingManager = getattr(
+                    self.__dict__.get('_master'),
+                    'recordingManager',
+                    None,
+                )
+                detailedSignals = (
+                    hasattr(
+                        getattr(
+                            recordingManager,
+                            'sigRecordingEndedDetailed',
+                            None,
+                        ),
+                        'connect',
+                    )
+                    and hasattr(
+                        getattr(
+                            recordingManager,
+                            'sigRecordingFailedDetailed',
+                            None,
+                        ),
+                        'connect',
+                    )
+                )
+                self._usesDetailedTriggeredRecordingSignals = detailedSignals
+                if detailedSignals:
+                    recordingManager.sigRecordingEndedDetailed.connect(
+                        self._onTriggeredRecordingEndedDetailed
+                    )
+                    recordingManager.sigRecordingFailedDetailed.connect(
+                        self._onTriggeredRecordingFailedDetailed
+                    )
+                    scanEndedSignal = getattr(
+                        self._commChannel, 'sigScanEnded', None
+                    )
+                    if hasattr(scanEndedSignal, 'connect'):
+                        scanEndedSignal.connect(
+                            self._onTriggeredRecordingLifecycleEnded
+                        )
+                else:
+                    self._commChannel.sigRecordingEnded.connect(
+                        self.scanEnded
+                    )
+                    self._commChannel.sigRecordingFailed.connect(
+                        self._onTriggeredRecordingFailed
+                    )
             self._state.scanEndSignalConnected = True
 
     def _disconnectRunSignals(self) -> None:
@@ -411,10 +544,51 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         if self._state.scanEndSignalConnected:
             if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
                 self._commChannel.sigToggleBlockScanWidget.emit(True)
-                self._safeDisconnect(self._commChannel.sigScanEnded, self.scanEnded)
             elif self._state.scanInitiationMode == ScanInitiationMode.RecordingWidget:
-                self._safeDisconnect(self._commChannel.sigRecordingEnded, self.scanEnded)
+                recordingManager = getattr(
+                    self.__dict__.get('_master'),
+                    'recordingManager',
+                    None,
+                )
+                if self.__dict__.get(
+                    '_usesDetailedTriggeredRecordingSignals', False
+                ):
+                    self._safeDisconnect(
+                        recordingManager.sigRecordingEndedDetailed,
+                        self._onTriggeredRecordingEndedDetailed,
+                    )
+                    self._safeDisconnect(
+                        recordingManager.sigRecordingFailedDetailed,
+                        self._onTriggeredRecordingFailedDetailed,
+                    )
+                    scanEndedSignal = getattr(
+                        self._commChannel, 'sigScanEnded', None
+                    )
+                    if scanEndedSignal is not None:
+                        self._safeDisconnect(
+                            scanEndedSignal,
+                            self._onTriggeredRecordingLifecycleEnded,
+                        )
+                else:
+                    self._safeDisconnect(
+                        self._commChannel.sigRecordingEnded,
+                        self.scanEnded,
+                    )
+                    self._safeDisconnect(
+                        self._commChannel.sigRecordingFailed,
+                        self._onTriggeredRecordingFailed,
+                    )
             self._state.scanEndSignalConnected = False
+        self._triggeredRecordingInFlight = False
+        self._triggeredRecordingGeneration = None
+        self._recordingGenerationBeforeTrigger = None
+        self._triggeredRecordingManagerTerminal = False
+        self._triggeredRecordingLifecycleEnded = False
+        self._triggeredRecordingFailureMessage = None
+        self._triggeredRecordingCaptured = False
+        self._triggeredRecordingScanSource = None
+        self._triggeredRecordingRunToken = None
+        self._triggeredRecordingSourceObservedRunning = False
 
     @staticmethod
     def _safeDisconnect(signal, slot) -> None:
@@ -423,10 +597,47 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         except (TypeError, RuntimeError):
             pass
 
+    def _disconnectNidaqCompletionSignals(self) -> None:
+        if not self.__dict__.get(
+            '_nidaqCompletionSignalsConnected', False
+        ):
+            return
+        self._safeDisconnect(
+            self._master.nidaqManager.sigScanDone,
+            self._onTriggeredNidaqScanDone,
+        )
+        self._safeDisconnect(
+            self._master.nidaqManager.sigScanBuildFailed,
+            self._onTriggeredNidaqScanBuildFailed,
+        )
+        self._nidaqCompletionSignalsConnected = False
+
+    def _disconnectNidaqCompletionSignalsIfIdle(self) -> None:
+        if not self.__dict__.get('_closed', False):
+            return
+        coordinator = self.__dict__.get('_scanCoordinator')
+        if (
+            coordinator is None
+            or (
+                coordinator.tokenForOwner(self) is None
+                and coordinator.runForOwner(self) is None
+            )
+        ):
+            self._disconnectNidaqCompletionSignals()
+
     def _acquireDetectorFastStream(self) -> None:
         """Hold detectorFast for the detection loop's lifetime."""
-        if self._detectorFastHandle is not None:
-            return
+        if self.__dict__.get('_detectorFastHandle') is not None:
+            if not self.__dict__.get(
+                '_detectorFastReleasePending', False
+            ):
+                # pauseFastModality deliberately retains a healthy stream
+                # lease while the slow scan runs.
+                return
+            if not self._releaseDetectorFastStream():
+                raise RuntimeError(
+                    'The previous event-stream lease is still stopping.'
+                )
         detectorFast = self._state.detectorFast
         if not detectorFast:
             return
@@ -434,6 +645,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self._detectorFastHandle = self._master.detectorsManager.acquire(
                 [detectorFast], LeasePurpose.EVENT_STREAM
             )
+            self._detectorFastReleasePending = False
         except Exception as e:
             # Surface it: without the lease the loop runs but never sees a
             # frame, which is far harder to diagnose than a failed start.
@@ -443,18 +655,26 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             )
             raise
 
-    def _releaseDetectorFastStream(self) -> None:
-        if self._detectorFastHandle is None:
-            return
+    def _releaseDetectorFastStream(self) -> bool:
+        handle = self.__dict__.get('_detectorFastHandle')
+        if handle is None:
+            return True
         try:
-            self._master.detectorsManager.release(self._detectorFastHandle)
+            self._master.detectorsManager.release(handle)
         except Exception as e:
+            self._detectorFastReleasePending = True
             self._logger.error(
                 f'Failed to release the {self.MODALITY_LABEL} detection-loop '
                 f'detector lease: {e}', exc_info=True
             )
-        finally:
+            # release() can fail before consuming a last frame-stream handle
+            # (notably when its poll thread has not stopped yet). Retain the
+            # token so stop/close can retry the same ownership transition.
+            return False
+        if self._detectorFastHandle is handle:
             self._detectorFastHandle = None
+        self._detectorFastReleasePending = False
+        return True
 
     def _setFastLaserEnabled(self, enabled: bool, *, require_success: bool = False) -> None:
         if self._state.laserFast is None:
@@ -506,6 +726,16 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     # ── Binary mask acquisition ─────────────────────────────────────────── #
 
     def initiateBinaryMask(self) -> None:
+        # Repeated clicks restart a capture rather than stacking signal
+        # connections, leases and timeout callbacks.
+        self._cleanupBinaryMaskRecording()
+        if self.__dict__.get('_binaryMaskHandle') is not None:
+            self._set_status(
+                'error',
+                'The previous binary-mask detector lease is still stopping; '
+                'retry after cleanup completes.',
+            )
+            return
         self._binary_stack_list = []
         laserFastIdx = self._widget.fastImgLasersPar.currentIndex()
         self._state.laserFast = self._widget.fastImgLasers[laserFastIdx]
@@ -513,29 +743,73 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         detectorFastIdx = self._widget.fastImgDetectorsPar.currentIndex()
         self._state.detectorFast = self._widget.fastImgDetectors[detectorFastIdx]
         self.detectorFast = self._state.detectorFast
-        self._master.lasersManager.execOn(
-            self._state.laserFast, lambda l: l.setEnabled(True)
-        )
-        self._commChannel.sigUpdateImage.connect(self.addImgBinStack)
-        self._state.binaryMaskSignalConnected = True
-        self._widget.recordBinaryMaskButton.setText('Recording...')
+        try:
+            self._binaryMaskHandle = self._master.detectorsManager.acquire(
+                [self._state.detectorFast], LeasePurpose.EVENT_STREAM
+            )
+            self._setFastLaserEnabled(True, require_success=True)
+            self._binaryMaskGeneration += 1
+            generation = self._binaryMaskGeneration
+            # Capture identity on the connected callback itself. Disconnecting
+            # a Qt signal does not retract deliveries that were already queued;
+            # without this token, a frame from an old capture can contaminate a
+            # newly started mask stack.
+            self._binaryMaskFrameSlot = (
+                lambda detectorName, img, init, scale, isCurrentDetector,
+                       captureGeneration=generation:
+                    self.addImgBinStack(
+                        detectorName, img, init, scale, isCurrentDetector,
+                        captureGeneration=captureGeneration,
+                    )
+            )
+            self._commChannel.sigUpdateImage.connect(
+                self._binaryMaskFrameSlot
+            )
+            self._state.binaryMaskSignalConnected = True
+            self._widget.recordBinaryMaskButton.setText('Recording...')
+            QtCore.QTimer.singleShot(
+                self.BINARY_MASK_TIMEOUT_MS,
+                lambda: self._onBinaryMaskTimeout(generation),
+            )
+        except Exception as e:
+            self._logger.error(
+                f'Could not start binary-mask acquisition: {e}',
+                exc_info=True,
+            )
+            self._set_status('error', f'Could not record binary mask: {e}')
+            self._cleanupBinaryMaskRecording()
 
-    def addImgBinStack(self, detectorName, img, init, scale, isCurrentDetector) -> None:
+    def addImgBinStack(self, detectorName, img, init, scale,
+                       isCurrentDetector, *, captureGeneration=None) -> None:
         del init, scale, isCurrentDetector
-        if detectorName != self._state.detectorFast:
+        if (
+            detectorName != self._state.detectorFast
+            or not self._state.binaryMaskSignalConnected
+            or self.__dict__.get('_binaryMaskHandle') is None
+            or (
+                captureGeneration is not None
+                and captureGeneration != self._binaryMaskGeneration
+            )
+        ):
             return
         if len(self._binary_stack_list) >= self.BINARY_FRAMES:
             return  # late frame after disconnect
         self._binary_stack_list.append(np.asarray(img))
         if len(self._binary_stack_list) >= self.BINARY_FRAMES:
-            self._safeDisconnect(self._commChannel.sigUpdateImage, self.addImgBinStack)
-            self._state.binaryMaskSignalConnected = False
-            self._master.lasersManager.execOn(
-                self._state.laserFast, lambda l: l.setEnabled(False)
-            )
             stack = np.stack(self._binary_stack_list, axis=0)
-            self._binary_stack_list = []
+            self._cleanupBinaryMaskRecording()
             self.calculateBinaryMask(stack)
+
+    def _onBinaryMaskTimeout(self, generation: int) -> None:
+        if (generation != self._binaryMaskGeneration
+                or not self._state.binaryMaskSignalConnected):
+            return
+        self._logger.warning(
+            f'Binary-mask acquisition timed out after '
+            f'{self.BINARY_MASK_TIMEOUT_MS / 1000:g} s.'
+        )
+        self._set_status('error', 'Binary-mask acquisition timed out.')
+        self._cleanupBinaryMaskRecording()
 
     def calculateBinaryMask(self, img_stack: np.ndarray) -> None:
         img_mean = np.mean(img_stack, 0)
@@ -546,13 +820,47 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self.launchHelpWidget()
 
     def _cleanupBinaryMaskRecording(self) -> None:
-        """Stop any interrupted binary-mask capture without touching acquisition."""
-        if self._state.binaryMaskSignalConnected:
-            self._safeDisconnect(self._commChannel.sigUpdateImage, self.addImgBinStack)
+        """Stop an interrupted capture and return every owned resource."""
+        self._binaryMaskGeneration = getattr(
+            self, '_binaryMaskGeneration', 0
+        ) + 1
+        signalConnected = bool(self._state.binaryMaskSignalConnected)
+        handle = self.__dict__.get('_binaryMaskHandle')
+        frameSlot = self.__dict__.get('_binaryMaskFrameSlot')
+        hadActiveCapture = signalConnected or handle is not None
+        if signalConnected:
+            self._safeDisconnect(
+                self._commChannel.sigUpdateImage,
+                frameSlot if frameSlot is not None else self.addImgBinStack,
+            )
             self._state.binaryMaskSignalConnected = False
+        self._binaryMaskFrameSlot = None
+        # initiateBinaryMask() pre-cleans stale capture state. Turning the laser
+        # off when there was no mask signal/lease would also extinguish an
+        # unrelated active event-detection run.
+        if hadActiveCapture:
+            self._setFastLaserEnabled(False)
+        self._releaseBinaryMaskLease()
         self._binary_stack_list = []
         if hasattr(self._widget, 'recordBinaryMaskButton'):
             self._widget.recordBinaryMaskButton.setText('Record binary mask')
+
+    def _releaseBinaryMaskLease(self) -> bool:
+        """Release one mask-capture lease without losing retry authority."""
+        handle = self.__dict__.get('_binaryMaskHandle')
+        if handle is None:
+            return True
+        try:
+            self._master.detectorsManager.release(handle)
+        except Exception as e:
+            self._logger.error(
+                f'Failed to release binary-mask detector lease: {e}',
+                exc_info=True,
+            )
+            return False
+        if self.__dict__.get('_binaryMaskHandle') is handle:
+            self._binaryMaskHandle = None
+        return True
 
     def setAnalysisHelpImg(self, img_ana: np.ndarray, exinfo=None) -> None:
         if np.max(img_ana) > self._state.maxAnaImgVal:
@@ -574,7 +882,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             )
 
     def _pipelineSupportsAnalysisScatter(self) -> bool:
-        pipeline_name = getattr(self, '_pipelineName', '')
+        pipeline_name = self.__dict__.get('_pipelineName', '')
         return any(
             marker in pipeline_name
             for marker in self.ANALYSIS_SCATTER_PIPELINE_NAME_MARKERS
@@ -623,7 +931,14 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
     def runPipeline(self, detectorName, img, init, scale, isCurrentDetector) -> None:
         """Dispatch one fast-detector frame through the analysis pipeline."""
         del init, scale, isCurrentDetector
-        if detectorName != self._state.detectorFast or self._state.busy:
+        if (
+            detectorName != self._state.detectorFast
+            or self._state.busy
+            or self.__dict__.get('_closed', False)
+            or self.__dict__.get('_stopRequested', False)
+            or not self.__dict__.get('_experimentActive', False)
+            or not self._state.running
+        ):
             return
 
         now_ms = _millis()
@@ -685,12 +1000,29 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
         if self._state.validating:
             if self._state.validationFrames > self.VALIDATION_FRAMES_LIMIT:
-                self.saveValidationImages(prev=True, prev_ana=True)
-                self.pauseFastModality()
-                self.endRecording()
-                self.continueFastModality()
-                self._state.frame = 0
-                self._state.validating = False
+                try:
+                    self.saveValidationImages(prev=True, prev_ana=True)
+                    self.pauseFastModality()
+                    self.endRecording()
+                except Exception as error:
+                    self._logger.error(
+                        'Validation terminal bookkeeping failed: %s',
+                        error,
+                        exc_info=True,
+                    )
+                    try:
+                        self._set_status('error', str(error))
+                    except Exception:
+                        self._logger.error(
+                            'Failed to surface validation terminal error',
+                            exc_info=True,
+                        )
+                finally:
+                    self._state.frame = 0
+                    self._state.validating = False
+                    self._continueFastModalitySafely(
+                        'validation terminal recovery'
+                    )
             self._state.validationFrames += 1
             return
 
@@ -705,6 +1037,19 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._state.validationFrames = 0
 
     def _handle_event_frame(self, coords_detected, img) -> None:
+        # sigUpdateImage is produced by the detector poll worker. A delivery
+        # already queued before pause/Stop may still invoke this slot after the
+        # signal is disconnected. Reject it before changing modes, moving a
+        # positioner, replacing prepared scan data, or reserving scan ownership.
+        if (
+            self.__dict__.get('_closed', False)
+            or self.__dict__.get('_stopRequested', False)
+            or not self.__dict__.get('_experimentActive', False)
+            or not self._state.running
+        ):
+            self.setBusyFalse()
+            return
+
         coords_wf = np.copy(self._first_coord(coords_detected))
         self.setDetLogLine('prepause', _now_us_tag())
         self.setDetLogLine('fastscan_x_center', coords_wf[0])
@@ -712,47 +1057,80 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         self._set_status('triggered')
         self.pauseFastModality()
 
-        self.setDetLogLine('coord_transf_start', _now_us_tag())
-        coords_scan = self._transformService.apply(
-            coords_wf, self._transform_apply_extra_arg()
-        )
-        self.setDetLogLine('slowscan_x_center', coords_scan[0])
-        self.setDetLogLine('slowscan_y_center', coords_scan[1])
-        self.setDetLogLine('scan_initiate', _now_us_tag())
-        self._log_all_detected_coords(coords_detected, override=coords_wf)
-
         try:
+            # Claim direct-scan ownership before preparation can move static
+            # positioners or overwrite signalDic/scanInfoDict. The normal
+            # queued-duplicate path is rejected above, while this remains the
+            # final cross-owner guard.
+            if not self._beginTriggeredScanRun():
+                self.setBusyFalse()
+                return
+
+            self.setDetLogLine('coord_transf_start', _now_us_tag())
+            coords_scan = self._transformService.apply(
+                coords_wf, self._transform_apply_extra_arg()
+            )
+            self.setDetLogLine('slowscan_x_center', coords_scan[0])
+            self.setDetLogLine('slowscan_y_center', coords_scan[1])
+            self.setDetLogLine('scan_initiate', _now_us_tag())
+            self._log_all_detected_coords(coords_detected, override=coords_wf)
+
             slow_scan_ready = self.initiateSlowScan(position=coords_scan)
+            if not slow_scan_ready:
+                raise RuntimeError(
+                    'Failed to initiate slow scan; scan was not started.'
+                )
+
+            self._set_status('scanning')
+            if not self.runSlowScan():
+                raise RuntimeError('Failed to trigger slow scan.')
+            if (
+                self._state.scanInitiationMode
+                == ScanInitiationMode.RecordingWidget
+                and not self._captureTriggeredRecordingOperation()
+            ):
+                raise RuntimeError(
+                    'Recording controller did not accept the triggered scan.'
+                )
         except Exception as e:
             self._logger.error(
-                f'Failed to initiate slow scan, likely due to not having loaded '
-                f'scanning parameters. Error message: {e}'
+                f'Failed to trigger {self.MODALITY_LABEL} slow scan: {e}',
+                exc_info=True,
             )
-            self._set_status('error', str(e))
-            self.setBusyFalse()
-            self.continueFastModality()
+            try:
+                self._set_status('error', str(e))
+            except Exception:
+                self._logger.error(
+                    'Failed to surface slow-scan trigger error',
+                    exc_info=True,
+                )
+            try:
+                self._finishTriggeredScanRun()
+            except Exception:
+                self._logger.error(
+                    'Failed to terminalize rejected triggered scan',
+                    exc_info=True,
+                )
+            finally:
+                self._state.busy = False
+                self._state.frame = 0
+                self._continueFastModalitySafely(
+                    'triggered scan arm-failure recovery'
+                )
             return
 
-        if not slow_scan_ready:
-            self._logger.error('Failed to initiate slow scan; scan was not started.')
-            self._set_status('error', 'Failed to initiate slow scan.')
-            self.setBusyFalse()
-            self.continueFastModality()
-            return
-
-        self._commChannel.scanWorkflow.notify_scan_starting()
-
-        self._set_status('scanning')
-        if not self.runSlowScan():
-            self._set_status('error', 'Failed to trigger slow scan.')
-            self.setBusyFalse()
-            self.continueFastModality()
-            return
-
-        self.updateScatter(coords_detected)
-        self._prevFrames.append(img)
-        self.saveValidationImages(prev=True, prev_ana=False)
-        self._exinfo = None
+        try:
+            self.updateScatter(coords_detected)
+            self._prevFrames.append(img)
+            self.saveValidationImages(prev=True, prev_ana=False)
+            self._exinfo = None
+        except Exception:
+            # The scan is already armed; bookkeeping failure must not publish
+            # an early end or resume the fast modality over active NI-DAQ.
+            self._logger.error(
+                'Triggered-scan post-arm bookkeeping failed.',
+                exc_info=True,
+            )
         self._state.busy = False
 
     @staticmethod
@@ -812,6 +1190,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             scan_info_dict=self.scanInfoDict,
             comm_channel=self._commChannel,
             scan_coordinator=self._scanCoordinator,
+            scan_owner=self,
         )
         if not result.success:
             self._logger.error(result.message)
@@ -851,24 +1230,753 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
 
     # ── Scan completion ──────────────────────────────────────────────────── #
 
-    def scanEnded(self) -> None:
-        self.setDetLogLine('scan_end', _now_us_tag())
-        if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
-            self._commChannel.sigSnapImg.emit()
-            try:
-                samples = self.scanInfoDict['scan_samples_total']
-                sample_rate = float(self.scanInfoDict.get(
-                    'sample_rate', _DEFAULT_SAMPLE_RATE_HZ
-                ))
-                self.setDetLogLine('total_scan_time', samples / sample_rate)
-            except KeyError:
-                self._logger.info(
-                    "Scan 'total_scan_time' not saved in log as 'scan_samples_total' "
-                    "not available in scanInfoDict using current signal designer."
+    def _isDirectTriggeredScan(self) -> bool:
+        return (
+            self._state.scanInitiationMode
+            == ScanInitiationMode.ScanWidget
+        )
+
+    def _beginTriggeredScanRun(self) -> bool:
+        """Reserve/publish one direct slow-scan run.
+
+        RecordingWidget intentionally does nothing here: RecordingController
+        already publishes the scan lifecycle and owns its terminal signal.
+        """
+        if not self._isDirectTriggeredScan():
+            if self.__dict__.get('_triggeredRecordingInFlight', False):
+                self._logger.warning(
+                    'Ignoring duplicate event-triggered recording start.'
                 )
-        self.endRecording()
-        self.continueFastModality()
+                return False
+            getActiveSource = getattr(
+                self.__dict__.get('_commChannel'),
+                'getActiveScanSource',
+                None,
+            )
+            if callable(getActiveSource):
+                try:
+                    if getActiveSource() is not None:
+                        self._logger.warning(
+                            'Cannot start a triggered recording while another '
+                            'scan source is active.'
+                        )
+                        return False
+                except Exception:
+                    self._logger.error(
+                        'Could not verify the active scan source.',
+                        exc_info=True,
+                    )
+                    return False
+            scanSource = None
+            resolveSource = getattr(
+                self.__dict__.get('_commChannel'),
+                'getRecordingScanSource',
+                None,
+            )
+            if callable(resolveSource):
+                try:
+                    scanSource = resolveSource()
+                except Exception as error:
+                    self._logger.error(
+                        'Could not resolve the RecordingWidget scan source: %s',
+                        error,
+                        exc_info=True,
+                    )
+                    return False
+            coordinator = getattr(
+                self.__dict__.get('_master'),
+                'scanExecutionCoordinator',
+                None,
+            )
+            if coordinator is None and scanSource is not None:
+                coordinator = getattr(
+                    scanSource, '_scanCoordinator', None
+                )
+            if coordinator is not None:
+                try:
+                    if getattr(
+                        coordinator, 'activeRunToken', None
+                    ) is not None:
+                        self._logger.warning(
+                            'Cannot start a triggered recording while another '
+                            'scan run is still reserved.'
+                        )
+                        return False
+                except Exception:
+                    self._logger.error(
+                        'Could not verify the scan-run reservation.',
+                        exc_info=True,
+                    )
+                    return False
+            self._triggeredRecordingInFlight = True
+            recordingManager = getattr(
+                self.__dict__.get('_master'),
+                'recordingManager',
+                None,
+            )
+            self._recordingGenerationBeforeTrigger = getattr(
+                recordingManager, 'recordingGeneration', None
+            )
+            self._triggeredRecordingGeneration = None
+            self._triggeredRecordingManagerTerminal = False
+            self._triggeredRecordingLifecycleEnded = False
+            self._triggeredRecordingFailureMessage = None
+            self._triggeredRecordingCaptured = False
+            self._triggeredRecordingScanSource = scanSource
+            self._triggeredRecordingRunToken = None
+            self._triggeredRecordingSourceObservedRunning = False
+            return True
+        localToken = self.__dict__.get('_triggeredScanRunToken')
+        activeRun = self._scanCoordinator.runForOwner(self)
+        if (
+            localToken is not None
+            and activeRun is localToken
+        ):
+            self._logger.warning(
+                'Ignoring duplicate event-triggered slow-scan start.'
+            )
+            return False
+        token = self._scanCoordinator.reserveRun(self)
+        self._triggeredScanRunToken = token
+        if not self.__dict__.get(
+            '_triggeredScanStartingPublished', False
+        ):
+            # Set before emitting so even a signal-slot exception is paired.
+            self._triggeredScanStartingPublished = True
+            self._commChannel.scanWorkflow.notify_scan_starting()
+        return True
+
+    def _finishTriggeredScanRun(self) -> bool:
+        """End/release the direct slow-scan run exactly once.
+
+        The run-level end notification belongs *after* the iteration finish
+        barrier and SCAN-lease release. ``releaseRun(onReleased=...)`` provides
+        that ordering even when this terminal path races an asynchronous
+        detector acknowledgement.
+        """
+        if not self._isDirectTriggeredScan():
+            hadTriggeredRecording = bool(
+                self.__dict__.get('_triggeredRecordingInFlight', False)
+            )
+            self._triggeredRecordingInFlight = False
+            self._triggeredRecordingGeneration = None
+            self._recordingGenerationBeforeTrigger = None
+            self._triggeredRecordingManagerTerminal = False
+            self._triggeredRecordingLifecycleEnded = False
+            self._triggeredRecordingFailureMessage = None
+            self._triggeredRecordingCaptured = False
+            self._triggeredRecordingScanSource = None
+            self._triggeredRecordingRunToken = None
+            self._triggeredRecordingSourceObservedRunning = False
+            return hadTriggeredRecording
+
+        token = self.__dict__.get('_triggeredScanRunToken')
+        startingPublished = bool(
+            self.__dict__.get('_triggeredScanStartingPublished', False)
+        )
+        if token is None and not startingPublished:
+            self._disconnectNidaqCompletionSignalsIfIdle()
+            return False
+
+        self._triggeredScanRunToken = None
+        self._triggeredScanStartingPublished = False
+        self._triggeredScanCompletionPublishing = True
+        terminalLock = threading.Lock()
+        terminalPublished = False
+
+        def publishTerminal():
+            nonlocal terminalPublished
+            with terminalLock:
+                if terminalPublished:
+                    return
+                terminalPublished = True
+            try:
+                if startingPublished:
+                    self._commChannel.scanWorkflow.notify_scan_ended()
+            finally:
+                finalizeError = None
+                try:
+                    finalizeRunRelease = getattr(
+                        self._scanCoordinator,
+                        'finalizeRunRelease',
+                        None,
+                    )
+                    if callable(finalizeRunRelease) and token is not None:
+                        finalized = finalizeRunRelease(token)
+                        if not finalized and not releaseProven():
+                            raise RuntimeError(
+                                'The held triggered scan run was not finalized.'
+                            )
+                except Exception as error:
+                    finalizeError = error
+                    self._logger.error(
+                        'Failed to finalize the triggered scan-run release',
+                        exc_info=True,
+                    )
+                    if not releaseProven():
+                        # The global end was already attempted. Retain only the
+                        # exact token so a later stop/close can retry release
+                        # without publishing a duplicate lifecycle terminal.
+                        if self.__dict__.get(
+                            '_triggeredScanRunToken'
+                        ) is None:
+                            self._triggeredScanRunToken = token
+                finally:
+                    self._triggeredScanCompletionPublishing = False
+                    self._disconnectNidaqCompletionSignalsIfIdle()
+
+        def publishTerminalOnControllerThread():
+            invoke = getattr(
+                self, '_invokeOnControllerThreadIfNeeded', None
+            )
+            if callable(invoke):
+                try:
+                    invoke(publishTerminal)
+                    return
+                except Exception:
+                    # The held coordinator reservation is more important than
+                    # preserving affinity after the handoff mechanism itself
+                    # has failed. publishTerminal is idempotent if a custom
+                    # handoff queued the callback before raising.
+                    self._logger.error(
+                        'Failed to hand off triggered-scan terminal '
+                        'publication; using the fail-safe path',
+                        exc_info=True,
+                    )
+            publishTerminal()
+
+        def releaseProven():
+            if bool(getattr(token, 'released', False)):
+                return True
+            try:
+                return self._scanCoordinator.activeRunToken is not token
+            except Exception:
+                return False
+
+        releaseAccepted = False
+        if token is not None:
+            try:
+                releaseKwargs = {
+                    'onReleased': publishTerminalOnControllerThread
+                }
+                if callable(getattr(
+                    self._scanCoordinator, 'finalizeRunRelease', None
+                )):
+                    releaseKwargs['holdUntilFinalized'] = True
+                releaseAccepted = self._scanCoordinator.releaseRun(
+                    token, **releaseKwargs
+                )
+            except Exception:
+                self._logger.error(
+                    'Failed to release triggered scan-run reservation',
+                    exc_info=True,
+                )
+                if not releaseProven():
+                    self._triggeredScanRunToken = token
+                    self._triggeredScanStartingPublished = startingPublished
+                    self._triggeredScanCompletionPublishing = False
+                    return False
+        # No token means only the published start flag remained. A rejected
+        # release means the token was already stale/released. Neither case has
+        # a live barrier that could legitimately delay terminal notification.
+        if token is None:
+            publishTerminalOnControllerThread()
+        elif not releaseAccepted:
+            if not releaseProven():
+                self._triggeredScanRunToken = token
+                self._triggeredScanStartingPublished = startingPublished
+                self._triggeredScanCompletionPublishing = False
+                return False
+            publishTerminalOnControllerThread()
+        return True
+
+    def _finishTriggeredScanRunIfIdle(self) -> bool:
+        coordinator = self.__dict__.get('_scanCoordinator')
+        if coordinator is None:
+            return False
+        if coordinator.tokenForOwner(self) is not None:
+            return False
+        return self._finishTriggeredScanRun()
+
+    def _onTriggeredNidaqScanDone(self) -> None:
+        token = self._scanCoordinator.tokenForOwner(self)
+        if token is None:
+            return
+        runToken = self.__dict__.get('_triggeredScanRunToken')
+        self._scanCoordinator.resolve(
+            token,
+            FINISH_GRACEFUL,
+            onComplete=lambda: self._invokeOnControllerThread(
+                lambda: self._deliverTriggeredScanEnded(runToken)
+            ),
+        )
+
+    def _onTriggeredNidaqScanBuildFailed(self) -> None:
+        token = self._scanCoordinator.tokenForOwner(self)
+        if token is None:
+            return
+        runToken = self.__dict__.get('_triggeredScanRunToken')
+        self._scanCoordinator.resolve(
+            token,
+            FINISH_ABORT,
+            onComplete=lambda: self._invokeOnControllerThread(
+                lambda: self._deliverTriggeredScanBuildFailed(runToken),
+            ),
+        )
+
+    def _triggeredRunStillCurrent(self, runToken) -> bool:
+        return (
+            runToken is not None
+            and self.__dict__.get('_triggeredScanRunToken') is runToken
+            and self._scanCoordinator.runForOwner(self) is runToken
+        )
+
+    def _deliverTriggeredScanEnded(self, runToken) -> None:
+        if self._triggeredRunStillCurrent(runToken):
+            self.scanEnded()
+
+    def _deliverTriggeredScanBuildFailed(self, runToken) -> None:
+        if self._triggeredRunStillCurrent(runToken):
+            self._afterTriggeredScanBuildFailed()
+
+    def _afterTriggeredScanBuildFailed(self) -> None:
+        self._logger.error('Triggered slow scan could not be built.')
+        try:
+            self._set_status(
+                'error', 'Triggered slow scan could not be built.'
+            )
+        except Exception:
+            self._logger.error(
+                'Failed to surface triggered-scan build failure',
+                exc_info=True,
+            )
+        try:
+            self._finishTriggeredScanRun()
+        except Exception as error:
+            self._logger.error(
+                'Failed to publish triggered-scan build failure: %s',
+                error,
+                exc_info=True,
+            )
+        finally:
+            self._state.busy = False
+            self._state.frame = 0
+            self._continueFastModalitySafely(
+                'triggered scan build-failure recovery'
+            )
+
+    def scanEnded(self) -> None:
+        if (
+            self._state.scanInitiationMode
+            == ScanInitiationMode.RecordingWidget
+        ):
+            if not self.__dict__.get(
+                '_triggeredRecordingInFlight', False
+            ):
+                return
+            self._triggeredRecordingInFlight = False
+            self._triggeredRecordingGeneration = None
+            self._recordingGenerationBeforeTrigger = None
+            self._triggeredRecordingManagerTerminal = False
+            self._triggeredRecordingLifecycleEnded = False
+            self._triggeredRecordingFailureMessage = None
+            self._triggeredRecordingCaptured = False
+            self._triggeredRecordingScanSource = None
+            self._triggeredRecordingRunToken = None
+            self._triggeredRecordingSourceObservedRunning = False
+        try:
+            # Pair/release lifecycle before any optional snapshot or log work.
+            # A filesystem/UI bookkeeping exception must not retain ownership.
+            self._finishTriggeredScanRun()
+            self.setDetLogLine('scan_end', _now_us_tag())
+            if (self.__dict__.get('_closed', False)
+                    or self.__dict__.get('_stopRequested', False)
+                    or not self.__dict__.get('_experimentActive', True)):
+                return
+            if self._state.scanInitiationMode == ScanInitiationMode.ScanWidget:
+                self._commChannel.sigSnapImg.emit()
+                try:
+                    samples = self.scanInfoDict['scan_samples_total']
+                    sample_rate = float(self.scanInfoDict.get(
+                        'sample_rate', _DEFAULT_SAMPLE_RATE_HZ
+                    ))
+                    self.setDetLogLine(
+                        'total_scan_time', samples / sample_rate
+                    )
+                except KeyError:
+                    self._logger.info(
+                        "Scan 'total_scan_time' not saved in log as "
+                        "'scan_samples_total' not available in scanInfoDict "
+                        "using current signal designer."
+                    )
+            self.endRecording()
+        except Exception as error:
+            # Snapshot delivery, log I/O and lifecycle notification are
+            # bookkeeping. Once hardware completion is authoritative, none of
+            # them may leave the fast modality paused with an active session.
+            self._logger.error(
+                'Triggered-scan terminal bookkeeping failed: %s',
+                error,
+                exc_info=True,
+            )
+            try:
+                self._set_status('error', str(error))
+            except Exception:
+                self._logger.error(
+                    'Failed to surface triggered-scan terminal error',
+                    exc_info=True,
+                )
+        finally:
+            self._state.busy = False
+            self._state.frame = 0
+            self._continueFastModalitySafely(
+                'triggered scan terminal recovery'
+            )
+
+    def _onTriggeredRecordingFailed(self, message: str) -> None:
+        """Recover one RecordingWidget-triggered slow-scan failure.
+
+        Recording failures are broadcast. Only the operation explicitly armed
+        by this controller is authoritative; queued failures after Stop/close
+        are allowed to clean up, but never to reconnect the scouting modality.
+        """
+        if (
+            self._state.scanInitiationMode
+            != ScanInitiationMode.RecordingWidget
+            or not self.__dict__.get(
+                '_triggeredRecordingInFlight', False
+            )
+        ):
+            return
+        self._triggeredRecordingInFlight = False
+        self._triggeredRecordingGeneration = None
+        self._recordingGenerationBeforeTrigger = None
+        self._triggeredRecordingManagerTerminal = False
+        self._triggeredRecordingLifecycleEnded = False
+        self._triggeredRecordingFailureMessage = None
+        self._triggeredRecordingCaptured = False
+        self._triggeredRecordingScanSource = None
+        self._triggeredRecordingRunToken = None
+        self._triggeredRecordingSourceObservedRunning = False
+        self._logger.error(
+            'Triggered slow-scan recording failed: %s', message
+        )
+        try:
+            self._set_status('error', str(message))
+        except Exception:
+            self._logger.error(
+                'Failed to surface triggered recording failure',
+                exc_info=True,
+            )
+        self._state.busy = False
         self._state.frame = 0
+        self._continueFastModalitySafely(
+            'triggered recording failure recovery'
+        )
+
+    def _captureTriggeredRecordingOperation(self) -> bool:
+        """Pin the exact RecordingManager generation started by this event."""
+        recordingManager = getattr(
+            self.__dict__.get('_master'),
+            'recordingManager',
+            None,
+        )
+        if recordingManager is None:
+            # Legacy test/third-party wiring has no manager identity surface.
+            return True
+        generation = getattr(
+            recordingManager, 'recordingGeneration', None
+        )
+        before = self.__dict__.get(
+            '_recordingGenerationBeforeTrigger'
+        )
+        if isinstance(generation, int) and isinstance(before, int):
+            # RecordingManager serializes sessions and advances this identity
+            # exactly once per accepted start. Skipping generations means an
+            # unrelated operation ran in this trigger's identity window.
+            if generation != before + 1:
+                return False
+            self._triggeredRecordingGeneration = generation
+            self._triggeredRecordingCaptured = True
+
+            source = self.__dict__.get('_triggeredRecordingScanSource')
+            if source is not None:
+                try:
+                    sourceRunning = bool(
+                        getattr(source, 'isRunning', False)
+                    )
+                except Exception:
+                    return False
+                if sourceRunning:
+                    self._triggeredRecordingSourceObservedRunning = True
+
+                coordinator = getattr(
+                    self.__dict__.get('_master'),
+                    'scanExecutionCoordinator',
+                    None,
+                )
+                if coordinator is None:
+                    coordinator = getattr(source, '_scanCoordinator', None)
+                if coordinator is not None:
+                    try:
+                        activeRun = getattr(
+                            coordinator, 'activeRunToken', None
+                        )
+                    except Exception:
+                        return False
+                    if (
+                        activeRun is not None
+                        and getattr(activeRun, 'owner', None) is source
+                    ):
+                        self._triggeredRecordingRunToken = activeRun
+                        self._triggeredRecordingSourceObservedRunning = True
+
+                if (
+                    not sourceRunning
+                    and not self.__dict__.get(
+                        '_triggeredRecordingLifecycleEnded', False
+                    )
+                ):
+                    # The manager armed, but the selected scan source did not
+                    # retain ownership and no exact synchronous terminal was
+                    # observed. Treat this as a rejected scan, not a recording
+                    # operation whose next global end may be adopted.
+                    return False
+            if (
+                not bool(getattr(recordingManager, 'record', False))
+                and not self.__dict__.get(
+                    '_triggeredRecordingManagerTerminal', False
+                )
+            ):
+                return False
+            self._finishTriggeredRecordingIfReady()
+            return True
+        # Compatibility for managers without generation-tagged signals.
+        return bool(getattr(recordingManager, 'record', True))
+
+    def _onTriggeredRecordingEndedDetailed(self, generation: int) -> None:
+        if not self._acceptTriggeredRecordingGeneration(generation):
+            return
+        self._triggeredRecordingManagerTerminal = True
+        self._finishTriggeredRecordingIfReady()
+
+    def _onTriggeredRecordingFailedDetailed(
+        self, message: str, generation: int
+    ) -> None:
+        if not self._acceptTriggeredRecordingGeneration(generation):
+            return
+        self._triggeredRecordingManagerTerminal = True
+        self._triggeredRecordingFailureMessage = str(message)
+        self._finishTriggeredRecordingIfReady()
+
+    def _acceptTriggeredRecordingGeneration(self, generation: int) -> bool:
+        if not self.__dict__.get(
+            '_triggeredRecordingInFlight', False
+        ):
+            return False
+        expected = self.__dict__.get('_triggeredRecordingGeneration')
+        if expected is not None:
+            return expected == generation
+        before = self.__dict__.get('_recordingGenerationBeforeTrigger')
+        if isinstance(before, int) and generation == before + 1:
+            # The manager can finish on a worker thread before the synchronous
+            # external-recording call returns. Pin that exact new identity now;
+            # actual recovery still waits until capture marks the dispatch
+            # complete and the scan-run lifecycle has ended.
+            self._triggeredRecordingGeneration = generation
+            return True
+        return False
+
+    def _onTriggeredRecordingLifecycleEnded(self) -> None:
+        if (
+            self._state.scanInitiationMode
+            != ScanInitiationMode.RecordingWidget
+            or not self.__dict__.get(
+                '_triggeredRecordingInFlight', False
+            )
+        ):
+            return
+        commChannel = self.__dict__.get('_commChannel')
+        getActiveSource = getattr(
+            commChannel, 'getActiveScanSource', None
+        )
+        activeSource = None
+        if callable(getActiveSource):
+            try:
+                activeSource = getActiveSource()
+            except Exception:
+                # Unreadable global source state is not attribution.
+                return
+            if activeSource is not None:
+                # A queued/global end from another run cannot terminalize the
+                # recording-triggered slow scan while any exact source is
+                # active.
+                return
+
+        expectedSource = self.__dict__.get(
+            '_triggeredRecordingScanSource'
+        )
+        expectedRun = self.__dict__.get(
+            '_triggeredRecordingRunToken'
+        )
+        coordinator = getattr(
+            self.__dict__.get('_master'),
+            'scanExecutionCoordinator',
+            None,
+        )
+        if coordinator is None and expectedSource is not None:
+            coordinator = getattr(
+                expectedSource, '_scanCoordinator', None
+            )
+        activeRun = None
+        if coordinator is not None:
+            try:
+                activeRun = getattr(
+                    coordinator, 'activeRunToken', None
+                )
+                heldForEndPublication = (
+                    activeRun is not None
+                    and bool(
+                        getattr(activeRun, 'releaseRequested', False)
+                    )
+                    and bool(
+                        getattr(activeRun, 'releaseBarrierCleared', False)
+                    )
+                    and bool(
+                        getattr(
+                            activeRun,
+                            'holdReleaseUntilFinalized',
+                            False,
+                        )
+                    )
+                )
+            except Exception:
+                # Unknown coordinator state is not proof that this global
+                # lifecycle event belongs to the triggered recording.
+                return
+            if activeRun is not None:
+                if not heldForEndPublication:
+                    return
+                if expectedRun is not None:
+                    if activeRun is not expectedRun:
+                        return
+                elif expectedSource is not None:
+                    try:
+                        if getattr(activeRun, 'owner', None) is not expectedSource:
+                            return
+                    except Exception:
+                        return
+                    # The exact run may finish synchronously inside the
+                    # external-recording dispatch, before the post-dispatch
+                    # capture runs. Pin it while the coordinator deliberately
+                    # holds it across this end publication.
+                    self._triggeredRecordingRunToken = activeRun
+                    self._triggeredRecordingSourceObservedRunning = True
+                elif not self.__dict__.get(
+                    '_triggeredRecordingCaptured', False
+                ):
+                    # With neither source nor completed manager dispatch, an
+                    # arbitrary held run is still not this operation.
+                    return
+
+        if expectedSource is not None:
+            try:
+                sourceStillRunning = bool(
+                    getattr(expectedSource, 'isRunning', False)
+                )
+            except Exception:
+                return
+            if sourceStillRunning:
+                self._triggeredRecordingSourceObservedRunning = True
+                return
+            if not self.__dict__.get(
+                '_triggeredRecordingSourceObservedRunning', False
+            ):
+                # Reject a stale global end delivered in the pre-arm window,
+                # before this selected source has ever owned the scan.
+                return
+        elif (
+            activeRun is None
+            and not self.__dict__.get(
+                '_triggeredRecordingCaptured', False
+            )
+        ):
+            # Legacy wiring without source identity cannot safely cache a
+            # pre-dispatch global terminal for adoption after capture.
+            return
+        self._triggeredRecordingLifecycleEnded = True
+        self._finishTriggeredRecordingIfReady()
+
+    def _finishTriggeredRecordingIfReady(self) -> None:
+        if (
+            not self.__dict__.get(
+                '_triggeredRecordingInFlight', False
+            )
+            or not self.__dict__.get(
+                '_triggeredRecordingCaptured', False
+            )
+            or not self.__dict__.get(
+                '_triggeredRecordingManagerTerminal', False
+            )
+            or not self.__dict__.get(
+                '_triggeredRecordingLifecycleEnded', False
+            )
+        ):
+            return
+        failure = self.__dict__.get(
+            '_triggeredRecordingFailureMessage'
+        )
+        if failure:
+            self._onTriggeredRecordingFailed(failure)
+        else:
+            self.scanEnded()
+
+    def _continueFastModalitySafely(self, context: str) -> None:
+        """Resume after terminal work, or force a safe stopped state.
+
+        ``continueFastModality`` already handles expected resume failures. This
+        outer boundary covers failures before that internal try-block (for
+        example a deleted widget during shutdown), so a queued completion can
+        never leave a laser/stream/session half-active.
+        """
+        try:
+            self.continueFastModality()
+            return
+        except Exception as error:
+            self._logger.error(
+                'Failed during %s: %s', context, error, exc_info=True
+            )
+
+        try:
+            self.stopExperiment(resetParams=False)
+        except Exception:
+            self._logger.error(
+                'Failed to stop after %s; forcing safe terminal state',
+                context,
+                exc_info=True,
+            )
+            self._stopRequested = True
+            self._experimentActive = False
+            self._state.running = False
+            self._state.busy = False
+            try:
+                self._disconnectRunSignals()
+            except Exception:
+                self._logger.error(
+                    'Failed to disconnect event-triggered run signals',
+                    exc_info=True,
+                )
+            self._setFastLaserEnabled(False)
+            self._disconnectNidaqCompletionSignalsIfIdle()
+        try:
+            self._set_status(
+                'error', f'Failed during {context}; experiment stopped.'
+            )
+        except Exception:
+            self._logger.error(
+                'Failed to surface terminal recovery status',
+                exc_info=True,
+            )
 
     def endRecording(self) -> None:
         self.setDetLogLine('pipeline', self.getPipelineName())
@@ -886,6 +1994,17 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
             self.setDetLogLine(key, val)
 
     def continueFastModality(self) -> None:
+        if (self.__dict__.get('_closed', False)
+                or self.__dict__.get('_stopRequested', False)
+                or not self.__dict__.get('_experimentActive', True)):
+            # A queued scan completion may arrive after Stop/close. It is still
+            # authoritative for resolving the iteration, but it must never
+            # reconnect frame signals, switch modes or re-enable a laser.
+            self._state.running = False
+            self._state.busy = False
+            self._setFastLaserEnabled(False)
+            self._disconnectNidaqCompletionSignalsIfIdle()
+            return
         if self._widget.endlessScanCheck.isChecked() and not self._state.running:
             try:
                 self._on_resume_modality_hook()

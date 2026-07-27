@@ -52,6 +52,15 @@ class _NidaqManager:
         self.calls.append((signal_dict, scan_info_dict))
 
 
+class _ScanCoordinator:
+    def __init__(self, nidaq_manager) -> None:
+        self.nidaq_manager = nidaq_manager
+
+    def arm(self, signal_dict, scan_info_dict, owner=None):
+        self.nidaq_manager.runScan(signal_dict, scan_info_dict)
+        return 'scan-token'
+
+
 class _Positioner:
     def __init__(self) -> None:
         self.calls = []
@@ -151,10 +160,27 @@ def test_trigger_scan_widget_runs_prepared_scan():
         nidaq_manager=nidaq_manager,
         signal_dict={'signal': 1},
         scan_info_dict={'info': 2},
+        scan_coordinator=_ScanCoordinator(nidaq_manager),
+        scan_owner=runner,
     )
 
     assert result.success
+    assert result.scan_token == 'scan-token'
     assert nidaq_manager.calls == [({'signal': 1}, {'info': 2})]
+
+
+def test_trigger_scan_widget_refuses_uncoordinated_direct_run():
+    runner = EtSTEDTriggeredScanRunner()
+
+    result = runner.trigger(
+        runner.scan_widget_mode,
+        nidaq_manager=_NidaqManager(),
+        signal_dict={'signal': 1},
+        scan_info_dict={'info': 2},
+    )
+
+    assert result.success is False
+    assert 'coordinator' in result.message
 
 
 def test_trigger_recording_widget_emits_external_recording_signal():

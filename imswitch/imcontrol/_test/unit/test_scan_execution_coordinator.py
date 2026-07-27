@@ -8,12 +8,14 @@ hardware stop happens only at aggregate zero.
 Design reference: docs/design/plans/detector-acquisition-selection.md.
 """
 
+import threading
+
 import pytest
 
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.managers._scan_execution import (
     EXCLUDED_KEY, FINISH_ABORT, FINISH_GRACEFUL, PARTICIPANTS_KEY,
-    ScanExecutionCoordinator,
+    ScanExecutionCoordinator, getSharedScanExecutionCoordinator,
 )
 from imswitch.imcontrol.model.managers.NidaqManager import ScanBusyError
 
@@ -27,6 +29,7 @@ class _Detector:
         # a detector whose final read is still in flight.
         self.autoAcknowledge = True
         self.pendingAck = None
+        self.cancelledAcks = []
 
     def finishScan(self, mode, acknowledge):
         self.finishCalls.append(mode)
@@ -34,6 +37,11 @@ class _Detector:
             acknowledge()
         else:
             self.pendingAck = acknowledge
+
+    def cancelFinishScan(self, acknowledge):
+        self.cancelledAcks.append(acknowledge)
+        if self.pendingAck is acknowledge:
+            self.pendingAck = None
 
 
 class _DetectorsManager:
@@ -168,13 +176,33 @@ def test_arm_with_no_participants_takes_no_lease():
     assert scanInfoDict[PARTICIPANTS_KEY] == []
 
 
+def test_all_entry_points_get_one_shared_coordinator_per_nidaq_manager():
+    _, manager, nidaq = _setup()
+
+    first = getSharedScanExecutionCoordinator(manager, nidaq)
+    second = getSharedScanExecutionCoordinator(manager, nidaq)
+
+    assert first is second
+
+
+def test_token_records_owner_for_broadcast_completion_routing():
+    coordinator, _, _ = _setup()
+    owner = object()
+
+    token = coordinator.arm({}, {}, owner=owner)
+
+    assert coordinator.tokenForOwner(owner) is token
+    assert coordinator.tokenForOwner(object()) is None
+
+
 # --------------------------------------------------------------------------- #
 # Exactly-once completion, all five terminations                               #
 # --------------------------------------------------------------------------- #
 
 def test_normal_completion_finishes_gracefully_and_releases():
     coordinator, manager, _ = _setup()
-    token = coordinator.arm({}, {})
+    scanInfo = {}
+    token = coordinator.arm({}, scanInfo)
 
     assert coordinator.resolve(token) is True
 
@@ -182,6 +210,8 @@ def test_normal_completion_finishes_gracefully_and_releases():
     assert manager['TimeTagger'].finishCalls == [FINISH_GRACEFUL]
     assert manager.released == ['lease-1']
     assert coordinator.activeToken is None
+    assert PARTICIPANTS_KEY not in scanInfo
+    assert EXCLUDED_KEY not in scanInfo
 
 
 def test_abort_finishes_abruptly_and_releases():
@@ -215,6 +245,17 @@ def test_arm_exception_unwinds_the_lease():
 
     assert manager.released == ['lease-1']
     assert coordinator.activeToken is None
+
+
+def test_arm_exception_removes_iteration_snapshot_from_reusable_scan_info():
+    coordinator, _, _ = _setup(nidaqError=RuntimeError('build blew up'))
+    scanInfo = {}
+
+    with pytest.raises(RuntimeError):
+        coordinator.arm({}, scanInfo)
+
+    assert PARTICIPANTS_KEY not in scanInfo
+    assert EXCLUDED_KEY not in scanInfo
 
 
 def test_completion_runs_exactly_once_however_many_paths_fire():
@@ -294,6 +335,7 @@ def test_etsted_runner_arms_through_the_coordinator_when_given_one():
         signal_dict={},
         scan_info_dict={},
         scan_coordinator=coordinator,
+        scan_owner=runner,
     )
 
     assert result.success is True
@@ -301,6 +343,7 @@ def test_etsted_runner_arms_through_the_coordinator_when_given_one():
         (('APD', 'TimeTagger'), LeasePurpose.SCAN, 'lease-1')
     ]
     assert coordinator.activeToken is not None
+    assert coordinator.tokenForOwner(runner) is result.scan_token
 
     coordinator.resolveActive()
     assert manager.released == ['lease-1']
@@ -330,10 +373,6 @@ def test_every_nidaq_scan_entry_point_is_routed_through_the_coordinator():
                 continue
             if pattern.search(line):
                 offenders.append(f'{path.relative_to(root)}:{number}')
-
-    # EtSTEDTriggeredScanRunner keeps a documented no-coordinator fallback.
-    offenders = [o for o in offenders
-                 if not o.startswith('imswitch/imcontrol/model/EtSTEDTriggeredScanRunner.py')]
 
     assert offenders == [], (
         'These call nidaqManager.runScan directly instead of arming through '
@@ -383,6 +422,193 @@ def test_completion_callback_fires_only_after_the_barrier_clears():
     assert completed == [True]
 
 
+def test_run_release_callback_waits_for_iteration_finish_barrier():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    owner = object()
+    runToken = coordinator.reserveRun(owner)
+    iterationToken = coordinator.arm({}, {}, owner=owner)
+    released = []
+
+    coordinator.resolve(iterationToken)
+    assert coordinator.releaseRun(
+        runToken, onReleased=lambda: released.append(True)
+    ) is True
+    assert released == []
+    assert coordinator.runForOwner(owner) is runToken
+
+    manager['TimeTagger'].pendingAck()
+
+    assert released == [True]
+    assert coordinator.runForOwner(owner) is None
+
+
+def test_held_run_release_blocks_new_owner_until_terminal_is_published():
+    """A worker-cleared detector barrier must not open a cross-owner start gap.
+
+    UI-affine controllers queue their terminal publication from the detector
+    acknowledgement thread.  The old run therefore remains globally reserved
+    until that queued publication explicitly finalizes the release.
+    """
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    owner = object()
+    nextOwner = object()
+    runToken = coordinator.reserveRun(owner)
+    iterationToken = coordinator.arm({}, {}, owner=owner)
+    terminalCallbacks = []
+
+    coordinator.resolve(iterationToken)
+    assert coordinator.releaseRun(
+        runToken,
+        onReleased=lambda: terminalCallbacks.append(True),
+        holdUntilFinalized=True,
+    ) is True
+
+    manager['TimeTagger'].pendingAck()
+
+    assert terminalCallbacks == [True]
+    assert coordinator.runForOwner(owner) is runToken
+    with pytest.raises(ScanBusyError, match='still finishing'):
+        coordinator.reserveRun(nextOwner)
+
+    assert coordinator.finalizeRunRelease(runToken) is True
+    nextRunToken = coordinator.reserveRun(nextOwner)
+    assert coordinator.runForOwner(nextOwner) is nextRunToken
+
+
+def test_repeated_held_release_does_not_queue_duplicate_terminal_callback():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    owner = object()
+    runToken = coordinator.reserveRun(owner)
+    iterationToken = coordinator.arm({}, {}, owner=owner)
+    callbacks = []
+
+    coordinator.resolve(iterationToken)
+    assert coordinator.releaseRun(
+        runToken,
+        onReleased=lambda: callbacks.append('first'),
+        holdUntilFinalized=True,
+    ) is True
+    assert coordinator.releaseRun(
+        runToken,
+        onReleased=lambda: callbacks.append('duplicate'),
+        holdUntilFinalized=True,
+    ) is True
+
+    manager['TimeTagger'].pendingAck()
+
+    assert callbacks == ['first']
+    assert coordinator.finalizeRunRelease(runToken) is True
+
+
+def test_held_release_callback_can_retry_after_failed_finalize_attempt():
+    coordinator, _, _ = _setup()
+    owner = object()
+    runToken = coordinator.reserveRun(owner)
+    callbacks = []
+
+    def firstAttempt():
+        callbacks.append('first')
+        # Simulate terminal publication returning without finalizing the held
+        # reservation. A concurrent request made from inside this callback is
+        # the same in-flight terminal and must not be dispatched recursively.
+        assert coordinator.releaseRun(
+            runToken,
+            onReleased=lambda: callbacks.append('reentrant'),
+            holdUntilFinalized=True,
+        ) is True
+
+    assert coordinator.releaseRun(
+        runToken,
+        onReleased=firstAttempt,
+        holdUntilFinalized=True,
+    ) is True
+    assert callbacks == ['first']
+    assert coordinator.runForOwner(owner) is runToken
+
+    def retry():
+        callbacks.append('retry')
+        assert coordinator.finalizeRunRelease(runToken) is True
+
+    assert coordinator.releaseRun(
+        runToken,
+        onReleased=retry,
+        holdUntilFinalized=True,
+    ) is True
+
+    assert callbacks == ['first', 'retry']
+    assert coordinator.runForOwner(owner) is None
+
+
+def test_stale_opaque_run_token_is_an_identity_safe_noop():
+    coordinator, _, _ = _setup()
+    owner = object()
+    runToken = coordinator.reserveRun(owner)
+    staleToken = object()
+
+    assert coordinator.releaseRun(staleToken) is False
+    assert coordinator.finalizeRunRelease(staleToken) is False
+    assert coordinator.runForOwner(owner) is runToken
+
+
+def test_run_release_callback_waits_for_detector_lease_release_to_finish():
+    """A resolved token is not drained until its lease release returns."""
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    owner = object()
+    runToken = coordinator.reserveRun(owner)
+    iterationToken = coordinator.arm({}, {}, owner=owner)
+    releaseStarted = threading.Event()
+    allowRelease = threading.Event()
+    released = []
+
+    def blockingRelease(handle):
+        releaseStarted.set()
+        if not allowRelease.wait(timeout=2):
+            raise RuntimeError('test did not unblock detector lease release')
+        manager.released.append(handle)
+
+    manager.release = blockingRelease
+    coordinator.resolve(iterationToken)
+    acknowledgeThread = threading.Thread(
+        target=manager['TimeTagger'].pendingAck
+    )
+    acknowledgeThread.start()
+    try:
+        assert releaseStarted.wait(timeout=1)
+        assert iterationToken.resolved is True
+        assert coordinator.releaseRun(
+            runToken, onReleased=lambda: released.append(True)
+        ) is True
+        assert released == []
+        assert coordinator.runForOwner(owner) is runToken
+    finally:
+        allowRelease.set()
+        acknowledgeThread.join(timeout=2)
+
+    assert acknowledgeThread.is_alive() is False
+    assert released == [True]
+    assert coordinator.runForOwner(owner) is None
+
+
+def test_same_owner_cannot_reserve_again_after_terminal_release_requested():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    owner = object()
+    runToken = coordinator.reserveRun(owner)
+    iterationToken = coordinator.arm({}, {}, owner=owner)
+
+    coordinator.resolve(iterationToken)
+    coordinator.releaseRun(runToken)
+
+    with pytest.raises(ScanBusyError, match='still finishing'):
+        coordinator.reserveRun(owner)
+
+    manager['TimeTagger'].pendingAck()
+
+
 def test_resolve_does_not_block_waiting_for_acknowledgements():
     coordinator, manager, _ = _setup()
     manager['APD'].autoAcknowledge = False
@@ -390,6 +616,29 @@ def test_resolve_does_not_block_waiting_for_acknowledgements():
     token = coordinator.arm({}, {})
 
     assert coordinator.resolve(token) is True  # returns immediately
+
+
+def test_timeout_scheduler_failure_does_not_bypass_participant_finish():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    coordinator.configure(
+        scheduleTimeout=lambda _delay, _callback: (
+            (_ for _ in ()).throw(RuntimeError('event loop is closing'))
+        )
+    )
+    token = coordinator.arm({}, {})
+
+    assert coordinator.resolve(token) is True
+
+    assert manager['APD'].finishCalls == [FINISH_GRACEFUL]
+    assert manager['TimeTagger'].finishCalls == [FINISH_GRACEFUL]
+    assert token.resolved is False
+    assert manager.released == []
+
+    manager['TimeTagger'].pendingAck()
+
+    assert token.resolved is True
+    assert manager.released == ['lease-1']
 
 
 def test_a_second_resolve_while_finishing_is_rejected():
@@ -438,6 +687,7 @@ def test_a_detector_that_never_acknowledges_is_timed_out():
     assert token.timedOut is True
     assert manager.released == ['lease-1']
     assert completed == [True]
+    assert manager['APD'].cancelledAcks
 
 
 def test_a_late_acknowledgement_after_timeout_is_harmless():
@@ -451,9 +701,10 @@ def test_a_late_acknowledgement_after_timeout_is_harmless():
     manager['APD'].autoAcknowledge = False
     token = coordinator.arm({}, {})
     coordinator.resolve(token)
+    lateAck = manager['APD'].pendingAck
     scheduled[0][1]()
 
-    manager['APD'].pendingAck()  # detector finally finishes
+    lateAck()  # detector finally finishes despite cancellation
 
     assert manager.released == ['lease-1']  # not released twice
 
@@ -484,6 +735,44 @@ def test_repeat_iterations_get_independent_tokens_and_leases():
     assert first is not second
     assert manager.released == ['lease-1', 'lease-2']
     assert manager['APD'].finishCalls == [FINISH_GRACEFUL, FINISH_GRACEFUL]
+
+
+def test_new_arm_is_rejected_while_previous_iteration_is_finishing():
+    coordinator, manager, _ = _setup()
+    manager['TimeTagger'].autoAcknowledge = False
+    first = coordinator.arm({}, {})
+    coordinator.resolve(first)
+
+    with pytest.raises(ScanBusyError, match='still in flight or finishing'):
+        coordinator.arm({}, {})
+
+    assert len(manager.acquired) == 1
+    manager['TimeTagger'].pendingAck()
+
+
+def test_new_arm_is_rejected_until_previous_release_fully_returns():
+    """Global ownership remains reserved through lease release and cleanup."""
+    coordinator, manager, _ = _setup()
+    token = coordinator.arm({}, {})
+    reentrantErrors = []
+
+    originalRelease = manager.release
+
+    def releaseAndTryToRearm(handle):
+        originalRelease(handle)
+        try:
+            coordinator.arm({}, {})
+        except Exception as error:
+            reentrantErrors.append(error)
+
+    manager.release = releaseAndTryToRearm
+
+    coordinator.resolve(token)
+
+    assert len(reentrantErrors) == 1
+    assert isinstance(reentrantErrors[0], ScanBusyError)
+    assert coordinator.activeToken is None
+    assert len(manager.acquired) == 1
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

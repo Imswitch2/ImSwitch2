@@ -201,6 +201,11 @@ def test_pin_is_cleared_by_releasing_and_re_pinned_next_scan():
     assert ctrl._scanDetectorName == 'CAM1'
 
     manager.setCurrentDetectorName('CAM2')
+    BeadRecController._releaseScanDetectorLease(ctrl)
+
+    assert ctrl._scanDetectorName is None
+    assert BeadRecController._reconstructionDetectorName(ctrl) == 'CAM2'
+
     BeadRecController.onScanStarting(ctrl)
 
     assert ctrl._scanDetectorName == 'CAM2'

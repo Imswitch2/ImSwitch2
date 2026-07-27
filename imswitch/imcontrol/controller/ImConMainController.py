@@ -2,7 +2,7 @@ import dataclasses
 from typing import Any, Dict
 
 import h5py
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
@@ -20,6 +20,9 @@ from .SetupModeController import SetupModeController
 from .SmartMicroscopyModeService import SmartMicroscopyModeService
 from .ShortcutManager import ShortcutManager
 from .basecontrollers import ImConWidgetControllerFactory
+
+
+_SERVER_THREAD_STOP_TIMEOUT_MS = 5000
 
 
 class ImConMainController(MainController):
@@ -401,21 +404,74 @@ class ImConMainController(MainController):
             except Exception as e:
                 self.__logger.warning(f'Failed to auto-save widget states: {e}')
         
-        # Stop server thread before closing hardware managers
+        # Stop server thread before closing hardware managers. A server that is
+        # still executing can retain API access into controllers and hardware,
+        # so its bounded join is a hard prerequisite for manager finalization.
+        serverStopped = True
         if hasattr(self, '_serverWorker') and hasattr(self, '_thread'):
             try:
                 self.__logger.debug('Stopping server thread')
                 self._serverWorker.stop()
                 self._thread.quit()
-                if not self._thread.wait(5000):  # 5 second timeout
-                    self.__logger.warning('Server thread did not stop within timeout')
+                if isinstance(self._thread, QtCore.QThread):
+                    # framework.Thread intentionally exposes wait() without a
+                    # timeout. Call the Qt base implementation so shutdown never
+                    # falls back to an unbounded join.
+                    serverStopped = bool(
+                        QtCore.QThread.wait(
+                            self._thread,
+                            _SERVER_THREAD_STOP_TIMEOUT_MS,
+                        )
+                    )
+                else:
+                    # Lightweight test/fallback threads may expose the bounded
+                    # signature directly.
+                    serverStopped = (
+                        self._thread.wait(
+                            _SERVER_THREAD_STOP_TIMEOUT_MS
+                        )
+                        is not False
+                    )
+                if not serverStopped:
+                    self.__logger.error(
+                        'Server thread did not stop within timeout'
+                    )
             except Exception as e:
-                self.__logger.warning(f'Error stopping server thread: {e}')
+                serverStopped = False
+                self.__logger.error(
+                    f'Error stopping server thread: {e}',
+                    exc_info=True,
+                )
         
+        controllersClosed = True
         if self.__factory is not None:
-            self.__factory.closeAllCreatedControllers()
-        if self.__masterController is not None:
-            self.__masterController.closeEvent()
+            controllersClosed = self.__factory.closeAllCreatedControllers(
+                waitTimeoutS=30.0
+            )
+        if self.__masterController is not None and not serverStopped:
+            self.__logger.error(
+                'Skipping hardware-manager finalization because the server '
+                'thread did not drain within the shutdown deadline.'
+            )
+            return False
+        if self.__masterController is not None and controllersClosed is not False:
+            hardwareClosed = self.__masterController.closeEvent()
+            if hardwareClosed is False:
+                self.__logger.error(
+                    'Hardware-manager shutdown did not complete; application '
+                    'close must remain fail-closed.'
+                )
+                return False
+        elif self.__masterController is not None:
+            # Fail closed: retained acquisition leases protect detector
+            # refcounts, but they cannot make manager.finalize() safe while a
+            # worker is inside a backend call.
+            self.__logger.error(
+                'Skipping hardware-manager finalization because controller '
+                'workers did not drain within the shutdown deadline.'
+            )
+            return False
+        return controllersClosed is not False
 
     def _shouldSaveWidgetStateOnClose(self):
         result = QtWidgets.QMessageBox.question(

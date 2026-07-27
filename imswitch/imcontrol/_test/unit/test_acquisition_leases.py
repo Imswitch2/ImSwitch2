@@ -129,6 +129,21 @@ def test_release_rejects_unknown_or_reused_handle():
         table.release(handle)
 
 
+def test_handle_fields_are_immutable():
+    hw = _Hardware()
+    table, _ = makeTable(hw)
+    handle, _ = table.acquire(['A'], LeasePurpose.GENERIC)
+
+    with pytest.raises(AttributeError):
+        handle.purpose = LeasePurpose.LIVE_VIEW
+    with pytest.raises(AttributeError):
+        handle.detectorNames = ('B',)
+
+    assert table.isActiveHandle(handle)
+    table.release(handle)
+    assert not table.isActiveHandle(handle)
+
+
 def test_purpose_must_be_a_lease_purpose():
     hw = _Hardware()
     table, _ = makeTable(hw)
@@ -143,7 +158,8 @@ def test_purpose_must_be_a_lease_purpose():
 
 def test_failed_acquire_rolls_back_existing_and_new_detectors():
     """existing-A + new-B + failing-C: A must go 2->1 (stay armed), B must be
-    stopped (this call started it), C never counts as armed."""
+    stopped, and failing-C must receive a compensating stop because its start
+    could have partially armed hardware before raising."""
     hw = _Hardware(failStarts=['C'])
     table, _ = makeTable(hw)
 
@@ -154,14 +170,14 @@ def test_failed_acquire_rolls_back_existing_and_new_detectors():
         table.acquire(['A', 'B', 'C'], LeasePurpose.SCAN)
 
     assert hw.started == ['B', 'C']
-    assert hw.stopped == ['B']       # only what this call started
+    assert hw.stopped == ['C', 'B']
     assert table.isLeased('A')       # 2 -> 1, still held by the LIVE_VIEW lease
     assert not table.isLeased('B')
     assert not table.isLeased('C')
     assert len(table.activeLeases()) == 1
 
     table.release(keepA)
-    assert hw.stopped == ['B', 'A']
+    assert hw.stopped == ['C', 'B', 'A']
 
 
 def test_rollback_stop_failure_faults_that_detector_and_reraises_original():
@@ -173,6 +189,32 @@ def test_rollback_stop_failure_faults_that_detector_and_reraises_original():
 
     assert table.isFaulted('B')
     assert not table.isLeased('B')
+
+
+def test_failed_start_is_compensated_and_quarantined_if_stop_fails():
+    events = []
+
+    def partialStart(name):
+        events.append(('start', name))
+        raise RuntimeError(f'partially started: {name}')
+
+    def failedCompensation(name):
+        events.append(('stop', name))
+        raise RuntimeError(f'cannot stop: {name}')
+
+    table = AcquisitionLeaseTable(
+        startDetector=partialStart,
+        stopDetector=failedCompensation,
+    )
+
+    with pytest.raises(RuntimeError, match='partially started: A'):
+        table.acquire(['A'], LeasePurpose.SCAN)
+
+    assert events == [('start', 'A'), ('stop', 'A')]
+    assert not table.isLeased('A')
+    assert table.isFaulted('A')
+    with pytest.raises(DetectorFaultedError):
+        table.acquire(['A'], LeasePurpose.SCAN)
 
 
 def test_acquire_leaves_no_lease_behind_when_it_fails():

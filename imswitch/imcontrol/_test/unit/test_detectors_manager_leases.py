@@ -11,6 +11,8 @@ Design reference: docs/design/plans/detector-acquisition-selection.md.
 """
 
 import sys
+import threading
+import time
 
 import pytest
 
@@ -79,6 +81,11 @@ def manager(monkeypatch):
     mgr._subManagers = detectors
     mgr._currentDetectorName = 'CAM'
     mgr._thread = _StubThread()
+    mgr._frameStreamLifecycleLock = threading.RLock()
+    mgr._framePollLock = threading.RLock()
+    mgr._detectorStopLock = threading.RLock()
+    mgr._detectorStopOperations = {}
+    mgr._lvWorker = None
 
     emitted = []
     mgr.sigAcquisitionStarted = _StubSignal(lambda: emitted.append('started'))
@@ -91,7 +98,7 @@ def manager(monkeypatch):
     )
     mgr._leaseTable = AcquisitionLeaseTable(
         startDetector=lambda name: detectors[name].startAcquisition(),
-        stopDetector=lambda name: detectors[name].stopAcquisition(),
+        stopDetector=mgr._stopDetectorBounded,
         onStateChanged=mgr._DetectorsManager__onLeaseStateChanged,
     )
     return mgr
@@ -150,6 +157,26 @@ def test_legacy_none_means_all_not_empty(manager):
         manager.startAcquisition(detectorNames=[])
 
 
+def test_legacy_empty_liveview_handle_never_keeps_an_idle_poller(manager):
+    for detector in manager._subManagers.values():
+        detector.forAcquisition = False
+
+    empty = manager.startAcquisition(liveView=True)
+    assert manager.frameStreamMembership() == set()
+    assert not manager._thread.isRunning()
+
+    explicit = manager.acquire(['FOCUSCAM'], LeasePurpose.LIVE_VIEW)
+    assert manager._thread.isRunning()
+    manager.release(explicit)
+
+    # The empty compatibility handle remains active, but has no detector
+    # membership and therefore must not keep the poll thread alive.
+    assert manager._leaseTable.isActiveHandle(empty)
+    assert manager.frameStreamMembership() == set()
+    assert not manager._thread.isRunning()
+    manager.release(empty)
+
+
 def test_legacy_and_explicit_leases_coexist(manager):
     legacy = manager.startAcquisition()          # GENERIC over everything
     explicit = manager.acquire(['CAM'], LeasePurpose.RECORDING)
@@ -161,6 +188,45 @@ def test_legacy_and_explicit_leases_coexist(manager):
 
     manager.stopAcquisition(legacy)
     assert manager['CAM'].stopCalls == 1
+
+
+def test_concurrent_last_release_notifies_stopped_before_new_started(manager):
+    """Global acquisition signals must follow serialized lease order."""
+    first = manager.acquire(['CAM'], LeasePurpose.GENERIC)
+    manager.signals.clear()
+    stopEntered = threading.Event()
+    allowStopSignal = threading.Event()
+
+    def emitStopped():
+        stopEntered.set()
+        assert allowStopSignal.wait(2)
+        manager.signals.append('stopped')
+
+    manager.sigAcquisitionStopped = _StubSignal(emitStopped)
+
+    releasing = threading.Thread(target=lambda: manager.release(first), daemon=True)
+    releasing.start()
+    assert stopEntered.wait(2)
+
+    acquired = []
+    acquiring = threading.Thread(
+        target=lambda: acquired.append(
+            manager.acquire(['CAM'], LeasePurpose.GENERIC)
+        ),
+        daemon=True,
+    )
+    acquiring.start()
+    acquiring.join(0.05)
+    assert acquiring.is_alive()
+
+    allowStopSignal.set()
+    releasing.join(2)
+    acquiring.join(2)
+
+    assert not releasing.is_alive()
+    assert not acquiring.is_alive()
+    assert manager.signals == ['stopped', 'started']
+    manager.release(acquired[0])
 
 
 def test_acquire_validates_detector_names(manager):
@@ -225,6 +291,41 @@ def test_retry_stop_clears_the_fault(manager):
     assert not manager.isDetectorFaulted('APD')
     assert manager['APD']._hardwareFaulted is False
     manager.acquire(['APD'], LeasePurpose.SCAN)  # usable again
+
+
+def test_blocking_detector_stop_times_out_without_duplicate_retry(
+        manager, monkeypatch):
+    module = sys.modules[
+        'imswitch.imcontrol.model.managers.DetectorsManager'
+    ]
+    monkeypatch.setattr(module, 'DETECTOR_STOP_TIMEOUT_MS', 20)
+    stopEntered = threading.Event()
+    releaseStop = threading.Event()
+    calls = []
+
+    def blockingStop():
+        calls.append(True)
+        stopEntered.set()
+        releaseStop.wait()
+
+    manager['CAM'].stopAcquisition = blockingStop
+    handle = manager.acquire(['CAM'], LeasePurpose.SCAN)
+
+    started = time.monotonic()
+    manager.release(handle)
+    assert time.monotonic() - started < 0.5
+    assert stopEntered.is_set()
+    assert manager.isDetectorFaulted('CAM')
+    assert 'CAM' in manager._detectorStopOperations
+    with pytest.raises(DetectorFaultedError):
+        manager.acquire(['CAM'], LeasePurpose.SCAN)
+
+    releaseStop.set()
+    manager.retryStop('CAM')
+
+    assert calls == [True]
+    assert not manager.isDetectorFaulted('CAM')
+    assert manager._detectorStopOperations == {}
 
 
 def test_a_faulted_detector_does_not_break_the_others(manager):

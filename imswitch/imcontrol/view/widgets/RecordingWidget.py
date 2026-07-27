@@ -85,10 +85,10 @@ class RecordingWidget(Widget):
                                        QtCore.Qt.AlignVCenter))
         self.timeToRec = QtWidgets.QLineEdit('1')
         
-        self.recTimelapseBtn = QtWidgets.QRadioButton('Timelapse')
+        self.recTimelapseBtn = QtWidgets.QRadioButton('Camera timelapse')
         self.currentTimelapseFrame = QtWidgets.QLabel('0 / ')
         self.timelapseFramesEdit = QtWidgets.QLineEdit('5')
-        self.timelapseFrameTimeLabel = QtWidgets.QLabel('Frame time [s]')
+        self.timelapseFrameTimeLabel = QtWidgets.QLabel('Interval [s]')
         self.timelapseFrameTimeEdit = QtWidgets.QLineEdit('0')
         self.lasersList = QtWidgets.QComboBox()
 
@@ -100,7 +100,9 @@ class RecordingWidget(Widget):
         self.freqLabel = QtWidgets.QLabel('Freq [s]')
         self.freqEdit = QtWidgets.QLineEdit('0')
 
-        self.singleFileLapseBox = QtWidgets.QCheckBox('Save all scans in a single file')
+        self.singleFileLapseBox = QtWidgets.QCheckBox(
+            'Save all timepoints in a single file'
+        )
 
         self.untilSTOPbtn = QtWidgets.QRadioButton('Run until STOP')
 
@@ -178,18 +180,10 @@ class RecordingWidget(Widget):
         recGrid.addWidget(self.timelapseFrameTimeLabel, gridRow, 3)
         recGrid.addWidget(self.timelapseFrameTimeEdit, gridRow, 4)
         recGrid.addWidget(self.lasersList, gridRow, 5)
-        # Plain camera-only timelapse is not backed by RecordingManager. Keep
-        # the legacy widgets for saved-state compatibility, but do not offer a
-        # mode that cannot start successfully.
-        for widget in (
-            self.recTimelapseBtn,
-            self.currentTimelapseFrame,
-            self.timelapseFramesEdit,
-            self.timelapseFrameTimeLabel,
-            self.timelapseFrameTimeEdit,
-            self.lasersList,
-        ):
-            widget.setVisible(False)
+        # Automatic illumination switching was part of the abandoned legacy
+        # prototype but never had a safe implementation. Camera timelapse uses
+        # the illumination state selected elsewhere in ImControl.
+        self.lasersList.setVisible(False)
         gridRow += 1
 
         recGrid.addWidget(self.recScanOnceBtn, gridRow, 0, 1, 5)
@@ -419,15 +413,16 @@ class RecordingWidget(Widget):
     def setFieldsEnabled(self, enabled):
         self.recGridContainer.setEnabled(enabled)
 
-    def setEnabledParams(self, specFrames=False, specTime=False, scanLapse=False, specLapse=False):
+    def setEnabledParams(self, specFrames=False, specTime=False,
+                         scanLapse=False, specLapse=False):
         self.numExpositionsEdit.setEnabled(specFrames)
         self.timeToRec.setEnabled(specTime)
         self.timeLapseEdit.setEnabled(scanLapse)
         self.freqEdit.setEnabled(scanLapse)
-        self.singleFileLapseBox.setEnabled(scanLapse)
+        self.singleFileLapseBox.setEnabled(scanLapse or specLapse)
         self.timelapseFramesEdit.setEnabled(specLapse)
         self.timelapseFrameTimeEdit.setEnabled(specLapse)
-        self.lasersList.setEnabled(specLapse)
+        self.lasersList.setEnabled(False)
 
     def setRecButtonChecked(self, checked):
         self.recButton.setChecked(checked)
@@ -447,6 +442,12 @@ class RecordingWidget(Widget):
     def setTimelapseSingleFile(self, singleFile):
         self.singleFileLapseBox.setChecked(singleFile)
 
+    def setCameraTimelapseNumFrames(self, numFrames):
+        self.timelapseFramesEdit.setText(str(numFrames))
+
+    def setCameraTimelapseInterval(self, intervalSeconds):
+        self.timelapseFrameTimeEdit.setText(str(intervalSeconds))
+
     def updateRecFrameNum(self, recFrameNum):
         self.currentFrame.setText(str(recFrameNum) + ' /')
 
@@ -455,6 +456,9 @@ class RecordingWidget(Widget):
 
     def updateRecLapseNum(self, lapseNum):
         self.currentLapse.setText(str(lapseNum) + ' /')
+
+    def updateCameraLapseNum(self, lapseNum):
+        self.currentTimelapseFrame.setText(str(lapseNum) + ' /')
 
     @shortcut(actionId="recording.toggleRecord", defaultKey="Ctrl+R",
               displayName="Record", initiallyBound=True)

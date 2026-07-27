@@ -63,8 +63,11 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
                         sigScanStartingEmitted):
         """ Runs a scan with the set scanning parameters. """
         try:
+            if self._beginScanRun(
+                sigScanStartingEmitted=sigScanStartingEmitted
+            ) is None:
+                return
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
@@ -75,13 +78,11 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
                     )
                 except TypeError:
                     self._logger.error(traceback.format_exc())
-                    self.isRunning = False
+                    self.scanFailed()
                     return
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
             # set positions of scanners not in scan from centerpos
             for index, positionerName in enumerate(self._analogParameterDict['target_device']):
                 if positionerName not in self._positionersScan:
@@ -89,25 +90,41 @@ class ScanControllerBase(BeadRecScanSourceMixin, SuperScanController):
                     self._master.positionersManager[positionerName].setPosition(position, 0)
                     self._logger.debug(f'set {positionerName} center to {position} before scan')
             # run scan
-            self._scanCoordinator.arm(self.signalDict, self.scanInfoDict)
+            self._scanCoordinator.arm(
+                self.signalDict, self.scanInfoDict, owner=self
+            )
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
+            self.scanFailed()
 
     def scanDone(self):
         self.isRunning = False
-
-        if not self._widget.isContLaserMode() and not self._widget.repeatEnabled():
-            self.emitScanSignal(self._commChannel.sigScanDone)
-            if not self.doingNonFinalPartOfSequence:
-                self._widget.setScanButtonChecked(False)
-                self.emitScanSignal(self._commChannel.sigScanEnded)
-        else:
-            # Defer the re-arm so the finished scan's NI-DAQ tasks and detector
-            # threads tear down before the next frame starts (see _armRepeatScan).
-            self._armRepeatScan()
+        try:
+            if (
+                not self._widget.isContLaserMode()
+                and not self._widget.repeatEnabled()
+            ):
+                isFinalPart = not self.doingNonFinalPartOfSequence
+                if isFinalPart:
+                    try:
+                        self._widget.setScanButtonChecked(False)
+                    except Exception:
+                        self._logger.error(
+                            'Failed to reset the scan widget after completion',
+                            exc_info=True,
+                        )
+                self._publishScanDone(isFinalPart=isFinalPart)
+            else:
+                # Defer the re-arm so the finished scan's NI-DAQ tasks and
+                # detector threads tear down before the next frame starts.
+                self._armRepeatScan()
+        except Exception:
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
 
     def _shouldContinueRepeat(self) -> bool:
+        if getattr(self, '_scanStopRequested', False):
+            return False
         return self._widget.isContLaserMode() or self._widget.repeatEnabled()
 
     def getParameters(self):

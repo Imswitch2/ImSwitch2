@@ -32,6 +32,7 @@ MODE_SCAN_LAPSE = 'scan_lapse' # ScanLapse
 _RECMODE_TO_MODE = {
     'SpecFrames': MODE_TIMELAPSE,
     'SpecTime': MODE_TIMELAPSE,
+    'CameraLapse': MODE_TIMELAPSE,
     'UntilStop': MODE_TIMELAPSE,
     'ScanOnce': MODE_SCAN,
     'ScanLapse': MODE_SCAN_LAPSE,

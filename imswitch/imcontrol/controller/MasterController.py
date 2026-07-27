@@ -5,6 +5,9 @@ from imswitch.imcontrol.model import (
     RotatorsManager, SLMsManager, ScanManagerAdvanced
 )
 from imswitch.imcontrol.model.managers.TriggerScopeManager import TriggerScopeManager
+from imswitch.imcontrol.model.managers._scan_execution import (
+    getSharedScanExecutionCoordinator,
+)
 
 
 class MasterController:
@@ -18,6 +21,10 @@ class MasterController:
         self.__setupInfo = setupInfo
         self.__commChannel = commChannel
         self.__moduleCommChannel = moduleCommChannel
+        # Successful finalizers are terminal for one concrete manager object.
+        # Retain the objects themselves (rather than integer ids) so a manager
+        # replaced between shutdown retries is never skipped due to id reuse.
+        self._shutdownFinalizedManagerObjects = []
 
         # Init managers
         self.nidaqManager = NidaqManager(self.__setupInfo)
@@ -51,6 +58,14 @@ class MasterController:
 
         self.detectorsManager = DetectorsManager(self.__setupInfo.detectors, updatePeriod=300,
                                                  **lowLevelManagers)
+        self.nidaqManager.setScanSimulationDetectorStateProvider(
+            self.detectorsManager.isDetectorLeased
+        )
+        self.scanExecutionCoordinator = getSharedScanExecutionCoordinator(
+            self.detectorsManager,
+            self.nidaqManager,
+            logger=self.__logger,
+        )
 
         self.lasersManager = LasersManager(self.__setupInfo.lasers,
                                            **lowLevelManagers)
@@ -102,6 +117,7 @@ class MasterController:
 
         self.recordingManager.sigRecordingStarted.connect(cc.sigRecordingStarted)
         self.recordingManager.sigRecordingEnded.connect(cc.sigRecordingEnded)
+        self.recordingManager.sigRecordingFailed.connect(cc.sigRecordingFailed)
         self.recordingManager.sigRecordingFrameNumUpdated.connect(cc.sigUpdateRecFrameNum)
         self.recordingManager.sigRecordingTimeUpdated.connect(cc.sigUpdateRecTime)
         self.recordingManager.sigMemorySnapAvailable.connect(cc.sigMemorySnapAvailable)
@@ -112,35 +128,235 @@ class MasterController:
             data=file, filePath=filePath, savedToDisk=savedToDisk
         )
 
+    def _managerFinalizationCompleted(self, manager):
+        completed = self.__dict__.setdefault(
+            '_shutdownFinalizedManagerObjects', []
+        )
+        return any(candidate is manager for candidate in completed)
+
+    def _markManagerFinalizationCompleted(self, manager):
+        completed = self.__dict__.setdefault(
+            '_shutdownFinalizedManagerObjects', []
+        )
+        if not any(candidate is manager for candidate in completed):
+            completed.append(manager)
+
     def closeEvent(self):
-        self.recordingManager.endRecording(emitSignal=False, wait=True)
-
-        # Finalize all manager attributes explicitly, not only MultiManager instances.
-        # Each wrapped in try/except so one failing finalize cannot prevent the others.
+        # Finalize all manager attributes explicitly, not only MultiManager
+        # instances. This ordering is also the retry scope: a manager object
+        # that already finalized successfully is skipped, while False/raising
+        # finalizers remain pending on the next close attempt.
         manager_attrs = [
-            'detectorsManager', 'lasersManager', 'positionersManager', 'rotatorsManager',
-            'flipMirrorsManager', 'recordingManager', 'slmsManager', 'nidaqManager',
-            'rs232sManager', 'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
-            'scanManager'
+            'detectorsManager', 'lasersManager', 'positionersManager',
+            'rotatorsManager', 'flipMirrorsManager', 'recordingManager',
+            'slmsManager', 'nidaqManager', 'rs232sManager',
+            'pulseGeneratorManager', 'triggerScopeManager', 'standManager',
+            'scanManager',
         ]
+        unsafeWhileActive = {
+            'detectorsManager',
+            'recordingManager',
+            'nidaqManager',
+            'scanManager',
+        }
+        pendingUnsafeManagers = {
+            attrName
+            for attrName in unsafeWhileActive
+            if (
+                (manager := getattr(self, attrName, None)) is not None
+                and not self._managerFinalizationCompleted(manager)
+            )
+        }
 
+        hardwareFinalizationSafe = True
+        recordingManager = getattr(self, 'recordingManager', None)
+        if (
+            recordingManager is not None
+            and 'recordingManager' in pendingUnsafeManagers
+        ):
+            try:
+                recordingManager.endRecording(
+                    emitSignal=False, wait=True
+                )
+            except Exception as e:
+                # Recording teardown failure must not bypass cleanup of every
+                # other hardware manager. Continue through the independently
+                # guarded finalization loop below.
+                self.__logger.error(
+                    f'Error stopping active recording during shutdown: {e}',
+                    exc_info=True,
+                )
+                hardwareFinalizationSafe = False
+
+            recordingShutdownComplete = getattr(
+                recordingManager, 'shutdownComplete', None
+            )
+            if callable(recordingShutdownComplete):
+                try:
+                    if recordingShutdownComplete() is False:
+                        hardwareFinalizationSafe = False
+                        self.__logger.error(
+                            'Skipping acquisition-hardware finalization because '
+                            'the recording producer/writer is still active.'
+                        )
+                except Exception:
+                    hardwareFinalizationSafe = False
+                    self.__logger.error(
+                        'Could not verify recording-worker shutdown.',
+                        exc_info=True,
+                    )
+
+        coordinator = getattr(self, 'scanExecutionCoordinator', None)
+        if pendingUnsafeManagers and coordinator is not None and (
+            getattr(coordinator, 'activeToken', None) is not None
+            or getattr(coordinator, 'activeRunToken', None) is not None
+        ):
+            hardwareFinalizationSafe = False
+            self.__logger.error(
+                'Skipping acquisition-hardware finalization because a scan '
+                'iteration/run still owns the shared coordinator.'
+            )
+
+        activeLeases = ()
+        detectorsManager = getattr(self, 'detectorsManager', None)
+        activeLeasesSnapshot = (
+            getattr(detectorsManager, 'activeAcquisitionLeases', None)
+            if 'detectorsManager' in pendingUnsafeManagers else None
+        )
+        if callable(activeLeasesSnapshot):
+            try:
+                candidate = activeLeasesSnapshot()
+                if isinstance(candidate, (tuple, list)):
+                    activeLeases = tuple(candidate)
+            except Exception:
+                self.__logger.error(
+                    'Could not verify detector leases during shutdown.',
+                    exc_info=True,
+                )
+                hardwareFinalizationSafe = False
+        if activeLeases:
+            hardwareFinalizationSafe = False
+            self.__logger.error(
+                'Skipping acquisition-hardware finalization because detector '
+                f'leases remain active: {activeLeases!r}'
+            )
+
+        faultSnapshot = getattr(
+            detectorsManager, 'faultedAcquisitionDetectors', None
+        ) if 'detectorsManager' in pendingUnsafeManagers else None
+        if hardwareFinalizationSafe and callable(faultSnapshot):
+            try:
+                candidate = faultSnapshot()
+                faultedDetectors = (
+                    tuple(candidate)
+                    if isinstance(candidate, (tuple, list))
+                    else ()
+                )
+            except Exception:
+                faultedDetectors = ()
+                hardwareFinalizationSafe = False
+                self.__logger.error(
+                    'Could not verify faulted detectors during shutdown.',
+                    exc_info=True,
+                )
+
+            retryStop = getattr(
+                detectorsManager, 'retryStop', None
+            )
+            for detectorName in faultedDetectors:
+                try:
+                    if not callable(retryStop):
+                        raise RuntimeError(
+                            'detector manager has no retryStop recovery API'
+                        )
+                    retryStop(detectorName)
+                except Exception:
+                    hardwareFinalizationSafe = False
+                    self.__logger.error(
+                        'Failed the bounded shutdown stop retry for detector '
+                        f'{detectorName!r}.',
+                        exc_info=True,
+                    )
+
+            try:
+                candidate = faultSnapshot()
+                unresolvedFaults = (
+                    tuple(candidate)
+                    if isinstance(candidate, (tuple, list))
+                    else ()
+                )
+            except Exception:
+                unresolvedFaults = ()
+                hardwareFinalizationSafe = False
+                self.__logger.error(
+                    'Could not re-check detector faults after shutdown '
+                    'recovery.',
+                    exc_info=True,
+                )
+            if unresolvedFaults:
+                hardwareFinalizationSafe = False
+                self.__logger.error(
+                    'Skipping acquisition-hardware finalization because '
+                    'detector stop faults remain unresolved: '
+                    f'{unresolvedFaults!r}'
+                )
+
+        shutdownSucceeded = hardwareFinalizationSafe
         for attrName in manager_attrs:
+            if (
+                not hardwareFinalizationSafe
+                and attrName in unsafeWhileActive
+            ):
+                continue
             if not hasattr(self, attrName):
                 continue
             attr = getattr(self, attrName)
             if attr is None:
                 continue
+            if self._managerFinalizationCompleted(attr):
+                continue
 
-            # Try finalize() first, fall back to close()
+            # Try finalize() first, falling back to close() only when a
+            # finalize method is not available. An explicit False result is a
+            # shutdown failure, not a successful no-op.
+            finalizerFound = False
             for method_name in ['finalize', 'close']:
-                if hasattr(attr, method_name):
-                    try:
-                        method = getattr(attr, method_name)
-                        method()
-                        self.__logger.debug(f'Finalized {attrName} via {method_name}()')
-                        break
-                    except Exception as e:
-                        self.__logger.error(f'Error finalizing {attrName}.{method_name}(): {e}', exc_info=True)
+                method = getattr(attr, method_name, None)
+                if not callable(method):
+                    continue
+                finalizerFound = True
+                try:
+                    result = method()
+                except Exception as e:
+                    shutdownSucceeded = False
+                    if attrName in unsafeWhileActive:
+                        hardwareFinalizationSafe = False
+                    self.__logger.error(
+                        f'Error finalizing {attrName}.{method_name}(): {e}',
+                        exc_info=True,
+                    )
+                else:
+                    if result is False:
+                        shutdownSucceeded = False
+                        if attrName in unsafeWhileActive:
+                            hardwareFinalizationSafe = False
+                        self.__logger.error(
+                            f'{attrName}.{method_name}() reported an '
+                            'incomplete shutdown.'
+                        )
+                    else:
+                        self._markManagerFinalizationCompleted(attr)
+                        self.__logger.debug(
+                            f'Finalized {attrName} via {method_name}()'
+                        )
+                break
+            if not finalizerFound:
+                # This manager has no explicit finalizer. Reaching it after all
+                # safety gates is a successful no-op for this concrete object,
+                # and repeating pre-finalization teardown on later retries is
+                # unnecessary.
+                self._markManagerFinalizationCompleted(attr)
+        return hardwareFinalizationSafe and shutdownSucceeded
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

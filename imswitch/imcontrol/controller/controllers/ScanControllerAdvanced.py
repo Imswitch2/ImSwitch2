@@ -469,8 +469,11 @@ class ScanControllerAdvanced(SuperScanController):
     ):
         """Runs a scan with current parameters."""
         try:
+            if self._beginScanRun(
+                sigScanStartingEmitted=sigScanStartingEmitted
+            ) is None:
+                return
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
@@ -497,16 +500,12 @@ class ScanControllerAdvanced(SuperScanController):
                     )
 
                     if self.signalDict is None:
-                        self.isRunning = False
-                        self.abortScan()
+                        self.scanFailed()
                         return
 
                     self._lastBuiltParams = paramsSnapshot
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
-
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
 
             # Set non-scanned positioners to center (same behavior as your PointScan controller)
             for index, positionerName in enumerate(self._analogParameterDict["target_device"]):
@@ -518,31 +517,45 @@ class ScanControllerAdvanced(SuperScanController):
                         self._logger.warning("Failed to set %s to center:\n%s",
                                              positionerName, traceback.format_exc())
 
-            self._scanCoordinator.arm(self.signalDict, self.scanInfoDict)
+            self._scanCoordinator.arm(
+                self.signalDict, self.scanInfoDict, owner=self
+            )
 
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
-            self.abortScan()
+            self.scanFailed()
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""
         self.isRunning = False
-
-        if not self._widget.repeatEnabled():
-            self.emitScanSignal(self._commChannel.sigScanDone)
-            if not getattr(self, "doingNonFinalPartOfSequence", False):
-                self._widget.setScanButtonChecked(False)
-                self.emitScanSignal(self._commChannel.sigScanEnded)
-
-            try:
-                self._resetReturnToCenterPositionersAfterScan()
-            except Exception:
-                self._logger.warning("Failed to reset positioners after scan:\n%s", traceback.format_exc())
-        else:
-            # Defer the re-arm so the finished scan's NI-DAQ tasks and detector
-            # threads tear down before the next frame starts (see _armRepeatScan).
-            self._armRepeatScan()
+        try:
+            if not self._widget.repeatEnabled():
+                isFinalPart = not getattr(
+                    self, "doingNonFinalPartOfSequence", False
+                )
+                try:
+                    self._resetReturnToCenterPositionersAfterScan()
+                except Exception:
+                    self._logger.warning(
+                        "Failed to reset positioners after scan:\n%s",
+                        traceback.format_exc(),
+                    )
+                if isFinalPart:
+                    try:
+                        self._widget.setScanButtonChecked(False)
+                    except Exception:
+                        self._logger.error(
+                            'Failed to reset the scan widget after completion',
+                            exc_info=True,
+                        )
+                self._publishScanDone(isFinalPart=isFinalPart)
+            else:
+                # Defer the re-arm so the finished scan's NI-DAQ tasks and
+                # detector threads tear down before the next frame starts.
+                self._armRepeatScan()
+        except Exception:
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)

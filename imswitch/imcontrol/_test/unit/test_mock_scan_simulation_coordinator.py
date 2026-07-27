@@ -145,6 +145,63 @@ def _recorded_dataset(memory_recordings, detector_name):
     raise AssertionError(f'No memory recording for detector {detector_name}')
 
 
+def test_detector_state_provider_setter_does_not_tear_down_task_waiters():
+    """Binding simulator state is configuration, not manager shutdown."""
+    class _Waiter:
+        def __init__(self):
+            self.quitCalls = 0
+            self.waitCalls = 0
+            self.running = True
+            self.threadRunning = True
+
+        def quit(self):
+            self.quitCalls += 1
+
+        def wait(self, _timeout):
+            self.waitCalls += 1
+            self.threadRunning = False
+            return True
+
+        def isRunning(self):
+            return self.threadRunning
+
+    class _Simulator:
+        def __init__(self):
+            self.provider = None
+            self.stopCalls = 0
+
+        def setDetectorStateProvider(self, provider):
+            self.provider = provider
+
+        def stop(self, wait):
+            assert wait is False
+            self.stopCalls += 1
+
+    manager = NidaqManager.__new__(NidaqManager)
+    simulator = _Simulator()
+    waiter = _Waiter()
+    manager._NidaqManager__scanSimulator = simulator
+    manager.doTaskWaiter = waiter
+    manager.aoTaskWaiter = None
+    manager.timerTaskWaiter = None
+    provider = lambda _name: True
+
+    manager.setScanSimulationDetectorStateProvider(provider)
+
+    assert simulator.provider is provider
+    assert waiter.quitCalls == 0
+    assert waiter.waitCalls == 0
+
+    manager.__del__()
+    assert simulator.stopCalls == 1
+    assert waiter.quitCalls == 1
+    assert waiter.waitCalls == 1
+
+    # Prevent a second observable cleanup if Python invokes __del__ at GC.
+    manager._NidaqManager__scanSimulator = None
+    manager.doTaskWaiter = None
+
+
 def test_simulated_scan_plan_counts_ttl_edges_and_fallback_frames():
     setup_info = SimpleNamespace(
         scan=SimpleNamespace(sampleRate=1000),
@@ -170,6 +227,25 @@ def test_simulated_scan_plan_counts_ttl_edges_and_fallback_frames():
         'Camera': 2,
         'APD': 12,
     }
+
+
+def test_simulated_scan_plan_only_emits_for_currently_armed_detectors():
+    setup_info = SimpleNamespace(
+        scan=SimpleNamespace(sampleRate=1000),
+        detectors={
+            'Camera': SimpleNamespace(forAcquisition=True),
+            'UnusedCamera': SimpleNamespace(forAcquisition=True),
+        },
+    )
+
+    plan = SimulatedScanPlan.fromScan(
+        setup_info,
+        {'TTLCycleSignalsDict': {}},
+        {'img_dims': [2, 2], 'scan_samples_total': 100},
+        detectorIsArmed=lambda name: name == 'Camera',
+    )
+
+    assert plan.frameCounts == {'Camera': 4}
 
 
 def test_simulated_scan_worker_stop_aborts_before_duration_cap():

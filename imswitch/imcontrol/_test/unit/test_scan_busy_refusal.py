@@ -91,16 +91,17 @@ def test_etsted_runner_reports_busy_refusal_as_a_failed_trigger():
         EtSTEDTriggeredScanRunner,
     )
 
-    class _BusyNidaq:
-        def runScan(self, signalDic, scanInfoDict):
+    class _BusyCoordinator:
+        def arm(self, signalDic, scanInfoDict, owner=None):
             raise ScanBusyError('daq is busy')
 
     runner = EtSTEDTriggeredScanRunner()
     result = runner.trigger(
         runner.scan_widget_mode,
-        nidaq_manager=_BusyNidaq(),
         signal_dict={'scanSignalsDict': {}, 'TTLCycleSignalsDict': {}},
         scan_info_dict={},
+        scan_coordinator=_BusyCoordinator(),
+        scan_owner=runner,
     )
 
     assert result.success is False

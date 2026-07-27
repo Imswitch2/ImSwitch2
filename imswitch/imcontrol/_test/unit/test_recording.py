@@ -36,6 +36,19 @@ class _OmeMetaDetectors:
         return {}
 
 
+class _OrphanWriter:
+    def __init__(self):
+        self.alive = True
+        self.abortCalls = 0
+
+    def abort(self):
+        self.abortCalls += 1
+        raise TimeoutError("writer did not stop")
+
+    def is_alive(self):
+        return self.alive
+
+
 def test_build_ome_meta_uses_scan_step_and_parameter_units():
     manager = RecordingManager(_OmeMetaDetectors())
 
@@ -47,6 +60,34 @@ def test_build_ome_meta_uses_scan_step_and_parameter_units():
     time_meta = manager.buildOmeMeta('Cam', MODE_TIMELAPSE, 4)
     assert time_meta.axes_string == 'TYX'
     assert time_meta.scale[0] == 0.025
+
+
+def test_recording_manager_retains_timed_out_writer_until_it_exits():
+    manager = RecordingManager(_OmeMetaDetectors())
+    worker = manager._RecordingManager__recordingWorker
+    writer = _OrphanWriter()
+    worker._writerThread = writer
+    manager._RecordingManager__record = True
+
+    with pytest.raises(TimeoutError, match="writer did not stop"):
+        manager.abortRecording(emitSignal=False, wait=True)
+
+    assert writer.abortCalls == 1
+    assert worker._writerThread is writer
+    assert manager.shutdownComplete() is False
+    with pytest.raises(RuntimeError, match="still shutting down"):
+        manager.startRecording(
+            detectorNames=["CAM"],
+            recMode=RecMode.SpecFrames,
+            savename="blocked",
+            saveMode=SaveMode.RAM,
+            attrs={"CAM": {}},
+            recFrames=1,
+        )
+
+    writer.alive = False
+    assert manager.shutdownComplete() is True
+    assert worker._writerThread is None
 
 
 def record(qtbot, detectorInfos, *args, **kwargs):
@@ -116,6 +157,111 @@ def test_recording_spec_frames(qtbot, detectorInfos, numFrames):
         assert savedToDisk is False
 
 
+def test_camera_lapse_point_records_one_fresh_frame_with_cadence_metadata(
+    qtbot,
+):
+    detectorInfos = detectorInfosBasic
+    files, _ = record(
+        qtbot,
+        detectorInfos,
+        detectorNames=list(detectorInfos.keys()),
+        recMode=RecMode.CameraLapse,
+        savename='test_camera_lapse_point',
+        saveMode=SaveMode.RAM,
+        attrs={name: {} for name in detectorInfos},
+        recFrames=1,
+        recLapseTotal=10,
+        recLapseIndex=3,
+        recLapseIntervalS=3600.0,
+        recLapseScheduledTime='2026-07-27T12:00:00+00:00',
+    )
+
+    for detectorName, file in files.items():
+        with h5py.File(file) as h5file:
+            dataset = h5file[f'{detectorName}/data']
+            assert dataset.shape[0] == 1
+            assert dataset.attrs['recording:num_timepoints'] == 10
+            assert dataset.attrs['recording:lapse_index'] == 3
+            assert dataset.attrs['recording:lapse_interval_s'] == 3600.0
+            assert (
+                dataset.attrs['recording:planned_start_time']
+                == '2026-07-27T12:00:00+00:00'
+            )
+        file.close()
+
+
+@pytest.mark.parametrize(
+    'saveFormat,extension',
+    [
+        (SaveFormat.HDF5, 'hdf5'),
+        (SaveFormat.ZARR, 'zarr'),
+    ],
+)
+def test_camera_lapse_single_file_appends_and_releases_between_points(
+    qtbot,
+    tmp_path,
+    saveFormat,
+    extension,
+):
+    detectorInfos = detectorInfosBasic
+    detectorName = next(iter(detectorInfos))
+    detectorsManager = DetectorsManager(detectorInfos, updatePeriod=100)
+    recordingManager = RecordingManager(detectorsManager)
+    savename = str(tmp_path / 'camera_lapse')
+
+    for index in range(2):
+        with qtbot.waitSignal(
+            recordingManager.sigRecordingEndedDetailed,
+            timeout=30000,
+        ):
+            recordingManager.startRecording(
+                detectorNames=[detectorName],
+                recMode=RecMode.CameraLapse,
+                savename=savename,
+                saveMode=SaveMode.Disk,
+                saveFormat=saveFormat,
+                attrs={detectorName: {}},
+                singleLapseFile=True,
+                recFrames=1,
+                recLapseTotal=2,
+                recLapseIndex=index,
+                recLapseIntervalS=3600,
+            )
+
+        # The detailed terminal is the writer barrier. The worker's outer
+        # finally releases the short RECORDING lease immediately afterwards;
+        # prove the cadence gap has no recording ownership.
+        qtbot.waitUntil(
+            lambda: (
+                recordingManager.shutdownComplete()
+                and not any(
+                    handle.purpose.name == 'RECORDING'
+                    for handle in detectorsManager.activeAcquisitionLeases()
+                )
+            ),
+            timeout=5000,
+        )
+
+    path = tmp_path / f'camera_lapse_{detectorName}.{extension}'
+    if saveFormat == SaveFormat.HDF5:
+        container = h5py.File(path, 'r')
+    else:
+        container = zarr.open_group(str(path), mode='r')
+    try:
+        assert container[f'scan0/{detectorName}/data'].shape[0] == 1
+        assert container[f'scan1/{detectorName}/data'].shape[0] == 1
+        assert (
+            container[
+                f'scan1/{detectorName}/data'
+            ].attrs['recording:lapse_index']
+            == 1
+        )
+    finally:
+        close = getattr(container, 'close', None)
+        if callable(close):
+            close()
+
+
 @pytest.mark.parametrize('detectorInfos',
                          [detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare])
 def test_recording_spec_time(qtbot, detectorInfos):
@@ -178,6 +324,28 @@ def test_recording_emits_recording_ended(qtbot, recMode, kwargs):
 
     qtbot.wait(200)  # let the worker thread fully wind down
     assert not recordingManager.record, "Recording should have stopped on its own"
+
+
+def test_queued_snap_is_inert_after_recording_controller_close():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    calls = []
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=True,
+        updateRecAttrs=lambda **_kwargs: calls.append("attrs"),
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(
+                snap=lambda *_args, **_kwargs: calls.append("snap")
+            )
+        ),
+    )
+
+    assert RecordingController.snap(ctrl) is False
+    assert calls == []
 
 
 def test_next_lapse_defers_start_while_previous_recording_active(monkeypatch):
@@ -258,12 +426,441 @@ def test_next_lapse_defers_start_while_previous_recording_active(monkeypatch):
     assert timer.timeout.cb == ctrl.nextLapse
 
 
+def test_camera_lapse_uses_deadlines_and_starts_fresh_one_frame_session(
+    monkeypatch,
+):
+    import types
+
+    import imswitch.imcontrol.controller.controllers.RecordingController as rc_mod
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class _Signal:
+        def __init__(self):
+            self.cb = None
+
+        def connect(self, cb):
+            self.cb = cb
+
+    class _Timer:
+        created = []
+
+        def __init__(self, singleShot=False):
+            self.singleShot = singleShot
+            self.timeout = _Signal()
+            self.started_ms = None
+            self.stopped = False
+            _Timer.created.append(self)
+
+        def start(self, interval):
+            self.started_ms = interval
+
+        def stop(self):
+            self.stopped = True
+
+        def isActive(self):
+            return not self.stopped
+
+    clock = {'now': 5000.0}
+    monkeypatch.setattr(rc_mod, 'Timer', _Timer)
+    monkeypatch.setattr(
+        rc_mod.time, 'monotonic', lambda: clock['now']
+    )
+
+    class _Manager:
+        def __init__(self):
+            self.record = False
+            self.recordingGeneration = 7
+            self.calls = []
+
+        def startRecording(self, **kwargs):
+            assert self.record is False
+            self.recordingGeneration += 1
+            self.record = True
+            self.calls.append(dict(kwargs))
+            return self.recordingGeneration
+
+    manager = _Manager()
+    widget = types.SimpleNamespace(
+        isRecButtonChecked=lambda: True,
+        updateCameraLapseNum=lambda _value: None,
+    )
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.CameraLapse,
+        recording=True,
+        doneScan=True,
+        endedRecording=True,
+        stopRequested=False,
+        lapseCurrent=0,
+        lapseTotal=3,
+        timer=None,
+        _shutdownRequested=False,
+        _recordingCycleTerminalHandled=False,
+        _recordingFailureHandled=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=7,
+        _recordingGenerationBeforeOperation=6,
+        _acceptedScanCompletion=None,
+        _exactScanCompletionHandled=False,
+        _scanLifecycleEndedObserved=False,
+        _cameraLapseIntervalS=3600.0,
+        # The original target was missed by more than one interval. The next
+        # capture must be one interval from now, not an immediate catch-up.
+        _cameraLapseNextDeadline=100.0,
+        _cameraLapsePlannedStart=None,
+        savename='/tmp/camera_lapse',
+        recordingArgs={
+            'detectorNames': ['cam'],
+            'recMode': RecMode.CameraLapse,
+            'savename': '/tmp/camera_lapse',
+            'saveMode': SaveMode.RAM,
+            'saveFormat': SaveFormat.HDF5,
+            'attrs': {'cam': {}},
+            'singleMultiDetectorFile': False,
+            'singleLapseFile': False,
+            'recFrames': 1,
+        },
+        _widget=widget,
+        _commChannel=types.SimpleNamespace(
+            getActiveScanSource=lambda: None,
+            sharedAttrs=types.SimpleNamespace(
+                getHDF5Attributes=lambda: {'fresh': True}
+            ),
+        ),
+        _master=types.SimpleNamespace(
+            recordingManager=manager,
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=None
+            ),
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+    )
+    for name in (
+        'recordingCycleEnded',
+        '_scheduleCameraLapseTimer',
+        '_cameraLapseTimerFired',
+        'nextCameraLapse',
+        '_assertCameraLapsePointIsIdle',
+        '_startManagerRecording',
+    ):
+        setattr(
+            ctrl,
+            name,
+            types.MethodType(getattr(RecordingController, name), ctrl),
+        )
+
+    ctrl.recordingCycleEnded()
+
+    assert manager.calls == []
+    assert ctrl.lapseCurrent == 1
+    assert ctrl._cameraLapseNextDeadline == 8600.0
+    timer = _Timer.created[-1]
+    assert timer.started_ms == 3_600_000
+
+    clock['now'] = 8600.0
+    timer.timeout.cb()
+
+    assert len(manager.calls) == 1
+    point = manager.calls[0]
+    assert point['recMode'] is RecMode.CameraLapse
+    assert point['recFrames'] == 1
+    assert point['recLapseTotal'] == 3
+    assert point['recLapseIndex'] == 1
+    assert point['recLapseIntervalS'] == 3600.0
+    assert point['savename'] == '/tmp/camera_lapse_time1'
+    assert point['attrs'] == {'cam': {'fresh': True}}
+    assert ctrl._recordingManagerGeneration == 8
+
+
+def test_camera_lapse_stop_in_idle_gap_cancels_without_touching_manager():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class _Timer:
+        def __init__(self):
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    timer = _Timer()
+    events = []
+    manager = types.SimpleNamespace(
+        record=False,
+        abortRecording=lambda **_kwargs: events.append('abort'),
+    )
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=False,
+        _finalizingRecCycle=False,
+        recMode=RecMode.CameraLapse,
+        recording=True,
+        stopRequested=False,
+        lapseCurrent=2,
+        timer=timer,
+        endedRecording=False,
+        _recordingCycleTerminalHandled=True,
+        _master=types.SimpleNamespace(recordingManager=manager),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: events.append('cycle-ended'),
+    )
+
+    RecordingController.toggleREC(ctrl, False)
+
+    assert timer.stopped is True
+    assert ctrl.timer is None
+    assert ctrl.stopRequested is True
+    assert events == ['cycle-ended']
+
+
+def test_camera_lapse_waits_for_previous_worker_release(monkeypatch):
+    import types
+
+    import imswitch.imcontrol.controller.controllers.RecordingController as rc_mod
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+        _LAPSE_RECORDING_DRAIN_RETRY_MS,
+    )
+
+    class _Signal:
+        def __init__(self):
+            self.cb = None
+
+        def connect(self, cb):
+            self.cb = cb
+
+    class _Timer:
+        created = []
+
+        def __init__(self, singleShot=False):
+            self.timeout = _Signal()
+            self.started_ms = None
+            _Timer.created.append(self)
+
+        def start(self, interval):
+            self.started_ms = interval
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(rc_mod, 'Timer', _Timer)
+    manager = types.SimpleNamespace(
+        record=False,
+        shutdownComplete=lambda: False,
+        startRecording=lambda **_kwargs: pytest.fail(
+            'new point started before previous worker released its lease'
+        ),
+    )
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=False,
+        stopRequested=False,
+        timer=None,
+        _widget=types.SimpleNamespace(isRecButtonChecked=lambda: True),
+        _master=types.SimpleNamespace(recordingManager=manager),
+    )
+    ctrl.nextCameraLapse = types.MethodType(
+        RecordingController.nextCameraLapse, ctrl
+    )
+
+    assert ctrl.nextCameraLapse() is True
+    assert len(_Timer.created) == 1
+    assert (
+        _Timer.created[0].started_ms
+        == _LAPSE_RECORDING_DRAIN_RETRY_MS
+    )
+    assert _Timer.created[0].timeout.cb == ctrl.nextCameraLapse
+
+
+@pytest.mark.parametrize(
+    'detector,single_file,save_format,message',
+    [
+        (
+            type('ScanDetector', (), {
+                'isScanDriven': True,
+                'parameters': {},
+            })(),
+            False,
+            SaveFormat.HDF5,
+            'scan-driven',
+        ),
+        (
+            type('ExternalCamera', (), {
+                'isScanDriven': False,
+                'parameters': {
+                    'Trigger source': type(
+                        'P', (), {'value': 'External frame-trigger'}
+                    )()
+                },
+            })(),
+            False,
+            SaveFormat.HDF5,
+            'internal/free-running',
+        ),
+        (
+            type('Camera', (), {
+                'isScanDriven': False,
+                'parameters': {},
+            })(),
+            True,
+            SaveFormat.TIFF,
+            'HDF5 and ZARR',
+        ),
+    ],
+)
+def test_camera_lapse_rejects_unsupported_configuration(
+    detector, single_file, save_format, message,
+):
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    ctrl = types.SimpleNamespace(
+        _master=types.SimpleNamespace(
+            detectorsManager={'det': detector}
+        )
+    )
+    with pytest.raises(ValueError, match=message):
+        RecordingController._validateCameraLapse(
+            ctrl,
+            ['det'],
+            10,
+            3600,
+            save_format,
+            single_file,
+        )
+
+
+def test_scanlapse_stop_in_cadence_gap_accepts_synchronous_run_terminal():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class _Timer:
+        def __init__(self):
+            self.stopped = False
+
+        def isActive(self):
+            return not self.stopped
+
+        def stop(self):
+            self.stopped = True
+
+    timer = _Timer()
+    events = []
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=False,
+        _finalizingRecCycle=False,
+        recMode=RecMode.ScanLapse,
+        lapseCurrent=1,
+        recording=True,
+        stopRequested=False,
+        timer=timer,
+        _recordingCycleTerminalHandled=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=None,
+        _acceptedScanCompletion=None,
+        _recordingScanSource=None,
+        _scanStartPublished=True,
+        _usesDetailedRecordingSignals=True,
+        endedRecording=True,
+        doneScan=False,
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(record=False),
+            scanExecutionCoordinator=None,
+        ),
+        _scanRunIsActive=lambda: True,
+    )
+
+    def cycleEnded():
+        events.append("cycle")
+        ctrl.recording = False
+        ctrl.lapseCurrent = -1
+
+    def abortOwned():
+        events.append("abort")
+        # The real owner may synchronously publish its run terminal from the
+        # targeted abort call.
+        RecordingController._scanLifecycleEnded(ctrl)
+
+    ctrl.recordingCycleEnded = cycleEnded
+    ctrl._abortOwnedScanSequence = abortOwned
+
+    RecordingController.toggleREC(ctrl, False)
+
+    assert timer.stopped is True
+    assert ctrl.timer is None
+    assert events == ["abort", "cycle"]
+    assert ctrl.recording is False
+    assert ctrl.lapseCurrent == -1
+    assert ctrl._scanRequestAccepted is False
+
+
+def test_new_recording_resets_previous_scan_and_writer_terminals_first():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    observed = []
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=False,
+        _finalizingRecCycle=False,
+        recording=False,
+        doneScan=True,
+        endedRecording=True,
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(
+                recordingGeneration=2,
+                record=False,
+            )
+        ),
+        _handleRecordingFailure=(
+            lambda message, **kwargs: failures.append((message, kwargs))
+        ),
+    )
+
+    def stopAfterInitialState(**_kwargs):
+        observed.append((ctrl.doneScan, ctrl.endedRecording))
+        raise RuntimeError('stop after observing fresh terminal window')
+
+    ctrl.updateRecAttrs = stopAfterInitialState
+
+    RecordingController.toggleREC(ctrl, True)
+
+    assert observed == [(False, False)]
+    assert ctrl.doneScan is False
+    assert ctrl.endedRecording is False
+    assert failures == [
+        (
+            'stop after observing fresh terminal window',
+            {'abortManager': False},
+        )
+    ]
+
+
 def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     """Two full ScanLapse timepoints through the controller's cycling state
-    machine (nextLapse / scanDone / recordingCycleEnded), each hitting the
-    sigScanDone-before-worker-drained race that
-    test_next_lapse_defers_start_while_previous_recording_active covers for a
-    single re-entry.
+    machine. A timepoint advances only after both scan completion and the
+    identity-carrying writer-finalization terminal.
 
     This is deliberately a controller-level regression: it drives the real
     lapse-cycling contract (lapseCurrent progression, per-cycle savename/
@@ -410,6 +1007,16 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
         lapseTotal=2,
         timer=None,
         _finalizingRecCycle=False,
+        _scanStartPublished=False,
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _recordingFailureHandled=False,
+        _recordingFailedCurrent=False,
+        _recordingCycleTerminalHandled=False,
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=None,
+        _recordingGenerationBeforeOperation=None,
+        _usesDetailedRecordingSignals=True,
         savename='/tmp/rec/test_rec',
         recordingArgs={
             'detectorNames': ['det'],
@@ -424,9 +1031,17 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
         _widget=widget,
         _commChannel=commChannel,
         _master=type("M", (), {"recordingManager": recMgr})(),
+        _RecordingController__logger=types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None,
+        ),
     )
-    for name in ('nextLapse', 'recordingCycleEnded', 'scanDone',
-                 '_scanDimsForRecording', '_scanStepSizesForRecording'):
+    for name in (
+        'nextLapse', 'recordingCycleEnded', 'scanDone', 'recordingEnded',
+        '_scanDimsForRecording', '_scanStepSizesForRecording',
+        '_startManagerRecording', '_waitForManagerArm',
+        '_notifyScanStarting', '_preflightNewScanRequest',
+        '_requestScanStart',
+    ):
         setattr(ctrl, name, types.MethodType(getattr(RecordingController, name), ctrl))
 
     # --- Cycle 0 (first lapse timepoint) ---
@@ -437,26 +1052,23 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     assert recMgr.calls[0]['savename'] == '/tmp/rec/test_rec_scan0'
     assert commChannel.scanWorkflow.run_scan_calls[-1] == (True, True)
 
-    # Scan hardware reports done while the worker is still draining/writing
-    # (record flag not yet cleared) - the exact race this test targets.
+    # Scan hardware reports done while the worker is still draining/writing.
+    # The controller must not advance or claim success yet.
     ctrl.scanDone()
+    assert ctrl.lapseCurrent == 0
+    assert _FakeTimer.created == []
+
+    # Writer finalization is the second terminal barrier.
+    recMgr._record = False
+    ctrl.recordingEnded()
     assert ctrl.lapseCurrent == 1
     assert widget.lapseNumUpdates == [1]
     assert len(_FakeTimer.created) == 1
     cadenceTimer = _FakeTimer.created[-1]
     assert cadenceTimer.started_ms == 0  # getTimelapseFreq() * 1000
 
-    # Timer fires; worker for cycle 0 still hasn't cleared `record` yet, so
-    # nextLapse must defer instead of starting cycle 1 early.
+    # Timer fires only after the worker-drained terminal, so cycle 1 may start.
     cadenceTimer.timeout.cb()
-    assert recMgr.start_calls == 1
-    assert len(_FakeTimer.created) == 2
-    retryTimer = _FakeTimer.created[-1]
-    assert retryTimer.started_ms == _LAPSE_RECORDING_DRAIN_RETRY_MS
-
-    # Worker finishes draining cycle 0; the retry fires and cycle 1 starts.
-    recMgr._record = False
-    retryTimer.timeout.cb()
     assert recMgr.start_calls == 2
     assert recMgr.calls[1]['recLapseIndex'] == 1
     assert recMgr.calls[1]['recLapseTotal'] == 2
@@ -464,9 +1076,10 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     assert commChannel.scanWorkflow.run_scan_calls[-1] == (False, False)
 
     # --- Cycle 1 (final lapse timepoint) ---
-    recMgr._record = False
-    ctrl.doneScan = False
     ctrl.scanDone()
+    assert ctrl.recording is True
+    recMgr._record = False
+    ctrl.recordingEnded()
 
     # Final cycle: no further lapse scheduled, controller resets to idle.
     assert ctrl.recording is False
@@ -479,6 +1092,2070 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
     # is soft-stop-only, matching RecordingManager suppressing it for
     # ScanOnce/ScanLapse (see RecordingWorker._record's finally block).
     assert commChannel.sigRecordingEnded.emit_calls == 0
+
+
+def test_recording_arm_failure_aborts_without_starting_scan_and_pairs_lifecycle():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    events = []
+
+    class _Logger:
+        def error(self, *_args, **_kwargs):
+            pass
+
+    workflow = types.SimpleNamespace(
+        abort_scan=lambda: events.append('abort-scan'),
+        notify_scan_ended=lambda: events.append('scan-ended'),
+    )
+    manager = types.SimpleNamespace(
+        abortRecording=lambda **kwargs: events.append(
+            ('abort-recording', kwargs)
+        )
+    )
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        _recordingFailureHandled=False,
+        _recordingFailedCurrent=False,
+        _scanStartPublished=True,
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        stopRequested=False,
+        recording=True,
+        endedRecording=False,
+        doneScan=False,
+        _commChannel=types.SimpleNamespace(scanWorkflow=workflow),
+        _master=types.SimpleNamespace(recordingManager=manager),
+        _RecordingController__logger=_Logger(),
+        recordingCycleEnded=lambda: events.append('cycle-ended'),
+    )
+    ctrl._abortOwnedScanSequence = types.MethodType(
+        RecordingController._abortOwnedScanSequence, ctrl
+    )
+    ctrl._notifyScanEndedIfPending = types.MethodType(
+        RecordingController._notifyScanEndedIfPending, ctrl
+    )
+    ctrl._scanRunIsActive = types.MethodType(
+        RecordingController._scanRunIsActive, ctrl
+    )
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'camera did not arm', abortManager=True
+    )
+
+    assert events == [
+        'scan-ended',
+        (
+            'abort-recording',
+            {'emitSignal': False, 'wait': True},
+        ),
+        'cycle-ended',
+    ]
+    assert ctrl.recording is False
+    assert ctrl._scanStartPublished is False
+
+
+def test_recording_failure_waits_for_active_scan_owner_to_publish_end():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    events = []
+    runToken = object()
+    coordinator = types.SimpleNamespace(activeRunToken=runToken)
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        _recordingFailureHandled=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=runToken,
+        _acceptedScanCompletion=None,
+        _recordingScanSource=None,
+        _scanLifecycleEndedObserved=False,
+        _usesDetailedRecordingSignals=True,
+        stopRequested=False,
+        recording=True,
+        endedRecording=False,
+        doneScan=False,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                abort_scan=lambda: events.append('abort-scan'),
+                notify_scan_ended=lambda: events.append('scan-ended'),
+            )
+        ),
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(),
+            scanExecutionCoordinator=coordinator,
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: events.append('cycle-ended'),
+    )
+    for name in (
+        '_abortOwnedScanSequence',
+        '_notifyScanEndedIfPending',
+        '_scanRunIsActive',
+        '_scanLifecycleEnded',
+    ):
+        setattr(
+            ctrl,
+            name,
+            types.MethodType(getattr(RecordingController, name), ctrl),
+        )
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'writer failed during scan', abortManager=False
+    )
+
+    assert events == ['abort-scan']
+    assert ctrl._scanStartPublished is True
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert ctrl._recordingFailureAwaitingScanEnd is True
+
+    coordinator.activeRunToken = None
+    ctrl._scanLifecycleEnded()
+
+    assert events == ['abort-scan', 'cycle-ended']
+    assert ctrl._scanStartPublished is False
+    assert ctrl._scanRequestAccepted is False
+    assert ctrl._acceptedScanRunToken is None
+
+
+def test_late_recording_failure_does_not_abort_unowned_scan():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    events = []
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        _recordingFailureHandled=False,
+        _recordingFailedCurrent=False,
+        _scanStartPublished=False,
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        stopRequested=False,
+        recording=False,
+        endedRecording=True,
+        doneScan=True,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                abort_scan=lambda: events.append('abort-scan')
+            )
+        ),
+        _master=types.SimpleNamespace(recordingManager=types.SimpleNamespace()),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: events.append('cycle-ended'),
+    )
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'late writer failure', abortManager=False
+    )
+
+    assert events == ['cycle-ended']
+
+
+def test_rejected_scan_request_aborts_recorder_without_broadcasting_scan_abort():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    failures = []
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=False,
+        rejectionMessage='scan owner busy',
+    )
+    ctrl = types.SimpleNamespace(
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: result
+            )
+        ),
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    accepted = RecordingController._requestScanStart(
+        ctrl, True, False
+    )
+
+    assert accepted is False
+    assert failures == [
+        ('scan owner busy', {'abortManager': True})
+    ]
+
+
+def test_accepted_scan_request_pins_exact_run_identity():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    runToken = object()
+    owner = object()
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=True,
+        acceptedTokens=((owner, runToken),),
+        reports=((owner, True, ''),),
+    )
+    ctrl = types.SimpleNamespace(
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: result
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=runToken
+            )
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+    )
+
+    accepted = RecordingController._requestScanStart(
+        ctrl, True, False
+    )
+
+    assert accepted is True
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+
+
+def _exact_recording_request_controller():
+    import types
+
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class Owner:
+        supportsExactScanRequestCompletion = True
+
+    owner = Owner()
+    runToken = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(runToken)
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=True,
+        acceptedTokens=((owner, runToken),),
+        acceptedCompletions=((owner, runToken, completion),),
+        reports=((owner, True, ''),),
+    )
+    queued = []
+    cycles = []
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=None,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: result
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=runToken
+            )
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None
+        ),
+        _sigExactScanRequestCompleted=types.SimpleNamespace(
+            emit=lambda resolved: queued.append(resolved)
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _acceptedScanCompletion=None,
+        _exactScanCompletionHandled=False,
+        _usesDetailedRecordingSignals=True,
+        _shutdownRequested=False,
+        stopRequested=False,
+        recMode=RecMode.ScanOnce,
+        doneScan=False,
+        endedRecording=False,
+        recordingCycleEnded=lambda: cycles.append(True),
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+    return ctrl, owner, runToken, completion, queued, cycles, failures
+
+
+@pytest.mark.parametrize("writer_first", [False, True])
+def test_exact_scan_terminal_and_writer_terminal_advance_once(
+        writer_first):
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    (
+        ctrl,
+        _owner,
+        runToken,
+        completion,
+        queued,
+        cycles,
+        failures,
+    ) = _exact_recording_request_controller()
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is True
+    assert ctrl._acceptedScanCompletion is completion
+
+    # A stale/global compatibility signal cannot complete an exact request.
+    RecordingController.scanDone(ctrl)
+    assert ctrl.doneScan is False
+    assert cycles == []
+
+    if writer_first:
+        RecordingController.recordingEnded(ctrl)
+        assert cycles == []
+
+    assert completion.resolve(runToken, True) is True
+    assert queued == [completion]
+    RecordingController._exactScanRequestCompleted(ctrl, queued.pop())
+
+    if not writer_first:
+        assert cycles == []
+        RecordingController.recordingEnded(ctrl)
+
+    assert cycles == [True]
+    assert failures == []
+    RecordingController._exactScanRequestCompleted(ctrl, completion)
+    assert cycles == [True]
+
+
+def test_exact_scan_failure_uses_failure_terminal_not_global_success():
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    (
+        ctrl,
+        _owner,
+        runToken,
+        completion,
+        queued,
+        cycles,
+        failures,
+    ) = _exact_recording_request_controller()
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is True
+    RecordingController.scanDone(ctrl)
+    assert completion.resolve(
+        runToken, False, "detector final-frame barrier failed"
+    ) is True
+    RecordingController._exactScanRequestCompleted(ctrl, queued.pop())
+
+    assert ctrl.doneScan is False
+    assert cycles == []
+    assert failures == [
+        (
+            "detector final-frame barrier failed",
+            {"abortManager": True},
+        )
+    ]
+
+
+def test_failure_completion_cannot_advance_before_exact_run_end():
+    import types
+
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    owner = object()
+    runToken = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(runToken)
+    completion.resolve(runToken, False, 'scan failed')
+    coordinator = types.SimpleNamespace(activeRunToken=runToken)
+    cycles = []
+    ctrl = types.SimpleNamespace(
+        _acceptedScanCompletion=completion,
+        _acceptedScanRunToken=runToken,
+        _scanRequestAccepted=True,
+        _scanStartPublished=True,
+        _recordingScanSource=None,
+        _exactScanCompletionHandled=False,
+        _recordingFailureAwaitingScanEnd=True,
+        _scanLifecycleEndedObserved=False,
+        _shutdownRequested=False,
+        _usesDetailedRecordingSignals=True,
+        stopRequested=True,
+        endedRecording=True,
+        doneScan=False,
+        recMode=RecMode.ScanOnce,
+        timer=None,
+        _recordingFailureHandled=True,
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=coordinator
+        ),
+        recordingCycleEnded=lambda: cycles.append(True),
+    )
+
+    RecordingController._exactScanRequestCompleted(ctrl, completion)
+
+    assert ctrl.doneScan is True
+    assert cycles == []
+    assert ctrl._acceptedScanRunToken is runToken
+
+    coordinator.activeRunToken = None
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert cycles == [True]
+    assert ctrl._scanLifecycleEndedObserved is True
+
+
+def test_exact_capable_scan_owner_must_report_one_matching_completion():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class Owner:
+        supportsExactScanRequestCompletion = True
+
+    owner = Owner()
+    runToken = object()
+    failures = []
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=True,
+        acceptedTokens=((owner, runToken),),
+        acceptedCompletions=(),
+        reports=((owner, True, ''),),
+    )
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=None,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: result
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=runToken
+            )
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    # The hardware may already be armed, so failure handling retains exact
+    # abort authority even though the extension contract was broken.
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert failures == [
+        (
+            'Scan controller acknowledged the recording request without one '
+            'matching exact completion terminal.',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_malformed_reported_token_retains_real_targeted_abort_authority():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class Owner:
+        supportsExactScanRequestCompletion = True
+        isRunning = True
+
+    owner = Owner()
+    realToken = object()
+    reportedToken = object()
+    failures = []
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=True,
+        acceptedTokens=((owner, reportedToken),),
+        acceptedCompletions=(),
+        reports=((owner, True, ''),),
+    )
+    coordinator = types.SimpleNamespace(
+        runForOwner=lambda candidate: (
+            realToken if candidate is owner else None
+        ),
+        activeRunToken=realToken,
+    )
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=owner,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: result
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=coordinator
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is realToken
+    assert failures == [
+        (
+            'Scan controller reported a run identity that does not match '
+            'its active reservation.',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_broken_acceptance_envelope_fails_recording_with_abort_authority():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class Owner:
+        isRunning = True
+
+    owner = Owner()
+    runToken = object()
+
+    class BrokenResult:
+        @property
+        def handled(self):
+            raise RuntimeError('broken handled property')
+
+        acceptedTokens = ((owner, runToken),)
+
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=owner,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: BrokenResult()
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                runForOwner=lambda candidate: (
+                    runToken if candidate is owner else None
+                )
+            )
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert failures == [
+        (
+            'Scan controller returned a malformed acceptance envelope: '
+            'broken handled property',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_broken_completion_descriptor_fails_recording_closed():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class Owner:
+        supportsExactScanRequestCompletion = True
+        isRunning = True
+
+    owner = Owner()
+    runToken = object()
+
+    class BrokenCompletion:
+        @property
+        def owner(self):
+            raise RuntimeError('broken completion owner')
+
+    completion = BrokenCompletion()
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=True,
+        acceptedTokens=((owner, runToken),),
+        acceptedCompletions=((owner, runToken, completion),),
+        reports=((owner, True, ''),),
+    )
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=owner,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: result
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                runForOwner=lambda candidate: (
+                    runToken if candidate is owner else None
+                )
+            )
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert failures == [
+        (
+            'Could not inspect exact scan completion terminal: '
+            'broken completion owner',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_exceptional_exact_completion_wait_fails_recording_closed():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class BrokenCompletion:
+        def wait(self, timeout=None):
+            raise RuntimeError('broken completion wait')
+
+    completion = BrokenCompletion()
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _acceptedScanCompletion=completion,
+        _exactScanCompletionHandled=False,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    RecordingController._exactScanRequestCompleted(ctrl, completion)
+
+    assert ctrl._exactScanCompletionHandled is True
+    assert failures == [
+        (
+            'Could not consume exact scan completion: broken completion wait',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_raising_rejection_message_still_fails_recording_closed():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class BrokenResult:
+        handled = True
+        accepted = False
+
+        @property
+        def rejectionMessage(self):
+            raise RuntimeError('broken rejection message')
+
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=None,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: BrokenResult()
+            )
+        ),
+        _master=types.SimpleNamespace(),
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert failures == [
+        (
+            'Scan controller returned a malformed rejection report: '
+            'broken rejection message',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_raising_targeted_source_state_retains_abort_authority():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class BrokenSource:
+        @property
+        def isRunning(self):
+            raise RuntimeError('broken running state')
+
+    source = BrokenSource()
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=source,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: types.SimpleNamespace(
+                    handled=False,
+                    accepted=False,
+                )
+            )
+        ),
+        _master=types.SimpleNamespace(),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert ctrl._scanRequestAccepted is True
+    assert failures == [
+        (
+            'Could not inspect whether the selected scan source started: '
+            'broken running state',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_exact_completion_callback_is_bound_to_validated_terminal():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class Owner:
+        supportsExactScanRequestCompletion = True
+
+    owner = Owner()
+    runToken = object()
+
+    class Completion:
+        successful = True
+        message = ''
+
+        def __init__(self):
+            self.owner = owner
+            self.runToken = runToken
+
+        def wait(self, timeout=None):
+            return True
+
+        def add_done_callback(self, callback):
+            # A malformed adapter supplies a foreign payload. Recording must
+            # still inspect only the already validated accepted terminal.
+            callback(object())
+
+    completion = Completion()
+    result = types.SimpleNamespace(
+        handled=True,
+        accepted=True,
+        acceptedTokens=((owner, runToken),),
+        acceptedCompletions=((owner, runToken, completion),),
+        reports=((owner, True, ''),),
+    )
+    queued = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=None,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: result
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=runToken
+            )
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _acceptedScanCompletion=None,
+        _exactScanCompletionHandled=False,
+        _sigExactScanRequestCompleted=types.SimpleNamespace(
+            emit=lambda terminal: queued.append(terminal)
+        ),
+        _handleRecordingFailure=lambda *_args, **_kwargs: None,
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is True
+    assert queued == [completion]
+
+
+def test_failure_cleanup_aborts_writer_when_source_state_getter_raises():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class BrokenSource:
+        @property
+        def isRunning(self):
+            raise RuntimeError('running state unavailable')
+
+    source = BrokenSource()
+    runToken = object()
+    events = []
+    manager = types.SimpleNamespace(
+        abortRecording=lambda **kwargs: events.append(
+            ('abort-writer', kwargs)
+        )
+    )
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        _recordingFailureHandled=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        _recordingOperationActive=False,
+        _recordingManagerGeneration=None,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=runToken,
+        _acceptedScanCompletion=None,
+        _exactScanCompletionHandled=False,
+        _recordingScanSource=source,
+        _scanLifecycleEndedObserved=False,
+        _shutdownRequested=False,
+        stopRequested=False,
+        endedRecording=False,
+        doneScan=False,
+        recording=True,
+        _master=types.SimpleNamespace(recordingManager=manager),
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                abort_scan_from=lambda target, token: events.append(
+                    ('abort-scan', target, token)
+                )
+            )
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: events.append(('cycle-ended',)),
+    )
+    for name in (
+        '_scanRunIsActive',
+        '_abortOwnedScanSequence',
+        '_notifyScanEndedIfPending',
+    ):
+        setattr(
+            ctrl,
+            name,
+            types.MethodType(getattr(RecordingController, name), ctrl),
+        )
+
+    RecordingController._handleRecordingFailure(
+        ctrl, 'terminal inspection failed', abortManager=True
+    )
+
+    assert ('abort-scan', source, runToken) in events
+    assert (
+        'abort-writer',
+        {'emitSignal': False, 'wait': True},
+    ) in events
+    assert ctrl._recordingFailureAwaitingScanEnd is True
+
+
+def test_nonfinal_exact_scanlapse_advances_with_run_lifecycle_open():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class Completion:
+        successful = True
+        message = ''
+
+        def wait(self, timeout=None):
+            return True
+
+    completion = Completion()
+    cycles = []
+    ctrl = types.SimpleNamespace(
+        _acceptedScanCompletion=completion,
+        _exactScanCompletionHandled=False,
+        _scanStartPublished=True,
+        _recordingFailureAwaitingScanEnd=False,
+        _scanLifecycleEndedObserved=False,
+        _shutdownRequested=False,
+        _usesDetailedRecordingSignals=True,
+        stopRequested=False,
+        recMode=RecMode.ScanLapse,
+        lapseCurrent=0,
+        lapseTotal=2,
+        doneScan=False,
+        endedRecording=True,
+        recordingCycleEnded=lambda: cycles.append(True),
+    )
+
+    RecordingController._exactScanRequestCompleted(ctrl, completion)
+
+    assert ctrl.doneScan is True
+    assert ctrl._exactScanCompletionHandled is True
+    assert ctrl._scanStartPublished is True
+    assert cycles == [True]
+
+
+def test_final_exact_success_waits_for_paired_scan_lifecycle_end():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    runToken = object()
+
+    class Completion:
+        successful = True
+        message = ''
+
+        def wait(self, timeout=None):
+            return True
+
+    completion = Completion()
+    cycles = []
+    ctrl = types.SimpleNamespace(
+        _acceptedScanCompletion=completion,
+        _acceptedScanRunToken=runToken,
+        _exactScanCompletionHandled=False,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _scanLifecycleEndedObserved=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailureHandled=False,
+        _recordingScanSource=None,
+        _shutdownRequested=False,
+        _usesDetailedRecordingSignals=True,
+        stopRequested=False,
+        recMode=RecMode.ScanLapse,
+        lapseCurrent=1,
+        lapseTotal=2,
+        doneScan=False,
+        endedRecording=True,
+        timer=None,
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=None
+            )
+        ),
+        recordingCycleEnded=lambda: cycles.append(True),
+    )
+
+    RecordingController._exactScanRequestCompleted(ctrl, completion)
+
+    assert ctrl.doneScan is True
+    assert ctrl._exactScanCompletionHandled is True
+    assert cycles == []
+
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert ctrl._scanStartPublished is False
+    assert ctrl._scanLifecycleEndedObserved is True
+    assert cycles == [True]
+
+
+def test_writer_terminal_cannot_use_stale_done_while_exact_is_pending():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    cycles = []
+    ctrl = types.SimpleNamespace(
+        _acceptedScanCompletion=object(),
+        _exactScanCompletionHandled=False,
+        _scanStartPublished=True,
+        _recordingFailureAwaitingScanEnd=False,
+        _scanLifecycleEndedObserved=False,
+        doneScan=True,
+        endedRecording=False,
+        recMode=RecMode.ScanOnce,
+        recordingCycleEnded=lambda: cycles.append(True),
+    )
+
+    RecordingController.recordingEnded(ctrl)
+
+    assert ctrl.endedRecording is True
+    assert cycles == []
+
+
+def test_recording_cycle_cleanup_survives_deleted_widget():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class DeletedWidget:
+        def isRecButtonChecked(self):
+            raise RuntimeError('widget was deleted')
+
+    ctrl = types.SimpleNamespace(
+        _recordingCycleTerminalHandled=False,
+        _shutdownRequested=False,
+        _widget=DeletedWidget(),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recMode=RecMode.ScanOnce,
+        stopRequested=False,
+        recording=True,
+        lapseCurrent=0,
+        lapseTotal=1,
+        timer=None,
+        _finalizingRecCycle=False,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=object(),
+        _acceptedScanCompletion=object(),
+        _exactScanCompletionHandled=True,
+        _scanLifecycleEndedObserved=True,
+        _recordingScanSource=object(),
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=1,
+        _recordingGenerationBeforeOperation=0,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+    )
+
+    RecordingController.recordingCycleEnded(ctrl)
+
+    assert ctrl.recording is False
+    assert ctrl._recordingCycleTerminalHandled is True
+    assert ctrl._scanRequestAccepted is False
+    assert ctrl._acceptedScanRunToken is None
+    assert ctrl._acceptedScanCompletion is None
+    assert ctrl._recordingScanSource is None
+    assert ctrl._recordingOperationActive is False
+
+
+@pytest.mark.parametrize('getterRaises', [False, True])
+def test_nonfinal_lapse_cadence_cancellation_retains_owner_until_run_end(
+        getterRaises):
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class Widget:
+        def isRecButtonChecked(self):
+            if getterRaises:
+                raise RuntimeError('cadence widget unavailable')
+            return False
+
+    source = object()
+    runToken = object()
+    events = []
+    manager = types.SimpleNamespace(
+        abortRecording=lambda **kwargs: events.append(
+            ('abort-writer', kwargs)
+        )
+    )
+    ctrl = types.SimpleNamespace(
+        _recordingCycleTerminalHandled=False,
+        _shutdownRequested=False,
+        _widget=Widget(),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recMode=RecMode.ScanLapse,
+        stopRequested=False,
+        recording=True,
+        lapseCurrent=0,
+        lapseTotal=2,
+        timer=None,
+        endedRecording=True,
+        doneScan=True,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=runToken,
+        _acceptedScanCompletion=object(),
+        _exactScanCompletionHandled=True,
+        _scanLifecycleEndedObserved=False,
+        _recordingScanSource=source,
+        _recordingOperationActive=False,
+        _recordingManagerGeneration=None,
+        _recordingFailureHandled=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        _master=types.SimpleNamespace(
+            recordingManager=manager,
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=runToken
+            ),
+        ),
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                abort_scan_from=lambda target, token: events.append(
+                    ('abort-scan', target, token)
+                )
+            )
+        ),
+    )
+    for name in (
+        '_handleRecordingFailure',
+        '_scanRunIsActive',
+        '_abortOwnedScanSequence',
+        '_notifyScanEndedIfPending',
+    ):
+        setattr(
+            ctrl,
+            name,
+            types.MethodType(getattr(RecordingController, name), ctrl),
+        )
+
+    RecordingController.recordingCycleEnded(ctrl)
+
+    assert ('abort-scan', source, runToken) in events
+    assert (
+        'abort-writer',
+        {'emitSignal': False, 'wait': True},
+    ) in events
+    assert ctrl._recordingFailureAwaitingScanEnd is True
+    assert ctrl._scanStartPublished is True
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert ctrl._recordingScanSource is source
+
+
+@pytest.mark.parametrize('failurePoint', ['unchecked', 'widget', 'timer'])
+def test_next_lapse_entry_failure_aborts_retained_run(
+        monkeypatch, failurePoint):
+    import types
+
+    import imswitch.imcontrol.controller.controllers.RecordingController as rc_mod
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    class Widget:
+        def isRecButtonChecked(self):
+            if failurePoint == 'widget':
+                raise RuntimeError('cadence widget unavailable')
+            return failurePoint != 'unchecked'
+
+    if failurePoint == 'timer':
+        class BrokenTimer:
+            def __init__(self, singleShot=False):
+                self.timeout = types.SimpleNamespace(
+                    connect=lambda _callback: None
+                )
+
+            def start(self, _delay):
+                raise RuntimeError('drain timer unavailable')
+
+            def stop(self):
+                pass
+
+        monkeypatch.setattr(rc_mod, 'Timer', BrokenTimer)
+
+    source = object()
+    runToken = object()
+    events = []
+    manager = types.SimpleNamespace(
+        record=failurePoint == 'timer',
+        abortRecording=lambda **kwargs: events.append(
+            ('abort-writer', kwargs)
+        ),
+    )
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=False,
+        stopRequested=False,
+        _widget=Widget(),
+        _recordingCycleTerminalHandled=True,
+        _recordingFailureHandled=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        _recordingOperationActive=False,
+        _recordingManagerGeneration=None,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=runToken,
+        _acceptedScanCompletion=None,
+        _exactScanCompletionHandled=False,
+        _scanLifecycleEndedObserved=False,
+        _recordingScanSource=source,
+        recMode=RecMode.ScanLapse,
+        recording=True,
+        endedRecording=True,
+        doneScan=True,
+        lapseCurrent=1,
+        lapseTotal=3,
+        timer=None,
+        _master=types.SimpleNamespace(
+            recordingManager=manager,
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=runToken
+            ),
+        ),
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                abort_scan_from=lambda target, token: events.append(
+                    ('abort-scan', target, token)
+                )
+            )
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+        recordingCycleEnded=lambda: events.append(('cycle-ended',)),
+    )
+    for name in (
+        '_handleRecordingFailure',
+        '_scanRunIsActive',
+        '_abortOwnedScanSequence',
+        '_notifyScanEndedIfPending',
+    ):
+        setattr(
+            ctrl,
+            name,
+            types.MethodType(getattr(RecordingController, name), ctrl),
+        )
+
+    assert RecordingController.nextLapse(ctrl) is False
+
+    assert ('abort-scan', source, runToken) in events
+    assert (
+        'abort-writer',
+        {'emitSignal': False, 'wait': True},
+    ) in events
+    assert ctrl._recordingFailureAwaitingScanEnd is True
+    assert ctrl._scanStartPublished is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert ctrl._recordingScanSource is source
+
+
+def test_failed_scan_end_notification_remains_pending_for_retry():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    attempts = []
+
+    def notify():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise RuntimeError('temporary signal failure')
+
+    ctrl = types.SimpleNamespace(
+        _scanStartPublished=True,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                notify_scan_ended=notify
+            )
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+    )
+
+    RecordingController._notifyScanEndedIfPending(ctrl)
+    assert ctrl._scanStartPublished is True
+
+    RecordingController._notifyScanEndedIfPending(ctrl)
+    assert ctrl._scanStartPublished is False
+    assert len(attempts) == 2
+
+
+def test_unpaired_scan_start_blocks_recording_shutdown():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    runToken = object()
+    source = types.SimpleNamespace(isRunning=False)
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=True,
+        timer=None,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=runToken,
+        _acceptedScanCompletion=object(),
+        _exactScanCompletionHandled=True,
+        _recordingScanSource=source,
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(
+                record=False,
+                shutdownComplete=lambda: True,
+            )
+        ),
+    )
+    ctrl._scanRunIsActive = (
+        lambda: RecordingController._scanRunIsActive(ctrl)
+    )
+
+    assert RecordingController.shutdownComplete(ctrl) is False
+
+    ctrl._scanStartPublished = False
+    assert RecordingController.shutdownComplete(ctrl) is True
+
+
+def test_pending_no_coordinator_exact_terminal_blocks_recording_shutdown():
+    import types
+
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    source = types.SimpleNamespace(isRunning=False)
+    runToken = object()
+    completion = ScanRequestCompletion(source)
+    completion.bind(runToken)
+    recordingManager = types.SimpleNamespace(
+        record=False,
+        shutdownComplete=lambda: True,
+    )
+    ctrl = types.SimpleNamespace(
+        _master=types.SimpleNamespace(
+            recordingManager=recordingManager
+        ),
+        _recordingScanSource=source,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=runToken,
+        _acceptedScanCompletion=completion,
+        _exactScanCompletionHandled=False,
+        _shutdownRequested=True,
+        timer=None,
+    )
+    ctrl._scanRunIsActive = (
+        lambda: RecordingController._scanRunIsActive(ctrl)
+    )
+
+    assert RecordingController._scanRunIsActive(ctrl) is True
+    assert RecordingController.shutdownComplete(ctrl) is False
+
+    completion.resolve(runToken, True)
+    assert RecordingController.shutdownComplete(ctrl) is False
+
+    ctrl._exactScanCompletionHandled = True
+    assert RecordingController._scanRunIsActive(ctrl) is False
+    assert RecordingController.shutdownComplete(ctrl) is True
+
+
+def test_raised_targeted_dispatch_retains_owner_token_from_attached_result():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    owner = types.SimpleNamespace(isRunning=True)
+    runToken = object()
+    completion = object()
+    requestResult = types.SimpleNamespace(
+        acceptedTokens=((owner, runToken),),
+        acceptedCompletions=((owner, runToken, completion),),
+    )
+    error = RuntimeError('source raised after accepting')
+    error.scanRequestResult = requestResult
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=owner,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: (_ for _ in ()).throw(error)
+            )
+        ),
+        # Exercise the attached-result fallback used by adapters without the
+        # shared NI coordinator.
+        _master=types.SimpleNamespace(),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert RecordingController._scanRunIsActive(ctrl) is True
+    assert failures == [
+        ('source raised after accepting', {'abortManager': True})
+    ]
+
+
+def test_unhandled_scan_request_gets_no_abort_authority():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    unrelatedToken = object()
+    ctrl = types.SimpleNamespace(
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan=lambda *_args: types.SimpleNamespace(
+                    handled=False,
+                    accepted=False,
+                )
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=unrelatedToken
+            )
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            warning=lambda *_args, **_kwargs: None
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+    )
+
+    accepted = RecordingController._requestScanStart(
+        ctrl, True, False
+    )
+
+    assert accepted is True
+    assert ctrl._scanRequestAccepted is False
+    assert ctrl._acceptedScanRunToken is None
+    assert RecordingController._scanRunIsActive(ctrl) is False
+
+
+def test_targeted_legacy_scan_source_has_identity_safe_start_and_abort():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    events = []
+    source = types.SimpleNamespace(isRunning=True)
+    workflow = types.SimpleNamespace(
+        run_scan_from=lambda target, *_args: (
+            events.append(('run', target)),
+            types.SimpleNamespace(handled=False, accepted=False),
+        )[1],
+        run_scan=lambda *_args: events.append('broadcast'),
+        abort_scan_from=lambda target: events.append(('abort', target)),
+    )
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=source,
+        _commChannel=types.SimpleNamespace(scanWorkflow=workflow),
+        _master=types.SimpleNamespace(),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is True
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is None
+    assert RecordingController._scanRunIsActive(ctrl) is True
+
+    assert RecordingController._requestScanStart(
+        ctrl, False, False
+    ) is True
+    RecordingController._abortOwnedScanSequence(ctrl)
+
+    assert events == [
+        ('run', source),
+        ('run', source),
+        ('abort', source),
+    ]
+
+
+def test_targeted_legacy_scan_source_must_enter_running_state():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    source = types.SimpleNamespace(isRunning=False)
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=source,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: types.SimpleNamespace(
+                    handled=False,
+                    accepted=False,
+                )
+            )
+        ),
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert failures == [
+        (
+            'The selected scan source did not start.',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_idle_exact_source_retains_draining_run_abort_authority():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    class Source:
+        supportsExactScanRequestCompletion = True
+        isRunning = False
+
+    source = Source()
+    runToken = object()
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingScanSource=source,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                run_scan_from=lambda *_args: types.SimpleNamespace(
+                    handled=False,
+                    accepted=False,
+                )
+            )
+        ),
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                runForOwner=lambda owner: (
+                    runToken if owner is source else None
+                )
+            )
+        ),
+        _scanRequestAccepted=False,
+        _acceptedScanRunToken=None,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._requestScanStart(
+        ctrl, True, False
+    ) is False
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is runToken
+    assert failures == [
+        (
+            'The selected scan source did not start.',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_close_in_targeted_legacy_cadence_gap_uses_source_terminal_once():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    events = []
+
+    class Timer:
+        def isActive(self):
+            return True
+
+        def stop(self):
+            events.append('timer-stop')
+
+    class Source:
+        isRunning = False
+        doingNonFinalPartOfSequence = True
+
+        def abortScan(self):
+            events.append('source-abort')
+            self.doingNonFinalPartOfSequence = False
+            events.append('source-end')
+            ctrl._scanLifecycleEnded()
+
+    source = Source()
+    manager = types.SimpleNamespace(
+        record=False,
+        abortRecording=lambda **_kwargs: events.append('manager-abort'),
+        shutdownComplete=lambda: True,
+    )
+    widget = types.SimpleNamespace(
+        isRecButtonChecked=lambda: True,
+        updateRecFrameNum=lambda _value: None,
+        updateRecTime=lambda _value: None,
+        updateRecLapseNum=lambda _value: None,
+        setRecButtonChecked=lambda _value: None,
+        setFieldsEnabled=lambda _value: None,
+    )
+    ctrl = types.SimpleNamespace(
+        _shutdownRequested=False,
+        _finalizingRecCycle=False,
+        _recordingCycleTerminalHandled=True,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingFailedCurrent=False,
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=1,
+        _recordingGenerationBeforeOperation=0,
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=None,
+        _acceptedScanCompletion=None,
+        _exactScanCompletionHandled=False,
+        _scanLifecycleEndedObserved=False,
+        _recordingScanSource=source,
+        _usesDetailedRecordingSignals=True,
+        recMode=RecMode.ScanLapse,
+        lapseCurrent=1,
+        lapseTotal=3,
+        recording=True,
+        stopRequested=False,
+        endedRecording=True,
+        doneScan=True,
+        timer=Timer(),
+        _widget=widget,
+        _commChannel=types.SimpleNamespace(
+            scanWorkflow=types.SimpleNamespace(
+                abort_scan_from=lambda target: target.abortScan(),
+                notify_scan_ended=lambda: events.append('synthetic-end'),
+            ),
+            sigRecordingEnded=types.SimpleNamespace(
+                emit=lambda: events.append('recording-ended')
+            ),
+        ),
+        _master=types.SimpleNamespace(
+            recordingManager=manager,
+            scanExecutionCoordinator=None,
+        ),
+        _RecordingController__logger=types.SimpleNamespace(
+            error=lambda *_args, **_kwargs: None
+        ),
+    )
+    for name in (
+        '_scanLifecycleEnded',
+        '_scanRunIsActive',
+        '_abortOwnedScanSequence',
+        '_notifyScanEndedIfPending',
+        'recordingCycleEnded',
+        'shutdownComplete',
+    ):
+        setattr(
+            ctrl,
+            name,
+            types.MethodType(getattr(RecordingController, name), ctrl),
+        )
+
+    assert RecordingController.closeEvent(ctrl) is True
+    assert source.doingNonFinalPartOfSequence is False
+    assert events.count('source-end') == 1
+    assert 'synthetic-end' not in events
+    assert ctrl._scanStartPublished is False
+    assert ctrl._scanRequestAccepted is False
+    assert ctrl._recordingScanSource is None
+
+
+def test_scan_recording_preflight_rejects_active_standalone_source():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    failures = []
+    activeSource = object()
+    ctrl = types.SimpleNamespace(
+        _commChannel=types.SimpleNamespace(
+            getActiveScanSource=lambda: activeSource
+        ),
+        _master=types.SimpleNamespace(),
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    assert RecordingController._preflightNewScanRequest(ctrl) is False
+    assert failures == [
+        (
+            'Cannot start scan recording while another scan source is active.',
+            {'abortManager': False},
+        )
+    ]
+
+
+def test_scanlapse_source_resolution_fails_before_recording_is_armed():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    events = []
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanLapse,
+        stopRequested=False,
+        timer=None,
+        lapseCurrent=0,
+        lapseTotal=2,
+        _recordingCycleTerminalHandled=False,
+        _recordingScanSource=None,
+        _widget=types.SimpleNamespace(
+            isRecButtonChecked=lambda: True
+        ),
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(record=False)
+        ),
+        _commChannel=types.SimpleNamespace(
+            getRecordingScanSource=lambda: (_ for _ in ()).throw(
+                RuntimeError('ambiguous scan source')
+            )
+        ),
+        _preflightNewScanRequest=lambda: True,
+        _handleRecordingFailure=lambda message, **kwargs: events.append(
+            (message, kwargs)
+        ),
+        _notifyScanStarting=lambda: events.append('scan-starting'),
+        _startManagerRecording=lambda: events.append('recording-started'),
+    )
+
+    assert RecordingController.nextLapse(ctrl) is False
+    assert events == [
+        (
+            'ambiguous scan source',
+            {'abortManager': False},
+        )
+    ]
+
+
+def test_scan_end_without_scan_done_aborts_armed_recording():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=object(),
+        recMode=RecMode.ScanOnce,
+        doneScan=False,
+        _recordingFailureHandled=False,
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert ctrl._scanStartPublished is False
+    assert ctrl._scanRequestAccepted is False
+    assert ctrl._acceptedScanRunToken is None
+    assert failures == [
+        (
+            'Scan ended before acquisition completed.',
+            {'abortManager': True},
+        )
+    ]
+
+
+def test_stale_global_scan_end_cannot_clear_active_recording_run_token():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    token = object()
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=token,
+        _recordingScanSource=None,
+        recMode=RecMode.ScanOnce,
+        doneScan=False,
+        _recordingFailureHandled=False,
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=token
+            )
+        ),
+        _handleRecordingFailure=lambda message, **kwargs: failures.append(
+            (message, kwargs)
+        ),
+    )
+
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert ctrl._scanStartPublished is True
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is token
+    assert failures == []
+
+
+def test_stale_scan_end_cannot_clear_no_coordinator_exact_cadence_gap():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    token = object()
+    source = types.SimpleNamespace(isRunning=False)
+    ctrl = types.SimpleNamespace(
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=token,
+        _acceptedScanCompletion=None,
+        _recordingScanSource=source,
+        _scanLifecycleEndedObserved=False,
+        _recordingFailureHandled=False,
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=None
+        ),
+        timer=types.SimpleNamespace(isActive=lambda: True),
+        recMode=RecMode.ScanLapse,
+        stopRequested=False,
+        doneScan=True,
+        endedRecording=False,
+        _usesDetailedRecordingSignals=True,
+    )
+
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert ctrl._scanStartPublished is True
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is token
+
+    # A targeted stop makes the next source terminal authoritative even though
+    # the cadence timer object is still retained by this lightweight fixture.
+    ctrl.stopRequested = True
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert ctrl._scanStartPublished is False
+    assert ctrl._scanRequestAccepted is False
+    assert ctrl._acceptedScanRunToken is None
+
+
+def test_held_barrier_cleared_run_accepts_its_real_recording_lifecycle_end():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    token = types.SimpleNamespace(
+        releaseRequested=True,
+        releaseBarrierCleared=True,
+        holdReleaseUntilFinalized=True,
+    )
+    ctrl = types.SimpleNamespace(
+        _scanStartPublished=True,
+        _scanRequestAccepted=True,
+        _acceptedScanRunToken=token,
+        _acceptedScanCompletion=object(),
+        _exactScanCompletionHandled=False,
+        _scanLifecycleEndedObserved=False,
+        _recordingFailureAwaitingScanEnd=False,
+        _recordingScanSource=None,
+        _master=types.SimpleNamespace(
+            scanExecutionCoordinator=types.SimpleNamespace(
+                activeRunToken=token
+            )
+        ),
+    )
+
+    RecordingController._scanLifecycleEnded(ctrl)
+
+    assert ctrl._scanLifecycleEndedObserved is True
+    assert ctrl._scanStartPublished is False
+    assert ctrl._scanRequestAccepted is True
+    assert ctrl._acceptedScanRunToken is token
+
+
+def test_stale_detailed_recording_failure_is_ignored_by_new_operation():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    failures = []
+    ctrl = types.SimpleNamespace(
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=2,
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(recordingGeneration=2)
+        ),
+        recordingFailed=lambda message: failures.append(message),
+    )
+    ctrl._recordingSignalMatches = types.MethodType(
+        RecordingController._recordingSignalMatches, ctrl
+    )
+
+    RecordingController._recordingFailedDetailed(
+        ctrl, 'old failure', 1
+    )
+    RecordingController._recordingFailedDetailed(
+        ctrl, 'current failure', 2
+    )
+
+    assert failures == ['current failure']
+
+
+def test_scan_done_keeps_recording_identity_until_writer_terminal():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+    from imswitch.imcontrol.model import RecMode
+
+    failures = []
+    ctrl = types.SimpleNamespace(
+        recMode=RecMode.ScanOnce,
+        doneScan=False,
+        endedRecording=False,
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=5,
+        _recordingGenerationBeforeOperation=4,
+        _usesDetailedRecordingSignals=True,
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(recordingGeneration=5)
+        ),
+        recordingCycleEnded=lambda: failures.append('premature-success'),
+        recordingFailed=lambda message: failures.append(message),
+    )
+    ctrl._recordingSignalMatches = types.MethodType(
+        RecordingController._recordingSignalMatches, ctrl
+    )
+
+    RecordingController.scanDone(ctrl)
+    RecordingController._recordingFailedDetailed(
+        ctrl, 'writer finalization failed', 5
+    )
+
+    assert ctrl.doneScan is True
+    assert failures == ['writer finalization failed']
+
+
+def test_prestart_generation_window_rejects_queued_previous_terminal():
+    import types
+
+    from imswitch.imcontrol.controller.controllers.RecordingController import (
+        RecordingController,
+    )
+
+    ctrl = types.SimpleNamespace(
+        _recordingOperationActive=True,
+        _recordingManagerGeneration=None,
+        _recordingGenerationBeforeOperation=8,
+        _master=types.SimpleNamespace(
+            recordingManager=types.SimpleNamespace(recordingGeneration=8)
+        ),
+    )
+
+    assert RecordingController._recordingSignalMatches(ctrl, 8) is False
+    ctrl._master.recordingManager.recordingGeneration = 9
+    assert RecordingController._recordingSignalMatches(ctrl, 9) is True
+    assert ctrl._recordingManagerGeneration == 9
 
 
 def test_recording_dtype_preservation(qtbot):
@@ -1142,12 +3819,14 @@ def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
     
     # Track signals
     stalled_detector = None
+    failures = []
     
     def on_stalled(detector_name):
         nonlocal stalled_detector
         stalled_detector = detector_name
     
     recordingManager.sigRecordingStalled.connect(on_stalled)
+    recordingManager.sigRecordingFailed.connect(failures.append)
     
     # Start recording with a very short stall timeout
     short_timeout = 0.5  # 0.5 seconds for faster test
@@ -1187,9 +3866,11 @@ def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
     assert elapsed >= short_timeout, f"Watchdog triggered too early: {elapsed:.2f}s < {short_timeout}s"
     assert elapsed < short_timeout + 2, f"Watchdog took too long: {elapsed:.2f}s > {short_timeout + 2}s"
     
-    # Verify recording ended cleanly (thread not hung)
+    # Verify recording failed closed (thread not hung and no ordinary-success
+    # interpretation for the truncated stream).
     qtbot.wait(200)  # Small delay to let thread finish
     assert not recordingManager.record, "Recording should have stopped after stall"
+    assert failures and 'stalled' in failures[0]
 
 
 def test_detector_dtype_contract(tmp_path):
@@ -1463,7 +4144,8 @@ def test_detector_bitDepth_property():
 # ---------------------------------------------------------------------------
 
 from imswitch.imcontrol.model.managers.RecordingManager import (
-    HDF5Storer, WriterThread, WRITER_QUEUE_MAXSIZE, WRITE_BATCH_FRAMES,
+    HDF5Storer, TiffStorer, WriterThread, WRITER_QUEUE_MAXSIZE,
+    WRITE_BATCH_FRAMES,
 )
 
 
@@ -1605,6 +4287,246 @@ def test_writerthread_abort_calls_abortstream_not_finalize():
     assert not writer.is_alive(), "Writer must terminate after abort"
     assert storer.aborted is True, "abortStream must be called on abort"
     assert storer.finalized is False, "finalizeStream must NOT be called on abort"
+
+
+def test_writerthread_late_abort_after_finalize_removes_output():
+    class _AbortDuringFinalizeStorer(_FakeStorer):
+        def __init__(self):
+            super().__init__()
+            self.writer = None
+
+        def finalizeStream(
+                self, currentFrames, filePaths, recordingManager, saveMode):
+            self.finalized = True
+            # Deterministically model abort() arriving while a slow backend is
+            # returning from finalizeStream.
+            self.writer._abort_event.set()
+
+    storer = _AbortDuringFinalizeStorer()
+    writer = _make_writer(storer)
+    storer.writer = writer
+    writer.start()
+    writer.wait_for_open()
+    writer.finish()
+
+    assert storer.finalized is True
+    assert storer.aborted is True
+    assert writer._stream_cleanup_done.is_set()
+
+
+def test_tiff_finalize_attempts_every_close_and_metadata_write(monkeypatch):
+    """One TIFF failure must not prevent cleanup/finalization attempts for peers."""
+    import importlib
+    from types import SimpleNamespace
+
+    recording_module = importlib.import_module(
+        'imswitch.imcontrol.model.managers.RecordingManager'
+    )
+    close_attempts = []
+    metadata_attempts = []
+
+    class _Writer:
+        def __init__(self, name, error=None):
+            self.name = name
+            self.error = error
+
+        def close(self):
+            close_attempts.append(self.name)
+            if self.error is not None:
+                raise self.error
+
+    def write_metadata(path, _xml):
+        metadata_attempts.append(path)
+        if path == 'B.ome.tiff':
+            raise OSError('metadata flush failed')
+
+    monkeypatch.setattr(
+        recording_module._ome, 'build_ome_xml',
+        lambda _meta, _shape: '<OME/>',
+    )
+    monkeypatch.setattr(recording_module.tiff, 'tiffcomment', write_metadata)
+
+    storer = TiffStorer.__new__(TiffStorer)
+    storer._writers = {
+        'A': _Writer('A', OSError('close failed')),
+        'B': _Writer('B'),
+    }
+    storer._paths = {
+        'A': 'A.ome.tiff',
+        'B': 'B.ome.tiff',
+    }
+    storer._spatial = {
+        'A': (2, 2),
+        'B': (2, 2),
+    }
+    storer._meta_for = lambda _name, n_frames: SimpleNamespace(axes='YX')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        storer.finalizeStream(
+            {'A': 1, 'B': 1},
+            storer._paths,
+            recordingManager=None,
+            saveMode=SaveMode.Disk,
+        )
+
+    assert close_attempts == ['A', 'B']
+    assert metadata_attempts == ['A.ome.tiff', 'B.ome.tiff']
+    message = str(exc_info.value)
+    assert 'close failed' in message
+    assert 'metadata flush failed' in message
+    assert '2 error(s)' in message
+
+
+def test_tiff_writer_finalize_failure_aborts_partial_output(tmp_path):
+    """A swallowed TiffWriter.close error must become writer failure + abort."""
+    partial_path = tmp_path / 'partial.ome.tiff'
+
+    class _FailingWriter:
+        def __init__(self):
+            self.closeCalls = 0
+
+        def close(self):
+            self.closeCalls += 1
+            raise OSError('disk flush failed')
+
+    class _FailingTiffStorer(TiffStorer):
+        def __init__(self):
+            self.writer = _FailingWriter()
+            self._writers = {}
+            self._paths = {}
+            self._spatial = {}
+
+        def openStream(self, **_kwargs):
+            partial_path.write_bytes(b'partial TIFF')
+            self._writers = {'CAM': self.writer}
+
+        def writeFrames(self, detectorName, frames):
+            pass
+
+    storer = _FailingTiffStorer()
+    writer = WriterThread(
+        storer=storer,
+        fileDests={'CAM': str(partial_path)},
+        detectorNames=['CAM'],
+        shapes={'CAM': (2, 2)},
+        attrs={'CAM': {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+        filePaths={'CAM': str(partial_path)},
+        recordingManager=None,
+    )
+    writer.start()
+    writer.wait_for_open()
+
+    with pytest.raises(RuntimeError, match='TIFF stream finalization failed'):
+        writer.finish()
+
+    assert not writer.is_alive()
+    assert storer.writer.closeCalls >= 2
+    assert not partial_path.exists()
+
+
+def test_finalize_failure_emits_failure_without_success_and_removes_output(
+        qtbot, tmp_path):
+    """RecordingManager publishes only failure after writer finalization fails."""
+    class _ImmediateDetector:
+        shape = (2, 2)
+        dtype = np.dtype(np.uint16)
+        pixelSizeUm = [1.0, 1.0, 1.0]
+
+        def __init__(self):
+            self._delivered = False
+
+        def startChunkConsumer(self, _consumerKey):
+            self._delivered = False
+
+        def releaseChunkConsumer(self, _consumerKey):
+            pass
+
+        def readChunk(self, _consumerKey):
+            if self._delivered:
+                return []
+            self._delivered = True
+            return [np.ones((2, 2), dtype=self.dtype)]
+
+    class _ImmediateDetectors:
+        def __init__(self):
+            self.detector = _ImmediateDetector()
+
+        def __getitem__(self, detectorName):
+            assert detectorName == 'CAM'
+            return self.detector
+
+        def acquire(self, detectorNames, purpose):
+            assert tuple(detectorNames) == ('CAM',)
+            return object()
+
+        def release(self, _handle):
+            pass
+
+    class _FinalizeFailingStorer:
+        instances = []
+
+        def __init__(self, _filepath, _detectorManager):
+            self.paths = ()
+            self.aborted = False
+            self.__class__.instances.append(self)
+
+        def openStream(self, *, fileDests, **_kwargs):
+            self.paths = tuple(fileDests.values())
+            for path in self.paths:
+                with open(path, 'wb') as partial:
+                    partial.write(b'partial recording')
+
+        def writeFrames(self, detectorName, frames):
+            pass
+
+        def finalizeStream(self, currentFrames, filePaths,
+                           recordingManager, saveMode):
+            raise OSError('finalize failed')
+
+        def abortStream(self, filePaths, fileDests, saveMode):
+            self.aborted = True
+            for path in set(filePaths.values()) | set(fileDests.values()):
+                if isinstance(path, str) and os.path.exists(path):
+                    os.remove(path)
+
+    manager = RecordingManager(
+        _ImmediateDetectors(),
+        storerMap={SaveFormat.TIFF: _FinalizeFailingStorer},
+    )
+    successes = []
+    legacySuccesses = []
+    failures = []
+    manager.sigRecordingEndedDetailed.connect(successes.append)
+    manager.sigRecordingEnded.connect(lambda: legacySuccesses.append(True))
+    manager.sigRecordingFailedDetailed.connect(
+        lambda message, generation: failures.append((message, generation))
+    )
+
+    with qtbot.waitSignal(
+        manager.sigRecordingFailedDetailed, timeout=5000
+    ):
+        generation = manager.startRecording(
+            detectorNames=['CAM'],
+            recMode=RecMode.SpecFrames,
+            savename=str(tmp_path / 'finalize_failure'),
+            saveMode=SaveMode.Disk,
+            saveFormat=SaveFormat.TIFF,
+            attrs={'CAM': {}},
+            recFrames=1,
+        )
+
+    manager.endRecording(emitSignal=False, wait=True)
+    storer = _FinalizeFailingStorer.instances[-1]
+    assert len(failures) == 1
+    assert failures[0][1] == generation
+    assert 'partial output was aborted' in failures[0][0]
+    assert successes == []
+    assert legacySuccesses == []
+    assert storer.aborted is True
+    assert all(not os.path.exists(path) for path in storer.paths)
 
 
 def test_hdf5storer_abort_removes_partial_file(tmp_path):

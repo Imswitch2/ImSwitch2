@@ -12,6 +12,7 @@ Design reference: docs/design/plans/detector-acquisition-selection.md.
 """
 
 import sys
+import threading
 
 import pytest
 
@@ -81,6 +82,9 @@ def manager(monkeypatch):
     mgr._subManagers = detectors
     mgr._currentDetectorName = 'CAM'
     mgr._thread = _StubThread()
+    mgr._frameStreamLifecycleLock = threading.RLock()
+    mgr._framePollLock = threading.RLock()
+    mgr._lvWorker = None
     mgr.sigAcquisitionStarted = _StubSignal()
     mgr.sigAcquisitionStopped = _StubSignal()
     mgr._leaseTable = AcquisitionLeaseTable(
@@ -119,6 +123,19 @@ def test_event_direct_consumers_are_not_polled(manager):
     assert manager.frameStreamMembership() == set()
 
 
+def test_switching_current_detector_never_reads_an_unleased_detector(manager):
+    """EVENT_STREAM can keep the poller alive while live view is off; changing
+    the displayed detector must not read unrelated, unarmed hardware."""
+    manager.sigDetectorSwitched = _StubSignal()
+    manager.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+
+    manager.setCurrentDetector('CAM')
+    manager.setCurrentDetector('FAST')
+
+    assert manager['CAM'].polls == []
+    assert manager['FAST'].polls == [True]
+
+
 # --------------------------------------------------------------------------- #
 # Poll-thread lifecycle                                                        #
 # --------------------------------------------------------------------------- #
@@ -152,6 +169,139 @@ def test_poll_thread_stops_only_when_the_last_streamer_goes(manager):
     assert manager._thread.quitCalls == 1
 
 
+def test_last_stream_release_keeps_lease_when_poller_cannot_stop(manager):
+    live = manager.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    manager._thread.wait = lambda: False
+
+    with pytest.raises(TimeoutError, match='poller did not stop'):
+        manager.release(live)
+
+    assert manager._leaseTable.isActiveHandle(live)
+    assert manager.frameStreamMembership() == {'CAM'}
+
+
+def test_acquire_during_last_streamer_release_restarts_the_poller(manager):
+    """A new streamer arriving while the old poller joins must not inherit a
+    non-empty membership with a stopped thread."""
+    old = manager.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    waitEntered = threading.Event()
+    allowWait = threading.Event()
+    errors = []
+    acquired = []
+
+    def blockingWait():
+        waitEntered.set()
+        assert allowWait.wait(2)
+
+    manager._thread.wait = blockingWait
+
+    def releaseOld():
+        try:
+            manager.release(old)
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
+            errors.append(exc)
+
+    def acquireNew():
+        try:
+            acquired.append(
+                manager.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+            )
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
+            errors.append(exc)
+
+    releasing = threading.Thread(target=releaseOld, daemon=True)
+    releasing.start()
+    assert waitEntered.wait(2)
+
+    acquiring = threading.Thread(target=acquireNew, daemon=True)
+    acquiring.start()
+    # acquire() is serialized behind the join/release transition.
+    acquiring.join(0.05)
+    assert acquiring.is_alive()
+
+    allowWait.set()
+    releasing.join(2)
+    acquiring.join(2)
+
+    assert not releasing.is_alive()
+    assert not acquiring.is_alive()
+    assert errors == []
+    assert len(acquired) == 1
+    assert manager.frameStreamMembership() == {'FAST'}
+    assert manager._thread.isRunning()
+    assert manager._thread.startCalls == 2
+    assert manager._thread.quitCalls == 1
+
+
+def test_invalid_stream_handle_has_no_poll_thread_side_effect(manager):
+    legitimate = manager.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    from imswitch.imcontrol.model.managers._acquisition_leases import LeaseHandle
+    invalid = LeaseHandle(LeasePurpose.LIVE_VIEW, ['CAM'])
+
+    with pytest.raises(ValueError, match='Invalid or already used handle'):
+        manager.release(invalid)
+
+    assert manager._thread.quitCalls == 0
+    assert manager._thread.isRunning()
+    assert manager.frameStreamMembership() == {'CAM'}
+    manager.release(legitimate)
+
+
+def test_nonlast_release_waits_for_inflight_poll_before_stopping_detector(
+        manager):
+    """A stale poll snapshot must finish before release tears down one detector
+    while another streamer keeps the worker thread alive."""
+    live = manager.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    event = manager.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+    pollEntered = threading.Event()
+    allowPoll = threading.Event()
+    polling = threading.Event()
+    stoppedDuringPoll = []
+    errors = []
+
+    def blockingPoll(init):
+        polling.set()
+        pollEntered.set()
+        assert allowPoll.wait(2)
+        polling.clear()
+
+    def guardedStop():
+        stoppedDuringPoll.append(polling.is_set())
+
+    manager['CAM'].updateLatestFrame = blockingPoll
+    manager['CAM'].stopAcquisition = guardedStop
+    worker = LVWorker(manager, 100)
+
+    poller = threading.Thread(
+        target=lambda: worker._pollFrameStream(init=True), daemon=True
+    )
+    poller.start()
+    assert pollEntered.wait(2)
+
+    def releaseLive():
+        try:
+            manager.release(live)
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
+            errors.append(exc)
+
+    releaser = threading.Thread(target=releaseLive, daemon=True)
+    releaser.start()
+    releaser.join(0.05)
+    assert releaser.is_alive()
+
+    allowPoll.set()
+    poller.join(2)
+    releaser.join(2)
+
+    assert not poller.is_alive()
+    assert not releaser.is_alive()
+    assert errors == []
+    assert stoppedDuringPoll == [False]
+    assert manager.frameStreamMembership() == {'FAST'}
+    assert manager._thread.quitCalls == 0
+    manager.release(event)
+
+
 def test_scan_lease_does_not_start_the_poll_thread(manager):
     manager.acquire(['APD'], LeasePurpose.SCAN)
 
@@ -177,6 +327,40 @@ def test_set_update_period_restarts_a_running_poll_thread(manager):
 
     assert manager._thread.startCalls == 2
     assert manager._thread.quitCalls == 1
+
+
+def test_set_update_period_and_last_release_leave_no_idle_poller(manager):
+    manager._lvWorker = LVWorker(manager, 100)
+    handle = manager.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    waitEntered = threading.Event()
+    allowWait = threading.Event()
+
+    def blockingWait():
+        waitEntered.set()
+        assert allowWait.wait(2)
+
+    manager._thread.wait = blockingWait
+    updating = threading.Thread(
+        target=lambda: manager.setUpdatePeriod(50), daemon=True
+    )
+    updating.start()
+    assert waitEntered.wait(2)
+
+    releasing = threading.Thread(
+        target=lambda: manager.release(handle), daemon=True
+    )
+    releasing.start()
+    releasing.join(0.05)
+    assert releasing.is_alive()
+
+    allowWait.set()
+    updating.join(2)
+    releasing.join(2)
+
+    assert not updating.is_alive()
+    assert not releasing.is_alive()
+    assert manager.frameStreamMembership() == set()
+    assert not manager._thread.isRunning()
 
 
 # --------------------------------------------------------------------------- #
@@ -206,6 +390,35 @@ def test_worker_picks_up_a_lease_taken_mid_flight(manager):
     worker._pollFrameStream(init=True)
 
     assert manager['CAM'].polls == [True, True]
+    assert manager['FAST'].polls == [True]
+
+
+def test_each_new_streaming_detector_gets_its_own_settle_window(
+        manager, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(
+        sys.modules['imswitch.imcontrol.model.managers.DetectorsManager'],
+        'monotonic', lambda: clock[0],
+    )
+    worker = LVWorker(manager, 100)
+    manager._lvWorker = worker
+
+    manager.acquire(['CAM'], LeasePurpose.LIVE_VIEW)
+    worker._pollFrameStream(init=True)
+    assert manager['CAM'].polls == []
+
+    clock[0] = 0.3
+    worker._pollFrameStream(init=True)
+    assert manager['CAM'].polls == [True]
+
+    manager.acquire(['FAST'], LeasePurpose.EVENT_STREAM)
+    worker._pollFrameStream(init=True)
+    assert manager['CAM'].polls == [True, True]
+    assert manager['FAST'].polls == []
+
+    clock[0] = 0.6
+    worker._pollFrameStream(init=True)
+    assert manager['CAM'].polls == [True, True, True]
     assert manager['FAST'].polls == [True]
 
 

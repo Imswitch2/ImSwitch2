@@ -12,6 +12,7 @@ from imswitch.imcontrol.model.workflows.spiral import spiral_moves
 from ..basecontrollers import ImConWidgetController
 
 _SETTLE_S = 0.15  # stage settle time after each move (seconds)
+_CLOSE_JOIN_TIMEOUT_S = 2.0
 CellFeatureCallback = Callable[[int, dict, Tuple[float, float]], None]
 
 
@@ -38,6 +39,12 @@ class TilingController(ImConWidgetController):
         self._cellPositionsRC: Optional[np.ndarray] = None  # (N, 2) row/col in overview
         self._cellProps: Optional[dict[str, np.ndarray]] = None
         self._cellTargetingRunning = False
+        self._cellTargetCancel = threading.Event()
+        self._activityLock = threading.Lock()
+        self._scanThread: Optional[threading.Thread] = None
+        self._cellTargetThread: Optional[threading.Thread] = None
+        self._scanAcqHandle = None
+        self._closed = False
 
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
@@ -61,45 +68,127 @@ class TilingController(ImConWidgetController):
     # Public API
     # ------------------------------------------------------------------
 
-    @APIExport()
+    @APIExport(runOnUIThread=True)
     def startTiling(self) -> None:
-        if self._scanning:
-            return
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
             return
+        with self._getActivityLock():
+            busyWithCells = self._cellTargetingRunning
+            busy = (
+                self._scanning
+                or busyWithCells
+                or getattr(self, '_closed', False)
+            )
+            if not busy:
+                self._scanning = True
+                self._stopRequested = False
+        if busy:
+            if busyWithCells:
+                self._logger.warning(
+                    'Tiling cannot start while cell targeting owns the stage'
+                )
+            return
+        try:
+            n_tiles = self._widget.getNTiles()
+            step_um = self._widget.getTileStepUm()
+            blend_overlaps = self._widget.getBlendOverlaps()
+            intensity_correction = self._widget.getIntensityCorrection()
 
-        n_tiles = self._widget.getNTiles()
-        step_um = self._widget.getTileStepUm()
-        blend_overlaps = self._widget.getBlendOverlaps()
-        intensity_correction = self._widget.getIntensityCorrection()
+            self._stitcher = None
+            self._originXY = None
+            self._gridPositions = []
+            self._lastStepUm = step_um
 
-        self._scanning = True
-        self._stopRequested = False
-        self._stitcher = None
-        self._originXY = None
-        self._gridPositions = []
-        self._lastStepUm = step_um
+            self._widget.setRunning(True)
+            self._widget.setProgress(0, n_tiles)
+            self._widget.clearCellMarkers()
+            self._widget.setCellTargetingEnabled(False)
+            self._cellPositionsRC = None
+            self._cellProps = None
 
-        self._widget.setRunning(True)
-        self._widget.setProgress(0, n_tiles)
-        self._widget.clearCellMarkers()
-        self._widget.setCellTargetingEnabled(False)
-        self._cellPositionsRC = None
-        self._cellProps = None
-
-        t = threading.Thread(
-            target=self._runScan,
-            args=(tilingInfo, n_tiles, step_um, blend_overlaps, intensity_correction),
-            daemon=True,
-        )
-        t.start()
+            self._scanThread = threading.Thread(
+                target=self._runScan,
+                args=(
+                    tilingInfo, n_tiles, step_um, blend_overlaps,
+                    intensity_correction,
+                ),
+                daemon=True,
+            )
+            self._scanThread.start()
+        except Exception as e:
+            with self._getActivityLock():
+                self._scanning = False
+                self._scanThread = None
+            try:
+                self._widget.setRunning(False)
+            except Exception:
+                pass
+            self._logger.error(
+                f'Tiling worker could not start: {e}', exc_info=True
+            )
 
     @APIExport()
     def stopTiling(self) -> None:
         self._stopRequested = True
+        self._cellCancelEvent().set()
 
-    @APIExport()
+    def closeEvent(self) -> bool:
+        """Request cancellation and wait briefly for owned workers.
+
+        The acquisition handle remains owned by ``_runScan`` until that worker
+        actually exits. This avoids disarming the camera underneath a blocked
+        ``getLatestFrame`` call when a hardware backend is slow to cancel.
+        """
+        with self._getActivityLock():
+            self._closed = True
+            self._stopRequested = True
+        self._cellCancelEvent().set()
+        for name in ('_scanThread', '_cellTargetThread'):
+            thread = getattr(self, name, None)
+            if thread is None or thread is threading.current_thread():
+                continue
+            thread.join(_CLOSE_JOIN_TIMEOUT_S)
+            if thread.is_alive():
+                self._logger.warning(
+                    f'{name[1:]} is still stopping after widget close; '
+                    'owned hardware will be released when it exits.'
+                )
+        super().closeEvent()
+        return self.shutdownComplete()
+
+    @staticmethod
+    def _threadIsAlive(thread) -> bool:
+        return bool(thread is not None and thread.is_alive())
+
+    def shutdownComplete(self) -> bool:
+        """Return whether all stage/camera workers have left their finally."""
+        with self._getActivityLock():
+            return (
+                not self._threadIsAlive(self.__dict__.get('_scanThread'))
+                and not self._threadIsAlive(
+                    self.__dict__.get('_cellTargetThread')
+                )
+                and self.__dict__.get('_scanAcqHandle') is None
+                and not self.__dict__.get('_scanning', False)
+                and not self.__dict__.get('_cellTargetingRunning', False)
+            )
+
+    def _getActivityLock(self):
+        lock = self.__dict__.get('_activityLock')
+        if lock is None:
+            lock = threading.Lock()
+            self._activityLock = lock
+        return lock
+
+    def _cellCancelEvent(self):
+        event = self.__dict__.get('_cellTargetCancel')
+        if event is None:
+            event = threading.Event()
+            self._cellTargetCancel = event
+        return event
+
+    @APIExport(runOnUIThread=True)
     def setTileLabel(self, label: str) -> None:
         self._widget.setLabel(label)
 
@@ -122,6 +211,11 @@ class TilingController(ImConWidgetController):
         intensity_correction: bool,
     ) -> None:
         acqHandle = None
+        positioner = None
+        x_axis = None
+        y_axis = None
+        origin_xy = None
+        scan_completed = False
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -140,10 +234,21 @@ class TilingController(ImConWidgetController):
             acqHandle = self._master.detectorsManager.acquire(
                 [camera], LeasePurpose.WORKFLOW
             )
+            with self._getActivityLock():
+                self._scanAcqHandle = acqHandle
+
+            # Give a newly armed camera one normal settle interval before the
+            # first tile. Subsequent tiles already wait after each stage move;
+            # previously only the first tile could be the pre-acquisition
+            # cached frame when live view had been off.
+            time.sleep(_SETTLE_S)
+            if self._stopRequested:
+                return
 
             # Record starting position as grid origin (0, 0)
             start_pos = positioner.position
-            self._originXY = (start_pos[x_axis], start_pos[y_axis])
+            origin_xy = (start_pos[x_axis], start_pos[y_axis])
+            self._originXY = origin_xy
 
             gx, gy = 0, 0
             for i, (dx, dy) in enumerate(spiral_moves(n_tiles)):
@@ -155,11 +260,13 @@ class TilingController(ImConWidgetController):
                     positioner.move(dx * step_um, x_axis)
                     positioner.move(dy * step_um, y_axis)
                     time.sleep(_SETTLE_S)
+                    if self._stopRequested:
+                        break
 
                 gx += dx
                 gy += dy
 
-                frame = detector.getLatestFrame()
+                frame = detector.getLatestFrameShared()
 
                 # Lazy stitcher init after first frame (we need tile_size_px)
                 if self._stitcher is None:
@@ -178,19 +285,42 @@ class TilingController(ImConWidgetController):
                 self._gridPositions.append((gx, gy))
 
                 overview = self._stitcher.get_overview()
-                self.sigOverviewUpdated.emit(overview)
-                self.sigProgressUpdated.emit(i + 1, n_tiles)
+                if not getattr(self, '_closed', False):
+                    self.sigOverviewUpdated.emit(overview)
+                    self.sigProgressUpdated.emit(i + 1, n_tiles)
 
-            # Return to origin
-            positioner.setPosition(self._originXY[0], x_axis)
-            positioner.setPosition(self._originXY[1], y_axis)
-
-            if self._stitcher is not None and not self._stopRequested:
-                self.sigCellTargetingEnabled.emit(True)
+            scan_completed = not self._stopRequested
 
         except Exception as e:
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
         finally:
+            # Once the origin is known, every exit path owns returning the
+            # stage: normal completion, user cancellation, camera/stitching
+            # failure, and close while the worker is active.
+            origin_restored = origin_xy is not None
+            if positioner is not None and origin_xy is not None:
+                for value, axis in (
+                    (origin_xy[0], x_axis),
+                    (origin_xy[1], y_axis),
+                ):
+                    try:
+                        positioner.setPosition(value, axis)
+                    except Exception as e:
+                        origin_restored = False
+                        self._logger.error(
+                            f'Failed to restore tiling origin on axis '
+                            f'"{axis}": {e}',
+                            exc_info=True,
+                        )
+
+            if (
+                scan_completed
+                and origin_restored
+                and self._stitcher is not None
+                and not getattr(self, '_closed', False)
+            ):
+                self.sigCellTargetingEnabled.emit(True)
+
             if acqHandle is not None:
                 try:
                     self._master.detectorsManager.release(acqHandle)
@@ -199,14 +329,18 @@ class TilingController(ImConWidgetController):
                         f'Failed to release tiling detector lease: {e}',
                         exc_info=True,
                     )
-            self._scanning = False
+            with self._getActivityLock():
+                self._scanAcqHandle = None
+                self._scanning = False
+                self._scanThread = None
             # Cross-thread emit — Qt's AutoConnection becomes QueuedConnection
             # because the sender (this background thread) lives in a different
             # thread than the receiver (widget on the GUI thread).  Previously
             # this used QMetaObject.invokeMethod which silently fails when the
             # target slot isn't registered with the Qt meta-object system
             # (setRunning is a plain Python method, not @Slot-decorated).
-            self.sigRunningChanged.emit(False)
+            if not getattr(self, '_closed', False):
+                self.sigRunningChanged.emit(False)
 
     # ------------------------------------------------------------------
     # Click-to-navigate
@@ -224,10 +358,10 @@ class TilingController(ImConWidgetController):
         # ``_scanning`` stays True, ``setRunning(False)`` never fires, Start
         # remains disabled and Stop becomes a no-op (the scan loop has already
         # exited, so flipping ``_stopRequested`` has nothing to react to).
-        if self._scanning:
+        if self._scanning or self._cellTargetingRunning:
             self._logger.info(
-                'Tiling click-to-navigate ignored: scan still in progress'
-                ' (return-to-origin). Wait for the run to finish.'
+                'Tiling click-to-navigate ignored: automated stage movement '
+                'is still in progress. Wait for it to finish.'
             )
             return
         self._moveStageToPixel(row, col)
@@ -290,6 +424,12 @@ class TilingController(ImConWidgetController):
         This GUI-safe path does not move the stage. It only updates the cached
         target list and the overview marker overlay.
         """
+        if self.__dict__.get('_scanning', False) or getattr(self, '_closed', False):
+            self._logger.warning(
+                'Cell targeting cannot start while tiling owns the stage'
+            )
+            return np.empty((0, 2))
+
         positions, props = self._detectCellTargets()
         self._cellPositionsRC = positions
         self._cellProps = props
@@ -312,6 +452,11 @@ class TilingController(ImConWidgetController):
         If neither ``feature_callback`` nor ``move_only`` is supplied this
         method behaves like ``detectCellTargets()`` and does not move hardware.
         """
+        if self.__dict__.get('_scanning', False) or getattr(self, '_closed', False):
+            self._logger.warning(
+                'Cell targeting cannot start while tiling owns the stage'
+            )
+            return
         positions, props = self._detectCellTargets()
         self._cellPositionsRC = positions
         self._cellProps = props
@@ -324,17 +469,33 @@ class TilingController(ImConWidgetController):
                 'Cell targets detected; no per-cell workflow requested, so stage iteration is skipped'
             )
             return
-        if self._cellTargetingRunning:
+        self._cellCancelEvent().clear()
+        with self._getActivityLock():
+            busy = (
+                self._cellTargetingRunning
+                or self.__dict__.get('_scanning', False)
+                or getattr(self, '_closed', False)
+            )
+            if not busy:
+                self._cellTargetingRunning = True
+        if busy:
             self._logger.warning('Cell targeting already running; ignoring duplicate request')
             return
 
-        self._cellTargetingRunning = True
-        t = threading.Thread(
-            target=self._iterateCells,
-            args=(positions, props, feature_callback),
-            daemon=True,
-        )
-        t.start()
+        try:
+            self._cellTargetThread = threading.Thread(
+                target=self._iterateCells,
+                args=(positions, props, feature_callback),
+                daemon=True,
+            )
+            self._cellTargetThread.start()
+        except Exception as e:
+            with self._getActivityLock():
+                self._cellTargetingRunning = False
+                self._cellTargetThread = None
+            self._logger.error(
+                f'Cell-target worker could not start: {e}', exc_info=True
+            )
 
     def _detectCellTargets(self) -> Tuple[np.ndarray, dict[str, np.ndarray]]:
         if self._stitcher is None:
@@ -366,14 +527,18 @@ class TilingController(ImConWidgetController):
         props: dict[str, np.ndarray],
         feature_callback: Optional[CellFeatureCallback],
     ) -> None:
+        cancel = self._cellCancelEvent()
         try:
             for i, (row, col) in enumerate(positions):
+                if cancel.is_set() or getattr(self, '_closed', False):
+                    break
                 self.sigHighlightCell.emit(i)
                 stage_xy = self._moveStageToPixel(int(row), int(col))
                 if stage_xy is None:
                     self._logger.warning(f'Cell {i}: stage coordinate conversion failed')
                     continue
-                time.sleep(_SETTLE_S)
+                if cancel.wait(_SETTLE_S) or getattr(self, '_closed', False):
+                    break
                 if feature_callback is not None:
                     try:
                         cell_props = {key: value[i] for key, value in props.items()}
@@ -381,8 +546,11 @@ class TilingController(ImConWidgetController):
                     except Exception as exc:
                         self._logger.warning(f'Cell {i}: feature_callback failed: {exc}')
         finally:
-            self._cellTargetingRunning = False
-            self.sigHighlightCell.emit(-1)
+            with self._getActivityLock():
+                self._cellTargetingRunning = False
+                self._cellTargetThread = None
+            if not getattr(self, '_closed', False):
+                self.sigHighlightCell.emit(-1)
 
     # ------------------------------------------------------------------
     # Helpers

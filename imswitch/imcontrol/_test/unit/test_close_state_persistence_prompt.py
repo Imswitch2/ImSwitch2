@@ -1,7 +1,9 @@
+import weakref
 from unittest.mock import Mock, patch
 
 from qtpy import QtWidgets
 
+from imswitch.imcommon.controller.basecontrollers import WidgetControllerFactory
 from imswitch.imcontrol.controller.ImConMainController import ImConMainController
 
 
@@ -58,3 +60,73 @@ def test_close_event_skips_state_save_when_prompt_declines():
     persistence.saveAllWidgetStates.assert_not_called()
     controller._ImConMainController__factory.closeAllCreatedControllers.assert_called_once()
     controller._ImConMainController__masterController.closeEvent.assert_called_once()
+
+
+def test_close_event_does_not_finalize_hardware_with_live_controller_worker():
+    controller = _close_ready_controller()
+    controller._ImConMainController__factory.closeAllCreatedControllers.return_value = False
+
+    with patch.object(
+        controller, '_shouldSaveWidgetStateOnClose', return_value=False
+    ):
+        assert controller.closeEvent() is False
+
+    controller._ImConMainController__factory.closeAllCreatedControllers.assert_called_once_with(
+        waitTimeoutS=30.0
+    )
+    controller._ImConMainController__masterController.closeEvent.assert_not_called()
+
+
+def test_close_event_server_timeout_skips_hardware_finalization():
+    controller = _close_ready_controller()
+    controller._serverWorker = Mock()
+    controller._thread = Mock()
+    controller._thread.wait.return_value = False
+    controller._ImConMainController__factory.closeAllCreatedControllers.return_value = True
+
+    with patch.object(
+        controller, '_shouldSaveWidgetStateOnClose', return_value=False
+    ):
+        assert controller.closeEvent() is False
+
+    controller._serverWorker.stop.assert_called_once_with()
+    controller._thread.quit.assert_called_once_with()
+    controller._thread.wait.assert_called_once_with(5000)
+    # Controller cleanup may still drain independent workers, but hardware
+    # finalization is unsafe while the API server thread remains alive.
+    controller._ImConMainController__factory.closeAllCreatedControllers.assert_called_once_with(
+        waitTimeoutS=30.0
+    )
+    controller._ImConMainController__masterController.closeEvent.assert_not_called()
+
+
+def test_close_event_propagates_incomplete_hardware_shutdown():
+    controller = _close_ready_controller()
+    controller._ImConMainController__factory.closeAllCreatedControllers.return_value = True
+    controller._ImConMainController__masterController.closeEvent.return_value = False
+
+    with patch.object(
+        controller, '_shouldSaveWidgetStateOnClose', return_value=False
+    ):
+        assert controller.closeEvent() is False
+
+    controller._ImConMainController__logger.error.assert_called()
+
+
+def test_factory_waits_for_shutdown_checker_even_when_close_returns_none():
+    owned = Mock()
+    owned.closeEvent.return_value = None
+    owned.shutdownComplete.side_effect = [False, True]
+    factory = WidgetControllerFactory.__new__(WidgetControllerFactory)
+    factory._WidgetControllerFactory__createdControllers = [
+        weakref.ref(owned)
+    ]
+    factory._WidgetControllerFactory__logger = Mock()
+
+    with patch(
+        'imswitch.imcommon.controller.basecontrollers.'
+        'FrameworkUtils.processPendingEventsCurrThread'
+    ) as process_events:
+        assert factory.closeAllCreatedControllers(waitTimeoutS=0.2) is True
+
+    process_events.assert_called()

@@ -64,6 +64,7 @@ class CommunicationChannel(SignalInterface):
     # Recording events.
     sigRecordingStarted = Signal()
     sigRecordingEnded = Signal()
+    sigRecordingFailed = Signal(str)
     sigUpdateRecFrameNum = Signal(int)  # (frameNumber)
     sigUpdateRecTime = Signal(int)  # (recTime)
     sigMemorySnapAvailable = Signal(
@@ -163,6 +164,7 @@ class CommunicationChannel(SignalInterface):
         self.recordingEvents = pythontools.dictToROClass({
             'recordingStarted': self.sigRecordingStarted,
             'recordingEnded': self.sigRecordingEnded,
+            'recordingFailed': self.sigRecordingFailed,
             'updateRecFrameNum': self.sigUpdateRecFrameNum,
             'updateRecTime': self.sigUpdateRecTime,
             'memorySnapAvailable': self.sigMemorySnapAvailable,
@@ -263,6 +265,51 @@ class CommunicationChannel(SignalInterface):
         """Return whether a generic 'Scan' widget is registered in this setup."""
         controllers = getattr(self.__main, 'controllers', None) or {}
         return 'Scan' in controllers
+
+    def getRecordingScanSource(self):
+        """Resolve one controller that can safely drive scan recording.
+
+        The global ``sigRunScan`` broadcast is unsafe on standalone
+        TriggerScope/LightSheet setups because every scan controller receives
+        it and can command hardware. Prefer the canonical Scan controller;
+        otherwise require exactly one standalone controller that exposes both
+        the targeted runner and the recording geometry/TTL accessors.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        required = (
+            'runScanExternal',
+            'abortScan',
+            'getNumScanPositions',
+            'getNumCamTTL',
+        )
+
+        def isRecordingSource(controller):
+            return controller is not None and all(
+                callable(getattr(controller, methodName, None))
+                for methodName in required
+            )
+
+        canonical = controllers.get('Scan')
+        if isRecordingSource(canonical):
+            return canonical
+
+        matches = [
+            (key, controller)
+            for key, controller in controllers.items()
+            if isRecordingSource(controller)
+        ]
+        if len(matches) == 1:
+            return matches[0][1]
+
+        candidates = [key for key, _controller in matches]
+        if candidates:
+            detail = f'multiple capable controllers are registered: {candidates}'
+        else:
+            detail = 'no controller exposes the required recording accessors'
+        raise RuntimeError(
+            'Cannot automate scan-lapse recording safely: '
+            f'{detail}. Select/configure one recording-capable scan source.'
+        )
 
     def _resolveScanAccessor(self, methodName):
         """Return a bound scan accessor, resolved in priority order:
@@ -473,6 +520,7 @@ class CommunicationChannel(SignalInterface):
          - acquisitionStopped
          - recordingStarted
          - recordingEnded
+         - recordingFailed
          - scanEnded
 
         They can be accessed like this: api.imcontrol.signals().scanEnded
@@ -483,6 +531,7 @@ class CommunicationChannel(SignalInterface):
             'acquisitionStopped': self.sigAcquisitionStopped,
             'recordingStarted': self.sigRecordingStarted,
             'recordingEnded': self.sigRecordingEnded,
+            'recordingFailed': self.sigRecordingFailed,
             'scanEnded': self.sigScanEnded,
             'saveFocus': self.sigSaveFocus
         })

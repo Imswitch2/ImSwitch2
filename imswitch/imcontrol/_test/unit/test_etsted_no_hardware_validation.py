@@ -37,6 +37,15 @@ class _NidaqManager:
         self.calls.append((signal_dict, scan_info_dict))
 
 
+class _ScanCoordinator:
+    def __init__(self, nidaq_manager) -> None:
+        self.nidaq_manager = nidaq_manager
+
+    def arm(self, signal_dict, scan_info_dict, owner=None):
+        self.nidaq_manager.runScan(signal_dict, scan_info_dict)
+        return object()
+
+
 def _write_pipeline(tmp_path, name: str, source: str) -> None:
     (tmp_path / f'{name}.py').write_text(source)
 
@@ -102,6 +111,8 @@ def synthetic_event_pipeline(img, prev_frames, binary_mask, testmode, exinfo, th
         nidaq_manager=nidaq_manager,
         signal_dict=prepare_result.signal_dict,
         scan_info_dict=prepare_result.scan_info_dict,
+        scan_coordinator=_ScanCoordinator(nidaq_manager),
+        scan_owner=scan_runner,
     )
 
     assert prepare_result.success

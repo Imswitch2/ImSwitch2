@@ -96,6 +96,7 @@ def test_communication_channel_event_groups_alias_existing_signals():
 
     assert "'updateImage': self.sigUpdateImage" in source
     assert "'recordingEnded': self.sigRecordingEnded" in source
+    assert "'recordingFailed': self.sigRecordingFailed" in source
     assert "'scanStarting': self.sigScanStarting" in source
     assert "'scanEnded': self.sigScanEnded" in source
     assert "'setAxisCenters': self.sigSetAxisCenters" in source
@@ -140,5 +141,6 @@ def test_communication_channel_keeps_public_api_signal_names():
     assert "'acquisitionStopped': self.sigAcquisitionStopped" in source
     assert "'recordingStarted': self.sigRecordingStarted" in source
     assert "'recordingEnded': self.sigRecordingEnded" in source
+    assert "'recordingFailed': self.sigRecordingFailed" in source
     assert "'scanEnded': self.sigScanEnded" in source
     assert "'saveFocus': self.sigSaveFocus" in source

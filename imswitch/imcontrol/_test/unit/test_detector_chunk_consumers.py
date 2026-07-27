@@ -14,11 +14,16 @@ from pathlib import Path
 from threading import Lock
 
 import numpy as np
+import pytest
 
+from imswitch.imcommon.framework import SignalInterface
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+    ChunkConsumerOverflowError,
     DetectorManager,
     MAX_QUEUED_CONSUMER_FRAMES,
 )
+from imswitch.imcontrol.model.managers.detectors.APDManager import APDManager
+from imswitch.imcontrol.model.managers.detectors.PMTManager import PMTManager
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -30,6 +35,7 @@ class _FakeDetector(DetectorManager):
     def __init__(self):  # noqa: D107 — deliberately not calling super()
         self._chunkConsumers = {}
         self._chunkConsumersWarned = set()
+        self._chunkConsumersOverflowed = set()
         self._chunkConsumersLock = Lock()
         self._DetectorManager__logger = logging.getLogger('test.FakeDetector')
         self._pendingFrames = []
@@ -124,6 +130,33 @@ def test_release_unknown_consumer_is_safe():
     det.releaseChunkConsumer('never-registered')
 
 
+def test_start_consumer_boundary_preserves_existing_consumers_backlog():
+    det = _FakeDetector()
+    assert det.readChunk('beadrec') == []
+    det.feed(3)
+
+    det.startChunkConsumer('recording')
+
+    assert len(det.readChunk('beadrec')) == 3
+    assert det.readChunk('recording') == []
+
+    det.feed(2)
+    assert len(det.readChunk('recording')) == 2
+    assert len(det.readChunk('beadrec')) == 2
+
+
+def test_shared_latest_frame_fans_chunk_out_to_recording_consumer():
+    det = _FakeDetector()
+    assert det.readChunk('recording') == []
+    det.feed(3)
+
+    latest = det.getLatestFrameShared()
+    recorded = det.readChunk('recording')
+
+    assert len(recorded) == 3
+    np.testing.assert_array_equal(latest, recorded[-1])
+
+
 def test_idle_consumer_queue_is_capped():
     det = _FakeDetector()
     det.readChunk('idle')  # registers, then never polls again
@@ -137,6 +170,8 @@ def test_idle_consumer_queue_is_capped():
     assert len(det._chunkConsumers['idle']) <= MAX_QUEUED_CONSUMER_FRAMES
     # active consumer was drained every time and is unaffected
     assert det._chunkConsumers['active'] == []
+    with pytest.raises(ChunkConsumerOverflowError, match='stream is incomplete'):
+        det.readChunk('idle')
 
 
 def test_no_production_code_calls_get_chunk_outside_detector_layer():
@@ -162,6 +197,41 @@ def test_no_production_code_calls_get_chunk_outside_detector_layer():
         'Direct .getChunk() calls outside the detector layer steal frames '
         'from concurrent consumers — use readChunk(consumerKey) instead '
         '(see DetectorManager.readChunk). Offenders: ' + ', '.join(offenders)
+    )
+
+
+def test_no_production_code_bypasses_shared_latest_frame_broker():
+    """Direct latest-frame SDK reads can steal frames from active chunk
+    consumers; in-tree callers must use getLatestFrameShared()."""
+    detectorsDir = (
+        ROOT / 'imswitch' / 'imcontrol' / 'model' / 'managers' / 'detectors'
+    )
+    callPattern = re.compile(r'\.getLatestFrame\(')
+
+    offenders = []
+    for path in (ROOT / 'imswitch').rglob('*.py'):
+        if detectorsDir in path.parents:
+            continue
+        if '_test' in path.parts or 'lantzdrivers_mock' in path.parts:
+            continue
+        for lineNumber, line in enumerate(
+                path.read_text(
+                    encoding='utf-8', errors='ignore'
+                ).splitlines(),
+                1,
+        ):
+            if (
+                callPattern.search(line)
+                and not line.lstrip().startswith('#')
+            ):
+                offenders.append(
+                    f'{path.relative_to(ROOT)}:{lineNumber}'
+                )
+
+    assert offenders == [], (
+        'Direct getLatestFrame() calls bypass the chunk broker and can steal '
+        'recording frames; use getLatestFrameShared(). Offenders: '
+        + ', '.join(offenders)
     )
 
 
@@ -202,3 +272,44 @@ def test_ndarray_chunks_are_distributed_per_frame():
     assert framesA[0].shape == (2, 2)
     # np.array(listOfFrames) reassembles the stack (RecordingWorker contract)
     assert np.array(framesB).shape == (3, 2, 2)
+
+
+@pytest.mark.parametrize(
+    ('managerClass', 'readyAttribute'),
+    [
+        (APDManager, '_APDManager__newFrameReady'),
+        (PMTManager, '_PMTManager__newFrameReady'),
+    ],
+)
+def test_scan_frame_boundary_does_not_duplicate_an_unread_frame(
+    managerClass, readyAttribute
+):
+    """Two real boundaries queue two distinct frames even if neither is read."""
+    manager = managerClass.__new__(managerClass)
+    SignalInterface.__init__(manager)
+    manager._chunkConsumers = {}
+    manager._chunkConsumersWarned = set()
+    manager._chunkConsumersOverflowed = set()
+    manager._chunkConsumersLock = Lock()
+    manager._DetectorManager__logger = logging.getLogger(
+        f'test.{managerClass.__name__}'
+    )
+    manager._DetectorManager__image = np.array([])
+    manager._image = np.full((2, 2), 3)
+    manager._image_display = np.zeros((2, 2))
+    manager._linestep = 1
+    manager._ttlmultiplying = False
+    manager.updateLatestFrame = (
+        lambda _init: manager.getLatestFrameShared()
+    )
+    setattr(manager, readyAttribute, False)
+
+    assert manager.readChunk('recording') == []
+    manager._onFrameBoundary()
+    manager._image = np.full((2, 2), 7)
+    manager._onFrameBoundary()
+    frames = manager.readChunk('recording')
+
+    assert len(frames) == 2
+    np.testing.assert_array_equal(frames[0], np.full((2, 2), 3))
+    np.testing.assert_array_equal(frames[1], np.full((2, 2), 7))

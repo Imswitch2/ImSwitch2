@@ -1,5 +1,6 @@
 import numpy as np
 import threading
+import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
@@ -10,6 +11,7 @@ from imswitch.imcontrol.model.timeresolved import (
     compute_gate_images,
     copy_time_resolved_products,
 )
+from .._scan_execution import PARTICIPANTS_KEY
 from .DetectorManager import (
     DetectorManager, DetectorNumberParameter, DetectorListParameter)
 
@@ -22,6 +24,9 @@ except ImportError:
     Flim = None
     createTimeTagger = None
     _TIMETAGGER_AVAILABLE = False
+
+
+_SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
 
 
 class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
@@ -140,9 +145,17 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         self._tt = None
         self._flim = None
         self._flim_lock = threading.Lock()
-        # Set while the scan coordinator is waiting for this detector's final
-        # frame; see finishScan.
-        self._finalFrameAck = None
+        # End-of-scan acknowledgements are indexed by the worker generation
+        # that must produce the final frame.  The lock closes the race where a
+        # final frame lands while finishScan is installing its callback.
+        self._finishAckLock = threading.Lock()
+        self._finishAcks = {}
+        self._completedFinalFrameGenerations = set()
+        self._finishedScanGenerations = set()
+        self._scanGeneration = 0
+        self._preparedScanGeneration = None
+        self._activeScanGeneration = None
+        self._scanParticipating = False
         self._ev_pix_begin = None
         self._ev_pix_end = None
         self._scan = {}
@@ -171,9 +184,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                          supportedBinnings=[1], model=name,
                          parameters=parameters, croppable=False)
 
-        self._nidaqManager.sigScanBuilt.connect(
-            lambda scanInfoDict, signalDict, _: self.initiateScan(scanInfoDict, signalDict)
-        )
+        self._nidaqManager.sigScanBuilt.connect(self._onScanBuilt)
         self._nidaqManager.sigScanStarted.connect(self.startScan)
         self._nidaqManager.sigScanDone.connect(self._onScanDone)
 
@@ -238,31 +249,125 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
     # Scan lifecycle                                                        #
     # ------------------------------------------------------------------ #
 
-    def _teardownScanThread(self):
-        """Clean up any existing scan worker and thread before starting a new scan."""
+    def _waitForScanThread(self, thread, timeoutMs):
+        """Join a Qt/framework thread without a wait-forever fallback."""
+        timeoutMs = max(0, int(timeoutMs))
+        try:
+            running = thread.isRunning()
+        except RuntimeError:
+            return True
+
+        if not running:
+            try:
+                result = thread.wait()
+            except TypeError:
+                result = thread.wait(0)
+            except RuntimeError:
+                return True
+            return result is not False
+
+        try:
+            result = thread.wait(timeoutMs)
+        except TypeError:
+            # framework.Thread exposes wait() without a timeout. Poll its
+            # state, and call wait() only after it is known to have stopped.
+            deadline = time.monotonic() + timeoutMs / 1000
+            while time.monotonic() < deadline:
+                try:
+                    if not thread.isRunning():
+                        thread.wait()
+                        return True
+                except RuntimeError:
+                    return True
+                time.sleep(
+                    min(0.01, max(0, deadline - time.monotonic()))
+                )
+            return False
+        except RuntimeError:
+            return True
+
+        try:
+            stillRunning = thread.isRunning()
+        except RuntimeError:
+            return True
+        return result is not False and not stillRunning
+
+    def _teardownScanThread(
+        self, timeoutMs=_SCAN_THREAD_JOIN_TIMEOUT_MS
+    ):
+        """Stop one worker with a deadline, retaining it until exit is proven."""
         worker = self._scanWorker
         thread = self._scanThread
-        self._scanWorker = None
-        self._scanThread = None
+        errors = []
         if worker is not None:
             try:
                 worker.stop()
             except RuntimeError:
                 pass  # C++ object already deleted — thread self-cleaned via deleteLater
+            except Exception as error:
+                errors.append(error)
         if thread is not None:
             try:
                 if thread.isRunning():
                     thread.quit()
-                    thread.wait()
+                if not self._waitForScanThread(thread, timeoutMs):
+                    errors.append(
+                        TimeoutError(
+                            'TimeTagger scan thread did not stop within '
+                            f'{timeoutMs / 1000:g} seconds'
+                        )
+                    )
             except RuntimeError:
                 pass  # C++ object already deleted — thread is already done
+            except Exception as error:
+                errors.append(error)
+
+        if errors:
+            # Do not discard the only identities through which retry can stop
+            # the worker.  Detector lease recovery will call stopAcquisition
+            # again and the manager remains quarantined until that succeeds.
+            raise errors[0]
+
+        if self._scanWorker is worker:
+            self._scanWorker = None
+        if self._scanThread is thread:
+            self._scanThread = None
 
     def initiateScan(self, scanInfoDict, signalDict):
+        participants = scanInfoDict.get(PARTICIPANTS_KEY)
+        self._scanParticipating = (
+            participants is None or self.name in participants
+        )
+        self._preparedScanGeneration = None
+        if not self._scanParticipating:
+            return
+
+        # Invalidate every object that could make startScan reuse a previous
+        # iteration before validating or allocating anything for this one.
+        self._activeScanGeneration = None
+        with self._flim_lock:
+            self._flim = None
+        self._scan = {}
+
+        self._scanGeneration += 1
+        generation = self._scanGeneration
+        with self._finishAckLock:
+            oldestRetained = generation - 8
+            self._completedFinalFrameGenerations = {
+                item for item in self._completedFinalFrameGenerations
+                if item >= oldestRetained
+            }
+            self._finishedScanGenerations = {
+                item for item in self._finishedScanGenerations
+                if item >= oldestRetained
+            }
         if not self._enabled:
             return
         if not _TIMETAGGER_AVAILABLE:
-            self._logger.warning('TimeTagger not available — initiateScan skipped.')
-            return
+            raise RuntimeError(
+                'TimeTagger library is unavailable for an enabled scan '
+                'participant'
+            )
 
         Nx, Ny, S, outer_axes, outer_dims = self._infer_dims_from_scanInfo(scanInfoDict)
         self._validate_time_resolved_scan_shape(outer_axes, outer_dims)
@@ -307,14 +412,11 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             if self._tt is None:
                 self._tt = createTimeTagger()
                 self._isMock = False
-        except Exception:
-            self._logger.exception(
-                'createTimeTagger() failed — running in mock mode (no FLIM data).'
-            )
+        except Exception as error:
             self._isMock = True
             with self._flim_lock:
                 self._flim = None
-            return
+            raise RuntimeError('createTimeTagger() failed') from error
 
         try:
             self._tt.setTriggerLevel(self._click_ch, self._click_trigger)
@@ -337,13 +439,12 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
                     n_bins=self._n_bins,
                     binwidth=self._binwidth_ps,
                 )
-        except Exception:
-            self._logger.exception(
-                'TimeTagger FLIM setup failed — no data this scan.'
-            )
+        except Exception as error:
             with self._flim_lock:
                 self._flim = None
-            return
+            self._ev_pix_begin = None
+            self._ev_pix_end = None
+            raise RuntimeError('TimeTagger FLIM setup failed') from error
 
         tot_scan_time_s = float(scanInfoDict.get('tot_scan_time_s', 0.0))
         ideal_scan_time_s = Nx * Ny * pixel_period_s
@@ -361,6 +462,36 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             f'scan_time={tot_scan_time_s:.3f}s '
             f'(ideal={ideal_scan_time_s:.3f}s, +{overhead_pct:.1f}% settling/flyback)'
         )
+        # A generation is startable only after validation, hardware setup and
+        # FLIM allocation all succeeded.
+        self._preparedScanGeneration = generation
+
+    def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
+        try:
+            self.initiateScan(scanInfoDict, signalDict)
+        except Exception as error:
+            self._logger.exception('TimeTagger scan preparation failed')
+            try:
+                self._teardownScanThread()
+            except Exception:
+                self._logger.exception(
+                    'TimeTagger partial preparation cleanup failed'
+                )
+            self._preparedScanGeneration = None
+            self._activeScanGeneration = None
+            with self._flim_lock:
+                self._flim = None
+            self._reportScanBuildFailure('prepare', error)
+
+    def _reportScanBuildFailure(self, stage, error):
+        try:
+            self._nidaqManager.reportScanBuildFailure(
+                f'{self.name}.{stage}', error
+            )
+        except Exception:
+            self._logger.exception(
+                'Failed to report TimeTagger scan %s failure', stage
+            )
 
     def _create_virtual_pixel_pulses(self):
         Nx = int(self._scan['Nx'])
@@ -384,23 +515,46 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         )
 
     def startScan(self):
-        if not self._enabled:
+        try:
+            self._startScan()
+        except Exception as error:
+            self._logger.exception('TimeTagger scan start failed')
+            try:
+                self._teardownScanThread()
+            except Exception:
+                self._logger.exception(
+                    'TimeTagger partial start cleanup failed'
+                )
+            self._preparedScanGeneration = None
+            self._activeScanGeneration = None
+            self._reportScanBuildFailure('start', error)
+
+    def _startScan(self):
+        if not self._scanParticipating or not self._enabled:
             return
-        
-        # Tear down any previous scan thread before starting a new one
-        self._teardownScanThread()
-        
+
+        generation = self._preparedScanGeneration
+        if generation is None:
+            return
         with self._flim_lock:
             flim = self._flim
         if flim is None:
             return
 
+        # Tear down any previous scan thread only after confirming that the new
+        # generation is fully prepared.
+        self._teardownScanThread()
+
         self.acquisition = True
-        self._scanWorker = _TTFlimWorker(self)
+        self._activeScanGeneration = generation
+        self._scanWorker = _TTFlimWorker(self, generation)
         self._scanThread = Thread()
         self._scanWorker.moveToThread(self._scanThread)
         self._scanThread.started.connect(self._scanWorker.run)
+        # Both signals carry the generation to make delayed queued delivery
+        # harmless after a timeout/re-arm.
         self._scanWorker.sigFrameReady.connect(self._on_frame_ready)
+        self._scanWorker.sigTerminated.connect(self._onScanWorkerFinished)
         self._scanWorker.sigFinished.connect(self._scanThread.quit)
         self._scanWorker.sigFinished.connect(self._scanWorker.deleteLater)
         self._scanThread.finished.connect(self._scanThread.deleteLater)
@@ -414,12 +568,21 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         """Triggered by NidaqManager.sigScanDone — flips acquisition off and
         wakes the worker immediately so it reads the final completed frame.
         """
+        if not self._scanParticipating:
+            return
         self.acquisition = False
         if self._scanWorker is not None:
             try:
                 self._scanWorker.signal_done()
-            except RuntimeError:
-                pass  # worker already cleaned up
+            except Exception:
+                generation = getattr(
+                    self._scanWorker, 'scanGeneration',
+                    self._activeScanGeneration,
+                )
+                self._logger.exception(
+                    'Failed to wake TimeTagger worker at scan end'
+                )
+                self._onScanWorkerFinished(generation)
 
     def finishScan(self, mode, acknowledge):
         """Hold the scan lease open until the final FLIM frame has landed.
@@ -433,7 +596,50 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
         On abort, or with no worker/data to wait for, there is nothing to wait
         on and we acknowledge at once.
         """
-        if mode != 'graceful' or self._scanWorker is None:
+        worker = self._scanWorker
+        if mode != 'graceful':
+            generation = getattr(
+                worker, 'scanGeneration', self._activeScanGeneration
+            )
+            # Abort is iteration-scoped.  It must stop this worker even when
+            # another purpose (for example WORKFLOW) keeps the detector's
+            # aggregate acquisition lease above zero, otherwise the abandoned
+            # worker can survive into the next scan.
+            try:
+                self._teardownScanThread()
+            except Exception:
+                self._logger.exception(
+                    'Failed to tear down TimeTagger worker on scan abort'
+                )
+                # Acknowledging while the worker may still be inside the
+                # backend would let the coordinator release its lease and arm
+                # another iteration over unknown hardware.  Withhold the ack;
+                # the coordinator's own bounded finalizer will fail closed.
+                return
+            if generation is not None:
+                with self._finishAckLock:
+                    self._finishedScanGenerations.add(generation)
+                    callbacks = self._finishAcks.pop(generation, ())
+                for callback in callbacks:
+                    try:
+                        callback()
+                    except Exception:
+                        self._logger.exception(
+                            'TimeTagger abort acknowledgement failed'
+                        )
+            if self._activeScanGeneration == generation:
+                self._activeScanGeneration = None
+            if self._preparedScanGeneration == generation:
+                self._preparedScanGeneration = None
+            with self._flim_lock:
+                self._flim = None
+            self._ev_pix_begin = None
+            self._ev_pix_end = None
+            self.acquisition = False
+            acknowledge()
+            return
+
+        if worker is None:
             acknowledge()
             return
 
@@ -443,21 +649,112 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             acknowledge()  # mock mode / setup failed: no final frame is coming
             return
 
-        self._finalFrameAck = acknowledge
+        generation = getattr(
+            worker, 'scanGeneration', self._activeScanGeneration
+        )
+        if generation is None:
+            acknowledge()
+            return
+
+        with self._finishAckLock:
+            if (generation in self._completedFinalFrameGenerations
+                    or generation in self._finishedScanGenerations):
+                acknowledgeImmediately = True
+            else:
+                self._finishAcks.setdefault(generation, []).append(acknowledge)
+                acknowledgeImmediately = False
+
+        # sigScanDone can wake the worker before the coordinator calls
+        # finishScan.  If that final frame already landed, do not leave a
+        # callback waiting for a frame that will never be emitted again.
+        if acknowledgeImmediately:
+            acknowledge()
+            return
+
         self.acquisition = False
         try:
-            self._scanWorker.signal_done()
-        except RuntimeError:
-            self._fireFinalFrameAck()  # worker already gone
-
-    def _fireFinalFrameAck(self):
-        """Release the coordinator's barrier once, whoever gets here first."""
-        acknowledge, self._finalFrameAck = self._finalFrameAck, None
-        if acknowledge is not None:
+            worker.signal_done()
+        except Exception:
+            # Worker already gone: remove this exact callback before falling
+            # back to immediate completion.
+            self.cancelFinishScan(acknowledge)
             acknowledge()
 
+    def cancelFinishScan(self, acknowledge):
+        """Cancel one pending finish callback by object identity.
+
+        The coordinator invokes this before releasing a timed-out/aborted
+        iteration.  Identity matching is important: closures for different
+        scan tokens may compare similarly but must never cancel each other.
+        Returns whether the callback was still pending.
+        """
+        removed = False
+        with self._finishAckLock:
+            for generation in tuple(self._finishAcks):
+                callbacks = self._finishAcks[generation]
+                remaining = []
+                for callback in callbacks:
+                    if callback is acknowledge:
+                        removed = True
+                    else:
+                        remaining.append(callback)
+                if remaining:
+                    self._finishAcks[generation] = remaining
+                else:
+                    self._finishAcks.pop(generation, None)
+        return removed
+
+    def _fireFinalFrameAck(self, generation):
+        """Release only barriers waiting for this worker generation."""
+        if generation is None:
+            return
+        with self._finishAckLock:
+            callbacks = self._finishAcks.pop(generation, ())
+            self._completedFinalFrameGenerations.add(generation)
+            self._finishedScanGenerations.add(generation)
+        for acknowledge in callbacks:
+            try:
+                acknowledge()
+            except Exception:
+                self._logger.exception(
+                    'TimeTagger final-frame acknowledgement failed'
+                )
+
+    def _onScanWorkerFinished(self, generation):
+        """Terminal fallback when a worker exits without a valid final frame.
+
+        The worker emits this signal after its last sigFrameReady emission.
+        Both are queued to this manager, preserving order: a valid final frame
+        therefore commits and acknowledges first, while no-data and crash exits
+        still release the coordinator barrier.
+        """
+        if generation is None:
+            return
+        with self._finishAckLock:
+            callbacks = self._finishAcks.pop(generation, ())
+            self._finishedScanGenerations.add(generation)
+        for acknowledge in callbacks:
+            try:
+                acknowledge()
+            except Exception:
+                self._logger.exception(
+                    'TimeTagger terminal acknowledgement failed'
+                )
+
     def _on_frame_ready(self, intensity_img, lifetime_img, is_final: bool,
-                        decay_counts, t_axis_ns, global_tau_ns: float):
+                        decay_counts, t_axis_ns, global_tau_ns: float,
+                        scanGeneration=None):
+        if scanGeneration is None:
+            scanGeneration = self._activeScanGeneration
+        if (scanGeneration is not None
+                and scanGeneration != self._activeScanGeneration):
+            # A timed-out worker may still have a queued signal.  Never let its
+            # old image overwrite a newer iteration, and never let it satisfy
+            # a newer generation's acknowledgement.
+            if is_final:
+                self._fireFinalFrameAck(scanGeneration)
+            return
+
         self._image_intensity[0] = intensity_img
         lifetime_ns = (lifetime_img * 1e9).astype(np.float32)
         self._last_decay_counts = decay_counts
@@ -490,7 +787,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             # The scan's last frame is committed and published — the
             # coordinator may now release the lease and let the next
             # iteration arm.
-            self._fireFinalFrameAck()
+            self._fireFinalFrameAck(scanGeneration)
 
     # ------------------------------------------------------------------ #
     # Generic time-resolved detector contract                              #
@@ -702,6 +999,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
     def stopAcquisition(self):
         self.acquisition = False
+        self._scanParticipating = False
         try:
             self._teardownScanThread()
         except Exception as e:
@@ -709,6 +1007,9 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
             # DetectorsManager, which quarantines this detector as FAULTED.
             self._logger.warning(f'Failed to stop scan thread: {e}')
             raise
+        else:
+            self._preparedScanGeneration = None
+            self._activeScanGeneration = None
         finally:
             self._newFrameReady = True
 
@@ -835,8 +1136,10 @@ def _fit_exp1(cube, t_axis):
 # --------------------------------------------------------------------------- #
 
 class _TTFlimWorker(Worker):
-    # intensity, lifetime, is_final, decay_counts, t_axis_ns, global_tau_ns
-    sigFrameReady = Signal(object, object, bool, object, object, float)
+    # intensity, lifetime, is_final, decay_counts, t_axis_ns, global_tau_ns,
+    # scan generation
+    sigFrameReady = Signal(object, object, bool, object, object, float, int)
+    sigTerminated = Signal(int)
     sigFinished = Signal()
 
     # Live-preview interval: read Flim data once per second during a running
@@ -845,10 +1148,11 @@ class _TTFlimWorker(Worker):
     LIVE_PREVIEW_S = 1.0
     STALL_MAX = 10  # consecutive live-preview ticks with no data → ~10 s
 
-    def __init__(self, m: SwabianTimeTaggerManager):
+    def __init__(self, m: SwabianTimeTaggerManager, scanGeneration):
         super().__init__()
         self._logger = initLogger(self, tryInheritParent=True)
         self._m = m
+        self.scanGeneration = scanGeneration
         self._running = True
         self._last_total_counts = 0.0
         self._done_event = threading.Event()
@@ -932,6 +1236,9 @@ class _TTFlimWorker(Worker):
         except Exception:
             self._logger.exception('TimeTagger FLIM worker crashed.')
         finally:
+            # Emitted after any final-frame signal.  The manager uses this as a
+            # no-data/crash fallback and generation-checks delayed delivery.
+            self.sigTerminated.emit(self.scanGeneration)
             self.sigFinished.emit()
 
     def _poll_frame(self, expected_shape, Nx, Ny, n_bins):
@@ -1029,6 +1336,7 @@ class _TTFlimWorker(Worker):
             decay_counts,
             t_axis_ns,
             float(global_tau_ns),
+            self.scanGeneration,
         )
 
     def _global_tau_ns(self, decay_counts, t_axis, t_axis_f64,

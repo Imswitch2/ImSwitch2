@@ -31,6 +31,7 @@ def test_normalize_mode():
     assert normalize_mode('ScanLapse') == MODE_SCAN_LAPSE
     assert normalize_mode('SpecFrames') == MODE_TIMELAPSE
     assert normalize_mode('SpecTime') == MODE_TIMELAPSE
+    assert normalize_mode('CameraLapse') == MODE_TIMELAPSE
     assert normalize_mode('UntilStop') == MODE_TIMELAPSE
     assert normalize_mode(None, is_snap=True) == MODE_SNAP
     assert normalize_mode('Anything', is_snap=True) == MODE_SNAP
