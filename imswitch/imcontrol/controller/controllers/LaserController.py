@@ -27,11 +27,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         self.settingAttr = False
         self.is_scanning = False
-        # Scan membership is published once per iteration, including every
-        # repeat frame; the arming/force-off only needs to run once per scan
-        # sequence. This guards against re-issuing blocking serial laser
-        # commands on every frame. Cleared in scanChanged(False).
-        self._scanBuiltApplied = False
 
         # Set up lasers
         for lName, lManager in self._master.lasersManager:
@@ -72,8 +67,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
         self._commChannel.sigScanStarting.connect(lambda: self.scanChanged(True))
-        # Hardware arming runs on scanDevicesResolved (DAQ still free);
-        # sigScanBuilt arrives after the manager is busy and is UI-only.
+        # Scan membership, published before the DAQ is claimed. Used for UI
+        # editability only — no hardware writes happen on the scan path (see
+        # scanDevicesResolved).
         self._commChannel.sigScanDevicesResolved.connect(self.scanDevicesResolved)
         self._commChannel.sigScanBuilt.connect(self.scanBuilt)
         self._commChannel.sigScanEnded.connect(lambda: self.scanChanged(False))
@@ -248,9 +244,6 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         """
 
         self.is_scanning = isScanning
-        if not isScanning:
-            # Scan sequence finished — re-arm the one-shot scanBuilt logic.
-            self._scanBuiltApplied = False
 
         for lName, _ in self._master.lasersManager:
             self._widget.setLaserEditable(lName, not isScanning)
@@ -277,52 +270,29 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self._widget.setLaserEditable(lName, lName not in deviceList)
 
     def scanDevicesResolved(self, deviceList):
-        """ Arm exactly the lasers participating in the imminent scan.
+        """ Refresh laser UI editability as soon as scan membership is known.
 
-        Runs before the scan claims the DAQ, so the one-shot writes below
-        actually reach the hardware.
+        Deliberately performs NO hardware writes.
 
-        The scan module's device list is the sole authority for which lasers
-        emit:
+        This handler used to arm lasers: drop the participating lasers' static
+        lines low so the scan's TTL owned emission, and force off
+        non-participating lasers that the scan could drive. That logic never
+        actually executed — it lived on ``sigScanBuilt``, which fires while the
+        NI-DAQ manager is busy, so every write was refused (silently at first,
+        later as a logged error). Moving it to this earlier hook made the
+        writes real for the first time, and on hardware the effect was that
+        lasers went dark: a laser the user had switched on was driven low at
+        scan start and never restored, so scans ran without illumination and
+        the laser stayed off afterwards while the UI still showed it on.
 
-        - Lasers in the list are armed for TTL-gated emission at their current
-          widget power (``setScanModeActive(True)``).
-        - Lasers not in the list that the scan can drive via the DAQ /
-          TriggerScope (they have an analog channel or a digital line) are
-          force-disabled.
-        - Pure RS232 lasers with no scan line are left in the state the user
-          set, since the scan cannot gate them.
-
-        The blocking hardware commands run once per scan sequence (guarded by
-        ``_scanBuiltApplied``) so serial commands are not re-issued on every
-        repeated scan frame. """
-        if self._scanBuiltApplied:
-            return
+        The scan drives the TTL lines it owns through its own DO task, so it
+        does not need the static line pre-dropped; and forcing off lasers the
+        scan does not own removes illumination the user deliberately enabled.
+        Emission during a scan is therefore left exactly as configured — which
+        is what the system did in practice before the arming path was fixed.
+        """
         for lName, _ in self._master.lasersManager:
-            inScan = lName in deviceList
-            if inScan:
-                # Arm: scan/digital-modulation mode at the laser's current
-                # widget power. Emission stays gated by the scanner's TTL line.
-                self._master.lasersManager[lName].setScanModeActive(True)
-                continue
-            # Not participating. Only force off lasers the scan can actually
-            # drive via the DAQ/TriggerScope (analog channel or digital line).
-            # Pure RS232-controlled lasers with no scan line cannot be gated,
-            # so we leave them in the state the user set.
-            info = self._setupInfo.lasers.get(lName)
-            hasScanChannel = info is not None and (
-                info.getAnalogChannel() is not None
-                or info.getDigitalLine() is not None
-            )
-            if not hasScanChannel:
-                continue
-            # Disarm and force off lasers not participating in this scan.
-            self._master.lasersManager[lName].setScanModeActive(False)
-            self._master.lasersManager[lName].setEnabled(False)
-            # Sync the UI toggle silently so it reflects the forced-off
-            # hardware state without re-triggering toggleLaser.
-            self._widget.setLaserActive(lName, False, emitSignal=False)
-        self._scanBuiltApplied = True
+            self._widget.setLaserEditable(lName, lName not in deviceList)
 
     def attrChanged(self, key, value):
         if self.settingAttr or len(key) != 3 or key[0] != _attrCategory:

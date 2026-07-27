@@ -1,17 +1,20 @@
 """Laser arming happens while the NI-DAQ is still free (rig finding).
 
 ``LaserController`` armed lasers from ``sigScanBuilt``, which ``runScan``
-emits *after* marking the NI-DAQ manager busy. Every one-shot digital/analog
-write it issued there was therefore refused — silently before the DAQ manager
-was hardened, and afterwards as
+emits *after* marking the NI-DAQ manager busy, so every one-shot write it
+issued there was refused — silently at first, later as
 ``cannot start Ni-daq task setDigitalTask, the manager is busy``.
 
-The consequence was not cosmetic: a laser outside the scan's device list was
-never actually forced off, so a laser left on for live view stayed on for the
-whole scan.
+Moving that work earlier made the writes real for the first time, and on
+hardware it went wrong: lasers were driven low at scan start and never
+restored, so scans ran dark and the laser stayed off afterwards while the UI
+still showed it on.
 
-Arming now runs on ``sigScanDevicesResolved``, published before the scan
-claims the DAQ. ``sigScanBuilt`` keeps only UI editability.
+The scan drives the TTL lines it owns through its own DO task and does not
+need the static line pre-dropped; lasers the scan does not own must keep the
+state the user set. So the scan path performs NO laser hardware writes, which
+is what the system did in practice all along. Membership is still published
+early (``sigScanDevicesResolved``) for UI editability.
 
 Design reference: docs/design/plans/detector-acquisition-selection.md.
 """
@@ -97,11 +100,10 @@ def _controller(names=('L488', 'L561'), scanChannels=True):
 
 
 # --------------------------------------------------------------------------- #
-# Arming moved off sigScanBuilt                                                #
+# No hardware writes on the scan path                                          #
 # --------------------------------------------------------------------------- #
 
 def test_scan_built_does_no_hardware_work():
-    """The whole point: no DAQ writes from a handler that runs while busy."""
     ctrl = _controller()
 
     LaserController.scanBuilt(ctrl, ['L488'])
@@ -110,53 +112,48 @@ def test_scan_built_does_no_hardware_work():
         assert ctrl._master.lasersManager[laser].calls == []
 
 
-def test_scan_built_still_updates_editability():
-    ctrl = _controller()
-
-    LaserController.scanBuilt(ctrl, ['L488'])
-
-    assert ctrl._widget.editable == {'L488': False, 'L561': True}
-
-
-def test_participating_laser_is_armed_before_the_scan_claims_the_daq():
+def test_scan_membership_does_no_hardware_work():
+    """The rig regression: driving lines here left lasers dark for the scan
+    and never restored them. The scan owns the TTL lines it drives; lasers it
+    does not own keep whatever the user set."""
     ctrl = _controller()
 
     LaserController.scanDevicesResolved(ctrl, ['L488'])
 
-    assert ('scanMode', True) in ctrl._master.lasersManager['L488'].calls
+    for laser in ('L488', 'L561'):
+        assert ctrl._master.lasersManager[laser].calls == []
 
 
-def test_non_participating_laser_with_a_scan_channel_is_forced_off():
-    """The bug that mattered: this laser used to stay on for the whole scan."""
+def test_a_manually_enabled_laser_outside_the_scan_is_left_on():
+    """Forcing it off removed illumination the user deliberately enabled."""
     ctrl = _controller()
 
     LaserController.scanDevicesResolved(ctrl, ['L488'])
 
-    calls = ctrl._master.lasersManager['L561'].calls
-    assert ('scanMode', False) in calls
-    assert ('enabled', False) in calls
-    assert ctrl._widget.active['L561'] is False
-
-
-def test_laser_without_a_scan_channel_is_left_alone():
-    """A pure RS232 laser cannot be gated by the scan, so it keeps user state."""
-    ctrl = _controller(scanChannels=False)
-
-    LaserController.scanDevicesResolved(ctrl, ['L488'])
-
+    assert 'L561' not in ctrl._widget.active
     assert ctrl._master.lasersManager['L561'].calls == []
 
 
-def test_arming_runs_once_per_scan_sequence_not_per_repeat_frame():
-    """Membership is republished every iteration; blocking serial commands
-    must not be re-issued on every repeat frame."""
+def test_both_handlers_update_editability():
     ctrl = _controller()
 
     LaserController.scanDevicesResolved(ctrl, ['L488'])
-    callsAfterFirst = list(ctrl._master.lasersManager['L561'].calls)
-    LaserController.scanDevicesResolved(ctrl, ['L488'])
+    assert ctrl._widget.editable == {'L488': False, 'L561': True}
 
-    assert ctrl._master.lasersManager['L561'].calls == callsAfterFirst
+    ctrl._widget.editable.clear()
+    LaserController.scanBuilt(ctrl, ['L488'])
+    assert ctrl._widget.editable == {'L488': False, 'L561': True}
+
+
+def test_no_laser_manager_call_appears_on_the_scan_path_at_all():
+    """Source guard: any setEnabled/setScanModeActive/setValue reintroduced
+    here runs against hardware at scan arm, which is what broke the rig."""
+    for handler in (LaserController.scanDevicesResolved,
+                    LaserController.scanBuilt):
+        source = inspect.getsource(handler)
+        body = source.partition('"""')[2].partition('"""')[2]
+        for forbidden in ('setEnabled(', 'setScanModeActive(', 'setValue('):
+            assert forbidden not in body, (handler.__name__, forbidden)
 
 
 # --------------------------------------------------------------------------- #
@@ -164,8 +161,7 @@ def test_arming_runs_once_per_scan_sequence_not_per_repeat_frame():
 # --------------------------------------------------------------------------- #
 
 def test_device_list_is_published_before_arming():
-    """Source guard: publishing after arm() would put consumers back inside
-    the busy window, which is the whole defect."""
+    """Membership must still reach consumers before the DAQ is claimed."""
     source = inspect.getsource(SuperScanController._armScanIteration)
     publish = source.index('sigScanDevicesResolved')
     arm = source.index('_scanCoordinator.arm(')
@@ -173,8 +169,6 @@ def test_device_list_is_published_before_arming():
 
 
 def test_resolved_devices_match_what_run_scan_would_drive():
-    """The published list must be the same one runScan builds its tasks from;
-    otherwise lasers are armed against a membership the scan does not honour."""
     from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
 
     source = inspect.getsource(NidaqManager.resolveScanDevices)

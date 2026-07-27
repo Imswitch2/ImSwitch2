@@ -2381,6 +2381,36 @@ class RecordingWorker(Worker):
         
         return augmented
 
+    def _isScanDrivenDetector(self, detectorName) -> bool:
+        try:
+            detector = self.__recordingManager.detectorsManager[detectorName]
+        except Exception:
+            return False
+        return bool(getattr(detector, 'isScanDriven', False))
+
+    def _expectedFramesFor(self, detectorName, recFrames, numCamTTL) -> int:
+        """How many frames this detector produces for the recording session.
+
+        The two detector families answer this completely differently, and
+        treating them alike is what made scan recordings hang or truncate:
+
+        - A **free-running/trigger-driven camera** emits one frame per scan
+          position (per camera TTL pulse), so it yields
+          ``recFrames * numCamTTL``.
+        - A **scan-driven** detector (APD, PMT, TimeTagger) integrates the
+          whole scan into a single assembled image and emits exactly ONE
+          frame per scan, whatever the position count. Expecting one frame
+          per position means waiting for frames that are never produced.
+
+        In the lapse modes each session covers one scan, so the scan-driven
+        answer stays 1 there too; the per-timepoint loop supplies the
+        repetition.
+        """
+        if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse) and \
+                self._isScanDrivenDetector(detectorName):
+            return 1
+        return recFrames * numCamTTL.get(detectorName, 1)
+
     def _record(self):
         """Unified streaming recording loop delegating all I/O to Storer.
         
@@ -2425,7 +2455,8 @@ class RecordingWorker(Worker):
 
             numCamTTL = self.numCamTTL if self.numCamTTL is not None else {}
             expected_frames = {
-                detectorName: recFrames * numCamTTL.get(detectorName, 1)
+                detectorName: self._expectedFramesFor(detectorName, recFrames,
+                                                      numCamTTL)
                 for detectorName in self.detectorNames
             }
 
