@@ -371,6 +371,11 @@ class FocusLockController(ImConWidgetController):
             return
         # get data
         img = self.__processDataThread.grabCameraFrame()
+        if img is None:
+            # The camera has not produced its first frame yet. Skip this tick
+            # rather than run the focus estimate on nothing; the timer will
+            # come back.
+            return
         self.setPointSignal = self.__processDataThread.update(self.twoFociVar)
         self._widget.center.setValue(self.setPointSignal)
         # move

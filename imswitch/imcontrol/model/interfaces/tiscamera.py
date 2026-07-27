@@ -2,6 +2,7 @@ import numpy as np
 
 from imswitch.imcommon.model import initLogger
 from .pyicic import IC_ImagingControl
+from .pyicic.IC_Camera import IC_NoFrameAvailable
 
 
 class CameraTIS:
@@ -26,6 +27,7 @@ class CameraTIS:
         self.cam.open()
 
         self.shape = (0, 0)
+        self._lastFrame = None
         self.cam.colorenable = 0
 
         self.cam.enable_continuous_mode(True)  # image in continuous mode
@@ -47,8 +49,21 @@ class CameraTIS:
         self.cam.prepare_live()  # prepare prepared state for live imaging
 
     def grabFrame(self):
-        # self.cam.wait_til_frame_ready(20)  # wait for frame ready
-        frame, width, height, depth = self.cam.get_image_data()
+        """Latest frame, or the previous one when the buffer is still empty.
+
+        An empty driver buffer is a normal transient — the camera has not
+        produced its first frame yet, or has just resumed after being
+        suspended for an ROI change. It used to reach ``data.contents`` as a
+        NULL pointer and abort the caller with "ValueError: NULL pointer
+        access"; on a focus lock, whose timer polls this continuously, that
+        killed the update loop.
+
+        Returns None only when no frame has ever been captured.
+        """
+        try:
+            frame, width, height, depth = self.cam.get_image_data()
+        except IC_NoFrameAvailable:
+            return self._lastFrame
         frame = np.array(frame, dtype=np.uint8)
         frame = np.reshape(frame, (height, width, depth))
         if depth == 2:
@@ -57,6 +72,7 @@ class CameraTIS:
         else:
             frame = frame[:, :, 0]
         frame = np.transpose(frame)
+        self._lastFrame = frame
         return frame
 
     def setROI(self, hpos, vpos, hsize, vsize):

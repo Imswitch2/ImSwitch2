@@ -68,7 +68,11 @@ class TISManager(DetectorManager):
 
     def getLatestFrame(self, is_save=True):
         if not self._adjustingParameters:
-            self.__image = self._camera.grabFrame()
+            frame = self._camera.grabFrame()
+            # None means the driver had no frame yet; keep the previous one
+            # rather than poisoning the cache with it.
+            if frame is not None:
+                self.__image = frame
         return self.__image
 
     # Real TIS hardware properties CameraTIS.setPropertyValue understands (see
@@ -110,7 +114,15 @@ class TISManager(DetectorManager):
         super().setBinning(binning)
 
     def getChunk(self):
-        return self._camera.grabFrame()[np.newaxis, :, :]
+        frame = self._camera.grabFrame()
+        if frame is None:
+            # No new frame: report an empty chunk rather than repeating the
+            # previous one, which would duplicate it into a recording.
+            if self.__image is None:
+                return np.empty((0, 0, 0), dtype=np.uint8)
+            return np.empty((0, *self.__image.shape),
+                            dtype=self.__image.dtype)
+        return frame[np.newaxis, :, :]
 
     def flushBuffers(self):
         pass

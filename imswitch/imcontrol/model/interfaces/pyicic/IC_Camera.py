@@ -29,6 +29,15 @@ COLOR_FORMAT = ['Y800',
 # outside of class so it can be called by unbound function
 C_FRAME_READY_CALLBACK = CFUNCTYPE(None, GrabberHandlePtr, POINTER(c_ubyte), c_ulong, c_void_p)
 
+class IC_NoFrameAvailable(Exception):
+    """The driver holds no frame yet.
+
+    Normal and transient: a live camera that has not produced its first frame,
+    or one that has just resumed after being suspended. Callers polling on a
+    timer should skip the cycle rather than treat it as a failure.
+    """
+
+
 class IC_Camera:
     
     @property
@@ -432,9 +441,22 @@ class IC_Camera:
         :returns: ctypes pointer -- pointer to image data.
         """
         img_ptr = IC_GrabberDLL.get_image_ptr(self._handle)
-        if img_ptr is None:
-            raise IC_Exception(todo)
-        
+        # A ctypes NULL pointer returned from the DLL is falsy but is NOT the
+        # Python object None, so the original `is None` test never fired and
+        # the NULL travelled on to be dereferenced as `data.contents`, raising
+        # "ValueError: NULL pointer access" from deep inside the driver
+        # wrapper. (The exception it meant to raise was broken too: `todo` is
+        # an undefined name, so the guard would have raised NameError.)
+        #
+        # An empty buffer is a normal transient — a live camera that has not
+        # delivered its first frame yet, or has just resumed — so report it as
+        # its own catchable condition rather than a crash.
+        if not img_ptr:
+            raise IC_NoFrameAvailable(
+                'No frame available in the camera buffer yet'
+            )
+
+
         #img_data = cast(img_ptr, POINTER(c_ubyte * buffer_size))
         ####array = (c_ubyte * iheight * iwidth * 3).from_address(addressof(data.contents))
         #array = img_data.contents
