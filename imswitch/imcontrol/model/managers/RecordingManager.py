@@ -2459,6 +2459,18 @@ class RecordingWorker(Worker):
                                                       numCamTTL)
                 for detectorName in self.detectorNames
             }
+            # A recording that stalls or truncates almost always comes down to
+            # this number being wrong for one detector: a scan-driven detector
+            # emits ONE assembled frame per scan while a camera emits one per
+            # position, so log what is actually being waited for, per detector.
+            self.__logger.info(
+                f'{self.recMode.name} recording expects: '
+                + ', '.join(
+                    f'{name} {count} frame(s)'
+                    f'{" [scan-driven]" if self._isScanDrivenDetector(name) else ""}'
+                    for name, count in expected_frames.items()
+                )
+            )
 
         # Augment attrs with recording metadata (exposure, version, timestamp)
         augmented_attrs = self._augment_attrs_with_recording_metadata(

@@ -41,7 +41,9 @@ class _Laser:
     def setEnabled(self, enabled):
         self.calls.append(('enabled', enabled))
 
-    def setValue(self, value, enabled=True, for_scanning=False):
+    def setValue(self, value):
+        # AAAOTFLaserManager and most other managers define exactly this
+        # signature; passing enabled/for_scanning keywords raises TypeError.
         self.calls.append(('value', value))
 
 
@@ -95,8 +97,17 @@ class _SetupInfo:
 
 
 class _Logger:
-    def error(self, *args, **kwargs):
-        pass
+    def __init__(self):
+        self.messages = []
+
+    def info(self, message, *args, **kwargs):
+        self.messages.append(('info', message))
+
+    def warning(self, message, *args, **kwargs):
+        self.messages.append(('warning', message))
+
+    def error(self, message, *args, **kwargs):
+        self.messages.append(('error', message))
 
 
 def _controller(names=('L488', 'L561'), scanChannels=True):
@@ -136,6 +147,18 @@ def test_arming_applies_the_widget_setpoint_explicitly():
     LaserController.scanDevicesResolved(ctrl, ['775AOM'])
 
     assert ('value', 42.0) in ctrl._master.lasersManager['775AOM'].calls
+
+
+def test_arming_uses_the_single_argument_setValue_every_manager_defines():
+    """AAAOTFLaserManager is setValue(power). Passing the base class's
+    optional keywords raises TypeError there and the laser is skipped as
+    'failed to arm' — which is silent breakage for most hardware."""
+    ctrl = _controller(names=('561AOTF',))
+
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    assert ctrl._scanArmedLasers == ['561AOTF']
+    assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
 
 
 def test_amplitude_is_applied_before_the_handover():
@@ -216,6 +239,54 @@ def test_consecutive_scans_each_reapply_the_amplitude():
                    if n == 'value']
         assert applied[-1] == 30.0
         LaserController.scanChanged(ctrl, False)
+
+
+def test_arming_runs_once_per_run_not_per_repeat_frame():
+    """Membership is republished every iteration and several managers issue
+    blocking RS232 commands here, so re-arming per frame would stall a fast
+    repeat scan."""
+    ctrl = _controller(names=('561AOTF',))
+
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+    callsAfterFirst = list(ctrl._master.lasersManager['561AOTF'].calls)
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    assert ctrl._master.lasersManager['561AOTF'].calls == callsAfterFirst
+
+
+def test_a_new_run_arms_again_after_teardown():
+    ctrl = _controller(names=('561AOTF',))
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+    LaserController.scanChanged(ctrl, False)
+    ctrl._master.lasersManager['561AOTF'].calls.clear()
+
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
+
+
+def test_arming_reports_which_lasers_will_emit():
+    """The un-armed AOTF was invisible: the scan ran, the UI looked fine, and
+    the sample saw no light."""
+    ctrl = _controller(names=('561AOTF', '775AOM'))
+
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    logged = ' '.join(m for _, m in ctrl._logger.messages)
+    assert '561AOTF' in logged and '775AOM' in logged
+
+
+def test_a_laser_that_cannot_be_armed_is_reported_as_not_emitting():
+    ctrl = _controller(names=('561AOTF',))
+
+    def explode(power):
+        raise RuntimeError('serial timeout')
+
+    ctrl._master.lasersManager['561AOTF'].setValue = explode
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    assert ctrl._scanArmedLasers == []
+    assert any(level == 'warning' for level, _ in ctrl._logger.messages)
 
 
 def test_scan_built_stays_ui_only():

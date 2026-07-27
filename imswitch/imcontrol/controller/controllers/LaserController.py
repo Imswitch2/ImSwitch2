@@ -300,15 +300,32 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
            button no longer governs it.
 
         Lasers the scan does not program are left completely alone.
+
+        Arming happens once per scan RUN, not per iteration. Membership is
+        republished for every repeat frame, and several managers issue blocking
+        RS232 commands here (the AOTF switches control mode over serial), so
+        re-arming each frame would stall a fast repeat scan. ``scanChanged``
+        clears the record at ``sigScanEnded``, which is what re-opens arming
+        for the next run.
         """
+        if self._scanArmedLasers:
+            return
+
         armed = []
+        skipped = []
         for lName, _ in self._master.lasersManager:
             if lName not in deviceList:
+                skipped.append(lName)
                 continue
             manager = self._master.lasersManager[lName]
             try:
-                manager.setValue(self._widget.getValue(lName), enabled=True,
-                                 for_scanning=True)
+                # Single positional argument only. The base class declares
+                # setValue(value, enabled, for_scanning), but most managers —
+                # AOTF, Cobolt0601New, GRBL, MPB, Oxxius, TriggerScope,
+                # PulseStreamer — override it as setValue(power). Passing the
+                # optional keywords raises TypeError on all of those, and the
+                # laser would then be skipped as "failed to arm".
+                manager.setValue(self._widget.getValue(lName))
                 manager.setScanModeActive(True)
             except Exception as e:
                 self._logger.error(
@@ -321,6 +338,25 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         self._scanArmedLasers = list(armed)
         for lName, _ in self._master.lasersManager:
             self._widget.setLaserEditable(lName, lName not in armed)
+
+        # Which lasers this scan will actually emit with was invisible before,
+        # and that is what made an un-armed AOTF so hard to spot: the scan ran,
+        # the UI looked normal, and the sample simply saw no light.
+        armedSummary = ', '.join(
+            f'{name}@{self._widget.getValue(name)}' for name in armed
+        ) or 'none'
+        self._logger.info(
+            f'Scan lasers armed (TTL-gated by the scan): {armedSummary}. '
+            f'Left under manual control: {", ".join(skipped) or "none"}.'
+        )
+        requested = [name for name in deviceList
+                     if name in dict(self._master.lasersManager)]
+        failed = [name for name in requested if name not in armed]
+        if failed:
+            self._logger.warning(
+                f'Scan requested these lasers but they could not be armed and '
+                f'will not emit: {", ".join(failed)}'
+            )
 
     def _disarmScanLasers(self):
         """ Return every laser this scan armed to a known-off idle state.
@@ -341,6 +377,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                     exc_info=True,
                 )
             self._widget.setLaserActive(lName, False, emitSignal=False)
+        if self._scanArmedLasers:
+            self._logger.info(
+                f'Scan lasers returned to idle and switched off: '
+                f'{", ".join(self._scanArmedLasers)}'
+            )
         self._scanArmedLasers = []
 
     def attrChanged(self, key, value):
