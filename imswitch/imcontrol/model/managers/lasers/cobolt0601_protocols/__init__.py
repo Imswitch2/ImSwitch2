@@ -151,6 +151,82 @@ def send_first_supported(connection, commands, *, purpose: str = '',
     raise last_rejection
 
 
+#: Run modes Cobolt controllers report for ``LASer:RUNMode?``. Used to check
+#: the *shape* of a probe reply: a connection that answers "OK" to everything
+#: must not be mistaken for an SCPI controller. An unrecognised mode makes
+#: discovery indeterminate rather than positive -- deliberately conservative,
+#: and a candidate for widening once Phase 1B transcripts exist.
+RUN_MODES = frozenset({
+    'constantcurrent',
+    'constantpower',
+    'currentmodulation',
+    'powermodulation',
+    'modulation',
+    'off',
+})
+
+
+def parse_run_mode(command: str, reply: str) -> str:
+    """Validate a run-mode reply, or raise :class:`UnexpectedReply`."""
+    normalised = reply.replace(' ', '').replace('_', '').lower()
+    if normalised not in RUN_MODES:
+        raise UnexpectedReply(
+            f'Cobolt answered {command!r} with {reply!r}, which is not a '
+            f'known run mode; the reply does not identify an SCPI controller',
+            command=command,
+            reply=reply,
+        )
+    return normalised
+
+
+def parse_float(command: str, reply: str) -> float:
+    """Validate a numeric reply, or raise :class:`UnexpectedReply`."""
+    try:
+        return float(reply)
+    except (TypeError, ValueError):
+        raise UnexpectedReply(
+            f'Cobolt answered {command!r} with {reply!r}, which is not the '
+            f'expected numeric value',
+            command=command,
+            reply=reply,
+        ) from None
+
+
+def parse_flag(command: str, reply: str, allowed=('0', '1')) -> str:
+    """Validate a small enumerated reply, or raise :class:`UnexpectedReply`."""
+    text = reply.strip()
+    if text not in allowed:
+        raise UnexpectedReply(
+            f'Cobolt answered {command!r} with {reply!r}; expected one of '
+            f'{", ".join(allowed)}',
+            command=command,
+            reply=reply,
+        )
+    return text
+
+
+def probe_query(connection, command: str, parser, evidence: list) -> bool:
+    """Run one read-only probe query and classify the reply.
+
+    Returns True on a valid positive reply and False on an explicit rejection,
+    which is clean negative evidence: the controller understood the query and
+    refused it, so it simply does not speak this dialect.
+
+    Every other failure propagates. A timeout, transport failure, or
+    structurally invalid reply means the probe learned *nothing*, and treating
+    "no answer" as "not this dialect" is how a healthy controller with a flaky
+    link gets driven with the wrong command set.
+    """
+    try:
+        reply = send_command(connection, command)
+    except CommandRejected as exc:
+        evidence.append((command, f'rejected: {exc.reply!r}'))
+        return False
+    parser(command, reply)
+    evidence.append((command, reply))
+    return True
+
+
 def read_identity(connection) -> dict:
     """Read the Cobolt identity fields that both dialects share.
 

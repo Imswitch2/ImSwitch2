@@ -364,6 +364,27 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'firmware that must not receive l0.'
             )
 
+    def _probe(self, profile):
+        """Run a profile's read-only probe, aborting if it learns nothing.
+
+        A probe reports a clean negative when the controller *rejects* its
+        queries — that genuinely means "not this dialect". Any other failure
+        means the probe is uninformative, and continuing would let a healthy
+        controller with a flaky link be driven with the wrong command set: an
+        SCPI unit whose SCPI queries time out still answers ``l?``, and would
+        otherwise be selected as legacy.
+        """
+        try:
+            return profile.probe(self._laser)
+        except ProtocolError as exc:
+            raise DeviceInitializationError(
+                f'Cobolt {self._port}: probing profile {profile.profile_id} '
+                f'did not complete ({type(exc).__name__}: {exc.message}). '
+                f'Profile discovery is indeterminate, so no command dialect '
+                f'can be trusted. Check the port, baud rate, cabling and '
+                f'device power rather than assuming a different dialect.'
+            ) from exc
+
     def _select_requested_profile(self, requested: str) -> None:
         """Load an explicitly configured profile and validate it read-only."""
         profile = self._profiles.get(requested)
@@ -374,7 +395,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'{", ".join(sorted(self._profiles))}.'
             )
 
-        result = profile.probe(self._laser)
+        result = self._probe(profile)
         if not result.matched:
             raise DeviceInitializationError(
                 f'Cobolt {self._port}: the controller does not behave like '
@@ -402,7 +423,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             profile = self._profiles.get(profile_id)
             if profile is None or not profile.auto_selectable:
                 continue
-            results[profile_id] = profile.probe(self._laser)
+            results[profile_id] = self._probe(profile)
 
         for profile_id in AUTO_SELECTION_ORDER:
             result = results.get(profile_id)
@@ -556,23 +577,19 @@ class Cobolt0601NewLaserManager(LaserManager):
             # Always flush the setpoint, including 0 — skipping the write
             # would turn the laser on at whatever power the hardware last
             # had, not what the GUI shows.
-            ok_power = self._set_cw_power_mw(self._setpoint_mw)
-            ok_mode = self._enter_constant_power()
-            ok_master = self._run('master_on')
-
-            if not (ok_power and ok_mode and ok_master):
-                # Something in the on-sequence failed. Drive the laser
-                # back to the safe state and leave _enabled = False so
-                # the GUI / scripting layer can see the transition did
-                # not take effect.
-                self.__logger.error(
-                    f'Cobolt {self._port} failed to enable '
-                    f'(power_ok={ok_power}, mode_ok={ok_mode}, '
-                    f'master_ok={ok_master}); reverting to safe-off state.'
-                )
-                self._run('master_off')
-                self._enter_modulation_mode(self._modulation_power_mw)
-                self._enabled = False
+            #
+            # Each step is a prerequisite for the next: the master switch is
+            # only allowed to close once the power setpoint and the mode are
+            # known good. Continuing past a failure would briefly enable the
+            # laser at whatever power the hardware still held.
+            if not self._set_cw_power_mw(self._setpoint_mw):
+                self._abort_enable('power setpoint')
+                return
+            if not self._enter_constant_power():
+                self._abort_enable('constant-power mode')
+                return
+            if not self._run('master_on'):
+                self._abort_enable('master on')
                 return
 
             self._enabled = True
@@ -603,18 +620,17 @@ class Cobolt0601NewLaserManager(LaserManager):
         be live.
         """
         if enabled:
-            # Always flush the setpoint, including 0 (see setEnabled).
-            ok_power = self._set_cw_power_mw(self._setpoint_mw)
-            ok_mode = self._enter_constant_power()
-            ok_resume = self._run('resume')
-            if not (ok_resume and ok_mode and ok_power):
-                self.__logger.error(
-                    f'Cobolt {self._port} failed to enable in pause mode '
-                    f'(resume_ok={ok_resume}, mode_ok={ok_mode}, '
-                    f'power_ok={ok_power}); pausing emission.'
-                )
-                self._run('pause')
-                self._enabled = False
+            # Always flush the setpoint, including 0 (see setEnabled). Resume
+            # is only reached once power and mode are known good — the same
+            # prerequisite rule as the master path.
+            if not self._set_cw_power_mw(self._setpoint_mw):
+                self._abort_enable('power setpoint')
+                return
+            if not self._enter_constant_power():
+                self._abort_enable('constant-power mode')
+                return
+            if not self._run('resume'):
+                self._abort_enable('resume emission')
                 return
             self._enabled = True
         else:
@@ -628,24 +644,65 @@ class Cobolt0601NewLaserManager(LaserManager):
                 return
             self._enabled = False
 
+    def _abort_enable(self, failed_step: str) -> None:
+        """Drive back to the safe state after a failed enable prerequisite.
+
+        Leaves ``_enabled`` False so the GUI and scripting layers can see the
+        transition did not take effect.
+        """
+        self.__logger.error(
+            f'Cobolt {self._port} failed to enable at step {failed_step!r}; '
+            f'reverting to the safe-off state without enabling emission.'
+        )
+        if self._pause_mode:
+            self._run('pause')
+        else:
+            self._run('master_off')
+            self._enter_modulation_mode(self._modulation_power_mw)
+        self._enabled = False
+
     def setValue(self, power) -> None:
         """Update the constant-power setpoint.
 
         Only flushed to the laser when ``_enabled`` is True. When the
         laser is off, the new value is cached and will take effect on
         the next ``setEnabled(True)``.
+
+        While the laser is live the cache is only committed after the
+        controller accepts the write, so the manager never reports a setpoint
+        the hardware never took. If the outcome is unknown the manager cannot
+        say what power is actually emitting, so it drives the defined safe-off
+        recovery rather than leaving an unverified beam live.
         """
         try:
             value = int(power)
         except (TypeError, ValueError):
             self.__logger.warning(f'Ignoring non-numeric setValue({power!r})')
             return
-        self._setpoint_mw = value
 
         if not self._enabled:
+            self._setpoint_mw = value
             return
 
-        self._set_cw_power_mw(value)
+        if self._set_cw_power_mw(value):
+            self._setpoint_mw = value
+            return
+
+        if isinstance(self._last_failure, CommandRejected):
+            # The controller refused the value and did not act on it, so the
+            # beam is still at the previous, known setpoint.
+            self.__logger.error(
+                f'Cobolt {self._port} rejected setpoint {value} mW; keeping '
+                f'the previous setpoint of {self._setpoint_mw} mW.'
+            )
+            return
+
+        self.__logger.error(
+            f'Cobolt {self._port} setpoint write of {value} mW failed with an '
+            f'unknown outcome; the emitted power cannot be confirmed. '
+            f'Driving the laser to the safe-off state.'
+        )
+        self.setEnabled(False)
 
     def setScanModeActive(self, active: bool) -> None:
         """Switch between continuous (off) and scan/digital-modulation (on).
@@ -659,7 +716,22 @@ class Cobolt0601NewLaserManager(LaserManager):
             # including 0, which must arm the laser DARK. Falling back to
             # _modulation_power_mw here would emit light the user explicitly
             # set to zero; that default is only for the idle safe state.
-            self._enter_modulation_mode(self._setpoint_mw)
+            #
+            # Arming the master switch depends on the modulation power AND the
+            # digital gate being set: if either failed, the TTL line may not
+            # gate the beam at all, so enabling emission could produce
+            # continuous light at an unknown power for the whole scan.
+            if not self._enter_modulation_mode(self._setpoint_mw):
+                self.__logger.error(
+                    f'Cobolt {self._port} could not arm digital modulation '
+                    f'for the scan; forcing the safe-off state instead of '
+                    f'enabling emission.'
+                )
+                if self._pause_mode:
+                    self._run('pause')
+                else:
+                    self._run('master_off')
+                return
             if self._setpoint_mw <= 0:
                 # A zero GUI setpoint is an explicit off command. Keep the
                 # master/resume state off even though the scan includes this

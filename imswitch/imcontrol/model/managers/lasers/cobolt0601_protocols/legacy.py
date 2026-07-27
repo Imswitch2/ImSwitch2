@@ -9,7 +9,7 @@ of the dialect: ``p`` takes **watts** while ``slmp`` takes **milliwatts**.
 """
 
 from .._protocol import ProbeResult, UnsupportedOperation
-from . import send_command
+from . import parse_flag, probe_query, send_command
 
 
 class LegacyProfile:
@@ -30,21 +30,29 @@ class LegacyProfile:
     def probe(self, connection) -> ProbeResult:
         """Read-only probe for the short-form command set.
 
-        ``l?`` is the master on/off query and answers on every legacy firmware
-        revision. Some controllers answer mode queries even when master state
-        is unavailable, so ``gam?`` is a second non-mutating probe. Both are
-        attempted so the fingerprint records what actually responded.
+        ``l?`` is the master on/off query and answers ``0``/``1`` on every
+        legacy firmware revision. Some controllers answer mode queries even
+        when master state is unavailable, so ``gam?`` is a second non-mutating
+        probe. Both are attempted so the fingerprint records what responded.
+
+        Replies are shape-checked, so a connection that answers ``OK`` to
+        everything is not mistaken for a legacy controller. Only an explicit
+        rejection counts as clean negative evidence; anything else propagates
+        and makes discovery indeterminate.
+
+        The accepted forms are provisional: they match every unit and mock
+        seen so far, and Phase 1B transcripts should confirm them.
         """
         positive = []
         evidence = []
-        for command in ('l?', 'gam?'):
-            try:
-                reply = send_command(connection, command)
-            except Exception as exc:
-                evidence.append((command, type(exc).__name__))
-                continue
-            positive.append(command)
-            evidence.append((command, reply))
+
+        if probe_query(connection, 'l?',
+                       lambda c, r: parse_flag(c, r, ('0', '1')), evidence):
+            positive.append('l?')
+        if probe_query(connection, 'gam?',
+                       lambda c, r: parse_flag(c, r, ('0', '1', '2')),
+                       evidence):
+            positive.append('gam?')
 
         return ProbeResult(
             profile_id=self.profile_id,

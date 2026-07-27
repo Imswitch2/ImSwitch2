@@ -640,6 +640,217 @@ def test_mock_cobolt06_send_cmd_records_and_rejects_scpi_by_default():
 
 
 # ---------------------------------------------------------------------------
+# Committed-sequence contract — no emission-enable after a failed prerequisite
+#
+# These are negative wire-trace tests: the point is the command that must NOT
+# appear. A passing "reverted to safe state" assertion is not enough, because
+# the laser can emit during the window before the revert.
+# ---------------------------------------------------------------------------
+
+
+def test_enable_does_not_send_master_on_after_failed_power_write():
+    """l1 after a failed power write enables the laser at whatever power the
+    hardware still held."""
+    laser = FakeLaser(firmware='legacy', failed_cmds={'p 0.050000'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert 'l1' not in laser.cmds
+    assert 'cp' not in laser.cmds      # mode entry is a later prerequisite
+    assert 'l0' in laser.cmds          # safe state still forced
+    assert m._enabled is False
+
+
+def test_enable_does_not_send_master_on_after_failed_mode_entry():
+    laser = FakeLaser(firmware='legacy', failed_cmds={'cp'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert 'l1' not in laser.cmds
+    assert m._enabled is False
+
+
+def test_enable_does_not_send_master_on_after_unknown_outcome():
+    laser = FakeLaser(
+        firmware='legacy',
+        raise_cmds={'p 0.050000': RuntimeError('Syntax Error: No response')},
+    )
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert 'l1' not in laser.cmds
+    assert m._enabled is False
+
+
+def test_pause_enable_does_not_resume_after_failed_power_write():
+    laser = FakeLaser(
+        firmware='scpi', failed_cmds={'LASer:CP:POWer:SETPoint 50.0',
+                                      'p 0.050000'},
+    )
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert 'las:paus 0' not in laser.cmds
+    assert 'las:paus 1' in laser.cmds
+    assert m._enabled is False
+
+
+def test_scan_arm_does_not_send_master_on_after_failed_modulation_power():
+    """A failed modulation-power or gating command means the TTL line may not
+    gate the beam, so enabling emission risks continuous light for the whole
+    scan."""
+    laser = FakeLaser(firmware='legacy', failed_cmds={'slmp 50.0'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 50
+    m.setScanModeActive(True)
+
+    assert 'l1' not in laser.cmds
+    assert 'l0' in laser.cmds
+
+
+def test_scan_arm_does_not_send_master_on_after_failed_digital_gate():
+    laser = FakeLaser(firmware='legacy', failed_cmds={'sdmes 1'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._setpoint_mw = 50
+    m.setScanModeActive(True)
+
+    assert 'l1' not in laser.cmds
+    assert 'l0' in laser.cmds
+
+
+def test_pause_scan_arm_does_not_resume_after_failed_modulation():
+    laser = FakeLaser(firmware='scpi', failed_cmds={'las:pm:dig:ena 1',
+                                                    'sdmes 1'})
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._setpoint_mw = 50
+    m.setScanModeActive(True)
+
+    assert 'las:paus 0' not in laser.cmds
+    assert 'las:paus 1' in laser.cmds
+
+
+# ---------------------------------------------------------------------------
+# Live setpoint writes — the cache must not claim an unaccepted value
+# ---------------------------------------------------------------------------
+
+
+def test_rejected_live_setpoint_write_keeps_previous_cached_value():
+    laser = FakeLaser(firmware='legacy', failed_cmds={'p 0.075000'})
+    m = _build_manager(laser)
+    m._scpi = False
+    m._enabled = True
+    m._setpoint_mw = 50
+    m.setValue(75)
+
+    assert m._setpoint_mw == 50        # hardware still holds 50 mW
+    assert m._enabled is True          # a rejection did not change the beam
+
+
+def test_unknown_outcome_live_setpoint_write_drives_safe_off():
+    """If the write outcome is unknown the emitted power cannot be confirmed,
+    so the laser must not be left live at an unverified power."""
+    laser = FakeLaser(
+        firmware='legacy',
+        raise_cmds={'p 0.075000': RuntimeError('Syntax Error: No response')},
+    )
+    m = _build_manager(laser)
+    m._scpi = False
+    m._enabled = True
+    m._setpoint_mw = 50
+    m.setValue(75)
+
+    assert m._setpoint_mw == 50
+    assert m._enabled is False
+    assert 'l0' in laser.cmds
+
+
+# ---------------------------------------------------------------------------
+# Discovery must be indeterminate, not creative, when probes learn nothing
+# ---------------------------------------------------------------------------
+
+
+def test_timed_out_scpi_probe_does_not_fall_back_to_legacy():
+    """An SCPI controller whose SCPI queries time out still answers l?. Taking
+    that as evidence would drive it with the wrong command set."""
+    timeout = RuntimeError('Syntax Error: No response on ...')
+    laser = FakeLaser(
+        firmware='scpi',
+        raise_cmds={
+            'LASer:RUNMode?': timeout,
+            'LASer:POWer:SETPoint?': timeout,
+            'LASer:CP:POWer:SETPoint?': timeout,
+            'LASer:PowerModulation:POWer:SETPoint?': timeout,
+        },
+    )
+    m = _build_manager(laser)
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        m._detect_firmware()
+
+    assert 'indeterminate' in str(excinfo.value)
+    assert m._profile is None
+
+
+def test_connection_answering_ok_to_everything_is_not_selected():
+    """Reply shape matters: 'OK' is not a run mode and not a setpoint."""
+
+    class AlwaysOkLaser:
+        def __init__(self):
+            self.cmds = []
+
+        def send_cmd(self, command):
+            self.cmds.append(command)
+            return 'OK'
+
+    m = _build_manager(AlwaysOkLaser())
+    with pytest.raises(DeviceInitializationError):
+        m._detect_firmware()
+    assert m._profile is None
+
+
+def test_malformed_legacy_reply_is_not_positive_evidence():
+    laser = FakeLaser(firmware='legacy')
+    laser.failed_cmds = {'LASer:RUNMode?', 'LASer:POWer:SETPoint?',
+                         'LASer:CP:POWer:SETPoint?',
+                         'LASer:PowerModulation:POWer:SETPoint?'}
+
+    original_send = laser.send_cmd
+
+    def send(command):
+        reply = original_send(command)
+        return 'garbage' if command in ('l?', 'gam?') else reply
+
+    laser.send_cmd = send
+
+    m = _build_manager(laser)
+    with pytest.raises(DeviceInitializationError):
+        m._detect_firmware()
+
+
+def test_explicit_profile_validation_timeout_aborts():
+    laser = FakeLaser(
+        firmware='legacy',
+        raise_cmds={'l?': RuntimeError('timed out'),
+                    'gam?': RuntimeError('timed out')},
+    )
+    m = _build_manager(laser)
+    m._protocol_profile = 'cobolt.legacy'
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        m._detect_firmware()
+    assert 'indeterminate' in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # Phase 2 — protocol profile selection
 # ---------------------------------------------------------------------------
 

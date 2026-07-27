@@ -13,7 +13,13 @@ guess about a power command is a 1000-fold setpoint error.
 """
 
 from .._protocol import ProbeResult
-from . import send_command, send_first_supported
+from . import (
+    parse_float,
+    parse_run_mode,
+    probe_query,
+    send_command,
+    send_first_supported,
+)
 
 
 class ScpiCompatibleProfile:
@@ -57,25 +63,25 @@ class ScpiCompatibleProfile:
         while rejecting every SCPI setpoint form. All setpoint variants are
         attempted rather than short-circuiting, so the fingerprint records
         which ones the controller actually supports.
+
+        Replies are shape-checked -- a known run mode, and numeric setpoints --
+        so a connection that answers ``OK`` to every query is not mistaken for
+        an SCPI controller. Only an explicit rejection is clean negative
+        evidence; a timeout or malformed reply propagates and makes discovery
+        indeterminate.
         """
         positive = []
         negative = []
         evidence = []
 
-        def _query(command):
-            try:
-                reply = send_command(connection, command)
-            except Exception as exc:
-                evidence.append((command, type(exc).__name__))
-                return False
-            evidence.append((command, reply))
-            return True
-
-        runmode_ok = _query('LASer:RUNMode?')
+        runmode_ok = probe_query(
+            connection, 'LASer:RUNMode?', parse_run_mode, evidence
+        )
         setpoint_ok = False
         for command in ('LASer:POWer:SETPoint?', 'LASer:CP:POWer:SETPoint?',
                         'LASer:PowerModulation:POWer:SETPoint?'):
-            setpoint_ok |= _query(command)
+            setpoint_ok |= probe_query(connection, command, parse_float,
+                                       evidence)
 
         if runmode_ok and setpoint_ok:
             positive.append('LASer:RUNMode? + SCPI power setpoint query')
