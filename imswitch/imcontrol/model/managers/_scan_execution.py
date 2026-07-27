@@ -329,17 +329,51 @@ class ScanExecutionCoordinator:
             condition=lambda detector: getattr(detector, 'isScanDriven', False)
         )
 
+    #: Purposes whose holder needs a scan-driven detector to run even when the
+    #: user deselected it. Deselecting is a preference; an active recording,
+    #: workflow or event modality is a commitment, and silently dropping its
+    #: detector mid-run would corrupt its output. GENERIC stays in the set for
+    #: as long as the legacy startAcquisition shim can produce it.
+    OVERRIDE_PURPOSES = (
+        LeasePurpose.RECORDING, LeasePurpose.SNAP, LeasePurpose.WORKFLOW,
+        LeasePurpose.EVENT_STREAM, LeasePurpose.EVENT_DIRECT,
+        LeasePurpose.GENERIC,
+    )
+
     def composeParticipants(self):
         """Scan-driven detectors taking part in the next iteration.
 
-        Phase 3 keeps this at "every scan-driven detector", which is exactly
-        today's behaviour. Phase 5 narrows it to
-        ``(selected scan-driven) | (scan-driven held by RECORDING / SNAP /
-        WORKFLOW / EVENT_* / GENERIC leases)``. Faulted detectors are excluded
-        here and always: a detector whose stop failed must not rejoin a scan.
+        ``(selected scan-driven) | (scan-driven held by an override purpose)``,
+        minus faulted ones — a detector whose stop failed must never rejoin a
+        scan, whatever anybody asked for.
+
+        Selection changes deferred while the previous iteration owned a
+        detector are applied here, which is the one point where a new selection
+        can take effect without disturbing an iteration already in flight.
         """
-        return [name for name in self.scanDrivenDetectors()
-                if not self._detectorsManager.isDetectorFaulted(name)]
+        detectorsManager = self._detectorsManager
+        flush = getattr(detectorsManager, 'flushQueuedSelectionChanges', None)
+        if flush is not None:
+            flush()
+
+        scanDriven = self.scanDrivenDetectors()
+        getSelected = getattr(detectorsManager, 'getSelectedDetectors', None)
+        if getSelected is None:
+            # A manager without selection support (tests, older embedders)
+            # behaves as though everything is selected.
+            selected = set(scanDriven)
+        else:
+            selected = getSelected()
+
+        overridden = detectorsManager.leasedDetectorNames(
+            self.OVERRIDE_PURPOSES
+        ) if hasattr(detectorsManager, 'leasedDetectorNames') else set()
+
+        return [
+            name for name in scanDriven
+            if (name in selected or name in overridden)
+            and not detectorsManager.isDetectorFaulted(name)
+        ]
 
     # ------------------------------------------------------------------ #
     # Arm / resolve                                                      #

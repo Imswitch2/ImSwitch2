@@ -5,6 +5,7 @@ import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Timer, Worker
+from imswitch.imcommon.model import initLogger
 from ._acquisition_leases import (FRAME_STREAM_PURPOSES, AcquisitionLeaseTable,
                                   DetectorFaultedError, LeaseHandle, LeasePurpose)
 from .MultiManager import MultiManager
@@ -27,10 +28,13 @@ class DetectorsManager(MultiManager, SignalInterface):
         str, np.ndarray, bool, list, bool
     )  # (detectorName, image, init, scale, isCurrentDetector)
     sigNewFrame = Signal()
+    # (detectorName, selected) — the user's acquisition selection changed.
+    sigDetectorSelectionChanged = Signal(str, bool)
 
     def __init__(self, detectorInfos, updatePeriod, **lowLevelManagers):
         MultiManager.__init__(self, detectorInfos, 'detectors', **lowLevelManagers)
         SignalInterface.__init__(self)
+        self.__logger = initLogger(self)
 
         # Serializes manager-level frame-stream transitions without involving
         # the lease-table lock. It must be re-entrant because synchronously
@@ -42,6 +46,22 @@ class DetectorsManager(MultiManager, SignalInterface):
         self._framePollLock = threading.RLock()
         self._detectorStopLock = threading.RLock()
         self._detectorStopOperations = {}
+
+        # Which detectors the user wants ImSwitch to acquire from. Seeds the
+        # LIVE_VIEW and SCAN lease composition; explicit consumers (recording,
+        # workflows, event modalities) override it by holding their own lease,
+        # so deselecting never silently drops a detector something is actively
+        # recording. Deliberately NOT persisted: every session starts with
+        # everything selected, so a forgotten checkbox cannot silently cost
+        # someone a channel days later.
+        self._selectedDetectors = set(
+            name for name, manager in self._subManagers.items()
+            if manager.forAcquisition
+        )
+        # Selection changes that arrive while a scan owns the detector, applied
+        # when the next iteration composes its participants. Hard-rejecting
+        # instead would leave no usable window during an auto-repeat scan.
+        self._queuedSelectionChanges = {}
 
         self._leaseTable = AcquisitionLeaseTable(
             startDetector=lambda name: self._subManagers[name].startAcquisition(),
@@ -290,6 +310,114 @@ class DetectorsManager(MultiManager, SignalInterface):
     def faultedAcquisitionDetectors(self):
         """Snapshot detectors whose hardware-off state is still unknown."""
         return tuple(self._leaseTable.faultedDetectors())
+
+    def leasedDetectorNames(self, purposes=None):
+        """ Detectors held by an active lease, optionally filtered by purpose.
+
+        Used to let an explicit consumer's lease override the user's selection
+        when a scan composes its participants. """
+        return self._leaseTable.leasedDetectorNames(purposes)
+
+    def getSelectedDetectors(self):
+        """ Detectors the user has selected for ImSwitch-managed acquisition.
+
+        A seed for lease composition, not an authority over hardware: a
+        detector held by an explicit consumer stays armed whatever this says.
+        """
+        with self._frameStreamLifecycleLock:
+            return set(self._selectedDetectors)
+
+    def isDetectorSelected(self, detectorName: str) -> bool:
+        with self._frameStreamLifecycleLock:
+            return detectorName in self._selectedDetectors
+
+    def setDetectorSelected(self, detectorName: str, selected: bool) -> bool:
+        """ Select or deselect a detector. Returns whether it took effect now.
+
+        Applied atomically under the manager lock rather than trusting the GUI
+        to disable itself, and it is never rejected outright — the two cases
+        that cannot apply immediately defer instead:
+
+        - a **scan-driven** detector while a scan owns it: queued and applied
+          when the next iteration composes its participants. Rejecting would
+          leave no usable window during an auto-repeat scan, where iterations
+          follow each other continuously.
+        - a **free-running** detector while live view is running: applied at
+          once by swapping the LIVE_VIEW lease, so the checkbox takes effect
+          immediately instead of silently waiting for the next restart.
+        """
+        self._validateManagedDeviceName(detectorName)
+        with self._frameStreamLifecycleLock:
+            if not self._subManagers[detectorName].forAcquisition:
+                raise ValueError(
+                    f'Detector "{detectorName}" is not available for '
+                    f'acquisition and cannot be selected'
+                )
+            if (detectorName in self._selectedDetectors) == selected:
+                self._queuedSelectionChanges.pop(detectorName, None)
+                return True
+
+            if self._subManagers[detectorName].isScanDriven and any(
+                handle.purpose is LeasePurpose.SCAN
+                and detectorName in handle.detectorNames
+                for handle in self._leaseTable.activeLeases()
+            ):
+                self._queuedSelectionChanges[detectorName] = selected
+                return False
+
+            self._applySelection(detectorName, selected)
+            return True
+
+    def flushQueuedSelectionChanges(self):
+        """ Apply selection changes deferred while a scan owned the detector.
+
+        Called by the scan coordinator at each iteration's participant
+        composition, which is the point where a new selection can take effect
+        without disturbing an iteration already in flight.
+        """
+        with self._frameStreamLifecycleLock:
+            queued, self._queuedSelectionChanges = (
+                self._queuedSelectionChanges, {}
+            )
+            for detectorName, selected in queued.items():
+                self._applySelection(detectorName, selected)
+            return queued
+
+    def _applySelection(self, detectorName, selected):
+        """ Record the selection and re-seed live view if it is running.
+
+        Caller holds the lifecycle lock.
+        """
+        if selected:
+            self._selectedDetectors.add(detectorName)
+        else:
+            self._selectedDetectors.discard(detectorName)
+        self.sigDetectorSelectionChanged.emit(detectorName, selected)
+        if not self._subManagers[detectorName].isScanDriven:
+            self._reseedLiveViewSelection()
+
+    def setLiveViewLeaseProvider(self, provider):
+        """ Register how live view re-seeds its lease after a selection change.
+
+        The LIVE_VIEW lease is owned by ViewController, so the manager cannot
+        swap it directly; the controller supplies a callable that re-acquires
+        over the current selection. Without one, a selection change while live
+        view is running simply takes effect at the next live-view start.
+        """
+        self._liveViewLeaseProvider = provider
+
+    def _reseedLiveViewSelection(self):
+        provider = self.__dict__.get('_liveViewLeaseProvider')
+        if provider is None:
+            return
+        try:
+            provider()
+        except Exception:
+            self.__logger.error(
+                'Failed to re-seed the live-view lease after a selection '
+                'change; live view keeps its previous detectors until it is '
+                'restarted.', exc_info=True
+            )
 
     def frameStreamMembership(self):
         """ Detectors whose frames must be polled into sigImageUpdated:
