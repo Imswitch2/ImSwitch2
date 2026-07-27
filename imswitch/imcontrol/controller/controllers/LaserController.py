@@ -319,13 +319,14 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 continue
             manager = self._master.lasersManager[lName]
             try:
-                # Single positional argument only. The base class declares
-                # setValue(value, enabled, for_scanning), but most managers —
-                # AOTF, Cobolt0601New, GRBL, MPB, Oxxius, TriggerScope,
-                # PulseStreamer — override it as setValue(power). Passing the
-                # optional keywords raises TypeError on all of those, and the
-                # laser would then be skipped as "failed to arm".
-                manager.setValue(self._widget.getValue(lName))
+                # Arming does NOT write the power. The widget already pushed
+                # the user's setpoint to the device when they set it, so the
+                # amplitude is already correct here; re-writing it only risks
+                # overwriting a good value with a bad read, which is exactly
+                # what silenced the AOTF lasers (armed "@0" while the widget
+                # showed a real power). Restoring an amplitude that scan
+                # teardown destroyed is handled at teardown, where the damage
+                # happens — see _disarmScanLasers.
                 manager.setScanModeActive(True)
             except Exception as e:
                 self._logger.error(
@@ -343,11 +344,14 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # and that is what made an un-armed AOTF so hard to spot: the scan ran,
         # the UI looked normal, and the sample simply saw no light.
         armedSummary = ', '.join(
-            f'{name}@{self._widget.getValue(name)}' for name in armed
+            f'{name} (widget setpoint {self._widget.getValue(name)})'
+            for name in armed
         ) or 'none'
         self._logger.info(
-            f'Scan lasers armed (TTL-gated by the scan): {armedSummary}. '
-            f'Left under manual control: {", ".join(skipped) or "none"}.'
+            f'Scan lasers handed over to TTL gating: {armedSummary}. '
+            f'Left under manual control: {", ".join(skipped) or "none"}. '
+            f'Emission power is whatever the device already holds; the '
+            f'setpoint above is shown for comparison, not written here.'
         )
         requested = [name for name in deviceList
                      if name in dict(self._master.lasersManager)]
@@ -371,6 +375,19 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 manager = self._master.lasersManager[lName]
                 manager.setScanModeActive(False)
                 manager.setEnabled(False)
+                # Leaving scan mode zeroes the output on managers that drive an
+                # analog channel (NidaqLaserManager does setValue(0)), which
+                # silently discards the user's setpoint: the widget still shows
+                # the power, the device is at zero, and every later scan runs
+                # dark. Put the setpoint back so device and UI agree again.
+                #
+                # Never write a zero back. Zero carries no information — the
+                # laser is already off via setEnabled — and a widget that reads
+                # 0 for a laser the user did set (as the AOTFs do) would
+                # otherwise have its real amplitude destroyed here instead.
+                setpoint = self._widget.getValue(lName)
+                if setpoint:
+                    manager.setValue(setpoint)
             except Exception as e:
                 self._logger.error(
                     f'Failed to disarm laser "{lName}" after the scan: {e}',

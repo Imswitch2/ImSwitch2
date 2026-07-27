@@ -31,12 +31,18 @@ from imswitch.imcontrol.controller.controllers.LaserController import (
 
 
 class _Laser:
-    def __init__(self, name):
+    """``zeroesOnExit`` models NidaqLaserManager, whose setScanModeActive(False)
+    is implemented as setValue(0) and so discards the user's setpoint."""
+
+    def __init__(self, name, zeroesOnExit=False):
         self.name = name
         self.calls = []
+        self._zeroesOnExit = zeroesOnExit
 
     def setScanModeActive(self, active):
         self.calls.append(('scanMode', active))
+        if not active and self._zeroesOnExit:
+            self.calls.append(('value', 0))
 
     def setEnabled(self, enabled):
         self.calls.append(('enabled', enabled))
@@ -48,8 +54,9 @@ class _Laser:
 
 
 class _LasersManager:
-    def __init__(self, names):
-        self._lasers = {name: _Laser(name) for name in names}
+    def __init__(self, names, zeroesOnExit=()):
+        self._lasers = {name: _Laser(name, name in zeroesOnExit)
+                        for name in names}
 
     def __iter__(self):
         return iter(self._lasers.items())
@@ -110,9 +117,9 @@ class _Logger:
         self.messages.append(('error', message))
 
 
-def _controller(names=('L488', 'L561'), scanChannels=True):
+def _controller(names=('L488', 'L561'), scanChannels=True, zeroesOnExit=()):
     ctrl = LaserController.__new__(LaserController)
-    ctrl._master = _Master(_LasersManager(names))
+    ctrl._master = _Master(_LasersManager(names, zeroesOnExit))
     ctrl._widget = _Widget()
     ctrl._logger = _Logger()
     ctrl._scanArmedLasers = []
@@ -138,36 +145,16 @@ def test_ttl_programmed_laser_is_armed_and_greyed_out():
     assert ctrl._widget.editable['561AOTF'] is False
 
 
-def test_arming_applies_the_widget_setpoint_explicitly():
-    """Without this an AOM whose amplitude was zeroed by a previous scan's
-    teardown stays dark for every subsequent scan."""
-    ctrl = _controller(names=('775AOM',))
-    ctrl._widget.values['775AOM'] = 42.0
-
-    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
-
-    assert ('value', 42.0) in ctrl._master.lasersManager['775AOM'].calls
-
-
-def test_arming_uses_the_single_argument_setValue_every_manager_defines():
-    """AAAOTFLaserManager is setValue(power). Passing the base class's
-    optional keywords raises TypeError there and the laser is skipped as
-    'failed to arm' — which is silent breakage for most hardware."""
+def test_arming_never_writes_the_power():
+    """The widget already pushed the setpoint to the device. Re-writing it at
+    arm overwrote a good amplitude with a bad widget read and silenced the
+    AOTF lasers, which armed "@0" while the widget showed a real power."""
     ctrl = _controller(names=('561AOTF',))
 
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
-    assert ctrl._scanArmedLasers == ['561AOTF']
-    assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
-
-
-def test_amplitude_is_applied_before_the_handover():
-    ctrl = _controller(names=('775AOM',))
-
-    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
-
-    calls = [name for name, _ in ctrl._master.lasersManager['775AOM'].calls]
-    assert calls.index('value') < calls.index('scanMode')
+    calls = ctrl._master.lasersManager['561AOTF'].calls
+    assert calls == [('scanMode', True)]
 
 
 def test_laser_outside_the_ttl_list_is_untouched_and_editable():
@@ -217,6 +204,30 @@ def test_teardown_never_touches_a_laser_the_scan_did_not_arm():
     assert '775AOM' not in ctrl._widget.active
 
 
+def test_teardown_restores_a_setpoint_that_leaving_scan_mode_destroyed():
+    """NidaqLaserManager zeroes the output when it leaves scan mode, which is
+    why an AOM went dark for every scan after the first."""
+    ctrl = _controller(names=('775AOM',), zeroesOnExit=('775AOM',))
+    ctrl._widget.values['775AOM'] = 20.0
+    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
+
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._master.lasersManager['775AOM'].calls[-1] == ('value', 20.0)
+
+
+def test_teardown_never_writes_a_zero_setpoint():
+    """A widget reading 0 for a laser the user did set (the AOTFs) must not
+    have its real amplitude destroyed on the way out."""
+    ctrl = _controller(names=('561AOTF',))
+    ctrl._widget.values['561AOTF'] = 0.0
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    LaserController.scanChanged(ctrl, False)
+
+    assert ('value', 0.0) not in ctrl._master.lasersManager['561AOTF'].calls
+
+
 def test_teardown_is_idempotent():
     ctrl = _controller(names=('775AOM',))
     LaserController.scanDevicesResolved(ctrl, ['775AOM'])
@@ -228,17 +239,16 @@ def test_teardown_is_idempotent():
     assert ctrl._master.lasersManager['775AOM'].calls == []
 
 
-def test_consecutive_scans_each_reapply_the_amplitude():
+def test_consecutive_scans_leave_the_setpoint_intact():
     """The 'exactly one scan works, then dark' regression."""
-    ctrl = _controller(names=('775AOM',))
+    ctrl = _controller(names=('775AOM',), zeroesOnExit=('775AOM',))
     ctrl._widget.values['775AOM'] = 30.0
 
     for _ in range(3):
         LaserController.scanDevicesResolved(ctrl, ['775AOM'])
-        applied = [v for n, v in ctrl._master.lasersManager['775AOM'].calls
-                   if n == 'value']
-        assert applied[-1] == 30.0
         LaserController.scanChanged(ctrl, False)
+        assert ctrl._master.lasersManager['775AOM'].calls[-1] == ('value', 30.0)
+        ctrl._master.lasersManager['775AOM'].calls.clear()
 
 
 def test_arming_runs_once_per_run_not_per_repeat_frame():
@@ -279,10 +289,10 @@ def test_arming_reports_which_lasers_will_emit():
 def test_a_laser_that_cannot_be_armed_is_reported_as_not_emitting():
     ctrl = _controller(names=('561AOTF',))
 
-    def explode(power):
+    def explode(active):
         raise RuntimeError('serial timeout')
 
-    ctrl._master.lasersManager['561AOTF'].setValue = explode
+    ctrl._master.lasersManager['561AOTF'].setScanModeActive = explode
     LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
     assert ctrl._scanArmedLasers == []
