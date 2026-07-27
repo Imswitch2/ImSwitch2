@@ -1188,7 +1188,7 @@ class EventTriggeredControllerBase(SmartModeRoleMixin, ImConWidgetController):
         # point and needs the same window, or lasers here are armed by a
         # sigScanBuilt handler whose one-shot writes are already refused.
         try:
-            devices = self._master.nidaqManager.resolveScanDevices(self.signalDic)
+            devices = self._master.nidaqManager.resolveScanTTLDevices(self.signalDic)
         except Exception as e:
             self._logger.error(
                 f'Could not resolve the scan device list for the '

@@ -1,23 +1,26 @@
-"""Laser arming happens while the NI-DAQ is still free (rig finding).
+"""Laser scan participation and arming (rig findings).
 
-``LaserController`` armed lasers from ``sigScanBuilt``, which ``runScan``
-emits *after* marking the NI-DAQ manager busy, so every one-shot write it
-issued there was refused — silently at first, later as
-``cannot start Ni-daq task setDigitalTask, the manager is busy``.
+Two independent, long-standing defects, both visible on a STED setup with
+AOTF-gated and NI-DAQ lasers:
 
-Moving that work earlier made the writes real for the first time, and on
-hardware it went wrong: lasers were driven low at scan start and never
-restored, so scans ran dark and the laser stayed off afterwards while the UI
-still showed it on.
+* Participation was decided from the NI-DAQ AO/DO device list, which only
+  contains devices owning an analog channel or digital line. An AOTF-gated
+  laser has neither, so it never appeared there: never greyed out, and never
+  handed over to external control. It emitted only if the user happened to
+  switch it on by hand. Participation now comes from the scan's TTL device
+  list — the rows the user actually ticks.
+* Arming inherited whatever amplitude the previous manual action left behind,
+  while scan teardown called ``setScanModeActive(False)`` on EVERY laser.
+  On a manager with an analog channel that zeroes the output, so an AOM was
+  silenced at the end of the first scan and stayed dark for every scan after
+  it. Arming now applies the widget setpoint explicitly, and teardown touches
+  only the lasers this scan armed.
 
-The scan drives the TTL lines it owns through its own DO task and does not
-need the static line pre-dropped; lasers the scan does not own must keep the
-state the user set. So the scan path performs NO laser hardware writes, which
-is what the system did in practice all along. Membership is still published
-early (``sigScanDevicesResolved``) for UI editability.
-
-Design reference: docs/design/plans/detector-acquisition-selection.md.
+Contract: a laser in the scan's TTL list is armed and gated by the scan
+regardless of its manual toggle, and ends the scan off; a laser outside it is
+never touched.
 """
+
 
 import inspect
 
@@ -38,7 +41,7 @@ class _Laser:
     def setEnabled(self, enabled):
         self.calls.append(('enabled', enabled))
 
-    def setValue(self, value):
+    def setValue(self, value, enabled=True, for_scanning=False):
         self.calls.append(('value', value))
 
 
@@ -62,12 +65,16 @@ class _Widget:
     def __init__(self):
         self.editable = {}
         self.active = {}
+        self.values = {}
 
     def setLaserEditable(self, name, editable):
         self.editable[name] = editable
 
     def setLaserActive(self, name, active, emitSignal=True):
         self.active[name] = active
+
+    def getValue(self, name):
+        return self.values.get(name, 10.0)
 
 
 class _LaserInfo:
@@ -87,11 +94,17 @@ class _SetupInfo:
         self.lasers = lasers
 
 
+class _Logger:
+    def error(self, *args, **kwargs):
+        pass
+
+
 def _controller(names=('L488', 'L561'), scanChannels=True):
     ctrl = LaserController.__new__(LaserController)
     ctrl._master = _Master(_LasersManager(names))
     ctrl._widget = _Widget()
-    ctrl._scanBuiltApplied = False
+    ctrl._logger = _Logger()
+    ctrl._scanArmedLasers = []
     ctrl._setupInfo = _SetupInfo({
         name: _LaserInfo(digitalLine='Dev1/port0/line1' if scanChannels else None)
         for name in names
@@ -100,60 +113,118 @@ def _controller(names=('L488', 'L561'), scanChannels=True):
 
 
 # --------------------------------------------------------------------------- #
-# No hardware writes on the scan path                                          #
+# Participation comes from the TTL list                                        #
 # --------------------------------------------------------------------------- #
 
-def test_scan_built_does_no_hardware_work():
-    ctrl = _controller()
+def test_ttl_programmed_laser_is_armed_and_greyed_out():
+    """Includes the AOTF case: no analog channel, no digital line, yet it is
+    in the scan's TTL list and must be armed."""
+    ctrl = _controller(names=('561AOTF', '775AOM'), scanChannels=False)
 
-    LaserController.scanBuilt(ctrl, ['L488'])
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
 
-    for laser in ('L488', 'L561'):
-        assert ctrl._master.lasersManager[laser].calls == []
-
-
-def test_scan_membership_does_no_hardware_work():
-    """The rig regression: driving lines here left lasers dark for the scan
-    and never restored them. The scan owns the TTL lines it drives; lasers it
-    does not own keep whatever the user set."""
-    ctrl = _controller()
-
-    LaserController.scanDevicesResolved(ctrl, ['L488'])
-
-    for laser in ('L488', 'L561'):
-        assert ctrl._master.lasersManager[laser].calls == []
+    assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
+    assert ctrl._widget.editable['561AOTF'] is False
 
 
-def test_a_manually_enabled_laser_outside_the_scan_is_left_on():
-    """Forcing it off removed illumination the user deliberately enabled."""
-    ctrl = _controller()
+def test_arming_applies_the_widget_setpoint_explicitly():
+    """Without this an AOM whose amplitude was zeroed by a previous scan's
+    teardown stays dark for every subsequent scan."""
+    ctrl = _controller(names=('775AOM',))
+    ctrl._widget.values['775AOM'] = 42.0
 
-    LaserController.scanDevicesResolved(ctrl, ['L488'])
+    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
 
-    assert 'L561' not in ctrl._widget.active
-    assert ctrl._master.lasersManager['L561'].calls == []
-
-
-def test_both_handlers_update_editability():
-    ctrl = _controller()
-
-    LaserController.scanDevicesResolved(ctrl, ['L488'])
-    assert ctrl._widget.editable == {'L488': False, 'L561': True}
-
-    ctrl._widget.editable.clear()
-    LaserController.scanBuilt(ctrl, ['L488'])
-    assert ctrl._widget.editable == {'L488': False, 'L561': True}
+    assert ('value', 42.0) in ctrl._master.lasersManager['775AOM'].calls
 
 
-def test_no_laser_manager_call_appears_on_the_scan_path_at_all():
-    """Source guard: any setEnabled/setScanModeActive/setValue reintroduced
-    here runs against hardware at scan arm, which is what broke the rig."""
-    for handler in (LaserController.scanDevicesResolved,
-                    LaserController.scanBuilt):
-        source = inspect.getsource(handler)
-        body = source.partition('"""')[2].partition('"""')[2]
-        for forbidden in ('setEnabled(', 'setScanModeActive(', 'setValue('):
-            assert forbidden not in body, (handler.__name__, forbidden)
+def test_amplitude_is_applied_before_the_handover():
+    ctrl = _controller(names=('775AOM',))
+
+    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
+
+    calls = [name for name, _ in ctrl._master.lasersManager['775AOM'].calls]
+    assert calls.index('value') < calls.index('scanMode')
+
+
+def test_laser_outside_the_ttl_list_is_untouched_and_editable():
+    ctrl = _controller(names=('561AOTF', '775AOM'))
+
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    assert ctrl._master.lasersManager['775AOM'].calls == []
+    assert ctrl._widget.editable['775AOM'] is True
+
+
+def test_arming_is_independent_of_the_manual_toggle():
+    """Ticking the box is the authority; the on/off button is not consulted."""
+    ctrl = _controller(names=('561AOTF',))
+
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+
+    assert ('scanMode', True) in ctrl._master.lasersManager['561AOTF'].calls
+
+
+# --------------------------------------------------------------------------- #
+# Teardown touches only what this scan armed                                   #
+# --------------------------------------------------------------------------- #
+
+def test_armed_laser_ends_the_scan_off_with_the_ui_in_sync():
+    ctrl = _controller(names=('775AOM',))
+    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
+    ctrl._master.lasersManager['775AOM'].calls.clear()
+
+    LaserController.scanChanged(ctrl, False)
+
+    calls = ctrl._master.lasersManager['775AOM'].calls
+    assert ('scanMode', False) in calls
+    assert ('enabled', False) in calls
+    assert ctrl._widget.active['775AOM'] is False
+
+
+def test_teardown_never_touches_a_laser_the_scan_did_not_arm():
+    """Disarming every laser is what silently zeroed an unrelated AOM."""
+    ctrl = _controller(names=('561AOTF', '775AOM'))
+    LaserController.scanDevicesResolved(ctrl, ['561AOTF'])
+    ctrl._master.lasersManager['775AOM'].calls.clear()
+
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._master.lasersManager['775AOM'].calls == []
+    assert '775AOM' not in ctrl._widget.active
+
+
+def test_teardown_is_idempotent():
+    ctrl = _controller(names=('775AOM',))
+    LaserController.scanDevicesResolved(ctrl, ['775AOM'])
+
+    LaserController.scanChanged(ctrl, False)
+    ctrl._master.lasersManager['775AOM'].calls.clear()
+    LaserController.scanChanged(ctrl, False)
+
+    assert ctrl._master.lasersManager['775AOM'].calls == []
+
+
+def test_consecutive_scans_each_reapply_the_amplitude():
+    """The 'exactly one scan works, then dark' regression."""
+    ctrl = _controller(names=('775AOM',))
+    ctrl._widget.values['775AOM'] = 30.0
+
+    for _ in range(3):
+        LaserController.scanDevicesResolved(ctrl, ['775AOM'])
+        applied = [v for n, v in ctrl._master.lasersManager['775AOM'].calls
+                   if n == 'value']
+        assert applied[-1] == 30.0
+        LaserController.scanChanged(ctrl, False)
+
+
+def test_scan_built_stays_ui_only():
+    """It fires inside the DAQ-busy window; hardware writes there are refused."""
+    ctrl = _controller(names=('775AOM',))
+
+    LaserController.scanBuilt(ctrl, ['775AOM'])
+
+    assert ctrl._master.lasersManager['775AOM'].calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -161,21 +232,22 @@ def test_no_laser_manager_call_appears_on_the_scan_path_at_all():
 # --------------------------------------------------------------------------- #
 
 def test_device_list_is_published_before_arming():
-    """Membership must still reach consumers before the DAQ is claimed."""
+    """Arming after arm() would put the writes back inside the busy window."""
     source = inspect.getsource(SuperScanController._armScanIteration)
     publish = source.index('sigScanDevicesResolved')
     arm = source.index('_scanCoordinator.arm(')
     assert publish < arm
 
 
-def test_resolved_devices_match_what_run_scan_would_drive():
+def test_participation_is_resolved_from_the_ttl_list_not_the_daq_channels():
+    """Source guard: reverting to the AO/DO list makes AOTF lasers invisible
+    again, which is the defect that started this."""
     from imswitch.imcontrol.model.managers.NidaqManager import NidaqManager
 
-    source = inspect.getsource(NidaqManager.resolveScanDevices)
-    assert "'scanSignalsDict'" in source
+    source = inspect.getsource(NidaqManager.resolveScanTTLDevices)
     assert "'TTLCycleSignalsDict'" in source
-    assert 'getAnalogChannel' in source
-    assert 'getDigitalLine' in source
+    assert 'getAnalogChannel' not in source
+    assert 'getDigitalLine' not in source
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

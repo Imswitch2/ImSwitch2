@@ -854,40 +854,29 @@ class NidaqManager(SignalInterface):
                 )
             )
 
-    def resolveScanDevices(self, signalDic):
-        """Devices this scan will drive, without touching hardware.
+    @staticmethod
+    def resolveScanTTLDevices(signalDic):
+        """Devices the scan programs a TTL sequence for.
 
-        Same rule ``runScan`` applies when it builds its AO/DO tasks, exposed
-        so consumers can learn the participating device list BEFORE the scan
-        claims the DAQ. Anything needing a one-shot DAQ write in response to
-        scan membership (laser arming, most notably) has to run at that point:
-        once ``runScan`` marks the manager busy, every one-shot output is
-        refused, and ``sigScanBuilt`` is already inside that window.
+        This — not the NI-DAQ AO/DO task device list — is the authority for
+        which devices the scan gates, and it is exactly what the user selects
+        in the scan widget's TTL device rows.
 
-        Kept next to the arming logic on purpose — if the two ever disagree,
-        lasers get armed against a device list the scan does not honour.
+        The distinction matters because the two are not the same set. The
+        AO/DO list only contains devices owning an NI-DAQ analog channel or
+        digital line, so a laser gated some other way is invisible to it: an
+        AOTF-driven laser (``digitalLine``/``analogChannel`` both None) is TTL
+        programmed by the scan yet never appears there. Deciding participation
+        from the AO/DO list left those lasers un-greyed and, worse, never
+        handed over to external control, so they only emitted if the user
+        happened to have switched them on by hand.
+
+        Published before ``runScan`` claims the DAQ: once the manager is busy
+        every one-shot output is refused, and ``sigScanBuilt`` already fires
+        inside that window.
         """
-        stageDic = (signalDic or {}).get('scanSignalsDict', {}) or {}
         ttlDic = (signalDic or {}).get('TTLCycleSignalsDict', {}) or {}
-
-        devices = [
-            device
-            for device, _channel in self.__makeSortedTargets('getAnalogChannel')
-            if device in stageDic
-        ]
-        devices += [
-            device
-            for device, line in self.__makeSortedTargets('getDigitalLine')
-            if device in ttlDic and 'Dev' in line
-        ]
-        for line, name in (
-            (self.__setupInfo.scan.lineClockLine, 'LineClock'),
-            (self.__setupInfo.scan.frameStartClockLine, 'FrameStartClock'),
-            (self.__setupInfo.scan.frameEndClockLine, 'FrameEndClock'),
-        ):
-            if line:
-                devices.append(name)
-        return devices
+        return list(ttlDic.keys())
 
     def _reserveOneShotTask(self, taskName, createTask):
         """Create and register one short output task before native I/O.

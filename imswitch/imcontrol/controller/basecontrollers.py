@@ -1276,7 +1276,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         itself does not depend on this, only the consumers do.
         """
         try:
-            devices = self._master.nidaqManager.resolveScanDevices(signalDict)
+            devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
         except Exception:
             self._logger.error(
                 'Could not resolve the scan device list; lasers and other '
