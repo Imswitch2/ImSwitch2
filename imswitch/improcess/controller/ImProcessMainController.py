@@ -427,6 +427,10 @@ class ImProcessMainController(MainController):
                     GraphController,
                     widget,
                 )
+            # The panel is usually opened after a result is already selected,
+            # and GraphController only renders on future selection changes —
+            # seed it so the graph is populated the moment it appears.
+            self._seed_graph_controller()
             return
         # Single-processor panels (generic ResultProcessorWidget, and custom
         # panels like Segmentation that conform to the contract) run one
@@ -444,6 +448,23 @@ class ImProcessMainController(MainController):
         # reconstruction list and feed them the current result.
         if hasattr(widget, "sigResultProduced"):
             self._wire_producing_panel(widget)
+
+    def _seed_graph_controller(self) -> None:
+        """Render the active result's plot payloads into a freshly opened Graph."""
+        controller = self.mainViewController.graphController
+        if controller is None:
+            return
+        try:
+            result = self.mainViewController.reconstructionController.getActiveResult()
+        except Exception:
+            return
+        try:
+            controller.currentResultChanged(result)
+        except Exception:
+            self.__logger.debug(
+                "Could not seed the Graph panel with the current result",
+                exc_info=True,
+            )
 
     def _wire_producing_panel(self, widget) -> None:
         """Bridge a panel that publishes its own results into the pipeline.
@@ -496,7 +517,57 @@ class ImProcessMainController(MainController):
 
     def _onResultProduced(self, result, name):
         """Bridge processing result to imcontrol if display is enabled."""
+        self._routeResultToAnalysisPanels(result)
         self._bridgeResultToImcontrol(result, name)
+
+    def _routeResultToAnalysisPanels(self, result) -> None:
+        """Show non-image results in the panel that can actually render them.
+
+        Table- and curve-kind results carry nothing the reconstruction viewer
+        can draw, so producing one used to leave the user staring at a cleared
+        canvas. Route their rows to the shared Results dock and reveal the
+        Graph dock for curves, gated on ``kind`` so ordinary image results
+        (many of which also expose plot payloads) never steal focus.
+        """
+        from imswitch.improcess.model.result import result_kind
+
+        kind = result_kind(result)
+        if kind == "table":
+            self._appendResultTableRecords(result)
+        elif kind == "curve" and self._resultHasPlotPayloads(result):
+            try:
+                self.__mainView.raiseDockByTitle('Graph')
+            except Exception:
+                self.__logger.debug(
+                    "Could not reveal the Graph dock", exc_info=True
+                )
+
+    def _appendResultTableRecords(self, result) -> None:
+        try:
+            records = list(result.table_records())
+            if not records:
+                return
+            columns = list(result.table_columns()) or list(records[0].keys())
+        except Exception:
+            self.__logger.exception(
+                "Could not read table records from %s",
+                getattr(result, "name", type(result).__name__),
+            )
+            return
+        try:
+            self.__mainView.appendResultTableRecords(columns, records)
+        except Exception:
+            self.__logger.exception("Could not append result rows to the Results table")
+
+    @staticmethod
+    def _resultHasPlotPayloads(result) -> bool:
+        payloads = getattr(result, "plot_payloads", None)
+        if not callable(payloads):
+            return False
+        try:
+            return bool(payloads())
+        except Exception:
+            return False
 
     def _onLiveResultUpdated(self, result):
         """Bridge live result update to imcontrol if display is enabled."""

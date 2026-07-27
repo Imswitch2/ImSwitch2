@@ -30,10 +30,7 @@ class BSC203StageManager(PositionerManager):
         self._invertJogAxes = set(props.get('invertJogAxes', []))
 
         try:
-            from thorlabs_apt_device.devices.bsc import BSC
-            from serial.serialutil import SerialException
-            self.dev = BSC(serial_port=port, vid=None, pid=None, manufacturer=None, product=None, serial_number=None,
-                           location=None, home=home, x=3, invert_direction_logic=False, swap_limit_switches=True)
+            self.dev = self._createDevice(port, home)
         except ImportError as e:
             self.__logger.warning(
                 f'Failed to import thorlabs_apt_device: {e}. '
@@ -53,6 +50,23 @@ class BSC203StageManager(PositionerManager):
         # home this reads ~0 (the end-stop); without a home it recovers the
         # retained encoder position so positions survive an ImSwitch restart.
         self._syncPositionFromController()
+
+    def _createDevice(self, port, home):
+        """Import and construct the vendor BSC device.
+
+        Isolated behind a method (mirroring
+        ``KDC101PositionerManager._getDeviceObj``) for one reason: the import is
+        deferred, so a machine without ``thorlabs_apt_device`` — CI, or any dev
+        box without the vendor library — still loads this module, and a test can
+        substitute a fake device by patching this method instead of importing
+        the real vendor package to monkeypatch it.
+        """
+        from thorlabs_apt_device.devices.bsc import BSC
+        return BSC(
+            serial_port=port, vid=None, pid=None, manufacturer=None,
+            product=None, serial_number=None, location=None, home=home, x=3,
+            invert_direction_logic=False, swap_limit_switches=True,
+        )
 
     def _syncPositionFromController(self, timeout=3.0):
         """Set ``self._position`` from the controller's reported encoder position.
@@ -104,11 +118,6 @@ class BSC203StageManager(PositionerManager):
                 f'({steps} steps, homed={status.get("homed")}) read from '
                 f'BSC203 controller'
             )
-
-    def initialize(self):
-        self.dev.set_velocity_params(acceleration=4506, max_velocity=21987328 * 5, bay=0, channel=0)
-        self.dev.set_velocity_params(acceleration=4506, max_velocity=21987328 * 5, bay=1, channel=0)
-        self.dev.set_velocity_params(acceleration=4506, max_velocity=21987328 * 5, bay=2, channel=0)
 
     # Safety bound (s) for how long to wait for the controller to ENTER homing
     # before giving up on observing the in-progress state. Not timing-critical:
@@ -289,14 +298,120 @@ class BSC203StageManager(PositionerManager):
             return
         size = abs(delta)
         # Use the bay's configured velocity so jog speed matches normal moves.
-        vel = self.dev.velparams_[channel][0].get('max_velocity',
-                                                   int(300 / 1000 * 21987328))
-        acc = self.dev.velparams_[channel][0].get('acceleration',
-                                                   int(4000 / 1000 * 4506))
+        vel, acc = self._jogDynamics(channel, axis)
         # Single-step (continuous=False) jog of exactly `size` steps, then stop.
         self.dev.set_jog_params(size, acc, vel, continuous=False,
                                 immediate_stop=False, bay=channel, channel=0)
         self.dev.move_jog(direction=direction, bay=channel, channel=0)
+
+    #: Jog dynamics to fall back on when the controller has not reported real
+    #: ones: 300 µm/s and 4000 µm/s² in the controller's native units. These are
+    #: the values this code always meant to use as defaults — they were just
+    #: unreachable (see :meth:`_jogDynamics`).
+    _FALLBACK_MAX_VELOCITY = int(300 / 1000 * 21987328)
+    _FALLBACK_ACCELERATION = int(4000 / 1000 * 4506)
+
+    def _jogDynamics(self, channel, axis):
+        """Velocity and acceleration for a jog on ``channel``. Never zero.
+
+        ``thorlabs_apt_device`` pre-fills ``velparams_`` with
+        ``max_velocity=0`` and ``acceleration=0``, then overwrites them only
+        when the controller's asynchronous ``mot_get_velparams`` reply lands on
+        the daemon I/O thread — the same polled-status lag that bites
+        ``status_['position']`` in ``_syncPositionFromController``.
+
+        The keys are therefore *always present*, which made the
+        ``dict.get(key, default)`` fallbacks this used to rely on dead code:
+        ``get`` substitutes a default for a missing key, not for a zero value.
+        So a move commanded before that reply arrived — at startup, or on a
+        single bay whose reply was lost — jogged with velocity and acceleration
+        zero.
+
+        That is not a harmless no-op, and it is why one axis could wedge on its
+        own while the others stayed fine:
+
+        * ``set_jog_params`` *writes* those zeros into the controller, so the
+          bay stays dead (or crawls) for every later move, not just the one;
+        * every subsequent move re-sent the same zeros, so the axis went on
+          ignoring commands;
+        * ``stop()`` defaults to a **profiled** stop, which decelerates along
+          the bay's velocity curve — a bay whose acceleration is zero cannot
+          decelerate, so the stop could not rescue it either.
+
+        Treating zero as "not reported yet" removes all four. The warning is
+        the diagnostic that was missing: a wedged bay now says so.
+        """
+        try:
+            params = self.dev.velparams_[channel][0]
+        except (IndexError, KeyError, TypeError):
+            params = {}
+        vel = params.get('max_velocity') or 0
+        acc = params.get('acceleration') or 0
+        if vel <= 0 or acc <= 0:
+            self.__logger.warning(
+                f'{axis}/bay{channel}: controller reports max_velocity={vel}, '
+                f'acceleration={acc} — it has not sent its velocity parameters '
+                f'yet. Jogging with the defaults '
+                f'({self._FALLBACK_MAX_VELOCITY}, {self._FALLBACK_ACCELERATION}) '
+                f'instead; commanding zero would wedge this axis.'
+            )
+            vel = vel if vel > 0 else self._FALLBACK_MAX_VELOCITY
+            acc = acc if acc > 0 else self._FALLBACK_ACCELERATION
+        return vel, acc
+
+    def stopAxis(self, axis):
+        """Stop one axis *immediately* and return it to a commandable state.
+
+        Three things beyond a bare ``dev.stop()``, each addressing a way the
+        plain version failed to rescue a wedged axis:
+
+        1. ``immediate=True``. The default is a profiled stop, which needs a
+           usable deceleration — precisely what a wedged bay lacks. An
+           immediate stop does not consult the velocity curve.
+        2. Rewrite the bay's velocity parameters through
+           :meth:`_jogDynamics`, so zeros written earlier are replaced with
+           real values. ``set_velocity_params`` also re-requests them, which
+           refreshes the stale ``velparams_`` cache that caused this.
+        3. Resync the tracked position from the encoder. ``_jogToSteps``
+           optimistically records the *target* as the current position, so
+           after an interrupted move the display — and any relative move
+           computed from it — would otherwise refer to a place the stage never
+           reached.
+
+        Best-effort: a failure on one axis must not stop the others, since this
+        is what the GUI's stop button calls.
+        """
+        if self.dev is None:
+            return
+        channel = self._AXIS_TO_BAY[axis]
+        try:
+            self.dev.stop(immediate=True, bay=channel, channel=0)
+        except Exception:
+            self.__logger.warning(
+                f'{axis}/bay{channel}: immediate stop failed.', exc_info=True
+            )
+        try:
+            vel, acc = self._jogDynamics(channel, axis)
+            self.dev.set_velocity_params(
+                acceleration=acc, max_velocity=vel, bay=channel, channel=0
+            )
+        except Exception:
+            self.__logger.warning(
+                f'{axis}/bay{channel}: could not restore motion parameters; '
+                f'the axis may stay unresponsive.', exc_info=True
+            )
+        self._position[axis] = self.to_mm(self._currentSteps(channel, axis)) * 1000
+        self.__logger.info(
+            f'STOP {axis}/bay{channel}: halted at {self._position[axis]:.3f} um'
+        )
+
+    def stopAll(self):
+        """Immediate-stop every axis and restore each to a commandable state."""
+        if self.dev is None:
+            return
+        for axis in self._AXIS_TO_BAY:
+            if axis in self._position:
+                self.stopAxis(axis)
 
     def get_abs(self, axis):
         return self._position[axis]

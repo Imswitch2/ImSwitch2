@@ -1,7 +1,43 @@
 # Config Editor Discovery And Schema Plan
 
-Status: proposed
-Date: 2026-06-22
+Date: 2026-06-22 (plan), status verified 2026-07-21
+
+## Status
+
+Phases 1–4 shipped in `99444fd8` ("Config editor: consume plugin registry,
+schemas, templates & shared validation"). Phase 5 landed partially; Phase 6 has
+not been started.
+
+| Phase | Status |
+| --- | --- |
+| 1. Catalog service | ✅ Done — exit criterion asserted by `test_configeditor_catalog.py::test_fake_plugin_contribution` |
+| 2. Schema and default builder | ✅ Done — `configeditor/schemas.py`, `configeditor/defaults.py` |
+| 3. Plugin setup templates | ✅ Done — `configeditor/templates.py` |
+| 4. Shared validation service | ⚠️ Mostly done — model layer complete, CLI still under-reports (see below) |
+| 5. Editor module split | ⚠️ Partial — core editor-resource loading never moved out of the Qt script |
+| 6. UX cleanup | ❌ Not started |
+
+Remaining work is rendered as the [Final Delivery Plan](#final-delivery-plan).
+
+## Verification Snapshot (2026-07-21)
+
+The status above was checked against the current checkout, rather than inferred
+from the implementation commit message.
+
+- `build_default_registry(discover=True)` currently yields **9** contributions.
+  The editor catalog contains **64** managers: 9 registry-backed and 55 added by
+  its legacy filename scanner. The registry is therefore the correct extension
+  mechanism, but it is not yet complete for core managers.
+- **0 of the 9** registered contributions currently declares a
+  `manager_properties_schema`. The editor supports schema-driven fields, but
+  core managers do not yet exercise that contract.
+- The editor supplies `ValidationContext`; the `validate-setup` CLI command
+  does not. Widget-to-section diagnostics are consequently absent from CLI
+  output for the same setup file.
+- Core editor schema resources remain under `utility_scripts/builtin_templates`
+  and are loaded by the Qt script. That location is not package data in
+  `MANIFEST.in`, so moving the loader without moving the resources would not
+  make the standalone editor reliably installable.
 
 ## Summary
 
@@ -22,6 +58,10 @@ The target architecture is:
   damaged by round-tripping.
 
 ## Current State
+
+> This section and *Problems To Fix* describe the **2026-06-22 baseline**, before
+> any phase landed. They are kept for rationale. For what is true today, see
+> [Status](#status) and the [Final Delivery Plan](#final-delivery-plan).
 
 The editor lives in `utility_scripts/imswitch_config_editor.py`. It currently
 does several jobs in one PyQt module:
@@ -133,8 +173,9 @@ imswitch/imcontrol/model/configeditor/
   catalog.py
   schemas.py
   templates.py
-  validation.py
   defaults.py
+  coercion.py
+  io.py
 ```
 
 Responsibilities:
@@ -143,9 +184,15 @@ Responsibilities:
   explicit legacy fallbacks.
 - `schemas.py`: resolves manager-property JSON schemas and optional UI schema
   hints.
-- `templates.py`: loads core and plugin setup templates.
-- `validation.py`: returns structured setup diagnostics.
+- `templates.py`: loads plugin setup templates. Core editor-resource loading
+  remains in the Qt script (see the Final Delivery Plan).
 - `defaults.py`: creates new setup entries without requiring Qt.
+- `coercion.py`, `io.py`: JSON↔display value coercion and setup file load/save.
+  Added during implementation; not anticipated by the original plan.
+
+There is deliberately **no** `configeditor/validation.py`: diagnostics live in
+`imswitch/imcontrol/model/plugins/validation.py`, which already served the CLI.
+See [Validation Contract](#validation-contract) and Phase 4.
 
 The PyQt script can then become a consumer of this service layer. It does not
 need to be rewritten at once; the current functions can be replaced one at a
@@ -274,7 +321,7 @@ Tests can assert diagnostic codes.
 
 ## Phased Implementation
 
-### Phase 1: Catalog Service
+### Phase 1: Catalog Service — ✅ Done
 
 - Add a pure-Python manager catalog built from `build_default_registry()`.
 - Map plugin kinds to setup sections using the existing plugin validation maps.
@@ -290,7 +337,13 @@ accepted aliases, and docs URL — with **zero** changes to
 `utility_scripts/builtin_templates/`. This is asserted by a pytest, not just
 checked by hand.
 
-### Phase 2: Schema And Default Builder
+*Met by `test_configeditor_catalog.py::test_fake_plugin_contribution`, including
+the assertion that `builtin_templates/` is untouched. Note that
+`_discover_managers()` and `_all_known_managers()` were not deleted — they are
+now catalog-first with the filename scanner retained as the intended legacy
+fallback.*
+
+### Phase 2: Schema And Default Builder — ✅ Done
 
 - Introduce a normalized internal field model for top-level common fields and
   `managerProperties`.
@@ -299,7 +352,7 @@ checked by hand.
 - Ensure unknown fields are preserved during round-trip editing.
 - Add tests for default device creation and unknown-field preservation.
 
-### Phase 3: Plugin Setup Templates
+### Phase 3: Plugin Setup Templates — ✅ Done
 
 - Load `setup_templates` resources from registry contributions.
 - Show core templates, plugin templates, and user templates in one template
@@ -308,7 +361,7 @@ checked by hand.
 - Validate template JSON before showing it and report plugin template errors as
   diagnostics.
 
-### Phase 4: Shared Validation Service
+### Phase 4: Shared Validation Service — ⚠️ Mostly done
 
 This phase **extends the existing** `imswitch.imcontrol.model.plugins.validation`
 module rather than building a new one beside it (see Validation Contract).
@@ -325,14 +378,20 @@ module rather than building a new one beside it (see Validation Contract).
 - Update the editor validation panel to render diagnostics instead of owning
   validation logic.
 
-### Phase 5: Editor Module Split
+*`SetupDiagnostic`/`SetupFix`/`ValidationContext` and the xref + DAQ checks all
+live in `plugins/validation.py`; the editor renders them and keeps
+`_collect_xref_issues()` only as a thin compatibility wrapper. Outstanding: the
+CLI passes no `ValidationContext`, so it silently emits a weaker report than the
+editor (see the Final Delivery Plan).*
+
+### Phase 5: Editor Module Split — ⚠️ Partial
 
 This phase is the **payoff** of Phases 1–4, not a separate refactor: by extracting
 catalog, schema, templates, and validation as importable services in the earlier
 phases, the seams are already cut. Phase 5 is mostly relocating the now-isolated
 logic into `imswitch/imcontrol/model/configeditor/` and deleting the dead code
 left in the script. Do it last, after the services are test-covered, because the
-3,900-line Qt module has wiring that no unit test guards.
+4,100-line Qt module has wiring that no unit test guards.
 
 - Move pure logic out of `utility_scripts/imswitch_config_editor.py`.
 - Keep the script as the entry point and Qt composition layer.
@@ -340,7 +399,15 @@ left in the script. Do it last, after the services are test-covered, because the
   validation, save/load round trips, and active-config handling.
 - Manually confirm the editor still launches and round-trips a real setup file.
 
-### Phase 6: UX Cleanup After The Contract Is Stable
+**Exit criterion (not yet met):** no `builtin_templates` filesystem access
+remains in `utility_scripts/imswitch_config_editor.py`; core editor resources,
+plugin setup templates, and user templates are each supplied by a Qt-free model
+service, and the script's resource-loading paths are covered by non-Qt tests.
+
+*Unlike Phase 1, this phase shipped without a falsifiable exit criterion, which
+is why its shortfall went unnoticed. The script grew from ~3,900 to 4,126 lines.*
+
+### Phase 6: UX Cleanup After The Contract Is Stable — ❌ Not started
 
 - Add a manager detail panel showing source plugin, accepted aliases, docs URL,
   and schema status.
@@ -361,14 +428,112 @@ left in the script. Do it last, after the services are test-covered, because the
 - Keep editing possible even when optional packages such as `jsonschema`,
   vendor SDKs, or plugin packages are missing.
 
-## Near-Term Recommendation
+## Final Delivery Plan
 
-The next useful implementation slice is Phase 1 plus the validation-service
-boundary for manager resolution. That gives immediate value for plugins and
-prevents more `AVManager`-style drift, while keeping the current GUI mostly
-unchanged.
+The remaining work should be completed in this order. Each stage has an exit
+criterion so a partial refactor cannot be mistaken for a finished contract.
 
-After that, add JSON Schema based `managerProperties` editing for plugin
-managers. That is the point where external hardware developers can make their
-managers self-describing without sending pull requests to the core config
-editor.
+**Implementation progress:** Stage A's shared metadata contract and coverage
+audit are in place. Its migration exit criterion remains open: the audit
+currently records 53 runtime-plugin-capable core managers that still need
+registry contributions, plus two intentional legacy-only pulse generators.
+
+### A. Make registry metadata complete and authoritative
+
+Create one model-layer setup-metadata definition for the mappings currently
+duplicated between `configeditor/catalog.py`, `plugins/validation.py`, and the
+Qt category registry. It must declare each kind's setup section, editor category,
+legacy scan directory, and whether the runtime can resolve third-party plugins.
+The editor may retain labels and colours as presentation-only data.
+
+Inventory every legacy-scanned core manager and classify it as one of:
+
+- a registry contribution with maintained ID/aliases and an optional schema;
+- explicitly legacy-only, with a documented reason; or
+- not a selectable device manager, and therefore excluded from scanning.
+
+Add a registry-completeness test that fails when a runtime-loadable core manager
+is silently discovered only by filename. `pulse_generator` must remain visibly
+legacy-only until its bespoke runtime loader becomes registry-backed; it must not
+be presented as a working external-plugin contract.
+
+**Exit criterion:** the normal catalog contains no unexplained legacy-scanned
+manager, and all kind/category/section mappings have one model-layer owner.
+
+### B. Move core editor resources out of Qt and into package data
+
+`builtin_templates` are editor schema/default overlays, not plugin setup-instance
+templates. Keep `templates.py` focused on plugin-declared setup instances; add a
+Qt-free `configeditor/resources.py` (or equivalent) to load the core overlays,
+blank category forms, and singleton-section forms as a typed resource bundle.
+
+Move those JSON files beneath an installable `imswitch` package-data directory
+and update `MANIFEST.in`/packaging metadata. Resolve them with
+`importlib.resources`, with an injectable resource root for tests. Move
+`TemplateStore` to the model layer separately: user-writable templates are a
+different concern from immutable packaged resources.
+
+**Exit criterion:** `utility_scripts/imswitch_config_editor.py` contains no
+`builtin_templates` path, `glob()` or JSON-loading code; a wheel-installed editor
+loads the resource bundle; and non-Qt tests cover a malformed resource, a blank
+schema, a section schema, and a user-template round trip.
+
+### C. Give CLI and editor identical validation inputs
+
+Move widget-to-section requirements and the default ImProcess ID providers out
+of the Qt script. Supply a standard `ValidationContext` factory to both
+`validate-setup` and the editor. Keep UI actions such as a clickable
+“Configure…” link as rendering of `SetupFix`, never as validator HTML.
+
+Add paired tests that validate the same fixture through the model, CLI, and
+editor adapter and assert the same diagnostic codes (including
+`widget.missing-section`, DAQ conflicts, and ImProcess plugin IDs).
+
+**Exit criterion:** the CLI and editor report the same diagnostics for the same
+setup data, apart from explicitly documented UI-only presentation.
+
+### D. Complete schema-driven editing and compatibility reporting
+
+For every registry contribution with a JSON Schema, render schema-only fields
+without a core template and preserve unsupported saved values/unknown nested
+members on round trip. Extend the supported schema-to-widget mapping only where
+there is a lossless representation; use the JSON editor for arrays, objects,
+unions, and unsupported extensions.
+
+Add optional `x-imswitch-*` JSON-Schema UI annotations for group, label, help,
+units, path picker, secret masking, and device-reference category. These are
+declarative plugin metadata; do not import manager classes or probe hardware to
+construct a form.
+
+Before saving, generate a compatibility report for registry aliases,
+legacy-scanned managers, unknown fields retained verbatim, and unavailable
+plugins. Saving must remain possible unless a validation error makes the setup
+invalid.
+
+**Exit criterion:** an injected plugin with only manifest + JSON Schema is
+editable, validates through CLI and editor, round-trips values unknown to the
+current form, and needs no file in the core resource package.
+
+### E. Deliver the UX on top of the settled contract
+
+Add a manager detail panel showing source, version, aliases, documentation URL,
+schema/resource status, and compatibility state. Surface plugin discovery and
+template/resource errors in the same diagnostic panel. Add safe quick fixes only
+for diagnostics carrying a `SetupFix`.
+
+Defer connected-hardware discovery until a manager declares a separately safe,
+side-effect-free discovery capability. It must never be inferred by importing a
+manager class.
+
+**Exit criterion:** the UI exposes why every selectable manager is available or
+legacy-only, and all diagnostics that can be fixed mechanically offer a scoped
+action.
+
+### Delivery safeguards
+
+- Preserve existing setup files, unknown sections, aliases, and unknown values
+  throughout every stage.
+- Never use manager-class introspection as normal metadata discovery: vendor SDK
+  imports and hardware-adjacent side effects make it unsuitable for an editor.
+- Land stages independently with unit tests plus one offscreen Qt smoke test;
+  build and inspect a wheel in stage B to verify package-data delivery.

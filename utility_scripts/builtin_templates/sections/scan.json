@@ -6,7 +6,7 @@
   "summary": "Scan widget configuration. Required to use the Scan widget. References positioners with forScanning=true.",
   "requires_widget": "Scan",
   "fields": [
-    {"key": "scanWidgetType",        "label": "Scan widget type",    "type": "select", "default": "Base", "req": true, "grp": "Basic",    "tip": "Selects the controller dispatched by MasterController.",      "opts": ["Base", "PointScan", "MoNaLISA", "Advanced"]},
+    {"key": "scanWidgetType",        "label": "Scan widget type",    "type": "select", "default": "Base", "req": true, "grp": "Basic",    "tip": "Selects the controller dispatched by MasterController.",      "opts": ["Base", "PointScan", "MoNaLISA", "Advanced", "TriggerScope"]},
     {"key": "scanDesigner",          "label": "Scan designer",       "type": "select", "default": "GalvoScanDesigner", "req": true, "grp": "Designers","tip": "Class that builds the scan trajectory.", "opts": ["GalvoScanDesigner", "BetaScanDesigner"]},
     {"key": "scanDesignerParams",    "label": "Scan designer params","type": "json",   "default": "{}",   "req": false,"grp": "Designers","tip": "JSON dict passed to the scan designer.",                       "opts": []},
     {"key": "TTLCycleDesigner",      "label": "TTL cycle designer",  "type": "select", "default": "PointScanTTLCycleDesigner","req": true,"grp": "Designers","tip": "Class that emits the TTL pattern in sync with the scan.","opts": ["PointScanTTLCycleDesigner", "AdvancedScanTTLCycleDesigner", "BetaTTLCycleDesigner"]},

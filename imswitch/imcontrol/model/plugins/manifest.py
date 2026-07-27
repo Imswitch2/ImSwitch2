@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from .setup_metadata import registry_backed_setup_kinds, setup_kinds
+
 
 class ManifestError(Exception):
     """Raised when a manifest is invalid."""
@@ -36,13 +38,10 @@ BESPOKE_LOADER_KINDS = {
     "pulse_generator",
 }
 
-# All kinds that can currently be resolved through DevicePluginRegistry.
-REGISTRY_BACKED_KINDS = (
-    MULTIMANAGER_BACKED_KINDS | STANDALONE_REGISTRY_BACKED_KINDS
-)
-
-# All valid device kinds (union of registry-backed and remaining bespoke kinds).
-ALL_VALID_KINDS = REGISTRY_BACKED_KINDS | BESPOKE_LOADER_KINDS
+# These are derived from the setup metadata contract.  The two named subsets
+# above remain as implementation documentation and are asserted in tests.
+REGISTRY_BACKED_KINDS = {metadata.kind for metadata in registry_backed_setup_kinds()}
+ALL_VALID_KINDS = {metadata.kind for metadata in setup_kinds()}
 
 # Type hint for device kinds (accepts all kinds for forward compatibility).
 DeviceKind = Literal[

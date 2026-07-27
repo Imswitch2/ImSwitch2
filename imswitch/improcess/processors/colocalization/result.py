@@ -51,6 +51,14 @@ class ColocalizationResult(ProcessingResult):
         else:
             raise ValueError(f"Colocalization result supports HDF5 or CSV/TXT, got {fmt!r}")
 
+    def table_records(self) -> list[dict]:
+        """One row per analyzed region — the same projection used for export."""
+        return self.analysis.rows()
+
+    def table_columns(self) -> list[str]:
+        rows = self.analysis.rows()
+        return list(rows[0].keys()) if rows else []
+
     def plot_payloads(self) -> list[PlotPayload]:
         if self.analysis.scatter_a.size == 0:
             return []
