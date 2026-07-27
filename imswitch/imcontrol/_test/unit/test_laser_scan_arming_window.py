@@ -104,6 +104,9 @@ class _Logger:
     def __init__(self):
         self.messages = []
 
+    def debug(self, message, *args, **kwargs):
+        self.messages.append(('debug', message))
+
     def info(self, message, *args, **kwargs):
         self.messages.append(('info', message))
 
@@ -143,6 +146,16 @@ def test_gate_and_its_power_device_are_both_armed():
     assert ('scanMode', True) in ctrl._master.lasersManager['561'].calls
     assert ('enabled', True) in ctrl._master.lasersManager['561AOTF'].calls
     assert ctrl._scanArmedLasers == ['561', '561AOTF']
+
+
+def test_power_device_button_is_synced_on_when_armed():
+    """Locking the button while it reads OFF looks exactly like "I still have
+    to press ON"."""
+    ctrl = _controller(names=('561', '561AOTF'), pairs={'561': '561AOTF'})
+
+    LaserController.scanDevicesResolved(ctrl, ['561'])
+
+    assert ctrl._widget.active['561AOTF'] is True
 
 
 def test_on_off_locks_for_both_while_setpoints_stay_editable():

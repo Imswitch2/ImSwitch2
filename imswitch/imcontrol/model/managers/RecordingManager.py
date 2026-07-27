@@ -2463,7 +2463,7 @@ class RecordingWorker(Worker):
             # this number being wrong for one detector: a scan-driven detector
             # emits ONE assembled frame per scan while a camera emits one per
             # position, so log what is actually being waited for, per detector.
-            self.__logger.info(
+            self.__logger.debug(
                 f'{self.recMode.name} recording expects: '
                 + ', '.join(
                     f'{name} {count} frame(s)'

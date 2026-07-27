@@ -319,6 +319,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 self._master.lasersManager[lName].setScanModeActive(True)
                 if powerDevice is not None:
                     self._master.lasersManager[powerDevice].setEnabled(True)
+                    # Sync the toggle to the hardware we just switched on.
+                    # Without this the button reads OFF while the laser emits,
+                    # which looks exactly like "I still have to press ON".
+                    self._widget.setLaserActive(powerDevice, True,
+                                                emitSignal=False)
             except Exception as e:
                 self._logger.error(
                     f'Failed to arm laser "{lName}" for the scan: {e}',
@@ -336,10 +341,16 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         requested = [name for name in deviceList
                      if name in dict(self._master.lasersManager)]
         failed = [name for name in requested if name not in armed]
-        self._logger.info(
-            f'Scan lasers armed: {", ".join(armed) or "none"} '
-            f'(gates handed to the scan TTL; paired power devices switched on '
-            f'at their current setpoint).'
+        # Name the pairing explicitly. A gate reported as "no powerDevice
+        # declared" when one is expected means the setup link is not being
+        # read, which shows up on the rig as "I still have to press ON".
+        detail = ', '.join(
+            f'{gate} -> {self._powerDeviceFor(gate) or "no powerDevice declared"}'
+            for gate in requested if gate in armed
+        ) or 'none'
+        self._logger.debug(
+            f'Scan lasers armed: {detail}. Gates handed to the scan TTL; '
+            f'declared power devices switched on at their current setpoint.'
         )
         if failed:
             self._logger.warning(
@@ -381,7 +392,7 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             self._widget.setLaserActive(lName, False, emitSignal=False)
             self._widget.setLaserEnableEditable(lName, True)
         if self._scanArmedLasers:
-            self._logger.info(
+            self._logger.debug(
                 f'Scan lasers returned to idle and switched off: '
                 f'{", ".join(self._scanArmedLasers)}'
             )
