@@ -325,11 +325,11 @@ class ScanWidgetAdvanced(SuperScanWidget):
         self.grid.addWidget(self.seqTimePar, currentRow, 1)
 
 
-        self.grid.addWidget(QtWidgets.QLabel("Phase delay (samples):"), currentRow, 2)
+        self.grid.addWidget(QtWidgets.QLabel("Delay [sampl.] D2:"), currentRow, 2)
         self.grid.addWidget(self.phaseDelayPar, currentRow, 3)
 
 
-        self.grid.addWidget(QtWidgets.QLabel("D3 step delay (samples):"), currentRow, 4)
+        self.grid.addWidget(QtWidgets.QLabel("D3:"), currentRow, 4)
         self.grid.addWidget(self.d3StepDelayPar, currentRow, 5)
         currentRow += 1
 
