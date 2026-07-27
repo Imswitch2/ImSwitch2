@@ -836,6 +836,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'Could not close Cobolt connection on {self._port} '
                     f'via {method_name}(): {exc}'
                 )
+                continue
             return
 
     def getAllDeviceNames(self):  # legacy hook
