@@ -143,6 +143,32 @@ class TestPluginTemplateLoader:
         assert len(templates) == 1
         assert len(errors) == 0
         assert templates[0].name == "My Custom Device"
+
+    def test_template_for_different_manager_produces_error(self, temp_package):
+        """A plugin cannot place another manager's device in its category."""
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "wrong-manager.json").write_text(json.dumps({
+            "managerName": "OtherManager", "managerProperties": {}
+        }))
+        manager = ManagerInfo(
+            manager_name="TestManager", category="detectors", kind="detector",
+            display_name="Test Detector", aliases=(), plugin_name="test-plugin",
+            source_package=pkg_name, docs_url=None, supported_platforms=(),
+            setup_templates=("templates/wrong-manager.json",), is_builtin=False,
+            from_registry=True,
+        )
+        other = ManagerInfo(
+            manager_name="OtherManager", category="lasers", kind="laser",
+            display_name="Other Laser", aliases=(), plugin_name="other-plugin",
+            source_package=pkg_name, docs_url=None, supported_platforms=(),
+            setup_templates=(), is_builtin=False, from_registry=True,
+        )
+
+        templates, errors = load_plugin_templates(ManagerCatalog([manager, other]))
+
+        assert templates == []
+        assert len(errors) == 1
+        assert "does not resolve" in errors[0].message
     
     def test_multiple_templates_multiple_managers(self, temp_package):
         """Test loading multiple templates from multiple managers."""
@@ -436,3 +462,132 @@ class TestPluginTemplateLoader:
         # Within a-plugin, sorted by name
         assert templates[0].name == "apple"
         assert templates[1].name == "banana"
+
+
+class TestSetupFileShapedTemplates:
+    """Templates shaped like a setup file, which is what plugins actually ship.
+
+    Every bundled plugin's setup_template is `{section: {deviceName: device}}`,
+    because the same file doubles as a runnable hardware-free setup that the
+    plugin README points users at and its own tests validate against the schema.
+    The loader originally accepted only a bare device dict, so all three shipped
+    templates — both Thorlabs ones and the TIS one — failed to load and the
+    template browser was empty for every real plugin.
+    """
+
+    @pytest.fixture
+    def temp_package(self, tmp_path):
+        pkg_name = f"test_setupshape_pkg_{id(tmp_path)}"
+        pkg_path = tmp_path / pkg_name
+        pkg_path.mkdir()
+        (pkg_path / "__init__.py").write_text("")
+        (pkg_path / "templates").mkdir()
+        sys.path.insert(0, str(tmp_path))
+        yield pkg_name, pkg_path
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+        if pkg_name in sys.modules:
+            del sys.modules[pkg_name]
+
+    @staticmethod
+    def _manager(pkg_name, resources, manager_name="TestManager",
+                 category="detectors", kind="detector"):
+        return ManagerInfo(
+            manager_name=manager_name,
+            category=category,
+            kind=kind,
+            display_name="Test",
+            aliases=(),
+            plugin_name="test-plugin",
+            source_package=pkg_name,
+            docs_url=None,
+            supported_platforms=(),
+            setup_templates=tuple(resources),
+            is_builtin=False,
+            from_registry=True,
+        )
+
+    def test_setup_file_shaped_template_loads(self, temp_package):
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "mock.json").write_text(json.dumps({
+            "detectors": {
+                "TestCam": {
+                    "managerName": "TestManager",
+                    "managerProperties": {"cameraSerial": "MOCK_1"},
+                    "forAcquisition": True,
+                }
+            }
+        }))
+        catalog = ManagerCatalog([self._manager(pkg_name, ["templates/mock.json"])])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert errors == []
+        assert len(templates) == 1
+        # The unwrapped *device* dict is what gets inserted into a config, not
+        # the section wrapper.
+        assert templates[0].device["managerName"] == "TestManager"
+        assert templates[0].device["managerProperties"] == {"cameraSerial": "MOCK_1"}
+        assert templates[0].device["forAcquisition"] is True
+        assert "detectors" not in templates[0].device
+
+    def test_bare_device_dict_still_loads_unchanged(self, temp_package):
+        """The original shape must keep working — it is still valid."""
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "bare.json").write_text(json.dumps({
+            "managerName": "TestManager", "managerProperties": {}
+        }))
+        catalog = ManagerCatalog([self._manager(pkg_name, ["templates/bare.json"])])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert errors == []
+        assert len(templates) == 1
+        assert templates[0].name == "bare"
+
+    def test_multiple_devices_in_one_template_are_labelled_distinctly(self, temp_package):
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "two.json").write_text(json.dumps({
+            "detectors": {
+                "CamA": {"managerName": "TestManager", "managerProperties": {}},
+                "CamB": {"managerName": "TestManager", "managerProperties": {}},
+            }
+        }))
+        catalog = ManagerCatalog([self._manager(pkg_name, ["templates/two.json"])])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert errors == []
+        assert sorted(t.name for t in templates) == ["two (CamA)", "two (CamB)"]
+
+    def test_ownership_check_still_applies_to_unwrapped_devices(self, temp_package):
+        """A device naming someone else's manager must still be rejected, or a
+        typo in a plugin resource could insert a device into the wrong category."""
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "wrong.json").write_text(json.dumps({
+            "detectors": {
+                "Cam": {"managerName": "SomeoneElsesManager", "managerProperties": {}}
+            }
+        }))
+        catalog = ManagerCatalog([self._manager(pkg_name, ["templates/wrong.json"])])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert templates == []
+        assert len(errors) == 1
+        assert "does not resolve to the declaring manager" in errors[0].message
+
+    def test_unknown_sections_are_ignored(self, temp_package):
+        """Only real setup sections are unwrapped; anything else is not a
+        device container and must not be mistaken for one."""
+        pkg_name, pkg_path = temp_package
+        (pkg_path / "templates" / "odd.json").write_text(json.dumps({
+            "notASection": {"X": {"managerName": "TestManager"}}
+        }))
+        catalog = ManagerCatalog([self._manager(pkg_name, ["templates/odd.json"])])
+
+        templates, errors = load_plugin_templates(catalog)
+
+        assert templates == []
+        assert len(errors) == 1
+        assert "managerName" in errors[0].message

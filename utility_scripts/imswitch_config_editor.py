@@ -33,6 +33,8 @@ from PyQt5.QtWidgets import (
 _MANAGER_CATALOG = None
 _coercion_module = None
 _io_module = None
+_schema_module = None
+_setup_kind_metadata = ()
 try:
     # Ensure the repo root is on sys.path for import resolution
     _script_path = Path(__file__).resolve()
@@ -44,6 +46,9 @@ try:
     _MANAGER_CATALOG = build_catalog()
     from imswitch.imcontrol.model.configeditor import coercion as _coercion_module
     from imswitch.imcontrol.model.configeditor import io as _io_module
+    from imswitch.imcontrol.model.configeditor import schemas as _schema_module
+    from imswitch.imcontrol.model.plugins.setup_metadata import setup_kinds
+    _setup_kind_metadata = setup_kinds()
 except ImportError as e:
     # Model package unavailable; fallback implementations will be used
     pass
@@ -56,18 +61,34 @@ except Exception as e:
 # =============================================================================
 # Authoritative category registry
 # =============================================================================
-# Maps category name → (display label override OR None, manager directory name)
-_CATEGORY_REGISTRY = {
-    "detectors":     (None, "detectors"),
-    "lasers":        (None, "lasers"),
-    "positioners":   (None, "positioners"),
-    "rotators":      (None, "rotators"),
-    "rs232devices":  ("RS232 Devices", "rs232"),
-    "slms":          ("SLMs", "slms"),
-    "flipMirrors":   (None, "flipMirrors"),
-    "pulsegen":      (None, "pulsegen"),
-    "stands":        (None, "stands"),
+# Category labels/colours belong to the UI.  Category names and legacy manager
+# directories are derived from plugins.setup_metadata whenever it is available.
+_CATEGORY_LABEL_OVERRIDES = {
+    "rs232devices": "RS232 Devices",
+    "slms": "SLMs",
 }
+_FALLBACK_CATEGORY_REGISTRY = {
+    "detectors": (None, "detectors"),
+    "lasers": (None, "lasers"),
+    "positioners": (None, "positioners"),
+    "rotators": (None, "rotators"),
+    "rs232devices": ("RS232 Devices", "rs232"),
+    "slms": ("SLMs", "slms"),
+    "flipMirrors": (None, "flipMirrors"),
+    "pulsegen": (None, "pulsegen"),
+    "stands": (None, "stands"),
+}
+_CATEGORY_REGISTRY = (
+    {
+        metadata.editor_category: (
+            _CATEGORY_LABEL_OVERRIDES.get(metadata.editor_category),
+            metadata.legacy_manager_directory,
+        )
+        for metadata in _setup_kind_metadata
+    }
+    if _setup_kind_metadata
+    else _FALLBACK_CATEGORY_REGISTRY
+)
 
 
 def _imswitch_user_root() -> Path:
@@ -433,6 +454,36 @@ def _all_known_managers() -> list[str]:
     return sorted(managers)
 
 
+def _schema_for_manager(manager_name: str) -> dict:
+    """Return the editor form schema for a manager, including plugin fields.
+
+    Built-in templates provide the curated layout.  For a registry-provided
+    manager without one, the category blank template provides the common
+    device fields and the plugin's JSON Schema supplies its properties.
+    """
+    template = SCHEMAS.get(manager_name)
+    if template is None:
+        category = _get_category_for_manager(manager_name)
+        if category:
+            template = BLANK_SCHEMAS.get(category)
+
+    json_schema = _plugin_schema_for_manager(manager_name)
+
+    if _schema_module is not None:
+        return _schema_module.materialize_device_schema(
+            template=template, json_schema=json_schema
+        )
+    return copy.deepcopy(template) if template else {}
+
+
+def _plugin_schema_for_manager(manager_name: str) -> dict | None:
+    """Return a manager's resolved plugin JSON Schema, if it has one."""
+    if _MANAGER_CATALOG is None:
+        return None
+    manager_info = _MANAGER_CATALOG.get(manager_name)
+    return manager_info.properties_schema if manager_info is not None else None
+
+
 def _build_default_device(manager_name: str) -> dict:
     """Return a new device dict pre-filled with schema defaults.
 
@@ -442,27 +493,22 @@ def _build_default_device(manager_name: str) -> dict:
     Phase 2: Delegates to defaults.build_default_device when available,
     passing both template and schema from the catalog.
     """
-    schema = SCHEMAS.get(manager_name)
-
-    # If no specific template, try to find the category and use its blank
-    if not schema:
-        cat = _get_category_for_manager(manager_name)
-        if cat:
-            schema = BLANK_SCHEMAS.get(cat, {})
+    template = SCHEMAS.get(manager_name)
+    if template is None:
+        category = _get_category_for_manager(manager_name)
+        if category:
+            template = BLANK_SCHEMAS.get(category)
+    schema = _schema_for_manager(manager_name)
 
     # Try to use Phase 2 defaults module (graceful fallback if unavailable)
     try:
         from imswitch.imcontrol.model.configeditor.defaults import build_default_device as build_default
         
-        # Get JSON schema from catalog if available
-        json_schema = None
-        if _MANAGER_CATALOG is not None:
-            manager_info = _MANAGER_CATALOG.get(manager_name)
-            if manager_info is not None:
-                json_schema = manager_info.properties_schema
-        
-        # Delegate to Phase 2 builder
-        return build_default(manager_name, template=schema, json_schema=json_schema)
+        return build_default(
+            manager_name,
+            template=template,
+            json_schema=_plugin_schema_for_manager(manager_name),
+        )
     except ImportError:
         # Phase 2 module unavailable - use legacy inline implementation
         pass
@@ -1070,8 +1116,14 @@ class FieldWidget(QWidget):
             self._w.setValue(float(value) if value is not None else 0.0)
         elif tp == "select":
             self._w = QComboBox()
-            self._w.addItems(self._def["opts"])
-            idx = self._w.findText(str(value) if value is not None else "")
+            for option in self._def.get("opts", []):
+                self._w.addItem(str(option), option)
+            # Configs can outlive their template/plugin version.  Keeping the
+            # saved value selectable prevents an open-and-save cycle from
+            # silently changing it to the first currently known option.
+            if value is not None and self._w.findData(value) < 0:
+                self._w.addItem(str(value), value)
+            idx = self._w.findData(value)
             if idx >= 0:
                 self._w.setCurrentIndex(idx)
         elif tp == "multiselect":
@@ -1079,7 +1131,12 @@ class FieldWidget(QWidget):
             self._w.setMinimumHeight(92)
             self._w.setMaximumHeight(150)
             selected = set(value if isinstance(value, list) else [])
-            for opt in self._def.get("opts", []) or []:
+            options = list(self._def.get("opts", []) or [])
+            # Keep choices from newer templates/plugins visible and checked.
+            for selected_value in selected:
+                if selected_value not in {str(option) for option in options}:
+                    options.append(selected_value)
+            for opt in options:
                 item = QListWidgetItem(str(opt))
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if str(opt) in selected else Qt.Unchecked)
@@ -1153,7 +1210,7 @@ class FieldWidget(QWidget):
         if tp == "float":
             return self._w.value()
         if tp == "select":
-            return self._w.currentText()
+            return self._w.currentData()
         if tp == "multiselect":
             return [
                 self._w.item(i).text()
@@ -1480,7 +1537,7 @@ class PropertyEditor(QWidget):
             mgr = self._custom_mgr_edit.text().strip() or self._device.get("managerName", "")
         else:
             mgr = raw_mgr or self._device.get("managerName", "")
-        schema = SCHEMAS.get(mgr, {})
+        schema = _schema_for_manager(mgr)
         props = self._device.get("managerProperties") or {}
 
         # Collect fields grouped by grp
@@ -1594,7 +1651,7 @@ class PropertyEditor(QWidget):
             mgr = self._custom_mgr_edit.text().strip() or self._device.get("managerName", "")
         else:
             mgr = raw_mgr or self._device.get("managerName", "")
-        schema = SCHEMAS.get(mgr, {})
+        schema = _schema_for_manager(mgr)
         new_device: dict = {"managerName": mgr, "managerProperties": {}}
         props = new_device["managerProperties"]
 
@@ -1651,6 +1708,10 @@ class PropertyEditor(QWidget):
             schema_top_keys = {f["key"] for f in schema.get("top", [])}
             schema_prop_keys = {f["key"] for f in schema.get("props", [])}
             schema_prop_keys |= set(schema.get("nested", {}).keys())
+            schema_nested_prop_keys = {
+                nest_key: {f["key"] for f in fields}
+                for nest_key, fields in schema.get("nested", {}).items()
+            }
             
             # Merge to restore unknown fields
             new_device = merge_preserving_unknown(
@@ -1658,6 +1719,7 @@ class PropertyEditor(QWidget):
                 new_device,
                 schema_top_keys=schema_top_keys,
                 schema_prop_keys=schema_prop_keys,
+                schema_nested_prop_keys=schema_nested_prop_keys,
             )
         except ImportError:
             # Phase 2 module unavailable - continue without merge (legacy behavior)

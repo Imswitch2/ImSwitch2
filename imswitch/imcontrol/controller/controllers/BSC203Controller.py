@@ -111,12 +111,20 @@ class BSC203Controller(ImConWidgetController):
         self._stageManager.setPosition(self._widget.setYEdit.value(), 'Y')
         self._stageManager.setPosition(self._widget.setZEdit.value(), 'Z')
 
+    _BAY_TO_AXIS = {0: 'X', 1: 'Y', 2: 'Z'}
+
     def stopAll(self):
-        for axis in range(3):
-            self.stop(axis)
+        # Delegate to the manager (single source of truth), as homeAll does.
+        # The bare dev.stop() this used to issue was a *profiled* stop, which
+        # decelerates along the bay's velocity curve and so cannot stop a bay
+        # whose acceleration has been zeroed — the one state the button is
+        # pressed in. The manager's version stops immediately and restores the
+        # motion parameters that got the axis stuck.
+        self._stageManager.stopAll()
 
     def stop(self, axis):
-        self.dev.stop(bay=axis)
+        """Stop one bay (0/1/2 — kept as bay indices for existing callers)."""
+        self._stageManager.stopAxis(self._BAY_TO_AXIS[axis])
 
     def homeAll(self):
         # Delegate to the manager (single source of truth). Homing parks each

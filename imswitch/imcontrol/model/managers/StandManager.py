@@ -34,7 +34,13 @@ class StandManager(ABC):
             return cls._resolveLegacyManagerClass(
                 currentPackage, managerName
             ), False
-        except (ImportError, AttributeError) as legacy_error:
+        # ValueError: a namespaced plugin id such as "vendor.stand-x" is not a
+        # legal module path, so joinModulePath rejects it. That means "there is
+        # no in-tree stand manager by this name" — it must not escape, or an
+        # uninstalled plugin surfaces "invalid characters" instead of the
+        # actionable diagnostic below, which is what carries the external-plugin
+        # install hint. Mirrors MultiManager._importLegacyManagerClass.
+        except (ImportError, AttributeError, ValueError) as legacy_error:
             mockName = f'{managerName}_mock'
             manager = registry.load_manager_class("stand", mockName)
             if manager is not None:
@@ -48,7 +54,7 @@ class StandManager(ABC):
                 return cls._resolveLegacyMockManagerClass(
                     currentPackage, managerName
                 ), True
-            except (ImportError, AttributeError) as mock_error:
+            except (ImportError, AttributeError, ValueError) as mock_error:
                 raise ImportError(
                     registry.format_resolution_error("stand", managerName)
                 ) from mock_error

@@ -89,6 +89,7 @@ def merge_preserving_unknown(
     *,
     schema_top_keys: set[str],
     schema_prop_keys: set[str],
+    schema_nested_prop_keys: Optional[dict[str, set[str]]] = None,
 ) -> dict:
     """Merge edited device dict back with original, preserving unknown fields.
     
@@ -100,6 +101,9 @@ def merge_preserving_unknown(
         edited: The edited device dict from the form
         schema_top_keys: Set of known top-level keys (from template + schema)
         schema_prop_keys: Set of known managerProperties keys (from template + schema)
+        schema_nested_prop_keys: Known keys within each template-defined nested
+            managerProperties dict.  Unknown keys in a known nested dict are
+            retained, allowing newer plugin settings to survive an older UI.
     
     Returns:
         The edited dict with unknown fields from original restored.
@@ -128,5 +132,17 @@ def merge_preserving_unknown(
                 # This is an unknown property - restore it verbatim
                 # This includes nested dicts, which is the bug being fixed
                 result_props[key] = value
+
+        # A template can know a nested *container* while not yet knowing a
+        # setting a newer plugin version has added to it.  Preserve those
+        # members just like entirely unknown properties.
+        for nest_key, known_keys in (schema_nested_prop_keys or {}).items():
+            original_nested = original_props.get(nest_key)
+            edited_nested = result_props.get(nest_key)
+            if not isinstance(original_nested, dict) or not isinstance(edited_nested, dict):
+                continue
+            for key, value in original_nested.items():
+                if key not in known_keys and key not in edited_nested:
+                    edited_nested[key] = value
     
     return result

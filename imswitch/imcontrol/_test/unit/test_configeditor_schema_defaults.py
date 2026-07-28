@@ -22,6 +22,7 @@ from imswitch.imcontrol.model.configeditor.catalog import (
 )
 from imswitch.imcontrol.model.configeditor.schemas import (
     FieldSpec,
+    materialize_device_schema,
     normalized_fields,
 )
 from imswitch.imcontrol.model.configeditor.defaults import (
@@ -355,6 +356,67 @@ class TestConfigEditorSchemaDefaults:
         
         # User's edit to unknownField should be preserved (not overwritten)
         assert result["managerProperties"]["unknownField"] == "edited"
+
+    def test_merge_preserves_new_nested_setting(self):
+        """A template must not drop settings added inside a known nested dict."""
+        original = {
+            "managerName": "TestManager",
+            "managerProperties": {
+                "driver": {"known": 1, "introducedByNewPlugin": "keep me"},
+            },
+        }
+        edited = {
+            "managerName": "TestManager",
+            "managerProperties": {"driver": {"known": 2}},
+        }
+
+        result = merge_preserving_unknown(
+            original,
+            edited,
+            schema_top_keys=set(),
+            schema_prop_keys={"driver"},
+            schema_nested_prop_keys={"driver": {"known"}},
+        )
+
+        assert result["managerProperties"]["driver"] == {
+            "known": 2,
+            "introducedByNewPlugin": "keep me",
+        }
+
+    def test_materialize_device_schema_adds_plugin_fields(self):
+        """Schema-only plugin fields become template-shaped editor fields."""
+        template = {
+            "top": [],
+            "props": [{"key": "legacy", "req": False, "type": "text"}],
+            "nested": {},
+        }
+        plugin_schema = {
+            "properties": {
+                "legacy": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["safe", "fast"],
+                    "default": "safe",
+                },
+                "calibration": {"type": "object", "default": {"gain": 1}},
+            },
+            "required": ["legacy", "mode"],
+        }
+
+        result = materialize_device_schema(
+            template=template, json_schema=plugin_schema
+        )
+
+        assert result["props"][0]["req"] is True
+        mode = next(field for field in result["props"] if field["key"] == "mode")
+        assert mode["type"] == "select"
+        assert mode["opts"] == ["safe", "fast"]
+        calibration = next(
+            field for field in result["props"] if field["key"] == "calibration"
+        )
+        assert calibration["type"] == "json"
+        # Inputs are cached by the editor and must never be changed in place.
+        assert template["props"] == [{"key": "legacy", "req": False, "type": "text"}]
     
     def test_normalized_fields_template_only(self):
         """Test normalized_fields with template only (no schema)."""
@@ -500,3 +562,51 @@ class TestConfigEditorSchemaDefaults:
         
         assert "unknownNested2" in result["managerProperties"]
         assert result["managerProperties"]["unknownNested2"] == {"x": "y", "z": [1, 2, 3]}
+
+
+class TestNullableSchemaTypes:
+    """`["string", "null"]` is the standard JSON Schema idiom for "or unset".
+
+    Both bundled device plugins use it for cameraSerial. Treating it as an
+    unrepresentable union demoted an ordinary text box to a raw JSON editor,
+    which forced the user to type quotes around a serial number and made an
+    empty box mean the literal string rather than null.
+    """
+
+    def test_nullable_scalars_keep_their_native_control(self):
+        from imswitch.imcontrol.model.configeditor.schemas import (
+            _infer_type_from_schema,
+        )
+
+        assert _infer_type_from_schema({"type": ["string", "null"]}) == "text"
+        assert _infer_type_from_schema({"type": ["integer", "null"]}) == "int"
+        assert _infer_type_from_schema({"type": ["number", "null"]}) == "float"
+        assert _infer_type_from_schema({"type": ["boolean", "null"]}) == "bool"
+
+    def test_plain_scalars_are_unaffected(self):
+        from imswitch.imcontrol.model.configeditor.schemas import (
+            _infer_type_from_schema,
+        )
+
+        assert _infer_type_from_schema({"type": "string"}) == "text"
+        assert _infer_type_from_schema({"type": "integer"}) == "int"
+
+    def test_genuine_multi_type_unions_still_fall_back_to_json(self):
+        """Only a single non-null member is representable; a real union has no
+        safe native control and must keep its value type intact."""
+        from imswitch.imcontrol.model.configeditor.schemas import (
+            _infer_type_from_schema,
+        )
+
+        assert _infer_type_from_schema({"type": ["string", "integer"]}) == "json"
+        assert _infer_type_from_schema({"type": ["null"]}) == "json"
+        assert _infer_type_from_schema({"type": "object"}) == "json"
+
+    def test_nullable_enum_still_becomes_a_select(self):
+        from imswitch.imcontrol.model.configeditor.schemas import (
+            _infer_type_from_schema,
+        )
+
+        assert _infer_type_from_schema(
+            {"type": ["string", "null"], "enum": ["Off", "Hardware"]}
+        ) == "select"

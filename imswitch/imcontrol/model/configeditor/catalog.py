@@ -11,34 +11,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from imswitch.imcontrol.model.plugins.setup_metadata import (
+    CATEGORY_METADATA,
+    KIND_METADATA,
+    kind_to_category,
+)
 
-# Authoritative mapping from registry kind to editor category
-KIND_TO_CATEGORY = {
-    "detector": "detectors",
-    "laser": "lasers",
-    "positioner": "positioners",
-    "rotator": "rotators",
-    "rs232": "rs232devices",
-    "slm": "slms",
-    "flip_mirror": "flipMirrors",
-    "stand": "stands",
-    "pulse_generator": "pulsegen",
-}
 
-# Reverse mapping for category to kind
-CATEGORY_TO_KIND = {v: k for k, v in KIND_TO_CATEGORY.items()}
-
-# Editor category to manager directory name
+# Compatibility exports for existing callers.  The model-owned setup metadata
+# is the single source of truth.
+KIND_TO_CATEGORY = kind_to_category()
+CATEGORY_TO_KIND = {category: metadata.kind for category, metadata in CATEGORY_METADATA.items()}
 CATEGORY_TO_DIR = {
-    "detectors": "detectors",
-    "lasers": "lasers",
-    "positioners": "positioners",
-    "rotators": "rotators",
-    "rs232devices": "rs232",
-    "slms": "slms",
-    "flipMirrors": "flipMirrors",
-    "pulsegen": "pulsegen",
-    "stands": "stands",
+    category: metadata.legacy_manager_directory
+    for category, metadata in CATEGORY_METADATA.items()
 }
 
 
@@ -59,6 +45,19 @@ class ManagerInfo:
     is_builtin: bool
     from_registry: bool  # True from registry, False from legacy scan
     properties_schema: Optional[dict] = None  # resolved managerProperties JSON Schema
+
+
+@dataclass(frozen=True)
+class CoreManagerCoverage:
+    """Registry-coverage result for one in-tree selectable manager.
+
+    ``unregistered`` is deliberately distinct from ``legacy_only``.  The
+    former is a migration item for a runtime-plugin-capable kind; the latter is
+    intentional because that kind still has a bespoke runtime loader.
+    """
+
+    manager: ManagerInfo
+    status: str  # "registered" | "unregistered" | "legacy_only"
 
 
 class ManagerCatalog:
@@ -167,13 +166,14 @@ def build_catalog(
     contributions = registry.list_contributions()
     for contrib in contributions:
         # Map kind to category
-        category = KIND_TO_CATEGORY.get(contrib.kind)
-        if category is None:
+        metadata = KIND_METADATA.get(contrib.kind)
+        if metadata is None:
             # Skip unknown kinds gracefully
             logger.debug(
                 f"Skipping contribution {contrib.id} with unmapped kind '{contrib.kind}'"
             )
             continue
+        category = metadata.editor_category
         
         # Determine if builtin (from imswitch-core plugin)
         is_builtin = contrib.plugin_name == "imswitch-core"
@@ -218,6 +218,38 @@ def build_catalog(
             )
     
     return ManagerCatalog(infos)
+
+
+def audit_core_manager_coverage(
+    registry=None,
+    *,
+    managers_root: Optional[Path] = None,
+) -> list[CoreManagerCoverage]:
+    """Classify each in-tree selectable manager against the core registry.
+
+    This intentionally uses the same static scanner as the catalog's legacy
+    fallback.  It is a migration guard, not runtime discovery: a newly added
+    manager must be registered or explicitly reviewed as legacy-only instead
+    of quietly becoming editor-visible through a filename convention.
+    """
+    if registry is None:
+        from imswitch.imcontrol.model.plugins.registry import build_default_registry
+
+        # Installed third-party plugins are irrelevant to coverage of the core
+        # source tree and could make a local audit environment-dependent.
+        registry = build_default_registry(discover=False)
+
+    coverage: list[CoreManagerCoverage] = []
+    for manager in _scan_legacy_managers(managers_root, set()):
+        metadata = KIND_METADATA[manager.kind]
+        if registry.resolve(manager.kind, manager.manager_name) is not None:
+            status = "registered"
+        elif metadata.supports_external_plugins:
+            status = "unregistered"
+        else:
+            status = "legacy_only"
+        coverage.append(CoreManagerCoverage(manager=manager, status=status))
+    return sorted(coverage, key=lambda item: (item.manager.kind, item.manager.manager_name))
 
 
 def _scan_legacy_managers(

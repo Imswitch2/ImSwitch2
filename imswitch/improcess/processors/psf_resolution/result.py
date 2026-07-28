@@ -53,6 +53,20 @@ class PSFResolutionResult(ProcessingResult):
         else:
             raise ValueError(f"PSF result supports HDF5 or CSV/TXT, got {fmt!r}")
 
+    def table_records(self) -> list[dict]:
+        """One row per fit, including the unit-scaled sigma/FWHM columns.
+
+        ``analysis.rows()`` is already the row-per-fit projection used for CSV
+        and HDF5 export; the shared Results dock renders the same rows.
+        """
+        return self.analysis.rows()
+
+    def table_columns(self) -> list[str]:
+        # Column names depend on the analysis unit (e.g. fwhm_x_nm), so they
+        # are read off an actual row rather than hard-coded.
+        rows = self.analysis.rows()
+        return list(rows[0].keys()) if rows else []
+
     def plot_payloads(self) -> list[PlotPayload]:
         if not self.analysis.fits:
             return []

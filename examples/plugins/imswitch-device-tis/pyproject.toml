@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imswitch-device-tis"
+version = "0.1.0"
+description = "The Imaging Source camera support for ImSwitch2, built on IC Imaging Control 4"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+keywords = ["imswitch", "imswitch-plugin", "the imaging source", "tis", "camera", "ic4"]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "ImSwitch>=0.1",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# The vendor SDK is only needed to talk to real hardware; the mock path works
+# without it via cameraSerial "MOCK_...". Note that imagingcontrol4 also
+# requires the IC4 GenTL Producer (USB3 Vision) to be installed on the machine —
+# pip cannot supply that.
+hardware = ["imagingcontrol4>=1.5"]
+test = ["pytest", "jsonschema"]
+
+[project.entry-points."imswitch.manifest"]
+imswitch-device-tis = "imswitch_device_tis:imswitch.json"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+imswitch_device_tis = [
+    "imswitch.json",
+    "schemas/*.schema.json",
+    "setup_templates/*.json",
+]

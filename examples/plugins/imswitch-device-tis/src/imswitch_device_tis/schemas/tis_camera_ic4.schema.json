@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "The Imaging Source IC4 camera managerProperties",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "cameraSerial": {
+      "type": ["string", "null"],
+      "description": "Camera serial number. null opens the first available camera; a value starting with 'MOCK_' loads a mock camera for headless testing. Preferred over a positional list index, which silently rebinds when USB enumeration order changes."
+    },
+    "cameraPixelSizeUm": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0.15,
+      "description": "Optically effective (sample-plane) pixel size in micrometers."
+    },
+    "maxQueuedFrames": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 256,
+      "description": "Bound on retained undrained frames. Oldest are dropped past this, with a single warning."
+    },
+    "pixelFormat": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "GenICam PixelFormat, e.g. 'Mono8' or 'Mono16'. null leaves the device default."
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "exposure_us": { "type": "number", "minimum": 1, "default": 5000 },
+        "gain": { "type": "number", "default": 0 },
+        "trigger_mode": {
+          "type": "string",
+          "enum": ["Off", "Hardware"],
+          "default": "Off",
+          "description": "'Hardware' arms the external trigger at startup. Scans may arm and disarm it at runtime."
+        },
+        "trigger_source": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "GenICam TriggerSource. The DMK 33UX250 offers 'Line1', 'Software' and 'Any'; use 'Line1' for a TriggerScope TTL. null leaves the device default."
+        },
+        "trigger_activation": {
+          "type": ["string", "null"],
+          "enum": ["RisingEdge", "FallingEdge", null],
+          "default": null,
+          "description": "Edge the camera latches on. The DMK 33UX250 ships set to FallingEdge, which fires on the trailing edge of a pulse; use 'RisingEdge' for a TriggerScope. null leaves the device default."
+        }
+      }
+    }
+  }
+}

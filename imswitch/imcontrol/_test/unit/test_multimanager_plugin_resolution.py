@@ -252,3 +252,65 @@ def test_no_shadowing_warning_when_only_legacy_resolves(patch_registry, caplog):
     # No warning should be logged (registry doesn't resolve, no shadowing)
     warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
     assert len(warning_records) == 0
+
+
+# --- Namespaced (hyphenated) contribution ids -------------------------------
+#
+# Every real plugin id looks like "vendor.device-name": thorlabs.tsi-camera,
+# thorlabs.kinesis-stage, tis.camera-ic4. joinModulePath rejects the hyphen with
+# ValueError, which used to escape _resolveManagerClass entirely — so no
+# installed plugin could be named by its own id in a setup file, and only legacy
+# class-name aliases worked. The fixtures above use "my.fakecam", which has a dot
+# but no hyphen, so joinModulePath accepts it and the bug stayed invisible.
+
+
+def _registry_with_hyphenated_detector():
+    registry = DevicePluginRegistry()
+    registry.register(
+        DeviceManagerContribution(
+            id="vendor.fake-cam",
+            kind="detector",
+            display_name="Hyphenated plugin camera",
+            python_name=f"{THIS_MODULE}:FakePluginManager",
+            plugin_name="imswitch-test-plugin",
+        )
+    )
+    return registry
+
+
+def test_resolves_plugin_manager_with_hyphenated_id(patch_registry):
+    """A hyphenated id is not a legal module path, but it is a legal plugin id."""
+    patch_registry(_registry_with_hyphenated_detector())
+
+    cls = MultiManager._resolveManagerClass(
+        CURRENT_PACKAGE, "detectors", "detector", "vendor.fake-cam"
+    )
+
+    assert cls is FakePluginManager
+
+
+def test_hyphenated_id_does_not_warn_about_shadowing(patch_registry, caplog):
+    """A name that cannot be a module cannot shadow an in-tree manager."""
+    patch_registry(_registry_with_hyphenated_detector())
+
+    with caplog.at_level("WARNING"):
+        MultiManager._resolveManagerClass(
+            CURRENT_PACKAGE, "detectors", "detector", "vendor.fake-cam"
+        )
+
+    assert "shadowing" not in caplog.text
+
+
+def test_unknown_hyphenated_id_gives_the_actionable_diagnostic(patch_registry):
+    """The external-plugin install hints in external.py are keyed by exactly
+    these namespaced ids, so a raw ValueError here made the whole hint system
+    unreachable — the user saw 'invalid characters' instead of what to install.
+    """
+    patch_registry(DevicePluginRegistry())
+
+    with pytest.raises(UnknownDeviceManagerError) as excinfo:
+        MultiManager._resolveManagerClass(
+            CURRENT_PACKAGE, "detectors", "detector", "not.installed-plugin"
+        )
+
+    assert "not.installed-plugin" in str(excinfo.value)

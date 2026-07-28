@@ -1,11 +1,16 @@
 """LaserManager for Cobolt 06-01 / 06-MLD lasers.
 
-This implementation talks directly through ``laser.send_cmd(...)`` and
-selects the command profile at startup. Older 06-01 / 06-MLD units use the
+Vendor commands live in ``cobolt0601_protocols``: this manager selects a
+protocol profile at startup and then drives the laser through named
+operations, never through command strings. Older 06-01 / 06-MLD units use the
 short Cobolt command set (``l0``/``l1``/``em``/``sdmes``/``slmp``). Newer
 firmware uses the SCPI-style profile exposed by Cobolt's official
 ``pycobolt`` package (``LASer:RUNMode`` /
 ``LASer:CP:POWer:SETPoint`` / ``LASer:PowerModulation:POWer:SETPoint``).
+
+What stays here is what only the manager can own: configuration, the safe
+initialization sequence, enable/disable/scan sequencing, cached ImSwitch
+state, the master-versus-pause emission policy, and simulation.
 
 Safety design (matches the WFS reference at
 ``/Users/lenny/PycharmProjects/WidefieldStarss/src/WFS/cobolt_laser.py``):
@@ -24,10 +29,38 @@ Safety design (matches the WFS reference at
   paused state, then resumes only after the requested power has been written.
 """
 
-from imswitch.imcommon.model import initLogger, pythontools
+from imswitch.imcommon.model import initLogger
 from .LaserManager import LaserManager, normalise_ports
-import importlib
+from .cobolt0601_protocols import (
+    AUTO_SELECTION_ORDER,
+    build_profiles,
+    read_identity,
+)
+from ._protocol import (
+    CommandRejected,
+    DeviceInitializationError,
+    ProtocolError,
+)
 import traceback
+
+
+LEGACY_PROFILE_ID = 'cobolt.legacy'
+SCPI_PROFILE_ID = 'cobolt.scpi-compatible'
+
+
+def _as_bool(value) -> bool:
+    """Interpret a managerProperties flag as a bool.
+
+    JSON gives a real bool, but hand-edited setups and the config editor can
+    produce strings. Anything unrecognised is False, which is the safe default
+    for ``simulation``: an unparseable value must not silently disable real
+    hardware.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
 
 
 class Cobolt0601NewLaserManager(LaserManager):
@@ -43,9 +76,19 @@ class Cobolt0601NewLaserManager(LaserManager):
     - ``emissionControl`` -- ``"master"`` (default, ``l0``/``l1``),
       ``"pause"`` (``las:paus 1``/``0``), or ``"auto"`` (diagnostic only;
       logs the detected family but resolves to master).
+    - ``protocolProfile`` -- command dialect to use: ``"cobolt.legacy"``,
+      ``"cobolt.scpi-compatible"``, or ``"auto"`` to discover it from
+      read-only probes. Omitting it means ``auto``, which reproduces the
+      manager's long-standing detection behavior for existing setup files.
     - ``scpiPowerUnit`` -- unit expected by SCPI power setpoint commands:
       ``"mW"`` (default, matches upstream ``pycobolt``) or ``"W"`` for
-      firmware/configurations that expose SCPI setpoints in watts.
+      firmware/configurations that expose SCPI setpoints in watts. Retained
+      for compatibility; it is expected to become a profile distinction once
+      the hardware inventory verifies which controllers need watts.
+    - ``simulation`` -- ``true`` to use the mock driver instead of opening the
+      port. Defaults to ``false``: a real device that cannot be initialized
+      raises instead of silently falling back to a mock, because a mock that
+      looks like a working laser is dangerous.
     """
 
     def __init__(self, laserInfo, name, **_lowLevelManagers):
@@ -63,6 +106,18 @@ class Cobolt0601NewLaserManager(LaserManager):
         self._modulation_power_mw = float(
             laserInfo.managerProperties.get('modulationPowerMw', 5.0)
         )
+        # Simulation is explicit and defaults to False. Previously ANY failure
+        # to open the port silently substituted a mock, so an operator could
+        # believe they were driving real hardware.
+        self._simulation = _as_bool(
+            laserInfo.managerProperties.get('simulation', False)
+        )
+        self._protocol_profile = laserInfo.managerProperties.get('protocolProfile')
+        if self._protocol_profile is not None:
+            self._protocol_profile = str(self._protocol_profile).strip()
+        self._profiles = {}
+        self._profile = None
+
         self._scpi_power_unit = str(
             laserInfo.managerProperties.get('scpiPowerUnit', 'mW')
         ).strip().lower()
@@ -99,148 +154,111 @@ class Cobolt0601NewLaserManager(LaserManager):
         self._setpoint_mw = 0
         self._enabled = False
         self._real_hw = False
-        # Firmware capability — detected at init. True for SCPI-only/newer
-        # Cobolt firmware (e.g. Skyra) that rejects the short-form commands
-        # `em`/`slmp`/`sdmes`/`cp`. False for legacy 06-01/06-MLD which
-        # rejects the SCPI variants `LAS:RUNM`/`las:pm:dig:ena`/`las:paus`.
-        # Initialised to None and set during _detect_firmware().
-        self._scpi = None
+        self._profiles = build_profiles(self._scpi_power_unit)
         self._firmware_version = None
         self._serial_number = None
         self._model_number = None
-        self._command_variant_cache = {}
+        # Failure type of the most recent profile call, so callers can tell an
+        # explicit rejection (safe to try an alternative) from an unknown
+        # outcome (never retry). None when the last operation succeeded.
+        self._last_failure = None
 
-        self.__logger.debug(f'Initializing Cobolt laser {name} on {self._port}')
-        try:
-            self._laser = self._Cobolt06(port=self._port)
+        if self._simulation:
+            self.__logger.info(
+                f'Cobolt laser {name} starting in simulation mode; '
+                f'port {self._port} will not be opened.'
+            )
+            from imswitch.imcontrol.model.lantzdrivers_mock.cobolt.cobolt0601 import (
+                MockCobolt06,
+            )
+            self._laser = MockCobolt06(self._port)
+            self._laser.initialize()
+            self._real_hw = False
+        else:
+            self.__logger.debug(f'Initializing Cobolt laser {name} on {self._port}')
+            try:
+                self._laser = self._Cobolt06(port=self._port)
+            except Exception as exc:
+                self.__logger.debug(
+                    f'Cobolt {name} open failure traceback:\n'
+                    f'{traceback.format_exc()}'
+                )
+                raise DeviceInitializationError(
+                    f'Cobolt laser {name!r} could not be opened on '
+                    f'{self._port}: {exc}. Check the configured port and '
+                    f'device power. To run without hardware, set '
+                    f'managerProperties.simulation to true.'
+                ) from exc
             self._real_hw = True
+
+        # Profile validation and the safe state are part of initialization: if
+        # either fails we must not hand back a manager that looks usable. The
+        # port is closed again so a failed startup does not leak it.
+        try:
             self._detect_firmware()
             self._init_safe_state()
-            super().__init__(laserInfo, name, isBinary=False,
-                             valueUnits='mW', valueDecimals=0)
-        except Exception as exc:
+        except Exception:
+            self._close_connection()
+            raise
+
+        super().__init__(laserInfo, name, isBinary=False,
+                         valueUnits='mW', valueDecimals=0)
+
+    # ------------------------------------------------------------------
+    # Profile bridge — the manager never builds a vendor command string.
+    # ------------------------------------------------------------------
+
+    def _run(self, operation_name: str, *args, log_failure: bool = True) -> bool:
+        """Invoke a profile operation and report success as a bool.
+
+        The manager's sequencing logic is built on "did this step work?", and
+        each call site decides for itself whether a failure is fatal or
+        best-effort — that safety policy stays here rather than moving into
+        the profiles. The failure *type* is recorded in ``self._last_failure``
+        so callers can tell an explicit rejection from an unknown outcome.
+        """
+        profile = self._profile
+        if profile is None:
+            self._last_failure = None
             self.__logger.error(
-                f'Failed to open real Cobolt {name} on {self._port}; '
-                f'loading mock: {exc}'
+                f'Cobolt {self._port}: no protocol profile selected; '
+                f'cannot run {operation_name}.'
             )
-            self.__logger.debug(
-                f'Cobolt {name} open failure traceback:\n{traceback.format_exc()}'
+            return False
+
+        operation = getattr(profile, operation_name, None)
+        if operation is None:
+            self._last_failure = None
+            self.__logger.error(
+                f'Cobolt {self._port}: profile {profile.profile_id} does not '
+                f'implement {operation_name}.'
             )
-            package = importlib.import_module(
-                pythontools.joinModulePath(
-                    'imswitch.imcontrol.model.lantzdrivers_mock.cobolt.', 'cobolt0601'
-                )
-            )
-            driver = getattr(package, 'MockCobolt06')
-            self._laser = driver(self._port)
-            self._laser.initialize()
-            super().__init__(laserInfo, name, isBinary=False,
-                             valueUnits='mW', valueDecimals=0)
+            return False
 
-    # ------------------------------------------------------------------
-    # Raw command shim — bypasses the SCPI helpers in PyCoboltManager.
-    # ------------------------------------------------------------------
-
-    def _cmd(self, command: str, *, log_failure: bool = True):
-        """Send a raw Cobolt command and return ``(ok, reply)``.
-
-        ``ok`` is True if the controller produced a reply and the reply
-        does not look like an error message ("illegal command" or
-        "syntax error"). Transport failures (no reply, raised exception)
-        return ``(False, '')``.
-
-        Set ``log_failure=False`` only for expected probe failures, such
-        as firmware-family detection. Callers that drive state transitions
-        MUST check ``ok`` before updating internal flags — see
-        :meth:`setEnabled`. Fail-open semantics are unsafe for laser
-        control.
-        """
         try:
-            reply = self._laser.send_cmd(command)
-        except Exception as e:
+            operation(self._laser, *args)
+        except CommandRejected as exc:
+            self._last_failure = exc
             if log_failure:
-                self.__logger.error(f'Command {command!r} raised: {e}')
-            return False, ''
-        reply = reply or ''
-        rl = reply.lower()
-        if 'illegal command' in rl or 'syntax error' in rl:
+                self.__logger.warning(str(exc))
+            return False
+        except ProtocolError as exc:
+            self._last_failure = exc
             if log_failure:
-                self.__logger.warning(
-                    f'Cobolt firmware rejected {command!r}: {reply!r}'
+                self.__logger.error(
+                    f'Cobolt {self._port}: {operation_name} failed with an '
+                    f'unknown outcome ({type(exc).__name__}): {exc.message}'
                 )
-            return False, reply
-        return True, reply
-
-    def _cmd_or_warn(self, command: str) -> bool:
-        """Send a command and log a warning on failure. Returns ``ok``."""
-        ok, _ = self._cmd(command)
-        if not ok:
-            self.__logger.warning(
-                f'Command {command!r} did not succeed; downstream state '
-                f'may be inconsistent.'
-            )
-        return ok
-
-    def _cmd_any(self, commands, purpose: str) -> bool:
-        """Try command variants in order and cache the winning index.
-
-        ``commands`` contain concrete command strings, often with dynamic
-        numeric values. Caching the index per purpose avoids retrying a known
-        losing variant on every setValue/scan transition while still allowing
-        fallback if a later command fails.
-        """
-        if not hasattr(self, '_command_variant_cache'):
-            self._command_variant_cache = {}
-
-        failures = []
-        cached_index = self._command_variant_cache.get(purpose)
-        if cached_index is not None and cached_index < len(commands):
-            command = commands[cached_index]
-            ok, reply = self._cmd(command, log_failure=False)
-            if ok:
-                return True
-            failures.append(f'{command!r} -> {reply!r}')
-            self._command_variant_cache.pop(purpose, None)
-
-        for index, command in enumerate(commands):
-            if index == cached_index:
-                continue
-            ok, reply = self._cmd(command, log_failure=False)
-            if ok:
-                self._command_variant_cache[purpose] = index
-                return True
-            failures.append(f'{command!r} -> {reply!r}')
-
-        self.__logger.warning(
-            f'Cobolt {self._port}: all command variants failed for '
-            f'{purpose}: {", ".join(failures)}'
-        )
-        return False
-
-    def _query_optional(self, command: str):
-        ok, reply = self._cmd(command, log_failure=False)
-        if not ok:
-            return None
-        value = str(reply).strip()
-        return value if value else None
+            return False
+        self._last_failure = None
+        return True
 
     def _read_identity(self) -> None:
-        """Read and log the Cobolt identity fields when the controller exposes them."""
-        firmware = (
-            self._query_optional('gfv?')
-            or getattr(self._laser, 'firmware', None)
-            or getattr(self._laser, 'firmware_version', None)
-        )
-        serial = (
-            self._query_optional('sn?')
-            or self._query_optional('gsn?')
-            or getattr(self._laser, 'serialnumber', None)
-        )
-        model = self._query_optional('glm?') or getattr(self._laser, 'modelnumber', None)
-
-        self._firmware_version = str(firmware).strip() if firmware else None
-        self._serial_number = str(serial).strip() if serial else None
-        self._model_number = str(model).strip() if model else None
+        """Read and log the Cobolt identity fields the controller exposes."""
+        identity = read_identity(self._laser)
+        self._firmware_version = identity['firmware']
+        self._serial_number = identity['serial']
+        self._model_number = identity['model']
 
         self.__logger.info(
             f'Cobolt {self._port} identity: '
@@ -249,18 +267,45 @@ class Cobolt0601NewLaserManager(LaserManager):
             f'model={self._model_number or "unknown"}'
         )
 
-    def _scpi_power_arg(self, value_mw: float) -> float:
-        """Convert a GUI mW value to the configured SCPI setpoint unit."""
-        value_mw = float(value_mw)
-        if self._scpi_power_unit == 'w':
-            return value_mw / 1000.0
-        return value_mw
+    # ------------------------------------------------------------------
+    # Transitional selection shims
+    #
+    # ``_scpi`` and ``_scpi_power_unit`` predate protocol profiles. They are
+    # kept as views onto the selected profile so existing callers and the
+    # command-sequence tests keep working unchanged through the extraction.
+    # Phase 3 replaces them with the profile identifier itself.
+    # ------------------------------------------------------------------
 
-    def _scpi_power_reply_to_mw(self, value: float) -> float:
-        value = float(value)
-        if self._scpi_power_unit == 'w':
-            return value * 1000.0
-        return value
+    @property
+    def _scpi(self):
+        profile = getattr(self, '_profile', None)
+        if profile is None:
+            return None
+        return profile.profile_id == SCPI_PROFILE_ID
+
+    @_scpi.setter
+    def _scpi(self, value):
+        if value is None:
+            self._profile = None
+            return
+        if not getattr(self, '_profiles', None):
+            self._profiles = build_profiles(
+                getattr(self, '_scpi_power_unit', 'mw')
+            )
+        self._profile = self._profiles[
+            SCPI_PROFILE_ID if value else LEGACY_PROFILE_ID
+        ]
+
+    @property
+    def _scpi_power_unit(self):
+        return getattr(self, '_scpi_power_unit_value', 'mw')
+
+    @_scpi_power_unit.setter
+    def _scpi_power_unit(self, value):
+        self._scpi_power_unit_value = value
+        for profile in (getattr(self, '_profiles', None) or {}).values():
+            if hasattr(profile, 'power_unit'):
+                profile.power_unit = value
 
     # ------------------------------------------------------------------
     # Firmware autodetection
@@ -282,63 +327,32 @@ class Cobolt0601NewLaserManager(LaserManager):
             ``LASer:CP:POWer:SETPoint?``; some firmware also accepts older
             ``LASer:POWer:SETPoint?``.
           - Legacy probes: ``l?`` or ``gam?``.
-          - Both probe groups fail → log ERROR (controller unresponsive
-            or wrong device on the port) and default to legacy as a
-            best-effort. Subsequent commands will fail loudly thanks to
-            the fail-closed logic in :meth:`setEnabled`, so the operator
-            gets a clear signal early.
+          - Both probe groups fail → raise
+            :class:`DeviceInitializationError`. The controller is
+            unresponsive, powered off, or not a Cobolt, and guessing a
+            command set for an unidentified laser is exactly the kind of
+            silent assumption this manager must not make.
 
         SCPI takes priority when both succeed — it's the modern command
-        set and avoids ambiguity on units. Decision is one-shot for the
-        lifetime of the manager and logged at INFO (or ERROR on the
-        unresponsive path).
+        set and avoids ambiguity on units. Modern controllers often still
+        answer short-form queries such as ``l?``, so overlap is expected and
+        is not itself an error. Decision is one-shot for the lifetime of the
+        manager.
+
+        An explicit ``protocolProfile`` skips discovery: the requested profile
+        is loaded and validated read-only, and a validation that contradicts
+        the request is refused rather than silently resolved to a different
+        profile.
         """
         self._read_identity()
 
-        ok_runmode, _ = self._cmd('LASer:RUNMode?', log_failure=False)
-        ok_power_generic, _ = self._cmd('LASer:POWer:SETPoint?', log_failure=False)
-        ok_power_cp, _ = self._cmd('LASer:CP:POWer:SETPoint?', log_failure=False)
-        ok_power_pm, _ = self._cmd(
-            'LASer:PowerModulation:POWer:SETPoint?', log_failure=False
-        )
-        scpi_ok = ok_runmode and (
-            ok_power_generic or ok_power_cp or ok_power_pm
-        )
-
-        # Legacy probe: ``l?`` returns "0" or "1" on every Cobolt
-        # firmware revision I'm aware of (it's the master on/off query). Some
-        # controllers answer mode queries even when master state is unavailable,
-        # so ``gam?`` is a second non-mutating legacy probe.
-        ok_legacy_probe, _ = self._cmd('l?', log_failure=False)
-        ok_legacy_mode, _ = self._cmd('gam?', log_failure=False)
-        legacy_ok = ok_legacy_probe or ok_legacy_mode
-
-        if scpi_ok:
-            self._scpi = True
-            self.__logger.debug(
-                f'Cobolt {self._port}: SCPI firmware detected; '
-                f'using SCPI command set '
-                f'(runmode={ok_runmode}, generic_power={ok_power_generic}, '
-                f'cp_power={ok_power_cp}, pm_power={ok_power_pm}, '
-                f'scpiPowerUnit={self._scpi_power_unit}).'
-            )
-        elif legacy_ok:
-            self._scpi = False
-            self.__logger.debug(
-                f'Cobolt {self._port}: legacy firmware detected; '
-                f'using em/slmp/sdmes/cp command set '
-                f'(l?={ok_legacy_probe}, gam?={ok_legacy_mode}).'
-            )
+        requested = self._protocol_profile
+        if requested and requested.lower() != 'auto':
+            self._select_requested_profile(requested)
         else:
-            self._scpi = False
-            self.__logger.error(
-                f'Cobolt {self._port}: NEITHER firmware family responds. '
-                f'SCPI probes (LASer:RUNMode?, SCPI power setpoint queries) '
-                f'and legacy probes (l?, gam?) all failed. Controller may be '
-                f'powered off, unplugged, on the wrong port, or in an error state. '
-                f'Defaulting to legacy command set as a best-effort — '
-                f'subsequent commands will likely fail.'
-            )
+            self._discover_profile()
+
+        self._validate_profile_capabilities()
 
         if self._emission_control == 'auto':
             self._pause_mode = False
@@ -350,60 +364,131 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'firmware that must not receive l0.'
             )
 
-    # --- Per-action helpers that branch on firmware ---
-    # Each returns True only if every required command succeeded.
+    def _probe(self, profile):
+        """Run a profile's read-only probe, aborting if it learns nothing.
+
+        A probe reports a clean negative when the controller *rejects* its
+        queries — that genuinely means "not this dialect". Any other failure
+        means the probe is uninformative, and continuing would let a healthy
+        controller with a flaky link be driven with the wrong command set: an
+        SCPI unit whose SCPI queries time out still answers ``l?``, and would
+        otherwise be selected as legacy.
+        """
+        try:
+            return profile.probe(self._laser)
+        except ProtocolError as exc:
+            raise DeviceInitializationError(
+                f'Cobolt {self._port}: probing profile {profile.profile_id} '
+                f'did not complete ({type(exc).__name__}: {exc.message}). '
+                f'Profile discovery is indeterminate, so no command dialect '
+                f'can be trusted. Check the port, baud rate, cabling and '
+                f'device power rather than assuming a different dialect.'
+            ) from exc
+
+    def _select_requested_profile(self, requested: str) -> None:
+        """Load an explicitly configured profile and validate it read-only."""
+        profile = self._profiles.get(requested)
+        if profile is None:
+            raise DeviceInitializationError(
+                f'Cobolt {self._port}: unknown protocolProfile '
+                f'{requested!r}. Available profiles: '
+                f'{", ".join(sorted(self._profiles))}.'
+            )
+
+        result = self._probe(profile)
+        if not result.matched:
+            raise DeviceInitializationError(
+                f'Cobolt {self._port}: the controller does not behave like '
+                f'the requested protocolProfile {requested!r} '
+                f'(evidence: {result.evidence}). Refusing to silently switch '
+                f'to a different profile.'
+            )
+
+        self._profile = profile
+        self.__logger.debug(
+            f'Cobolt {self._port}: using explicitly configured profile '
+            f'{profile.profile_id}.'
+        )
+
+    def _discover_profile(self) -> None:
+        """Select a profile from bounded, read-only probes.
+
+        Candidates are probed in the documented precedence order, and every
+        candidate is probed even after a match so the fingerprint records the
+        full picture. Overlap between SCPI and legacy is expected, not an
+        error; a device that matches nothing is refused rather than guessed.
+        """
+        results = {}
+        for profile_id in AUTO_SELECTION_ORDER:
+            profile = self._profiles.get(profile_id)
+            if profile is None or not profile.auto_selectable:
+                continue
+            results[profile_id] = self._probe(profile)
+
+        for profile_id in AUTO_SELECTION_ORDER:
+            result = results.get(profile_id)
+            if result is not None and result.matched:
+                self._profile = self._profiles[profile_id]
+                self.__logger.debug(
+                    f'Cobolt {self._port}: detected profile {profile_id} '
+                    f'(evidence: {result.evidence}, '
+                    f'scpiPowerUnit={self._scpi_power_unit}).'
+                )
+                return
+
+        raise DeviceInitializationError(
+            f'Cobolt {self._port}: neither firmware family responds. '
+            f'SCPI probes (LASer:RUNMode?, SCPI power setpoint queries) '
+            f'and legacy probes (l?, gam?) all failed. The controller may '
+            f'be powered off, unplugged, on the wrong port, or in an '
+            f'error state. Refusing to guess a command set for an '
+            f'unidentified device. To run without hardware, set '
+            f'managerProperties.simulation to true.'
+        )
+
+    def _validate_profile_capabilities(self) -> None:
+        """Fail at startup when the emission policy needs a missing operation.
+
+        Configuration and profile can each be valid yet mutually incompatible:
+        ``emissionControl="pause"`` needs pause/resume, which legacy firmware
+        does not have. Catching it here reports a configuration error instead
+        of surfacing later as a failed emission transition at the first enable.
+        """
+        if not self._pause_mode:
+            return
+        profile = self._profile
+        unsupported = getattr(profile, 'unsupported_operations', frozenset())
+        missing = [op for op in ('pause', 'resume') if op in unsupported]
+        if missing:
+            raise DeviceInitializationError(
+                f'Cobolt {self._port}: emissionControl="pause" requires '
+                f'{" and ".join(missing)}, which profile '
+                f'{profile.profile_id} does not support. Use '
+                f'emissionControl="master", or configure a profile that '
+                f'supports pausing emission.'
+            )
+
+    # --- Per-action helpers, delegating to the selected profile ---
+    # Each returns True only if every required operation succeeded.
 
     def _enter_constant_power(self) -> bool:
-        if self._scpi:
-            return self._cmd_any(
-                ['LASer:RUNMode ConstantPower', 'LAS:RUNM ConstantPower', 'cp'],
-                'enter constant-power mode',
-            )
-        return self._cmd_or_warn('cp')
+        return self._run('enter_constant_power')
 
     def _enter_modulation_mode(self, mod_power_mw: float) -> bool:
         """Enter digital-modulation mode at the given modulation power.
 
-        SCPI power commands default to mW because that is what the official
-        upstream ``pycobolt.Cobolt06`` wrapper sends. Set
-        ``managerProperties.scpiPowerUnit = "W"`` for controllers configured
-        to expose SCPI setpoints in watts.
+        All three steps are attempted even if an earlier one fails, so the
+        laser is driven as far towards the gated state as the controller
+        allows. The caller decides what a partial failure means.
         """
-        if self._scpi:
-            scpi_value = self._scpi_power_arg(mod_power_mw)
-            ok1 = self._cmd_any(
-                [
-                    f'LASer:PowerModulation:POWer:SETPoint {scpi_value}',
-                    f'slmp {float(mod_power_mw)}',
-                ],
-                'set modulation power',
-            )
-            ok2 = self._cmd_any(
-                ['LASer:RUNMode PowerModulation', 'LAS:RUNM PowerModulation', 'em'],
-                'enter power-modulation mode',
-            )
-            ok3 = self._cmd_any(
-                ['las:pm:dig:ena 1', 'sdmes 1'],
-                'enable digital modulation',
-            )
-            return ok1 and ok2 and ok3
-        ok1, _ = self._cmd(f'slmp {float(mod_power_mw)}')
-        ok2, _ = self._cmd('em')
-        ok3, _ = self._cmd('sdmes 1')
+        ok1 = self._run('set_modulation_power_mw', mod_power_mw)
+        ok2 = self._run('enter_modulation_mode')
+        ok3 = self._run('set_digital_modulation_enabled', True)
         return ok1 and ok2 and ok3
 
     def _set_cw_power_mw(self, value_mw: float) -> bool:
         """Set the constant-power setpoint."""
-        if self._scpi:
-            scpi_value = self._scpi_power_arg(value_mw)
-            return self._cmd_any(
-                [
-                    f'LASer:CP:POWer:SETPoint {scpi_value}',
-                    f'p {float(value_mw) / 1000.0:.6f}',
-                ],
-                'set constant-power setpoint',
-            )
-        return self._cmd_or_warn(f'p {float(value_mw) / 1000.0:.6f}')
+        return self._run('set_constant_power_mw', value_mw)
 
     # ------------------------------------------------------------------
     # Safe-state setup + ImSwitch API
@@ -416,9 +501,11 @@ class Cobolt0601NewLaserManager(LaserManager):
         - modulation mode armed at the configured idle power — firmware-branched
         - master ``l0`` so even without TTL the beam is dark — universal
 
-        ``l0`` is the safety-critical command; if it fails we log at
-        ERROR. The mode-entry is best-effort because the master switch
-        already guarantees the beam is dark.
+        ``l0`` is the safety-critical command; if it fails initialization
+        raises, because a laser whose beam could not be confirmed dark must
+        not be handed to the GUI as a working device. The mode-entry is
+        best-effort because the master switch already guarantees the beam is
+        dark.
         """
         if self._pause_mode:
             # SAFETY: do NOT send '@cob1' here. On this OEM-locked firmware
@@ -440,12 +527,13 @@ class Cobolt0601NewLaserManager(LaserManager):
             # over serial. A real fix needs vendor reconfiguration of the
             # controller. Revisit if Cobolt/HUBNER provide an unlock/restart.
             self._enter_modulation_mode(self._modulation_power_mw)
-            ok_pause, _ = self._cmd('las:paus 1')
+            ok_pause = self._run('pause')
             if not ok_pause:
-                self.__logger.error(
-                    f'CRITICAL: emission-pause (las:paus 1) failed during '
-                    f'safe-state init for Cobolt {self._port}. Verify the '
-                    f'controller is responsive before opening the shutter.'
+                raise DeviceInitializationError(
+                    f'Cobolt {self._port}: emission-pause (las:paus 1) failed '
+                    f'during safe-state init, so the beam could not be '
+                    f'confirmed dark. Verify the controller is responsive '
+                    f'before opening the shutter.'
                 )
             self._enabled = False
             self.__logger.debug(
@@ -454,15 +542,16 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'armed — no emission until turned on in the GUI).'
             )
         else:
-            self._cmd_or_warn('@cobas 0')
+            self._run('disable_autostart')
             self._enter_modulation_mode(self._modulation_power_mw)
 
-            ok_off, _ = self._cmd('l0')
+            ok_off = self._run('master_off')
             if not ok_off:
-                self.__logger.error(
-                    f'CRITICAL: master-off l0 failed during safe-state init for '
-                    f'Cobolt {self._port}. Verify the controller is responsive '
-                    f'before opening the shutter.'
+                raise DeviceInitializationError(
+                    f'Cobolt {self._port}: master-off (l0) failed during '
+                    f'safe-state init, so the beam could not be confirmed '
+                    f'dark. Verify the controller is responsive before '
+                    f'opening the shutter.'
                 )
             self._enabled = False
             self.__logger.debug(
@@ -488,23 +577,19 @@ class Cobolt0601NewLaserManager(LaserManager):
             # Always flush the setpoint, including 0 — skipping the write
             # would turn the laser on at whatever power the hardware last
             # had, not what the GUI shows.
-            ok_power = self._set_cw_power_mw(self._setpoint_mw)
-            ok_mode = self._enter_constant_power()
-            ok_master, _ = self._cmd('l1')
-
-            if not (ok_power and ok_mode and ok_master):
-                # Something in the on-sequence failed. Drive the laser
-                # back to the safe state and leave _enabled = False so
-                # the GUI / scripting layer can see the transition did
-                # not take effect.
-                self.__logger.error(
-                    f'Cobolt {self._port} failed to enable '
-                    f'(power_ok={ok_power}, mode_ok={ok_mode}, '
-                    f'master_ok={ok_master}); reverting to safe-off state.'
-                )
-                self._cmd_or_warn('l0')
-                self._enter_modulation_mode(self._modulation_power_mw)
-                self._enabled = False
+            #
+            # Each step is a prerequisite for the next: the master switch is
+            # only allowed to close once the power setpoint and the mode are
+            # known good. Continuing past a failure would briefly enable the
+            # laser at whatever power the hardware still held.
+            if not self._set_cw_power_mw(self._setpoint_mw):
+                self._abort_enable('power setpoint')
+                return
+            if not self._enter_constant_power():
+                self._abort_enable('constant-power mode')
+                return
+            if not self._run('master_on'):
+                self._abort_enable('master on')
                 return
 
             self._enabled = True
@@ -512,7 +597,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             # Master off is the critical step — must succeed. If it does
             # not, _enabled stays True so callers know the off-transition
             # did not actually happen.
-            ok_off, _ = self._cmd('l0')
+            ok_off = self._run('master_off')
             if not ok_off:
                 self.__logger.error(
                     f'CRITICAL: Cobolt {self._port} master-off l0 failed. '
@@ -535,22 +620,21 @@ class Cobolt0601NewLaserManager(LaserManager):
         be live.
         """
         if enabled:
-            # Always flush the setpoint, including 0 (see setEnabled).
-            ok_power = self._set_cw_power_mw(self._setpoint_mw)
-            ok_mode = self._enter_constant_power()
-            ok_resume, _ = self._cmd('las:paus 0')
-            if not (ok_resume and ok_mode and ok_power):
-                self.__logger.error(
-                    f'Cobolt {self._port} failed to enable in pause mode '
-                    f'(resume_ok={ok_resume}, mode_ok={ok_mode}, '
-                    f'power_ok={ok_power}); pausing emission.'
-                )
-                self._cmd_or_warn('las:paus 1')
-                self._enabled = False
+            # Always flush the setpoint, including 0 (see setEnabled). Resume
+            # is only reached once power and mode are known good — the same
+            # prerequisite rule as the master path.
+            if not self._set_cw_power_mw(self._setpoint_mw):
+                self._abort_enable('power setpoint')
+                return
+            if not self._enter_constant_power():
+                self._abort_enable('constant-power mode')
+                return
+            if not self._run('resume'):
+                self._abort_enable('resume emission')
                 return
             self._enabled = True
         else:
-            ok_pause, _ = self._cmd('las:paus 1')
+            ok_pause = self._run('pause')
             if not ok_pause:
                 self.__logger.error(
                     f'CRITICAL: Cobolt {self._port} emission-pause '
@@ -560,24 +644,65 @@ class Cobolt0601NewLaserManager(LaserManager):
                 return
             self._enabled = False
 
+    def _abort_enable(self, failed_step: str) -> None:
+        """Drive back to the safe state after a failed enable prerequisite.
+
+        Leaves ``_enabled`` False so the GUI and scripting layers can see the
+        transition did not take effect.
+        """
+        self.__logger.error(
+            f'Cobolt {self._port} failed to enable at step {failed_step!r}; '
+            f'reverting to the safe-off state without enabling emission.'
+        )
+        if self._pause_mode:
+            self._run('pause')
+        else:
+            self._run('master_off')
+            self._enter_modulation_mode(self._modulation_power_mw)
+        self._enabled = False
+
     def setValue(self, power) -> None:
         """Update the constant-power setpoint.
 
         Only flushed to the laser when ``_enabled`` is True. When the
         laser is off, the new value is cached and will take effect on
         the next ``setEnabled(True)``.
+
+        While the laser is live the cache is only committed after the
+        controller accepts the write, so the manager never reports a setpoint
+        the hardware never took. If the outcome is unknown the manager cannot
+        say what power is actually emitting, so it drives the defined safe-off
+        recovery rather than leaving an unverified beam live.
         """
         try:
             value = int(power)
         except (TypeError, ValueError):
             self.__logger.warning(f'Ignoring non-numeric setValue({power!r})')
             return
-        self._setpoint_mw = value
 
         if not self._enabled:
+            self._setpoint_mw = value
             return
 
-        self._set_cw_power_mw(value)
+        if self._set_cw_power_mw(value):
+            self._setpoint_mw = value
+            return
+
+        if isinstance(self._last_failure, CommandRejected):
+            # The controller refused the value and did not act on it, so the
+            # beam is still at the previous, known setpoint.
+            self.__logger.error(
+                f'Cobolt {self._port} rejected setpoint {value} mW; keeping '
+                f'the previous setpoint of {self._setpoint_mw} mW.'
+            )
+            return
+
+        self.__logger.error(
+            f'Cobolt {self._port} setpoint write of {value} mW failed with an '
+            f'unknown outcome; the emitted power cannot be confirmed. '
+            f'Driving the laser to the safe-off state.'
+        )
+        self.setEnabled(False)
 
     def setScanModeActive(self, active: bool) -> None:
         """Switch between continuous (off) and scan/digital-modulation (on).
@@ -591,71 +716,65 @@ class Cobolt0601NewLaserManager(LaserManager):
             # including 0, which must arm the laser DARK. Falling back to
             # _modulation_power_mw here would emit light the user explicitly
             # set to zero; that default is only for the idle safe state.
-            self._enter_modulation_mode(self._setpoint_mw)
+            #
+            # Arming the master switch depends on the modulation power AND the
+            # digital gate being set: if either failed, the TTL line may not
+            # gate the beam at all, so enabling emission could produce
+            # continuous light at an unknown power for the whole scan.
+            if not self._enter_modulation_mode(self._setpoint_mw):
+                self.__logger.error(
+                    f'Cobolt {self._port} could not arm digital modulation '
+                    f'for the scan; forcing the safe-off state instead of '
+                    f'enabling emission.'
+                )
+                if self._pause_mode:
+                    self._run('pause')
+                else:
+                    self._run('master_off')
+                return
             if self._setpoint_mw <= 0:
                 # A zero GUI setpoint is an explicit off command. Keep the
                 # master/resume state off even though the scan includes this
                 # laser, so TTL pulses cannot produce emission.
                 if self._pause_mode:
-                    self._cmd('las:paus 1')
+                    self._run('pause')
                 else:
-                    self._cmd('l0')
+                    self._run('master_off')
                 return
             if self._pause_mode:
                 # Laser is already started; just un-pause. The digital gate
                 # (las:pm:dig:ena 1, set by _enter_modulation_mode) keeps the
                 # beam dark until the scanner drives the TTL line HIGH.
-                self._cmd('las:paus 0')
+                self._run('resume')
             else:
-                self._cmd('l1')   # master on; TTL gates the actual emission
+                self._run('master_on')   # master on; TTL gates the actual emission
         else:
             # Leave scan mode — back to the saved enable state.
             self.setEnabled(self._enabled)
 
     def setModulationEnabled(self, enabled: bool) -> None:
-        if self._scpi:
-            self._cmd_any(
-                [
-                    f'las:pm:dig:ena {1 if enabled else 0}',
-                    f'sdmes {1 if enabled else 0}',
-                ],
-                'set digital modulation enabled',
-            )
-        else:
-            self._cmd(f'sdmes {1 if enabled else 0}')
+        self._run('set_digital_modulation_enabled', enabled)
 
     def setModulationPower(self, power) -> None:
         try:
             value = float(power)
         except (TypeError, ValueError):
             return
-        if self._scpi:
-            self._cmd_any(
-                [
-                    f'LASer:PowerModulation:POWer:SETPoint {self._scpi_power_arg(value)}',
-                    f'slmp {value}',
-                ],
-                'set modulation power',
-            )
-        else:
-            self._cmd(f'slmp {value}')
+        self._run('set_modulation_power_mw', value)
 
     def getModulationPower(self):
-        try:
-            if self._scpi:
-                ok, reply = self._cmd('LASer:PowerModulation:POWer:SETPoint?')
-                if ok:
-                    return self._scpi_power_reply_to_mw(float(reply))
-                ok, reply = self._cmd('glmp?')
-                if ok:
-                    return float(reply)
-                return self._modulation_power_mw
+        """Read back the modulation setpoint, falling back to the config value.
 
-            ok, reply = self._cmd('glmp?')
-            if ok:
-                return float(reply)
+        A controller that cannot report its setpoint is not an error worth
+        propagating to the GUI — the configured idle power is the best answer
+        available.
+        """
+        profile = self._profile
+        if profile is None:
             return self._modulation_power_mw
-        except (ValueError, TypeError):
+        try:
+            return profile.get_modulation_power_mw(self._laser)
+        except (ProtocolError, ValueError, TypeError):
             return self._modulation_power_mw
 
     def getFirmwareInfo(self):
@@ -664,7 +783,8 @@ class Cobolt0601NewLaserManager(LaserManager):
             'firmware': self._firmware_version,
             'serial': self._serial_number,
             'model': self._model_number,
-            'commandSet': 'SCPI' if self._scpi else 'legacy',
+            'profileId': self._profile.profile_id if self._profile else None,
+            'requestedProtocolProfile': self._protocol_profile or 'auto',
             'requestedEmissionControl': self._emission_control,
             'resolvedEmissionControl': 'pause' if self._pause_mode else 'master',
             'emissionControl': 'pause' if self._pause_mode else 'master',
@@ -672,20 +792,52 @@ class Cobolt0601NewLaserManager(LaserManager):
         }
 
     def finalize(self) -> None:
-        """Drive the laser to a safe-off state on shutdown."""
+        """Drive the laser to a safe-off state and release the port.
+
+        The safe-off command and the port close are independent: if darkening
+        the beam fails we still release the connection, otherwise the port
+        stays open until the process exits and the next session cannot
+        reconnect.
+        """
         try:
             if self._pause_mode:
                 # Pause the beam without sending l0. Sending l0 here
                 # would abort it into the interlock-re-arm state, forcing a
                 # physical re-arm at the next session start.
-                self._cmd('las:paus 1')
+                self._run('pause')
             else:
-                self._cmd('l0')
+                self._run('master_off')
         except Exception:
             self.__logger.error(
                 f'Could not turn off Cobolt {self._port} during finalize:\n'
                 f'{traceback.format_exc()}'
             )
+        finally:
+            self._close_connection()
+
+    def _close_connection(self) -> None:
+        """Release the underlying connection, if it exposes a way to do so.
+
+        Tolerates connections that have neither method (the mock does not),
+        and never raises: finalization must not be derailed by a port that is
+        already gone.
+        """
+        laser = getattr(self, '_laser', None)
+        if laser is None:
+            return
+        for method_name in ('disconnect', 'close'):
+            method = getattr(laser, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method()
+            except Exception as exc:
+                self.__logger.warning(
+                    f'Could not close Cobolt connection on {self._port} '
+                    f'via {method_name}(): {exc}'
+                )
+                continue
+            return
 
     def getAllDeviceNames(self):  # legacy hook
         try:

@@ -65,6 +65,9 @@ class DetectorListParameter(DetectorParameter):
 #: downstream modules such as tiling, scale bars and stitching.
 CAMERA_PIXEL_SIZE_PARAM = 'Camera pixel size'
 
+#: Setup-file ``managerProperties`` key that seeds CAMERA_PIXEL_SIZE_PARAM.
+CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
+
 #: Maximum frames retained per readChunk consumer queue. Only relevant for a
 #: consumer that registered but stopped polling while another consumer keeps
 #: draining; bounds the memory leak in that case.
@@ -99,10 +102,46 @@ class DetectorManager(SignalInterface):
         ``detectorInfo.managerProperties['cameraPixelSizeUm']`` if present,
         otherwise falls back to ``default`` (0.15 µm, a typical high-mag
         value).
+
+        A misspelled key or an unparseable value would otherwise fall back to
+        ``default`` silently, which looks exactly like "the pixel size keeps
+        resetting itself". Both cases are logged instead.
         """
-        value = float(
-            detectorInfo.managerProperties.get('cameraPixelSizeUm', default)
-        )
+        logger = initLogger('DetectorManager')
+        properties = detectorInfo.managerProperties
+        raw = properties.get(CAMERA_PIXEL_SIZE_KEY, None)
+
+        if raw is None:
+            # A key that only differs in case or separators is a typo, not an
+            # omission -- say so rather than quietly using the default.
+            def _canonical(key):
+                return key.replace('_', '').replace(' ', '').lower()
+
+            wanted = _canonical(CAMERA_PIXEL_SIZE_KEY)
+            nearMisses = [key for key in properties if _canonical(key) == wanted]
+            if nearMisses:
+                logger.warning(
+                    f'Manager property "{nearMisses[0]}" is not the pixel size'
+                    f' setting -- the key must be spelled exactly'
+                    f' "{CAMERA_PIXEL_SIZE_KEY}". Using the default'
+                    f' {default} µm instead of the configured value.'
+                )
+            return DetectorNumberParameter(
+                group='Miscellaneous', value=float(default),
+                valueUnits='µm', editable=True,
+            )
+
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            # e.g. "0,082" typed with a decimal comma.
+            logger.warning(
+                f'Manager property "{CAMERA_PIXEL_SIZE_KEY}" is {raw!r}, which'
+                f' is not a number (a decimal comma instead of a point is the'
+                f' usual cause). Using the default {default} µm.'
+            )
+            value = float(default)
+
         return DetectorNumberParameter(
             group='Miscellaneous', value=value,
             valueUnits='µm', editable=True,

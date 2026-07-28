@@ -76,45 +76,62 @@ class MultiManager(ABC):
                     kind, managerName)
                 
                 # Check if legacy path would also resolve (shadowing detection).
-                legacy_would_resolve = False
-                try:
-                    package = importlib.import_module(
-                        pythontools.joinModulePath(
-                            f'{currentPackage}.{subManagersPackage}', managerName)
+                if MultiManager._importLegacyManagerClass(
+                    currentPackage, subManagersPackage, managerName
+                ) is not None:
+                    # Warn about shadowing: registry is hiding an in-tree manager.
+                    logger.warning(
+                        f"Registry-backed {kind} manager '{managerName}' from "
+                        f"plugin '{registry_contribution.plugin_name}' is shadowing "
+                        f"an in-tree manager at "
+                        f"{currentPackage}.{subManagersPackage}.{managerName}. "
+                        f"Registry resolution takes precedence (deterministic). "
+                        f"Consider removing the in-tree manager or renaming the "
+                        f"plugin contribution to avoid confusion."
                     )
-                    legacy_class = getattr(package, managerName, None)
-                    if legacy_class is not None:
-                        legacy_would_resolve = True
-                        # Warn about shadowing: registry is hiding an in-tree manager.
-                        logger.warning(
-                            f"Registry-backed {kind} manager '{managerName}' from "
-                            f"plugin '{registry_contribution.plugin_name}' is shadowing "
-                            f"an in-tree manager at "
-                            f"{currentPackage}.{subManagersPackage}.{managerName}. "
-                            f"Registry resolution takes precedence (deterministic). "
-                            f"Consider removing the in-tree manager or renaming the "
-                            f"plugin contribution to avoid confusion."
-                        )
-                except (ImportError, AttributeError):
-                    # Legacy path does not exist, no shadowing
-                    pass
-                
+
                 return managerClass
 
         # 2. Legacy internal import path (imswitch.imcontrol.model.managers.<pkg>).
+        legacyClass = MultiManager._importLegacyManagerClass(
+            currentPackage, subManagersPackage, managerName
+        )
+        if legacyClass is not None:
+            return legacyClass
+
+        if kind is not None:
+            raise UnknownDeviceManagerError(
+                get_default_registry().format_resolution_error(kind, managerName)
+            )
+        raise ImportError(
+            f'No manager named "{managerName}" in '
+            f'{currentPackage}.{subManagersPackage}'
+        )
+
+    @staticmethod
+    def _importLegacyManagerClass(currentPackage, subManagersPackage, managerName):
+        """Return the in-tree manager class of that name, or None.
+
+        None covers every way there can fail to be one, including a name that
+        could never be a module in the first place. Plugin contribution ids are
+        namespaced — ``vendor.device-name`` — and ``joinModulePath`` rejects the
+        hyphen with ValueError. That is a definitive "no in-tree manager by this
+        name", so it must not escape:
+
+        - escaping from the shadowing check made *every* installed plugin
+          unusable by its own id, leaving only legacy class-name aliases working;
+        - escaping from the fallback replaced the actionable "install this
+          package" message with an opaque ValueError, for exactly the namespaced
+          ids the external-plugin hints in ``external.py`` are keyed by.
+        """
         try:
             package = importlib.import_module(
                 pythontools.joinModulePath(
                     f'{currentPackage}.{subManagersPackage}', managerName)
             )
-            return getattr(package, managerName)
-        except (ImportError, AttributeError) as exc:
-            if kind is not None:
-                raise UnknownDeviceManagerError(
-                    get_default_registry().format_resolution_error(
-                        kind, managerName)
-                ) from exc
-            raise
+        except (ImportError, ValueError):
+            return None
+        return getattr(package, managerName, None)
 
     def hasDevices(self):
         """ Returns whether this manager manages any devices. """

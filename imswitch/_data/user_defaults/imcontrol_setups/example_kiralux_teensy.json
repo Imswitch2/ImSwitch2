@@ -24,6 +24,7 @@
             "digitalLine": null,
             "managerName": "Cobolt0601NewLaserManager",
             "managerProperties": {
+                "simulation": true,
                 "digitalPorts": ["COM17"]
             },
             "wavelength": 488,
@@ -36,6 +37,7 @@
             "digitalLine": null,
             "managerName": "Cobolt0601NewLaserManager",
             "managerProperties": {
+                "simulation": true,
                 "digitalPorts": ["COM4"]
             },
             "wavelength": 405,

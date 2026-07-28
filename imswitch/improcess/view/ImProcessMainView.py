@@ -1099,10 +1099,23 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         sig.connect(self._onResultPushed)
 
     def _onResultPushed(self, columns, records):
-        self.resultsTableWidget.append_records(list(columns), list(records))
-        dock = getattr(self, "resultsDock", None)
-        if dock is not None:
-            self._safeRaiseDock(dock)
+        self.appendResultTableRecords(columns, records)
+
+    def appendResultTableRecords(self, columns, records) -> None:
+        """Append rows to the shared Results table and bring it into view.
+
+        The Results dock is an accumulating measurement log (Profile pushes,
+        ROI statistics, and table-kind results all extend it), so rows are
+        appended rather than replacing what is already there. The dock is
+        shown as well as raised: it starts hidden when the panel is disabled
+        at startup, and silently dropping measurements into a hidden dock is
+        indistinguishable from losing them.
+        """
+        records = list(records)
+        if not records:
+            return
+        self.resultsTableWidget.append_records(list(columns), records)
+        self.raiseDockByTitle('Results')
 
     def _onTablePlotRequested(self, spec):
         """Render a results-table plot request into the shared Graph panel."""
