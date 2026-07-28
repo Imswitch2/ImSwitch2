@@ -58,6 +58,9 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         self.scanInfoDict = None
         self.isRunning = False
         self.doingNonFinalPartOfSequence = False
+        # Set by abortScan while the firmware is mid-scan; consumed by
+        # scanDone to suppress the repeat re-arm. See abortScan.
+        self._scanStopRequested = False
 
         self.positioners = {
             pName: pManager for pName, pManager in self._setupInfo.positioners.items()
@@ -93,6 +96,8 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         self._widget.sigSaveScanClicked.connect(self.saveScan)
         self._widget.sigLoadScanClicked.connect(self.loadScan)
         self._widget.sigRunScanClicked.connect(self.runScan)
+        self._widget.sigAbortScanClicked.connect(self.abortScan)
+        self._widget.sigForceStopScanClicked.connect(self.forceStopScan)
         self._widget.sigSeqTimeParChanged.connect(self.plotSignalGraph)
         self._widget.sigSeqTimeParChanged.connect(self.updateScanTTLAttrs)
         self._widget.sigStageParChanged.connect(self.updateSteps)
@@ -259,9 +264,50 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
             self.isRunning = False
 
     def abortScan(self):
+        # The firmware runs the scan autonomously and exposes no abort
+        # command, so the iteration already under way always finishes. What
+        # an abort can and must do is stop the repeat loop from arming the
+        # next one: without this, an abort raised while Repeat is ticked
+        # (the RecordingController raises one whenever a scan-driven
+        # recording stops) was swallowed entirely and the scanner kept
+        # cycling with the recording long gone.
         self.doingNonFinalPartOfSequence = False
         if not self.isRunning:
             self.scanFailed()
+            return
+        if self._scanStopRequested:
+            # sigAbortScan is also raised by automated recording/workflow
+            # teardown. Keep duplicate emissions idempotent: only the
+            # dedicated UI action below is allowed to force local teardown.
+            self._logger.debug('A raster stop is already pending')
+            return
+        self._scanStopRequested = True
+        self._widget.setAbortPending(True)
+        self._logger.debug(
+            'Abort requested mid-scan: the TriggerScope firmware cannot '
+            'be interrupted, so this iteration finishes and no repeat '
+            'follows.'
+        )
+
+    def forceStopScan(self):
+        """Force local teardown after an ordinary raster stop is pending.
+
+        TriggerScope has no firmware abort command. This therefore ends the
+        ImSwitch lifecycle and disarms scan-controlled lasers, but it cannot
+        guarantee that physical scanning has stopped. Requiring the ordinary
+        stop first makes this an explicit two-stage operator action.
+        """
+        if not self.isRunning or not self._scanStopRequested:
+            self._logger.warning(
+                'Ignoring raster force-stop because no running scan has a '
+                'pending stop request'
+            )
+            return
+        self._logger.error(
+            'Forcing local raster teardown and laser disarm before '
+            'TriggerScope reported "Scan done"; firmware motion may continue'
+        )
+        self.scanFailed()
 
     def scanDone(self):
         # All TriggerScope scan controllers share the board-level sigScanDone, so
@@ -273,7 +319,12 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
             return
         self._logger.debug('Scan done')
         self.isRunning = False
-        if not self._widget.repeatEnabled():
+        # Consume the abort here rather than in runScanAdvanced: the repeat
+        # continuation re-enters runScanAdvanced with isRunning already back
+        # to False, so a reset there could not tell it apart from a fresh run.
+        stopRequested = self._scanStopRequested
+        self._scanStopRequested = False
+        if not self._widget.repeatEnabled() or stopRequested:
             self.emitScanSignal(self._commChannel.sigScanDone)
             if not self.doingNonFinalPartOfSequence:
                 self._widget.setScanButtonChecked(False)
@@ -285,6 +336,7 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
     def scanFailed(self):
         self._logger.error('Scan failed')
         self.isRunning = False
+        self._scanStopRequested = False
         self.doingNonFinalPartOfSequence = False
         self._widget.setScanButtonChecked(False)
         self.emitScanSignal(self._commChannel.sigScanEnded)
