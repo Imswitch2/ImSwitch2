@@ -37,12 +37,17 @@ class _DetectorsManager:
 class _RecordingManager:
     def __init__(self):
         self.detectorsManager = _DetectorsManager()
+        self.completionTimes = {}
+
+    def scanCompletionTime(self, generation):
+        return self.completionTimes.get(generation)
 
 
 def _worker(recMode):
     worker = RecordingWorker.__new__(RecordingWorker)
     worker._RecordingWorker__recordingManager = _RecordingManager()
     worker.recMode = recMode
+    worker.recordingGeneration = 7
     return worker
 
 
@@ -102,6 +107,28 @@ def test_unknown_detector_falls_back_to_the_camera_answer():
     worker = _worker(RecMode.ScanOnce)
 
     assert worker._expectedFramesFor('Nonexistent', 42, {}) == 42
+
+
+def test_point_detector_watchdog_waits_for_the_full_scan():
+    """A 20-second two-linestep scan must not trip a 10-second frame timer."""
+    worker = _worker(RecMode.ScanOnce)
+
+    assert worker._stallReferenceTimeFor('APD', 100.0) is None
+
+    worker._RecordingWorker__recordingManager.completionTimes[7] = 120.0
+    assert worker._stallReferenceTimeFor('APD', 100.0) == 120.0
+
+
+def test_camera_watchdog_still_starts_when_recording_is_armed():
+    worker = _worker(RecMode.ScanOnce)
+
+    assert worker._stallReferenceTimeFor('Camera', 100.0) == 100.0
+
+
+def test_non_scan_point_detector_watchdog_is_unchanged():
+    worker = _worker(RecMode.SpecFrames)
+
+    assert worker._stallReferenceTimeFor('APD', 100.0) == 100.0
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

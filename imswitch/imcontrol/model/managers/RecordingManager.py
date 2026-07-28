@@ -388,7 +388,9 @@ class ZarrStorer(Storer):
             shape=(0, *spatialShape),
             dtype=dtype,
             chunks=(chunk_frames, *spatialShape),
-            dimension_names=self._dimension_names(detectorName, 3),
+            dimension_names=self._dimension_names(
+                detectorName, 1 + len(spatialShape)
+            ),
         )
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._zarr_attr_value(
@@ -520,7 +522,10 @@ class ZarrStorer(Storer):
         if detectorName not in self._datasets:
             # Read the authoritative dtype from the detector (the contract's single source of truth)
             declared = self.detectorManager[detectorName].dtype
-            spatialShape = frames.shape[-2:]
+            # Everything after the leading frame axis belongs to one logical
+            # detector frame. Scan-driven point detectors may include a
+            # linestep plane axis: (N, S, Y, X).
+            spatialShape = frames.shape[1:]
             
             root = self._roots.get(self._fileDests[detectorName])
             if root is None:
@@ -549,8 +554,8 @@ class ZarrStorer(Storer):
         # Append frames to dataset (cast happens on assignment if needed)
         it = self._currentFrames[detectorName]
         newSize = it + len(frames)
-        dataset.resize((newSize, *dataset.shape[-2:]))
-        dataset[it:newSize, :, :] = frames
+        dataset.resize((newSize, *dataset.shape[1:]))
+        dataset[it:newSize, ...] = frames
         # Barrier AFTER the data: a reader seeing frames_committed=N is
         # guaranteed frames [0, N) are on disk, even though shape resized early.
         dataset.attrs['recording:frames_committed'] = newSize
@@ -563,7 +568,7 @@ class ZarrStorer(Storer):
         for detectorName, dataset in self._datasets.items():
             dataset.attrs['writing'] = False
             if currentFrames[detectorName] < 1:
-                dataset.resize((0, *dataset.shape[-2:]))
+                dataset.resize((0, *dataset.shape[1:]))
             dataset.attrs['recording:frames_committed'] = int(
                 max(0, currentFrames.get(detectorName, 0))
             )
@@ -661,7 +666,7 @@ class HDF5Storer(Storer):
         # Create data dataset
         if maxshape is not None:
             # Extendable dataset for streaming (start with 0 frames)
-            shape = maxshape[-2:]  # (Y, X)
+            shape = maxshape[1:]
             # Use multi-frame chunks for better compression ratio and fewer I/O ops
             chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
             dataset = det_group.create_dataset(
@@ -677,10 +682,10 @@ class HDF5Storer(Storer):
             # Fixed dataset from data (snapshot)
             if data is None:
                 raise ValueError("Must provide either maxshape or data")
-            # Ensure 3D: (T, Y, X)
+            # Ensure a leading logical-frame axis.
             if data.ndim == 2:
                 data = data[np.newaxis, ...]
-            chunks = (1, *data.shape[-2:]) if data.ndim >= 3 else True
+            chunks = (1, *data.shape[1:]) if data.ndim >= 3 else True
             dataset = det_group.create_dataset(
                 'data',
                 data=data,
@@ -890,7 +895,8 @@ class HDF5Storer(Storer):
             # .shape attribute is (X, Y) while frame arrays follow numpy's
             # (n, Y, X) convention, so using _shapes here would mis-broadcast
             # for non-square detectors.
-            spatialShape = frames.shape[-2:]
+            # Preserve all per-frame axes, including APD/PMT linesteps.
+            spatialShape = frames.shape[1:]
 
             file = self._files[detectorName]
             groupPath = self._groupPaths[detectorName]
@@ -902,7 +908,7 @@ class HDF5Storer(Storer):
                 # Create dataset with the DECLARED dtype (the contract), not frames.dtype
                 dataset = self._createDetectorGroup(
                     file, detectorName, declared, self._attrs[detectorName],
-                    maxshape=(None, *spatialShape),  # (None, Y, X)
+                    maxshape=(None, *spatialShape),
                     groupPath=groupPath
                 )
             finally:
@@ -949,7 +955,7 @@ class HDF5Storer(Storer):
         currentSize = dataset.shape[0]
         newSize = currentSize + len(frames)
         dataset.resize(newSize, axis=0)
-        dataset[currentSize:newSize, :, :] = frames
+        dataset[currentSize:newSize, ...] = frames
 
         # Flush after each write so SWMR readers see growth
         if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
@@ -1144,7 +1150,7 @@ class TiffStorer(Storer):
         """Open one plain BigTIFF per detector; OME-XML is embedded at finalize."""
         self._writers = {}
         self._paths = {}
-        self._spatial = {}            # detectorName -> (Y, X) from the first frame
+        self._spatial = {}            # detectorName -> per-frame shape
         self._dtypeWarned = set()
         for detectorName in detectorNames:
             path = fileDests[detectorName]
@@ -1173,7 +1179,9 @@ class TiffStorer(Storer):
         if frames.dtype != declared:
             frames = frames.astype(declared)
 
-        self._spatial[detectorName] = tuple(int(s) for s in frames.shape[-2:])
+        self._spatial[detectorName] = tuple(
+            int(s) for s in frames.shape[1:]
+        )
         tw = self._writers[detectorName]
         # One contiguous (N,Y,X) series: write each 2D plane appended in place.
         for frame in frames:
@@ -1199,18 +1207,14 @@ class TiffStorer(Storer):
                 n = int(currentFrames.get(detectorName, 0))
                 if n <= 0 or detectorName not in self._spatial:
                     continue
-                ny, nx = self._spatial[detectorName]
+                frame_shape = self._spatial[detectorName]
                 meta = self._meta_for(detectorName, n_frames=n)
-                if n == 1 and len(meta.axes) == 2:
+                if n == 1 and len(meta.axes) == len(frame_shape):
                     stored_meta = meta
-                    shape = (ny, nx)
+                    shape = frame_shape
                 else:
-                    # The streamed data is physically (N, Y, X). If a caller
-                    # hands us richer logical metadata, keep the TIFF valid by
-                    # reducing it to the stored rank instead of writing
-                    # mismatched OME-XML.
-                    stored_meta = meta.padded_to(3)
-                    shape = (n, ny, nx)
+                    shape = (n, *frame_shape)
+                    stored_meta = meta.padded_to(len(shape))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
             except Exception as e:
                 errors.append((
@@ -1308,6 +1312,13 @@ class RecordingManager(SignalInterface):
         self.__endSignalEmitted = False
         self.__failureSignalEmitted = False
         self.__lastRecordingError = None
+        # Scan-driven detectors publish one assembled frame only after the
+        # scan has finished. Their no-frame watchdog is therefore anchored to
+        # this completion time, not to recording arm time.
+        self.__scanExpectedCompletionGeneration = None
+        self.__scanExpectedCompletionTime = None
+        self.__scanCompletionGeneration = None
+        self.__scanCompletionTime = None
         self.__recordingWorker = None
         self.__thread = None
         self.__prepareRecordingThread()
@@ -1507,6 +1518,10 @@ class RecordingManager(SignalInterface):
             self.__endSignalEmitted = False
             self.__failureSignalEmitted = False
             self.__lastRecordingError = None
+            self.__scanExpectedCompletionGeneration = None
+            self.__scanExpectedCompletionTime = None
+            self.__scanCompletionGeneration = None
+            self.__scanCompletionTime = None
         self.__recordingWorker.recordingGeneration = recordingGeneration
         self.__record = True
         try:
@@ -1665,6 +1680,72 @@ class RecordingManager(SignalInterface):
         """Identity of the most recently started recording session."""
         with self.__recordingSignalLock:
             return self.__recordingGeneration
+
+    def markScanCompleted(self, generation=None):
+        """Start the final-frame watchdog for one exact scan recording.
+
+        APD/PMT/TimeTagger managers integrate the complete scan and cannot
+        produce frame progress while it is still running. RecordingController
+        calls this at the owner-scoped scan terminal so their normal stall
+        timeout measures delayed final-frame publication rather than total
+        scan duration.
+        """
+        with self.__recordingSignalLock:
+            if generation is None:
+                generation = self.__recordingGeneration
+            if (
+                generation != self.__recordingGeneration
+                or generation <= 0
+                or not self.__record
+            ):
+                return False
+            if self.__scanCompletionGeneration == generation:
+                return False
+            self.__scanCompletionGeneration = generation
+            self.__scanCompletionTime = time.time()
+            return True
+
+    def markScanStarted(self, scanInfoDict, generation=None):
+        """Set an expected end time for a scan-driven recording watchdog.
+
+        The generated sample count already includes line steps, flyback and
+        higher scan axes. Adding the ordinary stall timeout after that expected
+        duration preserves detection of a missing NI-DAQ trigger without
+        mistaking a long, healthy scan for a detector stall.
+        """
+        try:
+            duration = (
+                float(scanInfoDict['scan_samples_total'])
+                * float(scanInfoDict['scan_time_step'])
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not np.isfinite(duration) or duration < 0:
+            return False
+
+        with self.__recordingSignalLock:
+            if generation is None:
+                generation = self.__recordingGeneration
+            recMode = getattr(self.__recordingWorker, 'recMode', None)
+            if (
+                generation != self.__recordingGeneration
+                or generation <= 0
+                or not self.__record
+                or recMode not in (RecMode.ScanOnce, RecMode.ScanLapse)
+            ):
+                return False
+            self.__scanExpectedCompletionGeneration = generation
+            self.__scanExpectedCompletionTime = time.time() + duration
+            return True
+
+    def scanCompletionTime(self, generation):
+        """Return observed or expected scan completion time for ``generation``."""
+        with self.__recordingSignalLock:
+            if self.__scanCompletionGeneration == generation:
+                return self.__scanCompletionTime
+            if self.__scanExpectedCompletionGeneration == generation:
+                return self.__scanExpectedCompletionTime
+            return None
 
     def waitForAcquisitionStarted(self, timeout=None):
         """Block until the recording worker is ready for incoming frames, or
@@ -2411,6 +2492,22 @@ class RecordingWorker(Worker):
             return 1
         return recFrames * numCamTTL.get(detectorName, 1)
 
+    def _stallReferenceTimeFor(self, detectorName, lastFrameTime):
+        """Return when no-frame timing may begin, or ``None`` while scanning."""
+        if (
+            self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
+            and self._isScanDrivenDetector(detectorName)
+        ):
+            completionTime = getattr(
+                self.__recordingManager, 'scanCompletionTime', None
+            )
+            if not callable(completionTime):
+                return None
+            return completionTime(
+                getattr(self, 'recordingGeneration', None)
+            )
+        return lastFrameTime
+
     def _record(self):
         """Unified streaming recording loop delegating all I/O to Storer.
         
@@ -2637,15 +2734,40 @@ class RecordingWorker(Worker):
                         # Skip detectors that have already reached their target
                         if currentFrame[detectorName] >= nFramesPerDetector[detectorName]:
                             continue
-                        
-                        elapsed = now - lastFrameTime[detectorName]
+
+                        referenceTime = self._stallReferenceTimeFor(
+                            detectorName, lastFrameTime[detectorName]
+                        )
+                        if referenceTime is None:
+                            # A scan-driven detector has no frame-level
+                            # progress to report before the full scan ends.
+                            continue
+
+                        elapsed = now - referenceTime
                         if elapsed > self.stallTimeout:
-                            message = (
-                                f"Detector '{detectorName}' stalled: no frames received for {elapsed:.1f}s "
-                                f"(timeout: {self.stallTimeout}s). Current: {currentFrame[detectorName]} frames, "
-                                f"expected: {nFramesPerDetector[detectorName]} frames. "
-                                f"Check camera triggering and numCamTTL configuration."
-                            )
+                            if self._isScanDrivenDetector(detectorName):
+                                message = (
+                                    f"Detector '{detectorName}' stalled: no "
+                                    f"assembled frame received for "
+                                    f"{elapsed:.1f}s after scan completion "
+                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"Current: {currentFrame[detectorName]} "
+                                    f"frames, expected: "
+                                    f"{nFramesPerDetector[detectorName]} "
+                                    f"frames. Check the detector input, scan "
+                                    f"trigger, and sample-clock configuration."
+                                )
+                            else:
+                                message = (
+                                    f"Detector '{detectorName}' stalled: no "
+                                    f"frames received for {elapsed:.1f}s "
+                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"Current: {currentFrame[detectorName]} "
+                                    f"frames, expected: "
+                                    f"{nFramesPerDetector[detectorName]} "
+                                    f"frames. Check camera triggering and "
+                                    f"numCamTTL configuration."
+                                )
                             self.__logger.error(message)
                             self.__recordingManager.sigRecordingStalled.emit(detectorName)
                             # A truncated stream is a recording failure, not a

@@ -1287,6 +1287,20 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             self.emitScanSignal(
                 self._commChannel.sigScanDevicesResolved, devices
             )
+        recordingManager = getattr(self._master, 'recordingManager', None)
+        markScanStarted = getattr(
+            recordingManager, 'markScanStarted', None
+        )
+        if callable(markScanStarted):
+            try:
+                markScanStarted(scanInfoDict)
+            except Exception:
+                # Recording liveness diagnostics must never prevent the scan
+                # itself from arming.
+                self._logger.error(
+                    'Could not initialize the scan-recording watchdog',
+                    exc_info=True,
+                )
         return self._scanCoordinator.arm(signalDict, scanInfoDict, owner=self)
 
     def __onNidaqScanDone(self):

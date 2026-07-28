@@ -1171,6 +1171,71 @@ class NidaqManager(SignalInterface):
             if not hasOutputSignals and not self.__simulating:
                 raise NidaqManagerError('No signals to send')
 
+            nLinesteps = max(
+                1, int(scanInfoDict.get('n_linesteps', 1))
+            )
+            if nLinesteps > 1:
+                aoLengths = {
+                    device: int(np.asarray(signal).size)
+                    for device, signal in zip(AOdevices, AOsignals)
+                }
+                doLengths = {
+                    device: int(np.asarray(signal).size)
+                    for device, signal in zip(DOdevices, DOsignals)
+                }
+                outputSignal = (
+                    AOsignals[0] if AOsignals else
+                    (DOsignals[0] if DOsignals else [])
+                )
+                outputSamples = int(np.asarray(outputSignal).size)
+                timerSamples = int(outputSamples * (1e6 / 100e3))
+                scanTimeStep = float(
+                    scanInfoDict.get('scan_time_step', 0) or 0
+                )
+                apdSamplesPerScanSample = (
+                    max(1, int(round(1e6 * scanTimeStep)))
+                    if scanTimeStep > 0 else None
+                )
+                apdFiniteSamples = (
+                    int(scanInfoDict.get('scan_samples_total', 0))
+                    * apdSamplesPerScanSample
+                    if apdSamplesPerScanSample is not None else None
+                )
+                lineClock = np.asarray(
+                    ttlDic.get('line_clock', []), dtype=bool
+                ).reshape(-1)
+                lineClockEdges = (
+                    int(bool(lineClock[0]))
+                    + int(np.count_nonzero(
+                        lineClock[1:] & ~lineClock[:-1]
+                    ))
+                    if lineClock.size else None
+                )
+                mismatch = (
+                    apdFiniteSamples is not None
+                    and timerSamples != apdFiniteSamples
+                )
+                self.__logger.info(
+                    "[LineStepDiag][Nidaq] S=%s img_dims=%s "
+                    "scan_samples_total=%s output_samples=%s "
+                    "timer_samples=%s APD_finite_samples=%s "
+                    "line_clock_edges=%s AO_lengths=%s DO_lengths=%s "
+                    "status=%s",
+                    nLinesteps,
+                    scanInfoDict.get('img_dims'),
+                    scanInfoDict.get('scan_samples_total'),
+                    outputSamples,
+                    timerSamples,
+                    apdFiniteSamples,
+                    lineClockEdges,
+                    aoLengths,
+                    doLengths,
+                    (
+                        "MISMATCH: timer_samples!=APD_finite_samples"
+                        if mismatch else "OK"
+                    ),
+                )
+
             if not self.__simulating:
                 if self.__timerCounterChannel is not None:
                     self.timerTaskWaiter = WaitThread()

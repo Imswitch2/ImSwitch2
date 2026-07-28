@@ -735,6 +735,84 @@ def test_hamamatsu_mock_scan_once_recording_reaches_rec_frames(tmp_path):
         recording.endRecording(emitSignal=False, wait=True)
 
 
+def test_two_apds_record_both_linesteps_as_one_frame_each(tmp_path):
+    detector_json = {
+        name: {
+            'analogChannel': None,
+            'digitalLine': None,
+            'managerName': 'APDManager',
+            'managerProperties': {
+                'ctrInputLine': f'Dev1/ctr{index}',
+                'terminal': f'/Dev1/PFI{index}',
+                'mockRandomSeed': index + 1,
+            },
+            'forAcquisition': True,
+        }
+        for index, name in enumerate(('APDred', 'APDgreen'))
+    }
+    setup_info = _minimal_simulated_setup(detector_json)
+    nidaq = NidaqManager(setup_info)
+    apds = {
+        name: APDManager(info, name, nidaq)
+        for name, info in setup_info.detectors.items()
+    }
+    recording = RecordingManager(_ManualDetectorsManager(apds))
+    memory_recordings = []
+    recording.sigMemoryRecordingAvailable.connect(
+        lambda name, file, path, saved: memory_recordings.append(
+            (name, file, path, saved)
+        )
+    )
+
+    recording.startRecording(
+        detectorNames=['APDred', 'APDgreen'],
+        recMode=RecMode.ScanOnce,
+        savename=str(tmp_path / 'two_apd_linesteps'),
+        saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'APDred': {}, 'APDgreen': {}},
+        recFrames=1,
+        stallTimeout=1.0,
+    )
+    assert recording.waitForAcquisitionStarted(2.0)
+
+    scan_info = _minimal_scan_info()
+    scan_info.update({
+        'n_linesteps': 2,
+        'scan_samples': [1, 2, 8],
+        'scan_samples_total': 8,
+    })
+    generation = recording.recordingGeneration
+    assert recording.markScanStarted(scan_info, generation)
+
+    try:
+        nidaq.runScan(
+            {
+                'scanSignalsDict': {},
+                'TTLCycleSignalsDict': {},
+            },
+            scan_info,
+        )
+
+        assert _wait_for(lambda: len(memory_recordings) == 2, timeout=3.0)
+        open_files = []
+        try:
+            for detector_name in ('APDred', 'APDgreen'):
+                mem_file, h5file, dataset = _recorded_dataset(
+                    memory_recordings, detector_name
+                )
+                open_files.extend([h5file, mem_file])
+                assert dataset.shape == (1, 2, 2, 2)
+                assert dataset.attrs['axes'] == 'TCYX'
+                assert np.count_nonzero(dataset[:]) > 0
+        finally:
+            for file in open_files:
+                file.close()
+    finally:
+        recording.endRecording(emitSignal=False, wait=True)
+        nidaq.finalize()
+
+
 def test_mixed_hamamatsu_apd_mock_scan_once_records_each_target(tmp_path):
     _ensure_qcore_app()
     setup_info = _minimal_simulated_setup({

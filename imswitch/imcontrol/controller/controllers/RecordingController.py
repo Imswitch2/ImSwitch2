@@ -1669,6 +1669,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return
 
         if successful is True:
+            RecordingController._markRecordingScanCompleted(self)
             self.doneScan = True
             if RecordingController._finalScanLifecycleEndPending(self):
                 # Non-final ScanLapse parts deliberately retain one run-level
@@ -2183,6 +2184,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             # stale or belongs to another source. Unreadable state likewise
             # fails closed instead of accepting a compatibility success.
             return
+        RecordingController._markRecordingScanCompleted(self)
         self.doneScan = True
         if (
             self.__dict__.get(
@@ -2238,6 +2240,32 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
     def recordingFailed(self, message):
         """Terminal manager failure; reset UI without claiming success."""
         self._handleRecordingFailure(message, abortManager=False)
+
+    def _markRecordingScanCompleted(self):
+        """Anchor point-detector watchdogs to this recording's scan terminal."""
+        if self.recMode not in (RecMode.ScanOnce, RecMode.ScanLapse):
+            return False
+        manager = getattr(
+            getattr(self, '_master', None), 'recordingManager', None
+        )
+        if manager is None:
+            return False
+        marker = getattr(manager, 'markScanCompleted', None)
+        if not callable(marker):
+            return False
+        generation = self.__dict__.get('_recordingManagerGeneration')
+        if not isinstance(generation, int):
+            generation = getattr(manager, 'recordingGeneration', None)
+        if not isinstance(generation, int):
+            return False
+        try:
+            return bool(marker(generation))
+        except Exception:
+            self.__logger.error(
+                'Failed to mark the scan recording complete',
+                exc_info=True,
+            )
+            return False
 
     def closeEvent(self) -> bool:
         """Cancel lapse callbacks and drain this controller's exact owners."""

@@ -748,11 +748,29 @@ class APDManager(DetectorManager):
         Updates display buffer and triggers GUI redraw once per frame.
         """
         if not self._acceptScanWorkerGeneration(generation):
+            if int(getattr(self, "_linestep", 1)) > 1:
+                self.__logger.warning(
+                    "[LineStepDiag][APD:%s] frame_boundary_rejected "
+                    "generation=%s active=%s prepared=%s completed=%s",
+                    self._name,
+                    generation,
+                    self._activeScanGeneration,
+                    self._preparedScanGeneration,
+                    sorted(self._completedScanGenerations),
+                )
             return
         if self._image_display.size == 0:
             return
 
         S = int(getattr(self, "_linestep", 1))
+        if S > 1:
+            self.__logger.info(
+                "[LineStepDiag][APD:%s] frame_boundary_received "
+                "generation=%s raw_shape=%s",
+                self._name,
+                generation,
+                np.shape(self._image),
+            )
         if S > 1:
             raw = np.squeeze(self._image)  # (S,..,Ny,Nx)
             mode = getattr(self, "_linestep_view_mode", None)
@@ -779,6 +797,14 @@ class APDManager(DetectorManager):
         self.__newFrameReady = True
         self.updateLatestFrame(True)
         self.sigNewFrame.emit()
+        if S > 1:
+            self.__logger.info(
+                "[LineStepDiag][APD:%s] frame_published generation=%s "
+                "published_shape=%s",
+                self._name,
+                generation,
+                np.shape(self._image_display),
+            )
 
     @property
     def shape(self):
@@ -889,6 +915,7 @@ class ScanWorker(Worker):
 
         # Y is the slow scan axis
         y_idx = scan_axes.index("y") if "y" in scan_axes else 1
+        self._y_idx = y_idx
 
         # Loop dims: expand Y by linestep (Ny -> Ny*S), keep other dims unchanged
         self._img_dims = scan_dims  # recursion uses physical scan axes only (x,y,z,...)
@@ -923,6 +950,9 @@ class ScanWorker(Worker):
         self._throw_init_smooth = (pad_initpos + self._throw_settling + self._throw_startacc)
         # initiate parameter for thrown samples for smooth higher dimensions step init
         self._throw_init_higher_d = False
+        self._pending_read = None
+
+        self._logLinestepReadPlan(scanInfoDict)
 
         if not self._manager._simulation_mode:
             self._inputTaskGeneration = (
@@ -937,11 +967,81 @@ class ScanWorker(Worker):
         self._manager.initiateImage(self._output_image_dims)
         self._manager.setPixelSize(scanInfoDict['pixel_sizes'])  # 'pixel_sizes' order: low dim to high dim
 
+    def _logLinestepReadPlan(self, scanInfoDict):
+        if self._linestep <= 1:
+            return
+
+        expandedLines = int(self._loop_dims[self._y_idx])
+        exact2dPlan = None
+        exact2dMargin = None
+        if len(self._loop_dims) == 2:
+            higherInit = 0
+            if len(self._scan_pads_initpos) > 1 and any(
+                np.greater(
+                    self._scan_pads_initpos[1:],
+                    self._scan_pads_initpos[0],
+                )
+            ):
+                higherInit = int(
+                    np.max(self._scan_pads_initpos[1:])
+                    - self._scan_pads_initpos[0]
+                )
+            exact2dPlan = int(
+                self._phase_delay
+                + self._throw_startzero
+                + higherInit
+                + self._throw_init_smooth
+                + max(0, expandedLines - 1) * self._samples_d2_period
+                + self._samples_d_scanstep[1]
+            )
+            exact2dMargin = int(self._samples_total - exact2dPlan)
+
+        mismatch = (
+            exact2dMargin is not None and exact2dMargin < 0
+        )
+        self.__logger.info(
+            "[LineStepDiag][APD:%s] scan_S=%s img_dims=%s "
+            "loop_dims=%s output_dims=%s expanded_Y_lines=%s "
+            "scan_samples_total=%s CI_finite_samples=%s "
+            "line_samples=%s line_period_samples=%s "
+            "initial_throw_samples=%s exact_2D_read_plan=%s "
+            "remaining_samples=%s status=%s",
+            self._name,
+            self._linestep,
+            scanInfoDict.get("img_dims"),
+            self._loop_dims,
+            self._output_image_dims,
+            expandedLines,
+            scanInfoDict.get("scan_samples_total"),
+            self._samples_total,
+            (
+                self._samples_d_scanstep[1]
+                if len(self._samples_d_scanstep) > 1 else None
+            ),
+            self._samples_d2_period,
+            int(
+                self._phase_delay
+                + self._throw_startzero
+                + self._throw_init_smooth
+            ),
+            exact2dPlan,
+            exact2dMargin,
+            (
+                "MISMATCH: APD read plan exceeds finite task"
+                if mismatch else "OK"
+            ),
+        )
+
     def throwdata(self, datalen):
         """ Throw away data with length datalen, save the last value,
         and add length of data to total samples_read length.
         """
         if datalen > 0:
+            self._pending_read = {
+                "kind": "throw",
+                "start": int(self._samples_read),
+                "count": int(datalen),
+            }
             if self._manager._simulation_mode:
                 throwdata = self.randomInput(datalen)
             else:
@@ -956,10 +1056,16 @@ class ScanWorker(Worker):
                                    style='r-')
             self._last_value = throwdata[-1]
             self._samples_read += datalen
+            self._pending_read = None
 
     def readdata(self, datalen):
         """ Read data with length datalen and add length of data to total samples_read length.
         """
+        self._pending_read = {
+            "kind": "line",
+            "start": int(self._samples_read),
+            "count": int(datalen),
+        }
         if self._manager._simulation_mode:
             data = self.randomInput(datalen)
         else:
@@ -973,6 +1079,7 @@ class ScanWorker(Worker):
                                signal=self._ploty * np.ones(int((datalen) / 10)),
                                style='k-')
         self._samples_read += datalen
+        self._pending_read = None
         return data
 
     def samples_to_pixels(self, line_samples):
@@ -1002,12 +1109,41 @@ class ScanWorker(Worker):
 
     def run(self):
         try:
+            if self._linestep > 1:
+                self.__logger.info(
+                    "[LineStepDiag][APD:%s] worker_start generation=%s "
+                    "samples_read=%s/%s loop_dims=%s",
+                    self._name,
+                    self.scanGeneration,
+                    self._samples_read,
+                    self._samples_total,
+                    self._loop_dims,
+                )
             self._runAcquisition()
+            if self._linestep > 1:
+                self.__logger.info(
+                    "[LineStepDiag][APD:%s] worker_complete generation=%s "
+                    "samples_read=%s/%s final_pos=%s",
+                    self._name,
+                    self.scanGeneration,
+                    self._samples_read,
+                    self._samples_total,
+                    getattr(self, "_pos", None),
+                )
         except Exception:
             # An exception escaping a Qt worker slot can terminate the process.
             # Convert it into the same generation-tagged local completion path
             # used by a normal scan instead.
-            self.__logger.exception('APD scan worker crashed')
+            self.__logger.exception(
+                "[LineStepDiag][APD:%s] worker_failed generation=%s "
+                "samples_read=%s/%s pos=%s pending_read=%s",
+                self._name,
+                self.scanGeneration,
+                self._samples_read,
+                self._samples_total,
+                getattr(self, "_pos", None),
+                self._pending_read,
+            )
         finally:
             self.scanning = False
             self.acqDoneSignal.emit(int(self.scanGeneration))

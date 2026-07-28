@@ -3873,6 +3873,148 @@ def test_recording_stall_watchdog(qtbot, caplog, monkeypatch):
     assert failures and 'stalled' in failures[0]
 
 
+def test_scan_point_detector_watchdog_starts_after_scan_end(qtbot):
+    """Long scans get their full runtime before an APD final-frame timeout."""
+    class _PointDetector:
+        shape = (2, 2)
+        dtype = np.dtype(np.uint16)
+        pixelSizeUm = [1.0, 1.0, 1.0]
+        isScanDriven = True
+
+        def startAcquisition(self):
+            pass
+
+        def stopAcquisition(self):
+            pass
+
+        def startChunkConsumer(self, _consumerKey):
+            pass
+
+        def releaseChunkConsumer(self, _consumerKey):
+            pass
+
+        def readChunk(self, _consumerKey):
+            return []
+
+    class _PointDetectors:
+        def __init__(self):
+            self.detector = _PointDetector()
+
+        def __getitem__(self, name):
+            assert name == 'APDred'
+            return self.detector
+
+        def acquire(self, detectorNames, purpose):
+            assert tuple(detectorNames) == ('APDred',)
+            self.detector.startAcquisition()
+            return object()
+
+        def release(self, _handle):
+            self.detector.stopAcquisition()
+
+    class _NoopStorer:
+        def __init__(self, _filepath, _detectorsManager):
+            pass
+
+        def openStream(self, **_kwargs):
+            pass
+
+        def writeFrames(self, _detectorName, _frames):
+            pass
+
+        def finalizeStream(self, *_args, **_kwargs):
+            pass
+
+        def abortStream(self, *_args, **_kwargs):
+            pass
+
+    recordingManager = RecordingManager(
+        _PointDetectors(),
+        storerMap={SaveFormat.HDF5: _NoopStorer},
+    )
+    stalled = []
+    failures = []
+    recordingManager.sigRecordingStalled.connect(stalled.append)
+    recordingManager.sigRecordingFailed.connect(failures.append)
+
+    generation = recordingManager.startRecording(
+        detectorNames=['APDred'],
+        recMode=RecMode.ScanOnce,
+        savename='long_two_linestep_scan',
+        saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'APDred': {}},
+        recFrames=1,
+        stallTimeout=0.05,
+    )
+    try:
+        assert recordingManager.waitForAcquisitionStarted(2.0)
+        assert recordingManager.markScanStarted(
+            {
+                'scan_samples_total': 500,
+                'scan_time_step': 0.001,
+                'n_linesteps': 2,
+            },
+            generation,
+        )
+
+        # This is three times the ordinary frame timeout, but still well
+        # inside the generated 0.5 s scan.
+        qtbot.wait(150)
+        assert recordingManager.record
+        assert stalled == []
+
+        assert recordingManager.markScanCompleted(generation)
+        with qtbot.waitSignal(
+            recordingManager.sigRecordingStalled, timeout=1000
+        ):
+            pass
+        assert stalled == ['APDred']
+        qtbot.waitUntil(lambda: bool(failures), timeout=1000)
+        assert failures
+        assert 'after scan completion' in failures[0]
+    finally:
+        recordingManager.abortRecording(emitSignal=False, wait=True)
+
+
+def test_hdf5_stream_preserves_linestep_axis(tmp_path):
+    """One APD frame retains both line-step planes as (T, C, Y, X)."""
+    detectorsManager = DetectorsManager(detectorInfosBasic, updatePeriod=100)
+    detectorName = next(iter(detectorInfosBasic))
+    path = str(tmp_path / 'apd_linesteps.h5')
+    frames = np.arange(1 * 2 * 4 * 5, dtype=np.uint16).reshape(1, 2, 4, 5)
+
+    storer = HDF5Storer(str(tmp_path / 'unused'), detectorsManager)
+    metadataManager = RecordingManager(detectorsManager)
+    storer.omeMeta = {
+        detectorName: metadataManager.buildOmeMeta(
+            detectorName, MODE_SCAN, 1
+        )
+    }
+    storer.openStream(
+        fileDests={detectorName: path},
+        detectorNames=[detectorName],
+        shapes={detectorName: frames.shape[1:]},
+        attrs={detectorName: {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+    )
+    storer.writeFrames(detectorName, frames)
+    storer.finalizeStream(
+        {detectorName: 1},
+        {detectorName: path},
+        recordingManager=None,
+        saveMode=SaveMode.Disk,
+    )
+
+    with h5py.File(path, 'r') as file:
+        dataset = file[detectorName]['data']
+        assert dataset.shape == (1, 2, 4, 5)
+        assert dataset.attrs['axes'] == 'TCYX'
+        np.testing.assert_array_equal(dataset[:], frames)
+
+
 def test_detector_dtype_contract(tmp_path):
     """Test that storers create datasets from detector's declared dtype (the contract).
     
