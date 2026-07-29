@@ -6,6 +6,13 @@ such as BeadRec resolve scan geometry and running-state from it.
 Status: implemented (June 2026). Supersedes the capability-lookup-only design
 described in "Rework 1" of [beadrec_audit_plan.md](beadrec_audit_plan.md).
 
+Extended July 2026 with the **scan-execution coordinator** (§2.4): scan *runs*
+and *iterations* are now reserved through a shared coordinator that owns the
+participant snapshot, the SCAN detector lease and the end-of-scan barrier. The
+active-scan-source mechanism below is unchanged; the coordinator sits under it
+and decides *whether* an arm is allowed and *when* completion is published.
+Design record: [design/plans/detector-acquisition-selection.md](design/plans/detector-acquisition-selection.md).
+
 ---
 
 ## 1. The problem this solves
@@ -121,13 +128,84 @@ Unchanged and out of scope: `getNumScanPositions()`, `getNumCamTTL()`,
 `getNextAxial()` stay on the `'Scan'` key (consumed by RecordingController
 and the MoNaLISA axial workflow only).
 
-## 3. Lifecycle sequence
+### 2.4 `ScanExecutionCoordinator` (model/managers/_scan_execution.py)
+
+`isRunning` answers *who is scanning*. It does not answer *may this scan
+start*, *which detectors belong to it* or *when is it safe to tear down*.
+Those live in a single shared, framework-free coordinator
+(`getSharedScanExecutionCoordinator`, created by `MasterController`), because
+there are **five** direct `nidaqManager.runScan` callers — the four
+`SuperScanController` subclasses and `EtSTEDTriggeredScanRunner` — so the
+lifecycle cannot live on `SuperScanController` without missing one. Today
+exactly one call site reaches `runScan`, inside the coordinator.
+
+Two deliberately distinct levels:
+
+| Level | Token | Spans |
+|---|---|---|
+| **Scan run** | `ScanRunToken` (`reserveRun` / `releaseRun`) | one user-initiated scan *including* every repeat iteration, MoNaLISA `autoAxial` follow-up and `isNonFinalPartOfSequence` part |
+| **Scan iteration** | `ScanIterationToken` (`arm` / `resolve`) | one `runScan` → `scanDone` cycle, i.e. one frame |
+
+The run reservation is what stops another entry point from arming *in the gaps
+between* repeat frames, where no iteration is in flight. Re-reserving by the
+same owner is idempotent; a different owner is refused with `ScanBusyError`
+(`NidaqManagerError` subclass) — a refusal starts nothing and emits no
+lifecycle signal.
+
+**`arm(signalDict, scanInfoDict, owner=...)`** does four things in order:
+
+1. **Composes the participant snapshot** — `(selected scan-driven detectors) |
+   (scan-driven detectors held by an override purpose)`, minus faulted ones. A
+   detector whose stop failed never rejoins a scan. Override purposes
+   (`RECORDING`, `SNAP`, `WORKFLOW`, `EVENT_STREAM`, `EVENT_DIRECT`, `GENERIC`)
+   win over deselection: deselecting is a preference, an active recording is a
+   commitment. Deferred selection changes are flushed here — the one point
+   where a new selection takes effect without disturbing an iteration already
+   in flight.
+2. **Takes the `SCAN` lease** on those detectors (`DetectorsManager.acquire`).
+3. **Injects the snapshot into `scanInfoDict`** as `participants` and
+   `excludedDetectors`. Participation travels as scan-scoped data on the dict
+   `sigScanBuilt` already carries, so there is no mirror to go stale between
+   iterations. A dict *without* `participants` means "legacy scan": every
+   scan-driven detector participates, which preserves behavior for any entry
+   point not routed through the coordinator.
+4. Calls `nidaqManager.runScan`.
+
+Any failure — busy refusal, build failure, arm exception — resolves the token
+and unwinds the lease before propagating, so a refused arm cannot strand
+ownership. Completion runs **exactly once** per iteration across all five
+terminations (busy refusal, build failure, arm exception, normal completion,
+abort).
+
+**`resolve(token, mode, onComplete=...)` is the finish barrier.** It asks every
+participant `finishScan(mode, acknowledge)` and then *waits asynchronously* for
+their acknowledgements before releasing the SCAN lease — the call never blocks
+the UI thread. `mode` is `'graceful'` or `'abort'`. Point detectors integrate a
+whole scan and publish their frame at the very end, so releasing the lease at
+`sigScanDone` used to tear the worker down mid-read and lose that frame.
+`finishScan` runs for every participant regardless of refcount (a TimeTagger
+that also holds a `WORKFLOW` lease goes 2→1, so no hardware stop happens, but
+it still needs its final read); hardware stop happens only at aggregate zero.
+Implemented by `APDManager`, `PMTManager` and `SwabianTimeTaggerManager`; the
+`DetectorManager` base acknowledges immediately. A 5 s deadline
+(`DEFAULT_FINISH_TIMEOUT_S`, armed through an injected scheduler —
+`QTimer.singleShot` in the GUI) releases anyway rather than wedging the GUI:
+losing one final frame beats a stuck application.
+
+`onComplete` fires when the barrier clears, on whichever thread acknowledged
+last. **`scanDone` hangs off this**, which is why the sequence in §3 publishes
+completion after the barrier rather than directly from the NI-DAQ signal.
 
 ```
 user / external trigger
   └─ runScanAdvanced()
+       ├─ coordinator.reserveRun(self) ─► ScanRunToken   (ScanBusyError if
+       │                                  another owner holds the run)
        ├─ isRunning = True  ──────────► channel.setActiveScanSource(self)
        ├─ sigScanStarting               (unless already emitted by trigger)
+       ├─ coordinator.arm(...) ────────► participants + SCAN lease +
+       │                                  scanInfoDict['participants'],
+       │                                  then nidaqManager.runScan
        ├─ sigScanBuilt(deviceList)      (NIDAQ: relayed from nidaqManager;
        │                                 TriggerScope: emitted by controller)
        ├─ hardware starts
@@ -135,16 +213,36 @@ user / external trigger
                                          scanManager — active source is
                                          already set at this point)
   ... scan runs; consumers poll isScanRunning(), read getDimsScan() etc. ...
-hardware reports done / failure
-  └─ scanDone() / scanFailed()
-       ├─ isRunning = False ──────────► channel.clearActiveScanSource(self)
-       ├─ sigScanDone                   (skipped in repeat / cont-laser modes)
-       └─ sigScanEnded                  (skipped for non-final sequence parts)
+NI-DAQ reports done / build failure
+  └─ coordinator.resolve(token, graceful|abort)      ← finish barrier
+       ├─ finishScan(mode, ack) to every participant
+       ├─ wait (async) for all acknowledgements, or 5 s deadline
+       ├─ release the SCAN lease
+       └─ onComplete ─► scanDone() / scanFailed()   (re-queued onto the
+            ├─ isRunning = False ─────► clearActiveScanSource(self)
+            ├─ sigScanDone              controller's own thread)
+            └─ sigScanEnded             (skipped for non-final parts;
+                                         run reservation released here)
 ```
 
-Repeat mode: `scanDone()` sets `isRunning = False` and immediately calls
-`runScanAdvanced()` again, so `isScanRunning()` is briefly `False` between
-repeats — identical to the pre-refactor behavior of the raw flag.
+Only the controller that *armed* the iteration reacts: `tokenForOwner(self)`
+returns `None` for everyone else, so the NI-DAQ done signal — broadcast to
+every scan controller — cannot make a bystander publish an early
+`sigScanEnded`.
+
+**Repeat mode** does *not* re-enter the scan machinery synchronously. `scanDone`
+runs inside the just-finished scan's task-completion slot; calling
+`runScanAdvanced` from there recreated NI-DAQ tasks, `WaitThread`s and
+per-detector scan `QThread`s while the previous ones were still tearing down —
+a QThread destroyed while still running, which crashed the GUI on real hardware
+every time *Repeat* was enabled. `_armRepeatScan` therefore defers the next
+frame with `QTimer.singleShot(0, self._fireRepeatScan)` so the current signal
+chain unwinds first. `_repeatPending` is cleared by `abortScan` / `scanFailed`,
+and `_fireRepeatScan` re-checks `_shouldContinueRepeat()`, so aborting or
+un-checking *Repeat* in that gap cancels cleanly and terminalizes exactly as
+`scanDone` would have. `isScanRunning()` is briefly `False` between repeat
+frames, but the **run reservation is retained**, so no other entry point can
+arm in the gap.
 
 ## 4. Contract for new scan controllers
 
@@ -168,10 +266,37 @@ A new controller that runs hardware scans MUST:
    `sigScanStarted`, `sigScanDone`, `sigScanEnded`) following the sequence in
    §3.
 
-4. *(Optional, for BeadRec support)* additionally inherit
+4. **Never call `nidaqManager.runScan` directly.** Reserve the run with
+   `self._scanCoordinator.reserveRun(self)`, arm each iteration through
+   `self._scanCoordinator.arm(signalDict, scanInfoDict, owner=self)`, and let
+   `ScanBusyError` propagate as a refusal rather than starting hardware
+   anyway. `SuperScanController` already does all of this in
+   `_armScanIteration`; a controller outside that hierarchy (the
+   `EtSTEDTriggeredScanRunner` pattern) must do it itself.
+
+5. **Publish completion from the finish barrier, not from the NI-DAQ signal.**
+   Resolve the iteration with
+   `coordinator.resolve(token, mode, onComplete=...)` and call `scanDone()` /
+   `scanFailed()` from `onComplete`. Guard with `tokenForOwner(self)` so a
+   broadcast completion signal is ignored by non-owners, and re-queue
+   `onComplete` onto the controller's own thread — the last acknowledgement can
+   arrive on a detector worker thread.
+
+6. **Re-arm repeats deferred**, via `_armRepeatScan()` (or an equivalent
+   zero-delay timer) — never synchronously from `scanDone` (see §3).
+
+7. *(Optional, for BeadRec support)* additionally inherit
    `BeadRecScanSourceMixin` and implement `getBeadRecScanDims()` /
    `getBeadRecStepSizes()`; override `isBeadRecCompatible()` to return
    `False` if the frame stream does not map to a 2D raster.
+
+A **scan-driven detector manager** (one whose `isScanDriven` is `True`) has a
+matching obligation: override `finishScan(mode, acknowledge)` if it has
+end-of-scan work — a final read, a last frame to publish — and call
+`acknowledge()` when that work is done, from any thread. The base
+implementation acknowledges immediately, which is correct only for managers
+with nothing outstanding. Not acknowledging costs a 5 s stall per iteration and
+then proceeds without you.
 
 **Enforcement:** the adoption-audit test in
 `imswitch/imcontrol/_test/unit/test_scan_lifecycle.py`
@@ -278,10 +403,12 @@ deliberately excluded): `EtSnoutyController` (event-triggered workflow that
 
 ## 7. Edge cases and known limits
 
-- **Concurrent scans:** last announcement wins. Hardware does not support
-  truly concurrent scans today; if two controllers ever overlap, the channel
-  reflects the most recently started one, and the identity guard ensures the
-  earlier controller's teardown cannot clear the newer scan.
+- **Concurrent scans:** now *refused*, not merely reported. A second entry
+  point trying to reserve a run or arm an iteration while another owner holds
+  one gets `ScanBusyError` (§2.4), including in the gaps between repeat frames.
+  The channel-level rule below still applies as a backstop for controllers
+  outside the coordinator: last announcement wins, and the identity guard
+  ensures the earlier controller's teardown cannot clear the newer scan.
 - **Cont-laser-pulses mode** (`ScanControllerBase`): `isRunning` is set even
   though scan signals are suppressed — `isScanRunning()` reports `True`
   during continuous pulsing, identical to pre-refactor behavior.
@@ -297,3 +424,18 @@ deliberately excluded): `EtSnoutyController` (event-triggered workflow that
   protocol/mixin defaults and active-source-first resolution contract.
 - `imswitch/imcontrol/_test/unit/test_communication_channel_contract.py` —
   signal inventory unchanged (the active-source API is methods, not signals).
+
+Coordinator layer (§2.4):
+
+- `test_scan_execution_coordinator.py` — arm/resolve exactly-once across all
+  five terminations, participant composition, finish barrier and its timeout.
+- `test_scan_busy_refusal.py` — a refused arm starts nothing, emits no
+  lifecycle signal and strands no ownership.
+- `test_scan_repeat_rearm.py` — repeat defers instead of running synchronously;
+  abort / un-check / already-running cancel the pending frame.
+- `test_detector_selection.py` — selection, override purposes, deferred
+  application at the next iteration, back-compatibility without selection
+  support.
+- `test_acquisition_leases.py`, `test_detectors_manager_leases.py`,
+  `test_acquisition_concurrency.py` — lease refcounting, stop contract and
+  concurrency regressions.

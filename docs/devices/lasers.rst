@@ -244,6 +244,12 @@ mock fallback.
      - list[str]
      - COM ports to connect to.  Only the first port is used (the
        manager indexes ``[0]`` after normalisation).  **Required**.
+   * - ``useMockOnFailure``
+     - bool
+     - Defaults to ``true``. When the configured port cannot be opened, start
+       with ``MockCobolt06`` instead of aborting ImSwitch startup. Set it to
+       ``false`` for a hardware-required setup where a missing laser must be
+       reported as an error.
    * - ``emissionControl``
      - str
      - ``"master"`` uses ``l0``/``l1`` and is the default fail-safe off path.

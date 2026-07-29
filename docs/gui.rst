@@ -196,6 +196,36 @@ updated line-by-line during acquisition.
    :align: center
 
 
+Choosing which detectors acquire
+--------------------------------
+
+Setups with more than one detector show an **Acquire with** box above the
+LIVEVIEW button: one checkbox per detector, all ticked by default.  With a
+single detector there is nothing to choose between, so the box is hidden.
+
+Unticking a detector leaves it out of live view **and** out of scans.  That is
+how you stop paying for a detector you are not reading — an unused point
+detector still costs a counter task, a share of the scan's readout and its
+slice of every recorded file.
+
+The change lands at the earliest moment that is safe:
+
+* **Free-running detectors** (cameras) are reseeded immediately: the live view
+  drops or picks up the detector as soon as you click.
+* **Scan-driven detectors** (APD, PMT, Time Tagger) that the running scan is
+  currently using change at that scan's **next iteration** instead of
+  mid-frame.  Until then the checkbox shows what you asked for in *italics*,
+  so it is visibly a request rather than the current state.
+
+Deselection is a preference, not a veto.  A detector that a **recording,
+workflow or event modality is actively using keeps running** even when
+unticked — silently dropping it would corrupt an acquisition already in
+progress.  In the other direction, a detector whose last stop failed is
+quarantined: it is excluded from scans no matter what is ticked, and stays
+excluded for the rest of the session — the stop is only retried at shutdown,
+so recovering it means restarting ImSwitch.
+
+
 Hardware control
 ================
 
@@ -280,6 +310,56 @@ designers can be plugged in by subclassing those abstract bases.
 .. image:: ./images/auto/ScanWidgetBase.png
    :width: 600px
    :align: center
+
+Four widget variants exist — ``Base``, ``PointScan``, ``MoNaLISA`` and
+``Advanced`` — selected by ``scan.scanWidgetType`` in the setup JSON; see
+:doc:`setupinfo-reference`.
+
+Advanced scanning: line steps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``Advanced`` variant (paired with ``"TTLCycleDesigner":
+"AdvancedScanTTLCycleDesigner"``) adds **line steps**: the same physical line
+is scanned several times in a row, with a different set of devices enabled on
+each pass, before the slow axis advances.
+
+**#Line repeats** sets how many passes each line gets.  Ticking **Line program
+devices** shows the per-repeat enable matrix — one checkbox per device per
+step — so a two-colour point scan enables the first laser on step 1 and the
+second on step 2.
+
+Because the passes are interleaved *line by line* rather than frame by frame,
+the resulting channels are acquired within microseconds of each other at the
+same position: they stay co-registered even if the sample drifts, which a
+frame-sequential two-colour scan cannot promise.  The cost is proportional —
+``N`` line steps take ``N`` times as long and produce ``N`` times the data.
+
+Ticking **Advanced Line Program** exposes per-device, per-step control *within*
+each pixel's dwell time:
+
+* **Start(s)** / **End(s)** (ms, comma-separated) — one or more pulse windows
+  inside the dwell time.  A device with no windows is simply on for the whole
+  pixel.  The **Timing windows** / **Sequence builder** selector switches
+  between typing the windows directly and building them as a table of ordered
+  segments; switching modes converts what you already entered.
+* **Lock-Master** / **Lock-with:** — edit one device's program and have the
+  locked devices follow it, instead of retyping the same windows.
+* **Power Level (%)** — a per-step power for lasers that have an analog
+  channel, held constant across each pass.
+* **Intra-pixel positioners movement** — per-step positioner offsets in µm
+  (**Step(s) (um, comma-separated)**), for moving a stage or galvo within the
+  pixel rather than only gating light.
+
+**Dwell time (ms)** is the time spent per pixel; the widget shows the resulting
+**Dead time** so you can see how much of each pixel is not being used.
+**Delay [sampl.] D2 / D3** compensate scanner response on the fast and slow
+axes.  **Plot scan** previews the generated waveforms, with **include TTL** to
+overlay the device gating.
+
+With point detectors, a line-step scan produces one frame per scan holding all
+steps: ``APDManager`` keeps them as separate channels (saved as
+``(T, C, Y, X)``, one channel per step), while ``PMTManager`` sums them into a
+single image — see :doc:`devices/detectors`.
 
 
 Alignment tools
