@@ -195,6 +195,36 @@ def test_token_records_owner_for_broadcast_completion_routing():
     assert coordinator.tokenForOwner(object()) is None
 
 
+def test_backend_neutral_starter_runs_after_detector_lease_is_acquired():
+    coordinator, manager, nidaq = _setup()
+    observed = []
+
+    token = coordinator.armWithStarter(
+        lambda: observed.append(tuple(manager.acquired)),
+        owner=object(),
+    )
+
+    assert observed == [
+        ((('APD', 'TimeTagger'), LeasePurpose.SCAN, 'lease-1'),)
+    ]
+    assert nidaq.calls == []
+    assert token.participants == ('APD', 'TimeTagger')
+
+
+def test_backend_neutral_start_failure_unwinds_the_detector_lease():
+    coordinator, manager, _ = _setup()
+
+    def failToStart():
+        raise RuntimeError('firmware command failed')
+
+    with pytest.raises(RuntimeError, match='firmware command failed'):
+        coordinator.armWithStarter(failToStart)
+
+    assert manager.released == ['lease-1']
+    assert manager['APD'].finishCalls == [FINISH_ABORT]
+    assert coordinator.activeToken is None
+
+
 # --------------------------------------------------------------------------- #
 # Exactly-once completion, all five terminations                               #
 # --------------------------------------------------------------------------- #

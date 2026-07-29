@@ -295,6 +295,29 @@ def test_disarm_falls_back_when_the_model_has_no_trigger_selector():
     assert pm.writes == [('TriggerMode', 'Off')]
 
 
+def test_trigger_transition_is_bracketed_by_a_state_snapshot():
+    """Exposure and gain are reported to move across a trigger switch, and
+    nothing in set_trigger_enabled writes them. The snapshot either side is what
+    tells the frame-rate/exposure coupling apart from GainAuto re-engaging apart
+    from a merely stale cached parameter, so the 'before' one has to be taken
+    before any write lands -- a snapshot read after the fact proves nothing."""
+    from imswitch_device_tis._ic4_driver import IC4Camera
+
+    pm = _RecordingPropertyMap(values={'TriggerMode': 'Off'})
+    camera = _camera_with(pm)
+    snapshots = []
+    camera._log_state = lambda when, **kwargs: snapshots.append(
+        (when, len(pm.writes))
+    )
+
+    IC4Camera.set_trigger_enabled(camera, True)
+
+    assert len(snapshots) == 2, 'the transition must be logged either side'
+    assert snapshots[0][1] == 0, 'the "before" snapshot must precede every write'
+    assert snapshots[1][1] == len(pm.writes), 'the "after" snapshot must follow them'
+    assert 'before' in snapshots[0][0] and 'after' in snapshots[1][0]
+
+
 def test_mock_starts_with_the_autos_off():
     """Not cosmetic: the mock loads the Default user set's state on construction
     exactly as the real camera does, so this pins the fix at open time."""

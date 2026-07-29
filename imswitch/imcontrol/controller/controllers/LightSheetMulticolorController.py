@@ -9,14 +9,18 @@ from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import (
     ImConWidgetController,
-    ScanLifecycleMixin,
     StatefulComponentMixin,
     ComponentStateApplyMode,
     SetupModeApplyPriority
 )
+from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
-class LightSheetMulticolorController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
+class LightSheetMulticolorController(
+    StatefulComponentMixin,
+    TriggerScopeScanLifecycleMixin,
+    ImConWidgetController,
+):
     """ Controller for the multicolor light-sheet / pLS-RESOLFT scan widget.
 
     Builds a ``'MulticolorScan'`` parameter dict from the widget fields and
@@ -64,11 +68,7 @@ class LightSheetMulticolorController(StatefulComponentMixin, ScanLifecycleMixin,
         self._widget.MulticolorScanDeviceEdit.addItems(self.positioners.keys())
         self._widget.cycleScanDeviceEdit.addItems(self.positioners.keys())
 
-        # Connect ScanManagerTriggerScope signals
-        self._master.scanManager.sigScanStarted.connect(
-            lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
-        )
-        self._master.scanManager.sigScanDone.connect(self.scanDone)
+        self._initTriggerScopeScanLifecycle()
 
         self._commChannel.sigRunScan.connect(self.runScanExternal)
         self._commChannel.sigAbortScan.connect(self.abortScan)
@@ -231,54 +231,29 @@ class LightSheetMulticolorController(StatefulComponentMixin, ScanLifecycleMixin,
 
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):
-        if self._widget.autoStartRec:
-            self._commChannel.sigStartRecording.emit()
         try:
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
-            self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
-            # Declare which lasers participate so the LaserController can arm
-            # them (digital-modulation / external-control) and leave the rest
-            # off. TriggerScope runs the scan autonomously, so this signal is
-            # emitted here rather than from the DAQ manager.
-            self.emitScanSignal(self._commChannel.sigScanBuilt,
-                                self._getScanLaserDevices())
             params = self.getTriggerScopeParameters()
-            self._master.scanManager.runScan(params, scan_type='MulticolorScan')
+            self._startTriggerScopeScan(
+                parameters=params,
+                scanType='MulticolorScan',
+                laserDevices=self._getScanLaserDevices(),
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+            )
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
-
-    def abortScan(self):
-        self.doingNonFinalPartOfSequence = False
-        if not self.isRunning:
             self.scanFailed()
 
+    def abortScan(self):
+        self._requestTriggerScopeStop()
+
     def scanDone(self):
-        # All TriggerScope scan controllers share the board-level sigScanDone, so
-        # every one of them receives this when the firmware reports end-of-scan.
-        # Only the controller that actually started the scan should tear down;
-        # the rest must ignore it (their isRunning is False) to avoid redundant
-        # laser disarm rounds and duplicate sigScanEnded emissions.
-        if not self.isRunning:
-            return
-        self._logger.debug('Scan done')
-        self.isRunning = False
-        self.emitScanSignal(self._commChannel.sigScanDone)
-        if not self.doingNonFinalPartOfSequence:
-            self._widget.setScanButtonChecked(False)
-            self.emitScanSignal(self._commChannel.sigScanEnded)
-        if self._widget.autoStopRec:
-            self._commChannel.sigStopRecording.emit()
+        self._onTriggerScopeScanDone()
 
     def scanFailed(self):
         self._logger.error('Scan failed')
-        self.isRunning = False
-        self.doingNonFinalPartOfSequence = False
-        self._widget.setScanButtonChecked(False)
-        self.emitScanSignal(self._commChannel.sigScanEnded)
+        self._failTriggerScopeScan()
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)
@@ -289,8 +264,8 @@ class LightSheetMulticolorController(StatefulComponentMixin, ScanLifecycleMixin,
         Each laser-role dropdown stores a device name as a value in
         _deviceParameterDict; positioner/camera roles store non-laser device
         names. We keep only values that are registered lasers and de-duplicate.
-        The LaserController uses this list (via sigScanBuilt) to arm exactly
-        these lasers.
+        The LaserController uses this list (via sigScanDevicesResolved) to arm
+        exactly these lasers.
         """
         self.getParameters()
         devices = []

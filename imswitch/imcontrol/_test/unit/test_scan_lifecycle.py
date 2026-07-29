@@ -1,4 +1,4 @@
-"""Tests for the active-scan-source lifecycle (see docs/scan_lifecycle.md).
+"""Tests for the active-scan-source lifecycle (see docs/scan-lifecycle.rst).
 
 Covers:
 - ScanLifecycleMixin announcing/withdrawing the controller on isRunning flips.
@@ -148,7 +148,7 @@ def test_every_scan_controller_inherits_scan_lifecycle_mixin():
     assert offenders == [], (
         'Scan controllers must inherit ScanLifecycleMixin (directly or via '
         'SuperScanController) so the CommunicationChannel learns about their '
-        'scans (see docs/scan_lifecycle.md). Offending classes: '
+        'scans (see docs/scan-lifecycle.rst). Offending classes: '
         + ', '.join(offenders)
     )
 

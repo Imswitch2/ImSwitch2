@@ -2,7 +2,7 @@ import os
 import json
 import configparser
 from ast import literal_eval
-from ..basecontrollers import ImConWidgetController, ScanLifecycleMixin, StatefulComponentMixin, ComponentStateApplyMode
+from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 import numpy as np
 import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
@@ -10,6 +10,7 @@ from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from imswitch.imcommon.view.guitools import colorutils
 from ._beadrec_scan_source import BeadRecScanSourceMixin
+from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
 def trimRasterLengthForFirmwareBoundary(length, stepSize):
@@ -37,7 +38,12 @@ def trimRasterLengthForFirmwareBoundary(length, stepSize):
     return length - 0.5 * stepSize
 
 
-class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixin, ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopeRasterController(
+    StatefulComponentMixin,
+    BeadRecScanSourceMixin,
+    TriggerScopeScanLifecycleMixin,
+    ImConWidgetController,
+):
     """Linked to TriggerScopeRasterWidget."""
 
     componentName = 'Scan'
@@ -84,10 +90,7 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         self.updateScanStageAttrs()
         self.updateScanTTLAttrs()
 
-        self._master.scanManager.sigScanStarted.connect(
-            lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
-        )
-        self._master.scanManager.sigScanDone.connect(self.scanDone)
+        self._initTriggerScopeScanLifecycle()
 
         self._commChannel.sigRunScan.connect(self.runScanExternal)
         self._commChannel.sigAbortScan.connect(self.abortScan)
@@ -245,23 +248,18 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         """Runs a scan with the set scanning parameters."""
         try:
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
-            self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
-            # Tell the LaserController which lasers participate in this scan so
-            # it can arm them (digital-modulation / external-control mode) and
-            # leave the rest off. The TriggerScope firmware runs the scan
-            # autonomously, so unlike the Advanced/Nidaq path this signal must
-            # be emitted here rather than from the DAQ manager.
-            self.emitScanSignal(self._commChannel.sigScanBuilt,
-                                self._getScanLaserDevices())
             self._logRasterTTLDiagnostics()
             triggerscopeParameters = self.getTriggerscopeParameters()
-            self._master.scanManager.runScan(triggerscopeParameters, scan_type='rasterScan')
+            self._startTriggerScopeScan(
+                parameters=triggerscopeParameters,
+                scanType='rasterScan',
+                laserDevices=self._getScanLaserDevices(),
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+            )
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
+            self.scanFailed()
 
     def abortScan(self):
         # The firmware runs the scan autonomously and exposes no abort
@@ -271,23 +269,7 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         # (the RecordingController raises one whenever a scan-driven
         # recording stops) was swallowed entirely and the scanner kept
         # cycling with the recording long gone.
-        self.doingNonFinalPartOfSequence = False
-        if not self.isRunning:
-            self.scanFailed()
-            return
-        if self._scanStopRequested:
-            # sigAbortScan is also raised by automated recording/workflow
-            # teardown. Keep duplicate emissions idempotent: only the
-            # dedicated UI action below is allowed to force local teardown.
-            self._logger.debug('A raster stop is already pending')
-            return
-        self._scanStopRequested = True
-        self._widget.setAbortPending(True)
-        self._logger.debug(
-            'Abort requested mid-scan: the TriggerScope firmware cannot '
-            'be interrupted, so this iteration finishes and no repeat '
-            'follows.'
-        )
+        self._requestTriggerScopeStop()
 
     def forceStopScan(self):
         """Force local teardown after an ordinary raster stop is pending.
@@ -310,36 +292,11 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         self.scanFailed()
 
     def scanDone(self):
-        # All TriggerScope scan controllers share the board-level sigScanDone, so
-        # every one of them receives this when the firmware reports end-of-scan.
-        # Only the controller that actually started the scan should tear down;
-        # the rest must ignore it (their isRunning is False) to avoid redundant
-        # laser disarm rounds and duplicate sigScanEnded emissions.
-        if not self.isRunning:
-            return
-        self._logger.debug('Scan done')
-        self.isRunning = False
-        # Consume the abort here rather than in runScanAdvanced: the repeat
-        # continuation re-enters runScanAdvanced with isRunning already back
-        # to False, so a reset there could not tell it apart from a fresh run.
-        stopRequested = self._scanStopRequested
-        self._scanStopRequested = False
-        if not self._widget.repeatEnabled() or stopRequested:
-            self.emitScanSignal(self._commChannel.sigScanDone)
-            if not self.doingNonFinalPartOfSequence:
-                self._widget.setScanButtonChecked(False)
-                self.emitScanSignal(self._commChannel.sigScanEnded)
-        else:
-            self._logger.debug('Repeat scan')
-            self.runScanAdvanced(sigScanStartingEmitted=True)
+        self._onTriggerScopeScanDone()
 
     def scanFailed(self):
         self._logger.error('Scan failed')
-        self.isRunning = False
-        self._scanStopRequested = False
-        self.doingNonFinalPartOfSequence = False
-        self._widget.setScanButtonChecked(False)
-        self.emitScanSignal(self._commChannel.sigScanEnded)
+        self._failTriggerScopeScan()
 
     def getParameters(self):
         if self.settingParameters:
@@ -451,7 +408,7 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
         (sent as p1StartUs/p1EndUs). The per-device line selection (p1Line)
         and all other TTL rows are ignored, so which device sits on which of
         TTL0-3 does not affect the pulse pattern — emission control of the
-        lasers comes from arming (sigScanBuilt) alone.
+        lasers comes from arming (sigScanDevicesResolved) alone.
 
         A camera in external frame-trigger mode silently drops triggers that
         arrive while it is still exposing/reading out — the typical symptom
@@ -498,7 +455,7 @@ class TriggerScopeRasterController(StatefulComponentMixin, BeadRecScanSourceMixi
 
         These are the TTL-included devices that are also registered as
         lasers in the setup. The LaserController uses this list (via
-        sigScanBuilt) to arm exactly these lasers for the scan.
+        sigScanDevicesResolved) to arm exactly these lasers for the scan.
         """
         self.getParameters()
         return [d for d in self._digitalParameterDict['target_device']

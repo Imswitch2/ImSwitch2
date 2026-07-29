@@ -29,7 +29,21 @@ import numpy as np
 
 from ._frame_queue import FrameQueue
 
-logger = logging.getLogger(__name__)
+try:
+    from imswitch.imcommon.model import initLogger
+except Exception:  # pragma: no cover - only when run outside ImSwitch
+    def initLogger(owner, instanceName=None):
+        return logging.getLogger(str(owner))
+
+#: Routed through ImSwitch's ``initLogger`` rather than
+#: ``logging.getLogger(__name__)``. ImSwitch installs its handler on the
+#: ``imswitch`` logger alone (``imcommon/model/logging.py``), and
+#: ``imswitch_device_tis._ic4_driver`` is a separate top-level tree with no
+#: handler on it — so every record this module emitted below WARNING was
+#: discarded, and its warnings fell through to ``logging.lastResort`` (bare
+#: stderr, no timestamp, outside the ImSwitch log). That silently included
+#: ``_log_state``, the one line that reports what the camera is actually doing.
+logger = initLogger('IC4Camera')
 
 #: Default microseconds of exposure, matching the DMK 33UX250's usable range.
 DEFAULT_EXPOSURE_US = 5000.0
@@ -336,8 +350,23 @@ class IC4Camera:
         latches on the *trailing* edge of a TriggerScope pulse — frames still
         arrive, delayed by the pulse width, which is a subtle way to get skewed
         timing rather than an obvious failure.
+
+        The transition is bracketed by a state snapshot because exposure and
+        gain are reported to move across it, and nothing here writes them. Two
+        mechanisms could do that and they need opposite fixes: ``ExposureTime``
+        has a maximum coupled to ``AcquisitionFrameRate``, so *disarming* can
+        re-impose the frame-period cap and clamp a long exposure; ``Gain`` has
+        no such coupling, so a gain change points at ``GainAuto`` re-engaging
+        instead. Only the device's own values, read either side of the write,
+        distinguish those — and from the third case, where the hardware never
+        moved and only ImSwitch's cached parameter is stale. This is diagnostic
+        and deliberately changes no behaviour.
         """
         pm, pid = self._pm, self._ic4.PropId
+        self._log_state(
+            f"before TriggerMode -> {'On' if enabled else 'Off'}",
+            level=logging.DEBUG,
+        )
         # TriggerSelector must be set before TriggerMode on models that expose
         # it; try_set_value tolerates those that do not.
         pm.try_set_value(pid.TRIGGER_SELECTOR, "FrameStart")
@@ -356,6 +385,8 @@ class IC4Camera:
             logger.warning(
                 f"TriggerMode reads {actual!r} after setting it to {expected!r}."
             )
+
+        self._log_state(f"after TriggerMode -> {expected}", level=logging.DEBUG)
 
     def _disarm_all_triggers(self) -> None:
         """Set ``TriggerMode=Off`` for *every* ``TriggerSelector`` entry.
@@ -393,13 +424,16 @@ class IC4Camera:
         # arms, and the one a scan expects to be current.
         pm.try_set_value(pid.TRIGGER_SELECTOR, "FrameStart")
 
-    def _log_state(self, when: str) -> None:
+    def _log_state(self, when: str, *, level: int = logging.INFO) -> None:
         """Log the properties that decide whether frames flow and how bright.
 
-        These four have each already cost a debugging session on this rig, and
+        These five have each already cost a debugging session on this rig, and
         every one of them can be changed behind ImSwitch's back by the vendor
         GUI or by a previous run. One line at open turns "the camera is acting
         up again" into a fact.
+
+        ``level`` exists so the same snapshot can be taken often enough to
+        bracket a state change without flooding the console at INFO.
         """
         pid = self._ic4.PropId
         fields = []
@@ -414,7 +448,7 @@ class IC4Camera:
                 fields.append(f"{label}={getattr(self._pm, getter)(prop_id)}")
             except Exception:
                 fields.append(f"{label}=<unavailable>")
-        logger.info(f"IC4 camera state {when}: {', '.join(fields)}")
+        logger.log(level, f"IC4 camera state {when}: {', '.join(fields)}")
 
     def is_trigger_enabled(self) -> bool:
         return self._pm.get_value_str(self._ic4.PropId.TRIGGER_MODE) == "On"

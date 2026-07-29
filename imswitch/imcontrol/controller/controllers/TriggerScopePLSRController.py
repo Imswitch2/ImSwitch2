@@ -4,7 +4,6 @@ import configparser
 from ast import literal_eval
 from ..basecontrollers import (
     ImConWidgetController,
-    ScanLifecycleMixin,
     StatefulComponentMixin,
     ComponentStateApplyMode,
     SetupModeApplyPriority
@@ -13,9 +12,14 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
+from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
-class TriggerScopePLSRController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopePLSRController(
+    StatefulComponentMixin,
+    TriggerScopeScanLifecycleMixin,
+    ImConWidgetController,
+):
     """Linked to TriggerScopePLSRWidget."""
 
     componentName = 'TriggerScopePLSR'
@@ -56,10 +60,7 @@ class TriggerScopePLSRController(StatefulComponentMixin, ScanLifecycleMixin, ImC
         self._widget.roScanDeviceEdit.addItems(self.positioners.keys())
         self._widget.cycleScanDeviceEdit.addItems(self.positioners.keys())
 
-        self._master.scanManager.sigScanStarted.connect(
-            lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
-        )
-        self._master.scanManager.sigScanDone.connect(self.scanDone)
+        self._initTriggerScopeScanLifecycle()
 
         self._commChannel.sigRunScan.connect(self.runScanExternal)
         self._commChannel.sigAbortScan.connect(self.abortScan)
@@ -169,54 +170,29 @@ class TriggerScopePLSRController(StatefulComponentMixin, ScanLifecycleMixin, ImC
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):
         """Runs a scan with the set scanning parameters."""
-        if self._widget.autoStartRec:
-            self._commChannel.sigStartRecording.emit()
         try:
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
-            self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
-            # Declare which lasers participate so the LaserController can arm
-            # them (digital-modulation / external-control) and leave the rest
-            # off. TriggerScope runs the scan autonomously, so this signal is
-            # emitted here rather than from the DAQ manager.
-            self.emitScanSignal(self._commChannel.sigScanBuilt,
-                                self._getScanLaserDevices())
             triggerscopeParameters = self.getTriggerscopeParameters()
-            self._master.scanManager.runScan(triggerscopeParameters, scan_type='pLS-RESOLFTScan')
+            self._startTriggerScopeScan(
+                parameters=triggerscopeParameters,
+                scanType='pLS-RESOLFTScan',
+                laserDevices=self._getScanLaserDevices(),
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+            )
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
-
-    def abortScan(self):
-        self.doingNonFinalPartOfSequence = False
-        if not self.isRunning:
             self.scanFailed()
 
+    def abortScan(self):
+        self._requestTriggerScopeStop()
+
     def scanDone(self):
-        # All TriggerScope scan controllers share the board-level sigScanDone, so
-        # every one of them receives this when the firmware reports end-of-scan.
-        # Only the controller that actually started the scan should tear down;
-        # the rest must ignore it (their isRunning is False) to avoid redundant
-        # laser disarm rounds and duplicate sigScanEnded emissions.
-        if not self.isRunning:
-            return
-        self._logger.debug('Scan done')
-        self.isRunning = False
-        self.emitScanSignal(self._commChannel.sigScanDone)
-        if not self.doingNonFinalPartOfSequence:
-            self._widget.setScanButtonChecked(False)
-            self.emitScanSignal(self._commChannel.sigScanEnded)
-        if self._widget.autoStopRec:
-            self._commChannel.sigStopRecording.emit()
+        self._onTriggerScopeScanDone()
 
     def scanFailed(self):
         self._logger.error('Scan failed')
-        self.isRunning = False
-        self.doingNonFinalPartOfSequence = False
-        self._widget.setScanButtonChecked(False)
-        self.emitScanSignal(self._commChannel.sigScanEnded)
+        self._failTriggerScopeScan()
 
     def getParameters(self):
         """Get parameters from widget field to controller dict."""
@@ -258,8 +234,8 @@ class TriggerScopePLSRController(StatefulComponentMixin, ScanLifecycleMixin, ImC
         Each laser-role dropdown stores a device name as a value in
         _deviceParameterDict; positioner/camera roles store non-laser device
         names. We keep only values that are registered lasers and de-duplicate.
-        The LaserController uses this list (via sigScanBuilt) to arm exactly
-        these lasers.
+        The LaserController uses this list (via sigScanDevicesResolved) to arm
+        exactly these lasers.
         """
         self.getParameters()
         devices = []

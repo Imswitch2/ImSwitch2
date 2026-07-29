@@ -70,9 +70,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Connect CommunicationChannel signals
         self._commChannel.sharedAttrs.sigAttributeSet.connect(self.attrChanged)
         self._commChannel.sigScanStarting.connect(lambda: self.scanChanged(True))
-        # The scan's TTL device list, published before the DAQ is claimed.
-        # This is where lasers are armed — sigScanBuilt arrives after the
-        # manager is busy, when one-shot writes are refused.
+        # The scan's TTL device list, published before its execution backend
+        # starts. This is where lasers are armed; sigScanBuilt is too late for
+        # NI-DAQ writes and only a compatibility event for TriggerScope.
         self._commChannel.sigScanDevicesResolved.connect(self.scanDevicesResolved)
         self._commChannel.sigScanEnded.connect(lambda: self.scanChanged(False))
 
@@ -284,9 +284,9 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         deliberately NOT the NI-DAQ AO/DO device list, which only contains
         devices owning an analog channel or digital line.
 
-        Runs before the scan claims the DAQ, so these writes reach the
-        hardware; ``sigScanBuilt`` is already inside the busy window, where
-        every one-shot output is refused.
+        Runs before the execution backend starts, so these writes reach the
+        hardware. On NI-DAQ, ``sigScanBuilt`` is already inside the busy
+        window; on TriggerScope it is only a compatibility boundary.
 
         For each gated laser:
 

@@ -75,8 +75,9 @@ class ScanManagerTriggerScope(SuperScanManager):
         handler = dispatch.get(scan_type)
         if handler is None:
             self._logger.error(f'Unknown TriggerScope scan type "{scan_type}"')
-            return
+            return False
         handler(parameterDict)
+        return True
 
     # ------------------------------------------------------------------
     # Private scan sequence methods

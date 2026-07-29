@@ -255,7 +255,7 @@ class ScanLifecycleMixin:
     isRunning assignment) and must keep maintaining ``isRunning`` around its
     scan lifecycle. The adoption-audit unit test in
     imswitch/imcontrol/_test/unit/test_scan_lifecycle.py enforces that every
-    scan controller inherits this mixin. See docs/scan_lifecycle.md.
+    scan controller inherits this mixin. See docs/scan-lifecycle.rst.
     """
 
     # Class-level default so the getter works before __init__ assigns it

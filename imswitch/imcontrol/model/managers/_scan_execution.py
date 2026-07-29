@@ -1,9 +1,10 @@
-"""Shared scan-execution lifecycle for every NI-DAQ scan entry point.
+"""Shared scan-execution lifecycle for every hardware scan entry point.
 
-There are five direct ``nidaqManager.runScan`` callers — the four
-``SuperScanController`` subclasses and ``EtSTEDTriggeredScanRunner`` — so the
-lifecycle cannot live on ``SuperScanController`` without missing one. It lives
-here instead, framework-free (no Qt) so it is testable in isolation.
+The lifecycle cannot live on one controller hierarchy without missing scan
+backends such as TriggerScope. It lives here instead, framework-free (no Qt)
+so it is testable in isolation. NI-DAQ callers use :meth:`arm`; other
+backends use :meth:`armWithStarter` and receive the same ownership, detector
+lease and finish-barrier guarantees.
 
 Two levels, deliberately distinct (see the design plan, R7-2/R7-4):
 
@@ -130,9 +131,10 @@ class ScanRunToken:
 class ScanExecutionCoordinator:
     """Arms one scan iteration and guarantees exactly-once completion.
 
-    The caller supplies the NI-DAQ manager and DetectorsManager; nothing here
-    touches Qt, blocks the UI thread, or holds the DetectorsManager lock across
-    a wait.
+    The caller supplies a DetectorsManager and the NI-DAQ manager used by the
+    compatibility :meth:`arm` wrapper. Backend-neutral callers provide their
+    own start callback to :meth:`armWithStarter`. Nothing here touches Qt,
+    blocks the UI thread, or holds the DetectorsManager lock across a wait.
     """
 
     def __init__(self, detectorsManager, nidaqManager, logger=None,
@@ -174,8 +176,8 @@ class ScanExecutionCoordinator:
     def tokenForOwner(self, owner):
         """Return the active token only when it belongs to ``owner``.
 
-        NI-DAQ completion signals are broadcast to every scan controller.  A
-        shared coordinator makes ownership explicit so only the entry point
+        Backend completion signals can be broadcast to every scan controller.
+        A shared coordinator makes ownership explicit so only the entry point
         that armed the iteration can finish it or publish run-level completion.
         """
         with self._stateLock:
@@ -199,8 +201,8 @@ class ScanExecutionCoordinator:
 
         Re-reserving by the same owner is idempotent; it is how repeat and
         MoNaLISA follow-up iterations retain ownership during their no-iteration
-        gaps. A different owner is refused even when NI-DAQ currently has no
-        active iteration.
+        gaps. A different owner is refused even when the execution backend
+        currently has no active iteration.
         """
         if owner is None:
             raise ValueError('A scan run reservation requires a non-None owner.')
@@ -381,13 +383,34 @@ class ScanExecutionCoordinator:
 
     def arm(self, signalDict, scanInfoDict, *, owner=None):
         """Compose the snapshot, take the SCAN lease, inject the participants
-        and start the scan. Returns the iteration's token.
+        and start an NI-DAQ scan. Returns the iteration's token.
+
+        This compatibility wrapper preserves the original public API. New
+        scan backends should call :meth:`armWithStarter` instead of imitating
+        NI-DAQ signal dictionaries.
+        """
+        return self.armWithStarter(
+            lambda: self._nidaqManager.runScan(signalDict, scanInfoDict),
+            owner=owner,
+            scanInfoDict=scanInfoDict,
+        )
+
+    def armWithStarter(self, starter, *, owner=None, scanInfoDict=None):
+        """Arm one iteration and invoke a backend-specific start callback.
+
+        ``starter`` is called only after global ownership has been reserved and
+        the participating detectors hold a ``SCAN`` lease. ``scanInfoDict`` is
+        optional: NI-DAQ supplies it so detector managers and the simulator can
+        consume the participant snapshot; autonomous firmware backends can
+        keep the snapshot solely on the iteration token.
 
         Any failure — including a ``ScanBusyError`` refusal, which starts
         nothing and emits no lifecycle signal — resolves the token and unwinds
         the lease before propagating, so a refused arm can never strand
         ownership.
         """
+        if not callable(starter):
+            raise TypeError('A scan iteration starter must be callable.')
         participants = self.composeParticipants()
         implicitRunToken = None
         with self._stateLock:
@@ -427,16 +450,17 @@ class ScanExecutionCoordinator:
                 token.leaseHandle = self._detectorsManager.acquire(
                     participants, LeasePurpose.SCAN
                 )
-            # Participation travels as scan-scoped data on the dict that
-            # sigScanBuilt already carries, so there is no mirror to go stale
-            # between iterations.
-            scanInfoDict[PARTICIPANTS_KEY] = list(participants)
-            participantSet = set(participants)
-            scanInfoDict[EXCLUDED_KEY] = [
-                name for name in self.scanDrivenDetectors()
-                if name not in participantSet
-            ]
-            self._nidaqManager.runScan(signalDict, scanInfoDict)
+            if scanInfoDict is not None:
+                # Participation travels as scan-scoped data on the dict that
+                # NI-DAQ sigScanBuilt already carries, so there is no mirror
+                # to go stale between iterations.
+                scanInfoDict[PARTICIPANTS_KEY] = list(participants)
+                participantSet = set(participants)
+                scanInfoDict[EXCLUDED_KEY] = [
+                    name for name in self.scanDrivenDetectors()
+                    if name not in participantSet
+                ]
+            starter()
         except BaseException:
             # Nothing ran, so no participant has async work outstanding: no
             # timeout needed, the barrier clears immediately.
@@ -449,9 +473,10 @@ class ScanExecutionCoordinator:
                 ),
                 timeoutS=None,
             )
-            if scanInfoDict.get(PARTICIPANTS_KEY) == list(participants):
-                scanInfoDict.pop(PARTICIPANTS_KEY, None)
-            scanInfoDict.pop(EXCLUDED_KEY, None)
+            if scanInfoDict is not None:
+                if scanInfoDict.get(PARTICIPANTS_KEY) == list(participants):
+                    scanInfoDict.pop(PARTICIPANTS_KEY, None)
+                scanInfoDict.pop(EXCLUDED_KEY, None)
             raise
         return token
 

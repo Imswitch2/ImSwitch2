@@ -29,6 +29,7 @@ local teardown and laser disarm if the firmware never reports completion.
 """
 
 from collections import defaultdict
+import threading
 from types import SimpleNamespace
 
 from imswitch.imcontrol.controller.controllers.TriggerScopeRasterController import (
@@ -36,6 +37,9 @@ from imswitch.imcontrol.controller.controllers.TriggerScopeRasterController impo
 )
 from imswitch.imcontrol.model.managers.ScanManagerTriggerScope import (
     ScanManagerTriggerScope,
+)
+from imswitch.imcontrol.model.managers._scan_execution import (
+    ScanExecutionCoordinator,
 )
 from imswitch.imcontrol.view.widgets.TriggerScopeRasterWidget import (
     TriggerScopeRasterWidget,
@@ -221,6 +225,14 @@ class _RasterWidget:
         self.abortPending = pending
 
 
+class _NoDetectors:
+    def getAllDeviceNames(self, condition=None):
+        return []
+
+    def isDetectorFaulted(self, name):
+        return False
+
+
 def _rasterController(*, repeat, running=True):
     ctrl = TriggerScopeRasterController.__new__(TriggerScopeRasterController)
     ctrl._logger = _Logger()
@@ -232,7 +244,30 @@ def _rasterController(*, repeat, running=True):
     ctrl.runScanAdvanced = (
         lambda **kwargs: ctrl.reruns.append(kwargs)
     )
-    ctrl.isRunning = running
+    ctrl._scanCoordinator = ScanExecutionCoordinator(
+        _NoDetectors(), SimpleNamespace()
+    )
+    ctrl._triggerScopeRunToken = None
+    ctrl._triggerScopeStartingPublished = False
+    ctrl._triggerScopeRepeatPending = False
+    ctrl._triggerScopeCompletionPublishing = False
+    ctrl._triggerScopeTerminalLock = threading.RLock()
+
+    def startIteration():
+        runToken = ctrl._scanCoordinator.reserveRun(ctrl)
+        ctrl._triggerScopeRunToken = runToken
+        ctrl._triggerScopeStartingPublished = True
+        ctrl._scanStopRequested = False
+        ctrl._scanCoordinator.armWithStarter(
+            lambda: None, owner=ctrl
+        )
+        ctrl.isRunning = True
+
+    ctrl.startTestIteration = startIteration
+    if running:
+        startIteration()
+    else:
+        ctrl.isRunning = False
     return ctrl
 
 
@@ -265,6 +300,7 @@ def test_repeat_still_repeats_when_no_abort_was_raised():
     ctrl = _rasterController(repeat=True)
 
     ctrl.scanDone()
+    ctrl._fireTriggerScopeRepeat()
 
     assert ctrl.reruns == [{'sigScanStartingEmitted': True}]
     assert 'scanEnded' not in ctrl._commChannel.emitted
@@ -277,20 +313,21 @@ def test_an_abort_does_not_leak_into_the_next_run():
     ctrl.abortScan()
     ctrl.scanDone()
 
-    ctrl.isRunning = True
+    ctrl.startTestIteration()
     ctrl.scanDone()
+    ctrl._fireTriggerScopeRepeat()
 
     assert ctrl.reruns == [{'sigScanStartingEmitted': True}]
 
 
-def test_abort_while_idle_still_reports_failure():
-    """Pre-existing contract: an abort with nothing running unsticks the UI."""
+def test_abort_while_idle_only_unsticks_its_own_ui():
+    """An idle controller must not emit a global end for another scan owner."""
     ctrl = _rasterController(repeat=True, running=False)
 
     ctrl.abortScan()
 
     assert ctrl._widget.buttonChecked is False
-    assert ctrl._commChannel.emitted == ['scanEnded']
+    assert ctrl._commChannel.emitted == []
 
 
 def test_a_failure_clears_a_pending_abort():
