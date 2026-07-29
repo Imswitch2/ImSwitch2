@@ -1865,23 +1865,43 @@ class RecordingManager(SignalInterface):
             pass
         return 1.0
 
+    @staticmethod
+    def _scanStep(scanStepSizes, axis) -> float:
+        """One axis of ``getScanStepSizes()`` as a magnitude, 0 when unusable."""
+        if scanStepSizes is None:
+            return 0.0
+        try:
+            return abs(float(scanStepSizes[axis]))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return 0.0
+
     def buildOmeMeta(self, detectorName, mode, nFrames, scanDims=None,
                      scanStepSizes=None, frameIntervalS=None, annotations=None):
         """Build the shared :class:`OmeImageMeta` for a detector from recording
         context. ``mode`` is a normalized recording mode (see recording_metadata),
         ``scanDims`` is ``(Nx, Ny, Nz)`` from the scan controller (for z-stack
-        axis labeling), or None for non-scan recordings."""
+        axis labeling), and ``scanStepSizes`` is ``(x, y, z)``. Scan steps are
+        authoritative spatial calibration for scan-driven detectors."""
         det = self.__detectorsManager[detectorName]
         pix = list(det.pixelSizeUm)
         py = pix[1] if len(pix) > 1 else 1.0
         px = pix[2] if len(pix) > 2 else py
         z_step = pix[0] if (pix and pix[0]) else 1.0
-        if scanStepSizes is not None and len(scanStepSizes) >= 3:
-            try:
-                if float(scanStepSizes[2]) != 0:
-                    z_step = abs(float(scanStepSizes[2]))
-            except Exception:
-                pass
+        # An inactive axis reports a 0 step (getScanStepSizes pads to 3), and 0
+        # is not a pixel size -- it would emit PhysicalSize=0 and make every
+        # downstream consumer that divides by the scale blow up. So a 0 step
+        # always leaves the detector's own value in place.
+        xStep, yStep, zStep = (self._scanStep(scanStepSizes, axis)
+                               for axis in range(3))
+        if getattr(det, 'isScanDriven', False):
+            # Scan geometry is authoritative for point detectors: their pixel
+            # size *is* the scan step. The detector's own cache is only written
+            # once the scan is built, which is after this metadata is
+            # snapshotted, so it still describes the previous scan (or the
+            # startup default) at this point.
+            px = xStep or px
+            py = yStep or py
+        z_step = zStep or z_step
         t_interval = (float(frameIntervalS) if frameIntervalS is not None
                       else self._detectorFrameIntervalSeconds(det))
         return _ome.build_ome_image_meta(

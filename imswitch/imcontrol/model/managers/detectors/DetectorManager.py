@@ -74,6 +74,26 @@ CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 MAX_QUEUED_CONSUMER_FRAMES = 1000
 
 
+def scanPixelSizesToZYX(pixel_sizes: List[float]) -> List[float]:
+    """ Convert a scan's per-axis step sizes into ``DetectorManager.pixelSizeUm``.
+
+    Scan designers publish ``scanInfoDict['pixel_sizes']`` in scan-axis order,
+    low dim to high dim -- ``[x, y]`` for a 2D scan and ``[x, y, z]`` when a
+    slow axis is active. ``pixelSizeUm`` is the opposite convention and always
+    exactly three entries: ``[Z, Y, X]``, with a non-scanned ``Z`` set to 1.
+
+    Every scan-driven detector must funnel through this, because the two
+    orderings are indistinguishable whenever the steps happen to be equal --
+    which is the common case, so a transposition here survives casual testing
+    and only shows up as a wrong pixel size in a saved file.
+    """
+    sizes = list(pixel_sizes or [])
+    x = float(sizes[0]) if len(sizes) > 0 else 1.0
+    y = float(sizes[1]) if len(sizes) > 1 else x
+    z = float(sizes[2]) if len(sizes) > 2 else 1.0
+    return [z, y, x]
+
+
 class ChunkConsumerOverflowError(RuntimeError):
     """A consumer fell behind and lost frames from its broker queue."""
 

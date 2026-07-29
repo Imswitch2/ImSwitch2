@@ -6,7 +6,7 @@ import time
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
 from .._scan_execution import PARTICIPANTS_KEY
-from .DetectorManager import DetectorManager
+from .DetectorManager import DetectorManager, scanPixelSizesToZYX
 from ._live_display import LiveDisplayThrottle
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
@@ -823,7 +823,7 @@ class APDManager(DetectorManager):
 
     @property
     def pixelSizeUm(self):
-        return [1, *self.__pixel_sizes]
+        return scanPixelSizesToZYX(self.__pixel_sizes)
 
     def setPixelSize(self, pixel_sizes: list):
         # pixel_sizes: list of low dim to high dim

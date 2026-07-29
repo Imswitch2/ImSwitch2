@@ -1863,7 +1863,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             return None
 
     def _scanStepSizesForRecording(self):
-        """Scan step sizes matching getDimsScan(), used for OME PhysicalSizeZ."""
+        """Scan step sizes matching getDimsScan(), used for OME calibration."""
         try:
             return tuple(float(s) for s in self._commChannel.getScanStepSizes())
         except Exception:

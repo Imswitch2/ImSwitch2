@@ -13,7 +13,8 @@ from imswitch.imcontrol.model.timeresolved import (
 )
 from .._scan_execution import PARTICIPANTS_KEY
 from .DetectorManager import (
-    DetectorManager, DetectorNumberParameter, DetectorListParameter)
+    DetectorManager, DetectorNumberParameter, DetectorListParameter,
+    scanPixelSizesToZYX)
 
 try:
     import TimeTagger
@@ -963,7 +964,7 @@ class SwabianTimeTaggerManager(TimeResolvedDetectorMixin, DetectorManager):
 
     @property
     def pixelSizeUm(self):
-        return [1, *self.__pixel_sizes]
+        return scanPixelSizesToZYX(self.__pixel_sizes)
 
     @property
     def scale(self):
