@@ -1,5 +1,7 @@
 import numpy as np
 
+from imswitch.improcess.model.plane_navigation import extract_plane, plane_axes
+
 from .DataEditController import DataEditController
 from .basecontrollers import ImProcessWidgetController
 
@@ -52,7 +54,7 @@ class DataFrameController(ImProcessWidgetController):
 
     def setImgSlice(self, frame):
         data = self._currentDataArray()
-        img = data[frame]
+        img = extract_plane(data, frame, self._currentAxisLabels())
         self._displayedImage = img
         self._widget.setImage(img, autoLevels=False)
         self._commChannel.sigDisplayedFrameChanged.emit()
@@ -98,8 +100,14 @@ class DataFrameController(ImProcessWidgetController):
         scatter plot plots from lower left corner, so a flip has to be made
         in rows."""
         shape = self._currentDataArray().shape
-        numCols = shape[1]
-        numRows = shape[2]
+        # The grid lives on the displayed plane, which is not axes 1/2 once the
+        # dataset carries more than one navigation axis.
+        plane = plane_axes(shape, self._currentAxisLabels())
+        if plane is None:
+            self._logger.error(f'Cannot build a pattern grid for shape {shape}')
+            return
+        numCols = shape[plane[0]]
+        numRows = shape[plane[1]]
         numPointsCol = int(1 + np.floor(((numCols - 1) - self._pattern[1]) / self._pattern[3]))
         numPointsRow = int(1 + np.floor(((numRows - 1) - self._pattern[0]) / self._pattern[2]))
         colCoords = np.linspace(self._pattern[1],
@@ -122,6 +130,10 @@ class DataFrameController(ImProcessWidgetController):
         if handle is not None and not getattr(self._dataObj, "dataMaterialized", False):
             return handle
         return self._dataObj.data
+
+    def _currentAxisLabels(self):
+        """Axis labels of the loaded data, or None to fall back to defaults."""
+        return getattr(self._dataObj, "axis_labels", None)
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

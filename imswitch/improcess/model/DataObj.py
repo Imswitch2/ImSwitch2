@@ -19,6 +19,11 @@ from imswitch.improcess.model.image_sources import (
     is_zarr_group as _is_zarr_group,
     resolve_image,
 )
+from imswitch.improcess.model.plane_navigation import (
+    iter_planes,
+    mean_plane,
+    plane_count,
+)
 from imswitch.improcess.model.virtual_image import virtual_source_from_resolved_image
 
 
@@ -132,12 +137,21 @@ class DataObj:
 
     @property
     def numFrames(self):
+        """Number of 2D planes available for display.
+
+        This is ``shape[0]`` for the usual ``(frames, Y, X)`` stack, but it is
+        the *product* of every non-``(Y, X)`` axis in general: a 4D dataset has
+        to expose all of its planes on the one frame slider, and a plain 2D
+        image has exactly one plane rather than one "frame" per pixel row.
+        """
         if self._data is not None:
             shape = np.shape(self._data)
         else:
             source = self.data_source
             shape = source.array.shape if source is not None else ()
-        return shape[0] if shape else None
+        if not shape:
+            return None
+        return plane_count(shape, self.axis_labels)
 
     def checkAndLoadData(self):
         if not self.dataLoaded:
@@ -181,25 +195,30 @@ class DataObj:
         self._meanData = None
 
     def getMeanData(self):
+        """Mean 2D plane, averaged over every navigation axis.
+
+        A lazy handle is accumulated one plane at a time so a dataset larger
+        than memory can still be summarised.
+        """
         if self._meanData is None:
+            labels = self.axis_labels
             handle = self.data_handle
             if handle is not None and handle.ndim > 0 and not self.dataMaterialized:
-                frame_count = int(handle.shape[0])
+                frame_count = plane_count(handle.shape, labels)
                 if frame_count > 0:
                     accumulator = None
-                    for frame_index in range(frame_count):
-                        frame = np.asarray(handle[frame_index], dtype=np.float64)
+                    for frame in iter_planes(handle, labels):
                         if accumulator is None:
-                            accumulator = np.zeros_like(frame, dtype=np.float64)
+                            accumulator = np.zeros(frame.shape, dtype=np.float64)
                         accumulator += frame
                     self._meanData = np.asarray(
                         accumulator / frame_count,
                         dtype=np.float32,
                     )
                 else:
-                    self._meanData = np.array(np.mean(self.data, 0), dtype=np.float32)
+                    self._meanData = mean_plane(self.data, labels)
             else:
-                self._meanData = np.array(np.mean(self.data, 0), dtype=np.float32)
+                self._meanData = mean_plane(self.data, labels)
 
         return self._meanData
 
