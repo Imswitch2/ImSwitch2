@@ -12,11 +12,13 @@ import traceback
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
 class TriggerScopePLSRController(
     StatefulComponentMixin,
+    TriggerScopeScanGeometryMixin,
     TriggerScopeScanLifecycleMixin,
     ImConWidgetController,
 ):

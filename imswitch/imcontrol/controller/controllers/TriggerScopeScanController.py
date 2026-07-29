@@ -13,6 +13,7 @@ from ..basecontrollers import (
     ComponentStateApplyMode,
     SetupModeApplyPriority
 )
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
@@ -327,6 +328,7 @@ class _PLSRMulticolorAdapter(_ScanModeAdapter):
 
 class TriggerScopeScanController(
     StatefulComponentMixin,
+    TriggerScopeScanGeometryMixin,
     TriggerScopeScanLifecycleMixin,
     ImConWidgetController,
 ):
@@ -406,6 +408,17 @@ class TriggerScopeScanController(
 
     def _activeAdapter(self):
         return self._adapters[self._widget.currentMode()]
+
+    def _triggerScopeGeometryParameters(self):
+        """Report the recording geometry of the mode the widget is showing.
+
+        Each adapter owns its own parameter dicts, so a recording armed against
+        this controller must read the mode that will actually run rather than a
+        controller-level dict that does not exist here.
+        """
+        adapter = self._activeAdapter()
+        adapter.getParameters()
+        return adapter.scanParameterDict, adapter.deviceParameterDict
 
     # ------------------------------------------------------------------
     # Save / load (per visible mode)

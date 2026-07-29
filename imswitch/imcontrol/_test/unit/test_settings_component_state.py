@@ -475,6 +475,70 @@ def test_describe_component_state_empty(settings_controller):
     assert 'no detector state' in summary[0]
 
 
+# --- setup-file-owned parameters -----------------------------------------
+
+@pytest.fixture
+def configuredCameras(qapp):
+    """A camera whose pixel size the setup file declares (0.082 µm)."""
+    camera = FakeDetector('Camera1')
+    camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value = 0.082
+    camera.configOwnedParameters = frozenset({CAMERA_PIXEL_SIZE_PARAM})
+    controller = makeController([camera])
+    camera.calls.clear()
+    return controller, camera
+
+
+def test_config_owned_parameter_is_not_persisted(configuredCameras):
+    """A configured pixel size is optical calibration, not a runtime setting."""
+    controller, _ = configuredCameras
+
+    parameters = controller.getComponentState()['detectors']['Camera1']['parameters']
+
+    assert CAMERA_PIXEL_SIZE_PARAM not in parameters
+    assert 'Set exposure time' in parameters
+
+
+def test_unconfigured_pixel_size_is_still_persisted(cameras):
+    """Without cameraPixelSizeUm the value is the user's, so it must survive."""
+    controller, _, _ = cameras
+
+    parameters = controller.getComponentState()['detectors']['Camera1']['parameters']
+
+    assert parameters[CAMERA_PIXEL_SIZE_PARAM] == 0.15
+
+
+def test_stale_snapshot_cannot_override_the_configured_pixel_size(configuredCameras):
+    """The bug: every recording was calibrated with the previous session's
+    pixel size, because snapshots written before the setup file was edited
+    still carried it and restore wrote them straight back."""
+    controller, camera = configuredCameras
+
+    warnings = controller.applyComponentState(
+        savedState(parameters={CAMERA_PIXEL_SIZE_PARAM: 0.15}),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    assert warnings == []
+    assert camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value == 0.082
+    assert (CAMERA_PIXEL_SIZE_PARAM
+            not in [call[1] for call in camera.parameterCalls()])
+
+
+def test_widget_keeps_showing_the_configured_pixel_size(configuredCameras):
+    """The display and the detector must not be allowed to disagree."""
+    controller, camera = configuredCameras
+
+    controller.applyComponentState(
+        savedState(parameters={CAMERA_PIXEL_SIZE_PARAM: 0.15}),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    shown = controller._widget.trees['Camera1'].p.param('Miscellaneous').param(
+        CAMERA_PIXEL_SIZE_PARAM).value()
+    assert shown == pytest.approx(0.082)
+    assert shown == pytest.approx(camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value)
+
+
 def test_get_component_state_hazards_returns_empty(settings_controller):
     """Detector settings are passive configuration; no hazards in either mode."""
     state = savedState()

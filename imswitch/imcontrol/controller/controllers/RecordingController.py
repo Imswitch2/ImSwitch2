@@ -74,6 +74,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._recordingFailedCurrent = False
         self._recordingCycleTerminalHandled = False
         self._shutdownRequested = False
+        # Set while a scan-once recording is armed and waiting for the operator
+        # to start a scan from one of several scan widgets. The frame
+        # expectation is read from whichever controller announces itself, not
+        # guessed at arm time. See _activeScanSourceChanged.
+        self._awaitingScanSourceArm = False
+        # Widget key of the timelapse-scan source, surviving repopulation of
+        # the chooser and restored from the saved component state.
+        self._scanSourcePreference = ''
+        # Set when a late-bound scan owns the run-level lifecycle instead of
+        # this controller. _scanStartPublished stays False in that case, so the
+        # terminal checks need this to tell "no scan was ever expected" from
+        # "a scan was expected and somebody else published its start".
+        self._scanStartOwnedByScanSource = False
 
         self._widget.setsaveFormat(SaveFormat.HDF5.value)
         self._widget.setSnapSaveMode(SaveMode.Disk.value)
@@ -259,6 +272,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._exactScanCompletionHandled = False
             self._scanLifecycleEndedObserved = False
             self._recordingScanSource = None
+            self._awaitingScanSourceArm = False
+            self._scanStartOwnedByScanSource = False
             self._recordingOperationActive = True
             self._recordingManagerGeneration = None
             self._recordingFailureHandled = False
@@ -292,7 +307,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         self._recordingScanSource = (
                             self._commChannel.getRecordingScanSource()
                         )
-                    self._notifyScanStarting()
+                        self._notifyScanStarting()
+                    else:
+                        # Standalone setups arm here and the operator starts
+                        # the scan from its own widget, so the scanner is not
+                        # known yet. Reading the geometry now would freeze
+                        # whichever controller happens to expose the accessors
+                        # — the wrong one as soon as a rig has several. Defer
+                        # to _armScanOnceFromActiveSource, and leave both
+                        # lifecycle boundaries with the controller that runs.
+                        self._awaitingScanSourceArm = True
 
                 detectorsBeingCaptured = self.getDetectorNamesToCapture()
 
@@ -376,41 +400,26 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     )
                     return
             elif self.recMode == RecMode.ScanOnce:
-                try:
-                    self.recordingArgs['recFrames'] = (
-                        self._commChannel.getNumScanPositions()
-                    )
-                    self.recordingArgs['numCamTTL'] = (
-                        self._commChannel.getNumCamTTL()
-                    )
-                    self.recordingArgs['scanDims'] = (
-                        self._scanDimsForRecording()
-                    )
-                    self.recordingArgs['scanStepSizes'] = (
-                        self._scanStepSizesForRecording()
-                    )
-                except Exception as error:
-                    self._handleRecordingFailure(
-                        str(error), abortManager=False
-                    )
-                    return
-                if not self._startManagerRecording():
-                    return
-                if not self._waitForManagerArm():
-                    return
-                if self._commChannel.hasScanWidget():
-                    if not self._requestScanStart(True, False):
-                        return
-                else:
+                if self._awaitingScanSourceArm:
                     # Setups with standalone scan widgets (e.g. TriggerScope)
                     # register SEVERAL controllers on sigRunScan; broadcasting
                     # run_scan would start all of their scans at once. Arm the
                     # recording only and let the user start the intended scan
-                    # from its own widget.
+                    # from its own widget. The manager is armed once that scan
+                    # announces itself, so its geometry is the one recorded.
                     self.__logger.info(
                         'Recording armed (scan-once): start the scan from its '
                         'scan widget to begin acquiring frames.'
                     )
+                else:
+                    if not self._applyScanGeometryToRecordingArgs():
+                        return
+                    if not self._startManagerRecording():
+                        return
+                    if not self._waitForManagerArm():
+                        return
+                    if not self._requestScanStart(True, False):
+                        return
             elif self.recMode == RecMode.ScanLapse:
                 self.recordingArgs['singleLapseFile'] = self._widget.getTimelapseSingleFile()
                 self.lapseTotal = self._widget.getTimelapseTime()
@@ -547,6 +556,14 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     self.stopRequested = True
                     self.doneScan = True
                     self._notifyScanEndedIfPending()
+                    if self._awaitingScanSourceArm:
+                        # Nothing was ever handed to the manager, so its
+                        # endRecording() produces no terminal to reset this
+                        # operation. Without local cleanup the arm stays
+                        # pending and the next scan the operator starts would
+                        # begin recording with REC switched off.
+                        self._cancelPendingScanSourceArm()
+                        return
                     self._master.recordingManager.endRecording()
                     return
             self._master.recordingManager.endRecording()
@@ -870,8 +887,22 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self._commChannel, 'getRecordingScanSource', None
             )
             if callable(resolveSource):
+                # A timelapse scan is started by the recording, so unlike
+                # scan-once there is no operator gesture to infer the scanner
+                # from. The chooser is that gesture — and an unmade choice is
+                # refused rather than defaulted, because the default would
+                # command whichever hardware is registered first.
+                selectedKey = self._selectedScanSourceKey()
+                if not selectedKey and self._scanSourceChoiceRequired():
+                    self._handleRecordingFailure(
+                        'Select a scan source in the Recording widget before '
+                        'starting a timelapse scan: this setup has more than '
+                        'one scan widget that could be driven.',
+                        abortManager=False,
+                    )
+                    return False
                 try:
-                    self._recordingScanSource = resolveSource()
+                    self._recordingScanSource = resolveSource(selectedKey)
                 except Exception as error:
                     self._handleRecordingFailure(
                         str(error), abortManager=False
@@ -890,18 +921,11 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         self._commChannel.sharedAttrs.getHDF5Attributes()
                     for detectorName in self.recordingArgs['detectorNames']
                 }
-                self.recordingArgs['recFrames'] = (
-                    self._commChannel.getNumScanPositions()
-                )
-                self.recordingArgs['numCamTTL'] = (
-                    self._commChannel.getNumCamTTL()
-                )
-                self.recordingArgs['scanDims'] = (
-                    self._scanDimsForRecording()
-                )
-                self.recordingArgs['scanStepSizes'] = (
-                    self._scanStepSizesForRecording()
-                )
+                # Read through the pinned source, never the global accessors:
+                # nothing is scanning yet, so a rig with several capable
+                # controllers cannot be resolved by the channel.
+                if not self._applyScanGeometryToRecordingArgs():
+                    return False
 
             # Set lapse metadata for this timepoint
             self.recordingArgs['recLapseTotal'] = self.lapseTotal
@@ -1006,6 +1030,98 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             abortManager=True,
         )
         return False
+
+    def _applyScanGeometryToRecordingArgs(self) -> bool:
+        """Read the scan geometry into ``recordingArgs``. False on failure.
+
+        The accessors resolve through the CommunicationChannel, which prefers
+        the active scan source over any registration-order guess, so calling
+        this once a scanner has announced itself binds the recording to that
+        exact scanner.
+        """
+        try:
+            for key, methodName in (
+                ('recFrames', 'getNumScanPositions'),
+                ('numCamTTL', 'getNumCamTTL'),
+            ):
+                accessor = self._scanAccessor(methodName)
+                if accessor is None:
+                    raise RuntimeError(
+                        f'The scan source for this recording does not provide '
+                        f'{methodName}(), so the number of frames to record '
+                        f'cannot be determined.'
+                    )
+                self.recordingArgs[key] = accessor()
+            # Optional: absent on scan sources that are not BeadRec-capable.
+            # A recording without these is uncalibrated, not wrong.
+            self.recordingArgs['scanDims'] = self._scanDimsForRecording()
+            self.recordingArgs['scanStepSizes'] = (
+                self._scanStepSizesForRecording()
+            )
+        except Exception as error:
+            self._handleRecordingFailure(str(error), abortManager=False)
+            return False
+        return True
+
+    def _scanRunTokenFor(self, source):
+        """The coordinator's run reservation held by ``source``, or None."""
+        coordinator = getattr(
+            self._master, 'scanExecutionCoordinator', None
+        )
+        runForOwner = getattr(coordinator, 'runForOwner', None)
+        if not callable(runForOwner):
+            return None
+        try:
+            return runForOwner(source)
+        except Exception:
+            return None
+
+    def _cancelPendingScanSourceArm(self) -> None:
+        """Tear down a scan-once arm that no scan ever claimed.
+
+        The manager was never handed a session, so ``endRecording()`` produces
+        no terminal to run the ordinary cleanup. Close the operation locally
+        instead, clearing the pending arm first so a scan started during
+        teardown cannot bind to a recording that is going away.
+        """
+        self._awaitingScanSourceArm = False
+        self._recordingScanSource = None
+        self.recordingCycleEnded()
+
+    def prepareForScanSource(self, source) -> bool:
+        """Bind an armed scan-once recording to the scan about to start.
+
+        Called synchronously by the scan controller before it announces itself
+        or touches hardware, so a failure here can still stop the scan. False
+        means "do not start": a scan that ran anyway would bleach the sample
+        with nothing recording, and the geometry it was armed with would be
+        another scanner's.
+        """
+        if source is None or not self._awaitingScanSourceArm:
+            return True
+        self._awaitingScanSourceArm = False
+        self._recordingScanSource = source
+        # The source reserves its run before asking, so pin the exact
+        # reservation now: a later abort must target this run and not whichever
+        # generation that controller happens to be running by then.
+        self._acceptedScanRunToken = self._scanRunTokenFor(source)
+        self._scanRequestAccepted = True
+        if not self._applyScanGeometryToRecordingArgs():
+            return False
+        if not self._startManagerRecording():
+            return False
+        if not self._waitForManagerArm():
+            return False
+        # The scan source publishes sigScanStarting itself right after this
+        # returns, so the run-level lifecycle is pending even though this
+        # controller did not open it.
+        self._scanStartOwnedByScanSource = True
+        self.__logger.info(
+            'Scan-once recording bound to the scan source that started: '
+            '%s frame(s) expected.',
+            self.recordingArgs.get('recFrames'),
+        )
+        return True
 
     def _notifyScanStarting(self) -> None:
         if self._scanStartPublished:
@@ -1112,11 +1228,18 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 self.recordingCycleEnded()
             return
 
-        wasPending = self._scanStartPublished
+        # A late-bound scan-once recording never published the start itself —
+        # its scan source did — so the terminal checks below must treat that
+        # as just as pending, or a scanner that fails after the manager was
+        # armed leaves the writer waiting for frames until its stall watchdog.
+        wasPending = (
+            self._scanStartPublished or self._scanStartOwnedByScanSource
+        )
         accepted = self._scanRequestAccepted
         if accepted:
             self._scanLifecycleEndedObserved = True
         self._scanStartPublished = False
+        self._scanStartOwnedByScanSource = False
         self._scanRequestAccepted = False
         self._acceptedScanRunToken = None
         if (
@@ -1855,17 +1978,43 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self.recording = False
         self.recordingCycleEnded()
 
+    def _scanAccessor(self, methodName):
+        """Bind a scan accessor to this recording's own source when pinned.
+
+        The CommunicationChannel accessors resolve globally, which is only
+        unambiguous while a scan is running. A recording reads its geometry
+        before anything starts, so on a rig with several capable scanners the
+        global lookup would answer for the wrong one.
+
+        Returns None when a pinned source does not provide the accessor.
+        Falling back to the channel there would be worse than having no
+        answer: the optional BeadRec accessors exist on the raster controller
+        only, so a pinned RESOLFT scan would silently be labelled with the
+        raster's dimensions and step sizes.
+        """
+        source = self.__dict__.get('_recordingScanSource')
+        if source is not None:
+            accessor = getattr(source, methodName, None)
+            return accessor if callable(accessor) else None
+        return getattr(self._commChannel, methodName, None)
+
     def _scanDimsForRecording(self):
         """(Nx, Ny, Nz) scan pixel counts for OME axis labeling (None if no scan)."""
+        accessor = self._scanAccessor('getDimsScan')
+        if accessor is None:
+            return None
         try:
-            return tuple(int(d) for d in self._commChannel.getDimsScan())
+            return tuple(int(d) for d in accessor())
         except Exception:
             return None
 
     def _scanStepSizesForRecording(self):
         """Scan step sizes matching getDimsScan(), used for OME calibration."""
+        accessor = self._scanAccessor('getScanStepSizes')
+        if accessor is None:
+            return None
         try:
-            return tuple(float(s) for s in self._commChannel.getScanStepSizes())
+            return tuple(float(s) for s in accessor())
         except Exception:
             return None
 
@@ -2077,6 +2226,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._exactScanCompletionHandled = False
         self._scanLifecycleEndedObserved = False
         self._recordingScanSource = None
+        self._awaitingScanSourceArm = False
+        self._scanStartOwnedByScanSource = False
         self._recordingOperationActive = False
         self._recordingManagerGeneration = None
         self._recordingGenerationBeforeOperation = None
@@ -2423,7 +2574,76 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
     def recScanLapse(self):
         self._widget.checkScanLapse()
         self._widget.setEnabledParams(scanLapse=True)
+        self._refreshScanSourceOptions()
         self.recMode = RecMode.ScanLapse
+
+    def _refreshScanSourceOptions(self) -> None:
+        """Repopulate the timelapse-scan source chooser.
+
+        Refreshed on demand rather than at construction: controllers are built
+        one widget at a time, so the registry is still incomplete while this
+        controller is being created. The chooser stays hidden unless the rig
+        actually has a choice to make.
+        """
+        listSources = getattr(
+            self._commChannel, 'getRecordingScanSourceNames', None
+        )
+        try:
+            sources = list(listSources()) if callable(listSources) else []
+        except Exception:
+            self.__logger.error(
+                'Could not list the scan sources available for recording',
+                exc_info=True,
+            )
+            sources = []
+        self._widget.setScanSourceOptions(sources, self._scanSourcePreference)
+        # A saved choice for a scanner this setup no longer has must not
+        # survive as a preference that later silently rebinds.
+        if self._scanSourcePreference not in sources:
+            self._scanSourcePreference = ''
+        self._widget.setScanSourceVisible(len(sources) > 1)
+
+    def _scanSourceChoiceRequired(self) -> bool:
+        """Whether this setup offers a choice the operator has to make.
+
+        One capable scanner is not a choice, so single-scanner rigs are never
+        asked and keep resolving automatically.
+        """
+        listSources = getattr(
+            self._commChannel, 'getRecordingScanSourceNames', None
+        )
+        if not callable(listSources):
+            return False
+        try:
+            return len(list(listSources())) > 1
+        except Exception:
+            self.__logger.error(
+                'Could not list the scan sources available for recording',
+                exc_info=True,
+            )
+            return False
+
+    def _selectedScanSourceKey(self) -> str:
+        """The chosen timelapse-scan source, or '' to resolve automatically.
+
+        Falls back to the remembered preference when the chooser has not been
+        populated yet, so a restored selection survives a startup in which the
+        operator never opened the timelapse mode.
+        """
+        getSource = getattr(self._widget, 'getScanSource', None)
+        if not callable(getSource):
+            return self._scanSourcePreference
+        try:
+            selected = getSource() or ''
+        except Exception:
+            self.__logger.error(
+                'Could not read the selected scan source', exc_info=True
+            )
+            return self._scanSourcePreference
+        if selected:
+            self._scanSourcePreference = selected
+            return selected
+        return self._scanSourcePreference
 
     def untilStop(self):
         self._widget.checkUntilStop()
@@ -2668,7 +2888,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 'timeToRec': float,
                 'cameraLapseFrames': int,
                 'cameraLapseInterval': float,
-                'timelapseSingleFile': bool
+                'timelapseSingleFile': bool,
+                'scanSource': str (scan widget key, '' when unset)
             }
         """
         state = {
@@ -2682,8 +2903,10 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             'cameraLapseFrames': self._widget.getTimelapseNumFrames(),
             'cameraLapseInterval': self._widget.getSpecTimelapseFrameTime(),
             'timelapseSingleFile': self._widget.getTimelapseSingleFile(),
+            'scanSource': self._selectedScanSourceKey()
+                          or self._scanSourcePreference,
         }
-        
+
         return state
     
     def applyComponentState(
@@ -2780,6 +3003,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 f'Failed to restore timelapse file grouping: {e}'
             )
         
+        # Restored before the rec mode: switching to ScanLapse repopulates the
+        # chooser, which reapplies this preference to the refreshed entries.
+        scanSource = state.get('scanSource', '')
+        if isinstance(scanSource, str):
+            self._scanSourcePreference = scanSource
+        else:
+            warnings.append(
+                f'Ignored a non-text scan source {scanSource!r}.'
+            )
+
         recModeName = state.get('recMode', 'UntilStop')
         try:
             if recModeName == 'SpecFrames':

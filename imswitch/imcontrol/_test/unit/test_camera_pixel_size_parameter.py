@@ -14,7 +14,7 @@ import pytest
 
 from imswitch.imcontrol.model.SetupInfo import DetectorInfo
 from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
-    DetectorManager,
+    CAMERA_PIXEL_SIZE_PARAM, DetectorManager, configuredCameraPixelSize,
 )
 
 
@@ -94,3 +94,68 @@ def test_numeric_string_is_still_accepted(monkeypatch):
     )
     assert param.value == pytest.approx(0.082)
     assert messages == []
+
+
+# --- ownership: who is allowed to change the value at runtime -------------
+
+class _Camera(DetectorManager):
+    """Minimal concrete manager, only to exercise the base-class bookkeeping."""
+
+    def __init__(self, detectorInfo, withPixelSizeParam=True):
+        parameters = {}
+        if withPixelSizeParam:
+            parameters[CAMERA_PIXEL_SIZE_PARAM] = \
+                DetectorManager.makeCameraPixelSizeParameter(detectorInfo)
+        super().__init__(detectorInfo, 'Cam', fullShape=(64, 64),
+                         supportedBinnings=[1], model='Mock',
+                         parameters=parameters)
+
+    def crop(self, hpos, vpos, hsize, vsize): pass
+    def getLatestFrame(self): return None
+    def getChunk(self): return None
+    def flushBuffers(self): pass
+    def startAcquisition(self): pass
+    def stopAcquisition(self): pass
+
+
+@pytest.mark.parametrize('managerProperties, configured', [
+    ({'cameraPixelSizeUm': 0.082}, True),
+    ({'cameraPixelSizeUm': '0.082'}, True),
+    ({'cameraListIndex': 0}, False),
+    # A misspelled or unparseable value means the running value is the 0.15
+    # default, not a calibration -- so it stays the user's to set and persist.
+    ({'camerapixelsizeum': 0.082}, False),
+    ({'cameraPixelSizeUm': '0,082'}, False),
+])
+def test_config_ownership_follows_a_usable_configured_value(
+        monkeypatch, managerProperties, configured):
+    _warnings(monkeypatch)
+    camera = _Camera(_info(managerProperties))
+
+    expected = {CAMERA_PIXEL_SIZE_PARAM} if configured else set()
+    assert set(camera.configOwnedParameters) == expected
+
+
+def test_no_pixel_size_parameter_means_nothing_is_config_owned(monkeypatch):
+    """APD/PMT-style managers derive the pixel size from the scan instead."""
+    _warnings(monkeypatch)
+    camera = _Camera(_info({'cameraPixelSizeUm': 0.082}), withPixelSizeParam=False)
+
+    assert set(camera.configOwnedParameters) == set()
+
+
+@pytest.mark.parametrize('raw, expected', [
+    (0.082, 0.082),
+    ('0.082', 0.082),
+    (None, None),
+    ('0,082', None),
+    ('', None),
+])
+def test_configured_camera_pixel_size_parses_or_returns_none(raw, expected):
+    properties = {} if raw is None else {'cameraPixelSizeUm': raw}
+    result = configuredCameraPixelSize(properties)
+
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected)

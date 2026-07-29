@@ -1,6 +1,7 @@
 import threading
 
 from imswitch.imcommon.framework import Signal, SignalInterface
+from imswitch.imcommon.model import initLogger
 
 _SCAN_DISPATCH_QUEUE_TIMEOUT_S = 30.0
 _MISSING_SCAN_IDENTITY = object()
@@ -199,6 +200,41 @@ class ScanWorkflowService(SignalInterface):
 
     def request_scan_parameters(self) -> None:
         self._comm_channel.sigRequestScanParameters.emit()
+
+    def prepare_recording_for_scan(self, source) -> bool:
+        """Let an armed recording bind to ``source`` before it starts.
+
+        A recording armed in scan-once mode on a standalone setup waits for the
+        operator to start a scan from one of several scan widgets; this is
+        where it learns which one and arms its manager with that scanner's
+        frame count. Synchronous and vetoing on purpose: the scan must not run
+        without the recording it was armed for, and by the time an announcement
+        signal came back the firmware would already be moving.
+
+        Returns True when there is nothing to prepare, when preparation
+        succeeded, or when no Recording widget exists. False means the scan
+        must not start.
+        """
+        try:
+            controllers = self._comm_channel.controllerRegistry()
+        except Exception:
+            return True
+        recording = controllers.get('Recording')
+        prepare = getattr(recording, 'prepareForScanSource', None)
+        if not callable(prepare):
+            return True
+        try:
+            return bool(prepare(source))
+        except Exception:
+            # A recording that could not even be asked has not been armed for
+            # this scan. Refusing is the fail-closed answer: a scan that runs
+            # anyway destroys the sample state the operator meant to record.
+            initLogger(self).error(
+                'The recording controller failed while binding to the scan '
+                'that was starting; the scan was not started',
+                exc_info=True,
+            )
+            return False
 
     def run_scan_prepared(
         self,

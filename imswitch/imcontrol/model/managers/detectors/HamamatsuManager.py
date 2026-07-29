@@ -400,15 +400,23 @@ class HamamatsuManager(DetectorManager):
         self.setParameter('Internal frame rate',
                           self._camera.getPropertyValue('internal_frame_rate')[0])
 
-        triggerSource = self._camera.getPropertyValue('trigger_source')
+        # getPropertyValue returns (value, type) -- the [0] is not optional.
+        # Without it these compared a tuple against an int, so every branch was
+        # dead and 'Trigger source' was never refreshed from the camera: the
+        # settings tree kept showing whatever ImSwitch last wrote, even when the
+        # camera was actually in a different trigger mode.
+        triggerSource = self._camera.getPropertyValue('trigger_source')[0]
+        # super(), not self: this is a read-back, and self.setParameter would
+        # route 'Trigger source' straight back into _setTriggerSource and
+        # re-write the hardware properties we just read (cf. _setExposure).
         if triggerSource == 1:
-            self.setParameter('Trigger source', 'Internal trigger')
+            super().setParameter('Trigger source', 'Internal trigger')
         else:
-            triggerMode = self._camera.getPropertyValue('trigger_mode')
+            triggerMode = self._camera.getPropertyValue('trigger_mode')[0]
             if triggerSource == 2 and triggerMode == 6:
-                self.setParameter('Trigger source', 'External "start-trigger"')
+                super().setParameter('Trigger source', 'External "start-trigger"')
             elif triggerSource == 2 and triggerMode == 1:
-                self.setParameter('Trigger source', 'External "frame-trigger"')
+                super().setParameter('Trigger source', 'External "frame-trigger"')
 
     def _getCameraObj(self, cameraId):
         try:

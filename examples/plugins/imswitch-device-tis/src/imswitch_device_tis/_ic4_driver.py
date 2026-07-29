@@ -277,20 +277,24 @@ class IC4Camera:
                 f"feature is overriding it."
             )
 
-    def set_exposure_us(self, exposure_us) -> None:
+    def set_exposure_us(self, exposure_us) -> float:
+        """Set the exposure and return what the device actually took."""
         self._ensure_manual_exposure_and_gain()
         self._pm.set_value(self._ic4.PropId.EXPOSURE_TIME, float(exposure_us))
-        self._warn_if_not_applied(
-            "ExposureTime", float(exposure_us), self.get_exposure_us()
-        )
+        applied = self.get_exposure_us()
+        self._warn_if_not_applied("ExposureTime", float(exposure_us), applied)
+        return applied
 
     def get_exposure_us(self) -> float:
         return float(self._pm.get_value_float(self._ic4.PropId.EXPOSURE_TIME))
 
-    def set_gain(self, gain) -> None:
+    def set_gain(self, gain) -> float:
+        """Set the gain and return what the device actually took."""
         self._ensure_manual_exposure_and_gain()
         self._pm.set_value(self._ic4.PropId.GAIN, float(gain))
-        self._warn_if_not_applied("Gain", float(gain), self.get_gain())
+        applied = self.get_gain()
+        self._warn_if_not_applied("Gain", float(gain), applied)
+        return applied
 
     def get_gain(self) -> float:
         return float(self._pm.get_value_float(self._ic4.PropId.GAIN))
@@ -323,8 +327,15 @@ class IC4Camera:
             value -= (value - minimum) % increment
         return value
 
-    def set_roi(self, x0, y0, width, height) -> None:
-        """Set the readout region. Requires the stream to be stopped."""
+    def set_roi(self, x0, y0, width, height) -> tuple:
+        """Set the readout region and return the ``(x0, y0, width, height)`` the
+        device actually took. Requires the stream to be stopped.
+
+        The return value is not a formality: ``_fit_to_property`` rounds the
+        request down to the sensor's increment, so the applied region routinely
+        differs from what was asked for. A caller that assumes its request was
+        honoured ends up describing frames the camera is not producing.
+        """
         pm, pid = self._pm, self._ic4.PropId
         # Offsets to zero first, so a larger width/height is never rejected for
         # overflowing the sensor while an old offset is still applied. The
@@ -335,6 +346,15 @@ class IC4Camera:
         pm.set_value(pid.HEIGHT, self._fit_to_property(pid.HEIGHT, height))
         pm.set_value(pid.OFFSET_X, self._fit_to_property(pid.OFFSET_X, x0))
         pm.set_value(pid.OFFSET_Y, self._fit_to_property(pid.OFFSET_Y, y0))
+        # Read back rather than returning the fitted values: the device is the
+        # authority, and it may constrain a combination that each property
+        # accepts on its own.
+        return (
+            int(pm.get_value_int(pid.OFFSET_X)),
+            int(pm.get_value_int(pid.OFFSET_Y)),
+            int(pm.get_value_int(pid.WIDTH)),
+            int(pm.get_value_int(pid.HEIGHT)),
+        )
 
     # -- trigger ----------------------------------------------------------
 
@@ -688,9 +708,10 @@ class MockIC4Camera:
         self._exposure_auto = "Off"
         self._gain_auto = "Off"
 
-    def set_exposure_us(self, exposure_us) -> None:
+    def set_exposure_us(self, exposure_us) -> float:
         self._ensure_manual_exposure_and_gain()
         self._exposure_us = float(exposure_us)
+        return self.get_exposure_us()
 
     def get_exposure_us(self) -> float:
         # Mirrors the device: while the auto algorithm owns the property, what
@@ -700,17 +721,32 @@ class MockIC4Camera:
             return self.AUTO_EXPOSURE_US
         return self._exposure_us
 
-    def set_gain(self, gain) -> None:
+    def set_gain(self, gain) -> float:
         self._ensure_manual_exposure_and_gain()
         self._gain = float(gain)
+        return self.get_gain()
 
     def get_gain(self) -> float:
         if self._gain_auto != "Off":
             return self.AUTO_GAIN_DB
         return self._gain
 
-    def set_roi(self, x0, y0, width, height) -> None:
-        self._roi = (int(x0), int(y0), int(width), int(height))
+    #: Width/Height/Offset increment, as GenICam sensors impose (commonly 4 or
+    #: 8 px). The mock enforces it for the same reason it starts with the autos
+    #: on: a mock that took every ROI verbatim could never show a caller
+    #: describing frames the camera is not producing.
+    ROI_INCREMENT = 4
+
+    def set_roi(self, x0, y0, width, height) -> tuple:
+        def fit(value, limit):
+            value = max(0, min(int(value), limit))
+            return value - value % self.ROI_INCREMENT
+
+        self._roi = (
+            fit(x0, self._sensor_width), fit(y0, self._sensor_height),
+            fit(width, self._sensor_width), fit(height, self._sensor_height),
+        )
+        return self._roi
 
     def set_trigger_enabled(self, enabled: bool, source=None, activation=None) -> None:
         self._trigger_enabled = bool(enabled)

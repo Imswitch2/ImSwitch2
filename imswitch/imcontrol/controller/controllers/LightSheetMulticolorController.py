@@ -13,11 +13,13 @@ from ..basecontrollers import (
     ComponentStateApplyMode,
     SetupModeApplyPriority
 )
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
 from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
 class LightSheetMulticolorController(
     StatefulComponentMixin,
+    TriggerScopeScanGeometryMixin,
     TriggerScopeScanLifecycleMixin,
     ImConWidgetController,
 ):

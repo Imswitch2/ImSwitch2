@@ -434,6 +434,61 @@ and terminalizes the run before a non-final ScanLapse part can re-arm.
 Auto-stop recording is likewise a run-terminal action, never a per-part
 sequence action.
 
+Binding a recording to the right scanner
+----------------------------------------
+
+A rig can register several TriggerScope scan widgets, and a scan-once
+recording on such a setup is *armed* and then started from whichever scan
+widget the operator chooses.  The frame expectation therefore cannot be read
+when REC is pressed — there is no scanner yet, and resolving one by
+registration order silently binds the recording to whichever controller
+happens to implement the accessors.
+
+``_startTriggerScopeScan`` instead calls
+``scanWorkflow.prepare_recording_for_scan(self)`` **before** it announces
+itself as the active source, before ``sigScanStarting`` and before any
+hardware write.  The RecordingController fills in ``recFrames``,
+``numCamTTL``, ``scanDims`` and ``scanStepSizes`` from that exact controller
+and arms its manager there.  The hook is synchronous and may refuse: a
+recording that cannot be armed vetoes the scan rather than letting it bleach
+the sample with nothing recording.  A refused *new* run hands the reservation
+straight back without publishing any boundary; a refused *continuation*, whose
+start was already published, is terminalized normally.
+
+Every controller a recording can be bound to must therefore answer
+``getNumScanPositions`` and ``getNumCamTTL``.  The RESOLFT-family modes report
+``roSteps × cycleSteps × timeLapsePoints`` through
+``TriggerScopeScanGeometryMixin``; ``TriggerScopeRaster`` keeps its own, since
+its frame count is a pixel grid.  ``TriggerScopeScanController`` overrides the
+mixin's parameter hook to read the mode its widget is showing.
+
+A *timelapse* scan is started by the recording itself, so no operator gesture
+identifies the scanner.  The Recording widget's **Scan source** chooser
+supplies it, and it appears only when the setup has more than one capable
+controller.  Its first entry is a valueless ``Select scan source...``
+placeholder and a timelapse is refused while it is showing: repopulating a
+combo box selects index zero, so a saved choice that disappeared — or a rig
+seen for the first time — would otherwise arm whichever scanner happens to be
+registered first, and that scanner's hardware would then actually run.
+
+Geometry for both modes is read through ``_scanAccessor``, which binds to the
+pinned ``_recordingScanSource`` rather than the CommunicationChannel
+accessors.  Those resolve globally and are unambiguous only while a scan is
+running, which is never true at the moment a recording needs its frame count.
+When a pinned source does not implement an *optional* accessor
+(``getDimsScan`` / ``getScanStepSizes``, which only the BeadRec-capable raster
+controller provides) the result is ``None`` rather than a fallback: an
+uncalibrated recording is correct, one labelled with another scanner's
+dimensions is not.  The two required accessors have no fallback either — a
+source that cannot report its frame count fails the recording outright.
+
+Because a late-bound recording does not publish ``sigScanStarting`` itself,
+``_scanStartOwnedByScanSource`` records that its scan source owns the
+run-level lifecycle.  Without it, a scanner that fails after the manager was
+armed would clear ownership on ``sigScanEnded`` without ever reaching the
+failure terminal, and the writer would sit waiting for frames until its stall
+watchdog fired.
+
 **Not scan sources** — they orchestrate around scans but never own the
 lifecycle, and are deliberately excluded: ``EtSnoutyController`` (an
 event-triggered workflow that *requests* scans via

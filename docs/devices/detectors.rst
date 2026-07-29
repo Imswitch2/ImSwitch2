@@ -49,6 +49,36 @@ them — leave them out (or ``null``).
     }
 
 
+Camera pixel size
+-----------------
+
+Every camera manager accepts ``cameraPixelSizeUm`` in its
+``managerProperties``.  This is the *optically effective* pixel size at
+the sample plane — the physical sensor pitch divided by the total
+magnification — in micrometers, **not** the sensor pitch itself.  It is
+exposed at runtime as the ``Camera pixel size`` detector parameter and is
+what calibrates recorded files (OME ``PhysicalSize``, Fiji
+``element_size_um``), the napari layer scale, scale bars, tiling and
+stitching.  Scan-driven detectors (APD, PMT, TimeTagger) ignore it and
+derive their pixel size from the scan step instead.
+
+.. code-block:: json
+
+    "managerProperties": { "cameraPixelSizeUm": 0.082 }
+
+Omitting the key falls back to 0.15 µm.  A misspelled key
+(``camerapixelsizeum``) or an unparseable value (``"0,082"`` — a decimal
+comma) also falls back to 0.15 µm, but logs a warning naming the mistake.
+
+**The setup file wins over saved widget state.**  When
+``cameraPixelSizeUm`` is set, the parameter is treated as instrument
+calibration owned by the config: it is neither written into
+``imcontrol_widget_states`` nor restored from it, so editing the setup
+file takes effect on the next start.  Without the key the value is an
+editable runtime setting like any other and does round-trip through
+state persistence.
+
+
 APDManager
 ==========
 

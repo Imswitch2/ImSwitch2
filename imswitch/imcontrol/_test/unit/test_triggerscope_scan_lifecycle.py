@@ -145,9 +145,24 @@ class _Widget:
         return self.repeat
 
 
+class _ScanWorkflow:
+    """Stand-in for the recording-acceptance hook the real service provides."""
+
+    def __init__(self, events):
+        self.events = events
+        self.accept = True
+        self.sources = []
+
+    def prepare_recording_for_scan(self, source):
+        self.sources.append(source)
+        self.events.append(('recording-prepare', source))
+        return self.accept
+
+
 class _CommChannel:
     def __init__(self, events):
         self.activeSource = None
+        self.scanWorkflow = _ScanWorkflow(events)
         self.sigScanStarting = _Signal('scan-starting', events)
         self.sigScanDevicesResolved = _Signal('devices-resolved', events)
         self.sigScanBuilt = _Signal('scan-built', events)
@@ -216,6 +231,70 @@ def _setup(*, autoAcknowledge=True):
         detector,
         events,
     )
+
+
+def test_recording_acceptance_precedes_every_announcement_and_command():
+    controller, master, commChannel, _, events = _setup()
+
+    assert controller.runScanAdvanced(sigScanStartingEmitted=False) is True
+
+    names = [event[0] for event in events]
+    assert commChannel.scanWorkflow.sources == [controller]
+    for later in (
+        'scan-starting', 'devices-resolved', 'detectors-acquired',
+        'firmware-command',
+    ):
+        assert names.index('recording-prepare') < names.index(later), later
+
+
+def test_a_refused_recording_stops_the_scan_without_a_lifecycle():
+    """The scan must not run when the recording armed for it cannot bind. No
+    boundary was published for this attempt, so none may be published now —
+    a sigScanEnded here would disarm lasers for a scan that never existed."""
+    controller, master, commChannel, detector, events = _setup()
+    commChannel.scanWorkflow.accept = False
+
+    assert controller.runScanAdvanced(sigScanStartingEmitted=False) is False
+
+    names = [event[0] for event in events]
+    assert master.scanManager.calls == []
+    assert 'scan-starting' not in names
+    assert 'devices-resolved' not in names
+    assert 'scan-ended' not in names
+    assert 'detectors-acquired' not in names
+    assert detector.finishCalls == []
+    # The reservation is handed back, so the next scan can arm normally.
+    assert controller._scanCoordinator.activeRunToken is None
+    assert controller._triggerScopeRunToken is None
+    assert controller.isRunning is False
+    assert commChannel.activeSource is None
+    assert controller._widget.scanButtonChecked is False
+
+    commChannel.scanWorkflow.accept = True
+    assert controller.runScanAdvanced(sigScanStartingEmitted=False) is True
+    assert len(master.scanManager.calls) == 1
+
+
+def test_a_refused_continuation_terminalizes_the_published_run():
+    """A sequence part whose recording refuses cannot simply drop the run: its
+    start boundary was already published and needs its pair."""
+    controller, master, commChannel, _, events = _setup()
+    controller.runScanAdvanced(
+        sigScanStartingEmitted=False, isNonFinalPartOfSequence=True
+    )
+    master.scanManager.sigScanDone.emit()
+    assert controller._triggerScopeRunToken is not None
+
+    commChannel.scanWorkflow.accept = False
+    assert controller.runScanAdvanced(
+        sigScanStartingEmitted=True, isNonFinalPartOfSequence=False
+    ) is False
+
+    names = [event[0] for event in events]
+    assert len(master.scanManager.calls) == 1
+    assert names.count('scan-ended') == 1
+    assert controller._scanCoordinator.activeRunToken is None
+    assert controller.isRunning is False
 
 
 def test_membership_and_detector_lease_precede_firmware_start():

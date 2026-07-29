@@ -10,6 +10,28 @@ if TYPE_CHECKING:
     from .controllers._beadrec_scan_source import BeadRecScanSource
 
 
+#: Methods a controller must expose to be driven by a scan recording: the
+#: targeted runner, its abort, and the geometry the recording is armed with.
+RECORDING_SCAN_SOURCE_METHODS = (
+    'runScanExternal',
+    'abortScan',
+    'getNumScanPositions',
+    'getNumCamTTL',
+)
+
+
+def _recordingScanSourceMatches(controllers):
+    """``[(key, controller)]`` for every controller a recording could drive."""
+    return [
+        (key, controller)
+        for key, controller in controllers.items()
+        if controller is not None and all(
+            callable(getattr(controller, methodName, None))
+            for methodName in RECORDING_SCAN_SOURCE_METHODS
+        )
+    ]
+
+
 class CommunicationChannel(SignalInterface):
     """
     Signal bus and narrow API helper for imcontrol controllers.
@@ -230,6 +252,10 @@ class CommunicationChannel(SignalInterface):
             'scriptExecutionFinished': self.sigScriptExecutionFinished,
         })
 
+    def controllerRegistry(self) -> Mapping:
+        """The live widget-key -> controller mapping (empty before setup)."""
+        return getattr(self.__main, 'controllers', None) or {}
+
     def _get_required_controller(self, widgetKey, displayName=None):
         """Return a controller by widget key or raise the legacy RuntimeError."""
         try:
@@ -273,38 +299,45 @@ class CommunicationChannel(SignalInterface):
         controllers = getattr(self.__main, 'controllers', None) or {}
         return 'Scan' in controllers
 
-    def getRecordingScanSource(self):
+    def getRecordingScanSourceNames(self):
+        """Widget keys of every controller a scan recording could drive.
+
+        The Recording widget offers these when more than one exists; a rig with
+        a single scanner needs no choice and is never asked to make one.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        return [
+            key
+            for key, _controller in _recordingScanSourceMatches(controllers)
+        ]
+
+    def getRecordingScanSource(self, preferredKey=None):
         """Resolve one controller that can safely drive scan recording.
 
         The global ``sigRunScan`` broadcast is unsafe on standalone
         TriggerScope/LightSheet setups because every scan controller receives
-        it and can command hardware. Prefer the canonical Scan controller;
-        otherwise require exactly one standalone controller that exposes both
-        the targeted runner and the recording geometry/TTL accessors.
+        it and can command hardware. Resolution order: the operator's explicit
+        choice, then the canonical Scan controller, then a lone standalone
+        controller. Several capable controllers with no choice made is an
+        ambiguity, not a default — guessing there is what binds a recording to
+        the wrong scanner's geometry.
         """
         controllers = getattr(self.__main, 'controllers', None) or {}
-        required = (
-            'runScanExternal',
-            'abortScan',
-            'getNumScanPositions',
-            'getNumCamTTL',
-        )
-
-        def isRecordingSource(controller):
-            return controller is not None and all(
-                callable(getattr(controller, methodName, None))
-                for methodName in required
+        matches = _recordingScanSourceMatches(controllers)
+        if preferredKey:
+            for key, controller in matches:
+                if key == preferredKey:
+                    return controller
+            raise RuntimeError(
+                f'The selected scan source "{preferredKey}" is not available '
+                'or no longer exposes the recording accessors. Pick another '
+                'scan source in the Recording widget.'
             )
 
-        canonical = controllers.get('Scan')
-        if isRecordingSource(canonical):
-            return canonical
+        for key, controller in matches:
+            if key == 'Scan':
+                return controller
 
-        matches = [
-            (key, controller)
-            for key, controller in controllers.items()
-            if isRecordingSource(controller)
-        ]
         if len(matches) == 1:
             return matches[0][1]
 

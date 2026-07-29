@@ -170,6 +170,22 @@ processing module), or both.  Recording modes:
   acquisitions, as an alternative way to do a 3D scan.
 * **Run until stop** – recording thread runs until the user stops it.
 
+On a setup with a single scan widget, scan recordings need no further
+input.  A setup with several scan widgets (a TriggerScope rig with both a
+raster and a RESOLFT panel, for example) is asked which scanner to use, but
+only where the answer cannot be inferred:
+
+* **Scan once** infers it.  Press **REC** to arm the recording, then start
+  the scan you want from its own scan widget; the recording takes its frame
+  count and scan dimensions from that scanner.  If the recording cannot be
+  armed for it, the scan does not start and the reason is logged.
+* **Timelapse scan** is started by the recording itself, so it cannot infer
+  anything — pick the scanner in the **Scan source** control that appears
+  next to the mode.  The choice is remembered between sessions, but it is
+  never made for you: while the control still reads *Select scan source...*
+  the recording is refused rather than defaulting to a scanner, since that
+  scanner's hardware would actually be driven.
+
 Data is saved as HDF5 with every user-interactable parameter
 (laser power, scan parameters, …) stored alongside the images.
 

@@ -120,6 +120,18 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
         if isNewRun:
             self._scanStopRequested = False
 
+        # A recording armed for "whichever scan you start next" binds to this
+        # controller here, while nothing has been announced and no hardware has
+        # moved. It can refuse, and a refusal must stop the scan: running one
+        # anyway would bleach the sample with nothing recording it.
+        if not self._prepareRecordingForTriggerScopeScan():
+            self._logger.error(
+                'The armed recording could not be prepared for this scan; '
+                'the scan was not started.'
+            )
+            self._abandonTriggerScopeRun(runToken)
+            return False
+
         # The active source is announced only after this controller owns the
         # global run. A losing controller must not replace the real owner.
         self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
@@ -179,6 +191,53 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
                 self._releaseTriggerScopeRun(runToken)
             return False
         return True
+
+    def _prepareRecordingForTriggerScopeScan(self) -> bool:
+        """Ask an armed recording to bind to this scan. False vetoes the start.
+
+        Deliberately synchronous and placed before ``isRunning``,
+        ``sigScanStarting`` and every hardware write: a recording that learns
+        about the scan from an announcement signal can no longer stop it, and
+        the firmware would already be uploading parameters.
+        """
+        prepare = getattr(
+            getattr(self._commChannel, 'scanWorkflow', None),
+            'prepare_recording_for_scan',
+            None,
+        )
+        if not callable(prepare):
+            return True
+        try:
+            return bool(prepare(self))
+        except Exception:
+            self._logger.error(
+                'Failed to prepare an armed recording for this TriggerScope '
+                'scan; refusing the start',
+                exc_info=True,
+            )
+            return False
+
+    def _abandonTriggerScopeRun(self, runToken):
+        """Give a reservation back before anything about it was published.
+
+        Not a terminal: no ``sigScanStarting`` was emitted for this attempt and
+        no hardware moved, so publishing an end boundary here would disarm
+        lasers on behalf of a scan that never existed. A continuation that has
+        already published its start is terminalized properly instead.
+        """
+        self._triggerScopeRepeatPending = False
+        if self._triggerScopeStartingPublished:
+            self._releaseTriggerScopeRun(runToken)
+        else:
+            with self._triggerScopeTerminalLock:
+                if self._triggerScopeRunToken is runToken:
+                    self._triggerScopeRunToken = None
+            self._scanCoordinator.releaseRun(runToken)
+        self.isRunning = False
+        self._scanStopRequested = False
+        self.doingNonFinalPartOfSequence = False
+        self._setTriggerScopeScanButtonChecked(False)
+        self._setTriggerScopeAbortPending(False)
 
     def _onTriggerScopeScanStarted(self):
         """Relay the board boundary only from the controller that owns it."""

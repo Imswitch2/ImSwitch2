@@ -1035,8 +1035,13 @@ def test_scanlapse_two_cycle_drain_and_progression(monkeypatch):
             warning=lambda *_args, **_kwargs: None,
         ),
     )
+    # Never reached on this happy path; a stub keeps the shell small.
+    ctrl._handleRecordingFailure = lambda message, **kwargs: (_ for _ in ()).throw(
+        AssertionError(f'unexpected recording failure: {message}')
+    )
     for name in (
         'nextLapse', 'recordingCycleEnded', 'scanDone', 'recordingEnded',
+        '_scanAccessor', '_applyScanGeometryToRecordingArgs',
         '_scanDimsForRecording', '_scanStepSizesForRecording',
         '_startManagerRecording', '_waitForManagerArm',
         '_notifyScanStarting', '_preflightNewScanRequest',
@@ -2898,10 +2903,15 @@ def test_scanlapse_source_resolution_fails_before_recording_is_armed():
             recordingManager=types.SimpleNamespace(record=False)
         ),
         _commChannel=types.SimpleNamespace(
-            getRecordingScanSource=lambda: (_ for _ in ()).throw(
-                RuntimeError('ambiguous scan source')
-            )
+            getRecordingScanSource=lambda _preferred=None: (
+                _ for _ in ()
+            ).throw(RuntimeError('ambiguous scan source'))
         ),
+        _selectedScanSourceKey=lambda: '',
+        # No getRecordingScanSourceNames on the fake channel: a setup that
+        # offers no choice resolves automatically and still surfaces the
+        # ambiguity error from the resolver.
+        _scanSourceChoiceRequired=lambda: False,
         _preflightNewScanRequest=lambda: True,
         _handleRecordingFailure=lambda message, **kwargs: events.append(
             (message, kwargs)

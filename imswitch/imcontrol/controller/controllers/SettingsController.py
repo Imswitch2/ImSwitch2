@@ -735,6 +735,12 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         camera-reported readings, not settings, so they are not persisted --
         they are refreshed from hardware on restore.
 
+        Parameters the setup file owns (``detector.configOwnedParameters``, i.e.
+        the camera pixel size when ``cameraPixelSizeUm`` is configured) are not
+        persisted either. They are optical calibration declared in the config,
+        so the config must win on every boot; snapshotting them makes editing
+        the setup file a no-op until the state file is deleted by hand.
+
         This shape differs from the legacy SetupModesController summarizer
         (which expected roiMode/roi tuple); describeComponentState adapts to this shape.
 
@@ -767,9 +773,12 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                     }
 
                     # Get editable detector-specific parameters (exposure, gain, etc.)
+                    configOwned = getattr(detector, 'configOwnedParameters', frozenset())
                     if hasattr(detector, 'parameters'):
                         for paramName, parameter in detector.parameters.items():
                             if not getattr(parameter, 'editable', True):
+                                continue
+                            if paramName in configOwned:
                                 continue
                             try:
                                 detector_state['parameters'][paramName] = parameter.value
@@ -869,8 +878,10 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                     # time', 'Readout time', ...) are camera readings, not
                     # settings; writing a saved value would overwrite what the
                     # hardware just reported with a stale number. Legacy state
-                    # files still contain them -- ignore those entries.
+                    # files still contain them -- ignore those entries. Same for
+                    # setup-file-owned parameters (the camera pixel size).
                     parameters_state = detector_state.get('parameters', {})
+                    configOwned = getattr(detector, 'configOwnedParameters', frozenset())
                     for paramName, value in parameters_state.items():
                         parameter = getattr(detector, 'parameters', {}).get(paramName)
                         if parameter is None:
@@ -879,6 +890,19 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                             )
                             continue
                         if not getattr(parameter, 'editable', True):
+                            continue
+                        if paramName in configOwned:
+                            # The setup file owns this one. Snapshots written by
+                            # an older build still carry it, and restoring that
+                            # value is exactly the bug this guard exists for --
+                            # it silently reinstates the previous calibration
+                            # and every recording gets the wrong pixel size.
+                            if value != parameter.value:
+                                self._logger.info(
+                                    f'Ignoring saved {paramName}={value} for'
+                                    f' {detectorName}: the setup file sets'
+                                    f' {parameter.value}, which takes precedence.'
+                                )
                             continue
                         try:
                             detector.setParameter(paramName, value)
@@ -894,9 +918,22 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                             params.frameMode.setValue(frameMode, blockSignal=True)
                         except Exception as e:
                             warnings.append(f'Could not restore frame mode for {detectorName}: {e}')
-                    self.updateParamsFromDetector(detector=detector, blockSignals=True)
-                    self._applyFrameModeFieldState(detector)
-                    self.updateFrameActionButtons(detector=detector)
+                    # The hardware is already configured at this point, so a
+                    # failure here does not undo the restore -- it leaves the
+                    # widget showing pre-restore values while the detector runs
+                    # with the restored ones. That silent divergence is worse
+                    # than the original failure: the GUI then misreports what
+                    # every recording is actually calibrated with. Report it and
+                    # keep going rather than aborting the whole detector.
+                    try:
+                        self.updateParamsFromDetector(detector=detector, blockSignals=True)
+                        self._applyFrameModeFieldState(detector)
+                        self.updateFrameActionButtons(detector=detector)
+                    except Exception as e:
+                        warnings.append(
+                            f'Restored {detectorName} but could not refresh its settings'
+                            f' display; the shown values may not match the detector: {e}'
+                        )
 
                     restoredDetectors.append(detectorName)
 

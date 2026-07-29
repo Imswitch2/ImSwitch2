@@ -94,6 +94,26 @@ def scanPixelSizesToZYX(pixel_sizes: List[float]) -> List[float]:
     return [z, y, x]
 
 
+def configuredCameraPixelSize(managerProperties) -> Optional[float]:
+    """ The sample-plane pixel size the setup file declares, or ``None``.
+
+    ``None`` means "the setup file does not usably declare one" -- the key is
+    absent, misspelled, or unparseable. Callers must treat all three the same:
+    the runtime value is then a default, not a configured calibration, so it is
+    the user's to set and to persist.
+    """
+    try:
+        raw = managerProperties.get(CAMERA_PIXEL_SIZE_KEY, None)
+    except AttributeError:
+        return None  # e.g. managerProperties is None
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class ChunkConsumerOverflowError(RuntimeError):
     """A consumer fell behind and lost frames from its broker queue."""
 
@@ -151,9 +171,8 @@ class DetectorManager(SignalInterface):
                 valueUnits='µm', editable=True,
             )
 
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
+        value = configuredCameraPixelSize(properties)
+        if value is None:
             # e.g. "0,082" typed with a decimal comma.
             logger.warning(
                 f'Manager property "{CAMERA_PIXEL_SIZE_KEY}" is {raw!r}, which'
@@ -222,6 +241,17 @@ class DetectorManager(SignalInterface):
         # stop).
         self._acquisitionLeased = False
         self._hardwareFaulted = False
+
+        # Parameters whose authoritative value is the setup file, not the
+        # runtime. Saved widget state must neither capture nor restore these:
+        # a value the user edited into the config only takes effect if it wins
+        # over whatever the last session happened to be running with.
+        self.__configOwnedParameters = frozenset(
+            name for name in (CAMERA_PIXEL_SIZE_PARAM,)
+            if name in self.__parameters
+            and configuredCameraPixelSize(
+                getattr(detectorInfo, 'managerProperties', None)) is not None
+        )
 
         self.setBinning(supportedBinnings[0])
 
@@ -299,6 +329,16 @@ class DetectorManager(SignalInterface):
     def parameters(self) -> Dict[str, DetectorParameter]:
         """ Dictionary of available parameters. """
         return self.__parameters
+
+    @property
+    def configOwnedParameters(self) -> frozenset:
+        """ Names of parameters that the setup file declares and therefore owns.
+
+        These are calibration constants of the instrument (currently the camera
+        pixel size), not runtime settings. State persistence must skip them in
+        both directions, so that editing the setup file is enough to change
+        them and a stale snapshot can never reinstate the old value. """
+        return self.__configOwnedParameters
 
     @property
     def actions(self) -> Dict[str, DetectorAction]:
