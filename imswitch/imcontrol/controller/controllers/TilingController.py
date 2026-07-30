@@ -13,10 +13,7 @@ from imswitch.imcontrol.model.workflows.tile_registration import (
     RegistrationReport,
     TileShift,
     estimate_shift,
-    infer_orientation,
     max_shift_for_step,
-    measure_pair_shift,
-    orientation_advice,
 )
 from ..basecontrollers import ImConWidgetController
 
@@ -272,7 +269,6 @@ class TilingController(ImConWidgetController):
         frameFailure = False
         registration = RegistrationReport()
         maxShiftPx = 0.0
-        probeFrames = []
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -383,12 +379,6 @@ class TilingController(ImConWidgetController):
                 self._stitcher.add_tile(frame, ix, iy, offset_px)
                 self._gridPositions.append((gx, gy))
 
-                # The spiral's first two moves are a pure +X step then a pure
-                # +Y step, which is exactly what is needed to measure how stage
-                # axes map onto image axes. Keep those three frames.
-                if len(probeFrames) < 3:
-                    probeFrames.append(np.asarray(frame, dtype=np.float32))
-
                 # Repainting the whole mosaic on the GUI thread after every
                 # tile starved other GUI-thread work — most visibly the focus
                 # lock, whose PI update runs on the same event loop. Throttle
@@ -407,16 +397,9 @@ class TilingController(ImConWidgetController):
 
             scan_completed = not self._stopRequested and not frameFailure
 
-            messages = []
-            advice = self._probeOrientation(probeFrames, orientation)
-            if advice:
-                messages.append(advice)
             if register_tiles:
                 self._registrationReport = registration
-                messages.append(registration.summary())
-
-            if messages:
-                summary = ' '.join(messages)
+                summary = registration.summary()
                 self._logger.info(summary)
                 if not getattr(self, '_closed', False):
                     self.sigRegistrationSummary.emit(summary)
@@ -496,28 +479,6 @@ class TilingController(ImConWidgetController):
             if not getattr(self, '_closed', False):
                 self.sigRunningChanged.emit(False)
 
-    def _probeOrientation(self, probeFrames, orientation) -> str:
-        """Check the mosaic's assembly axes against the stage's real motion.
-
-        Uses the spiral's first two moves — a pure +X step then a pure +Y step
-        — so the measurement costs one extra correlation per run and needs no
-        special calibration routine. Returns advice to show the user, or an
-        empty string when there is nothing to say.
-        """
-        if len(probeFrames) < 2:
-            return ''
-
-        x_shift = measure_pair_shift(probeFrames[0], probeFrames[1])
-        if x_shift is None:
-            return ''
-        y_shift = (
-            measure_pair_shift(probeFrames[1], probeFrames[2])
-            if len(probeFrames) >= 3 else None
-        )
-
-        measured = infer_orientation(x_shift, y_shift)
-        return orientation_advice(orientation, measured)
-
     @staticmethod
     def _gridToImage(gx: int, gy: int, orientation) -> Tuple[int, int]:
         """Map a stage-grid position to the mosaic's image grid.
@@ -525,6 +486,16 @@ class TilingController(ImConWidgetController):
         The stage traces the same physical spiral regardless; this only decides
         where each tile is laid down in the overview. ``orientation`` is
         ``(flip_x, flip_y, swap_axes)``; swap is applied first.
+
+        There are exactly **eight** ways a camera can sit relative to the stage
+        axes, and these three booleans cover all of them. Counting it the way
+        you would at the microscope: a positive stage X step can send the image
+        in one of four directions (+col, -col, +row, -row); once that is fixed,
+        Y must land on the perpendicular axis, leaving two choices. Four times
+        two is eight — the symmetry group of the square, four rotations and
+        their four mirror images. ``swap_axes`` picks which stage axis drives
+        image columns and the two flips pick the signs, so ``2 * 2 * 2``
+        enumerates the same eight.
         """
         flip_x, flip_y, swap_axes = orientation
         if swap_axes:
