@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 import h5py
 from qtpy import QtCore, QtWidgets
+import zarr
 
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
@@ -37,6 +38,7 @@ class ImConMainController(MainController):
 
         # Connect view signals
         self.__mainView.sigLoadParamsFromHDF5.connect(self.loadParamsFromHDF5)
+        self.__mainView.sigLoadParamsFromZarr.connect(self.loadParamsFromZarr)
         self.__mainView.sigPickSetup.connect(self.pickSetup)
         self.__mainView.sigClosing.connect(self.closeEvent)
         self.__mainView.sigSaveWidgetState.connect(self.saveWidgetState)
@@ -144,6 +146,14 @@ class ImConMainController(MainController):
             owner=self.__mainView
         )
         self.__shortcutManager.registerAction(
+            actionId='app.loadParamsZarr',
+            displayName='Load parameters from Zarr',
+            callback=lambda: self.__mainView.sigLoadParamsFromZarr.emit(),
+            defaultKeySequence='Ctrl+Alt+P',
+            scope=ShortcutScope.Window,
+            owner=self.__mainView
+        )
+        self.__shortcutManager.registerAction(
             actionId='app.saveWidgetStates',
             displayName='Save Widget States',
             callback=lambda: self.__mainView.sigSaveWidgetState.emit(),
@@ -230,7 +240,9 @@ class ImConMainController(MainController):
         """ Set detector, positioner, laser etc. params from values saved in a
         user-picked HDF5 snap/recording. """
 
-        filePath = guitools.askForFilePath(self.__mainView, 'Open HDF5 file', nameFilter='*.hdf5')
+        filePath = guitools.askForFilePath(
+            self.__mainView, 'Open HDF5 file', nameFilter='HDF5 files (*.h5 *.hdf5)'
+        )
         if not filePath:
             return
 
@@ -255,6 +267,37 @@ class ImConMainController(MainController):
 
             attrs = SharedAttributes.fromHDF5File(file, datasetToLoad)
             self.__commChannel.sharedAttrs.update(attrs)
+
+    def loadParamsFromZarr(self):
+        """ Set detector, positioner, laser etc. params from values saved in a
+        user-picked Zarr snap/recording store. Twin of loadParamsFromHDF5 for
+        the Zarr recording layout (a store is a directory, not a single file). """
+
+        folderPath = guitools.askForFolderPath(self.__mainView, 'Open Zarr store')
+        if not folderPath:
+            return
+
+        root = zarr.open(folderPath, mode='r')
+        datasetsInStore = list(root.keys())
+        if len(datasetsInStore) < 1:
+            # Store does not contain any datasets
+            return
+        elif len(datasetsInStore) == 1:
+            datasetToLoad = datasetsInStore[0]
+        else:
+            # Store contains multiple datasets
+            self.pickDatasetsController.setDatasets(folderPath, datasetsInStore)
+            if not self.__mainView.showPickDatasetsDialogBlocking():
+                return
+
+            datasetsSelected = self.pickDatasetsController.getSelectedDatasets()
+            if len(datasetsSelected) != 1:
+                return
+
+            datasetToLoad = datasetsSelected[0]
+
+        attrs = SharedAttributes.fromZarrStore(root, datasetToLoad)
+        self.__commChannel.sharedAttrs.update(attrs)
 
     def pickSetup(self):
         """ Let the user change which setup is used. """

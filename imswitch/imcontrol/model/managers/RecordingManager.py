@@ -17,7 +17,7 @@ import tifffile as tiff
 from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Worker
-from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model import initLogger, JSON_ATTR_PREFIX
 import abc
 import logging
 
@@ -631,6 +631,26 @@ class HDF5Storer(Storer):
         super().__init__(filepath, detectorManager)
         self.compression = compression
 
+    @staticmethod
+    def _set_hdf5_attr(target, key, value, context) -> None:
+        """Write an HDF5 attribute, JSON-encoding values h5py can't store natively.
+
+        h5py attrs only accept native scalar/array dtypes; a dict or ragged list
+        (e.g. per-device ScanTTL timing maps) raises "Object dtype ... has no
+        native HDF5 equivalent" and used to be dropped silently. JSON-encoding
+        keeps the value round-trippable through SharedAttributes.fromHDF5File
+        instead of losing it.
+        """
+        try:
+            target.attrs[key] = value
+            return
+        except Exception:
+            pass
+        try:
+            target.attrs[key] = JSON_ATTR_PREFIX + json.dumps(value, default=str)
+        except Exception as e:
+            logger.debug(f'Could not save metadata {context}/{key}={value}: {e}')
+
     def _createDetectorGroup(self, h5file, detectorName, dtype, attrs, *,
                              maxshape=None, data=None, groupPath=None):
         """Create structured HDF5 detector group with data and metadata.
@@ -707,10 +727,7 @@ class HDF5Storer(Storer):
             )
             recording_attrs.setdefault('source_format', 'HDF5')
             for key, value in recording_attrs.items():
-                try:
-                    dataset.attrs[f'recording:{key}'] = value
-                except Exception as e:
-                    logger.debug(f'Could not save HDF5 recording metadata {key}={value}: {e}')
+                self._set_hdf5_attr(dataset, f'recording:{key}', value, 'recording')
 
         # Group attrs by category and create metadata subgroups
         grouped = self._group_metadata_by_category(other_attrs)
@@ -721,16 +738,10 @@ class HDF5Storer(Storer):
                 if category:  # Non-empty category -> subgroup
                     cat_group = meta_group.create_group(category)
                     for key, value in cat_attrs.items():
-                        try:
-                            cat_group.attrs[key] = value
-                        except Exception as e:
-                            logger.debug(f'Could not save metadata {category}/{key}={value}: {e}')
+                        self._set_hdf5_attr(cat_group, key, value, category)
                 else:  # Empty category -> flat in metadata group
                     for key, value in cat_attrs.items():
-                        try:
-                            meta_group.attrs[key] = value
-                        except Exception as e:
-                            logger.debug(f'Could not save metadata {key}={value}: {e}')
+                        self._set_hdf5_attr(meta_group, key, value, 'metadata')
 
         # Snapshot: shape is known now, so embed OME-XML. Streaming (maxshape)
         # defers to finalizeStream (frame count unknown here, and SWMR forbids
