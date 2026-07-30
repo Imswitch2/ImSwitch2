@@ -13,6 +13,10 @@ from ..basecontrollers import ImConWidgetController
 
 _SETTLE_S = 0.15  # stage settle time after each move (seconds)
 _CLOSE_JOIN_TIMEOUT_S = 2.0
+_FRESH_FRAME_TIMEOUT_S = 5.0  # max wait for a post-settle frame, per tile
+_FRAME_POLL_S = 0.005
+_OVERVIEW_EMIT_INTERVAL_S = 0.2  # throttle live overview repaints
+_CHUNK_CONSUMER_KEY = 'tiling'
 CellFeatureCallback = Callable[[int, dict, Tuple[float, float]], None]
 
 
@@ -212,14 +216,25 @@ class TilingController(ImConWidgetController):
     ) -> None:
         acqHandle = None
         positioner = None
+        detector = None
         x_axis = None
         y_axis = None
         origin_xy = None
         scan_completed = False
+        # Displacement actually commanded onto each axis, in µm. The scan
+        # unwinds this with relative moves instead of an absolute move back to
+        # the recorded origin: a positioner's tracked position and its
+        # controller's absolute frame need not share an origin (they did not on
+        # the Marzhauser stage), and an absolute move to a tracked coordinate
+        # then flung the stage across its travel range at the end of every run.
+        applied_um = {}
+        staleFrames = 0
+        frameFailure = False
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
             x_axis, y_axis = axes[0], axes[1]
+            applied_um = {x_axis: 0.0, y_axis: 0.0}
 
             camera = (tilingInfo.camera
                       if tilingInfo.camera
@@ -245,12 +260,17 @@ class TilingController(ImConWidgetController):
             if self._stopRequested:
                 return
 
-            # Record starting position as grid origin (0, 0)
+            # Record starting position as grid origin (0, 0). Re-read hardware
+            # first where the positioner supports it: the overview's stage
+            # anchor is only as good as this number, and a joystick nudge
+            # between runs moves the stage without the manager noticing.
+            self._syncPositionerFromHardware(positioner)
             start_pos = positioner.position
             origin_xy = (start_pos[x_axis], start_pos[y_axis])
             self._originXY = origin_xy
 
             gx, gy = 0, 0
+            lastEmit = 0.0
             for i, (dx, dy) in enumerate(spiral_moves(n_tiles)):
                 if self._stopRequested:
                     break
@@ -258,7 +278,9 @@ class TilingController(ImConWidgetController):
                 # Move to next tile (skip move for the very first position)
                 if i > 0:
                     positioner.move(dx * step_um, x_axis)
+                    applied_um[x_axis] += dx * step_um
                     positioner.move(dy * step_um, y_axis)
+                    applied_um[y_axis] += dy * step_um
                     time.sleep(_SETTLE_S)
                     if self._stopRequested:
                         break
@@ -266,7 +288,16 @@ class TilingController(ImConWidgetController):
                 gx += dx
                 gy += dy
 
-                frame = detector.getLatestFrameShared()
+                frame, wasFresh = self._grabSettledFrame(detector)
+                if frame is None:
+                    self._logger.error(
+                        'Tiling: no frame available for tile '
+                        f'{i + 1}/{n_tiles}; aborting scan'
+                    )
+                    frameFailure = True
+                    break
+                if not wasFresh:
+                    staleFrames += 1
 
                 # Lazy stitcher init after first frame (we need tile_size_px)
                 if self._stitcher is None:
@@ -284,12 +315,32 @@ class TilingController(ImConWidgetController):
                 self._stitcher.add_tile(frame, gx, gy)
                 self._gridPositions.append((gx, gy))
 
-                overview = self._stitcher.get_overview()
+                # Repainting the whole mosaic on the GUI thread after every
+                # tile starved other GUI-thread work — most visibly the focus
+                # lock, whose PI update runs on the same event loop. Throttle
+                # to a human-perceptible rate; the last tile always emits.
+                now = time.monotonic()
+                isLastTile = (i + 1) >= n_tiles
+                shouldEmit = (
+                    isLastTile
+                    or (now - lastEmit) >= _OVERVIEW_EMIT_INTERVAL_S
+                )
                 if not getattr(self, '_closed', False):
-                    self.sigOverviewUpdated.emit(overview)
+                    if shouldEmit:
+                        lastEmit = now
+                        self.sigOverviewUpdated.emit(self._stitcher.get_overview())
                     self.sigProgressUpdated.emit(i + 1, n_tiles)
 
-            scan_completed = not self._stopRequested
+            scan_completed = not self._stopRequested and not frameFailure
+
+            if staleFrames:
+                self._logger.warning(
+                    f'Tiling: {staleFrames}/{n_tiles} tiles fell back to the '
+                    'latest buffered frame because no new frame arrived within '
+                    f'{_FRESH_FRAME_TIMEOUT_S:g} s. Those tiles may be smeared '
+                    'or belong to the previous position — check the camera '
+                    'frame rate against the tile rate.'
+                )
 
         except Exception as e:
             self._logger.error(f'Tiling scan failed: {e}', exc_info=True)
@@ -297,14 +348,20 @@ class TilingController(ImConWidgetController):
             # Once the origin is known, every exit path owns returning the
             # stage: normal completion, user cancellation, camera/stitching
             # failure, and close while the worker is active.
+            #
+            # The return is a relative unwind of exactly what the scan
+            # commanded, so it lands correctly no matter where the positioner's
+            # tracked frame sits relative to its controller's absolute frame,
+            # and it stays correct when the scan stopped part-way through.
             origin_restored = origin_xy is not None
-            if positioner is not None and origin_xy is not None:
-                for value, axis in (
-                    (origin_xy[0], x_axis),
-                    (origin_xy[1], y_axis),
-                ):
+            if positioner is not None and applied_um:
+                for axis in (x_axis, y_axis):
+                    offset = applied_um.get(axis, 0.0)
+                    if not offset:
+                        continue
                     try:
-                        positioner.setPosition(value, axis)
+                        positioner.move(-offset, axis)
+                        applied_um[axis] = 0.0
                     except Exception as e:
                         origin_restored = False
                         self._logger.error(
@@ -312,6 +369,15 @@ class TilingController(ImConWidgetController):
                             f'"{axis}": {e}',
                             exc_info=True,
                         )
+
+            if detector is not None:
+                try:
+                    detector.releaseChunkConsumer(_CHUNK_CONSUMER_KEY)
+                except Exception as e:
+                    self._logger.error(
+                        f'Failed to release tiling chunk consumer: {e}',
+                        exc_info=True,
+                    )
 
             if (
                 scan_completed
@@ -341,6 +407,64 @@ class TilingController(ImConWidgetController):
             # (setRunning is a plain Python method, not @Slot-decorated).
             if not getattr(self, '_closed', False):
                 self.sigRunningChanged.emit(False)
+
+    def _grabSettledFrame(self, detector):
+        """Return ``(frame, was_fresh)`` for a tile, avoiding in-motion frames.
+
+        With a free-running camera, ``getLatestFrameShared()`` hands back
+        whatever is newest in the buffer — which, at a typical exposure, is
+        routinely a frame that began exposing while the stage was still moving,
+        or that belongs to the previous tile. Either produces a mosaic that is
+        silently misregistered rather than visibly broken.
+
+        The handshake: open a "frames after now" boundary, then require *two*
+        frames past it. The first may have started exposing before the
+        boundary; the second provably started after it, so it cannot contain
+        any of the move. The newest frame received is returned.
+
+        Falls back to the latest buffered frame (with ``was_fresh=False``) if
+        the camera produces nothing in time, so a slow camera degrades to the
+        old behaviour instead of aborting the run.
+        """
+        try:
+            detector.startChunkConsumer(_CHUNK_CONSUMER_KEY)
+        except Exception as e:
+            self._logger.warning(
+                f'Tiling: could not open a fresh-frame boundary ({e}); '
+                'falling back to the latest buffered frame.'
+            )
+            return self._latestFrame(detector), False
+
+        received = 0
+        newest = None
+        deadline = time.monotonic() + _FRESH_FRAME_TIMEOUT_S
+        while received < 2:
+            if self._stopRequested or getattr(self, '_closed', False):
+                break
+            try:
+                frames = detector.readChunk(_CHUNK_CONSUMER_KEY)
+            except Exception as e:
+                # Includes ChunkConsumerOverflowError: more frames arrived than
+                # the broker retained, which still means frames are flowing.
+                self._logger.debug(f'Tiling: chunk read interrupted ({e})')
+                break
+            if frames is not None and len(frames) > 0:
+                received += len(frames)
+                newest = frames[-1]
+                continue
+            if time.monotonic() > deadline:
+                break
+            time.sleep(_FRAME_POLL_S)
+
+        if received >= 2 and newest is not None:
+            return np.asarray(newest), True
+
+        return self._latestFrame(detector), False
+
+    @staticmethod
+    def _latestFrame(detector):
+        frame = detector.getLatestFrameShared()
+        return None if frame is None else np.asarray(frame)
 
     # ------------------------------------------------------------------
     # Click-to-navigate
@@ -555,6 +679,24 @@ class TilingController(ImConWidgetController):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _syncPositionerFromHardware(self, positioner) -> None:
+        """Re-read the positioner's true position, where the driver offers it.
+
+        Optional: positioners that cannot report an absolute position simply
+        keep their tracked value.
+        """
+        sync = getattr(positioner, 'syncPositionFromHardware', None)
+        if sync is None:
+            return
+        try:
+            if not sync():
+                self._logger.warning(
+                    'Tiling: stage could not report its absolute position; '
+                    'the overview anchor and click-to-navigate may be offset.'
+                )
+        except Exception as e:
+            self._logger.warning(f'Tiling: stage position sync failed: {e}')
 
     def _defaultCamera(self) -> str:
         for name, info in self._setupInfo.detectors.items():

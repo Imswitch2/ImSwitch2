@@ -581,7 +581,12 @@ schema — fields below are derived from the constructor.
         "MPB775": {
             "managerName": "MPBLaserManager",
             "managerProperties": {
-                "rs232device": "mpb"
+                "rs232device": "mpb",
+                "rampDownEnabled": true,
+                "rampDownDurationS": 2.0,
+                "rampDownSteps": 20,
+                "rampDownDwellS": 0.0,
+                "useMockOnFailure": true
             },
             "wavelength": 775,
             "valueRangeMin": 0,
@@ -602,6 +607,26 @@ schema — fields below are derived from the constructor.
      - str
      - RS232 channel name resolved via
        ``kwargs['rs232sManager']._subManagers[...]``.  **Required**.
+   * - ``rampDownEnabled``
+     - bool
+     - Ramp a live APC output to the device-reported minimum before normal
+       OFF, zero-power, and finalization commands. Defaults to ``true``.
+   * - ``rampDownDurationS``
+     - float
+     - Approximate duration of the descending software ramp. Defaults to
+       ``2.0`` seconds; confirm the correct profile for the exact laser and
+       firmware.
+   * - ``rampDownSteps``
+     - int
+     - Number of descending ``SETPOWER`` commands. Defaults to ``20``.
+   * - ``rampDownDwellS``
+     - float
+     - Optional dwell at minimum power before diode disable. Defaults to zero.
+   * - ``useMockOnFailure``
+     - bool
+     - Continue in mock mode after an initialization failure. A best-effort
+       immediate OFF is attempted first. Set to ``false`` when an unavailable
+       or unconfirmed MPB laser must abort startup.
 
 **LaserInfo fields used**
 
@@ -616,9 +641,16 @@ schema — fields below are derived from the constructor.
 **Vendor library**
 
 None — commands are MPB SCPI strings (``GETSN``, ``GETPOWERENABLE``,
-``SETLDENABLE``, ``SETPOWER``, ``POWER``) sent over RS232.  On any init
-failure the manager enters mock mode (``_isMock=True``) and silently
-ignores writes.
+``SETLDENABLE``, ``SETPOWER``, ``POWER``) sent over RS232. Startup never
+re-enables emission while correcting APC mode. If an APC laser was left
+emitting by a crashed process, startup uses the configured ramp before
+disabling it. Initialization failure triggers an independent best-effort
+immediate OFF before the optional mock fallback.
+
+While emission is disabled, positive power changes are cached rather than
+written. Enabling flushes the cached user setpoint before ``SETLDENABLE 1``.
+This keeps the desired power separate from the temporary minimum-power
+setpoint reached by a graceful ramp.
 
 **Source**
 

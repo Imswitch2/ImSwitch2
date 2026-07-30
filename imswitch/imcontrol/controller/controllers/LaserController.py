@@ -100,7 +100,15 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
     def toggleLaser(self, laserName, enabled):
         """ Enable or disable laser (on/off)."""
-        self._master.lasersManager[laserName].setEnabled(enabled)
+        applied = self._master.lasersManager[laserName].setEnabled(enabled)
+        # Managers may explicitly reject an unsafe enable (for example an MPB
+        # laser with no positive setpoint). Keep the toggle and shared state
+        # fail-closed instead of displaying ON while the hardware remains dark.
+        if applied is False:
+            enabled = False
+            self._widget.setLaserActive(
+                laserName, False, emitSignal=False
+            )
         self.setSharedAttr(laserName, _enabledAttr, enabled)
 
     def valueChanged(self, laserName, magnitude):

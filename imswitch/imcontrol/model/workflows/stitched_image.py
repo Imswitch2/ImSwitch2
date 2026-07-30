@@ -73,6 +73,17 @@ class StitchedImage:
         # Storage for tiles: {(grid_x, grid_y): np.ndarray}
         self._tiles: Dict[Tuple[int, int], np.ndarray] = {}
 
+        # Incremental canvas state. The canvas is accumulated as tiles arrive
+        # instead of being rebuilt from every tile on each get_overview() call:
+        # a live scan asks for the overview once per tile, and rebuilding made
+        # that O(n_tiles^2) work plus two full-canvas allocations per tile,
+        # which stalled the GUI thread badly enough to starve the focus lock.
+        self._canvas_sum: np.ndarray | None = None
+        self._canvas_weight: np.ndarray | None = None
+        self._canvas_min_gx: int = 0
+        self._canvas_min_gy: int = 0
+        self._overview_cache: np.ndarray | None = None
+
     def add_tile(self, image: np.ndarray, grid_x: int, grid_y: int) -> None:
         """Add one tile at grid position (grid_x, grid_y).
 
@@ -100,7 +111,19 @@ class StitchedImage:
         if normalized.ndim == 3:
             normalized = normalized.mean(axis=2)
 
+        replacing = (grid_x, grid_y) in self._tiles
         self._tiles[(grid_x, grid_y)] = normalized
+        self._overview_cache = None
+
+        if replacing:
+            # A tile's old contribution cannot be subtracted back out of the
+            # accumulator, so replacement falls back to a full rebuild. This
+            # does not happen during a normal scan, where each grid position
+            # is visited once.
+            self._rebuild_canvas()
+        else:
+            self._grow_canvas_for(grid_x, grid_y)
+            self._paste_tile(normalized, grid_x, grid_y)
 
     def get_overview(self) -> np.ndarray:
         """Return the current stitched image as float32 in [0, 1].
@@ -109,63 +132,105 @@ class StitchedImage:
         Returns a 2-D array (H_total, W_total).
         Canvas grows to accommodate any grid extent seen so far.
         """
-        if not self._tiles:
+        if not self._tiles or self._canvas_sum is None:
             return np.zeros((self.tile_size_px, self.tile_size_px), dtype=np.float32)
 
-        # Find grid extents
-        grid_positions = list(self._tiles.keys())
-        grid_xs = [pos[0] for pos in grid_positions]
-        grid_ys = [pos[1] for pos in grid_positions]
+        if self._overview_cache is None:
+            canvas = np.zeros_like(self._canvas_sum)
+            np.divide(
+                self._canvas_sum,
+                self._canvas_weight,
+                out=canvas,
+                where=self._canvas_weight > 0,
+            )
+            self._overview_cache = canvas
 
+        # Callers have always received an array they may modify freely, so hand
+        # out a copy rather than the cached accumulator result.
+        return self._overview_cache.copy()
+
+    # ------------------------------------------------------------------
+    # Incremental canvas maintenance
+    # ------------------------------------------------------------------
+
+    def _canvas_shape_for(self, min_gx: int, min_gy: int, max_gx: int, max_gy: int):
+        return (
+            self.step_y_px * (max_gy - min_gy) + self.tile_shape_px[0],
+            self.step_x_px * (max_gx - min_gx) + self.tile_shape_px[1],
+        )
+
+    def _grow_canvas_for(self, grid_x: int, grid_y: int) -> None:
+        """Ensure the canvas covers ``(grid_x, grid_y)``, growing if needed.
+
+        Growth reallocates and copies the existing accumulator, which happens
+        only when the mosaic's bounding box expands — O(sqrt(n_tiles)) times
+        for a spiral, not once per tile.
+        """
+        grid_xs = [pos[0] for pos in self._tiles]
+        grid_ys = [pos[1] for pos in self._tiles]
         min_gx, max_gx = min(grid_xs), max(grid_xs)
         min_gy, max_gy = min(grid_ys), max(grid_ys)
 
-        # Calculate canvas size
-        # Number of tiles in each direction
-        n_tiles_x = max_gx - min_gx + 1
-        n_tiles_y = max_gy - min_gy + 1
+        height, width = self._canvas_shape_for(min_gx, min_gy, max_gx, max_gy)
 
-        # Canvas dimensions accounting for overlap
-        canvas_width = self.step_x_px * (n_tiles_x - 1) + self.tile_shape_px[1]
-        canvas_height = self.step_y_px * (n_tiles_y - 1) + self.tile_shape_px[0]
+        if self._canvas_sum is None:
+            self._canvas_sum = np.zeros((height, width), dtype=np.float32)
+            self._canvas_weight = np.zeros((height, width), dtype=np.float32)
+            self._canvas_min_gx = min_gx
+            self._canvas_min_gy = min_gy
+            return
 
-        canvas_sum = np.zeros((canvas_height, canvas_width), dtype=np.float32)
-        canvas_weight = np.zeros((canvas_height, canvas_width), dtype=np.float32)
+        if (height, width) == self._canvas_sum.shape:
+            return
 
-        # Paste tiles onto canvas
+        # Offset of the old canvas inside the new, larger one.
+        row_offset = (self._canvas_min_gy - min_gy) * self.step_y_px
+        col_offset = (self._canvas_min_gx - min_gx) * self.step_x_px
+
+        old_h, old_w = self._canvas_sum.shape
+        new_sum = np.zeros((height, width), dtype=np.float32)
+        new_weight = np.zeros((height, width), dtype=np.float32)
+        new_sum[row_offset:row_offset + old_h, col_offset:col_offset + old_w] = self._canvas_sum
+        new_weight[row_offset:row_offset + old_h, col_offset:col_offset + old_w] = self._canvas_weight
+
+        self._canvas_sum = new_sum
+        self._canvas_weight = new_weight
+        self._canvas_min_gx = min_gx
+        self._canvas_min_gy = min_gy
+
+    def _paste_tile(self, tile: np.ndarray, grid_x: int, grid_y: int) -> None:
+        """Accumulate one already-normalized tile into the canvas."""
+        canvas_height, canvas_width = self._canvas_sum.shape
+
+        row_start = (grid_y - self._canvas_min_gy) * self.step_y_px
+        col_start = (grid_x - self._canvas_min_gx) * self.step_x_px
+
+        # Ensure tile fits (crop if necessary)
+        tile_h = min(tile.shape[0], canvas_height - row_start)
+        tile_w = min(tile.shape[1], canvas_width - col_start)
+
+        tile_view = tile[:tile_h, :tile_w]
+        sum_view = self._canvas_sum[row_start:row_start + tile_h, col_start:col_start + tile_w]
+        weight_view = self._canvas_weight[row_start:row_start + tile_h, col_start:col_start + tile_w]
+
+        if self.intensity_correction:
+            tile_view = self._match_overlap_intensity(tile_view, sum_view, weight_view)
+
+        if self.blend_overlaps:
+            sum_view += tile_view
+            weight_view += 1.0
+        else:
+            sum_view[:] = tile_view
+            weight_view[:] = 1.0
+
+    def _rebuild_canvas(self) -> None:
+        """Rebuild the accumulator from every stored tile, in insertion order."""
+        self._canvas_sum = None
+        self._canvas_weight = None
+        self._overview_cache = None
         for (grid_x, grid_y), tile in self._tiles.items():
-            # Calculate pixel position in canvas
-            # Relative grid position from min corner
-            rel_gx = grid_x - min_gx
-            rel_gy = grid_y - min_gy
-
-            # Top-left corner of this tile in canvas
-            col_start = rel_gx * self.step_x_px
-            row_start = rel_gy * self.step_y_px
-
-            # Ensure tile fits (crop if necessary)
-            tile_h = min(tile.shape[0], canvas_height - row_start)
-            tile_w = min(tile.shape[1], canvas_width - col_start)
-
-            tile_view = tile[:tile_h, :tile_w]
-            row_end = row_start + tile_h
-            col_end = col_start + tile_w
-            sum_view = canvas_sum[row_start:row_end, col_start:col_end]
-            weight_view = canvas_weight[row_start:row_end, col_start:col_end]
-
-            if self.intensity_correction:
-                tile_view = self._match_overlap_intensity(tile_view, sum_view, weight_view)
-
-            if self.blend_overlaps:
-                sum_view += tile_view
-                weight_view += 1.0
-            else:
-                sum_view[:] = tile_view
-                weight_view[:] = 1.0
-
-        canvas = np.zeros_like(canvas_sum)
-        np.divide(canvas_sum, canvas_weight, out=canvas, where=canvas_weight > 0)
-        return canvas
+            self._grow_canvas_for(grid_x, grid_y)
+            self._paste_tile(tile, grid_x, grid_y)
 
     def _match_overlap_intensity(
         self,

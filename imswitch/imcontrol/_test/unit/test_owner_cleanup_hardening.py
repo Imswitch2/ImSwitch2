@@ -928,10 +928,12 @@ def test_tiling_restores_origin_after_camera_failure(monkeypatch):
 
     assert positioner.position == {'X': 10.0, 'Y': 20.0}
     assert ('move', 5.0, 'X') in positioner.moves
-    assert positioner.moves[-2:] == [
-        ('set', 10.0, 'X'),
-        ('set', 20.0, 'Y'),
-    ]
+    # The origin is restored by unwinding the commanded displacement, never by
+    # an absolute move to the tracked coordinate: the tracked frame and the
+    # controller's absolute frame need not share an origin, and assuming they
+    # did sent the stage flying across its travel range at the end of a run.
+    assert positioner.moves[-1] == ('move', -5.0, 'X')
+    assert not any(entry[0] == 'set' for entry in positioner.moves)
     assert detectors.released == ['lease-1']
 
 
@@ -1336,11 +1338,8 @@ def test_focus_calibration_completes_without_reading_widget_from_worker():
 
 def test_focus_lock_pauses_pi_motion_while_calibrating():
     class _Process:
-        def grabCameraFrame(self):
-            return np.ones((2, 2))
-
-        def update(self, _twoFoci):
-            return 1.0
+        def takeResult(self):
+            return (np.ones((2, 2)), 1.0, 0.0)
 
     class _Value:
         def setValue(self, _value):
@@ -1372,7 +1371,7 @@ def test_focus_lock_pauses_pi_motion_while_calibrating():
         camImg=_Image(),
         focusPlotCurve=_Curve(),
     )
-    ctrl.updatePI = lambda: (_ for _ in ()).throw(
+    ctrl.updatePI = lambda *_args: (_ for _ in ()).throw(
         AssertionError('PI must be paused during calibration')
     )
 

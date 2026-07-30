@@ -61,6 +61,7 @@ class FocusLockController(ImConWidgetController):
         self._commChannel.sigScanDone.connect(self.scanLockFocus)
 
         self.setPointSignal = 0
+        self._lastPIUpdate = None
         self.locked = False
         self.aboutToLock = False
         self.zStackVar = False
@@ -93,6 +94,9 @@ class FocusLockController(ImConWidgetController):
         self._focusAcqHandle = self._master.detectorsManager.acquire(
             [self.camera], LeasePurpose.FOCUS
         )
+
+        # Start the frame/estimate worker before the timer that consumes it.
+        self.__processDataThread.start()
 
         self.timer = Timer()
         self.timer.timeout.connect(self.update)
@@ -367,22 +371,31 @@ class FocusLockController(ImConWidgetController):
             self.twoFociVar = True
 
     def update(self):
+        """Timer tick: grab, estimate, and correct focus.
+
+        Frame acquisition and the focus estimate run on a worker thread, so a
+        busy GUI thread (a tiling scan repainting its mosaic, say) can no
+        longer stall the lock. This method only consumes the newest completed
+        estimate and touches the widgets.
+        """
         if self.__dict__.get('_shutdownComplete', False):
             return
-        # get data
-        img = self.__processDataThread.grabCameraFrame()
-        if img is None:
-            # The camera has not produced its first frame yet. Skip this tick
-            # rather than run the focus estimate on nothing; the timer will
-            # come back.
+
+        result = self.__processDataThread.takeResult()
+        if result is None:
+            # No estimate has completed since the last tick — either the camera
+            # has not produced a frame yet, or the worker is still busy. Skip
+            # rather than block the GUI thread waiting for it.
             return
-        self.setPointSignal = self.__processDataThread.update(self.twoFociVar)
+
+        img, setPointSignal, timestamp = result
+        self.setPointSignal = setPointSignal
         self._widget.center.setValue(self.setPointSignal)
         # move
         if self._focusCalibrationActive:
             pass
         elif self.locked:
-            value_move = self.updatePI()
+            value_move = self.updatePI(timestamp)
             if self.noStepVar and abs(value_move) > 0.002:
                 self.movePositioner(value_move)
         elif self.aboutToLock:
@@ -395,7 +408,7 @@ class FocusLockController(ImConWidgetController):
                                                 self.setPointData[1:self.currPoint])
         else:
             self._widget.focusPlotCurve.setData(self.timeData, self.setPointData)
-    
+
     def aboutToLockUpdate(self):
         self.aboutToLockDataPoints = np.roll(self.aboutToLockDataPoints,1)
         self.aboutToLockDataPoints[0] = self.setPointSignal
@@ -416,13 +429,24 @@ class FocusLockController(ImConWidgetController):
             self.timeData[-1] = perf_counter() - self.startTime
         self.currPoint += 1
 
-    def updatePI(self):
+    def updatePI(self, timestamp=None):
         if not self.noStepVar:
             self.noStepVar = True
         #self.currentPosition = self._master.positionersManager[self.positioner].get_abs()
         #self.stepDistance = np.abs(self.currentPosition - self.lastPosition)
         #distance = self.currentPosition - self.lockPosition
-        move = self.pi.update(self.setPointSignal)
+
+        # Feed the true interval since the last correction. The integral term
+        # is a rate, so with a fixed implicit dt the loop silently detuned
+        # whenever ticks were delayed or dropped — exactly when the GUI thread
+        # was busy and the lock most needed to keep up.
+        dt = None
+        if timestamp is not None:
+            if self._lastPIUpdate is not None:
+                dt = timestamp - self._lastPIUpdate
+            self._lastPIUpdate = timestamp
+
+        move = self.pi.update(self.setPointSignal, dt)
         self.lastPosition = self.currentPosition
 
         if abs(move) > 3:
@@ -440,7 +464,9 @@ class FocusLockController(ImConWidgetController):
         if not self.locked:
             kp = float(self._widget.kpEdit.text())
             ki = float(self._widget.kiEdit.text())
-            self.pi = PI(self.setPointSignal, 0.001, kp, ki)
+            self.pi = PI(self.setPointSignal, 0.001, kp, ki,
+                         nominalDt=self.focusTime / 1000.0)
+            self._lastPIUpdate = None
             self.lockPosition = zpos
             self.locked = True
             self._widget.focusLockGraph.lineLock = self._widget.focusPlot.addLine(
@@ -480,13 +506,68 @@ class FocusLockController(ImConWidgetController):
 
 
 class ProcessDataThread(Thread):
+    """Grabs focus-camera frames and computes the focus signal off the GUI thread.
+
+    This class used to be constructed but never started, so its gaussian
+    filter, peak search and centre-of-mass all executed inside the Qt event
+    loop via the controller's timer. Any other GUI-thread work — a tiling scan
+    repainting its mosaic being the worst offender — directly delayed the
+    focus correction. It now runs as a real worker: it publishes the newest
+    completed estimate, and the controller's timer consumes whatever is ready.
+    """
+
     def __init__(self, controller, *args, **kwargs):
         self._controller = controller
+        self._stopRequested = threading.Event()
+        self._resultLock = threading.Lock()
+        self._result = None
+        self.latestimg = None
         super().__init__(*args, **kwargs)
+
+    def stop(self):
+        self._stopRequested.set()
+
+    def takeResult(self):
+        """Pop the newest ``(image, setPointSignal, timestamp)``, or None."""
+        with self._resultLock:
+            result = self._result
+            self._result = None
+            return result
+
+    def run(self):
+        while not self._stopRequested.is_set():
+            try:
+                img = self.grabCameraFrame()
+                if img is None:
+                    if self._stopRequested.wait(0.01):
+                        break
+                    continue
+                setPointSignal = self.update(self._controller.twoFociVar)
+            except Exception as e:
+                self._controller._logger.error(
+                    f'Focus signal update failed: {e}', exc_info=True
+                )
+                if self._stopRequested.wait(0.1):
+                    break
+                continue
+
+            with self._resultLock:
+                # Copy: the detector may reuse its frame buffer, and the GUI
+                # thread now reads this array concurrently with the next grab.
+                self._result = (np.array(img, copy=True), setPointSignal,
+                                perf_counter())
+
+            # Pace the worker to the configured update rate instead of
+            # spinning: the camera cannot deliver useful new information
+            # faster than it delivers frames.
+            if self._stopRequested.wait(max(0.001, self._controller.focusTime / 1000.0)):
+                break
 
     def grabCameraFrame(self):
         detectorManager = self._controller._master.detectorsManager[self._controller.camera]
         self.latestimg = detectorManager.getLatestFrameShared()
+        if self.latestimg is None:
+            return None
         # 1.5 swap axes of frame (depending on setup, make this a variable in the json)
         if self._controller._setupInfo.focusLock.swapImageAxes:
             self.latestimg = np.swapaxes(self.latestimg,0,1)
@@ -494,7 +575,7 @@ class ProcessDataThread(Thread):
 
     def update(self, twoFociVar):
         # Gaussian filter the image, to remove noise and so on, to get a better center estimate
-        imagearraygf = ndi.filters.gaussian_filter(self.latestimg, 7)
+        imagearraygf = ndi.gaussian_filter(self.latestimg, 7)
 
         # Update the focus signal
         if twoFociVar:
@@ -526,13 +607,17 @@ class ProcessDataThread(Thread):
 
         subsizey = 50
         subsizex = 50
+        # Clamp to the frame's real shape. These bounds were hardcoded to
+        # 1024/1280, which silently truncated the sub-window (or missed part of
+        # it) on any focus camera or crop that is not exactly that size.
+        frame_h, frame_w = imagearraygf.shape[:2]
         xlow = max(0, (centercoords2[0] - subsizex))
-        xhigh = min(1024, (centercoords2[0] + subsizex))
+        xhigh = min(frame_h, (centercoords2[0] + subsizex))
         ylow = max(0, (centercoords2[1] - subsizey))
-        yhigh = min(1280, (centercoords2[1] + subsizey))
+        yhigh = min(frame_w, (centercoords2[1] + subsizey))
 
         imagearraygfsub = imagearraygf[xlow:xhigh, ylow:yhigh]
-        massCenter = np.array(ndi.measurements.center_of_mass(imagearraygfsub))
+        massCenter = np.array(ndi.center_of_mass(imagearraygfsub))
         # add the information about where the center of the subarray is
         massCenterGlobal = massCenter[0] + centercoords2[0]  # - subsizey - self.sensorSize[1] / 2
         #self._controller._widget.center.setValue(massCenterGlobal)
@@ -656,21 +741,36 @@ class PI:
     """Simple implementation of a discrete PI controller.
     Taken from http://code.activestate.com/recipes/577231-discrete-pid-controller/
     Author: Federico Barabas"""
-    def __init__(self, setPoint, multiplier=1, kp=0, ki=0):
+    def __init__(self, setPoint, multiplier=1, kp=0, ki=0, nominalDt=0.0,
+                 maxIntegralScale=5.0):
         self._kp = multiplier * kp
         self._ki = multiplier * ki
         self._setPoint = setPoint
         self.multiplier = multiplier
         self.error = 0.0
         self._started = False
+        # Interval the gains were tuned at. dt-scaling is relative to this, so
+        # existing kp/ki values keep their meaning when the loop runs on time.
+        self.nominalDt = nominalDt
+        self.maxIntegralScale = maxIntegralScale
 
-    def update(self, currentValue):
+    def update(self, currentValue, dt=None):
         """ Calculate PI output value for given reference input and feedback.
-        Using the iterative formula to avoid integrative part building. """
+        Using the iterative formula to avoid integrative part building.
+
+        ``dt`` is the interval in seconds since the previous update. The
+        integral term is scaled by it so the loop behaves the same whether it
+        is running at its nominal rate or has been delayed; pass None to keep
+        the historical fixed-interval behaviour. """
         self.error = self.setPoint - currentValue
+        # Guard against a stalled or non-monotonic clock producing a huge or
+        # negative integral kick after a delay.
+        scale = 1.0
+        if dt is not None and self.nominalDt > 0:
+            scale = min(max(dt, 0.0) / self.nominalDt, self.maxIntegralScale)
         if self.started:
             self.dError = self.error - self.lastError
-            self.out = self.out + self.kp * self.dError + self.ki * self.error
+            self.out = self.out + self.kp * self.dError + self.ki * self.error * scale
         else:
             # This only runs in the first step
             self.out = self.kp * self.error
