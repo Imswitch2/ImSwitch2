@@ -12,6 +12,7 @@ from .PickSetupDialog import PickSetupDialog
 
 class ImConMainView(QtWidgets.QMainWindow):
     sigLoadParamsFromHDF5 = QtCore.Signal()
+    sigLoadParamsFromZarr = QtCore.Signal()
     sigPickSetup = QtCore.Signal()
     sigClosing = QtCore.Signal()
     sigSaveWidgetState = QtCore.Signal()
@@ -46,7 +47,11 @@ class ImConMainView(QtWidgets.QMainWindow):
         self.loadParamsAction = QtWidgets.QAction('Load parameters from saved HDF5 file…', self)
         self.loadParamsAction.triggered.connect(self.sigLoadParamsFromHDF5)
         file.addAction(self.loadParamsAction)
-        
+
+        self.loadParamsZarrAction = QtWidgets.QAction('Load parameters from saved Zarr store…', self)
+        self.loadParamsZarrAction.triggered.connect(self.sigLoadParamsFromZarr)
+        file.addAction(self.loadParamsZarrAction)
+
         file.addSeparator()
         
         self.saveWidgetStateAction = QtWidgets.QAction('Save Widget States…', self)
@@ -166,6 +171,7 @@ class ImConMainView(QtWidgets.QMainWindow):
         """
         actionInfo = {
             'app.loadParams': (self.loadParamsAction, 'Load parameters from saved HDF5 file…'),
+            'app.loadParamsZarr': (self.loadParamsZarrAction, 'Load parameters from saved Zarr store…'),
             'app.saveWidgetStates': (self.saveWidgetStateAction, 'Save Widget States…'),
             'app.loadWidgetStates': (self.loadWidgetStateAction, 'Load Widget States…'),
         }
