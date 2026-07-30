@@ -271,6 +271,25 @@ class TilingInfo:
     defaultTileStepUm: float = 100.0
     """ Default stage step between tile centres, in µm. """
 
+    settleTimeMs: float = 150.0
+    """ Time to wait after each stage move before acquiring a tile, in ms.
+
+    Covers mechanical settling of the stage. Too short and tiles are captured
+    while the stage is still ringing, which shows up as a mosaic that will not
+    overlap cleanly. The widget can override this per run. """
+
+    registerTiles: bool = False
+    """ Refine each tile's placement by phase correlation against its already-
+    placed neighbours, instead of trusting the commanded stage position alone.
+
+    Useful when the stage is not repeatable enough for seamless stitching. The
+    measured corrections are also reported after each run, which distinguishes
+    stage error from a wrong sample-plane pixel size. """
+
+    registrationMaxShiftFraction: float = 0.5
+    """ Reject registration corrections larger than this fraction of the tile
+    step. Guards against false matches on periodic sample structure. """
+
 
 @dataclass(frozen=True)
 class ScanInfo:

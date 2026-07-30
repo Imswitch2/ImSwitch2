@@ -80,11 +80,54 @@ class StitchedImage:
         # which stalled the GUI thread badly enough to starve the focus lock.
         self._canvas_sum: np.ndarray | None = None
         self._canvas_weight: np.ndarray | None = None
-        self._canvas_min_gx: int = 0
-        self._canvas_min_gy: int = 0
         self._overview_cache: np.ndarray | None = None
 
-    def add_tile(self, image: np.ndarray, grid_x: int, grid_y: int) -> None:
+        # Each tile's top-left corner in a virtual pixel space where the tile
+        # at grid (0, 0) sits at (0, 0). Placement lives here rather than being
+        # derived from the grid index, so a tile can be nudged off its nominal
+        # position by image registration without disturbing the rest.
+        self._placements: Dict[Tuple[int, int], Tuple[int, int]] = {}
+        self._canvas_row0: int = 0
+        self._canvas_col0: int = 0
+
+    def nominal_placement(self, grid_x: int, grid_y: int) -> Tuple[int, int]:
+        """Top-left virtual pixel coordinate a tile would occupy uncorrected."""
+        return (grid_y * self.step_y_px, grid_x * self.step_x_px)
+
+    @property
+    def canvas_origin_px(self) -> Tuple[int, int]:
+        """Virtual coordinate of canvas pixel (0, 0), as ``(row, col)``."""
+        return (self._canvas_row0, self._canvas_col0)
+
+    def placement(self, grid_x: int, grid_y: int) -> Tuple[int, int] | None:
+        """Where a placed tile actually sits, in virtual pixels."""
+        return self._placements.get((grid_x, grid_y))
+
+    def canvas_region_for(
+        self, grid_x: int, grid_y: int, offset_px: Tuple[float, float] = (0.0, 0.0)
+    ):
+        """Return ``(canvas_patch, nominal_offset)`` for registering a new tile.
+
+        ``canvas_patch`` is the current canvas, and ``nominal_offset`` is where
+        the incoming tile's origin would land inside it. Returns None before
+        any tile has been placed.
+        """
+        if self._canvas_sum is None:
+            return None
+        row0, col0 = self.nominal_placement(grid_x, grid_y)
+        overview = self.get_overview()
+        return overview, (
+            row0 + offset_px[0] - self._canvas_row0,
+            col0 + offset_px[1] - self._canvas_col0,
+        )
+
+    def add_tile(
+        self,
+        image: np.ndarray,
+        grid_x: int,
+        grid_y: int,
+        offset_px: Tuple[float, float] = (0.0, 0.0),
+    ) -> None:
         """Add one tile at grid position (grid_x, grid_y).
 
         Grid (0,0) is the spiral centre.
@@ -94,6 +137,9 @@ class StitchedImage:
             image: Tile image array.
             grid_x: Grid column position.
             grid_y: Grid row position.
+            offset_px: Correction ``(dy, dx)`` applied to the nominal placement,
+                in canvas pixels. Used by image-registration refinement; the
+                default of zero reproduces pure commanded-position placement.
         """
         if image.ndim not in (2, 3):
             raise ValueError(f"image must be 2-D or 3-D, got shape {image.shape}")
@@ -112,7 +158,14 @@ class StitchedImage:
             normalized = normalized.mean(axis=2)
 
         replacing = (grid_x, grid_y) in self._tiles
+        nominal_row, nominal_col = self.nominal_placement(grid_x, grid_y)
+        placement = (
+            int(round(nominal_row + offset_px[0])),
+            int(round(nominal_col + offset_px[1])),
+        )
+
         self._tiles[(grid_x, grid_y)] = normalized
+        self._placements[(grid_x, grid_y)] = placement
         self._overview_cache = None
 
         if replacing:
@@ -122,7 +175,7 @@ class StitchedImage:
             # is visited once.
             self._rebuild_canvas()
         else:
-            self._grow_canvas_for(grid_x, grid_y)
+            self._grow_canvas_for()
             self._paste_tile(normalized, grid_x, grid_y)
 
     def get_overview(self) -> np.ndarray:
@@ -153,39 +206,41 @@ class StitchedImage:
     # Incremental canvas maintenance
     # ------------------------------------------------------------------
 
-    def _canvas_shape_for(self, min_gx: int, min_gy: int, max_gx: int, max_gy: int):
+    def _canvas_bounds(self):
+        """Virtual-coordinate bounding box over all placed tiles."""
+        rows = [placement[0] for placement in self._placements.values()]
+        cols = [placement[1] for placement in self._placements.values()]
+        tile_h, tile_w = self.tile_shape_px
         return (
-            self.step_y_px * (max_gy - min_gy) + self.tile_shape_px[0],
-            self.step_x_px * (max_gx - min_gx) + self.tile_shape_px[1],
+            min(rows), min(cols),
+            max(row + tile_h for row in rows),
+            max(col + tile_w for col in cols),
         )
 
-    def _grow_canvas_for(self, grid_x: int, grid_y: int) -> None:
-        """Ensure the canvas covers ``(grid_x, grid_y)``, growing if needed.
+    def _grow_canvas_for(self) -> None:
+        """Ensure the canvas covers every placed tile, growing if needed.
 
         Growth reallocates and copies the existing accumulator, which happens
         only when the mosaic's bounding box expands — O(sqrt(n_tiles)) times
         for a spiral, not once per tile.
         """
-        grid_xs = [pos[0] for pos in self._tiles]
-        grid_ys = [pos[1] for pos in self._tiles]
-        min_gx, max_gx = min(grid_xs), max(grid_xs)
-        min_gy, max_gy = min(grid_ys), max(grid_ys)
-
-        height, width = self._canvas_shape_for(min_gx, min_gy, max_gx, max_gy)
+        row0, col0, row1, col1 = self._canvas_bounds()
+        height, width = row1 - row0, col1 - col0
 
         if self._canvas_sum is None:
             self._canvas_sum = np.zeros((height, width), dtype=np.float32)
             self._canvas_weight = np.zeros((height, width), dtype=np.float32)
-            self._canvas_min_gx = min_gx
-            self._canvas_min_gy = min_gy
+            self._canvas_row0 = row0
+            self._canvas_col0 = col0
             return
 
-        if (height, width) == self._canvas_sum.shape:
+        if (height, width) == self._canvas_sum.shape and row0 == self._canvas_row0 \
+                and col0 == self._canvas_col0:
             return
 
         # Offset of the old canvas inside the new, larger one.
-        row_offset = (self._canvas_min_gy - min_gy) * self.step_y_px
-        col_offset = (self._canvas_min_gx - min_gx) * self.step_x_px
+        row_offset = self._canvas_row0 - row0
+        col_offset = self._canvas_col0 - col0
 
         old_h, old_w = self._canvas_sum.shape
         new_sum = np.zeros((height, width), dtype=np.float32)
@@ -195,15 +250,16 @@ class StitchedImage:
 
         self._canvas_sum = new_sum
         self._canvas_weight = new_weight
-        self._canvas_min_gx = min_gx
-        self._canvas_min_gy = min_gy
+        self._canvas_row0 = row0
+        self._canvas_col0 = col0
 
     def _paste_tile(self, tile: np.ndarray, grid_x: int, grid_y: int) -> None:
         """Accumulate one already-normalized tile into the canvas."""
         canvas_height, canvas_width = self._canvas_sum.shape
 
-        row_start = (grid_y - self._canvas_min_gy) * self.step_y_px
-        col_start = (grid_x - self._canvas_min_gx) * self.step_x_px
+        placement = self._placements[(grid_x, grid_y)]
+        row_start = placement[0] - self._canvas_row0
+        col_start = placement[1] - self._canvas_col0
 
         # Ensure tile fits (crop if necessary)
         tile_h = min(tile.shape[0], canvas_height - row_start)
@@ -228,8 +284,8 @@ class StitchedImage:
         self._canvas_sum = None
         self._canvas_weight = None
         self._overview_cache = None
+        self._grow_canvas_for()
         for (grid_x, grid_y), tile in self._tiles.items():
-            self._grow_canvas_for(grid_x, grid_y)
             self._paste_tile(tile, grid_x, grid_y)
 
     def _match_overlap_intensity(

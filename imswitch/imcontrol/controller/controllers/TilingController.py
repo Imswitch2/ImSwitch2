@@ -9,6 +9,12 @@ from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
+from imswitch.imcontrol.model.workflows.tile_registration import (
+    RegistrationReport,
+    TileShift,
+    estimate_shift,
+    max_shift_for_step,
+)
 from ..basecontrollers import ImConWidgetController
 
 _SETTLE_S = 0.15  # stage settle time after each move (seconds)
@@ -29,6 +35,7 @@ class TilingController(ImConWidgetController):
     sigShowCellMarkers = QtCore.Signal(object)    # (N, 2) row/col array
     sigHighlightCell = QtCore.Signal(int)
     sigCellTargetingEnabled = QtCore.Signal(bool)
+    sigRegistrationSummary = QtCore.Signal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -49,12 +56,19 @@ class TilingController(ImConWidgetController):
         self._cellTargetThread: Optional[threading.Thread] = None
         self._scanAcqHandle = None
         self._closed = False
+        self._registrationReport = None
 
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
             return
 
         self._widget.setDefaultStep(tilingInfo.defaultTileStepUm)
+        self._widget.setDefaultSettleTimeMs(
+            getattr(tilingInfo, 'settleTimeMs', _SETTLE_S * 1000.0)
+        )
+        self._widget.setDefaultRegisterTiles(
+            getattr(tilingInfo, 'registerTiles', False)
+        )
 
         self._widget.sigStartTiling.connect(self.startTiling)
         self._widget.sigStopTiling.connect(self.stopTiling)
@@ -67,6 +81,7 @@ class TilingController(ImConWidgetController):
         self.sigShowCellMarkers.connect(self._widget.showCellMarkers)
         self.sigHighlightCell.connect(self._widget.highlightCurrentCell)
         self.sigCellTargetingEnabled.connect(self._widget.setCellTargetingEnabled)
+        self.sigRegistrationSummary.connect(self._widget.setRegistrationSummary)
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,14 +113,18 @@ class TilingController(ImConWidgetController):
             step_um = self._widget.getTileStepUm()
             blend_overlaps = self._widget.getBlendOverlaps()
             intensity_correction = self._widget.getIntensityCorrection()
+            settle_s = max(0.0, self._widget.getSettleTimeMs() / 1000.0)
+            register_tiles = self._widget.getRegisterTiles()
 
             self._stitcher = None
             self._originXY = None
             self._gridPositions = []
             self._lastStepUm = step_um
+            self._registrationReport = None
 
             self._widget.setRunning(True)
             self._widget.setProgress(0, n_tiles)
+            self._widget.setRegistrationSummary('')
             self._widget.clearCellMarkers()
             self._widget.setCellTargetingEnabled(False)
             self._cellPositionsRC = None
@@ -115,7 +134,7 @@ class TilingController(ImConWidgetController):
                 target=self._runScan,
                 args=(
                     tilingInfo, n_tiles, step_um, blend_overlaps,
-                    intensity_correction,
+                    intensity_correction, settle_s, register_tiles,
                 ),
                 daemon=True,
             )
@@ -197,6 +216,12 @@ class TilingController(ImConWidgetController):
         self._widget.setLabel(label)
 
     @APIExport()
+    def getRegistrationSummary(self) -> str:
+        """Diagnostics from the last run with tile alignment enabled."""
+        report = self.__dict__.get('_registrationReport')
+        return report.summary() if report is not None else ''
+
+    @APIExport()
     def getStitchedImage(self) -> Optional[np.ndarray]:
         if self._stitcher is None:
             return None
@@ -213,6 +238,8 @@ class TilingController(ImConWidgetController):
         step_um: float,
         blend_overlaps: bool,
         intensity_correction: bool,
+        settle_s: float = _SETTLE_S,
+        register_tiles: bool = False,
     ) -> None:
         acqHandle = None
         positioner = None
@@ -230,6 +257,8 @@ class TilingController(ImConWidgetController):
         applied_um = {}
         staleFrames = 0
         frameFailure = False
+        registration = RegistrationReport()
+        maxShiftPx = 0.0
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -256,7 +285,7 @@ class TilingController(ImConWidgetController):
             # first tile. Subsequent tiles already wait after each stage move;
             # previously only the first tile could be the pre-acquisition
             # cached frame when live view had been off.
-            time.sleep(_SETTLE_S)
+            time.sleep(settle_s)
             if self._stopRequested:
                 return
 
@@ -281,7 +310,7 @@ class TilingController(ImConWidgetController):
                     applied_um[x_axis] += dx * step_um
                     positioner.move(dy * step_um, y_axis)
                     applied_um[y_axis] += dy * step_um
-                    time.sleep(_SETTLE_S)
+                    time.sleep(settle_s)
                     if self._stopRequested:
                         break
 
@@ -311,8 +340,29 @@ class TilingController(ImConWidgetController):
                         blend_overlaps=blend_overlaps,
                         intensity_correction=intensity_correction,
                     )
+                    maxShiftPx = max_shift_for_step(
+                        self._stitcher.step_y_px,
+                        self._stitcher.step_x_px,
+                        getattr(tilingInfo, 'registrationMaxShiftFraction', 0.5),
+                    )
+                    if register_tiles and (
+                        self._stitcher.step_x_px >= frame.shape[1]
+                        or self._stitcher.step_y_px >= frame.shape[0]
+                    ):
+                        register_tiles = False
+                        self._logger.warning(
+                            'Tiling: tile alignment needs the tiles to overlap, '
+                            f'but the {step_um:g} µm step is at least a full '
+                            'field of view. Reduce the step, then re-enable it.'
+                        )
 
-                self._stitcher.add_tile(frame, gx, gy)
+                offset_px = (0.0, 0.0)
+                if register_tiles:
+                    offset_px = self._registerTile(
+                        frame, gx, gy, registration, maxShiftPx
+                    )
+
+                self._stitcher.add_tile(frame, gx, gy, offset_px)
                 self._gridPositions.append((gx, gy))
 
                 # Repainting the whole mosaic on the GUI thread after every
@@ -332,6 +382,13 @@ class TilingController(ImConWidgetController):
                     self.sigProgressUpdated.emit(i + 1, n_tiles)
 
             scan_completed = not self._stopRequested and not frameFailure
+
+            if register_tiles:
+                self._registrationReport = registration
+                summary = registration.summary()
+                self._logger.info(summary)
+                if not getattr(self, '_closed', False):
+                    self.sigRegistrationSummary.emit(summary)
 
             if staleFrames:
                 self._logger.warning(
@@ -407,6 +464,39 @@ class TilingController(ImConWidgetController):
             # (setRunning is a plain Python method, not @Slot-decorated).
             if not getattr(self, '_closed', False):
                 self.sigRunningChanged.emit(False)
+
+    def _registerTile(self, frame, gx, gy, report, maxShiftPx):
+        """Measure where a tile really belongs and return its correction.
+
+        Correlates the incoming tile against the canvas built so far, over the
+        region the commanded position says they share. Returns ``(dy, dx)`` in
+        canvas pixels, or ``(0, 0)`` when there is nothing to register against
+        or the match is not trustworthy.
+        """
+        region = self._stitcher.canvas_region_for(gx, gy)
+        if region is None:
+            return (0.0, 0.0)
+
+        canvas, nominal_offset = region
+        shift, confidence, reason = estimate_shift(
+            canvas, np.asarray(frame, dtype=np.float32), nominal_offset,
+            max_shift_px=maxShiftPx,
+        )
+        accepted = not reason
+        report.add(TileShift(
+            grid=(gx, gy),
+            applied=shift if accepted else (0.0, 0.0),
+            measured=shift,
+            expected=nominal_offset,
+            confidence=confidence,
+            accepted=accepted,
+            reason=reason,
+        ))
+        if not accepted:
+            self._logger.debug(
+                f'Tiling: tile {(gx, gy)} not registered — {reason}'
+            )
+        return shift if accepted else (0.0, 0.0)
 
     def _grabSettledFrame(self, detector):
         """Return ``(frame, was_fresh)`` for a tile, avoiding in-motion frames.
@@ -491,15 +581,22 @@ class TilingController(ImConWidgetController):
         self._moveStageToPixel(row, col)
 
     def _canvasOrigin(self) -> Optional[Tuple[float, float]]:
+        """Stage (x, y) of canvas pixel (0, 0).
+
+        Derived from the stitcher's own canvas origin rather than recomputed
+        from the grid indices, so click-to-navigate stays correct when tile
+        registration has nudged the mosaic off its nominal layout.
+        """
         if self._stitcher is None or self._originXY is None or not self._gridPositions:
             return None
-        min_gx = min(g[0] for g in self._gridPositions)
-        min_gy = min(g[1] for g in self._gridPositions)
+        canvas_row0, canvas_col0 = self._stitcher.canvas_origin_px
         return (
-            self._originXY[0] + min_gx * self._lastStepUm
-            - (self._stitcher.tile_shape_px[1] / 2) / self._stitcher.px_per_um_x,
-            self._originXY[1] + min_gy * self._lastStepUm
-            - (self._stitcher.tile_shape_px[0] / 2) / self._stitcher.px_per_um_y,
+            self._originXY[0]
+            + (canvas_col0 - self._stitcher.tile_shape_px[1] / 2)
+            / self._stitcher.px_per_um_x,
+            self._originXY[1]
+            + (canvas_row0 - self._stitcher.tile_shape_px[0] / 2)
+            / self._stitcher.px_per_um_y,
         )
 
     def _moveStageToPixel(self, row: int, col: int) -> Optional[Tuple[float, float]]:
@@ -705,15 +802,38 @@ class TilingController(ImConWidgetController):
         return next(iter(self._setupInfo.detectors))
 
     def _detectorPixelSizeUm(self, detector) -> Tuple[float, float]:
-        """Return detector pixel size as ``(y, x)`` in micrometres."""
+        """Return the delivered-frame pixel size as ``(y, x)`` in micrometres.
+
+        ``DetectorManager.pixelSizeUm`` reports the *unbinned* sample-plane
+        pixel size — ``setBinning`` changes the frame the camera delivers but
+        never touches that parameter. Stitching needs the size of a pixel in
+        the array it actually receives, so binning is applied here. Without it
+        a binned scan lays tiles out ``binning`` times too far apart and the
+        mosaic never overlaps cleanly, which looks exactly like stage error.
+        """
         pixel_size_um = detector.pixelSizeUm
         if len(pixel_size_um) >= 3:
-            return float(pixel_size_um[-2]), float(pixel_size_um[-1])
-        if len(pixel_size_um) == 2:
-            return float(pixel_size_um[0]), float(pixel_size_um[1])
-        if len(pixel_size_um) == 1:
-            return float(pixel_size_um[0]), float(pixel_size_um[0])
-        raise ValueError(f'Detector {detector.name} has invalid pixelSizeUm: {pixel_size_um}')
+            size_y, size_x = float(pixel_size_um[-2]), float(pixel_size_um[-1])
+        elif len(pixel_size_um) == 2:
+            size_y, size_x = float(pixel_size_um[0]), float(pixel_size_um[1])
+        elif len(pixel_size_um) == 1:
+            size_y = size_x = float(pixel_size_um[0])
+        else:
+            raise ValueError(
+                f'Detector {detector.name} has invalid pixelSizeUm: {pixel_size_um}'
+            )
+
+        binning = 1
+        try:
+            binning = max(1, int(getattr(detector, 'binning', 1) or 1))
+        except (TypeError, ValueError):
+            binning = 1
+        if binning != 1:
+            self._logger.info(
+                f'Tiling: detector binning {binning} — effective tile pixel '
+                f'size {size_y * binning:.4g} x {size_x * binning:.4g} µm'
+            )
+        return size_y * binning, size_x * binning
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

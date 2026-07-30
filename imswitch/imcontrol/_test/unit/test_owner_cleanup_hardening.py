@@ -18,7 +18,7 @@ from imswitch.imcontrol.controller.controllers.EtSnoutyController import (
     EtSnoutyController,
 )
 from imswitch.imcontrol.controller.controllers.FocusLockController import (
-    FocusCalibThread, FocusLockController,
+    FocusCalibThread, FocusLockController, ProcessDataThread,
 )
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
@@ -877,7 +877,10 @@ def test_tiling_restores_origin_after_camera_failure(monkeypatch):
         def __init__(self, **kwargs):
             pass
 
-        def add_tile(self, frame, gx, gy):
+        step_x_px = 1
+        step_y_px = 1
+
+        def add_tile(self, frame, gx, gy, offset_px=(0.0, 0.0)):
             pass
 
         def get_overview(self):
@@ -1376,3 +1379,57 @@ def test_focus_lock_pauses_pi_motion_while_calibrating():
     )
 
     FocusLockController.update(ctrl)
+
+
+def test_focus_process_thread_snapshots_shared_camera_frame():
+    sharedFrame = np.arange(16, dtype=np.uint16).reshape(4, 4)
+
+    class _Detector:
+        def getLatestFrameShared(self):
+            return sharedFrame
+
+    controller = SimpleNamespace(
+        camera='FocusCam',
+        _master=SimpleNamespace(
+            detectorsManager={'FocusCam': _Detector()},
+        ),
+        _setupInfo=SimpleNamespace(
+            focusLock=SimpleNamespace(swapImageAxes=False),
+        ),
+    )
+    thread = ProcessDataThread(controller)
+
+    capturedFrame = thread.grabCameraFrame()
+    sharedFrame[:] = 0
+
+    np.testing.assert_array_equal(
+        capturedFrame,
+        np.arange(16, dtype=np.uint16).reshape(4, 4),
+    )
+
+
+def test_focus_scan_pause_does_not_integrate_the_paused_interval():
+    class _Checked:
+        def __init__(self, checked):
+            self._checked = checked
+
+        def isChecked(self):
+            return self._checked
+
+    ctrl = FocusLockController.__new__(FocusLockController)
+    ctrl._shutdownComplete = False
+    ctrl._lastPIUpdate = 123.0
+    ctrl.locked = True
+    ctrl._widget = SimpleNamespace(
+        ScanBlock=_Checked(True),
+        lockButton=_Checked(True),
+    )
+
+    ctrl.scanUnlockFocus()
+    assert ctrl.locked is False
+    assert ctrl._lastPIUpdate is None
+
+    ctrl._lastPIUpdate = 456.0
+    ctrl.scanLockFocus()
+    assert ctrl.locked is True
+    assert ctrl._lastPIUpdate is None

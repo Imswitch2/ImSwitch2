@@ -271,6 +271,7 @@ class FocusLockController(ImConWidgetController):
             return
         if self._widget.ScanBlock.isChecked():
             self.locked = False
+            self._lastPIUpdate = None
 
     def scanLockFocus(self):
         # print('lock')
@@ -278,10 +279,12 @@ class FocusLockController(ImConWidgetController):
             return
         if self._widget.ScanBlock.isChecked() and self._widget.lockButton.isChecked():
             self.locked = True
+            self._lastPIUpdate = None
 
     def unlockFocus(self):
         if self.locked:
             self.locked = False
+            self._lastPIUpdate = None
             self._widget.lockButton.setChecked(False)
             self._widget.focusPlot.removeItem(self._widget.focusLockGraph.lineLock)
 
@@ -536,6 +539,7 @@ class ProcessDataThread(Thread):
 
     def run(self):
         while not self._stopRequested.is_set():
+            iterationStart = perf_counter()
             try:
                 img = self.grabCameraFrame()
                 if img is None:
@@ -552,22 +556,28 @@ class ProcessDataThread(Thread):
                 continue
 
             with self._resultLock:
-                # Copy: the detector may reuse its frame buffer, and the GUI
-                # thread now reads this array concurrently with the next grab.
-                self._result = (np.array(img, copy=True), setPointSignal,
-                                perf_counter())
+                self._result = (img, setPointSignal, perf_counter())
 
             # Pace the worker to the configured update rate instead of
             # spinning: the camera cannot deliver useful new information
             # faster than it delivers frames.
-            if self._stopRequested.wait(max(0.001, self._controller.focusTime / 1000.0)):
+            processingTime = perf_counter() - iterationStart
+            waitTime = max(
+                0.001,
+                self._controller.focusTime / 1000.0 - processingTime,
+            )
+            if self._stopRequested.wait(waitTime):
                 break
 
     def grabCameraFrame(self):
         detectorManager = self._controller._master.detectorsManager[self._controller.camera]
-        self.latestimg = detectorManager.getLatestFrameShared()
-        if self.latestimg is None:
+        sharedImage = detectorManager.getLatestFrameShared()
+        if sharedImage is None:
             return None
+        # The detector may recycle its shared buffer while this worker applies
+        # filters. Work on an owned snapshot so one estimate never combines
+        # pixels from two camera frames.
+        self.latestimg = np.array(sharedImage, copy=True)
         # 1.5 swap axes of frame (depending on setup, make this a variable in the json)
         if self._controller._setupInfo.focusLock.swapImageAxes:
             self.latestimg = np.swapaxes(self.latestimg,0,1)

@@ -1,8 +1,9 @@
 from imswitch.imcommon.model import initLogger
+from ._PiezoconceptZSerialMixin import PiezoconceptZSerialMixin
 from .PositionerManager import PositionerManager
 
 
-class PiezoconceptZManager2(PositionerManager):
+class PiezoconceptZManager2(PiezoconceptZSerialMixin, PositionerManager):
     """Improved PositionerManager for control of a Piezoconcept Z-piezo through RS232
     communication. Adapted to new Firmware as of 2026.
 
@@ -21,6 +22,7 @@ class PiezoconceptZManager2(PositionerManager):
             axis: 0 for axis in positionerInfo.axes
         })
         self.__logger = initLogger(self, instanceName=name)
+        self._initPiezoconceptSerial(self.__logger)
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][
                 positionerInfo.managerProperties['rs232device']
@@ -47,15 +49,15 @@ class PiezoconceptZManager2(PositionerManager):
             cmd = 'MOVRZ -' + str(round(float(value), 3))[1:7] + 'u'
         else:
             return
-        _ = self._rs232Manager.query(cmd)
-
-        self._position[self.axes[0]] = self._position[self.axes[0]] + value
+        with self._piezoconceptSerialLock:
+            self._queryPiezoconceptMove(cmd)
+            self._position[self.axes[0]] = self._position[self.axes[0]] + value
 
     def setPosition(self, value, _):
         cmd = 'MOVEZ ' + str(round(float(value), 3)) + 'u'
-        _ = self._rs232Manager.query(cmd)
-
-        self._position[self.axes[0]] = value
+        with self._piezoconceptSerialLock:
+            self._queryPiezoconceptMove(cmd)
+            self._position[self.axes[0]] = value
 
     @property
     def position(self):
@@ -64,17 +66,12 @@ class PiezoconceptZManager2(PositionerManager):
 
     def get_abs(self, axis=None):
         cmd = 'GET_Z'
-        reply = self._rs232Manager.query(cmd)
-        if reply is None:
-            reply = self._position[self.axes[0]]
-        else:
-            try:
-                reply = float(reply.split(' ')[0])
-            except Exception as e:
-                self.__logger.warning(f"PiezoZManager get abs error: {e}")
+        with self._piezoconceptSerialLock:
+            reply = self._queryPiezoconceptPosition(cmd)
+            if reply is None:
                 return self._position[self.axes[0]]
-        self._position[self.axes[0]] = reply
-        return reply
+            self._position[self.axes[0]] = reply
+            return reply
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

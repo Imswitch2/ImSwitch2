@@ -39,36 +39,65 @@ class TilingWidget(Widget):
         self.tileStepSpinbox.setValue(100.0)
         layout.addWidget(self.tileStepSpinbox, 0, 3)
 
-        # Row 1: Start, Stop buttons and navigate toggle
+        # Row 1: Settle time — the knob to reach for when the mosaic does not
+        # line up: too short and tiles are grabbed while the stage still rings.
+        layout.addWidget(QtWidgets.QLabel('Settle (ms):'), 1, 0)
+        self.settleTimeSpinbox = QtWidgets.QDoubleSpinBox()
+        self.settleTimeSpinbox.setMinimum(0.0)
+        self.settleTimeSpinbox.setMaximum(10000.0)
+        self.settleTimeSpinbox.setSingleStep(25.0)
+        self.settleTimeSpinbox.setDecimals(0)
+        self.settleTimeSpinbox.setValue(150.0)
+        self.settleTimeSpinbox.setToolTip(
+            'Wait after each stage move before capturing a tile.\n'
+            'Increase this first if tiles do not overlap cleanly.'
+        )
+        layout.addWidget(self.settleTimeSpinbox, 1, 1)
+
+        self.registerTilesCheck = QtWidgets.QCheckBox('Align tiles')
+        self.registerTilesCheck.setToolTip(
+            'Refine each tile by cross-correlating it with its already-placed\n'
+            'neighbours instead of trusting the stage position alone.\n'
+            'Also reports how far off the commanded positions were.'
+        )
+        layout.addWidget(self.registerTilesCheck, 1, 2, 1, 2)
+
+        # Row 2: Start, Stop buttons and navigate toggle
         self.startButton = guitools.BetterPushButton('Start Tiling')
         self.stopButton = guitools.BetterPushButton('Stop')
         self.stopButton.setEnabled(False)
         self.navigateToggle = QtWidgets.QCheckBox('Navigate on click')
-        layout.addWidget(self.startButton, 1, 0, 1, 2)
-        layout.addWidget(self.stopButton, 1, 2)
-        layout.addWidget(self.navigateToggle, 1, 3)
+        layout.addWidget(self.startButton, 2, 0, 1, 2)
+        layout.addWidget(self.stopButton, 2, 2)
+        layout.addWidget(self.navigateToggle, 2, 3)
 
-        # Row 2: Stitching options
+        # Row 3: Stitching options
         self.blendOverlapsCheck = QtWidgets.QCheckBox('Mean overlaps')
         self.blendOverlapsCheck.setChecked(True)
         self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
-        layout.addWidget(self.blendOverlapsCheck, 2, 0, 1, 2)
-        layout.addWidget(self.intensityCorrectionCheck, 2, 2, 1, 2)
+        layout.addWidget(self.blendOverlapsCheck, 3, 0, 1, 2)
+        layout.addWidget(self.intensityCorrectionCheck, 3, 2, 1, 2)
 
-        # Row 3: Progress label
+        # Row 4: Progress label
         self.progressLabel = QtWidgets.QLabel('')
         self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(self.progressLabel, 3, 0, 1, 4)
+        layout.addWidget(self.progressLabel, 4, 0, 1, 4)
 
-        # Row 4: Cell targeting controls
+        # Row 5: registration diagnostics, populated after a run
+        self.registrationLabel = QtWidgets.QLabel('')
+        self.registrationLabel.setWordWrap(True)
+        self.registrationLabel.setAlignment(QtCore.Qt.AlignLeft)
+        layout.addWidget(self.registrationLabel, 5, 0, 1, 4)
+
+        # Row 6: Cell targeting controls
         self.tuneSegmentationButton = guitools.BetterPushButton('Tune segmentation...')
         self.tuneSegmentationButton.setEnabled(False)
         self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
         self.runCellTargetingButton.setEnabled(False)
-        layout.addWidget(self.tuneSegmentationButton, 4, 0, 1, 2)
-        layout.addWidget(self.runCellTargetingButton, 4, 2, 1, 2)
+        layout.addWidget(self.tuneSegmentationButton, 6, 0, 1, 2)
+        layout.addWidget(self.runCellTargetingButton, 6, 2, 1, 2)
 
-        # Rows 5+: Stitched overview display
+        # Rows 7+: Stitched overview display
         self.overviewView = pg.GraphicsLayoutWidget()
         self.overviewItem = pg.ImageItem()
         self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
@@ -88,7 +117,7 @@ class TilingWidget(Widget):
         self._overviewVB.addItem(self.currentCellMarker)
         self._cellPositions = None  # Store positions for highlightCurrentCell
         
-        layout.addWidget(self.overviewView, 5, 0, 4, 4)
+        layout.addWidget(self.overviewView, 7, 0, 4, 4)
 
         # Wire signals
         self.startButton.clicked.connect(self.sigStartTiling)
@@ -99,6 +128,8 @@ class TilingWidget(Widget):
         self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
         self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
+        self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
         self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
 
     def _onSceneClicked(self, event):
@@ -133,8 +164,24 @@ class TilingWidget(Widget):
     def getIntensityCorrection(self) -> bool:
         return self.intensityCorrectionCheck.isChecked()
 
+    def getSettleTimeMs(self) -> float:
+        return self.settleTimeSpinbox.value()
+
+    def getRegisterTiles(self) -> bool:
+        return self.registerTilesCheck.isChecked()
+
     def setDefaultStep(self, step_um: float) -> None:
         self.tileStepSpinbox.setValue(step_um)
+
+    def setDefaultSettleTimeMs(self, settle_ms: float) -> None:
+        self.settleTimeSpinbox.setValue(settle_ms)
+
+    def setDefaultRegisterTiles(self, enabled: bool) -> None:
+        self.registerTilesCheck.setChecked(bool(enabled))
+
+    def setRegistrationSummary(self, summary: str) -> None:
+        """Show the post-run registration diagnostics, or clear them."""
+        self.registrationLabel.setText(summary or '')
 
     def setLabel(self, label: str) -> None:
         self.progressLabel.setText(label)
