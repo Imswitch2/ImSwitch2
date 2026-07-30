@@ -1,5 +1,6 @@
 import threading
 import time
+from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -9,6 +10,11 @@ from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
+from imswitch.imcontrol.model.workflows.tile_dataset import (
+    TileDataset,
+    TileRecord,
+    default_tiling_folder,
+)
 from imswitch.imcontrol.model.workflows.tile_registration import (
     RegistrationReport,
     TileShift,
@@ -58,6 +64,7 @@ class TilingController(ImConWidgetController):
         self._closed = False
         self._registrationReport = None
         self._orientation = (False, False, False)
+        self._lastSaveFolder = None
 
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
@@ -70,6 +77,7 @@ class TilingController(ImConWidgetController):
         self._widget.setDefaultRegisterTiles(
             getattr(tilingInfo, 'registerTiles', False)
         )
+        self._widget.setDefaultSaveTiles(getattr(tilingInfo, 'saveTiles', False))
         self._widget.setDefaultTileOrientation(
             getattr(tilingInfo, 'flipTileAxisX', False),
             getattr(tilingInfo, 'flipTileAxisY', False),
@@ -122,6 +130,7 @@ class TilingController(ImConWidgetController):
             settle_s = max(0.0, self._widget.getSettleTimeMs() / 1000.0)
             register_tiles = self._widget.getRegisterTiles()
             orientation = self._widget.getTileOrientation()
+            save_tiles = self._widget.getSaveTiles()
 
             self._stitcher = None
             self._originXY = None
@@ -143,7 +152,7 @@ class TilingController(ImConWidgetController):
                 args=(
                     tilingInfo, n_tiles, step_um, blend_overlaps,
                     intensity_correction, settle_s, register_tiles,
-                    orientation,
+                    orientation, save_tiles,
                 ),
                 daemon=True,
             )
@@ -250,6 +259,7 @@ class TilingController(ImConWidgetController):
         settle_s: float = _SETTLE_S,
         register_tiles: bool = False,
         orientation: Tuple[bool, bool, bool] = (False, False, False),
+        save_tiles: bool = False,
     ) -> None:
         acqHandle = None
         positioner = None
@@ -269,6 +279,8 @@ class TilingController(ImConWidgetController):
         frameFailure = False
         registration = RegistrationReport()
         maxShiftPx = 0.0
+        dataset = TileDataset()
+        saveFolder = None
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -379,6 +391,27 @@ class TilingController(ImConWidgetController):
                 self._stitcher.add_tile(frame, ix, iy, offset_px)
                 self._gridPositions.append((gx, gy))
 
+                if save_tiles:
+                    if saveFolder is None:
+                        saveFolder = default_tiling_folder(
+                            getattr(tilingInfo, 'measurementsRoot', None)
+                        )
+                        saveFolder.mkdir(parents=True, exist_ok=True)
+                        self._logger.info(f'Tiling: saving to {saveFolder}')
+                        dataset.pixel_size_um = self._stitcher and (
+                            1.0 / self._stitcher.px_per_um_y,
+                            1.0 / self._stitcher.px_per_um_x,
+                        )
+                        dataset.step_um = step_um
+                        dataset.tile_shape_px = tuple(frame.shape[:2])
+                        dataset.orientation = orientation
+                    stage_xy = (
+                        origin_xy[0] + gx * step_um,
+                        origin_xy[1] + gy * step_um,
+                    )
+                    self._saveTile(frame, camera, gx, gy, stage_xy,
+                                   dataset, saveFolder)
+
                 # Repainting the whole mosaic on the GUI thread after every
                 # tile starved other GUI-thread work — most visibly the focus
                 # lock, whose PI update runs on the same event loop. Throttle
@@ -396,6 +429,19 @@ class TilingController(ImConWidgetController):
                     self.sigProgressUpdated.emit(i + 1, n_tiles)
 
             scan_completed = not self._stopRequested and not frameFailure
+
+            if save_tiles and saveFolder is not None:
+                # The mosaic and the sidecars are written even for a stopped or
+                # partial run: whatever tiles reached disk should still be a
+                # usable dataset rather than orphaned files.
+                self._saveMosaic(camera, saveFolder, self._canvasOriginStage())
+                dataset.extra['completed'] = bool(scan_completed)
+                written = dataset.write(saveFolder)
+                self._logger.info(
+                    f'Tiling: saved {len(dataset.tiles)} tiles, the mosaic and '
+                    f'{len(written)} sidecar file(s) to {saveFolder}'
+                )
+                self._lastSaveFolder = str(saveFolder)
 
             if register_tiles:
                 self._registrationReport = registration
@@ -515,6 +561,129 @@ class TilingController(ImConWidgetController):
         if swap_axes:
             stage_dx, stage_dy = stage_dy, stage_dx
         return stage_dx, stage_dy
+
+    def _saveTile(self, frame, detectorName, gx, gy, stage_xy, dataset, folder):
+        """Write one tile as an OME image carrying its own stage position.
+
+        Goes through RecordingManager's storer layer rather than writing files
+        here, so tiles land in the same OME formats as everything else the
+        instrument records, and the stage position rides along in the standard
+        ``Plane/@PositionX|Y`` fields that make the set re-stitchable.
+        """
+        name = f'tile_x{gx:+03d}_y{gy:+03d}'
+        savename = str(Path(folder) / name)
+        attrs = {detectorName: self._tileAttrs(gx, gy, stage_xy)}
+        try:
+            written = self._master.recordingManager.snapImagePrev(
+                detectorName, savename, self._saveFormat, frame, attrs,
+                stagePositionUm=(stage_xy[0], stage_xy[1], 0.0),
+            )
+        except Exception as e:
+            self._logger.error(f'Tiling: failed to save tile {name}: {e}',
+                               exc_info=True)
+            return None
+
+        # The storer decides the final name (it appends the detector name and
+        # its own extension, and de-duplicates). The manifest and
+        # TileConfiguration.txt must name the file that actually exists, or no
+        # stitcher will find it.
+        if written:
+            filename = Path(written[0]).name
+        else:
+            filename = f'{name}_{detectorName}{self._saveExtension}'
+
+        placement = self._stitcher.placement(
+            *self._gridToImage(gx, gy, self._orientation)
+        ) or (0, 0)
+        nominal = self._stitcher.nominal_placement(
+            *self._gridToImage(gx, gy, self._orientation)
+        )
+        dataset.add(TileRecord(
+            filename=filename,
+            grid=(int(gx), int(gy)),
+            stage_um=(float(stage_xy[0]), float(stage_xy[1])),
+            # TileConfiguration.txt wants (x, y) = (col, row).
+            pixel_xy=(float(placement[1]), float(placement[0])),
+            correction_px=(
+                float(placement[0] - nominal[0]),
+                float(placement[1] - nominal[1]),
+            ),
+        ))
+        return name
+
+    @property
+    def _saveFormat(self):
+        """Save format for tiles, from config. OME-TIFF is the default.
+
+        OME-TIFF is what Fiji, BigStitcher and BioFormats read natively, and it
+        is the format whose per-plane stage position survives round-tripping,
+        so it is the sensible default for a dataset meant to be re-stitched.
+        """
+        from imswitch.imcontrol.model.managers.RecordingManager import SaveFormat
+        name = str(
+            getattr(self._setupInfo.tiling, 'saveFormat', 'TIFF') or 'TIFF'
+        ).upper()
+        try:
+            return SaveFormat[name]
+        except KeyError:
+            self._logger.warning(
+                f'Tiling: unknown saveFormat "{name}"; using OME-TIFF'
+            )
+            return SaveFormat.TIFF
+
+    @property
+    def _saveExtension(self) -> str:
+        from imswitch.imcontrol.model.managers.RecordingManager import SaveFormat
+        return {
+            SaveFormat.TIFF: '.ome.tif',
+            SaveFormat.HDF5: '.h5',
+            SaveFormat.ZARR: '.zarr',
+        }.get(self._saveFormat, '.ome.tif')
+
+    def _canvasOriginStage(self) -> Optional[Tuple[float, float]]:
+        """Stage position of canvas pixel (0, 0), for the mosaic's metadata."""
+        return self._canvasPixelToStage(0, 0)
+
+    @staticmethod
+    def _tileAttrs(gx, gy, stage_xy) -> dict:
+        return {
+            'Tiling:grid_x': int(gx),
+            'Tiling:grid_y': int(gy),
+            'Tiling:stage_x_um': float(stage_xy[0]),
+            'Tiling:stage_y_um': float(stage_xy[1]),
+        }
+
+    def _saveMosaic(self, detectorName, folder, canvasOriginStage) -> None:
+        """Write the assembled overview as a single OME image.
+
+        Saved as uint16 rather than the float the stitcher blends in, so the
+        file matches the camera's own range and opens sensibly anywhere. Its
+        pixel size is the mosaic's, and its position is the canvas origin, so
+        it lands in the right place next to the individual tiles.
+        """
+        if self._stitcher is None:
+            return
+        overview = self._stitcher.get_overview()
+        if overview.size == 0:
+            return
+        image = np.clip(overview, 0.0, 1.0)
+        image = (image * np.iinfo(np.uint16).max).astype(np.uint16)
+
+        savename = str(Path(folder) / 'mosaic')
+        attrs = {detectorName: {
+            'Tiling:kind': 'stitched_overview',
+            'Tiling:tiles': len(self._gridPositions),
+        }}
+        try:
+            self._master.recordingManager.snapImagePrev(
+                detectorName, savename, self._saveFormat, image, attrs,
+                stagePositionUm=(
+                    canvasOriginStage[0], canvasOriginStage[1], 0.0
+                ) if canvasOriginStage else None,
+            )
+        except Exception as e:
+            self._logger.error(f'Tiling: failed to save mosaic: {e}',
+                               exc_info=True)
 
     def _registerTile(self, frame, gx, gy, report, maxShiftPx):
         """Measure where a tile really belongs and return its correction.

@@ -278,6 +278,24 @@ class TilingInfo:
     while the stage is still ringing, which shows up as a mosaic that will not
     overlap cleanly. The widget can override this per run. """
 
+    saveTiles: bool = False
+    """ Save every tile, plus the stitched mosaic and stitching sidecars, as
+    each run proceeds.
+
+    Tiles are written through the ordinary recording/storer layer, so each one
+    is an OME image carrying its own stage position in ``Plane/@PositionX|Y``.
+    A ``TileConfiguration.txt`` (Fiji Grid/Collection Stitching, BigStitcher)
+    and a ``tiles.json`` manifest are written alongside them. """
+
+    saveFormat: str = "TIFF"
+    """ Format for saved tiles: ``TIFF`` (OME-TIFF), ``HDF5`` or ``ZARR``
+    (OME-NGFF). OME-TIFF is the default because it is what stitching tools read
+    natively. """
+
+    measurementsRoot: str = ""
+    """ Base folder for saved tiling datasets. Empty uses the ImSwitch default
+    measurements root. Each run gets its own ``<date>/tiling_<time>`` folder. """
+
     flipTileAxisX: bool = False
     """ Mirror the mosaic along X when assembling it.
 

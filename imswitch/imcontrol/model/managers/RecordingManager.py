@@ -1809,7 +1809,8 @@ class RecordingManager(SignalInterface):
         if saveMode == SaveMode.Numpy:
             return images
 
-    def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs):
+    def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs,
+                      stagePositionUm=None):
         """Save a previously captured image using the appropriate Storer.
         
         Routes through Storer.snap() for unified snapshot saving logic.
@@ -1822,16 +1823,29 @@ class RecordingManager(SignalInterface):
             saveFormat: SaveFormat enum value
             image: Image array to save (T, Y, X) or (Y, X)
             attrs: Dict mapping detector name to flat metadata dict
+            stagePositionUm: Optional ``(x, y, z)`` stage position in µm,
+                written as OME ``Plane/@PositionX|Y|Z``. This is what lets a
+                set of separately saved images (tiling, for one) be
+                reassembled into a mosaic by any OME-aware reader.
+
+        Returns:
+            The list of paths actually written. Callers that index the saved
+            files (a tiling manifest, say) must use these rather than guess:
+            the storer appends the detector name and its own extension, and
+            de-duplicates the basename against existing files.
         """
         storer = self.__storerMap[saveFormat]
         savename = self.getSaveSnapName(savename, saveFormat, [detectorName])
+        savePaths = self._snapSavePaths(savename, saveFormat, [detectorName])
         store = storer(savename, self.__detectorsManager)
 
         # Wrap single detector in dict for storer interface
         images = {detectorName: image}
         nf = 1 if np.asarray(image).ndim == 2 else int(np.asarray(image).shape[0])
-        store.omeMeta = {detectorName: self.buildOmeMeta(detectorName, _ome.MODE_SNAP, nf)}
+        store.omeMeta = {detectorName: self.buildOmeMeta(
+            detectorName, _ome.MODE_SNAP, nf, stagePositionUm=stagePositionUm)}
         store.snap(images, attrs)
+        return savePaths
 
     @staticmethod
     def _parameter_seconds(param) -> Optional[float]:
@@ -1876,7 +1890,8 @@ class RecordingManager(SignalInterface):
             return 0.0
 
     def buildOmeMeta(self, detectorName, mode, nFrames, scanDims=None,
-                     scanStepSizes=None, frameIntervalS=None, annotations=None):
+                     scanStepSizes=None, frameIntervalS=None, annotations=None,
+                     stagePositionUm=None):
         """Build the shared :class:`OmeImageMeta` for a detector from recording
         context. ``mode`` is a normalized recording mode (see recording_metadata),
         ``scanDims`` is ``(Nx, Ny, Nz)`` from the scan controller (for z-stack
@@ -1908,7 +1923,8 @@ class RecordingManager(SignalInterface):
             detectorName, mode, nFrames,
             pixel_size_yx_um=(py, px), scan_dims=scanDims,
             z_step_um=z_step, t_interval_s=t_interval,
-            dtype=det.dtype, annotations=annotations or {})
+            dtype=det.dtype, annotations=annotations or {},
+            stage_position_um=stagePositionUm)
 
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path

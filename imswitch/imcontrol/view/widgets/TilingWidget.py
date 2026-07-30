@@ -54,6 +54,14 @@ class TilingWidget(Widget):
         )
         layout.addWidget(self.settleTimeSpinbox, 1, 1)
 
+        self.saveTilesCheck = QtWidgets.QCheckBox('Save')
+        self.saveTilesCheck.setToolTip(
+            'Save each tile as an OME image as it is acquired, plus the\n'
+            'stitched mosaic and a TileConfiguration.txt for Fiji/BigStitcher.\n'
+            'Every tile carries its stage position in OME metadata.'
+        )
+        layout.addWidget(self.saveTilesCheck, 0, 4)
+
         self.registerTilesCheck = QtWidgets.QCheckBox('Align tiles')
         self.registerTilesCheck.setToolTip(
             'Refine each tile by cross-correlating it with its already-placed\n'
@@ -153,6 +161,7 @@ class TilingWidget(Widget):
         self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
         self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
         self.flipXCheck.stateChanged.connect(self.sigParamsChanged)
         self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
         self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
@@ -196,6 +205,9 @@ class TilingWidget(Widget):
     def getRegisterTiles(self) -> bool:
         return self.registerTilesCheck.isChecked()
 
+    def getSaveTiles(self) -> bool:
+        return self.saveTilesCheck.isChecked()
+
     def getTileOrientation(self) -> tuple:
         """Return ``(flip_x, flip_y, swap_axes)`` for mosaic assembly."""
         return (
@@ -212,6 +224,9 @@ class TilingWidget(Widget):
 
     def setDefaultRegisterTiles(self, enabled: bool) -> None:
         self.registerTilesCheck.setChecked(bool(enabled))
+
+    def setDefaultSaveTiles(self, enabled: bool) -> None:
+        self.saveTilesCheck.setChecked(bool(enabled))
 
     def setDefaultTileOrientation(
         self, flip_x: bool, flip_y: bool, swap_axes: bool

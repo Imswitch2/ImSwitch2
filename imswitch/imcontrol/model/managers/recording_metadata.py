@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -103,6 +103,12 @@ class OmeImageMeta:
     channels: List[Dict[str, Any]] = field(default_factory=list)
     acquisition_time: Optional[str] = None
     annotations: Dict[str, Any] = field(default_factory=dict)
+    #: Stage position of this image as ``(x, y, z)`` in micrometres, or None.
+    #: OME's standard place for "where on the sample was this taken", written as
+    #: ``Plane/@PositionX|Y|Z`` in OME-XML and as a ``translation`` coordinate
+    #: transformation in OME-NGFF. This is what makes a set of tiles a
+    #: reconstructable mosaic rather than unrelated images.
+    stage_position_um: Optional[Tuple[float, float, float]] = None
 
     def __post_init__(self):
         if len(self.axes) != len(self.scale):
@@ -149,7 +155,8 @@ class OmeImageMeta:
             axes = axes[len(axes) - ndim:]
             scale = scale[len(scale) - ndim:]
         return OmeImageMeta(self.name, axes, scale, self.dtype, self.channels,
-                            self.acquisition_time, self.annotations)
+                            self.acquisition_time, self.annotations,
+                            self.stage_position_um)
 
     # ---- serializers -------------------------------------------------------
 
@@ -167,7 +174,39 @@ class OmeImageMeta:
                 md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
         if self.channels:
             md['Channel'] = {'Name': [c.get('name', self.name) for c in self.channels]}
+        md.update(self.plane_position_metadata())
         return md
+
+    def n_planes(self) -> int:
+        """Number of OME planes, i.e. the product of the non-YX axis sizes.
+
+        The scale list carries physical sizes, not counts, so this is derived
+        from the axis names alone: anything beyond Y and X contributes planes.
+        Without a real frame count the safe answer is one plane.
+        """
+        return 1
+
+    def plane_position_metadata(self) -> Dict[str, Any]:
+        """``Plane`` position entries for tifffile's OME metadata dict.
+
+        OME records stage position per *plane*, so the values are lists. Empty
+        when no position is known, which keeps the metadata identical to before
+        for every non-tiled recording.
+        """
+        if self.stage_position_um is None:
+            return {}
+        x, y, z = self.stage_position_um
+        n = max(1, self.n_planes())
+        plane: Dict[str, Any] = {
+            'PositionX': [float(x)] * n,
+            'PositionXUnit': [_SPACE_UNIT] * n,
+            'PositionY': [float(y)] * n,
+            'PositionYUnit': [_SPACE_UNIT] * n,
+        }
+        if z is not None:
+            plane['PositionZ'] = [float(z)] * n
+            plane['PositionZUnit'] = [_SPACE_UNIT] * n
+        return {'Plane': plane}
 
     def ngff_ome_metadata(self, path: str = '0', ndim: Optional[int] = None) -> Dict[str, Any]:
         """The ``ome`` group attribute for OME-NGFF 0.5 (``zarr.json`` ``attributes.ome``).
@@ -188,6 +227,18 @@ class OmeImageMeta:
                 entry['unit'] = 'micrometer' if a.unit == _SPACE_UNIT else (
                     'second' if a.unit == _TIME_UNIT else a.unit)
             axes.append(entry)
+        transforms: List[Dict[str, Any]] = [{'type': 'scale', 'scale': scale}]
+        if src.stage_position_um is not None:
+            # OME-NGFF places a tile in the mosaic with a translation transform,
+            # in the same physical units as the scale. Axis order follows the
+            # axes list, so a leading t/c axis translates by zero.
+            x, y, z = src.stage_position_um
+            by_name = {'x': float(x), 'y': float(y), 'z': float(z or 0.0)}
+            transforms.append({
+                'type': 'translation',
+                'translation': [by_name.get(a.name, 0.0) for a in axes_objs],
+            })
+
         return {
             'version': '0.5',
             'multiscales': [{
@@ -195,9 +246,7 @@ class OmeImageMeta:
                 'axes': axes,
                 'datasets': [{
                     'path': path,
-                    'coordinateTransformations': [
-                        {'type': 'scale', 'scale': scale}
-                    ],
+                    'coordinateTransformations': transforms,
                 }],
             }],
         }
@@ -238,6 +287,8 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
         elif axis.name == 't':
             md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
 
+    md.update(meta.plane_position_metadata())
+
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
     xml = tifffile.OmeXml()
     xml.addimage(dtype, shp, stored, axes=meta.axes_string, **md)
@@ -257,6 +308,7 @@ def build_ome_image_meta(
     channels: Optional[List[Dict[str, Any]]] = None,
     acquisition_time: Optional[str] = None,
     annotations: Optional[Dict[str, Any]] = None,
+    stage_position_um: Optional[Sequence[float]] = None,
 ) -> OmeImageMeta:
     """Build an :class:`OmeImageMeta` from recording context.
 
@@ -285,4 +337,8 @@ def build_ome_image_meta(
         channels=channels or [{'name': name}],
         acquisition_time=acquisition_time or datetime.now(timezone.utc).isoformat(),
         annotations=annotations or {},
+        stage_position_um=(
+            tuple(float(v) for v in stage_position_um)
+            if stage_position_um is not None else None
+        ),
     )
