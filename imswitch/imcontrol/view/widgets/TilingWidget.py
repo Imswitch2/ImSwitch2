@@ -78,26 +78,49 @@ class TilingWidget(Widget):
         layout.addWidget(self.blendOverlapsCheck, 3, 0, 1, 2)
         layout.addWidget(self.intensityCorrectionCheck, 3, 2, 1, 2)
 
-        # Row 4: Progress label
+        # Row 4: mosaic orientation. Which way the overview grows depends on
+        # the camera mounting and the stage sign convention, so it has to be
+        # settable per rig rather than assumed.
+        orientationBox = QtWidgets.QHBoxLayout()
+        orientationBox.addWidget(QtWidgets.QLabel('Orientation:'))
+        self.flipXCheck = QtWidgets.QCheckBox('Flip X')
+        self.flipXCheck.setToolTip(
+            'Mirror the mosaic left/right.\n'
+            'Use when tiles build in the opposite direction to the stage.'
+        )
+        self.flipYCheck = QtWidgets.QCheckBox('Flip Y')
+        self.flipYCheck.setToolTip('Mirror the mosaic up/down.')
+        self.swapAxesCheck = QtWidgets.QCheckBox('Swap X/Y')
+        self.swapAxesCheck.setToolTip(
+            'Exchange the mosaic axes, for a camera mounted at 90° to the stage.'
+        )
+        for check in (self.flipXCheck, self.flipYCheck, self.swapAxesCheck):
+            orientationBox.addWidget(check)
+        orientationBox.addStretch(1)
+        orientationWidget = QtWidgets.QWidget()
+        orientationWidget.setLayout(orientationBox)
+        layout.addWidget(orientationWidget, 4, 0, 1, 4)
+
+        # Row 5: Progress label
         self.progressLabel = QtWidgets.QLabel('')
         self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(self.progressLabel, 4, 0, 1, 4)
+        layout.addWidget(self.progressLabel, 5, 0, 1, 4)
 
-        # Row 5: registration diagnostics, populated after a run
+        # Row 6: registration and orientation diagnostics, filled after a run
         self.registrationLabel = QtWidgets.QLabel('')
         self.registrationLabel.setWordWrap(True)
         self.registrationLabel.setAlignment(QtCore.Qt.AlignLeft)
-        layout.addWidget(self.registrationLabel, 5, 0, 1, 4)
+        layout.addWidget(self.registrationLabel, 6, 0, 1, 4)
 
-        # Row 6: Cell targeting controls
+        # Row 7: Cell targeting controls
         self.tuneSegmentationButton = guitools.BetterPushButton('Tune segmentation...')
         self.tuneSegmentationButton.setEnabled(False)
         self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
         self.runCellTargetingButton.setEnabled(False)
-        layout.addWidget(self.tuneSegmentationButton, 6, 0, 1, 2)
-        layout.addWidget(self.runCellTargetingButton, 6, 2, 1, 2)
+        layout.addWidget(self.tuneSegmentationButton, 7, 0, 1, 2)
+        layout.addWidget(self.runCellTargetingButton, 7, 2, 1, 2)
 
-        # Rows 7+: Stitched overview display
+        # Rows 8+: Stitched overview display
         self.overviewView = pg.GraphicsLayoutWidget()
         self.overviewItem = pg.ImageItem()
         self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
@@ -117,7 +140,7 @@ class TilingWidget(Widget):
         self._overviewVB.addItem(self.currentCellMarker)
         self._cellPositions = None  # Store positions for highlightCurrentCell
         
-        layout.addWidget(self.overviewView, 7, 0, 4, 4)
+        layout.addWidget(self.overviewView, 8, 0, 4, 4)
 
         # Wire signals
         self.startButton.clicked.connect(self.sigStartTiling)
@@ -130,6 +153,9 @@ class TilingWidget(Widget):
         self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
         self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.flipXCheck.stateChanged.connect(self.sigParamsChanged)
+        self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
+        self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
         self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
 
     def _onSceneClicked(self, event):
@@ -170,6 +196,14 @@ class TilingWidget(Widget):
     def getRegisterTiles(self) -> bool:
         return self.registerTilesCheck.isChecked()
 
+    def getTileOrientation(self) -> tuple:
+        """Return ``(flip_x, flip_y, swap_axes)`` for mosaic assembly."""
+        return (
+            self.flipXCheck.isChecked(),
+            self.flipYCheck.isChecked(),
+            self.swapAxesCheck.isChecked(),
+        )
+
     def setDefaultStep(self, step_um: float) -> None:
         self.tileStepSpinbox.setValue(step_um)
 
@@ -178,6 +212,13 @@ class TilingWidget(Widget):
 
     def setDefaultRegisterTiles(self, enabled: bool) -> None:
         self.registerTilesCheck.setChecked(bool(enabled))
+
+    def setDefaultTileOrientation(
+        self, flip_x: bool, flip_y: bool, swap_axes: bool
+    ) -> None:
+        self.flipXCheck.setChecked(bool(flip_x))
+        self.flipYCheck.setChecked(bool(flip_y))
+        self.swapAxesCheck.setChecked(bool(swap_axes))
 
     def setRegistrationSummary(self, summary: str) -> None:
         """Show the post-run registration diagnostics, or clear them."""

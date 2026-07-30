@@ -278,6 +278,23 @@ class TilingInfo:
     while the stage is still ringing, which shows up as a mosaic that will not
     overlap cleanly. The widget can override this per run. """
 
+    flipTileAxisX: bool = False
+    """ Mirror the mosaic along X when assembling it.
+
+    The stitcher assumes a positive stage X move places the next tile further
+    right in the overview. Whether that holds depends on how the camera is
+    mounted and on the stage's sign convention, so set this when the mosaic
+    builds left/right opposite to the physical movement. Affects only how tiles
+    are assembled and how a click maps back to a stage position — the stage
+    itself traces the same physical spiral either way. """
+
+    flipTileAxisY: bool = False
+    """ Mirror the mosaic along Y when assembling it. See ``flipTileAxisX``. """
+
+    swapTileAxes: bool = False
+    """ Exchange the mosaic's X and Y axes, for a camera mounted at 90 degrees
+    to the stage axes. Applied before ``flipTileAxisX``/``flipTileAxisY``. """
+
     registerTiles: bool = False
     """ Refine each tile's placement by phase correlation against its already-
     placed neighbours, instead of trusting the commanded stage position alone.

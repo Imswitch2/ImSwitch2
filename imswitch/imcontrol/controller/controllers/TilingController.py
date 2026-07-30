@@ -13,7 +13,10 @@ from imswitch.imcontrol.model.workflows.tile_registration import (
     RegistrationReport,
     TileShift,
     estimate_shift,
+    infer_orientation,
     max_shift_for_step,
+    measure_pair_shift,
+    orientation_advice,
 )
 from ..basecontrollers import ImConWidgetController
 
@@ -57,6 +60,7 @@ class TilingController(ImConWidgetController):
         self._scanAcqHandle = None
         self._closed = False
         self._registrationReport = None
+        self._orientation = (False, False, False)
 
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
@@ -68,6 +72,11 @@ class TilingController(ImConWidgetController):
         )
         self._widget.setDefaultRegisterTiles(
             getattr(tilingInfo, 'registerTiles', False)
+        )
+        self._widget.setDefaultTileOrientation(
+            getattr(tilingInfo, 'flipTileAxisX', False),
+            getattr(tilingInfo, 'flipTileAxisY', False),
+            getattr(tilingInfo, 'swapTileAxes', False),
         )
 
         self._widget.sigStartTiling.connect(self.startTiling)
@@ -115,12 +124,14 @@ class TilingController(ImConWidgetController):
             intensity_correction = self._widget.getIntensityCorrection()
             settle_s = max(0.0, self._widget.getSettleTimeMs() / 1000.0)
             register_tiles = self._widget.getRegisterTiles()
+            orientation = self._widget.getTileOrientation()
 
             self._stitcher = None
             self._originXY = None
             self._gridPositions = []
             self._lastStepUm = step_um
             self._registrationReport = None
+            self._orientation = orientation
 
             self._widget.setRunning(True)
             self._widget.setProgress(0, n_tiles)
@@ -135,6 +146,7 @@ class TilingController(ImConWidgetController):
                 args=(
                     tilingInfo, n_tiles, step_um, blend_overlaps,
                     intensity_correction, settle_s, register_tiles,
+                    orientation,
                 ),
                 daemon=True,
             )
@@ -240,6 +252,7 @@ class TilingController(ImConWidgetController):
         intensity_correction: bool,
         settle_s: float = _SETTLE_S,
         register_tiles: bool = False,
+        orientation: Tuple[bool, bool, bool] = (False, False, False),
     ) -> None:
         acqHandle = None
         positioner = None
@@ -259,6 +272,7 @@ class TilingController(ImConWidgetController):
         frameFailure = False
         registration = RegistrationReport()
         maxShiftPx = 0.0
+        probeFrames = []
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -356,14 +370,24 @@ class TilingController(ImConWidgetController):
                             'field of view. Reduce the step, then re-enable it.'
                         )
 
+                # Assemble in image space, which need not share the stage's
+                # axis directions — that depends on the camera mounting.
+                ix, iy = self._gridToImage(gx, gy, orientation)
+
                 offset_px = (0.0, 0.0)
                 if register_tiles:
                     offset_px = self._registerTile(
-                        frame, gx, gy, registration, maxShiftPx
+                        frame, ix, iy, registration, maxShiftPx
                     )
 
-                self._stitcher.add_tile(frame, gx, gy, offset_px)
+                self._stitcher.add_tile(frame, ix, iy, offset_px)
                 self._gridPositions.append((gx, gy))
+
+                # The spiral's first two moves are a pure +X step then a pure
+                # +Y step, which is exactly what is needed to measure how stage
+                # axes map onto image axes. Keep those three frames.
+                if len(probeFrames) < 3:
+                    probeFrames.append(np.asarray(frame, dtype=np.float32))
 
                 # Repainting the whole mosaic on the GUI thread after every
                 # tile starved other GUI-thread work — most visibly the focus
@@ -383,9 +407,16 @@ class TilingController(ImConWidgetController):
 
             scan_completed = not self._stopRequested and not frameFailure
 
+            messages = []
+            advice = self._probeOrientation(probeFrames, orientation)
+            if advice:
+                messages.append(advice)
             if register_tiles:
                 self._registrationReport = registration
-                summary = registration.summary()
+                messages.append(registration.summary())
+
+            if messages:
+                summary = ' '.join(messages)
                 self._logger.info(summary)
                 if not getattr(self, '_closed', False):
                     self.sigRegistrationSummary.emit(summary)
@@ -464,6 +495,55 @@ class TilingController(ImConWidgetController):
             # (setRunning is a plain Python method, not @Slot-decorated).
             if not getattr(self, '_closed', False):
                 self.sigRunningChanged.emit(False)
+
+    def _probeOrientation(self, probeFrames, orientation) -> str:
+        """Check the mosaic's assembly axes against the stage's real motion.
+
+        Uses the spiral's first two moves — a pure +X step then a pure +Y step
+        — so the measurement costs one extra correlation per run and needs no
+        special calibration routine. Returns advice to show the user, or an
+        empty string when there is nothing to say.
+        """
+        if len(probeFrames) < 2:
+            return ''
+
+        x_shift = measure_pair_shift(probeFrames[0], probeFrames[1])
+        if x_shift is None:
+            return ''
+        y_shift = (
+            measure_pair_shift(probeFrames[1], probeFrames[2])
+            if len(probeFrames) >= 3 else None
+        )
+
+        measured = infer_orientation(x_shift, y_shift)
+        return orientation_advice(orientation, measured)
+
+    @staticmethod
+    def _gridToImage(gx: int, gy: int, orientation) -> Tuple[int, int]:
+        """Map a stage-grid position to the mosaic's image grid.
+
+        The stage traces the same physical spiral regardless; this only decides
+        where each tile is laid down in the overview. ``orientation`` is
+        ``(flip_x, flip_y, swap_axes)``; swap is applied first.
+        """
+        flip_x, flip_y, swap_axes = orientation
+        if swap_axes:
+            gx, gy = gy, gx
+        return (-gx if flip_x else gx, -gy if flip_y else gy)
+
+    @staticmethod
+    def _imageOffsetToStage(dx_um: float, dy_um: float, orientation):
+        """Inverse of :meth:`_gridToImage` for a continuous µm offset.
+
+        Both transforms are their own inverse up to the swap, which must be
+        undone after the sign flips rather than before.
+        """
+        flip_x, flip_y, swap_axes = orientation
+        stage_dx = -dx_um if flip_x else dx_um
+        stage_dy = -dy_um if flip_y else dy_um
+        if swap_axes:
+            stage_dx, stage_dy = stage_dy, stage_dx
+        return stage_dx, stage_dy
 
     def _registerTile(self, frame, gx, gy, report, maxShiftPx):
         """Measure where a tile really belongs and return its correction.
@@ -580,33 +660,40 @@ class TilingController(ImConWidgetController):
             return
         self._moveStageToPixel(row, col)
 
-    def _canvasOrigin(self) -> Optional[Tuple[float, float]]:
-        """Stage (x, y) of canvas pixel (0, 0).
+    def _canvasPixelToStage(self, row: int, col: int) -> Optional[Tuple[float, float]]:
+        """Stage (x, y) for a canvas pixel, honouring the mosaic orientation.
 
-        Derived from the stitcher's own canvas origin rather than recomputed
-        from the grid indices, so click-to-navigate stays correct when tile
-        registration has nudged the mosaic off its nominal layout.
+        Measures the pixel's offset from the centre of the grid-(0, 0) tile —
+        whose stage position is known — converts that to µm in image space, and
+        maps it back through the same axis transform used to assemble the
+        mosaic. Reading the stitcher's own canvas origin keeps this correct
+        when registration has nudged tiles off their nominal layout.
         """
         if self._stitcher is None or self._originXY is None or not self._gridPositions:
             return None
+
         canvas_row0, canvas_col0 = self._stitcher.canvas_origin_px
-        return (
-            self._originXY[0]
-            + (canvas_col0 - self._stitcher.tile_shape_px[1] / 2)
-            / self._stitcher.px_per_um_x,
-            self._originXY[1]
-            + (canvas_row0 - self._stitcher.tile_shape_px[0] / 2)
-            / self._stitcher.px_per_um_y,
-        )
+        tile_h, tile_w = self._stitcher.tile_shape_px
+
+        # Offset from the centre of the tile at image grid (0, 0), in pixels.
+        d_col = (col + canvas_col0) - tile_w / 2
+        d_row = (row + canvas_row0) - tile_h / 2
+
+        dx_um = d_col / self._stitcher.px_per_um_x
+        dy_um = d_row / self._stitcher.px_per_um_y
+
+        orientation = self.__dict__.get('_orientation', (False, False, False))
+        stage_dx, stage_dy = self._imageOffsetToStage(dx_um, dy_um, orientation)
+        return self._originXY[0] + stage_dx, self._originXY[1] + stage_dy
 
     def _moveStageToPixel(self, row: int, col: int) -> Optional[Tuple[float, float]]:
-        canvas_origin = self._canvasOrigin()
-        if canvas_origin is None:
+        target = self._canvasPixelToStage(row, col)
+        if target is None:
             return None
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
             return None
-        stage_x, stage_y = self._stitcher.pixel_to_stage(row, col, canvas_origin)
+        stage_x, stage_y = target
         axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
         positioner = self._master.positionersManager[tilingInfo.xyPositioner]
         positioner.setPosition(stage_x, axes[0])
