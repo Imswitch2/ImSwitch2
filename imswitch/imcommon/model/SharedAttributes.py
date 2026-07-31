@@ -2,6 +2,13 @@ import json
 
 from imswitch.imcommon.framework import Signal, SignalInterface
 
+# Sentinel prefix marking an HDF5/Zarr attribute value that was JSON-encoded
+# because the storage backend can't hold it natively (e.g. a dict or ragged
+# list). Written by RecordingManager's storers, decoded back here so values
+# like per-device ScanTTL timing maps survive a save/load round trip instead
+# of being silently dropped.
+JSON_ATTR_PREFIX = '__imswitch_json__:'
+
 
 class SharedAttributes(SignalInterface):
     sigAttributeSet = Signal(object, object)  # (key, value)
@@ -58,11 +65,49 @@ class SharedAttributes(SignalInterface):
     def fromHDF5File(cls, file, dataset):
         """ Loads the attributes from a HDF5 file into a SharedAttributes
         object. """
+        return cls._fromStructuredGroup(file[dataset])
+
+    @classmethod
+    def fromZarrStore(cls, root, dataset):
+        """ Loads the attributes from a Zarr store into a SharedAttributes
+        object. Twin of fromHDF5File for the Zarr recording layout. """
+        return cls._fromStructuredGroup(root[dataset])
+
+    @classmethod
+    def _fromStructuredGroup(cls, group):
+        """ Reads attrs from a detector group written by RecordingManager's
+        HDF5Storer/ZarrStorer: flat legacy attrs directly on the group, plus
+        the current structured ``metadata/<category>/`` subgroup layout. """
         attrs = cls()
-        for key, value in file[dataset].attrs.items():
-            keyTuple = tuple(key.split(':'))
-            attrs[keyTuple] = value
+        for key, value in dict(group.attrs).items():
+            cls._setFlatKey(attrs, key, value)
+
+        metaGroup = group.get('metadata') if hasattr(group, 'get') else None
+        if metaGroup is not None:
+            cls._collectMetadataAttrs(attrs, metaGroup, [])
         return attrs
+
+    @classmethod
+    def _collectMetadataAttrs(cls, attrs, group, prefix):
+        for key, value in dict(group.attrs).items():
+            cls._setFlatKey(attrs, ':'.join([*prefix, key]), value)
+        for name in group.keys():
+            child = group[name]
+            if hasattr(child, 'keys'):  # subgroup (h5py.Group / zarr.Group)
+                cls._collectMetadataAttrs(attrs, child, [*prefix, name])
+
+    @classmethod
+    def _setFlatKey(cls, attrs, key, value):
+        attrs[tuple(key.split(':'))] = cls._decodeAttrValue(value)
+
+    @staticmethod
+    def _decodeAttrValue(value):
+        if isinstance(value, str) and value.startswith(JSON_ATTR_PREFIX):
+            try:
+                return json.loads(value[len(JSON_ATTR_PREFIX):])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return value
+        return value
 
     @staticmethod
     def _validateKey(key):
