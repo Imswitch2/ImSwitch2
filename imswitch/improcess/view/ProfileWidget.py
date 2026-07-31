@@ -16,6 +16,7 @@ from imswitch.improcess.profile_helpers import (
     ExponentialFit,
     build_profile_record,
 )
+from imswitch.improcess.model.plotting import build_delta_x_record
 
 
 class ProfileWidget(QtWidgets.QWidget):
@@ -39,12 +40,19 @@ class ProfileWidget(QtWidgets.QWidget):
         self._last_kind = None
         self._last_payload: list[tuple[str, np.ndarray, np.ndarray]] = []
         self._current_record_inputs = []
+        self._measurementRegion: pg.LinearRegionItem | None = None
+        self._measurementValues: tuple[float, float] | None = None
 
         self.modeButtons = QtWidgets.QButtonGroup(self)
         self.panButton = self._makeModeButton("Pan", "pan", checked=True)
         self.lineButton = self._makeModeButton("Line", "line")
         self.rectangleButton = self._makeModeButton("Rectangle", "rectangle")
         self.clearButton = QtWidgets.QPushButton("Clear")
+        self.measureButton = QtWidgets.QPushButton("Measure Δx")
+        self.measureButton.setCheckable(True)
+        self.measureButton.setToolTip(
+            "Show two draggable vertical markers and measure their horizontal distance"
+        )
 
         self.widthSpinBox = QtWidgets.QSpinBox()
         self.widthSpinBox.setRange(1, 99)
@@ -62,6 +70,9 @@ class ProfileWidget(QtWidgets.QWidget):
         self.fitSummary = QtWidgets.QLabel("")
         self.fitSummary.setWordWrap(True)
         self.fitSummary.setStyleSheet("color:#888; font-size:8pt;")
+        self.measurementSummary = QtWidgets.QLabel("")
+        self.measurementSummary.setWordWrap(True)
+        self.measurementSummary.setStyleSheet("color:#b8860b; font-size:8pt;")
 
         self.plot = pg.PlotWidget()
         self.plot.showGrid(x=True, y=True, alpha=0.25)
@@ -73,6 +84,7 @@ class ProfileWidget(QtWidgets.QWidget):
         toolbar.addWidget(self.lineButton)
         toolbar.addWidget(self.rectangleButton)
         toolbar.addWidget(self.clearButton)
+        toolbar.addWidget(self.measureButton)
         toolbar.addSpacing(8)
         toolbar.addWidget(QtWidgets.QLabel("Width"))
         toolbar.addWidget(self.widthSpinBox)
@@ -88,11 +100,13 @@ class ProfileWidget(QtWidgets.QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(toolbar)
         layout.addWidget(self.plot, 1)
+        layout.addWidget(self.measurementSummary)
         layout.addWidget(self.fitSummary)
         self.setLayout(layout)
 
         self.modeButtons.buttonClicked.connect(self._modeChanged)
         self.clearButton.clicked.connect(self._clearShapes)
+        self.measureButton.toggled.connect(self._measurementToggled)
         self.widthSpinBox.valueChanged.connect(self._refresh)
         self.fitCombo.currentIndexChanged.connect(self._refresh)
         self.pushButton.clicked.connect(self._onPushToTable)
@@ -146,6 +160,9 @@ class ProfileWidget(QtWidgets.QWidget):
             self._plotRectangleProfiles(self._findFirstShape("rectangle"))
 
     def _drawEmpty(self):
+        self.measureButton.setChecked(False)
+        self.measureButton.setEnabled(False)
+        self._removeMeasurementRegion(clear_values=True)
         self._last_kind = None
         self._last_payload = []
         self._current_record_inputs = []
@@ -157,6 +174,7 @@ class ProfileWidget(QtWidgets.QWidget):
 
     def _plotLineProfile(self, endpoints):
         self._last_kind = "line"
+        self._removeMeasurementRegion(clear_values=False)
         self.plot.clear()
         self.plot.setTitle("Line Profile")
         self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
@@ -165,10 +183,12 @@ class ProfileWidget(QtWidgets.QWidget):
         self._current_record_inputs = []
 
         if endpoints is None:
+            self._setMeasurementAvailable(False)
             self.fitSummary.setText("")
             return
         image = self._currentImage2D()
         if image is None:
+            self._setMeasurementAvailable(False)
             self.fitSummary.setText("No image layer selected.")
             return
 
@@ -183,6 +203,7 @@ class ProfileWidget(QtWidgets.QWidget):
         r1, c1 = wr1 / row_scale, wc1 / col_scale
         profile = self._computeLineProfile(image, r0, c0, r1, c1, self.widthSpinBox.value())
         if profile is None:
+            self._setMeasurementAvailable(False)
             self.fitSummary.setText("")
             return
 
@@ -195,9 +216,11 @@ class ProfileWidget(QtWidgets.QWidget):
         unit = self._distanceUnit()
         self._current_record_inputs = [("line", x, profile, length_px, length_scaled, unit)]
         self._applyFits()
+        self._setMeasurementAvailable(True)
 
     def _plotRectangleProfiles(self, bounds):
         self._last_kind = "rectangle"
+        self._removeMeasurementRegion(clear_values=False)
         self.plot.clear()
         self.plot.setTitle("Rectangle Projections")
         self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
@@ -206,10 +229,12 @@ class ProfileWidget(QtWidgets.QWidget):
         self._current_record_inputs = []
 
         if bounds is None:
+            self._setMeasurementAvailable(False)
             self.fitSummary.setText("")
             return
         image = self._currentImage2D()
         if image is None:
+            self._setMeasurementAvailable(False)
             self.fitSummary.setText("No image layer selected.")
             return
 
@@ -225,6 +250,7 @@ class ProfileWidget(QtWidgets.QWidget):
         rlo, rhi = max(0, rlo), min(h, rhi)
         clo, chi = max(0, clo), min(w, chi)
         if rlo >= rhi or clo >= chi:
+            self._setMeasurementAvailable(False)
             self.fitSummary.setText("")
             return
 
@@ -247,6 +273,90 @@ class ProfileWidget(QtWidgets.QWidget):
             ("rectangle-y", y, y_profile, y_length_px, y_length_scaled, unit)
         ]
         self._applyFits()
+        self._setMeasurementAvailable(True)
+
+    def _setMeasurementAvailable(self, available: bool) -> None:
+        self.measureButton.setEnabled(bool(available))
+        if not available:
+            self.measureButton.setChecked(False)
+            self._removeMeasurementRegion(clear_values=True)
+        elif self.measureButton.isChecked():
+            self._addMeasurementRegion()
+
+    def _measurementToggled(self, enabled: bool) -> None:
+        if enabled and self._last_payload:
+            self._addMeasurementRegion()
+            return
+        self._removeMeasurementRegion(clear_values=True)
+
+    def _addMeasurementRegion(self) -> None:
+        x_range = self._profileXRange()
+        if x_range is None:
+            self._removeMeasurementRegion(clear_values=True)
+            return
+        self._removeMeasurementRegion(clear_values=False)
+        x_min, x_max = x_range
+        span = x_max - x_min
+        defaults = (x_min + span / 3.0, x_min + 2.0 * span / 3.0)
+        values = self._measurementValues or defaults
+        values = tuple(min(max(float(value), x_min), x_max) for value in values)
+        if values[1] <= values[0]:
+            values = defaults
+
+        region = pg.LinearRegionItem(
+            values=values,
+            orientation="vertical",
+            brush=pg.mkBrush(255, 215, 0, 45),
+            pen=pg.mkPen(255, 190, 0, width=2),
+            hoverBrush=pg.mkBrush(255, 215, 0, 75),
+            hoverPen=pg.mkPen(255, 225, 80, width=2),
+            movable=True,
+            bounds=(x_min, x_max),
+            swapMode="sort",
+        )
+        region.setZValue(20)
+        region.sigRegionChanged.connect(self._measurementChanged)
+        self.plot.addItem(region)
+        self._measurementRegion = region
+        self._measurementChanged()
+
+    def _removeMeasurementRegion(self, *, clear_values: bool) -> None:
+        region = self._measurementRegion
+        self._measurementRegion = None
+        if region is not None:
+            try:
+                self.plot.removeItem(region)
+            except Exception:
+                pass
+        if clear_values:
+            self._measurementValues = None
+        self.measurementSummary.clear()
+
+    def _measurementChanged(self) -> None:
+        region = self._measurementRegion
+        if region is None:
+            return
+        x_1, x_2 = sorted(float(value) for value in region.getRegion())
+        self._measurementValues = (x_1, x_2)
+        self.measurementSummary.setText(
+            f"x₁={x_1:.6g}  x₂={x_2:.6g}  Δx={x_2 - x_1:.6g}"
+        )
+
+    def _profileXRange(self) -> tuple[float, float] | None:
+        finite_ranges = []
+        for _name, x, _y in self._last_payload:
+            values = np.asarray(x, dtype=float).ravel()
+            values = values[np.isfinite(values)]
+            if values.size:
+                finite_ranges.append((float(values.min()), float(values.max())))
+        if not finite_ranges:
+            return None
+        x_min = min(start for start, _end in finite_ranges)
+        x_max = max(end for _start, end in finite_ranges)
+        if x_max <= x_min:
+            padding = max(abs(x_min) * 0.5, 0.5)
+            return x_min - padding, x_max + padding
+        return x_min, x_max
 
     def _applyFits(self):
         fit_id = self.fitCombo.currentData()
@@ -337,32 +447,41 @@ class ProfileWidget(QtWidgets.QWidget):
         if not self._current_record_inputs:
             return
         from imswitch.improcess.view.ResultsTableWidget import merge_columns
-        
-        records = []
-        for rec_input in self._current_record_inputs:
-            if len(rec_input) == 7:
-                kind, x, y, length_px, length_scaled, unit, fit_metrics = rec_input
-            else:
-                kind, x, y, length_px, length_scaled, unit = rec_input
-                fit_metrics = None
-            record = build_profile_record(kind, x, y, 
-                                        length_px=length_px, 
-                                        length_scaled=length_scaled, 
-                                        unit=unit, 
-                                        fit_metrics=fit_metrics)
-            records.append(record)
-        
+
+        records = self._buildOutputRecords()
+
         columns = []
         for record in records:
             columns = merge_columns(columns, record.keys())
-        
+
         self.sigResultPushed.emit(columns, records)
 
     def _onSaveCSV(self):
         if not self._current_record_inputs:
             return
         from imswitch.improcess.view.ResultsTableWidget import merge_columns, records_to_csv
-        
+
+        records = self._buildOutputRecords()
+
+        columns = []
+        for record in records:
+            columns = merge_columns(columns, record.keys())
+
+        filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save CSV", "", "CSV (*.csv)"
+        )
+        if not filepath:
+            return
+
+        csv_text = records_to_csv(columns, records)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(csv_text)
+        except Exception as e:
+            self.fitSummary.setText(f"Error saving CSV: {e}")
+
+    def _buildOutputRecords(self) -> list[dict]:
+        """Build profile/fit rows plus the optional manual Δx measurement."""
         records = []
         for rec_input in self._current_record_inputs:
             if len(rec_input) == 7:
@@ -370,29 +489,33 @@ class ProfileWidget(QtWidgets.QWidget):
             else:
                 kind, x, y, length_px, length_scaled, unit = rec_input
                 fit_metrics = None
-            record = build_profile_record(kind, x, y, 
-                                        length_px=length_px, 
-                                        length_scaled=length_scaled, 
-                                        unit=unit, 
-                                        fit_metrics=fit_metrics)
+            record = build_profile_record(
+                kind,
+                x,
+                y,
+                length_px=length_px,
+                length_scaled=length_scaled,
+                unit=unit,
+                fit_metrics=fit_metrics,
+            )
             records.append(record)
-        
-        columns = []
-        for record in records:
-            columns = merge_columns(columns, record.keys())
-        
-        filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save CSV", "", "CSV (*.csv)"
-        )
-        if not filepath:
-            return
-        
-        csv_text = records_to_csv(columns, records)
-        try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(csv_text)
-        except Exception as e:
-            self.fitSummary.setText(f"Error saving CSV: {e}")
+
+        if self._measurementValues is not None and self.measureButton.isChecked():
+            unit = (
+                str(self._current_record_inputs[0][5])
+                if self._current_record_inputs else "px"
+            )
+            title = (
+                "Line Profile" if self._last_kind == "line"
+                else "Rectangle Projections"
+            )
+            records.append(build_delta_x_record(
+                title,
+                f"Distance ({unit})",
+                *self._measurementValues,
+                kind="profile-delta-x",
+            ))
+        return records
 
     @staticmethod
     def _computeLineProfile(image, r0, c0, r1, c1, width=1):

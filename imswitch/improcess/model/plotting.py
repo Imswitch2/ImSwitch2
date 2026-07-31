@@ -31,18 +31,30 @@ class PlotPayload:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def build_delta_x_record(
+    title: str,
+    x_axis: str,
+    x_1: float,
+    x_2: float,
+    *,
+    kind: str = "graph-delta-x",
+) -> dict[str, Any]:
+    """Build one CSV/table-ready manual horizontal-distance measurement."""
+    start, end = sorted((float(x_1), float(x_2)))
+    return {
+        "kind": str(kind),
+        "plot": str(title),
+        "x_axis": str(x_axis or "x"),
+        "x_1": start,
+        "x_2": end,
+        "delta_x": end - start,
+    }
+
+
 def build_graph_delta_x_record(
     payload: PlotPayload,
     x_1: float,
     x_2: float,
 ) -> dict[str, Any]:
-    """Build one CSV/table-ready manual horizontal-distance measurement."""
-    start, end = sorted((float(x_1), float(x_2)))
-    return {
-        "kind": "graph-delta-x",
-        "plot": str(payload.title),
-        "x_axis": str(payload.x_label or "x"),
-        "x_1": start,
-        "x_2": end,
-        "delta_x": end - start,
-    }
+    """Build a manual horizontal-distance record for a graph payload."""
+    return build_delta_x_record(payload.title, payload.x_label, x_1, x_2)
