@@ -326,6 +326,25 @@ class CommunicationChannel(SignalInterface):
             for key, _controller in _recordingScanSourceMatches(controllers)
         ]
 
+    def getRecordingFolder(self):
+        """The output folder the Recording widget is currently pointed at.
+
+        The single place the operator sets "where my data goes", so anything
+        else that writes files should start from here rather than invent its
+        own root. Returns None when there is no Recording widget, leaving the
+        caller to fall back.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        controller = controllers.get('Recording')
+        getter = getattr(controller, 'getRecFolder', None)
+        if not callable(getter):
+            return None
+        try:
+            folder = getter()
+        except Exception:
+            return None
+        return str(folder) if folder else None
+
     def getScanSourceNames(self):
         """Widget keys of every controller a workflow could run one scan on.
 

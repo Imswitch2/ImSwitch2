@@ -13,7 +13,7 @@ from imswitch.imcontrol.model.workflows.spiral import spiral_moves
 from imswitch.imcontrol.model.workflows.tile_dataset import (
     TileDataset,
     TileRecord,
-    default_tiling_folder,
+    tiling_folder,
 )
 from imswitch.imcontrol.model.workflows.tile_registration import (
     RegistrationReport,
@@ -538,9 +538,7 @@ class TilingController(ImConWidgetController):
 
                 if save_tiles:
                     if saveFolder is None:
-                        saveFolder = default_tiling_folder(
-                            getattr(tilingInfo, 'measurementsRoot', None)
-                        )
+                        saveFolder = tiling_folder(self._saveRoot(tilingInfo))
                         saveFolder.mkdir(parents=True, exist_ok=True)
                         self._logger.info(f'Tiling: saving to {saveFolder}')
                         dataset.pixel_size_um = self._stitcher and (
@@ -938,6 +936,37 @@ class TilingController(ImConWidgetController):
             for name, info in self._setupInfo.positioners.items()
             if getattr(info, 'forScanning', False)
         }
+
+    def _saveRoot(self, tilingInfo):
+        """Where tiling datasets go, in order of precedence.
+
+        The Recording widget's folder wins: that is where the operator has
+        already said their data belongs, and having tiling invent a separate
+        root is how a run ends up written somewhere nobody looks (or, on
+        Windows, to a ``D:`` drive that may not exist).
+        """
+        configured = getattr(tilingInfo, 'measurementsRoot', '') or ''
+        if configured:
+            return configured
+
+        getFolder = getattr(self._commChannel, 'getRecordingFolder', None)
+        if callable(getFolder):
+            try:
+                folder = getFolder()
+            except Exception as e:
+                self._logger.warning(
+                    f'Tiling: could not read the recording folder: {e}'
+                )
+                folder = None
+            if folder:
+                return folder
+
+        self._logger.warning(
+            'Tiling: no recording folder available; falling back to the '
+            'default measurements root. Set the folder in the Recording '
+            'widget to control where tiling datasets are written.'
+        )
+        return None
 
     def _populateScanSources(self, preferredKey: str) -> None:
         """Offer the scan-source choice, but only when there is one to make."""

@@ -154,6 +154,78 @@ def test_write_creates_the_folder(tmp_path):
 
 
 # ----------------------------------------------------------------------
+# Where datasets are written
+# ----------------------------------------------------------------------
+
+
+def _controllerWithRecFolder(folder, configured=''):
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._logger = _Logger()
+    ctrl._commChannel = SimpleNamespace(
+        getRecordingFolder=lambda: folder
+    )
+    return ctrl, SimpleNamespace(measurementsRoot=configured)
+
+
+def test_save_root_follows_the_recording_widget():
+    """The operator sets the output folder in one place; tiling honours it."""
+    ctrl, tilingInfo = _controllerWithRecFolder('/data/today')
+
+    assert ctrl._saveRoot(tilingInfo) == '/data/today'
+
+
+def test_configured_root_overrides_the_recording_folder():
+    ctrl, tilingInfo = _controllerWithRecFolder('/data/today', '/explicit')
+
+    assert ctrl._saveRoot(tilingInfo) == '/explicit'
+
+
+def test_save_root_falls_back_when_no_recording_widget():
+    """Must not crash a run just because Recording is not loaded."""
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._logger = _Logger()
+    ctrl._commChannel = SimpleNamespace()
+
+    assert ctrl._saveRoot(SimpleNamespace(measurementsRoot='')) is None
+
+
+def test_save_root_falls_back_when_the_folder_is_blank():
+    ctrl, tilingInfo = _controllerWithRecFolder('')
+
+    assert ctrl._saveRoot(tilingInfo) is None
+
+
+def test_save_root_survives_a_raising_accessor():
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._logger = _Logger()
+
+    def _boom():
+        raise RuntimeError('widget gone')
+
+    ctrl._commChannel = SimpleNamespace(getRecordingFolder=_boom)
+
+    assert ctrl._saveRoot(SimpleNamespace(measurementsRoot='')) is None
+
+
+def test_tiling_folder_is_one_subfolder_per_run(tmp_path):
+    from imswitch.imcontrol.model.workflows.tile_dataset import tiling_folder
+
+    folder = tiling_folder(tmp_path)
+
+    assert folder.parent == tmp_path
+    assert folder.name.startswith('tiling_')
+
+
+def test_tiling_folder_without_a_base_uses_the_measurements_root():
+    from imswitch.imcontrol.model.workflows.tile_dataset import tiling_folder
+    from imswitch.imcontrol.model.workflows.paths import (
+        resolve_measurements_root,
+    )
+
+    assert tiling_folder(None).parent == resolve_measurements_root(None)
+
+
+# ----------------------------------------------------------------------
 # End to end
 # ----------------------------------------------------------------------
 
@@ -206,6 +278,7 @@ def _runSavingScan(tmp_path, monkeypatch, n_tiles=4, step_um=64.0):
         positioners={'STAGE': SimpleNamespace(axes=['X', 'Y'])},
         tiling=SimpleNamespace(saveFormat='TIFF'),
     )
+    ctrl._commChannel = SimpleNamespace(getRecordingFolder=lambda: str(tmp_path))
     ctrl._stopRequested = False
     ctrl._stitcher = None
     ctrl._originXY = None
@@ -225,7 +298,7 @@ def _runSavingScan(tmp_path, monkeypatch, n_tiles=4, step_um=64.0):
     )
     monkeypatch.setattr(
         'imswitch.imcontrol.controller.controllers.TilingController'
-        '.default_tiling_folder',
+        '.tiling_folder',
         lambda _root=None: tmp_path / 'run',
     )
 
@@ -322,6 +395,7 @@ def test_nothing_is_written_when_saving_is_off(tmp_path, monkeypatch):
         positioners={'STAGE': SimpleNamespace(axes=['X', 'Y'])},
         tiling=SimpleNamespace(saveFormat='TIFF'),
     )
+    ctrl._commChannel = SimpleNamespace(getRecordingFolder=lambda: str(tmp_path))
     for attr, value in (
         ('_stopRequested', False), ('_stitcher', None), ('_originXY', None),
         ('_gridPositions', []), ('_scanAcqHandle', None), ('_scanning', True),
@@ -337,7 +411,7 @@ def test_nothing_is_written_when_saving_is_off(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         'imswitch.imcontrol.controller.controllers.TilingController'
-        '.default_tiling_folder',
+        '.tiling_folder',
         lambda _root=None: tmp_path / 'run',
     )
 

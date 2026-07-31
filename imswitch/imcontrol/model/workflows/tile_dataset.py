@@ -136,12 +136,22 @@ class TileDataset:
         return path
 
 
-def default_tiling_folder(root: Optional[Path] = None) -> Path:
-    """``<root>/<YYYY_MM_DD>/tiling_<HHMMSS>`` — the house tiling convention."""
+def tiling_folder(base: Optional[Path | str] = None) -> Path:
+    """One folder per run: ``<base>/tiling_<YYYYMMDD_HHMMSS>``.
+
+    ``base`` should be the operator's configured output folder — a tiled
+    dataset is a folder with a manifest rather than a single file, so each run
+    gets its own subfolder there. Falls back to the headless-workflow
+    measurements root only when no base is given, which on Windows is a
+    hardcoded ``D:/Measurements`` that will not exist on most machines.
+    """
     from datetime import datetime
 
     from imswitch.imcontrol.model.workflows.paths import resolve_measurements_root
 
-    base = resolve_measurements_root(root)
-    now = datetime.now()
-    return Path(base) / now.strftime('%Y_%m_%d') / f'tiling_{now.strftime("%H%M%S")}'
+    root = Path(base).expanduser() if base else resolve_measurements_root(None)
+    return Path(root) / f'tiling_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+
+
+#: Deprecated alias kept for the headless workflow callers.
+default_tiling_folder = tiling_folder
