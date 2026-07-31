@@ -104,6 +104,10 @@ class ScpiCompatibleProfile:
     def disable_autostart(self, connection) -> None:
         send_command(connection, '@cobas 0')
 
+    def start_controller(self, connection) -> None:
+        """Start the controller's laser/TEC sequence under software control."""
+        send_command(connection, '@cob1')
+
     def master_off(self, connection) -> None:
         send_command(connection, 'l0')
 

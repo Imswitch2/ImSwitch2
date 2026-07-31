@@ -222,7 +222,9 @@ mock fallback.
             "managerName": "Cobolt0601NewLaserManager",
             "managerProperties": {
                 "digitalPorts": ["COM7"],
+                "protocolProfile": "cobolt.scpi-compatible",
                 "emissionControl": "master",
+                "startupControl": "external",
                 "scpiPowerUnit": "mW"
             },
             "wavelength": 561,
@@ -257,6 +259,18 @@ mock fallback.
        firmware that must not be stopped with ``l0``; it assumes the laser is
        otherwise externally started/armed. ``"auto"`` is diagnostic-only: it
        logs the detected command family and still resolves to ``"master"``.
+   * - ``protocolProfile``
+     - str
+     - ``"auto"`` (the default) selects a command profile using read-only
+       probes. A known controller can be pinned to ``"cobolt.legacy"`` or
+       ``"cobolt.scpi-compatible"``.
+   * - ``startupControl``
+     - str
+     - ``"external"`` (the default) never sends a software-start command.
+       ``"software"`` sends ``@cob1`` once after establishing the
+       modulation gate and requires ``emissionControl: "pause"`` so normal
+       off transitions do not undo the start with ``l0``. This is an explicit
+       per-laser setting and is never auto-detected.
    * - ``modulationPowerMw``
      - float
      - Digital-modulation setpoint used for the idle safe state.  Defaults to
@@ -294,6 +308,11 @@ for headless operation.
   ``"emissionControl": "pause"`` only when the controller is known to be
   externally started/armed and must not receive ``l0``.  ``"auto"`` is useful
   for logging/diagnosis, but intentionally keeps the master-off path.
+* A controller that requires ``@cob1`` should use the explicit combination
+  ``"protocolProfile": "cobolt.scpi-compatible"``,
+  ``"emissionControl": "pause"``, and
+  ``"startupControl": "software"``. Existing OEM pause-controlled units
+  that must not receive ``@cob1`` keep the default ``"external"`` value.
 
 **Source**
 
