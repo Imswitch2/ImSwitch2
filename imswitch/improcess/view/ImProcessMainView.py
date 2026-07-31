@@ -510,6 +510,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._connectResultPusher(self.profileWidget)
         self._connectResultPusher(self.roiStatsWidget)
+        self._connectResultPusher(self.graphWidget)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
