@@ -26,7 +26,7 @@ def default_params():
         'device': 'CPU',
         'n_timepoints': 1,
         'c_px': 100.0,
-        'alpha_deg': 35.0,
+        'alpha_deg': 30.0,
         'dy': 210.0,
         'sample_vx_size': 200.0,
         'camera_offset': 0.0,

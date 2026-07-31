@@ -13,10 +13,10 @@ import numpy as np
 
 _logger = logging.getLogger(__name__)
 
-# Defaults from Mini_Recon
+# ImProcess defaults, originally based on Mini_Recon.
 DEFAULT_PARAMS = {
     "c_px": 100.0,              # nm
-    "alpha_deg": 35.0,          # degrees
+    "alpha_deg": 30.0,          # degrees
     "dy": 210.0,                # nm
     "sample_vx_size": 200.0,    # nm
     "camera_offset": 100.0,     # ADU
@@ -27,28 +27,23 @@ DEFAULT_PARAMS = {
 }
 
 
-def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
+def snouty_param_overrides_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
+    """Return only SNOUTY parameters explicitly represented in ``attrs``.
+
+    The sparse result is used by the parameter widget when the selected
+    dataset changes.  Keeping it sparse prevents absent metadata from
+    resetting user-entered values to application defaults.
+
+    ``ScanStage:positive_direction`` is deliberately not interpreted here:
+    stage direction and the deskew processor's plane-order flip are separate
+    concepts.
     """
-    Extract SNOUTY deskew parameters from ImSwitch HDF5 attributes.
-
-    Args:
-        attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes)
-
-    Returns:
-        Parameter dict with keys: c_px, alpha_deg, dy, sample_vx_size,
-        camera_offset, flip_data, cycles, planes_in_cycle, restack.
-        Missing keys are filled with Mini_Recon defaults.
-
-    Examples:
-        >>> attrs = {"Detector:Cam:Param:Camera pixel size": 0.108}
-        >>> snouty_params_from_attrs(attrs)
-        {'c_px': 108.0, 'alpha_deg': 35.0, ...}
-    """
-    params = DEFAULT_PARAMS.copy()
+    params: dict[str, Any] = {}
     _found: dict[str, Any] = {}   # collects what was actually read, for debug log
 
     _logger.debug(
-        "snouty_params_from_attrs: inspecting %d attribute keys", len(attrs)
+        "snouty_param_overrides_from_attrs: inspecting %d attribute keys",
+        len(attrs),
     )
 
     # ------------------------------------------------------------------
@@ -61,9 +56,6 @@ def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     #   2. Detector:*:Pixel size                  — array µm [z, y, x]
     #      e.g. "Detector:Orca:Pixel size": array([1., 0.1, 0.1])
     #      lateral pixel = last element (x-axis)
-    #
-    # The regex uses a greedy middle segment (?:.*:)? to tolerate any number
-    # of intermediate sub-keys (e.g. "Param").
     # ------------------------------------------------------------------
     c_px_um = None
 
@@ -108,9 +100,7 @@ def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
         params["c_px"] = c_px_um * 1000.0   # µm → nm
         _found["c_px_nm"] = params["c_px"]
 
-    # ------------------------------------------------------------------
-    # Scan step  (dy): MS-RESOLFT_Scan:cycleStepSizeUm  [µm → nm]
-    # ------------------------------------------------------------------
+    # Scan step (dy): MS-RESOLFT_Scan:cycleStepSizeUm [µm → nm]
     dy_val = attrs.get("MS-RESOLFT_Scan:cycleStepSizeUm")
     if dy_val is not None:
         try:
@@ -120,9 +110,6 @@ def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError) as exc:
             _logger.debug("  dy: could not convert %r: %s", dy_val, exc)
 
-    # ------------------------------------------------------------------
-    # MS-RESOLFT cycles
-    # ------------------------------------------------------------------
     cycles_val = attrs.get("MS-RESOLFT_Scan:cycleSteps")
     if cycles_val is not None:
         try:
@@ -131,9 +118,6 @@ def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError) as exc:
             _logger.debug("  cycles: could not convert %r: %s", cycles_val, exc)
 
-    # ------------------------------------------------------------------
-    # Planes per cycle
-    # ------------------------------------------------------------------
     planes_val = attrs.get("MS-RESOLFT_Scan:roSteps")
     if planes_val is not None:
         try:
@@ -142,25 +126,34 @@ def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError) as exc:
             _logger.debug("  planes_in_cycle: could not convert %r: %s", planes_val, exc)
 
-    # ------------------------------------------------------------------
-    # Flip data: ScanStage:positive_direction
-    # The attribute is usually a bool array; index 0 is the primary scan axis.
-    # ------------------------------------------------------------------
-    flip_val = attrs.get("ScanStage:positive_direction")
-    if flip_val is not None:
-        try:
-            params["flip_data"] = bool(np.asarray(flip_val).flat[0])
-            _found["flip_data"] = params["flip_data"]
-        except (TypeError, ValueError, IndexError) as exc:
-            _logger.debug("  flip_data: could not convert %r: %s", flip_val, exc)
-
-    # ------------------------------------------------------------------
-    # Summary debug log
-    # ------------------------------------------------------------------
     _logger.debug(
-        "snouty_params_from_attrs: resolved from file: %s",
+        "snouty_param_overrides_from_attrs: resolved from file: %s",
         {k: v for k, v in _found.items()},
     )
+    return params
+
+
+def snouty_params_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extract SNOUTY deskew parameters from ImSwitch HDF5 attributes.
+
+    Args:
+        attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes)
+
+    Returns:
+        Parameter dict with keys: c_px, alpha_deg, dy, sample_vx_size,
+        camera_offset, flip_data, cycles, planes_in_cycle, restack.
+        Missing keys are filled with the ImProcess defaults.  Dataset-change
+        handling uses :func:`snouty_param_overrides_from_attrs` directly so
+        missing metadata does not reset values in the widget.
+
+    Examples:
+        >>> attrs = {"Detector:Cam:Param:Camera pixel size": 0.108}
+        >>> snouty_params_from_attrs(attrs)
+        {'c_px': 108.0, 'alpha_deg': 30.0, ...}
+    """
+    params = DEFAULT_PARAMS.copy()
+    params.update(snouty_param_overrides_from_attrs(attrs))
     _logger.debug(
         "snouty_params_from_attrs: final params: "
         "c_px=%.1f nm  alpha_deg=%.1f°  dy=%.1f nm  sample_vx=%.1f nm  "
