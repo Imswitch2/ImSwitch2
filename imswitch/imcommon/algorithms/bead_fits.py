@@ -247,6 +247,195 @@ class DonutR2Gaussian(FitModel):
         }
 
 
+class Exponential2D(FitModel):
+    """Isotropic 2D exponential decay from a fitted center.
+
+    ``I(x, y) = A * exp(-r / decay_length) + B``, where
+    ``r = sqrt((x - x0)^2 + (y - y0)^2)``.
+
+    Parameters: amplitude, x0, y0, decay_length, offset.
+    """
+
+    @property
+    def name(self) -> str:
+        return "exponential2d"
+
+    @property
+    def param_names(self) -> tuple[str, ...]:
+        return ("amplitude", "x0", "y0", "decay_length", "offset")
+
+    def initial_guess(self, image: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
+        """Estimate the center from baseline-subtracted intensity moments."""
+        height, width = image.shape
+        offset = float(np.min(image))
+        weights = np.maximum(np.asarray(image, dtype=float) - offset, 0.0)
+        if mask is not None:
+            weights = np.where(mask, weights, 0.0)
+
+        y_coords, x_coords = np.indices(image.shape)
+        total = float(np.sum(weights))
+        if total <= 0:
+            x0 = (width - 1) / 2.0
+            y0 = (height - 1) / 2.0
+        else:
+            x0 = float(np.sum(x_coords * weights) / total)
+            y0 = float(np.sum(y_coords * weights) / total)
+
+        amplitude = float(np.ptp(image))
+        decay_length = max(min(width, height) / 4.0, 0.1)
+        return np.array([amplitude, x0, y0, decay_length, offset])
+
+    def model(
+        self, xy: tuple[np.ndarray, np.ndarray], *params
+    ) -> np.ndarray:
+        """Evaluate the radial exponential at mesh coordinates."""
+        amplitude, x0, y0, decay_length, offset = params
+        x, y = xy
+        radius = np.hypot(x - x0, y - y0)
+        return amplitude * np.exp(-radius / decay_length) + offset
+
+    def bounds(
+        self, image: np.ndarray, mask: np.ndarray | None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return bounds for a positive exponential peak and free baseline."""
+        height, width = image.shape
+        value_range = float(np.ptp(image))
+        lower = np.array([0, 0, 0, 0.1, -np.inf])
+        upper = np.array(
+            [2 * value_range, width, height, max(width, height), np.inf]
+        )
+        return lower, upper
+
+    def summary(self, params: dict[str, float]) -> dict[str, object]:
+        """Return the radial decay and full width at half maximum."""
+        decay_length = params["decay_length"]
+        half_max_radius = decay_length * np.log(2)
+        return {
+            "decay_length": decay_length,
+            "half_max_radius": half_max_radius,
+            "fwhm": 2 * half_max_radius,
+        }
+
+
+class Sine1D(FitModel):
+    """A one-dimensional sine wave at an arbitrary image-plane angle.
+
+    ``I(x, y) = A * sin(2*pi*u/lambda + phi) + B``, with
+    ``u = x*cos(theta) + y*sin(theta)``. ``theta`` is therefore the direction
+    in which the phase advances; the visible stripe direction is perpendicular
+    to it.
+
+    Parameters: amplitude, wavelength, theta (radians), phase, offset.
+    """
+
+    wants_full_image = True
+
+    @property
+    def name(self) -> str:
+        return "sine1d"
+
+    @property
+    def param_names(self) -> tuple[str, ...]:
+        return ("amplitude", "wavelength", "theta", "phase", "offset")
+
+    def initial_guess(self, image: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
+        """Estimate wavelength, orientation, and phase from the dominant FFT peak."""
+        height, width = image.shape
+        offset = float(np.mean(image))
+        data = np.asarray(image, dtype=float) - offset
+
+        spectrum = np.fft.fft2(data)
+        magnitude = np.abs(spectrum)
+        freq_y = np.fft.fftfreq(height)
+        freq_x = np.fft.fftfreq(width)
+        fy_grid, fx_grid = np.meshgrid(freq_y, freq_x, indexing="ij")
+
+        # Keep one member of each conjugate pair. This convention gives theta
+        # in [-pi/2, pi/2] initially while still supporting a purely y-directed
+        # wave (fx == 0).
+        canonical_half_plane = (fx_grid > 0) | (
+            np.isclose(fx_grid, 0) & (fy_grid > 0)
+        )
+        search = np.where(canonical_half_plane, magnitude, 0.0)
+        search[0, 0] = 0.0
+        ky, kx = np.unravel_index(int(np.argmax(search)), search.shape)
+
+        fx = float(freq_x[kx])
+        fy = float(freq_y[ky])
+        spatial_frequency = float(np.hypot(fx, fy))
+        wavelength = (
+            1.0 / spatial_frequency
+            if spatial_frequency > 0
+            else float(max(width, height))
+        )
+        theta = float(np.arctan2(fy, fx))
+
+        # For numpy's exp(-i*2*pi*k*n/N) convention, the positive-frequency
+        # coefficient of sin(2*pi*f*n + phi) has angle phi - pi/2.
+        phase = float(np.angle(spectrum[ky, kx]) + np.pi / 2)
+        phase = float((phase + np.pi) % (2 * np.pi) - np.pi)
+        amplitude = float(np.sqrt(2) * np.std(data))
+
+        return np.array([amplitude, wavelength, theta, phase, offset])
+
+    def model(
+        self, xy: tuple[np.ndarray, np.ndarray], *params
+    ) -> np.ndarray:
+        """Evaluate the oriented one-dimensional sine pattern."""
+        amplitude, wavelength, theta, phase, offset = params
+        x, y = xy
+        u = x * np.cos(theta) + y * np.sin(theta)
+        return amplitude * np.sin(2 * np.pi * u / wavelength + phase) + offset
+
+    def bounds(
+        self, image: np.ndarray, mask: np.ndarray | None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return bounds spanning all distinct image-plane orientations."""
+        height, width = image.shape
+        value_range = float(np.ptp(image))
+        max_wavelength = 4.0 * max(width, height)
+        lower = np.array([0, 2.0, -np.pi, -2 * np.pi, -np.inf])
+        upper = np.array(
+            [2 * value_range, max_wavelength, np.pi, 2 * np.pi, np.inf]
+        )
+        return lower, upper
+
+    def summary(self, params: dict[str, float]) -> dict[str, object]:
+        """Return wavelength and both phase-gradient and stripe angles."""
+        wavelength = params["wavelength"]
+        theta_degrees = float(np.degrees(params["theta"]))
+        return {
+            "wavelength": wavelength,
+            "spatial_frequency": 1.0 / wavelength,
+            "theta_degrees": theta_degrees,
+            "stripe_angle_degrees": theta_degrees + 90.0,
+            "phase_degrees": np.degrees(params["phase"]),
+        }
+
+    def center_px(
+        self, params: dict[str, float], shape: tuple[int, int]
+    ) -> tuple[float, float]:
+        """Return the point nearest image center on the closest sine maximum."""
+        height, width = shape
+        center_x = (width - 1) / 2.0
+        center_y = (height - 1) / 2.0
+        theta = params["theta"]
+        wavelength = params["wavelength"]
+        phase = params["phase"]
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        center_u = center_x * cos_theta + center_y * sin_theta
+        base_u = wavelength * (np.pi / 2 - phase) / (2 * np.pi)
+        period_index = round((center_u - base_u) / wavelength)
+        maximum_u = base_u + period_index * wavelength
+        displacement = maximum_u - center_u
+        return (
+            center_y + displacement * sin_theta,
+            center_x + displacement * cos_theta,
+        )
+
+
 class Sine2D(FitModel):
     """Crossed standing-wave pattern: I(x,y) = A * sin(2πx/λx + φx) * sin(2πy/λy + φy) + B.
 
@@ -368,5 +557,7 @@ class Sine2D(FitModel):
 FIT_MODELS: dict[str, FitModel] = {
     "gaussian2d": Gaussian2D(),
     "donut_r2_gaussian": DonutR2Gaussian(),
+    "exponential2d": Exponential2D(),
+    "sine1d": Sine1D(),
     "sine2d": Sine2D(),
 }

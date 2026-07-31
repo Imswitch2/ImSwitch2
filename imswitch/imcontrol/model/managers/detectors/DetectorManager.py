@@ -508,8 +508,6 @@ class DetectorManager(SignalInterface):
             if self._chunkConsumers:
                 newFrames = self.getChunk()
                 self._distributeChunkLocked(newFrames)
-                if newFrames is not None and len(newFrames) > 0:
-                    self.__image = np.asarray(newFrames[-1])
                 return self.__image
 
             try:
@@ -522,9 +520,16 @@ class DetectorManager(SignalInterface):
             return frame
 
     def _distributeChunkLocked(self, newFrames) -> None:
-        """Fan a hardware chunk out; caller holds _chunkConsumersLock."""
+        """Latch and fan out a hardware chunk; caller holds the broker lock.
+
+        Any broker participant may be the one that drains the hardware queue.
+        Keep the display/focus ``latest frame`` view in sync with that drain so
+        a faster chunk consumer (for example BeadRec) cannot leave latest-frame
+        readers returning a stale image indefinitely.
+        """
         if newFrames is None or len(newFrames) == 0:
             return
+        self.__image = np.asarray(newFrames[-1])
         for key, consumerQueue in self._chunkConsumers.items():
             consumerQueue.extend(newFrames)
             excess = len(consumerQueue) - MAX_QUEUED_CONSUMER_FRAMES

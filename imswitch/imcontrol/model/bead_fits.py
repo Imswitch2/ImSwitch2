@@ -9,17 +9,21 @@ existing ``imswitch.imcontrol.model.bead_fits`` imports keep working.
 from imswitch.imcommon.algorithms.bead_fits import (  # noqa: F401
     FIT_MODELS,
     DonutR2Gaussian,
+    Exponential2D,
     FitModel,
     FitResult,
     Gaussian2D,
+    Sine1D,
     Sine2D,
 )
 
 __all__ = [
     "FIT_MODELS",
     "DonutR2Gaussian",
+    "Exponential2D",
     "FitModel",
     "FitResult",
     "Gaussian2D",
+    "Sine1D",
     "Sine2D",
 ]

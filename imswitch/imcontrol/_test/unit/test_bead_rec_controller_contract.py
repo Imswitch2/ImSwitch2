@@ -10,6 +10,9 @@ ROOT = Path(__file__).resolve().parents[4]
 BEAD_REC_CONTROLLER_PATH = (
     ROOT / 'imswitch' / 'imcontrol' / 'controller' / 'controllers' / 'BeadRecController.py'
 )
+BEAD_REC_WIDGET_PATH = (
+    ROOT / 'imswitch' / 'imcontrol' / 'view' / 'widgets' / 'BeadRecWidget.py'
+)
 
 
 def _stub_lifecycle(ctrl):
@@ -56,6 +59,13 @@ def test_bead_rec_center_query_and_donut_plotting_use_model_analysis():
     # Plotting must not block the GUI event loop from the controller
     assert 'plt.show()' not in source
     assert 'import matplotlib.pyplot' not in source
+
+
+def test_bead_rec_widget_exposes_new_shared_fit_models():
+    source = BEAD_REC_WIDGET_PATH.read_text()
+
+    assert '"Exponential 2D", "exponential2d"' in source
+    assert '"Sine 1D (angled)", "sine1d"' in source
 
 
 def test_bead_worker_uses_narrow_callables_instead_of_controller_access():

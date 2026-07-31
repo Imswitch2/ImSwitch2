@@ -74,6 +74,8 @@ class BeadRecWidget(Widget):
         self.fitModelCombo = QtWidgets.QComboBox()
         self.fitModelCombo.addItem("Gaussian 2D", "gaussian2d")
         self.fitModelCombo.addItem("Donut r²·Gaussian", "donut_r2_gaussian")
+        self.fitModelCombo.addItem("Exponential 2D", "exponential2d")
+        self.fitModelCombo.addItem("Sine 1D (angled)", "sine1d")
         self.fitModelCombo.addItem("Sine 2D", "sine2d")
         self.fitModelCombo.addItem("Legacy donut", "legacy_donut")
         self.runFitBtn = guitools.BetterPushButton('Run fit')
