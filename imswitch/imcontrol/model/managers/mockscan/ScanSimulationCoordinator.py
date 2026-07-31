@@ -16,7 +16,8 @@ class SimulatedScanPlan:
     samplesTotal: int
 
     @classmethod
-    def fromScan(cls, setupInfo, signalDict, scanInfoDict):
+    def fromScan(cls, setupInfo, signalDict, scanInfoDict,
+                 detectorIsArmed=None):
         ttlDict = (signalDict or {}).get('TTLCycleSignalsDict', {}) or {}
         try:
             imgDims = list((scanInfoDict or {}).get('img_dims', []) or [])
@@ -28,10 +29,27 @@ class SimulatedScanPlan:
         sampleRate = float(getattr(setupInfo.scan, 'sampleRate', 0) or 0)
         duration = samplesTotal / sampleRate if sampleRate > 0 else 0.0
 
+        # Detectors the scan coordinator deliberately left out of this scan.
+        # Simulating frames for them would hand the recorder data that real
+        # hardware would never produce, which is exactly the divergence the
+        # mock setup exists to avoid. Absent key = legacy scan = nothing
+        # excluded.
+        excluded = set((scanInfoDict or {}).get('excludedDetectors', []) or [])
+
         frameCounts = {}
         for detectorName, detectorInfo in (setupInfo.detectors or {}).items():
             if not getattr(detectorInfo, 'forAcquisition', True):
                 continue
+            if detectorName in excluded:
+                continue
+            if detectorIsArmed is not None:
+                try:
+                    if not detectorIsArmed(detectorName):
+                        continue
+                except Exception:
+                    # A state provider that cannot resolve the detector is not
+                    # evidence that hardware would have produced a frame.
+                    continue
 
             nFrames = cls._countRisingEdges(ttlDict.get(detectorName))
             if nFrames <= 0:
@@ -67,11 +85,15 @@ class ScanSimulationCoordinator(SignalInterface):
     sigFrameTrigger = Signal(str, int)
     sigDone = Signal()
 
-    def __init__(self, setupInfo):
+    def __init__(self, setupInfo, detectorIsArmed=None):
         super().__init__()
         self._setupInfo = setupInfo
+        self._detectorIsArmed = detectorIsArmed
         self._worker = None
         self._activePlan = None
+
+    def setDetectorStateProvider(self, detectorIsArmed):
+        self._detectorIsArmed = detectorIsArmed
 
     @property
     def activePlan(self):
@@ -88,7 +110,8 @@ class ScanSimulationCoordinator(SignalInterface):
     def start(self, signalDict, scanInfoDict):
         self.stop(wait=True)
         self._activePlan = SimulatedScanPlan.fromScan(
-            self._setupInfo, signalDict, scanInfoDict
+            self._setupInfo, signalDict, scanInfoDict,
+            detectorIsArmed=self._detectorIsArmed,
         )
         self._worker = SimulatedScanWorker(self._activePlan)
         self._worker.sigFrameTrigger.connect(self.sigFrameTrigger)

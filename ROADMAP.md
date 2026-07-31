@@ -81,6 +81,38 @@ manually tuned offsets and magic numbers, especially for fast scans.
 - ⬜ Add structured logging for all DAQ operations
 - ⬜ Create integration tests with mock hardware
 
+**Point-scan confocal/STED live-acquisition efficiency**
+(branch `perf/pointscan-confocal-sted`; see
+[docs/pointscan-confocal-sted-performance.md](docs/pointscan-confocal-sted-performance.md)):
+
+- 🔄 **Repeat-checkbox crash + choppy live preview (landed, uncommitted).**
+  The *Repeat* re-arm re-entered `nidaqManager.runScan` from inside the
+  `sigScanDone` handler — recreating NI-DAQ `WaitThread`s / detector QThreads
+  while the previous ones were still finishing (QThread destroyed while
+  running → crash on hardware). Now deferred via
+  `SuperScanController._armRepeatScan` (`QTimer.singleShot`, guarded by
+  `_repeatPending` + `_shouldContinueRepeat`), applied to Advanced / PointScan /
+  Base / MoNaLISA. Live preview redraws moved off the shape-dependent random
+  gate onto a deterministic `LiveDisplayThrottle` (20 Hz, config-tunable).
+  13 new tests; full scan/detector/galvo/triggerscope suites green. **Needs rig
+  validation before commit.**
+- ⬜ **Detector acquisition ownership & selection (DRAFT v4 — under review).**
+  Complete ImSwitch's half-built acquisition-handle system into detector-scoped
+  refcounted **leases** — one rule: *a detector acquires iff it holds a lease*.
+  Live view, scans, recording, focus lock and workflows each lease the detectors
+  they need; the user's "which detectors acquire" selection seeds the live-view
+  and scan leases. This dissolves the earlier `acquisitionActive` flag / effective
+  predicate, fixes latent acquisition-ownership bugs (focus-lock camera stopped by
+  another consumer; CamFacade), and lets a deselected point detector skip the scan
+  entirely — cutting the per-scan cost of a 1000×1000 z-stack/timelapse when only
+  one detector is wanted. Full design + code-dive findings + review history + phased
+  plan:
+  [docs/design/plans/detector-acquisition-selection.md](docs/design/plans/detector-acquisition-selection.md).
+- ⬜ **Further point-scan efficiency follow-ups (documented, rig-gated):**
+  per-line `d2Step` event batching, `getLatestFrame(is_save=True)` sending the
+  raw stack to the live view, and a configurable TimeTagger live-preview cadence
+  for STED tuning.
+
 ---
 
 ## Milestone 10: Recording Manager Upgrade 🔄 (almost done)

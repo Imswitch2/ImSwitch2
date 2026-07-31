@@ -75,8 +75,9 @@ class ScanManagerTriggerScope(SuperScanManager):
         handler = dispatch.get(scan_type)
         if handler is None:
             self._logger.error(f'Unknown TriggerScope scan type "{scan_type}"')
-            return
+            return False
         handler(parameterDict)
+        return True
 
     # ------------------------------------------------------------------
     # Private scan sequence methods
@@ -87,6 +88,28 @@ class ScanManagerTriggerScope(SuperScanManager):
 
     def _send(self, cmd):
         self._ts.send(cmd)
+
+    def _startFirmwareScan(self, command):
+        """Announce the scan boundary, then command the firmware.
+
+        The order matters. ``sigScanStarted`` is what consumers use as the
+        "frames from here on belong to this scan" boundary -- BeadRec
+        registers its detector chunk consumer in that slot, which excludes
+        every frame captured before it. Emitting AFTER the command let the
+        firmware trigger the camera first, so those first frames were
+        excluded from the reconstruction and it came out shifted by a few
+        pixels.
+
+        ``sigScanStarting`` cannot serve as the boundary either: it fires
+        before the parameter upload, and ``setParameter`` sleeps 50 ms per
+        parameter, so it precedes the scan command by roughly a second. A
+        free-running camera would deposit a second of backlog into the
+        reconstruction -- the same bug with the sign flipped. Emitting here
+        leaves only the slot dispatch itself, during which the firmware is
+        provably still idle because it has not been told to scan yet.
+        """
+        self._ts.sigScanStarted.emit()
+        self._send(command)
 
     def _chanDAC(self, deviceName):
         return self._ts.deviceInfo[deviceName]['DACChannel']
@@ -106,8 +129,7 @@ class ScanManagerTriggerScope(SuperScanManager):
         for key, value in params['scanParameters'].items():
             self._setParam(key, value)
         self._logger.debug('Parameters set')
-        self._send('pLS-RESOLFT_SCAN')
-        self._ts.sigScanStarted.emit()
+        self._startFirmwareScan('pLS-RESOLFT_SCAN')
 
     # ---- pLS-RESOLFT multicolor --------------------------------------
 
@@ -125,8 +147,7 @@ class ScanManagerTriggerScope(SuperScanManager):
         for key, value in params['scanParameters'].items():
             self._setParam(key, value)
         self._logger.debug('Parameters set')
-        self._send('pLS-RESOLFT-Multicolor_SCAN')
-        self._ts.sigScanStarted.emit()
+        self._startFirmwareScan('pLS-RESOLFT-Multicolor_SCAN')
 
     # ---- galvo detection scan ----------------------------------------
 
@@ -141,8 +162,7 @@ class ScanManagerTriggerScope(SuperScanManager):
         for key, value in params['scanParameters'].items():
             self._setParam(key, value)
         self._logger.debug('Parameters set')
-        self._send('galvo_Detection_SCAN')
-        self._ts.sigScanStarted.emit()
+        self._startFirmwareScan('galvo_Detection_SCAN')
 
     # ---- multicolor scan ---------------------------------------------
 
@@ -160,8 +180,7 @@ class ScanManagerTriggerScope(SuperScanManager):
         for key, value in params['scanParameters'].items():
             self._setParam(key, value)
         self._logger.debug('Parameters set')
-        self._send('multicolor_SCAN')
-        self._ts.sigScanStarted.emit()
+        self._startFirmwareScan('multicolor_SCAN')
 
     # ---- raster scan -------------------------------------------------
 
@@ -193,8 +212,7 @@ class ScanManagerTriggerScope(SuperScanManager):
 
         self._setParam('angleRad', np.deg2rad(0))
         self._logger.debug('Parameters set')
-        self._send('RASTER_SCAN')
-        self._ts.sigScanStarted.emit()
+        self._startFirmwareScan('RASTER_SCAN')
 
     # ---- LS-XY-RESOLFT scan ------------------------------------------
 
@@ -211,8 +229,7 @@ class ScanManagerTriggerScope(SuperScanManager):
         for key, value in params['scanParameters'].items():
             self._setParam(key, value)
         self._logger.debug('Parameters set')
-        self._send('LS-XY-RESOLFT_SCAN')
-        self._ts.sigScanStarted.emit()
+        self._startFirmwareScan('LS-XY-RESOLFT_SCAN')
         self._logger.debug('LSXYR scanParameters=%s deviceParameters=%s',
                            params.get('scanParameters'), params.get('deviceParameters'))
 

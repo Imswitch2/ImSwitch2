@@ -74,6 +74,50 @@ CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 MAX_QUEUED_CONSUMER_FRAMES = 1000
 
 
+def scanPixelSizesToZYX(pixel_sizes: List[float]) -> List[float]:
+    """ Convert a scan's per-axis step sizes into ``DetectorManager.pixelSizeUm``.
+
+    Scan designers publish ``scanInfoDict['pixel_sizes']`` in scan-axis order,
+    low dim to high dim -- ``[x, y]`` for a 2D scan and ``[x, y, z]`` when a
+    slow axis is active. ``pixelSizeUm`` is the opposite convention and always
+    exactly three entries: ``[Z, Y, X]``, with a non-scanned ``Z`` set to 1.
+
+    Every scan-driven detector must funnel through this, because the two
+    orderings are indistinguishable whenever the steps happen to be equal --
+    which is the common case, so a transposition here survives casual testing
+    and only shows up as a wrong pixel size in a saved file.
+    """
+    sizes = list(pixel_sizes or [])
+    x = float(sizes[0]) if len(sizes) > 0 else 1.0
+    y = float(sizes[1]) if len(sizes) > 1 else x
+    z = float(sizes[2]) if len(sizes) > 2 else 1.0
+    return [z, y, x]
+
+
+def configuredCameraPixelSize(managerProperties) -> Optional[float]:
+    """ The sample-plane pixel size the setup file declares, or ``None``.
+
+    ``None`` means "the setup file does not usably declare one" -- the key is
+    absent, misspelled, or unparseable. Callers must treat all three the same:
+    the runtime value is then a default, not a configured calibration, so it is
+    the user's to set and to persist.
+    """
+    try:
+        raw = managerProperties.get(CAMERA_PIXEL_SIZE_KEY, None)
+    except AttributeError:
+        return None  # e.g. managerProperties is None
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+class ChunkConsumerOverflowError(RuntimeError):
+    """A consumer fell behind and lost frames from its broker queue."""
+
+
 class DetectorManager(SignalInterface):
     """ Abstract base class for managers that control detectors. Each type of
     detector corresponds to a manager derived from this class. """
@@ -127,9 +171,8 @@ class DetectorManager(SignalInterface):
                 valueUnits='µm', editable=True,
             )
 
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
+        value = configuredCameraPixelSize(properties)
+        if value is None:
             # e.g. "0,082" typed with a decimal comma.
             logger.warning(
                 f'Manager property "{CAMERA_PIXEL_SIZE_KEY}" is {raw!r}, which'
@@ -183,6 +226,7 @@ class DetectorManager(SignalInterface):
         # Multi-consumer chunk distribution state (see readChunk)
         self._chunkConsumers = {}
         self._chunkConsumersWarned = set()
+        self._chunkConsumersOverflowed = set()
         self._chunkConsumersLock = Lock()
 
         self.__forAcquisition = detectorInfo.forAcquisition
@@ -191,12 +235,30 @@ class DetectorManager(SignalInterface):
             raise ValueError('At least one of forAcquisition and forFocusLock must be set in'
                              ' DetectorInfo.')
 
+        # Acquisition-ownership mirrors — read-only for managers, written ONLY
+        # by the DetectorsManager lease table (never conflate the two: leased
+        # is bookkeeping, faulted is uncertain hardware state after a failed
+        # stop).
+        self._acquisitionLeased = False
+        self._hardwareFaulted = False
+
+        # Parameters whose authoritative value is the setup file, not the
+        # runtime. Saved widget state must neither capture nor restore these:
+        # a value the user edited into the config only takes effect if it wins
+        # over whatever the last session happened to be running with.
+        self.__configOwnedParameters = frozenset(
+            name for name in (CAMERA_PIXEL_SIZE_PARAM,)
+            if name in self.__parameters
+            and configuredCameraPixelSize(
+                getattr(detectorInfo, 'managerProperties', None)) is not None
+        )
+
         self.setBinning(supportedBinnings[0])
 
     def updateLatestFrame(self, init):
         """ :meta private: """
         try:
-            self.__image = self.getLatestFrame()
+            self.__image = self.getLatestFrameShared()
         except Exception:
             self.__logger.error(traceback.format_exc())
         else:
@@ -269,6 +331,16 @@ class DetectorManager(SignalInterface):
         return self.__parameters
 
     @property
+    def configOwnedParameters(self) -> frozenset:
+        """ Names of parameters that the setup file declares and therefore owns.
+
+        These are calibration constants of the instrument (currently the camera
+        pixel size), not runtime settings. State persistence must skip them in
+        both directions, so that editing the setup file is enough to change
+        them and a stale snapshot can never reinstate the old value. """
+        return self.__configOwnedParameters
+
+    @property
     def actions(self) -> Dict[str, DetectorAction]:
         """ Dictionary of available actions. """
         return self.__actions
@@ -287,6 +359,33 @@ class DetectorManager(SignalInterface):
     def forFocusLock(self) -> bool:
         """ Whether the detector is used for focus lock. """
         return self.__forFocusLock
+
+    @property
+    def isScanDriven(self) -> bool:
+        """ Whether this detector is driven by the scan clock and produces its
+        image *as* the scan runs (APD, PMT, TimeTagger), as opposed to a
+        free-running detector that produces frames on its own schedule.
+
+        This is the OWNERSHIP axis, and it is not the same question as how the
+        frame clock is wired: a camera set to an external/scan trigger is still
+        free-running by this definition (``isScanDriven=False``) — its frame
+        clock changed, not who owns its acquisition. Only scan-driven detectors
+        take part in the scan participant snapshot.
+        """
+        return False
+
+    @property
+    def acquisitionLeased(self) -> bool:
+        """ Whether this detector holds at least one acquisition lease.
+        Written only by the DetectorsManager lease table. """
+        return self._acquisitionLeased
+
+    @property
+    def hardwareFaulted(self) -> bool:
+        """ Whether this detector is quarantined because a hardware stop
+        failed (uncertain hardware state — distinct from lease bookkeeping).
+        Written only by the DetectorsManager lease table. """
+        return self._hardwareFaulted
 
     @property
     def scale(self) -> List[float]:
@@ -373,32 +472,76 @@ class DetectorManager(SignalInterface):
         The consumer is auto-registered on its first call. Call
         releaseChunkConsumer() when done, so frames stop being retained for
         a consumer that no longer polls. A consumer that is registered but
-        not polling has its queue capped at MAX_QUEUED_CONSUMER_FRAMES
-        (oldest frames dropped, warned once).
+        not polling has its queue capped at MAX_QUEUED_CONSUMER_FRAMES.
+        Crossing that cap marks the stream incomplete: the oldest retained
+        frames are discarded to bound memory, and the consumer's next read
+        raises :class:`ChunkConsumerOverflowError` instead of silently
+        returning a truncated recording.
 
         Returns a list of frames; an empty list when no new frames are
         queued for this consumer.
         """
         with self._chunkConsumersLock:
             queue = self._chunkConsumers.setdefault(consumerKey, [])
-            newFrames = self.getChunk()
-            if newFrames is not None and len(newFrames) > 0:
-                for key, consumerQueue in self._chunkConsumers.items():
-                    consumerQueue.extend(newFrames)
-                    excess = len(consumerQueue) - MAX_QUEUED_CONSUMER_FRAMES
-                    if excess > 0:
-                        del consumerQueue[:excess]
-                        if key not in self._chunkConsumersWarned:
-                            self._chunkConsumersWarned.add(key)
-                            self.__logger.warning(
-                                f'readChunk consumer "{key}" is registered '
-                                f'but not polling; dropping its oldest '
-                                f'frames (cap {MAX_QUEUED_CONSUMER_FRAMES}). '
-                                f'Call releaseChunkConsumer when done.'
-                            )
+            self._distributeChunkLocked(self.getChunk())
+            if consumerKey in self._chunkConsumersOverflowed:
+                raise ChunkConsumerOverflowError(
+                    f'readChunk consumer "{consumerKey}" fell behind by more '
+                    f'than {MAX_QUEUED_CONSUMER_FRAMES} frames; its stream is '
+                    f'incomplete'
+                )
             frames = list(queue)
             queue.clear()
             return frames
+
+    def getLatestFrameShared(self, is_save=False) -> np.ndarray:
+        """Read a latest frame without bypassing active chunk consumers.
+
+        When Recording/BeadRec/etc. have registered broker queues, a direct
+        SDK ``getLatestFrame`` call may destructively steal a pending hardware
+        frame. In that state this method drains ``getChunk`` once, fans every
+        frame out to the registered consumers, and returns the newest frame for
+        display/focus/direct use. With no chunk consumers it delegates to the
+        detector's ordinary latest-frame method under the same SDK lock.
+        """
+        with self._chunkConsumersLock:
+            if self._chunkConsumers:
+                newFrames = self.getChunk()
+                self._distributeChunkLocked(newFrames)
+                if newFrames is not None and len(newFrames) > 0:
+                    self.__image = np.asarray(newFrames[-1])
+                return self.__image
+
+            try:
+                frame = self.getLatestFrame(is_save=is_save)
+            except TypeError:
+                # Most legacy managers expose getLatestFrame() without the
+                # optional save hint.
+                frame = self.getLatestFrame()
+            self.__image = frame
+            return frame
+
+    def _distributeChunkLocked(self, newFrames) -> None:
+        """Fan a hardware chunk out; caller holds _chunkConsumersLock."""
+        if newFrames is None or len(newFrames) == 0:
+            return
+        for key, consumerQueue in self._chunkConsumers.items():
+            consumerQueue.extend(newFrames)
+            excess = len(consumerQueue) - MAX_QUEUED_CONSUMER_FRAMES
+            if excess <= 0:
+                continue
+            del consumerQueue[:excess]
+            self._chunkConsumersOverflowed.add(key)
+            if key in self._chunkConsumersWarned:
+                continue
+            self._chunkConsumersWarned.add(key)
+            self.__logger.warning(
+                f'readChunk consumer "{key}" is registered but not polling; '
+                f'dropping its oldest frames (cap '
+                f'{MAX_QUEUED_CONSUMER_FRAMES}). The consumer will fail '
+                f'rather than accept an incomplete stream; call '
+                f'releaseChunkConsumer when done.'
+            )
 
     def releaseChunkConsumer(self, consumerKey: str) -> None:
         """ Unregisters a readChunk() consumer and drops any frames still
@@ -407,6 +550,24 @@ class DetectorManager(SignalInterface):
         with self._chunkConsumersLock:
             self._chunkConsumers.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
+            self._chunkConsumersOverflowed.discard(consumerKey)
+
+    def startChunkConsumer(self, consumerKey: str) -> None:
+        """Start one consumer at an atomic "frames after now" boundary.
+
+        Pre-boundary hardware frames are drained exactly once and delivered to
+        consumers that were already registered. They are excluded only from
+        the new consumer, unlike a global ``flushBuffers()`` which can discard
+        another owner's pending data.
+        """
+        with self._chunkConsumersLock:
+            self._chunkConsumers.pop(consumerKey, None)
+            self._chunkConsumersWarned.discard(consumerKey)
+            self._chunkConsumersOverflowed.discard(consumerKey)
+
+            self._distributeChunkLocked(self.getChunk())
+
+            self._chunkConsumers[consumerKey] = []
 
     @abstractmethod
     def startAcquisition(self) -> None:
@@ -415,8 +576,33 @@ class DetectorManager(SignalInterface):
 
     @abstractmethod
     def stopAcquisition(self) -> None:
-        """ Stops image acquisition. """
+        """ Stops image acquisition.
+
+        Detector stop contract: teardown MUST raise on failure (logging first
+        is fine, swallowing is not) — the DetectorsManager is the only catcher
+        and records a failure as a hardware fault that quarantines the
+        detector. """
         pass
+
+    def finishScan(self, mode: str, acknowledge) -> None:
+        """ Graceful-finish contract hook, called by the scan-execution
+        coordinator for every scan participant on every scan-iteration
+        termination, regardless of lease refcounts (a detector that keeps
+        other leases still needs its end-of-scan handling).
+
+        ``mode`` is ``'graceful'`` (normal completion — e.g. the TimeTagger
+        signals done and produces its final read/fit/emit) or ``'abort'``
+        (abrupt termination). Distinct from stopAcquisition(), which is
+        hardware teardown and only happens when the last lease is released.
+
+        ``acknowledge`` is a zero-argument callable that MUST be invoked once
+        this detector's end-of-scan work is complete — possibly later, from
+        another thread. The coordinator holds the scan lease open until every
+        participant acknowledges, so hardware teardown and the next repeat
+        iteration cannot race a final read that is still in flight. A manager
+        with nothing asynchronous to do simply acknowledges immediately, which
+        is what this default does. """
+        acknowledge()
 
     def finalize(self) -> None:
         """ Close/cleanup detector. """

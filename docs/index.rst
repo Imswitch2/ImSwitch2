@@ -67,6 +67,7 @@ config files).
     :caption: Extending Imswitch2
 
     adding-device-support
+    scan-lifecycle
     mock-infrastructure
     no-hardware-validation
     how-to/wire-teensy

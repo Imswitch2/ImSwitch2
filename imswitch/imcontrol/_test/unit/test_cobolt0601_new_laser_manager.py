@@ -1,4 +1,4 @@
-"""Tests for Cobolt0601NewLaserManager — autodetect, safe-state, fail-closed.
+"""Tests for Cobolt0601NewLaserManager — autodetect, safe-state, mock fallback.
 
 The manager is exercised through a fake ``send_cmd``-driven laser that
 records every command and lets the test choose whether SCPI variants are
@@ -1184,7 +1184,7 @@ def test_finalize_closes_the_connection_even_if_safe_off_fails():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1A — simulation is explicit
+# Simulation and connection-failure mock fallback
 # ---------------------------------------------------------------------------
 
 
@@ -1204,27 +1204,49 @@ def test_simulation_true_uses_mock_without_opening_the_port():
     m = Cobolt0601NewLaserManager(info, 'simulated')
 
     assert m._simulation is True
+    assert m._mock_fallback is False
     assert m._real_hw is False
     assert m._laser.cmds[-1] == 'l0'        # reached the safe state
     assert m._enabled is False
 
 
-def test_absent_simulation_key_defaults_to_false_and_raises():
-    """The migration-critical case: no existing setup file has a simulation
-    key, and a missing device must fail loudly instead of loading a mock that
-    looks like a working laser."""
+def test_absent_simulation_key_falls_back_to_mock_when_port_is_unavailable():
+    """Existing setups recover from a missing COM port without an extra key."""
     info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'])
-    with pytest.raises(DeviceInitializationError) as excinfo:
-        Cobolt0601NewLaserManager(info, 'real')
+    m = Cobolt0601NewLaserManager(info, 'fallback')
 
-    message = str(excinfo.value)
-    assert 'COM_DOES_NOT_EXIST' in message
-    assert 'simulation' in message          # tells the operator the way out
+    assert m._simulation is False
+    assert m._mock_fallback is True
+    assert m._real_hw is False
+    assert m._laser.cmds[-1] == 'l0'
 
 
-def test_simulation_false_raises_rather_than_loading_mock():
-    info = FakeLaserInfo(digitalPorts=['COM_DOES_NOT_EXIST'], simulation=False)
-    with pytest.raises(DeviceInitializationError):
+def test_connection_open_error_falls_back_to_mock(monkeypatch):
+    """The serial-open error raised for a port such as COM24 is recoverable."""
+    from imswitch.imcontrol.model.managers.lasers import PyCoboltManager
+
+    class UnavailableCobolt:
+        def __init__(self, *, port):
+            raise OSError(f'{port} not accessible')
+
+    monkeypatch.setattr(PyCoboltManager, 'Cobolt06', UnavailableCobolt)
+
+    m = Cobolt0601NewLaserManager(
+        FakeLaserInfo(digitalPorts=['COM24']), 'unavailable-cobolt'
+    )
+
+    assert m._mock_fallback is True
+    assert m._real_hw is False
+    assert m._laser.cmds[-1] == 'l0'
+
+
+def test_mock_on_failure_false_raises_for_an_unavailable_port():
+    info = FakeLaserInfo(
+        digitalPorts=['COM_DOES_NOT_EXIST'],
+        simulation=False,
+        useMockOnFailure=False,
+    )
+    with pytest.raises(DeviceInitializationError, match='COM_DOES_NOT_EXIST'):
         Cobolt0601NewLaserManager(info, 'real')
 
 

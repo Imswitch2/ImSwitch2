@@ -11,6 +11,7 @@
   ],
   "props": [
     {"key": "digitalPorts",       "label": "COM Port(s)",       "type": "text",   "default": "COM4",   "req": true,  "grp": "Basic",    "tip": "Comma-sep: COM4,COM5", "opts": []},
+    {"key": "useMockOnFailure",   "label": "Mock on failure",   "type": "bool",   "default": true,      "req": false, "grp": "Basic",    "tip": "Use MockCobolt06 if the configured port cannot be opened. Disable to make a missing laser a startup error.", "opts": []},
     {"key": "emissionControl",    "label": "Emission Control",  "type": "select", "default": "master", "req": false, "grp": "Advanced", "tip": "master=l0/l1, pause=explicit OEM workaround, auto=diagnostic master", "opts": ["master","pause","auto"]},
     {"key": "modulationPowerMw",  "label": "Idle Mod Power mW", "type": "float",  "default": 5.0,      "req": false, "grp": "Advanced", "tip": "Safe-state digital modulation setpoint", "opts": []},
     {"key": "scpiPowerUnit",      "label": "SCPI Power Unit",   "type": "select", "default": "mW",     "req": false, "grp": "Advanced", "tip": "Unit expected by SCPI setpoint commands", "opts": ["mW","W"]}

@@ -1,13 +1,18 @@
-import time
+import threading
+import sip
 
 import numpy as np
 from time import perf_counter
 import scipy.ndimage as ndi
 from skimage.feature import peak_local_max
+from qtpy import QtCore
 
-from imswitch.imcommon.framework import Thread, Timer
+from imswitch.imcommon.framework import Signal, Thread, Timer
 from imswitch.imcommon.model import initLogger
+from imswitch.imcontrol.model.managers import LeasePurpose
 from ..basecontrollers import ImConWidgetController
+
+_CLOSE_WAIT_TIMEOUT_MS = 2000
 
 
 class FocusLockController(ImConWidgetController):
@@ -16,6 +21,14 @@ class FocusLockController(ImConWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
+
+        self._focusAcqHandle = None
+        self.__processDataThread = None
+        self.__focusCalibThread = None
+        self.timer = None
+        self._shutdownComplete = False
+        self._focusLeaseLock = threading.Lock()
+        self._focusCalibrationActive = False
 
         if self._setupInfo.focusLock is None:
             return
@@ -64,9 +77,22 @@ class FocusLockController(ImConWidgetController):
         self.setPointData = np.zeros(self.buffer)
         self.timeData = np.zeros(self.buffer)
 
-        self._master.detectorsManager[self.camera].startAcquisition()
+        # FOCUS lease instead of reaching past the DetectorsManager to the
+        # sub-manager: the camera is now refcounted, so an unrelated global
+        # stop can no longer disarm it underneath the focus lock. FOCUS leases
+        # are excluded from the user-visible acquisition signals.
         self.__processDataThread = ProcessDataThread(self)
         self.__focusCalibThread = FocusCalibThread(self)
+        self.__focusCalibThread.sigCalibrationFinished.connect(
+            self._onFocusCalibrationFinished
+        )
+        self.__focusCalibThread.finished.connect(
+            self._onFocusCalibrationThreadFinished
+        )
+
+        self._focusAcqHandle = self._master.detectorsManager.acquire(
+            [self.camera], LeasePurpose.FOCUS
+        )
 
         self.timer = Timer()
         self.timer.timeout.connect(self.update)
@@ -74,21 +100,178 @@ class FocusLockController(ImConWidgetController):
         self.startTime = perf_counter()
 
     def __del__(self):
-        self.__processDataThread.quit()
-        self.__processDataThread.wait()
-        self.__focusCalibThread.quit()
-        self.__focusCalibThread.wait()
-        if hasattr(super(), '__del__'):
-            super().__del__()
+        try:
+            self._shutdown()
+        except Exception:
+            pass
+        try:
+            parentDel = getattr(super(), '__del__', None)
+            if parentDel is not None:
+                parentDel()
+        except Exception:
+            pass
 
+    def closeEvent(self) -> bool:
+        self._shutdown()
+        super().closeEvent()
+        return self.shutdownComplete()
+
+    def _shutdown(self):
+        """Stop all focus work before releasing the camera lease."""
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        self._shutdownComplete = True
+
+        comm = self.__dict__.get('_commChannel')
+        if comm is not None:
+            for signalName, slot in (
+                ('sigScanStarted', self.scanUnlockFocus),
+                ('sigScanDone', self.scanLockFocus),
+            ):
+                signal = getattr(comm, signalName, None)
+                if signal is not None:
+                    try:
+                        signal.disconnect(slot)
+                    except Exception:
+                        pass
+
+        timer = self.__dict__.get('timer')
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+
+        processThread = self.__dict__.get(
+            '_FocusLockController__processDataThread'
+        )
+        processThreadStopped = True
+        for thread in (
+            processThread,
+            self.__dict__.get('_FocusLockController__focusCalibThread'),
+        ):
+            if thread is None:
+                continue
+            try:
+                stop = getattr(thread, 'stop', None)
+                if stop is not None:
+                    stop()
+                thread.quit()
+                stopped = self._waitForThread(thread)
+                if thread is processThread:
+                    processThreadStopped = stopped
+                if not stopped:
+                    self._logger.warning(
+                        f'{type(thread).__name__} is still stopping after '
+                        f'focus-lock close; shutdown will complete after its '
+                        f'active hardware call returns.'
+                    )
+            except Exception:
+                if thread is processThread:
+                    processThreadStopped = False
+
+        # FocusCalibThread only moves the stage and reads the last focus
+        # signal. ProcessDataThread is the camera owner, so defer the lease only
+        # if that thread outlives the bounded close wait.
+        if processThreadStopped:
+            self._releaseFocusLease()
+        elif processThread is not None:
+            try:
+                processThread.finished.connect(
+                    self._releaseFocusLease,
+                    QtCore.Qt.DirectConnection,
+                )
+                if not processThread.isRunning():
+                    self._releaseFocusLease()
+            except Exception:
+                self._logger.warning(
+                    'Focus-lock camera worker is still active; retaining its '
+                    'detector lease to avoid disarming an in-flight read.'
+                )
+
+    @staticmethod
+    def _threadIsRunning(thread) -> bool:
+        if thread is None:
+            return False
+        if isinstance(thread, QtCore.QThread) and sip.isdeleted(thread):
+            return False
+        isRunning = getattr(thread, 'isRunning', None)
+        if isRunning is None:
+            isAlive = getattr(thread, 'is_alive', None)
+            return bool(isAlive()) if isAlive is not None else False
+        try:
+            return bool(isRunning())
+        except RuntimeError:
+            return (
+                not sip.isdeleted(thread)
+                if isinstance(thread, QtCore.QThread)
+                else True
+            )
+
+    def shutdownComplete(self) -> bool:
+        """Return whether camera/calibration workers and their lease are gone."""
+        return (
+            not self._threadIsRunning(
+                self.__dict__.get(
+                    '_FocusLockController__processDataThread'
+                )
+            )
+            and not self._threadIsRunning(
+                self.__dict__.get(
+                    '_FocusLockController__focusCalibThread'
+                )
+            )
+            and self.__dict__.get('_focusAcqHandle') is None
+        )
+
+    @staticmethod
+    def _waitForThread(thread) -> bool:
+        if isinstance(thread, QtCore.QThread):
+            if sip.isdeleted(thread):
+                return True
+            try:
+                return bool(
+                    QtCore.QThread.wait(thread, _CLOSE_WAIT_TIMEOUT_MS)
+                )
+            except RuntimeError:
+                if sip.isdeleted(thread):
+                    return True
+                raise
+        result = thread.wait()
+        return True if result is None else bool(result)
+
+    def _releaseFocusLease(self):
+        lock = self.__dict__.get('_focusLeaseLock')
+        if lock is None:
+            lock = threading.Lock()
+            self._focusLeaseLock = lock
+        with lock:
+            handle = self.__dict__.get('_focusAcqHandle')
+            if handle is None:
+                return
+            try:
+                self._master.detectorsManager.release(handle)
+            except Exception as e:
+                logger = self.__dict__.get('_logger')
+                if logger is not None:
+                    logger.error(
+                        f'Failed to release focus-lock detector lease: {e}',
+                        exc_info=True,
+                    )
+            finally:
+                self._focusAcqHandle = None
 
     def scanUnlockFocus(self):
         # print('unlock')
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         if self._widget.ScanBlock.isChecked():
             self.locked = False
 
     def scanLockFocus(self):
         # print('lock')
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         if self._widget.ScanBlock.isChecked() and self._widget.lockButton.isChecked():
             self.locked = True
 
@@ -112,7 +295,61 @@ class FocusLockController(ImConWidgetController):
         self._master.detectorsManager[self.camera].openPropertiesDialog()
 
     def focusCalibrationStart(self):
-        self.__focusCalibThread.start()
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        try:
+            fromVal = float(self._widget.calibFromEdit.text())
+            toVal = float(self._widget.calibToEdit.text())
+        except ValueError:
+            self._logger.warning(
+                'Focus calibration range must contain numeric values.'
+            )
+            return
+        if not np.isfinite(fromVal) or not np.isfinite(toVal):
+            self._logger.warning(
+                'Focus calibration range must contain finite values.'
+            )
+            return
+        if fromVal == toVal:
+            self._logger.warning(
+                'Focus calibration range must span two different positions.'
+            )
+            return
+        if self.__focusCalibThread.isRunning():
+            self._logger.warning(
+                'Focus calibration is already running; duplicate start ignored.'
+            )
+            return
+        self.__focusCalibThread.configure(fromVal, toVal)
+        self._focusCalibrationActive = True
+        try:
+            self._widget.focusCalibButton.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            self.__focusCalibThread.start()
+        except Exception:
+            self._focusCalibrationActive = False
+            try:
+                self._widget.focusCalibButton.setEnabled(True)
+            except Exception:
+                pass
+            raise
+
+    def _onFocusCalibrationFinished(self, cal_nm):
+        """Apply worker results on the controller/widget thread."""
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        self._widget.calibrationDisplay.setText(f'1 px --> {cal_nm} nm')
+
+    def _onFocusCalibrationThreadFinished(self):
+        self._focusCalibrationActive = False
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        try:
+            self._widget.focusCalibButton.setEnabled(True)
+        except Exception:
+            pass
 
     def showCalibrationCurve(self):
         self._widget.showCalibrationCurve(self.__focusCalibThread.getData())
@@ -130,12 +367,21 @@ class FocusLockController(ImConWidgetController):
             self.twoFociVar = True
 
     def update(self):
+        if self.__dict__.get('_shutdownComplete', False):
+            return
         # get data
         img = self.__processDataThread.grabCameraFrame()
+        if img is None:
+            # The camera has not produced its first frame yet. Skip this tick
+            # rather than run the focus estimate on nothing; the timer will
+            # come back.
+            return
         self.setPointSignal = self.__processDataThread.update(self.twoFociVar)
         self._widget.center.setValue(self.setPointSignal)
         # move
-        if self.locked:
+        if self._focusCalibrationActive:
+            pass
+        elif self.locked:
             value_move = self.updatePI()
             if self.noStepVar and abs(value_move) > 0.002:
                 self.movePositioner(value_move)
@@ -226,6 +472,12 @@ class FocusLockController(ImConWidgetController):
         """Move the configured positioner axis."""
         self._master.positionersManager[self.positioner].move(value, self.positionerAxis)
 
+    def setPositionerAbs(self, value):
+        """Move the configured positioner axis to an absolute coordinate."""
+        self._master.positionersManager[self.positioner].setPosition(
+            value, self.positionerAxis
+        )
+
 
 class ProcessDataThread(Thread):
     def __init__(self, controller, *args, **kwargs):
@@ -234,7 +486,7 @@ class ProcessDataThread(Thread):
 
     def grabCameraFrame(self):
         detectorManager = self._controller._master.detectorsManager[self._controller.camera]
-        self.latestimg = detectorManager.getLatestFrame()
+        self.latestimg = detectorManager.getLatestFrameShared()
         # 1.5 swap axes of frame (depending on setup, make this a variable in the json)
         if self._controller._setupInfo.focusLock.swapImageAxes:
             self.latestimg = np.swapaxes(self.latestimg,0,1)
@@ -289,40 +541,115 @@ class ProcessDataThread(Thread):
 
 
 class FocusCalibThread(Thread):
+    sigCalibrationFinished = Signal(float)
+
     def __init__(self, controller, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self._controller = controller
-
-    def run(self):
+        self._stopRequested = threading.Event()
+        self._dataLock = threading.Lock()
+        self.fromVal = None
+        self.toVal = None
+        self.scan_list = np.array([])
         self.signalData = []
         self.positionData = []
-        self.fromVal = float(self._controller._widget.calibFromEdit.text())
-        self.toVal = float(self._controller._widget.calibToEdit.text())
-        self.scan_list = np.round(np.linspace(self.fromVal, self.toVal, 20), 2)
-        for z in self.scan_list:
-            self._controller.movePositioner(z)
-            time.sleep(0.5)
-            self.focusCalibSignal = self._controller.setPointSignal
-            self.signalData.append(self.focusCalibSignal)
-            self.positionData.append(
-                    self._controller.getPositionerAbs())
-        self.poly = np.polyfit(self.positionData, self.signalData, 1)
-        self.calibrationResult = np.around(self.poly, 4)
-        self.show()
+        self.poly = np.array([])
+        self.calibrationResult = np.array([])
 
-    def show(self):
-        cal_nm = np.round(1000 / self.poly[0], 1)
-        calText = f'1 px --> {cal_nm} nm'
-        self._controller._widget.calibrationDisplay.setText(calText)
+    def configure(self, fromVal, toVal):
+        self.fromVal = float(fromVal)
+        self.toVal = float(toVal)
+        self._stopRequested.clear()
+
+    def stop(self):
+        self._stopRequested.set()
+
+    def run(self):
+        if self.fromVal is None or self.toVal is None:
+            return
+
+        signalData = []
+        positionData = []
+        scan_list = np.round(np.linspace(self.fromVal, self.toVal, 20), 2)
+        startPosition = None
+        completed = False
+        failed = False
+        cancelled = False
+        poly = None
+        calibrationResult = None
+        cal_nm = None
+
+        def setAbsolutePosition(target):
+            setter = getattr(self._controller, 'setPositionerAbs', None)
+            if setter is not None:
+                setter(target)
+                return
+            current = self._controller.getPositionerAbs()
+            self._controller.movePositioner(target - current)
+
+        try:
+            startPosition = self._controller.getPositionerAbs()
+            for offset in scan_list:
+                if self._stopRequested.is_set():
+                    cancelled = True
+                    break
+                setAbsolutePosition(startPosition + offset)
+                # Event.wait makes the former fixed sleep cooperatively
+                # cancellable during controller shutdown.
+                if self._stopRequested.wait(0.5):
+                    cancelled = True
+                    break
+                signalData.append(self._controller.setPointSignal)
+                positionData.append(self._controller.getPositionerAbs())
+
+            if not cancelled and not self._stopRequested.is_set():
+                poly = np.polyfit(positionData, signalData, 1)
+                if poly[0] == 0:
+                    raise ValueError('focus calibration slope is zero')
+                calibrationResult = np.around(poly, 4)
+                cal_nm = float(np.round(1000 / poly[0], 1))
+                completed = True
+            else:
+                cancelled = True
+        except Exception as e:
+            failed = True
+            self._controller._logger.error(
+                f'Focus calibration failed: {e}', exc_info=True
+            )
+        finally:
+            if startPosition is not None:
+                try:
+                    setAbsolutePosition(startPosition)
+                except Exception as e:
+                    failed = True
+                    self._controller._logger.error(
+                        f'Focus calibration could not restore its starting '
+                        f'position: {e}',
+                        exc_info=True,
+                    )
+
+        if failed or cancelled or not completed:
+            return
+        with self._dataLock:
+            self.scan_list = scan_list
+            self.signalData = signalData
+            self.positionData = positionData
+            self.poly = poly
+            self.calibrationResult = calibrationResult
+
+        if not self._stopRequested.is_set():
+            # The receiver lives on the GUI thread, so Qt queues the widget
+            # update instead of touching it from this worker thread.
+            self.sigCalibrationFinished.emit(cal_nm)
 
     def getData(self):
-        data = {
-            'signalData': self.signalData,
-            'positionData': self.positionData,
-            'poly': self.poly
-        }
-        return data
+        with self._dataLock:
+            return {
+                'signalData': list(self.signalData),
+                'positionData': list(self.positionData),
+                'poly': np.array(self.poly, copy=True),
+            }
 
 
 class PI:

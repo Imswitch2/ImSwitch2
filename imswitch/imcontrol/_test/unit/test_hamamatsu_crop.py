@@ -136,3 +136,71 @@ def test_crop_to_full_frame_resets_cleanly(monkeypatch):
 
     assert mgr.frameStart == (0, 0)
     assert mgr.shape == (2048, 2048)
+
+
+# --- trigger-source read-back --------------------------------------------
+#
+# _updatePropertiesFromCamera compared getPropertyValue('trigger_source')
+# against an int, but that method returns (value, type). Every branch was
+# therefore dead and 'Trigger source' was never refreshed from the camera: the
+# settings tree kept showing whatever ImSwitch had last written, even when the
+# camera was in a different trigger mode. The camera-reported timings around it
+# used [0] correctly, which is what made the omission easy to miss.
+
+def _setCameraTrigger(mgr, source, mode):
+    mgr._camera.properties['trigger_source'] = source
+    mgr._camera.properties['trigger_mode'] = mode
+
+
+def test_trigger_source_is_read_back_from_the_camera(monkeypatch):
+    mgr = _make_manager(monkeypatch)
+    _setCameraTrigger(mgr, source=2, mode=1)
+
+    mgr._updatePropertiesFromCamera()
+
+    assert mgr.parameters['Trigger source'].value == 'External "frame-trigger"'
+
+
+def test_start_trigger_is_read_back_from_the_camera(monkeypatch):
+    mgr = _make_manager(monkeypatch)
+    _setCameraTrigger(mgr, source=2, mode=6)
+
+    mgr._updatePropertiesFromCamera()
+
+    assert mgr.parameters['Trigger source'].value == 'External "start-trigger"'
+
+
+def test_internal_trigger_is_read_back_from_the_camera(monkeypatch):
+    mgr = _make_manager(monkeypatch)
+    mgr.setParameter('Trigger source', 'External "frame-trigger"')
+    _setCameraTrigger(mgr, source=1, mode=1)
+
+    mgr._updatePropertiesFromCamera()
+
+    assert mgr.parameters['Trigger source'].value == 'Internal trigger'
+
+
+def test_trigger_read_back_does_not_rewrite_the_camera(monkeypatch):
+    """The read-back must not route back through _setTriggerSource: re-writing
+    the properties it just read would make a plain exposure change poke the
+    camera's trigger configuration."""
+    mgr = _make_manager(monkeypatch)
+    _setCameraTrigger(mgr, source=2, mode=6)
+    mgr._camera.set_calls.clear()
+
+    mgr._updatePropertiesFromCamera()
+
+    triggerWrites = [call for call in mgr._camera.set_calls
+                     if call[0] in ('trigger_source', 'trigger_mode')]
+    assert triggerWrites == []
+
+
+def test_setting_exposure_refreshes_the_displayed_trigger_source(monkeypatch):
+    """The path this actually runs on: the GUI sets an exposure, and the
+    manager refreshes every camera-reported value alongside it."""
+    mgr = _make_manager(monkeypatch)
+    _setCameraTrigger(mgr, source=2, mode=6)
+
+    mgr.setParameter('Set exposure time', 0.02)
+
+    assert mgr.parameters['Trigger source'].value == 'External "start-trigger"'

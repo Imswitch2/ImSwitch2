@@ -242,6 +242,66 @@ def test_crop_updates_shape_and_discards_stale_frames(manager):
     assert manager.getChunk().shape == (1, 256, 512)
 
 
+def test_crop_reports_the_roi_the_sensor_actually_took(manager):
+    """The sensor rounds Width/Height/Offset down to its increment. Storing the
+    *request* made frameStart/shape -- and so the settings display, the viewer
+    scale and the recorded OME metadata -- describe frames the camera was not
+    producing."""
+    manager.crop(3, 7, 513, 259)
+
+    assert manager.shape == (512, 256)
+    assert manager.frameStart == (0, 4)
+    assert manager.shape == tuple(manager._camera._roi[2:])
+    assert manager.frameStart == tuple(manager._camera._roi[:2])
+
+
+def test_crop_frames_match_the_reported_shape(manager):
+    """The shape the manager reports must be the shape the frames arrive in."""
+    manager.crop(3, 7, 513, 259)
+    manager.startAcquisition()
+    manager._camera.simulate_hardware_trigger(1)
+
+    frame = manager.getChunk()[0]
+
+    assert frame.shape == (manager.shape[1], manager.shape[0])
+
+
+def test_crop_survives_a_driver_that_reports_no_applied_roi(manager):
+    """An older driver stub returning None must degrade to the request, not
+    raise out of the GUI's crop path."""
+    manager._camera.set_roi = lambda *args: None
+
+    manager.crop(0, 0, 512, 256)
+
+    assert manager.shape == (512, 256)
+
+
+def test_exposure_parameter_holds_what_the_camera_took(manager):
+    """The camera clamps; the parameter feeds the settings tree, the saved
+    snapshot and the recording metadata, so it must not keep the request."""
+    manager._camera.set_exposure_us = lambda value: 20.0
+
+    manager.setParameter('Exposure', 1.0)
+
+    assert manager.parameters['Exposure'].value == pytest.approx(20.0)
+
+
+def test_gain_parameter_holds_what_the_camera_took(manager):
+    manager._camera.set_gain = lambda value: 48.0
+
+    manager.setParameter('Gain', 999.0)
+
+    assert manager.parameters['Gain'].value == pytest.approx(48.0)
+
+
+def test_parameter_keeps_the_request_when_the_driver_reports_nothing(manager):
+    manager._camera.set_exposure_us = lambda value: None
+
+    manager.setParameter('Exposure', 1234.0)
+
+    assert manager.parameters['Exposure'].value == pytest.approx(1234.0)
+
+
 def test_crop_resumes_streaming_when_it_was_active(manager):
     manager.startAcquisition()
 

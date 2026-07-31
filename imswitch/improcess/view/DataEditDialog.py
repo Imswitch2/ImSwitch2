@@ -99,7 +99,7 @@ class DataEditDialog(QtWidgets.QDialog):
         self.dataName.setText(f'File: {dataName}')
         self.datasetName.setText(f'Dataset: {datasetName}')
         self.numFrames.setText(str(numFrames))
-        self.slider.setMaximum(numFrames - 1)
+        self.slider.setMaximum(numFrames - 1 if numFrames else 0)
 
 
 class DataEditActions(QtWidgets.QFrame):

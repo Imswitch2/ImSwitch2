@@ -199,14 +199,31 @@ class TISCameraIC4Manager(DetectorManager):
     def setParameter(self, name, value):
         super().setParameter(name, value)
 
+        # Store back what the device took, not what was asked for. Exposure is
+        # clamped to the sensor's range (and to the frame period, which the
+        # trigger state moves), and gain to its own range. Leaving the request
+        # in the parameter makes the settings tree, the saved snapshot and the
+        # recording metadata all report a value the camera never ran with.
         if name == 'Exposure':
-            self._camera.set_exposure_us(value)
+            self._storeApplied(name, self._camera.set_exposure_us(value))
         elif name == 'Gain':
-            self._camera.set_gain(value)
+            self._storeApplied(name, self._camera.set_gain(value))
         elif name == 'Trigger Mode':
             self.setTriggerEnabled(value == 'Hardware')
 
         return self.parameters
+
+    def _storeApplied(self, name, applied):
+        """Record the device-reported value, ignoring drivers that report none."""
+        if applied is None:
+            return
+        try:
+            self.parameters[name].value = float(applied)
+        except (TypeError, ValueError):
+            self.__logger.debug(
+                f'Camera reported a non-numeric {name} ({applied!r}); keeping '
+                f'the requested value.'
+            )
 
     def getParameter(self, name):
         if name not in self.parameters:
@@ -241,14 +258,49 @@ class TISCameraIC4Manager(DetectorManager):
     def crop(self, hpos, vpos, hsize, vsize):
         wasStreaming = self._camera.is_streaming
         self._camera.stop_stream()
-        self._camera.set_roi(hpos, vpos, hsize, vsize)
+        # The sensor constrains Width/Height/Offset to an increment, so the
+        # applied region is routinely not the requested one. Record what the
+        # camera took: frameStart/shape feed the settings display, the viewer
+        # scale, the recording shape and the OME metadata, and storing the
+        # request there makes every one of them describe frames that do not
+        # exist. (HamamatsuManager.crop reads back for the same reason.)
+        applied = self._camera.set_roi(hpos, vpos, hsize, vsize)
         # Stale frames in the queue still carry the old geometry; stacking those
         # with post-crop frames in getChunk would raise on mismatched shapes.
         self._camera.flush()
-        self._frameStart = (hpos, vpos)
-        self._shape = (hsize, vsize)
+        appliedHpos, appliedVpos, appliedHsize, appliedVsize = (
+            self._resolveAppliedRoi(applied, (hpos, vpos, hsize, vsize))
+        )
+        if (appliedHpos, appliedVpos, appliedHsize, appliedVsize) != (
+                hpos, vpos, hsize, vsize):
+            self.__logger.warning(
+                f'Camera snapped the requested ROI (x0={hpos}, y0={vpos}, '
+                f'width={hsize}, height={vsize}) to (x0={appliedHpos}, '
+                f'y0={appliedVpos}, width={appliedHsize}, '
+                f'height={appliedVsize}) due to sensor step/range constraints; '
+                f'using the actually-applied values.'
+            )
+        self._frameStart = (appliedHpos, appliedVpos)
+        self._shape = (appliedHsize, appliedVsize)
         if wasStreaming:
             self._camera.start_stream()
+
+    def _resolveAppliedRoi(self, applied, requested):
+        """The ROI the camera reports, or the request when it reports nothing.
+
+        A driver that returns ``None`` (an older stub, or a mock written before
+        ``set_roi`` had a return value) must degrade to the previous behaviour
+        rather than corrupting frameStart/shape with a ``TypeError``.
+        """
+        try:
+            x0, y0, width, height = applied
+            return int(x0), int(y0), int(width), int(height)
+        except (TypeError, ValueError):
+            self.__logger.debug(
+                'Camera driver did not report the applied ROI; assuming the '
+                'requested one was taken.'
+            )
+            return requested
 
     def setBinning(self, binning):
         super().setBinning(binning)

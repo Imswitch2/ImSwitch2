@@ -1,604 +1,555 @@
 """
-Unit tests for SettingsController unified state persistence (Phase 2b).
+Unit tests for SettingsController unified state persistence.
 
-Tests the StatefulComponentMixin implementation on SettingsController:
-- getComponentState / applyComponentState round-trip
-- STARTUP_RESTORE and SETUP_MODE_APPLY behave identically (both restore settings, neither starts acquisition)
-- Acquisition is NEVER started in either mode
-- describeComponentState returns human-readable summaries
-- getComponentStateHazards returns empty list (no hazards)
-- Missing detector warnings
-- Settings appears in setup mode component discovery
+These tests drive the REAL SettingsController against the REAL SettingsWidget
+(pyqtgraph parameter trees with live signal connections) on top of fake detector
+managers that record every hardware call.
+
+That matters: an earlier version of these tests used Mock() parameter objects,
+so no Qt signal ever fired and no manager was ever touched. They asserted only
+that the widget fields had been written, and passed while ROI restore reached no
+detector at all. Assert on the DETECTOR (crop/setBinning/setParameter), and use
+the widget only to check it ends up mirroring hardware.
+
+Covered:
+- getComponentState snapshots hardware, not un-applied widget edits
+- applyComponentState crops/bins/parameterizes each detector directly
+- restoring one detector does not disturb another's restored frame
+- read-only (camera-reported) parameters are neither saved nor written back
+- non-croppable detectors (APD/PMT) are handled without spurious warnings
+- STARTUP_RESTORE and SETUP_MODE_APPLY behave identically; neither acquires
+- describeComponentState / getComponentStateHazards payload handling
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock
 
-from imswitch.imcontrol.controller.controllers.SettingsController import SettingsController
+from qtpy import QtWidgets
+
+from imswitch.imcommon.model import getWidgetStatePersistence
 from imswitch.imcontrol.controller.basecontrollers import ComponentStateApplyMode
-from imswitch.imcontrol.model.managers.detectors.DetectorManager import CAMERA_PIXEL_SIZE_PARAM
+from imswitch.imcontrol.controller.controllers.SettingsController import SettingsController
+from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+    CAMERA_PIXEL_SIZE_PARAM, DetectorListParameter, DetectorNumberParameter,
+)
+from imswitch.imcontrol.view.widgets.SettingsWidget import SettingsWidget
 
 
 @pytest.fixture
-def mock_detector_manager():
-    """Mock detectorsManager with one forAcquisition detector."""
-    manager = MagicMock()
-    
-    # Create detector manager instance
-    detector_cam1 = Mock()
-    detector_cam1.forAcquisition = True
-    detector_cam1.model = "TestCam"
-    detector_cam1.binning = 1
-    detector_cam1.frameStart = (0, 0)
-    detector_cam1.shape = (512, 512)
-    detector_cam1.pixelSizeUm = [6.5, 6.5]
-    detector_cam1.setBinning = Mock()
-    
-    # Mock detector parameters
-    param_exposure = Mock()
-    param_exposure.value = 100.0
-    param_exposure.group = "Acquisition"
-    param_gain = Mock()
-    param_gain.value = 1.0
-    param_gain.group = "Acquisition"
-    param_pixel_size = Mock()
-    param_pixel_size.value = 0.15
-    param_pixel_size.group = "Miscellaneous"
-    detector_cam1.parameters = {
-        'Exposure time': param_exposure,
-        'Gain': param_gain,
-        CAMERA_PIXEL_SIZE_PARAM: param_pixel_size,
-    }
-    def set_parameter(name, value):
-        detector_cam1.parameters[name].value = value
-        return detector_cam1.parameters
-    detector_cam1.setParameter = Mock(side_effect=set_parameter)
-    
-    # Make manager iterable
-    manager.__iter__ = Mock(return_value=iter([('Camera1', detector_cam1)]))
-    manager.__getitem__ = Mock(side_effect=lambda name: detector_cam1 if name == 'Camera1' else None)
-    manager.getAllDeviceNames = Mock(return_value=['Camera1'])
-    manager.hasDevices = Mock(return_value=True)
-    manager.getCurrentDetectorName = Mock(return_value='Camera1')
-    
-    return manager
+def qapp():
+    """Ensure QApplication exists."""
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    return app
 
 
-@pytest.fixture
-def mock_widget_tree():
-    """Mock parameter tree for widget."""
-    tree = MagicMock()
-    
-    # Mock parameter structure
-    root_param = Mock()
-    image_frame_param = Mock()
-    binning_param = Mock()
-    binning_param.value = Mock(return_value=1)
-    binning_param.setValue = Mock()
-    frame_mode_param = Mock()
-    frame_mode_param.value = Mock(return_value='Full chip')
-    frame_mode_param.setValue = Mock()
-    x0_param = Mock()
-    x0_param.value = Mock(return_value=0)
-    x0_param.setValue = Mock()
-    y0_param = Mock()
-    y0_param.value = Mock(return_value=0)
-    y0_param.setValue = Mock()
-    width_param = Mock()
-    width_param.value = Mock(return_value=512)
-    width_param.setValue = Mock()
-    height_param = Mock()
-    height_param.value = Mock(return_value=512)
-    height_param.setValue = Mock()
-    
-    # Mock parameter retrieval chain
-    image_frame_param.param = Mock(side_effect=lambda name: {
-        'Binning': binning_param,
-        'Mode': frame_mode_param,
-        'X0': x0_param,
-        'Y0': y0_param,
-        'Width': width_param,
-        'Height': height_param,
-        'Apply': Mock(),
-        'New ROI': Mock(),
-        'Abort ROI': Mock(),
-        'Save mode': Mock(),
-        'Delete mode': Mock(),
-        'Update all detectors': Mock()
-    }[name])
-    
-    root_param.param = Mock(side_effect=lambda name: {
-        'Model': Mock(),
-        'Image frame': image_frame_param,
-        'Acquisition': Mock()
-    }[name])
-    
-    # Mock detector-specific parameter groups
-    acquisition_param = Mock()
-    misc_param = Mock()
-    exposure_param_widget = Mock()
-    exposure_param_widget.value = Mock(return_value=100.0)
-    exposure_param_widget.setValue = Mock()
-    gain_param_widget = Mock()
-    gain_param_widget.value = Mock(return_value=1.0)
-    gain_param_widget.setValue = Mock()
-    pixel_size_param_widget = Mock()
-    pixel_size_param_widget.value = Mock(return_value=0.15)
-    pixel_size_param_widget.setValue = Mock()
-    acquisition_param.param = Mock(side_effect=lambda name: {
-        'Exposure time': exposure_param_widget,
-        'Gain': gain_param_widget,
-    }.get(name))
-    misc_param.param = Mock(side_effect=lambda name: {
-        CAMERA_PIXEL_SIZE_PARAM: pixel_size_param_widget,
-    }.get(name))
-    root_param.param = Mock(side_effect=lambda name: {
-        'Model': Mock(),
-        'Image frame': image_frame_param,
-        'Acquisition': acquisition_param,
-        'Miscellaneous': misc_param
-    }[name])
-    
-    tree.p = root_param
-    
-    return tree
+@pytest.fixture(autouse=True)
+def isolatePersistenceRegistry():
+    """Constructing a real SettingsController registers it in the global
+    persistence singleton; leaving it there leaks into other test modules."""
+    yield
+    getWidgetStatePersistence().unregister('Settings')
 
 
-@pytest.fixture
-def mock_widget(mock_widget_tree):
-    """Mock SettingsWidget."""
-    widget = MagicMock()
-    widget.trees = {'Camera1': mock_widget_tree}
-    widget.addDetector = Mock()
-    widget.getROIGraphicsItem = Mock()
-    widget.showROI = Mock()
-    widget.hideROI = Mock()
-    widget.getAdvancedWidget = Mock(return_value=None)
-    
-    return widget
+class FakeDetector:
+    """Minimal DetectorManager stand-in that records hardware calls."""
+
+    def __init__(self, name, croppable=True, fullShape=(2048, 2048)):
+        self.name = name
+        self.model = f'Model-{name}'
+        self.forAcquisition = True
+        self.croppable = croppable
+        self.supportedBinnings = [1, 2, 4]
+        self.binning = 1
+        self.fullShape = fullShape
+        self.frameStart = (0, 0)
+        self.shape = fullShape
+        self.pixelSizeUm = [1.0, 0.1, 0.1]
+        self.actions = {}
+        self.parameters = {
+            'Set exposure time': DetectorNumberParameter(
+                group='Timings', value=0.01, valueUnits='s', editable=True),
+            # Camera-reported reading, not a setting.
+            'Real exposure time': DetectorNumberParameter(
+                group='Timings', value=0.0105, valueUnits='s', editable=False),
+            'Trigger source': DetectorListParameter(
+                group='Acquisition mode', value='Internal trigger',
+                options=['Internal trigger', 'External "start-trigger"',
+                         'External "frame-trigger"'],
+                editable=True),
+            CAMERA_PIXEL_SIZE_PARAM: DetectorNumberParameter(
+                group='Miscellaneous', value=0.15, valueUnits='µm', editable=True),
+        }
+        self.calls = []
+
+    def crop(self, hpos, vpos, hsize, vsize):
+        self.calls.append(('crop', hpos, vpos, hsize, vsize))
+        self.frameStart = (hpos, vpos)
+        self.shape = (hsize, vsize)
+
+    def setBinning(self, binning):
+        self.calls.append(('setBinning', binning))
+        self.binning = binning
+
+    def setParameter(self, name, value):
+        self.calls.append(('setParameter', name, value))
+        self.parameters[name].value = value
+        # A real camera re-reports its derived timings when the exposure is set
+        # (cf. HamamatsuManager._updatePropertiesFromCamera).
+        if name == 'Set exposure time':
+            self.parameters['Real exposure time'].value = round(value * 1.05, 6)
+        return self.parameters
+
+    def cropCalls(self):
+        return [call for call in self.calls if call[0] == 'crop']
+
+    def parameterCalls(self):
+        return [call for call in self.calls if call[0] == 'setParameter']
 
 
-@pytest.fixture
-def mock_setupinfo():
-    """Mock setupInfo."""
-    setupinfo = Mock()
-    setupinfo.rois = {}
-    return setupinfo
+class FakeDetectorsManager:
+    def __init__(self, detectors):
+        self._detectors = {detector.name: detector for detector in detectors}
+        self._current = detectors[0].name
+
+    def hasDevices(self):
+        return True
+
+    def __iter__(self):
+        return iter(self._detectors.items())
+
+    def __getitem__(self, name):
+        return self._detectors[name]
+
+    def getAllDeviceNames(self):
+        return list(self._detectors)
+
+    def getCurrentDetectorName(self):
+        return self._current
+
+    def setCurrentDetector(self, name):
+        self._current = name
+
+    def execOn(self, name, func):
+        return func(self._detectors[name])
+
+    def execOnCurrent(self, func):
+        return func(self._detectors[self._current])
+
+    def execOnAll(self, func, condition=None):
+        return {name: func(detector) for name, detector in self._detectors.items()
+                if condition is None or condition(detector)}
 
 
-@pytest.fixture
-def mock_master(mock_detector_manager):
-    """Mock master controller."""
-    master = Mock()
-    master.detectorsManager = mock_detector_manager
-    return master
+def makeController(detectors):
+    master = MagicMock()
+    master.detectorsManager = FakeDetectorsManager(detectors)
 
+    setupInfo = MagicMock()
+    setupInfo.rois = {}
 
-@pytest.fixture
-def mock_commchannel():
-    """Mock communication channel."""
-    commchannel = Mock()
-    commchannel.sharedAttrs = Mock()
-    commchannel.sharedAttrs.sigAttributeSet = Mock()
-    commchannel.sharedAttrs.sigAttributeSet.connect = Mock()
-    commchannel.sharedAttrs.__setitem__ = Mock()
-    commchannel.sigDetectorSwitched = Mock()
-    commchannel.sigDetectorSwitched.connect = Mock()
-    return commchannel
+    commChannel = MagicMock()
+    commChannel.getCenterViewbox.return_value = (1024, 1024)
 
-
-@pytest.fixture
-def mock_settings_controller_params():
-    """Mock SettingsControllerParams structure."""
-    from imswitch.imcontrol.controller.controllers.SettingsController import SettingsControllerParams
-    
-    binning_param = Mock()
-    binning_param.value = Mock(return_value=1)
-    binning_param.setValue = Mock()
-    binning_param.sigValueChanged = Mock()
-    binning_param.sigValueChanged.connect = Mock()
-    
-    frame_mode_param = Mock()
-    frame_mode_param.value = Mock(return_value='Full chip')
-    frame_mode_param.setValue = Mock()
-    frame_mode_param.sigValueChanged = Mock()
-    frame_mode_param.sigValueChanged.connect = Mock()
-    
-    x0_param = Mock()
-    x0_param.value = Mock(return_value=0)
-    x0_param.setValue = Mock()
-    x0_param.sigValueChanged = Mock()
-    x0_param.sigValueChanged.connect = Mock()
-    
-    y0_param = Mock()
-    y0_param.value = Mock(return_value=0)
-    y0_param.setValue = Mock()
-    y0_param.sigValueChanged = Mock()
-    y0_param.sigValueChanged.connect = Mock()
-    
-    width_param = Mock()
-    width_param.value = Mock(return_value=512)
-    width_param.setValue = Mock()
-    width_param.sigValueChanged = Mock()
-    width_param.sigValueChanged.connect = Mock()
-    
-    height_param = Mock()
-    height_param.value = Mock(return_value=512)
-    height_param.setValue = Mock()
-    height_param.sigValueChanged = Mock()
-    height_param.sigValueChanged.connect = Mock()
-    
-    apply_param = Mock()
-    apply_param.sigActivated = Mock()
-    apply_param.sigActivated.connect = Mock()
-    
-    new_roi_param = Mock()
-    new_roi_param.sigActivated = Mock()
-    new_roi_param.sigActivated.connect = Mock()
-    
-    abort_roi_param = Mock()
-    abort_roi_param.sigActivated = Mock()
-    abort_roi_param.sigActivated.connect = Mock()
-    
-    save_mode_param = Mock()
-    save_mode_param.sigActivated = Mock()
-    save_mode_param.sigActivated.connect = Mock()
-    
-    delete_mode_param = Mock()
-    delete_mode_param.sigActivated = Mock()
-    delete_mode_param.sigActivated.connect = Mock()
-    
-    all_detectors_param = Mock()
-    all_detectors_param.value = Mock(return_value=False)
-    all_detectors_param.sigValueChanged = Mock()
-    all_detectors_param.sigValueChanged.connect = Mock()
-    
-    params = SettingsControllerParams(
-        model=Mock(),
-        binning=binning_param,
-        frameMode=frame_mode_param,
-        x0=x0_param,
-        y0=y0_param,
-        width=width_param,
-        height=height_param,
-        applyROI=apply_param,
-        newROI=new_roi_param,
-        abortROI=abort_roi_param,
-        saveMode=save_mode_param,
-        deleteMode=delete_mode_param,
-        allDetectorsFrame=all_detectors_param
+    widget = SettingsWidget(options=MagicMock())
+    controller = SettingsController(
+        setupInfo, commChannel, master,
+        widget=widget, factory=MagicMock(), moduleCommChannel=MagicMock(),
     )
-    
-    return params
-
-
-@pytest.fixture
-def settings_controller(mock_setupinfo, mock_commchannel, mock_master, mock_widget, 
-                        mock_widget_tree, mock_settings_controller_params):
-    """Create SettingsController mock with necessary attributes and methods."""
-    controller = Mock(spec=SettingsController)
-    controller._setupInfo = mock_setupinfo
-    controller._commChannel = mock_commchannel
-    controller._master = mock_master
-    controller._widget = mock_widget
-    controller._logger = Mock()
-    
-    # Mock allParams
-    controller.allParams = {'Camera1': mock_settings_controller_params}
-    
-    # Bind the actual methods from SettingsController to the mock
-    controller.getComponentState = lambda: SettingsController.getComponentState(controller)
-    controller.applyComponentState = lambda state, applyMode: SettingsController.applyComponentState(
-        controller, state, applyMode=applyMode
-    )
-    controller.describeComponentState = lambda state: SettingsController.describeComponentState(controller, state)
-    controller.getComponentStateHazards = lambda state, applyMode, context=None: SettingsController.getComponentStateHazards(
-        controller, state, applyMode=applyMode, context=context
-    )
-    
-    # Bind helper methods
-    controller._findSavedTriggerText = lambda parameters: SettingsController._findSavedTriggerText(
-        controller, parameters
-    )
-    controller._fmt = lambda value: SettingsController._fmt(controller, value)
-    controller._onOff = lambda value: SettingsController._onOff(controller, value)
-    
     return controller
 
 
-def test_get_component_state(settings_controller, mock_widget_tree, mock_settings_controller_params):
-    """Test getComponentState returns correct structure."""
-    state = settings_controller.getComponentState()
-    
-    assert isinstance(state, dict)
-    assert 'detectors' in state
-    
-    # Check Camera1 detector state
-    assert 'Camera1' in state['detectors']
-    detector_state = state['detectors']['Camera1']
-    assert detector_state['binning'] == 1
-    assert detector_state['frame_mode'] == 'Full chip'
-    assert detector_state['x0'] == 0
-    assert detector_state['y0'] == 0
-    assert detector_state['width'] == 512
-    assert detector_state['height'] == 512
-    assert 'parameters' in detector_state
-    assert detector_state['parameters'][CAMERA_PIXEL_SIZE_PARAM] == 0.15
+@pytest.fixture
+def cameras(qapp):
+    """Two cameras; Camera1 is the current (displayed) detector."""
+    camera1 = FakeDetector('Camera1')
+    camera2 = FakeDetector('Camera2')
+    controller = makeController([camera1, camera2])
+    for camera in (camera1, camera2):
+        camera.calls.clear()
+    return controller, camera1, camera2
 
 
-def test_apply_component_state_startup_restore_no_acquisition(settings_controller, mock_settings_controller_params):
-    """Test STARTUP_RESTORE mode does NOT start acquisition."""
-    state = {
-        'detectors': {
-            'Camera1': {
-                'binning': 2,
-                'frame_mode': 'Custom',
-                'x0': 100,
-                'y0': 100,
-                'width': 256,
-                'height': 256,
-                'parameters': {
-                    'Exposure time': 50.0,
-                    'Gain': 2.0
-                }
-            }
-        }
+@pytest.fixture
+def settings_controller(cameras):
+    controller, _, _ = cameras
+    return controller
+
+
+def savedState(detectorName='Camera1', **overrides):
+    detector_state = {
+        'binning': 2,
+        'frame_mode': 'Custom',
+        'x0': 512, 'y0': 256, 'width': 400, 'height': 300,
+        'parameters': {
+            'Set exposure time': 0.02,
+            'Trigger source': 'External "frame-trigger"',
+        },
     }
-    
-    warnings = settings_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
-    
-    # Should set all parameters
-    mock_settings_controller_params.binning.setValue.assert_called_with(2)
-    mock_settings_controller_params.frameMode.setValue.assert_called_with('Custom')
-    mock_settings_controller_params.x0.setValue.assert_called_with(100)
-    mock_settings_controller_params.y0.setValue.assert_called_with(100)
-    mock_settings_controller_params.width.setValue.assert_called_with(256)
-    mock_settings_controller_params.height.setValue.assert_called_with(256)
-    
-    # No acquisition should be started (verified by lack of startAcquisition/startLive calls)
-    # We assert this implicitly - if methods were called on non-mocked objects, test would fail
+    detector_state.update(overrides)
+    return {'detectors': {detectorName: detector_state}}
 
 
-def test_apply_component_state_restores_detector_parameters_to_manager(
-    settings_controller,
-    mock_widget_tree,
-):
-    """Detector parameters must not depend on Qt signal delivery during startup restore."""
-    state = {
-        'detectors': {
-            'Camera1': {
-                'binning': 1,
-                'frame_mode': 'Full chip',
-                'x0': 0,
-                'y0': 0,
-                'width': 512,
-                'height': 512,
-                'parameters': {
-                    'Exposure time': 50.0,
-                    CAMERA_PIXEL_SIZE_PARAM: 0.108,
-                }
-            }
-        }
-    }
-    detector = settings_controller._master.detectorsManager['Camera1']
-    settings_controller.updateSharedAttrs = Mock()
+# --- snapshot -------------------------------------------------------------
 
-    warnings = settings_controller.applyComponentState(
-        state,
+def test_get_component_state_reads_hardware(cameras):
+    """The snapshot reflects the detector, not the widget."""
+    controller, camera1, _ = cameras
+    camera1.binning = 4
+    camera1.frameStart = (64, 32)
+    camera1.shape = (256, 128)
+    camera1.parameters['Set exposure time'].value = 0.05
+
+    state = controller.getComponentState()['detectors']['Camera1']
+
+    assert state['binning'] == 4
+    assert (state['x0'], state['y0'], state['width'], state['height']) == (64, 32, 256, 128)
+    assert state['parameters']['Set exposure time'] == 0.05
+    assert state['frame_mode'] == 'Full chip'
+
+
+def test_get_component_state_ignores_unapplied_widget_edits(cameras):
+    """ROI typed into the widget but never applied must not be persisted."""
+    controller, camera1, _ = cameras
+    params = controller.allParams['Camera1']
+    params.x0.setValue(999)
+    params.width.setValue(111)
+
+    state = controller.getComponentState()['detectors']['Camera1']
+
+    assert (state['x0'], state['width']) == (*camera1.frameStart[:1], camera1.shape[0])
+
+
+def test_get_component_state_omits_read_only_parameters(cameras):
+    """Camera-reported readings are not settings and are not persisted."""
+    controller, _, _ = cameras
+
+    parameters = controller.getComponentState()['detectors']['Camera1']['parameters']
+
+    assert 'Real exposure time' not in parameters
+    assert 'Set exposure time' in parameters
+
+
+# --- restore reaches hardware --------------------------------------------
+
+@pytest.mark.parametrize('applyMode', [
+    ComponentStateApplyMode.STARTUP_RESTORE,
+    ComponentStateApplyMode.SETUP_MODE_APPLY,
+])
+def test_apply_component_state_crops_the_detector(cameras, applyMode):
+    """The regression that started this: the saved ROI must reach crop()."""
+    controller, camera1, _ = cameras
+
+    warnings = controller.applyComponentState(savedState(), applyMode=applyMode)
+
+    assert warnings == []
+    assert camera1.cropCalls() == [('crop', 512, 256, 400, 300)]
+    assert camera1.frameStart == (512, 256)
+    assert camera1.shape == (400, 300)
+
+
+def test_apply_component_state_sets_binning_on_the_saved_detector(cameras):
+    """Binning must land on the restored detector, not the displayed one."""
+    controller, camera1, camera2 = cameras
+
+    controller.applyComponentState(
+        savedState('Camera2', binning=4),
         applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
     )
 
+    assert camera2.binning == 4
+    assert camera1.binning == 1
+    assert ('setBinning', 4) in camera2.calls
+    assert camera1.calls == []
+
+
+def test_apply_component_state_applies_trigger_mode(cameras):
+    """Trigger mode is a setting and must be pushed to the manager."""
+    controller, camera1, _ = cameras
+
+    controller.applyComponentState(
+        savedState(), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert ('setParameter', 'Trigger source', 'External "frame-trigger"') in camera1.calls
+    assert camera1.parameters['Trigger source'].value == 'External "frame-trigger"'
+
+
+def test_apply_component_state_skips_read_only_parameters(cameras):
+    """Legacy files still carry camera readings; they must be ignored, and the
+    hardware value refreshed rather than overwritten with a stale number."""
+    controller, camera1, _ = cameras
+    state = savedState()
+    state['detectors']['Camera1']['parameters']['Real exposure time'] = 9.99
+
+    warnings = controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
     assert warnings == []
-    detector.setParameter.assert_any_call('Exposure time', 50.0)
-    detector.setParameter.assert_any_call(CAMERA_PIXEL_SIZE_PARAM, 0.108)
-    mock_widget_tree.p.param('Acquisition').param('Exposure time').setValue.assert_called_with(
-        50.0,
-        blockSignal=True,
-    )
-    mock_widget_tree.p.param('Miscellaneous').param(CAMERA_PIXEL_SIZE_PARAM).setValue.assert_called_with(
-        0.108,
-        blockSignal=True,
-    )
-    settings_controller.updateSharedAttrs.assert_called()
+    assert all(call[1] != 'Real exposure time' for call in camera1.parameterCalls())
+    # Refreshed from the restored exposure (0.02 * 1.05), not the saved 9.99.
+    assert camera1.parameters['Real exposure time'].value == pytest.approx(0.021)
 
 
-def test_apply_component_state_setup_mode_no_acquisition(settings_controller, mock_settings_controller_params):
-    """Test SETUP_MODE_APPLY mode also does NOT start acquisition (same as STARTUP_RESTORE)."""
-    state = {
-        'detectors': {
-            'Camera1': {
-                'binning': 2,
-                'frame_mode': 'Custom',
-                'x0': 100,
-                'y0': 100,
-                'width': 256,
-                'height': 256,
-                'parameters': {}
-            }
-        }
-    }
-    
-    warnings = settings_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
-    
-    # Should set all parameters (same as STARTUP_RESTORE)
-    mock_settings_controller_params.binning.setValue.assert_called_with(2)
-    mock_settings_controller_params.frameMode.setValue.assert_called_with('Custom')
-    mock_settings_controller_params.x0.setValue.assert_called_with(100)
-    mock_settings_controller_params.y0.setValue.assert_called_with(100)
-    mock_settings_controller_params.width.setValue.assert_called_with(256)
-    mock_settings_controller_params.height.setValue.assert_called_with(256)
-    
-    # No acquisition should be started
-    # Behavior is identical to STARTUP_RESTORE
+def test_apply_component_state_does_not_disturb_other_detectors(cameras):
+    """Restoring Camera2 must not rewrite Camera1's already-restored frame.
+
+    Previously frameMode.setValue() fired updateFrame() on the *displayed*
+    detector, which opened a fresh 64x64 ROI overlay and wrote its geometry over
+    Camera1's fields via ROIchanged()/getCurrentParams().
+    """
+    controller, camera1, camera2 = cameras
+
+    controller.applyComponentState(
+        savedState('Camera1'), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+    controller.applyComponentState(
+        savedState('Camera2', x0=100, y0=100, width=200, height=200),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert camera1.frameStart == (512, 256)
+    assert camera1.shape == (400, 300)
+    params = controller.allParams['Camera1']
+    assert (params.x0.value(), params.y0.value(),
+            params.width.value(), params.height.value()) == (512, 256, 400, 300)
 
 
-def test_apply_modes_behave_identically(settings_controller, mock_settings_controller_params):
-    """Test that STARTUP_RESTORE and SETUP_MODE_APPLY behave identically."""
-    state = {
-        'detectors': {
-            'Camera1': {
-                'binning': 4,
-                'frame_mode': 'Full chip',
-                'x0': 0,
-                'y0': 0,
-                'width': 512,
-                'height': 512,
-                'parameters': {}
-            }
-        }
-    }
-    
-    # Apply in STARTUP_RESTORE mode
-    mock_settings_controller_params.binning.setValue.reset_mock()
-    mock_settings_controller_params.frameMode.setValue.reset_mock()
-    warnings1 = settings_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
-    calls1 = (
-        mock_settings_controller_params.binning.setValue.call_count,
-        mock_settings_controller_params.frameMode.setValue.call_count,
-    )
-    
-    # Apply in SETUP_MODE_APPLY mode
-    mock_settings_controller_params.binning.setValue.reset_mock()
-    mock_settings_controller_params.frameMode.setValue.reset_mock()
-    warnings2 = settings_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
-    calls2 = (
-        mock_settings_controller_params.binning.setValue.call_count,
-        mock_settings_controller_params.frameMode.setValue.call_count,
-    )
-    
-    # Both modes should make the same calls
-    assert calls1 == calls2
-    # Both should have same or similar warnings (if any)
-    assert len(warnings1) == len(warnings2)
+def test_widget_mirrors_hardware_after_restore(cameras):
+    """The widget is a view of the resulting hardware state."""
+    controller, camera1, _ = cameras
+
+    controller.applyComponentState(
+        savedState(), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    params = controller.allParams['Camera1']
+    assert params.binning.value() == camera1.binning
+    assert (params.x0.value(), params.y0.value()) == camera1.frameStart
+    assert (params.width.value(), params.height.value()) == camera1.shape
+    assert params.frameMode.value() == 'Custom'
+
+
+def test_restore_survives_hardware_clamping(cameras):
+    """When the detector snaps the ROI, the widget shows what hardware took."""
+    controller, camera1, _ = cameras
+
+    def snappingCrop(hpos, vpos, hsize, vsize):
+        camera1.calls.append(('crop', hpos, vpos, hsize, vsize))
+        camera1.frameStart = (hpos, vpos)
+        camera1.shape = (hsize - 4, vsize - 4)  # driver step granularity
+    camera1.crop = snappingCrop
+
+    controller.applyComponentState(
+        savedState(), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    params = controller.allParams['Camera1']
+    assert (params.width.value(), params.height.value()) == (396, 296)
+
+
+def test_round_trip_restores_exactly(cameras):
+    """snapshot -> drift -> restore must reproduce the original hardware state."""
+    controller, camera1, _ = cameras
+    camera1.setBinning(2)
+    camera1.crop(512, 256, 400, 300)
+    camera1.setParameter('Set exposure time', 0.02)
+    snapshot = controller.getComponentState()
+
+    camera1.setBinning(1)
+    camera1.crop(0, 0, 2048, 2048)
+    camera1.setParameter('Set exposure time', 0.5)
+
+    warnings = controller.applyComponentState(
+        snapshot, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert warnings == []
+    assert camera1.binning == 2
+    assert camera1.frameStart == (512, 256)
+    assert camera1.shape == (400, 300)
+    assert camera1.parameters['Set exposure time'].value == 0.02
+
+
+def test_apply_modes_behave_identically(cameras):
+    """STARTUP_RESTORE and SETUP_MODE_APPLY produce the same hardware calls."""
+    controller, camera1, camera2 = cameras
+
+    controller.applyComponentState(
+        savedState('Camera1'), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+    startupCalls = list(camera1.calls)
+
+    controller.applyComponentState(
+        savedState('Camera2'), applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY)
+    setupModeCalls = list(camera2.calls)
+
+    assert startupCalls == setupModeCalls
+
+
+def test_apply_component_state_never_acquires(cameras):
+    """Neither mode may start acquisition or live view."""
+    controller, camera1, _ = cameras
+
+    for applyMode in ComponentStateApplyMode:
+        controller.applyComponentState(savedState(), applyMode=applyMode)
+
+    forbidden = {'startAcquisition', 'stopAcquisition', 'startLive', 'flushBuffers'}
+    assert not any(call[0] in forbidden for call in camera1.calls)
+
+
+# --- edge cases -----------------------------------------------------------
+
+def test_non_croppable_detector_is_not_cropped(qapp):
+    """APD/PMT/TimeTagger derive their shape from the scan; no ROI to restore."""
+    apd = FakeDetector('APD', croppable=False)
+    controller = makeController([apd])
+    apd.calls.clear()
+
+    warnings = controller.applyComponentState(
+        savedState('APD'), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert warnings == []
+    assert apd.cropCalls() == []
+    assert apd.binning == 2
 
 
 def test_apply_component_state_missing_detector_warning(settings_controller):
-    """Test warning is returned for detector not in current setup."""
-    state = {
-        'detectors': {
-            'NonExistentCam': {
-                'binning': 1,
-                'frame_mode': 'Full chip',
-                'x0': 0,
-                'y0': 0,
-                'width': 512,
-                'height': 512,
-                'parameters': {}
-            }
-        }
-    }
-    
-    warnings = settings_controller.applyComponentState(state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
-    
-    assert any('NonExistentCam' in w and 'not present' in w for w in warnings)
+    """A detector absent from the current setup is reported, not fatal."""
+    warnings = settings_controller.applyComponentState(
+        savedState('NonExistentCam'),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
 
+    assert any('NonExistentCam' in warning and 'not present' in warning
+               for warning in warnings)
+
+
+def test_apply_component_state_unknown_parameter_warns(cameras):
+    """A parameter that no longer exists on the detector is reported."""
+    controller, camera1, _ = cameras
+    state = savedState()
+    state['detectors']['Camera1']['parameters']['Gone'] = 1
+
+    warnings = controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert any('Gone' in warning for warning in warnings)
+    assert camera1.frameStart == (512, 256)  # rest of the restore still applied
+
+
+def test_apply_component_state_partial_roi_is_skipped(cameras):
+    """An incomplete ROI must not be half-applied."""
+    controller, camera1, _ = cameras
+    state = savedState()
+    del state['detectors']['Camera1']['height']
+
+    controller.applyComponentState(
+        state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert camera1.cropCalls() == []
+
+
+# --- payload-only surface -------------------------------------------------
 
 def test_describe_component_state(settings_controller):
-    """Test describeComponentState returns human-readable summary."""
+    """describeComponentState returns a human-readable summary."""
     state = {
         'detectors': {
             'Camera1': {
-                'binning': 2,
-                'frame_mode': 'Custom',
-                'x0': 100,
-                'y0': 100,
-                'width': 256,
-                'height': 256,
-                'parameters': {
-                    'Trigger source': 'External'
-                }
+                'binning': 2, 'frame_mode': 'Custom',
+                'x0': 100, 'y0': 100, 'width': 256, 'height': 256,
+                'parameters': {'Trigger source': 'External'},
             }
         }
     }
-    
+
     summary = settings_controller.describeComponentState(state)
-    
-    assert isinstance(summary, list)
-    assert len(summary) > 0
-    
-    # Should include detector name
+
     assert any('Camera1' in line for line in summary)
-    
-    # Should include mode
     assert any('mode: Custom' in line for line in summary)
-    
-    # Should include ROI
     assert any('ROI:' in line and '100' in line and '256' in line for line in summary)
-    
-    # Should include binning
     assert any('binning: 2' in line for line in summary)
-    
-    # Should include trigger parameter
     assert any('Trigger source' in line and 'External' in line for line in summary)
 
 
 def test_describe_component_state_empty(settings_controller):
-    """Test describeComponentState handles empty state."""
-    state = {'detectors': {}}
-    
-    summary = settings_controller.describeComponentState(state)
-    
-    assert isinstance(summary, list)
+    """describeComponentState handles empty state."""
+    summary = settings_controller.describeComponentState({'detectors': {}})
+
     assert len(summary) == 1
     assert 'no detector state' in summary[0]
 
 
-def test_get_component_state_hazards_returns_empty(settings_controller):
-    """Test getComponentStateHazards returns empty list (no hazards for detector settings)."""
-    state = {
-        'detectors': {
-            'Camera1': {
-                'binning': 1,
-                'frame_mode': 'Full chip',
-                'x0': 0,
-                'y0': 0,
-                'width': 512,
-                'height': 512,
-                'parameters': {}
-            }
-        }
-    }
-    
-    # Test for both apply modes
-    hazards_startup = settings_controller.getComponentStateHazards(
-        state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE, context=None
-    )
-    hazards_setup = settings_controller.getComponentStateHazards(
-        state, applyMode=ComponentStateApplyMode.SETUP_MODE_APPLY, context=None
-    )
-    
-    assert hazards_startup == []
-    assert hazards_setup == []
+# --- setup-file-owned parameters -----------------------------------------
+
+@pytest.fixture
+def configuredCameras(qapp):
+    """A camera whose pixel size the setup file declares (0.082 µm)."""
+    camera = FakeDetector('Camera1')
+    camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value = 0.082
+    camera.configOwnedParameters = frozenset({CAMERA_PIXEL_SIZE_PARAM})
+    controller = makeController([camera])
+    camera.calls.clear()
+    return controller, camera
 
 
-def test_round_trip_state_persistence(settings_controller, mock_settings_controller_params):
-    """Test round-trip: getComponentState -> applyComponentState restores original state."""
-    # Get initial state
-    initial_state = settings_controller.getComponentState()
-    
-    # Modify parameters
-    mock_settings_controller_params.binning.value = Mock(return_value=2)
-    mock_settings_controller_params.frameMode.value = Mock(return_value='Custom')
-    mock_settings_controller_params.x0.value = Mock(return_value=50)
-    mock_settings_controller_params.y0.value = Mock(return_value=50)
-    mock_settings_controller_params.width.value = Mock(return_value=300)
-    mock_settings_controller_params.height.value = Mock(return_value=300)
-    
-    # Restore initial state
-    warnings = settings_controller.applyComponentState(
-        initial_state, applyMode=ComponentStateApplyMode.STARTUP_RESTORE
+def test_config_owned_parameter_is_not_persisted(configuredCameras):
+    """A configured pixel size is optical calibration, not a runtime setting."""
+    controller, _ = configuredCameras
+
+    parameters = controller.getComponentState()['detectors']['Camera1']['parameters']
+
+    assert CAMERA_PIXEL_SIZE_PARAM not in parameters
+    assert 'Set exposure time' in parameters
+
+
+def test_unconfigured_pixel_size_is_still_persisted(cameras):
+    """Without cameraPixelSizeUm the value is the user's, so it must survive."""
+    controller, _, _ = cameras
+
+    parameters = controller.getComponentState()['detectors']['Camera1']['parameters']
+
+    assert parameters[CAMERA_PIXEL_SIZE_PARAM] == 0.15
+
+
+def test_stale_snapshot_cannot_override_the_configured_pixel_size(configuredCameras):
+    """The bug: every recording was calibrated with the previous session's
+    pixel size, because snapshots written before the setup file was edited
+    still carried it and restore wrote them straight back."""
+    controller, camera = configuredCameras
+
+    warnings = controller.applyComponentState(
+        savedState(parameters={CAMERA_PIXEL_SIZE_PARAM: 0.15}),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
     )
-    
-    # Verify settings were restored
-    mock_settings_controller_params.binning.setValue.assert_called_with(initial_state['detectors']['Camera1']['binning'])
-    mock_settings_controller_params.frameMode.setValue.assert_called_with(initial_state['detectors']['Camera1']['frame_mode'])
-    
-    # No warnings for valid round-trip
+
     assert warnings == []
+    assert camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value == 0.082
+    assert (CAMERA_PIXEL_SIZE_PARAM
+            not in [call[1] for call in camera.parameterCalls()])
+
+
+def test_widget_keeps_showing_the_configured_pixel_size(configuredCameras):
+    """The display and the detector must not be allowed to disagree."""
+    controller, camera = configuredCameras
+
+    controller.applyComponentState(
+        savedState(parameters={CAMERA_PIXEL_SIZE_PARAM: 0.15}),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    shown = controller._widget.trees['Camera1'].p.param('Miscellaneous').param(
+        CAMERA_PIXEL_SIZE_PARAM).value()
+    assert shown == pytest.approx(0.082)
+    assert shown == pytest.approx(camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value)
+
+
+def test_get_component_state_hazards_returns_empty(settings_controller):
+    """Detector settings are passive configuration; no hazards in either mode."""
+    state = savedState()
+
+    for applyMode in ComponentStateApplyMode:
+        assert settings_controller.getComponentStateHazards(
+            state, applyMode=applyMode, context=None) == []
 
 
 def test_component_name_and_schema_version():
-    """Test SettingsController has correct component name and schema version."""
+    """SettingsController declares the canonical component identity."""
     assert SettingsController.componentName == 'Settings'
     assert SettingsController.stateSchemaVersion == 1
     assert SettingsController.legacyStateNames == ()

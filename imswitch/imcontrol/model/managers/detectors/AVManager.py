@@ -113,13 +113,13 @@ class AVManager(DetectorManager):
 
     def stopAcquisition(self):
         if self._running:
-            self._running = False
             self._camera.suspend_live()
+            self._running = False
             self.__logger.debug('suspendlive')
 
     def stopAcquisitionForROIChange(self):
-        self._running = False
         self._camera.stop_live()
+        self._running = False
         self.__logger.debug('stoplive for roi change')
 
     def finalize(self) -> None:

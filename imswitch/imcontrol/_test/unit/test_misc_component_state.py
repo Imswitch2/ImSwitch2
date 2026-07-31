@@ -288,6 +288,9 @@ class TestRecordingController:
         widget.getRecFolder = MagicMock(return_value='/tmp/test')
         widget.getNumExpositions = MagicMock(return_value=100)
         widget.getTimeToRec = MagicMock(return_value=10.0)
+        widget.getTimelapseNumFrames = MagicMock(return_value=10)
+        widget.getSpecTimelapseFrameTime = MagicMock(return_value=3600.0)
+        widget.getTimelapseSingleFile = MagicMock(return_value=False)
         widget.setsaveFormat = MagicMock()
         widget.setSnapSaveMode = MagicMock()
         widget.setRecSaveMode = MagicMock()
@@ -364,8 +367,8 @@ class TestRecordingController:
         
         controller._master.recordingManager.startRecording.assert_not_called()
 
-    def test_legacy_spec_lapse_state_restores_until_stop(self, controller):
-        """Legacy plain Timelapse states must not touch missing RecMode.SpecLapse."""
+    def test_legacy_spec_lapse_state_restores_camera_lapse(self, controller):
+        """The old saved name now migrates to the supported camera lapse."""
         state = {
             'saveFormat': 1,
             'snapSaveMode': 1,
@@ -378,9 +381,9 @@ class TestRecordingController:
             applyMode=ComponentStateApplyMode.STARTUP_RESTORE
         )
 
-        controller.specLapse.assert_not_called()
-        controller.untilStop.assert_called_once()
-        assert any('SpecLapse' in warning for warning in warnings)
+        controller.specLapse.assert_called_once()
+        controller.untilStop.assert_not_called()
+        assert warnings == []
     
     def test_describe_component_state(self, controller):
         """Verify describeComponentState returns non-empty."""

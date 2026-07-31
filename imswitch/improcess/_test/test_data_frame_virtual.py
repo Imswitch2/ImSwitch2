@@ -65,6 +65,7 @@ def _controller_stub():
         _dataObj=None,
     )
     controller._currentDataArray = DataFrameController._currentDataArray.__get__(controller)
+    controller._currentAxisLabels = DataFrameController._currentAxisLabels.__get__(controller)
     controller.showMean = DataFrameController.showMean.__get__(controller)
     controller.currentDataChanged = DataFrameController.currentDataChanged.__get__(controller)
     controller.setImgSlice = DataFrameController.setImgSlice.__get__(controller)

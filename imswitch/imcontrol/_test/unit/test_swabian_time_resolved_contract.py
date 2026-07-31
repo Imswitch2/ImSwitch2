@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -34,6 +36,32 @@ class _DetectorInfo:
 
     def __init__(self, props):
         self.managerProperties = props
+
+
+class _ScanWorker:
+    def __init__(self, generation=1):
+        self.scanGeneration = generation
+        self.stopCalls = 0
+
+    def stop(self):
+        self.stopCalls += 1
+
+
+class _StuckScanThread:
+    def __init__(self):
+        self.running = True
+        self.quitCalls = 0
+        self.waitTimeouts = []
+
+    def isRunning(self):
+        return self.running
+
+    def quit(self):
+        self.quitCalls += 1
+
+    def wait(self, timeout=None):
+        self.waitTimeouts.append(timeout)
+        return not self.running
 
 
 def _make_manager(props=None):
@@ -186,3 +214,47 @@ def test_time_resolved_product_capture_rejects_outer_scan_axes():
 
     with pytest.raises(RuntimeError, match="2D x/y scans"):
         manager._validate_time_resolved_scan_shape(["z"], [3])
+
+
+def test_scan_thread_teardown_is_bounded_and_retains_retry_identity():
+    manager = _make_manager()
+    worker = _ScanWorker()
+    thread = _StuckScanThread()
+    manager._scanWorker = worker
+    manager._scanThread = thread
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="did not stop"):
+        manager._teardownScanThread(timeoutMs=5)
+    assert time.monotonic() - started < 0.2
+    assert manager._scanWorker is worker
+    assert manager._scanThread is thread
+    assert worker.stopCalls == 1
+    assert thread.waitTimeouts == [5]
+
+    thread.running = False
+    manager._teardownScanThread(timeoutMs=5)
+    assert worker.stopCalls == 2
+    assert manager._scanWorker is None
+    assert manager._scanThread is None
+
+
+def test_abort_withholds_ack_when_scan_worker_cannot_be_stopped(
+        monkeypatch):
+    manager = _make_manager()
+    worker = _ScanWorker(generation=7)
+    manager._scanWorker = worker
+    manager._activeScanGeneration = 7
+    manager._preparedScanGeneration = 7
+    acknowledgements = []
+
+    def failTeardown():
+        raise TimeoutError("worker stuck")
+
+    monkeypatch.setattr(manager, "_teardownScanThread", failTeardown)
+    manager.finishScan("abort", lambda: acknowledgements.append(True))
+
+    assert acknowledgements == []
+    assert manager._scanWorker is worker
+    assert manager._activeScanGeneration == 7
+    assert manager._preparedScanGeneration == 7

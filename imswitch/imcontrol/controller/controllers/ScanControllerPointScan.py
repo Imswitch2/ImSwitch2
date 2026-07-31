@@ -8,6 +8,7 @@ from typing import Dict, Any
 from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
+from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
 
 class ScanControllerPointScan(SuperScanController):
     def __init__(self, *args, **kwargs):
@@ -59,8 +60,11 @@ class ScanControllerPointScan(SuperScanController):
                         sigScanStartingEmitted):
         """ Runs a scan with the set scanning parameters. """
         try:
+            if self._beginScanRun(
+                sigScanStartingEmitted=sigScanStartingEmitted
+            ) is None:
+                return
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
@@ -70,14 +74,11 @@ class ScanControllerPointScan(SuperScanController):
                     )
                 except TypeError:
                     self._logger.error(traceback.format_exc())
-                    self.isRunning = False
-                    self.abortScan()
+                    self.scanFailed()
                     return
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
             # set positions of scanners not in scan from centerpos
             for index, positionerName in enumerate(self._analogParameterDict['target_device']):
                 if positionerName not in self._positionersScan:
@@ -85,23 +86,62 @@ class ScanControllerPointScan(SuperScanController):
                     self._master.positionersManager[positionerName].setPosition(position, 0)
                     #self._logger.debug(f'Set {positionerName} center to {position} before scan')
             # run scan
-            self._master.nidaqManager.runScan(self.signalDict, self.scanInfoDict)
+            self._armScanIteration(self.signalDict, self.scanInfoDict)
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
-            self.abortScan()
+            self.scanFailed()
 
     def scanDone(self):
         self.isRunning = False
+        try:
+            if not self._widget.repeatEnabled():
+                isFinalPart = not self.doingNonFinalPartOfSequence
+                try:
+                    self._resetReturnToCenterPositionersAfterScan()
+                except Exception:
+                    self._logger.warning(
+                        "Failed to reset positioners after scan:\n%s",
+                        traceback.format_exc(),
+                    )
+                if isFinalPart:
+                    try:
+                        self._widget.setScanButtonChecked(False)
+                    except Exception:
+                        self._logger.error(
+                            'Failed to reset the scan widget after completion',
+                            exc_info=True,
+                        )
+                self._publishScanDone(isFinalPart=isFinalPart)
+            else:
+                # Defer the re-arm so the finished scan's NI-DAQ tasks and
+                # detector threads tear down before the next frame starts.
+                self._armRepeatScan()
+        except Exception:
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
 
-        if not self._widget.repeatEnabled():
-            self.emitScanSignal(self._commChannel.sigScanDone)
-            if not self.doingNonFinalPartOfSequence:
-                self._widget.setScanButtonChecked(False)
-                self.emitScanSignal(self._commChannel.sigScanEnded)
-            self._resetReturnToCenterPositionersAfterScan()
-        else:
-            self.runScanAdvanced(sigScanStartingEmitted=True)
+    def getDimsScan(self):
+        """Return (x, y, z) pixel counts for the first three scan axes."""
+        self.getParameters()
+        lengths = self._analogParameterDict.get('axis_length', [])
+        stepSizes = self._analogParameterDict.get('axis_step_size', [])
+        dims = []
+        for i in range(min(3, len(lengths))):
+            step = stepSizes[i] if i < len(stepSizes) else 0
+            dims.append(
+                pixels_for_length_step(lengths[i], step) if step != 0 else 0
+            )
+        while len(dims) < 3:
+            dims.append(0)
+        return tuple(dims[:3])
+
+    def getScanStepSizes(self):
+        """Return (x, y, z) step sizes for recording metadata."""
+        stepSizes = self._analogParameterDict.get('axis_step_size', [])
+        result = list(stepSizes[:3])
+        while len(result) < 3:
+            result.append(0.0)
+        return result
 
     def getParameters(self):
         if self.settingParameters:

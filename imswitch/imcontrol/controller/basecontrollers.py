@@ -2,15 +2,25 @@ import copy
 import functools
 import json
 import os
+import threading
 import traceback
 
 from abc import abstractmethod
 
+from qtpy import QtCore
+
+from imswitch.imcommon.framework import Signal
 from imswitch.imcommon.controller.basecontrollers import (
     WidgetController,
     WidgetControllerFactory,
 )
 from imswitch.imcontrol.model import InvalidChildClassError
+from imswitch.imcontrol.model.managers._scan_execution import (
+    FINISH_ABORT, FINISH_GRACEFUL, getSharedScanExecutionCoordinator,
+)
+from imswitch.imcontrol.controller.WorkflowServices import (
+    ScanRequestCompletion,
+)
 from imswitch.imcontrol.model.state_contracts import ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport, dirtools, initLogger
 
@@ -32,6 +42,8 @@ class ImConWidgetController(WidgetController):
     All WidgetControllers should have access to the setup information,
     MasterController, CommunicationChannel and the linked Widget. """
 
+    sigInvokeOnControllerThread = Signal(object)
+
     def __init__(self, setupInfo, commChannel, master, *args, **kwargs):
         # Protected attributes, which should only be accessed from controller and its subclasses
         self._setupInfo = setupInfo
@@ -40,6 +52,44 @@ class ImConWidgetController(WidgetController):
 
         # Init superclass
         super().__init__(*args, **kwargs)
+        queuedConnection = getattr(
+            QtCore.Qt, 'ConnectionType', QtCore.Qt
+        ).QueuedConnection
+        try:
+            self.sigInvokeOnControllerThread.connect(
+                self.__invokeOnControllerThread,
+                type=queuedConnection,
+            )
+        except TypeError:
+            self.sigInvokeOnControllerThread.connect(
+                self.__invokeOnControllerThread,
+                queuedConnection,
+            )
+
+    def _invokeOnControllerThread(self, callback) -> None:
+        """Queue ``callback`` onto this controller QObject's affinity thread."""
+        self.sigInvokeOnControllerThread.emit(callback)
+
+    def _invokeOnControllerThreadIfNeeded(self, callback) -> None:
+        """Run now on the affinity thread, otherwise queue to that thread."""
+        try:
+            if QtCore.QThread.currentThread() is self.thread():
+                callback()
+                return
+        except Exception:
+            # Lightweight non-Qt test adapters execute synchronously.
+            callback()
+            return
+        self._invokeOnControllerThread(callback)
+
+    def __invokeOnControllerThread(self, callback) -> None:
+        try:
+            callback()
+        except Exception:
+            self._logger.error(
+                'A controller-thread lifecycle handoff failed',
+                exc_info=True,
+            )
 
 
 class SetupModeApplyPriority:
@@ -205,7 +255,7 @@ class ScanLifecycleMixin:
     isRunning assignment) and must keep maintaining ``isRunning`` around its
     scan lifecycle. The adoption-audit unit test in
     imswitch/imcontrol/_test/unit/test_scan_lifecycle.py enforces that every
-    scan controller inherits this mixin. See docs/scan_lifecycle.md.
+    scan controller inherits this mixin. See docs/scan-lifecycle.rst.
     """
 
     # Class-level default so the getter works before __init__ assigns it
@@ -226,6 +276,7 @@ class ScanLifecycleMixin:
 
 class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     componentName = 'Scan'
+    supportsExactScanRequestCompletion = True
     stateSchemaVersion = 1
     legacyStateNames = ('ScanController', 'ScanControllerAdvanced', 'ScanControllerMoNaLISA', 'ScanControllerPointScan')
     setupModeCategory = 'scan'
@@ -249,6 +300,32 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self.scanInfoDict = None
         self.isRunning = False
         self.doingNonFinalPartOfSequence = False
+        # True between a repeat-scan frame finishing and the next frame arming.
+        # See _armRepeatScan for why the re-arm is deferred.
+        self._repeatPending = False
+        # Run-level ownership deliberately outlives each NI-DAQ iteration. It
+        # spans repeat gaps, non-final sequence parts and MoNaLISA axial
+        # follow-ups, and is released exactly once with sigScanEnded.
+        self._scanRunToken = None
+        self._scanRunStartingPublished = False
+        self._scanStopRequested = False
+        self._scanRunFailed = False
+        self._scanClosing = False
+        # Per-broadcast acknowledgement state. Recording uses this synchronous
+        # result to distinguish a scan that reserved/armed from a legacy signal
+        # that was emitted but refused by every controller.
+        self._externalScanRequestInProgress = False
+        self._externalScanRequestAccepted = False
+        self._externalScanRequestFailed = False
+        self._externalScanRequestFailureMessage = ''
+        self._externalScanRequestRunToken = None
+        self._externalScanRequestCompletion = None
+        self._pendingExternalScanRequestCompletions = []
+        self._scanCompletionPublishing = False
+        # Terminal ownership is claimed atomically before local run identity is
+        # cleared. Close, failure and completion paths can otherwise race,
+        # capture the same token, and publish the same run-level end twice.
+        self._scanRunTerminalLock = threading.RLock()
 
         self.positioners = {
             pName: pManager for pName, pManager in self._setupInfo.positioners.items()
@@ -260,6 +337,18 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         if not os.path.exists(self.scanDir):
             os.makedirs(self.scanDir)
 
+        # All NI-DAQ entry points share one global iteration owner. Ownership is
+        # recorded on the token, so the broadcast completion signals are acted
+        # on only by the controller that armed the scan.
+        self._scanCoordinator = getSharedScanExecutionCoordinator(
+            self._master.detectorsManager,
+            self._master.nidaqManager,
+            logger=self._logger,
+            scheduleTimeout=lambda delayS, callback: QtCore.QTimer.singleShot(
+                int(delayS * 1000), callback
+            ),
+        )
+
         # Connect NidaqManager signals
         self._master.nidaqManager.sigScanBuilt.connect(
             lambda _, __, deviceList: self.emitScanSignal(self._commChannel.sigScanBuilt, deviceList)
@@ -267,8 +356,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         self._master.nidaqManager.sigScanStarted.connect(
             lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
         )
-        self._master.nidaqManager.sigScanDone.connect(self.scanDone)
-        self._master.nidaqManager.sigScanBuildFailed.connect(self.scanFailed)
+        # NI-DAQ is authoritative: abortScan() does not stop a running scan, so
+        # ownership is released on sigScanDone rather than at the user's abort
+        # click.
+        self._master.nidaqManager.sigScanDone.connect(self.__onNidaqScanDone)
+        self._master.nidaqManager.sigScanBuildFailed.connect(
+            self.__onNidaqScanBuildFailed
+        )
 
         # Connect CommunicationChannel signals
         self._commChannel.sigRunScan.connect(self.runScanExternal)
@@ -299,11 +393,358 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def runScanExternal(self, recalculateSignals, isNonFinalPartOfSequence):
         """ Run scan from external non-scan-widget trigger. """
-        self._widget.setScanMode()
-        self._widget.setRepeatEnabled(False)
-        self.runScanAdvanced(recalculateSignals=recalculateSignals,
-                             isNonFinalPartOfSequence=isNonFinalPartOfSequence,
-                             sigScanStartingEmitted=True)
+        requestCompletion = ScanRequestCompletion(self)
+        self._externalScanRequestInProgress = True
+        self._externalScanRequestAccepted = False
+        self._externalScanRequestFailed = False
+        self._externalScanRequestFailureMessage = ''
+        self._externalScanRequestRunToken = None
+        self._externalScanRequestCompletion = requestCompletion
+        try:
+            refusalMessage = SuperScanController._externalScanStartRefusal(
+                self
+            )
+            if refusalMessage:
+                self._externalScanRequestFailureMessage = refusalMessage
+                return
+            self._widget.setScanMode()
+            self._widget.setRepeatEnabled(False)
+            self.runScanAdvanced(
+                recalculateSignals=recalculateSignals,
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+                sigScanStartingEmitted=True,
+            )
+        except Exception as error:
+            self._externalScanRequestFailed = True
+            self._externalScanRequestFailureMessage = str(error)
+            coordinator = getattr(self, '_scanCoordinator', None)
+            if coordinator is not None:
+                ownedRun = coordinator.runForOwner(self)
+                activeIteration = coordinator.tokenForOwner(self)
+                if ownedRun is not None and activeIteration is None:
+                    # A continuation can fail in setScanMode/setRepeatEnabled
+                    # before _beginScanRun binds this request. Its earlier
+                    # non-final part still owns one published lifecycle, so
+                    # terminalize that idle retained run instead of leaking it.
+                    try:
+                        self.scanFailed()
+                    except Exception:
+                        self._logger.error(
+                            'Failed to terminalize an idle scan continuation',
+                            exc_info=True,
+                        )
+                        self._finishScanRun()
+            raise
+        finally:
+            # Acceptance means this request obtained an exact run identity, not
+            # that arming later completed successfully.  A controller can bind
+            # the request and then fail while its detector-finish barrier is
+            # still draining.  Reporting that case as an unowned rejection
+            # would let the caller synthesize an early terminal and would
+            # resolve the exact completion before the run is really released.
+            accepted = (
+                self._externalScanRequestAccepted
+                and requestCompletion.runToken is not None
+            )
+            message = self._externalScanRequestFailureMessage
+            if not accepted and not message:
+                message = (
+                    'Scan controller refused the request or failed to arm.'
+                )
+            reportResult = getattr(
+                self._commChannel.scanWorkflow,
+                'report_scan_request_result',
+                None,
+            )
+            try:
+                if callable(reportResult):
+                    reportResult(
+                        self,
+                        accepted,
+                        message,
+                        getattr(
+                            self, '_externalScanRequestRunToken', None
+                        )
+                        if accepted else None,
+                        requestCompletion if accepted else None,
+                    )
+            finally:
+                if not accepted:
+                    runToken = requestCompletion.runToken
+                    if runToken is not None:
+                        requestCompletion.resolve(
+                            runToken,
+                            False,
+                            message,
+                        )
+                    pending = self.__dict__.setdefault(
+                        '_pendingExternalScanRequestCompletions', []
+                    )
+                    if requestCompletion in pending:
+                        pending.remove(requestCompletion)
+                self._externalScanRequestInProgress = False
+                self._externalScanRequestRunToken = None
+                self._externalScanRequestCompletion = None
+
+    def _externalScanStartRefusal(self) -> str:
+        """Return a side-effect-free refusal reason, or ``''`` if safe to arm.
+
+        External requests configure widget scan/repeat state before concrete
+        controllers enter ``_beginScanRun``. Ownership therefore has to be
+        preflighted here; otherwise a duplicate request can disable Repeat on
+        the acquisition it is about to reject. A same-owner run with no active
+        iteration is the intentional non-final/repeat-gap continuation.
+        """
+        if bool(getattr(self, '_scanCompletionPublishing', False)):
+            return (
+                'The previous scan completion is still being published.'
+            )
+        if bool(getattr(self, 'isRunning', False)):
+            return 'This scan controller already has an active iteration.'
+
+        coordinator = getattr(self, '_scanCoordinator', None)
+        if coordinator is None:
+            return ''
+        try:
+            activeIteration = getattr(coordinator, 'activeToken')
+        except Exception:
+            tokenForOwner = getattr(coordinator, 'tokenForOwner', None)
+            try:
+                activeIteration = (
+                    tokenForOwner(self)
+                    if callable(tokenForOwner) else None
+                )
+            except Exception:
+                return 'Unable to verify current scan-iteration ownership.'
+        if activeIteration is not None:
+            return 'A scan iteration is already active or still finishing.'
+
+        try:
+            activeRun = getattr(coordinator, 'activeRunToken')
+        except Exception:
+            runForOwner = getattr(coordinator, 'runForOwner', None)
+            try:
+                activeRun = (
+                    runForOwner(self)
+                    if callable(runForOwner) else None
+                )
+            except Exception:
+                return 'Unable to verify current scan-run ownership.'
+        if activeRun is None:
+            return ''
+
+        localToken = getattr(self, '_scanRunToken', None)
+        if activeRun is not localToken:
+            return 'Another or mismatched scan run is already reserved.'
+        if (
+            bool(getattr(self, '_repeatPending', False))
+            or bool(getattr(self, 'awaitingPipeline', False))
+        ):
+            return 'The current scan run already has an internal continuation.'
+        for completion in tuple(getattr(
+            self, '_pendingExternalScanRequestCompletions', ()
+        ) or ()):
+            if getattr(completion, 'runToken', None) is not activeRun:
+                continue
+            wait = getattr(completion, 'wait', None)
+            try:
+                unresolved = not callable(wait) or not wait(timeout=0)
+            except Exception:
+                unresolved = True
+            if unresolved:
+                return (
+                    'The current scan run already has an unresolved external '
+                    'request.'
+                )
+        if (
+            bool(getattr(self, '_scanRunFailed', False))
+            or bool(getattr(self, '_scanStopRequested', False))
+            or bool(getattr(activeRun, 'releaseRequested', False))
+        ):
+            return 'The current scan run is failed, stopped, or releasing.'
+        return ''
+
+    def _detachExternalScanRequestCompletions(self, runToken):
+        """Remove and return the requests pending for this exact run.
+
+        Detaching before a compatibility signal is emitted prevents a
+        re-entrant continuation from being swept into the previous part's
+        completion merely because both parts intentionally share a run token.
+        """
+        if runToken is None:
+            return ()
+        pending = self.__dict__.setdefault(
+            '_pendingExternalScanRequestCompletions', []
+        )
+        matched = tuple(
+            completion for completion in pending
+            if completion.runToken is runToken
+        )
+        if matched:
+            pending[:] = [
+                completion for completion in pending
+                if completion not in matched
+            ]
+        return matched
+
+    def _completeExternalScanRequest(
+        self, runToken, *, successful: bool, message: str = '',
+        completions=None,
+    ) -> bool:
+        """Resolve request terminals detached for this exact scan part."""
+        if runToken is None:
+            return False
+        if completions is None:
+            completions = self._detachExternalScanRequestCompletions(
+                runToken
+            )
+        resolved = False
+        for completion in tuple(completions):
+            if completion.resolve(runToken, successful, message):
+                resolved = True
+        return resolved
+
+    def _requeueExternalScanRequestCompletions(
+        self, runToken, completions
+    ) -> None:
+        """Restore unresolved terminals after an unproven run release.
+
+        Final success/failure callbacks are detached before compatibility
+        signals are emitted to make signal re-entry identity-safe. If the
+        coordinator then cannot prove release, those terminals must be put back
+        so a later abort/close retry can resolve them after the real barrier.
+        """
+        if runToken is None:
+            return
+        pending = self.__dict__.setdefault(
+            '_pendingExternalScanRequestCompletions', []
+        )
+        for completion in tuple(completions):
+            if getattr(completion, 'runToken', None) is not runToken:
+                continue
+            wait = getattr(completion, 'wait', None)
+            if callable(wait) and wait(timeout=0):
+                continue
+            if completion not in pending:
+                pending.append(completion)
+
+    def _publishScanDone(self, *, isFinalPart: bool) -> None:
+        """Publish success for this controller's exact external request."""
+        runToken = getattr(self, '_scanRunToken', None)
+        completions = self._detachExternalScanRequestCompletions(runToken)
+        self._scanCompletionPublishing = True
+        signalError = None
+        try:
+            self.emitScanSignal(self._commChannel.sigScanDone)
+        except Exception as error:
+            signalError = error
+            self._logger.error(
+                'A scan-completion listener failed',
+                exc_info=True,
+            )
+        finally:
+            completionLock = threading.Lock()
+            completionPublished = False
+
+            def completeRequest(finishError=None):
+                nonlocal completionPublished
+                with completionLock:
+                    if completionPublished:
+                        return
+                    completionPublished = True
+                if (
+                    finishError is not None
+                    and not SuperScanController._scanRunReleaseProven(
+                        self, runToken
+                    )
+                ):
+                    # A held reservation whose finalization failed is not an
+                    # exact terminal yet. Keep the request attached to this
+                    # identity so abort/timeout/close can retry finalization;
+                    # waking it now would only make its next start hit Busy.
+                    self._scanRunFailed = True
+                    if not getattr(
+                        self, '_externalScanRequestFailureMessage', ''
+                    ):
+                        self._externalScanRequestFailureMessage = (
+                            'Failed to finalize the scan-run lifecycle.'
+                        )
+                    self._requeueExternalScanRequestCompletions(
+                        runToken, completions
+                    )
+                    self._scanCompletionPublishing = False
+                    return
+                aborted = bool(
+                    getattr(self, '_scanStopRequested', False)
+                )
+                failed = bool(getattr(self, '_scanRunFailed', False))
+                terminalError = signalError or finishError
+                # Clear the re-entry gate before waking completion waiters or
+                # invoking callbacks. A worker can otherwise wake, dispatch the
+                # next scan on the UI thread, and be spuriously refused while
+                # this terminal is already physically complete.
+                self._scanCompletionPublishing = False
+                self._completeExternalScanRequest(
+                    runToken,
+                    successful=(
+                        not aborted
+                        and not failed
+                        and terminalError is None
+                    ),
+                    message=(
+                        'Scan was aborted.'
+                        if aborted else
+                        (
+                            getattr(
+                                self,
+                                '_externalScanRequestFailureMessage',
+                                '',
+                            )
+                            or 'Scan failed before successful completion.'
+                        )
+                        if failed else
+                        'A scan-completion listener failed.'
+                        if signalError is not None else
+                        'Failed to finalize the scan-run lifecycle.'
+                        if finishError is not None else ''
+                    ),
+                    completions=completions,
+                )
+
+            mustFinalizeRun = (
+                isFinalPart
+                or signalError is not None
+                or bool(getattr(self, '_scanStopRequested', False))
+                or bool(getattr(self, '_scanRunFailed', False))
+            )
+            if mustFinalizeRun:
+                try:
+                    # The exact request terminal belongs after the run release
+                    # callback.  releaseRun may defer that callback until every
+                    # detector has acknowledged its final-frame barrier.
+                    self._finishScanRun(
+                        onReleased=completeRequest,
+                        expectedRunToken=runToken,
+                    )
+                except Exception:
+                    self._logger.error(
+                        'Failed to finalize the scan-run lifecycle',
+                        exc_info=True,
+                    )
+                    # Make one failure-path retry while retaining the outer
+                    # publication gate and the captured run identity. If the
+                    # coordinator still cannot prove release, scanFailed
+                    # restores the exact terminal for an abort/close retry.
+                    self.scanFailed(
+                        _terminalRunToken=runToken,
+                        _terminalCompletions=completions,
+                        _forceFinalizeDuringPublication=True,
+                    )
+            else:
+                # A non-final sequence part deliberately retains the run-level
+                # reservation. Its exact part terminal is nevertheless ready
+                # once sigScanDone publication has returned.
+                completeRequest()
     
     @abstractmethod
     def setParameters(self):
@@ -429,17 +870,625 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
 
     def abortScan(self):
         """ Abort scan. """
+        # An abort can arrive while an iteration is still running.  Remember
+        # it at run scope so the eventual NI-DAQ completion cannot re-arm a
+        # repeat/continuous/sequence continuation.
+        self._scanStopRequested = True
+        self._repeatPending = False  # Cancel any pending repeat re-arm
         self.doingNonFinalPartOfSequence = False  # So that sigScanEnded is emitted
         if not self.isRunning:
             self.scanFailed()
 
-    def scanFailed(self):
+    def _beginScanRun(self, *, sigScanStartingEmitted):
+        """Reserve one complete run, or reject a duplicate from this owner.
+
+        ``sigScanStartingEmitted=True`` identifies an internal continuation
+        (repeat, sequence or axial follow-up). A new user/API start while this
+        controller already owns a run is a no-op; it must never fall through
+        to ``arm()``, be refused, and then call ``scanFailed()`` on the
+        original still-running scan.
+        """
+        if getattr(self, '_scanCompletionPublishing', False):
+            self._logger.warning(
+                'Ignoring a re-entrant scan start while the previous '
+                'completion is still being published.'
+            )
+            self.isRunning = False
+            return None
+
+        localToken = getattr(self, '_scanRunToken', None)
+        activeRun = self._scanCoordinator.runForOwner(self)
+        activeIteration = self._scanCoordinator.tokenForOwner(self)
+        if (
+            localToken is not None
+            and activeRun is localToken
+            and (
+                bool(getattr(self, '_scanRunFailed', False))
+                or bool(getattr(self, '_scanStopRequested', False))
+                or bool(getattr(activeRun, 'releaseRequested', False))
+            )
+        ):
+            self._logger.warning(
+                'Ignoring a scan continuation while the current run is '
+                'failed, stopped, or still releasing.'
+            )
+            self.isRunning = activeIteration is not None
+            return None
+        if localToken is not None and activeRun is localToken:
+            if activeIteration is not None or not sigScanStartingEmitted:
+                self._logger.warning(
+                    'Ignoring duplicate scan start from the active owner.'
+                )
+                # Callers historically mark isRunning before entering this
+                # helper.  Restore the real iteration state so a duplicate
+                # during a repeat/axial gap cannot suppress the legitimate
+                # deferred continuation.
+                self.isRunning = activeIteration is not None
+                return None
+        elif localToken is not None:
+            # A released token retained by a stale UI path must not be reused.
+            self._scanRunToken = None
+            self._scanRunStartingPublished = False
+
+        isNewRun = activeRun is None
+        token = self._scanCoordinator.reserveRun(self)
+        if getattr(self, '_externalScanRequestInProgress', False):
+            self._externalScanRequestAccepted = True
+            self._externalScanRequestRunToken = token
+            completion = getattr(
+                self, '_externalScanRequestCompletion', None
+            )
+            if completion is not None:
+                completion.bind(token)
+                pending = self.__dict__.setdefault(
+                    '_pendingExternalScanRequestCompletions', []
+                )
+                if completion not in pending:
+                    pending.append(completion)
+        if isNewRun:
+            self._scanStopRequested = False
+            self._scanRunFailed = False
+        self._scanRunToken = token
+        # Announce the active source only after the global coordinator has
+        # granted this exact run. A losing controller must never replace the
+        # source of the scan that actually owns the hardware.
+        self.isRunning = True
+        if sigScanStartingEmitted:
+            # An external workflow published the run-level start before asking
+            # this controller to arm.
+            self._scanRunStartingPublished = True
+        elif not self._scanRunStartingPublished:
+            # Mark first so a signal-slot exception is still paired by the
+            # failure path.
+            self._scanRunStartingPublished = True
+            self.emitScanSignal(self._commChannel.sigScanStarting)
+        return token
+
+    def _scanRunReleaseProven(self, token) -> bool:
+        if token is None:
+            return True
+        if bool(getattr(token, 'released', False)):
+            return True
+        try:
+            return self._scanCoordinator.activeRunToken is not token
+        except Exception:
+            return False
+
+    def _claimScanRunTerminal(self, expectedRunToken=None):
+        """Atomically take the one local terminal-publication claim.
+
+        The coordinator makes release idempotent, but it cannot decide which of
+        two controller callbacks owns ``sigScanEnded`` and the exact request
+        terminal. Clearing the local identity under this lock gives exactly one
+        path that publication authority.
+        """
+        terminalLock = self.__dict__.setdefault(
+            '_scanRunTerminalLock', threading.RLock()
+        )
+        with terminalLock:
+            token = getattr(self, '_scanRunToken', None)
+            startingPublished = bool(
+                getattr(self, '_scanRunStartingPublished', False)
+            )
+            if expectedRunToken is not None and token is not expectedRunToken:
+                if not SuperScanController._scanRunReleaseProven(
+                    self, expectedRunToken
+                ):
+                    raise RuntimeError(
+                        'The captured scan run is still active but the '
+                        'controller no longer holds its exact local identity.'
+                    )
+                return None, False, False
+            if token is None and not startingPublished:
+                return None, False, False
+
+            # Clear before emitting: a re-entrant failure/end callback must be a
+            # no-op, and a stale callback must never release a later run.
+            self._scanRunToken = None
+            self._scanRunStartingPublished = False
+            return token, startingPublished, True
+
+    def _finishScanRun(self, onReleased=None, *, expectedRunToken=None):
+        """Release one exact run, then publish its end and optional terminal.
+
+        ``onReleased(error)`` runs after ``sigScanEnded`` and only after the
+        coordinator's detector-finish barrier has actually released the run.
+        ``error`` is the end-signal publication failure, if any. It is also
+        called for an already-absent/stale lifecycle so callers cannot strand
+        an exact request terminal. ``expectedRunToken`` binds a terminal path
+        to the run it captured before emitting compatibility signals, so
+        re-entrant code can never make it release a newer run.
+        """
+        def deliverOnControllerThread(callback):
+            invoke = getattr(
+                self, '_invokeOnControllerThreadIfNeeded', None
+            )
+            if callable(invoke):
+                try:
+                    invoke(callback)
+                    return
+                except Exception:
+                    # A deleted QObject or failed queued-signal handoff must
+                    # not leave a holdUntilFinalized reservation permanently
+                    # active. The publication callback is idempotent, so a
+                    # handoff that queued and then raised is safe to replay.
+                    self._logger.error(
+                        'Failed to hand off scan terminal publication to the '
+                        'controller thread; publishing through the fail-safe '
+                        'path',
+                        exc_info=True,
+                    )
+            callback()
+
+        token, startingPublished, terminalClaimed = (
+            SuperScanController._claimScanRunTerminal(
+                self, expectedRunToken
+            )
+        )
+        if not terminalClaimed:
+            if onReleased is not None:
+                deliverOnControllerThread(onReleased)
+            return False
+        callbackLock = threading.Lock()
+        callbackDelivered = False
+        finalizeRunRelease = getattr(
+            self._scanCoordinator, 'finalizeRunRelease', None
+        )
+        holdUntilFinalized = bool(
+            callable(finalizeRunRelease)
+            and (startingPublished or onReleased is not None)
+        )
+
+        def publishEnded():
+            nonlocal callbackDelivered
+            with callbackLock:
+                if callbackDelivered:
+                    return
+                callbackDelivered = True
+            endError = None
+            try:
+                if startingPublished:
+                    self.emitScanSignal(self._commChannel.sigScanEnded)
+            except Exception as error:
+                endError = error
+                self._logger.error(
+                    'Failed to publish the scan-run end signal',
+                    exc_info=True,
+                )
+            finalizeError = None
+            if holdUntilFinalized:
+                try:
+                    finalized = finalizeRunRelease(token)
+                    if (
+                        not finalized
+                        and not SuperScanController._scanRunReleaseProven(
+                            self, token
+                        )
+                    ):
+                        raise RuntimeError(
+                            'Scan coordinator did not finalize the held '
+                            'run reservation after terminal publication.'
+                        )
+                except Exception as error:
+                    finalizeError = error
+                    self._logger.error(
+                        'Failed to finalize the published scan-run release',
+                        exc_info=True,
+                    )
+                    # The run-level end has already been attempted, so retain
+                    # only the exact token identity. A later abort/shutdown can
+                    # retry finalization without publishing a duplicate end.
+                    if not SuperScanController._scanRunReleaseProven(
+                        self, token
+                    ):
+                        if getattr(self, '_scanRunToken', None) is None:
+                            self._scanRunToken = token
+            if onReleased is not None:
+                onReleased(endError or finalizeError)
+
+        def publishEndedFromReleaseThread():
+            deliverOnControllerThread(publishEnded)
+
+        if token is not None:
+            releaseAccepted = False
+            try:
+                releaseKwargs = {
+                    'onReleased': (
+                        publishEndedFromReleaseThread
+                        if startingPublished or onReleased is not None
+                        else None
+                    ),
+                }
+                if holdUntilFinalized:
+                    releaseKwargs['holdUntilFinalized'] = True
+                releaseAccepted = self._scanCoordinator.releaseRun(
+                    token, **releaseKwargs
+                )
+            except Exception:
+                self._logger.error(
+                    'Failed to release scan-run reservation',
+                    exc_info=True,
+                )
+                releaseProven = SuperScanController._scanRunReleaseProven(
+                    self, token
+                )
+                if not releaseProven:
+                    # Restore the exact local lifecycle so a later failure,
+                    # abort, or close can retry this same reservation. Never
+                    # synthesize sigScanEnded or resolve an exact request while
+                    # the coordinator may still own the token.
+                    if getattr(self, '_scanRunToken', None) is None:
+                        self._scanRunToken = token
+                    if startingPublished:
+                        self._scanRunStartingPublished = True
+                    raise
+                if not callbackDelivered:
+                    publishEndedFromReleaseThread()
+                return True
+            # A stale/already-released reservation still needs its published
+            # start paired.  A live deferred release accepted the callback and
+            # will publish only after the participant barrier clears.
+            if (
+                (startingPublished or onReleased is not None)
+                and not releaseAccepted
+            ):
+                releaseProven = SuperScanController._scanRunReleaseProven(
+                    self, token
+                )
+                if not releaseProven:
+                    if getattr(self, '_scanRunToken', None) is None:
+                        self._scanRunToken = token
+                    if startingPublished:
+                        self._scanRunStartingPublished = True
+                    raise RuntimeError(
+                        'Scan coordinator did not accept or prove release of '
+                        'the active run reservation.'
+                    )
+                publishEndedFromReleaseThread()
+        else:
+            publishEndedFromReleaseThread()
+        return True
+
+    def scanFailed(
+        self, *, _terminalRunToken=None, _terminalCompletions=None,
+        _forceFinalizeDuringPublication=False,
+    ):
         """ Called when scan failed. """
+        publicationAlreadyInProgress = bool(
+            getattr(self, '_scanCompletionPublishing', False)
+        )
+        self._scanRunFailed = True
+        if getattr(self, '_externalScanRequestInProgress', False):
+            self._externalScanRequestFailed = True
+            if not self._externalScanRequestFailureMessage:
+                self._externalScanRequestFailureMessage = (
+                    'Scan controller failed before the requested run armed.'
+                )
         self._logger.error('Scan failed')
+        self._repeatPending = False  # Cancel any pending repeat re-arm
         self.isRunning = False
         self.doingNonFinalPartOfSequence = False
-        self._widget.setScanButtonChecked(False)
-        self.emitScanSignal(self._commChannel.sigScanEnded)
+        runToken = (
+            _terminalRunToken
+            if _terminalRunToken is not None else
+            getattr(self, '_scanRunToken', None)
+        )
+        try:
+            self._widget.setScanButtonChecked(False)
+        except Exception:
+            # Cosmetic cleanup must never bypass the exact hardware terminal.
+            self._logger.error(
+                'Failed to reset the scan widget after scan failure',
+                exc_info=True,
+            )
+        if (
+            publicationAlreadyInProgress
+            and not _forceFinalizeDuringPublication
+        ):
+            # The outer success publisher owns the detached exact terminal and
+            # release callback. Marking failure is sufficient; clearing its
+            # gate or starting a second finish path would let a later listener
+            # re-arm hardware before the outer signal emission returns.
+            return
+        completions = (
+            tuple(_terminalCompletions)
+            if _terminalCompletions is not None else
+            self._detachExternalScanRequestCompletions(runToken)
+        )
+        self._scanCompletionPublishing = True
+
+        def completeFailure(finishError=None):
+            if (
+                finishError is not None
+                and not SuperScanController._scanRunReleaseProven(
+                    self, runToken
+                )
+            ):
+                # Finalization is still unproven. Preserve retry authority and
+                # the exact request instead of reporting a terminal while the
+                # global reservation remains held.
+                self._requeueExternalScanRequestCompletions(
+                    runToken, completions
+                )
+                self._scanCompletionPublishing = False
+                return
+            self._scanCompletionPublishing = False
+            self._completeExternalScanRequest(
+                runToken,
+                successful=False,
+                message=(
+                    getattr(
+                        self,
+                        '_externalScanRequestFailureMessage',
+                        '',
+                    )
+                    or 'Scan failed before successful completion.'
+                ),
+                completions=completions,
+            )
+
+        try:
+            self._finishScanRun(
+                onReleased=completeFailure,
+                expectedRunToken=runToken,
+            )
+        except Exception:
+            self._logger.error(
+                'Failed to finalize the failed scan-run lifecycle',
+                exc_info=True,
+            )
+            self._requeueExternalScanRequestCompletions(
+                runToken, completions
+            )
+            self._scanCompletionPublishing = False
+
+    def _armScanIteration(self, signalDict, scanInfoDict):
+        """Publish the participating device list, then arm the iteration.
+
+        The publication has to happen HERE, before ``arm``. ``runScan`` marks
+        the NI-DAQ manager busy and only then emits ``sigScanBuilt``, so any
+        consumer that must issue a one-shot DAQ write in response to scan
+        membership — laser arming above all — is already too late by the time
+        ``sigScanBuilt`` arrives and its write is refused. Publishing first
+        gives those consumers a window while the DAQ is still free.
+
+        A failure to resolve the device list must not block the scan: the scan
+        itself does not depend on this, only the consumers do.
+        """
+        try:
+            devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
+        except Exception:
+            self._logger.error(
+                'Could not resolve the scan device list; lasers and other '
+                f'membership consumers are not being notified:\n'
+                f'{traceback.format_exc()}'
+            )
+        else:
+            self.emitScanSignal(
+                self._commChannel.sigScanDevicesResolved, devices
+            )
+        recordingManager = getattr(self._master, 'recordingManager', None)
+        markScanStarted = getattr(
+            recordingManager, 'markScanStarted', None
+        )
+        if callable(markScanStarted):
+            try:
+                markScanStarted(scanInfoDict)
+            except Exception:
+                # Recording liveness diagnostics must never prevent the scan
+                # itself from arming.
+                self._logger.error(
+                    'Could not initialize the scan-recording watchdog',
+                    exc_info=True,
+                )
+        return self._scanCoordinator.arm(signalDict, scanInfoDict, owner=self)
+
+    def __onNidaqScanDone(self):
+        """NI-DAQ finished a scan iteration.
+
+        For the controller that armed it, ``scanDone`` — which ends the scan
+        for the UI and arms the next repeat frame — is held back until every
+        participant has acknowledged its end-of-scan work. Releasing the lease
+        and re-arming while a detector is still reading out its final frame
+        tears the worker down mid-read and loses that frame.
+
+        Other scan controllers see the same NI-DAQ signal but do nothing: they
+        do not own this iteration and must not publish an early sigScanEnded.
+        """
+        token = self._scanCoordinator.tokenForOwner(self)
+        if token is None:
+            return
+        runToken = self._scanCoordinator.runForOwner(self)
+        finishMode = (
+            FINISH_ABORT
+            if getattr(self, '_scanStopRequested', False)
+            else FINISH_GRACEFUL
+        )
+        self._scanCoordinator.resolve(
+            token,
+            finishMode,
+            onComplete=lambda: self.__afterScanFinishBarrier(runToken),
+        )
+
+    def __onNidaqScanBuildFailed(self):
+        token = self._scanCoordinator.tokenForOwner(self)
+        if token is None:
+            return
+        runToken = self._scanCoordinator.runForOwner(self)
+        self._scanCoordinator.resolve(
+            token,
+            FINISH_ABORT,
+            onComplete=lambda: self.__afterScanBuildFailureBarrier(runToken),
+        )
+
+    def __afterScanFinishBarrier(self, runToken):
+        # The last acknowledgement may arrive on a detector's worker thread;
+        # queue through this QObject's affinity before touching the widget or
+        # re-arming. A static singleShot created on a plain worker can be lost.
+        self._invokeOnControllerThread(
+            lambda: self.__deliverScanDone(runToken)
+        )
+
+    def __afterScanBuildFailureBarrier(self, runToken):
+        self._invokeOnControllerThread(
+            lambda: self.__deliverScanFailed(runToken)
+        )
+
+    def __deliverScanDone(self, runToken):
+        if (
+            runToken is None
+            or getattr(self, '_scanRunToken', None) is not runToken
+            or self._scanCoordinator.runForOwner(self) is not runToken
+        ):
+            return
+        self.scanDone()
+
+    def __deliverScanFailed(self, runToken):
+        if (
+            runToken is None
+            or getattr(self, '_scanRunToken', None) is not runToken
+            or self._scanCoordinator.runForOwner(self) is not runToken
+        ):
+            return
+        self.scanFailed()
+
+    def _armRepeatScan(self):
+        """Schedule the next repeat-scan frame on the next event-loop turn.
+
+        ``scanDone`` runs inside the NidaqManager ``sigScanDone`` handler, which
+        itself fires from the just-finished scan's task-completion slot. Calling
+        ``runScanAdvanced`` (and therefore ``nidaqManager.runScan``) directly
+        from there re-enters the scan machinery while the previous scan's NI-DAQ
+        tasks, WaitThreads and per-detector scan QThreads are still tearing down.
+        On real hardware that recreates/reassigns those objects while the old
+        ones are mid-shutdown — a QThread destroyed while still running — which
+        crashes the GUI when 'Repeat' is enabled.
+
+        Deferring the re-arm with a zero-delay timer lets the current signal
+        chain unwind and the previous scan fully release its resources before
+        the next frame arms. ``_repeatPending`` is cleared by ``abortScan`` /
+        ``scanFailed`` so a stop/abort in the gap cancels the pending frame.
+        """
+        self._repeatPending = True
+        QtCore.QTimer.singleShot(0, self._fireRepeatScan)
+
+    def _fireRepeatScan(self):
+        """Deferred continuation of a repeat scan (see _armRepeatScan)."""
+        if not self._repeatPending:
+            return  # Aborted or superseded while the re-arm was pending
+        self._repeatPending = False
+        if self.isRunning:
+            return  # A scan is already running; don't stack another
+        try:
+            shouldContinue = self._shouldContinueRepeat()
+        except Exception:
+            self._logger.error(
+                'Failed to determine whether the repeat scan should continue',
+                exc_info=True,
+            )
+            self.scanFailed()
+            return
+        if not shouldContinue:
+            # ``scanDone`` retained the run reservation because repeat was
+            # enabled at that instant. If the user disables it before this
+            # deferred callback, terminalize exactly as scanDone would have.
+            isFinalPart = not self.doingNonFinalPartOfSequence
+            if isFinalPart:
+                try:
+                    self._widget.setScanButtonChecked(False)
+                except Exception:
+                    self._logger.error(
+                        'Failed to reset the scan widget after completion',
+                        exc_info=True,
+                    )
+            self._publishScanDone(isFinalPart=isFinalPart)
+            return
+        self.runScanAdvanced(sigScanStartingEmitted=True)
+
+    def _shouldContinueRepeat(self) -> bool:
+        """Whether a deferred repeat frame should still fire when it comes due.
+
+        Default: only while the widget's 'Repeat' box is checked. Controllers
+        that also loop in continuous-laser mode override this to keep looping
+        there too.
+        """
+        if getattr(self, '_scanStopRequested', False):
+            return False
+        repeatEnabled = getattr(self._widget, 'repeatEnabled', None)
+        return bool(repeatEnabled()) if callable(repeatEnabled) else False
+
+    def closeEvent(self) -> bool:
+        """Cancel this run and report whether its NI/detector barrier drained."""
+        self._scanClosing = True
+        self.abortScan()
+        super().closeEvent()
+        return self.shutdownComplete()
+
+    def shutdownComplete(self) -> bool:
+        """Whether this controller owns no iteration or run-level reservation."""
+        coordinator = getattr(self, '_scanCoordinator', None)
+        pendingCompletion = False
+        for completion in tuple(getattr(
+            self, '_pendingExternalScanRequestCompletions', ()
+        ) or ()):
+            wait = getattr(completion, 'wait', None)
+            try:
+                if not callable(wait) or not wait(timeout=0):
+                    pendingCompletion = True
+                    break
+            except Exception:
+                pendingCompletion = True
+                break
+        coordinatorComplete = True
+        if coordinator is not None:
+            try:
+                coordinatorComplete = (
+                    coordinator.tokenForOwner(self) is None
+                    and coordinator.runForOwner(self) is None
+                )
+            except Exception:
+                # Teardown must fail closed if exact coordinator ownership
+                # cannot be inspected. Reporting success here would allow the
+                # application to destroy a controller whose hardware terminal
+                # may still be pending.
+                coordinatorComplete = False
+                logger = getattr(self, '_logger', None)
+                if logger is not None:
+                    try:
+                        logger.error(
+                            'Unable to verify scan ownership during shutdown',
+                            exc_info=True,
+                        )
+                    except Exception:
+                        pass
+        return (
+            coordinatorComplete
+            and not getattr(self, '_repeatPending', False)
+            and not getattr(self, 'isRunning', False)
+            and not getattr(self, '_scanCompletionPublishing', False)
+            and not getattr(self, '_scanRunStartingPublished', False)
+            and not pendingCompletion
+        )
 
     def setCenterParameters(self, devices, centers):
         """ Set center parameter for all axes. """

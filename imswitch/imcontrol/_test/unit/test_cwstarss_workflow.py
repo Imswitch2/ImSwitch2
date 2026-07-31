@@ -7,6 +7,7 @@ the workflow calls rotator positioning, pre-bleach, 488-only stream, and
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -399,16 +400,18 @@ def test_cwstarss_saves_files_per_phase(tmp_path, monkeypatch):
     # Should have 4 files: 2 polarisations × 2 phases (488, 488+405)
     assert len(saved_files) == 4
 
-    # Check that files have correct labels
-    filenames = [f.name for f in saved_files]
+    # Compare the phase labels exactly, with the _HHMMSS stamp stripped off.
+    # Substring checks conflate the two: _save() appends time.strftime("%H%M%S"),
+    # so a run at 12:34:05 names the 488-only file cwstarss_V_488_123405.tif and
+    # a "405" not in name guard rejects it as if it were the 488+405 phase.
+    labels = {re.sub(r"_\d{6}\.tif$", "", f.name) for f in saved_files}
 
-    # H polarisation files
-    assert any("H_488_" in f and "405" not in f for f in filenames)
-    assert any("H_488_405_" in f for f in filenames)
-
-    # V polarisation files
-    assert any("V_488_" in f and "405" not in f for f in filenames)
-    assert any("V_488_405_" in f for f in filenames)
+    assert labels == {
+        "cwstarss_H_488",
+        "cwstarss_H_488_405",
+        "cwstarss_V_488",
+        "cwstarss_V_488_405",
+    }
 
 
 def test_cwstarss_save_uses_default_root_when_params_root_is_none(tmp_path, monkeypatch):

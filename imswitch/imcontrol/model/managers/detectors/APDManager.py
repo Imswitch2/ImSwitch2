@@ -1,11 +1,43 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import threading
+import time
 
 from imswitch.imcommon.framework import Signal, Thread, Worker
 from imswitch.imcommon.model import initLogger
-from .DetectorManager import DetectorManager
+from .._scan_execution import PARTICIPANTS_KEY
+from .DetectorManager import DetectorManager, scanPixelSizesToZYX
+from ._live_display import LiveDisplayThrottle
 
 UpdateRateInPixels = 0.05 # update image every Xth pixel, depends on how efficient the data transfer code is.
+_SCAN_THREAD_JOIN_TIMEOUT_MS = 2000
+
+
+def _joinScanThreadBounded(thread, timeoutMs, detectorName):
+    """Join framework.Thread without relying on an unavailable timeout API."""
+    timeoutMs = max(0, int(timeoutMs))
+    try:
+        joined = thread.wait(timeoutMs)
+    except TypeError:
+        deadline = time.monotonic() + timeoutMs / 1000
+        while thread.isRunning():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f'{detectorName} scan thread did not stop within '
+                    f'{timeoutMs / 1000:g} s'
+                )
+            time.sleep(min(0.01, remaining))
+        # The abstraction's wait() has no timeout. Calling it only after
+        # isRunning() is false makes this a non-blocking reap.
+        thread.wait()
+        return
+
+    if joined is False or thread.isRunning():
+        raise RuntimeError(
+            f'{detectorName} scan thread did not stop within '
+            f'{timeoutMs / 1000:g} s'
+        )
 
 
 class APDManager(DetectorManager):
@@ -63,9 +95,28 @@ class APDManager(DetectorManager):
         self._frameCount = 0
         self._scanWorker = None
         self._scanThread = None
+        self._scanParticipating = False
+        self._scanLifecycleLock = threading.Lock()
+        self._scanGeneration = 0
+        self._preparedScanGeneration = None
+        self._activeScanGeneration = None
+        self._tearingDownScanGenerations = set()
+        self._completedScanGenerations = set()
+        self._finishAcks = {}
+        self._scanTeardownOperation = None
         self.__newFrameReady = False
         self._ttlmultiplying = False
         self.acquisition = True
+        # Deterministic rate limiter for the in-progress live preview. Caps
+        # full-image napari redraws at a fixed rate (default 20 Hz) instead of
+        # the old shape-dependent random gate that flooded the GUI on fast
+        # scans. Tunable per rig via the ``liveUpdateIntervalMs`` config prop.
+        self._liveThrottle = LiveDisplayThrottle(
+            min_interval_s=max(
+                0.0,
+                float(manager_props.get("liveUpdateIntervalMs", 50.0)) / 1000.0,
+            )
+        )
         self._debug_mode = False  # run mode for plotting detected samples
         # Generate detected samples instead of reading the NI-DAQ counter input.
         # Forced on whenever the NI-DAQ itself is simulating: with no hardware
@@ -89,49 +140,104 @@ class APDManager(DetectorManager):
                          model=model, parameters=parameters, croppable=False)
 
     def __del__(self):
-        if self._scanThread is not None:
-            self._scanThread.quit()
-            self._scanThread.wait()
+        try:
+            self._teardownScan(raiseErrors=False)
+        except Exception as error:
+            try:
+                state = object.__getattribute__(self, '__dict__')
+            except Exception:
+                state = {}
+            logger = state.get('_APDManager__logger')
+            if logger is not None:
+                logger.warning(
+                    'Failed to clean up APD scan worker: %s', error
+                )
         if hasattr(super(), '__del__'):
             super().__del__()
 
     def initiateScan(self, scanInfoDict, signalDict):
-        if self.acquisition:
-            self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
-            self._scanThread = Thread()
-            self._scanWorker.moveToThread(self._scanThread)
-            self._scanThread.started.connect(self._scanWorker.run)
-            self._scanWorker.scanning = True
-            self._scanWorker.d2Step.connect(
-                lambda pixels, pos: self.updateImage(pixels, pos)
+        participants = scanInfoDict.get(PARTICIPANTS_KEY)
+        self._scanParticipating = (
+            participants is None or self.name in participants
+        )
+        self._preparedScanGeneration = None
+        if not self._scanParticipating:
+            return
+
+        # The scan-scoped participant snapshot is authoritative.  Do not gate
+        # on ``acquisition``: it is a coarse hardware-state flag and older
+        # versions left it true after the last lease was released.
+        # Fresh scan: let the first line refresh the preview immediately.
+        with self._scanLifecycleLock:
+            operation = self._scanTeardownOperation
+            needsTeardown = (
+                self._scanWorker is not None
+                or self._scanThread is not None
+                or (
+                    operation is not None
+                    and not operation['event'].is_set()
+                )
             )
-            self._scanWorker.acqDoneSignal.connect(self.stopAcquisitionLocal)
-            self._scanWorker.d3Step.connect(self._onFrameBoundary)
-            if self._debug_mode:
-                plt.figure(1)
-            self._linestep = getattr(self._scanWorker, "_linestep", 1)
+        if needsTeardown:
+            self._teardownScan(raiseErrors=True)
+        with self._scanLifecycleLock:
+            self._scanGeneration += 1
+            generation = self._scanGeneration
+            self._completedScanGenerations = {
+                item for item in self._completedScanGenerations
+                if item >= generation - 8
+            }
+        self._liveThrottle.reset()
+        self._scanWorker = ScanWorker(self, scanInfoDict, signalDict)
+        self._scanWorker.scanGeneration = generation
+        self._scanTeardownOperation = None
+        self._scanThread = Thread()
+        self._scanWorker.moveToThread(self._scanThread)
+        self._scanThread.started.connect(self._scanWorker.run)
+        self._scanWorker.scanning = True
+        self._scanWorker.d2Step.connect(
+            self._onScanPixels
+        )
+        self._scanWorker.acqDoneSignal.connect(self.stopAcquisitionLocal)
+        self._scanWorker.d3Step.connect(self._onFrameBoundary)
+        if self._debug_mode:
+            plt.figure(1)
+        self._linestep = getattr(self._scanWorker, "_linestep", 1)
+        self._preparedScanGeneration = generation
 
     def _onScanBuilt(self, scanInfoDict, signalDict, _devices):
-        if self._simulation_mode:
-            self.mockStartScan(scanInfoDict, signalDict)
-        else:
-            self.initiateScan(scanInfoDict, signalDict)
+        try:
+            if self._simulation_mode:
+                self.mockStartScan(scanInfoDict, signalDict)
+            else:
+                self.initiateScan(scanInfoDict, signalDict)
+        except Exception as error:
+            self.__logger.exception('APD scan preparation failed')
+            try:
+                self._teardownScan(raiseErrors=False)
+            except Exception:
+                self.__logger.exception(
+                    'APD partial preparation cleanup failed'
+                )
+            self._reportScanBuildFailure('prepare', error)
+
+    def _reportScanBuildFailure(self, stage, error):
+        try:
+            self._nidaqManager.reportScanBuildFailure(
+                f'{self.name}.{stage}', error
+            )
+        except Exception:
+            # A reporting failure must not let the original exception escape a
+            # Qt slot, where several bindings treat it as process-fatal.
+            self.__logger.exception(
+                'Failed to report APD scan %s failure', stage
+            )
 
     def mockStartScan(self, scanInfoDict, signalDict):
         self.initiateScan(scanInfoDict, signalDict)
 
     def mockStopScan(self):
-        worker = self._scanWorker
-        thread = self._scanThread
-        if worker is not None:
-            worker.scanning = False
-        if thread is not None:
-            thread.quit()
-            thread.wait()
-        if worker is not None:
-            worker.close()
-        self._scanWorker = None
-        self._scanThread = None
+        self._teardownScan(raiseErrors=False)
 
     def mockScanDone(self):
         return self._scanWorker is None or not getattr(
@@ -139,61 +245,336 @@ class APDManager(DetectorManager):
         )
 
     def startScan(self):
-        if (self.acquisition and self._scanThread is not None
-                and not self._scanThread.isRunning()):
-            self._scanThread.start()
+        try:
+            thread = self._scanThread
+            generation = self._preparedScanGeneration
+            if (self._scanParticipating and generation is not None
+                    and thread is not None and not thread.isRunning()):
+                self._activeScanGeneration = generation
+                thread.start()
+        except Exception as error:
+            self.__logger.exception('APD scan start failed')
+            try:
+                self._teardownScan(raiseErrors=False)
+            except Exception:
+                self.__logger.exception('APD partial start cleanup failed')
+            self._reportScanBuildFailure('start', error)
 
     def startAcquisition(self):
         self.acquisition = True
         self.__newFrameReady = False
 
     def stopAcquisition(self):
+        # Last-lease release is fail-closed even if teardown itself fails.
+        # DetectorsManager will additionally quarantine a teardown failure.
+        self.acquisition = False
+        self._scanParticipating = False
         try:
-            worker = self._scanWorker
-            thread = self._scanThread
-            if worker is None and thread is None:
-                return
-            if worker is not None:
-                worker.scanning = False
-            if thread is not None:
-                thread.quit()
-                thread.wait()
-            if worker is not None:
-                worker.close()
-            self._scanWorker = None
-            self._scanThread = None
-            self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
-            # NOTE: do NOT set __newFrameReady=True here. _onFrameBoundary
-            # (driven by d3Step) has already flagged the final real frame and
-            # _image_display is unchanged by this stop, so re-flagging causes
-            # getChunk() to return the same frame twice (phantom duplicate).
+            self._teardownScan(raiseErrors=True)
         except Exception as e:
+            # Detector stop contract: teardown failure must reach the
+            # DetectorsManager, which quarantines this detector as FAULTED.
             self.__logger.warning(f'Failed to stop acquisition cleanly: {e}')
+            raise
 
-    def stopAcquisitionLocal(self):
-        try:
-            worker = self._scanWorker
-            thread = self._scanThread
-            if worker is None and thread is None:
+    def stopAcquisitionLocal(self, generation=None):
+        self._ensureScanLifecycleState()
+        if generation is not None:
+            with self._scanLifecycleLock:
+                currentGeneration = getattr(
+                    self._scanWorker, 'scanGeneration',
+                    self._activeScanGeneration
+                    or self._preparedScanGeneration,
+                )
+            if currentGeneration != generation:
+                # A delayed queued completion from an old worker must never
+                # detach a newer generation's worker/thread.
+                self._completeScanGeneration(generation)
                 return
-            if worker is not None:
-                worker.scanning = False
-            if thread is not None:
-                thread.quit()
-                thread.wait()
-            if worker is not None:
-                worker.close()
-            self._scanWorker = None
-            self._scanThread = None
-            if self._ttlmultiplying:
-                self._renewImage()
-            self.__currSlice = self.__currSlice[:-1] + (self.__currSlice[-1] + 1,)
-            # See stopAcquisition: __newFrameReady is NOT re-flagged here to
-            # avoid a phantom duplicate frame at scan end.
+        try:
+            self._teardownScan(raiseErrors=False)
         except Exception as e:
             self.__logger.warning(f'Failed to stop acquisition locally: {e}')
-        if self._debug_mode:
-            plt.show()
+
+    def _teardownScan(self, *, raiseErrors):
+        """Detach first, then close; acknowledge only after all cleanup."""
+        self._ensureScanLifecycleState()
+        concurrentOperation = None
+        with self._scanLifecycleLock:
+            worker = self._scanWorker
+            thread = self._scanThread
+            generation = getattr(
+                worker, 'scanGeneration',
+                self._activeScanGeneration or self._preparedScanGeneration,
+            )
+            if worker is None and thread is None:
+                operation = self._scanTeardownOperation
+                if (operation is not None
+                        and not operation['event'].is_set()):
+                    concurrentOperation = operation
+            else:
+                operation = {
+                    'event': threading.Event(),
+                    'generation': generation,
+                    'success': None,
+                    'errors': (),
+                    'errorsReported': False,
+                }
+                self._scanTeardownOperation = operation
+                self._scanWorker = None
+                self._scanThread = None
+                if generation is not None:
+                    self._tearingDownScanGenerations.add(generation)
+
+        if worker is None and thread is None:
+            if concurrentOperation is not None:
+                return self._awaitTeardownOperation(
+                    concurrentOperation, raiseErrors=raiseErrors
+                )
+            operation = self._scanTeardownOperation
+            if operation is not None and operation['event'].is_set():
+                return self._awaitTeardownOperation(
+                    operation, raiseErrors=raiseErrors
+                )
+            if generation is not None:
+                self._completeScanGeneration(generation)
+            return True
+
+        errors = []
+        blockingCleanupFailed = False
+        try:
+            if worker is not None:
+                try:
+                    worker.scanning = False
+                except Exception as error:
+                    errors.append(error)
+            if worker is not None:
+                try:
+                    # close() tears down the NI input task.  It must happen
+                    # before joining the worker thread because a worker can be
+                    # blocked inside the driver's read call; waiting first
+                    # creates a teardown deadlock on abort and application
+                    # shutdown.
+                    worker.close()
+                except Exception as error:
+                    errors.append(error)
+                    blockingCleanupFailed = True
+            if thread is not None:
+                try:
+                    thread.quit()
+                except Exception as error:
+                    errors.append(error)
+                    blockingCleanupFailed = True
+                try:
+                    _joinScanThreadBounded(
+                        thread, _SCAN_THREAD_JOIN_TIMEOUT_MS, 'APD'
+                    )
+                except Exception as error:
+                    errors.append(error)
+                    blockingCleanupFailed = True
+
+            if worker is not None:
+                if self._ttlmultiplying:
+                    try:
+                        self._renewImage()
+                    except Exception as error:
+                        errors.append(error)
+                try:
+                    currSlice = self.__currSlice
+                    if currSlice:
+                        self.__currSlice = (
+                            currSlice[:-1] + (currSlice[-1] + 1,)
+                        )
+                except (AttributeError, IndexError, TypeError):
+                    # A build may fail before image bookkeeping exists.
+                    pass
+            # NOTE: do not set __newFrameReady here; d3Step already published
+            # the final real frame and re-flagging creates a duplicate.
+            if self._debug_mode:
+                try:
+                    plt.show()
+                except Exception as error:
+                    errors.append(error)
+        finally:
+            callbacks = ()
+            with self._scanLifecycleLock:
+                if blockingCleanupFailed:
+                    # Keep strong references so Qt never destroys a
+                    # still-running QThread and a later lease-release/finalize
+                    # retry can attempt task closure again.
+                    if self._scanWorker is None and self._scanThread is None:
+                        self._scanWorker = worker
+                        self._scanThread = thread
+                elif generation is not None:
+                    self._tearingDownScanGenerations.discard(generation)
+                    self._completedScanGenerations.add(generation)
+                    if self._activeScanGeneration == generation:
+                        self._activeScanGeneration = None
+                    if self._preparedScanGeneration == generation:
+                        self._preparedScanGeneration = None
+                    callbacks = self._finishAcks.pop(generation, ())
+                operation['success'] = not blockingCleanupFailed
+                operation['errors'] = tuple(errors)
+                operation['event'].set()
+            for acknowledge in callbacks:
+                try:
+                    acknowledge()
+                except Exception:
+                    self.__logger.exception(
+                        'APD scan-finish acknowledgement failed'
+                    )
+
+        if errors:
+            for error in errors:
+                self.__logger.warning(
+                    'APD scan teardown step failed: %s', error
+                )
+            if raiseErrors:
+                operation['errorsReported'] = True
+                raise errors[0]
+        return not blockingCleanupFailed
+
+    def _awaitTeardownOperation(self, operation, *, raiseErrors):
+        if not operation['event'].wait(
+                _SCAN_THREAD_JOIN_TIMEOUT_MS / 1000):
+            error = RuntimeError(
+                'APD scan teardown did not finish within '
+                f'{_SCAN_THREAD_JOIN_TIMEOUT_MS / 1000:g} s'
+            )
+            if raiseErrors:
+                raise error
+            return False
+        success = bool(operation['success'])
+        errors = operation['errors']
+        if errors and raiseErrors and not operation['errorsReported']:
+            operation['errorsReported'] = True
+            raise errors[0]
+        if not success and raiseErrors:
+            if errors:
+                raise errors[0]
+            raise RuntimeError('APD scan teardown failed')
+        return success
+
+    def _completeScanGeneration(self, generation):
+        if generation is None:
+            return
+        self._ensureScanLifecycleState()
+        with self._scanLifecycleLock:
+            self._tearingDownScanGenerations.discard(generation)
+            self._completedScanGenerations.add(generation)
+            if self._activeScanGeneration == generation:
+                self._activeScanGeneration = None
+            if self._preparedScanGeneration == generation:
+                self._preparedScanGeneration = None
+            callbacks = self._finishAcks.pop(generation, ())
+        for acknowledge in callbacks:
+            try:
+                acknowledge()
+            except Exception:
+                self.__logger.exception(
+                    'APD scan-finish acknowledgement failed'
+                )
+
+    def finishScan(self, mode, acknowledge):
+        self._ensureScanLifecycleState()
+        if mode != 'graceful':
+            # If a graceful barrier for this exact callback was installed
+            # before the iteration escalated to abort, teardown must not invoke
+            # it once and the abort path invoke it a second time.
+            self.cancelFinishScan(acknowledge)
+            with self._scanLifecycleLock:
+                operation = self._scanTeardownOperation
+                generation = (
+                    self._activeScanGeneration
+                    or self._preparedScanGeneration
+                    or (
+                        operation['generation']
+                        if operation is not None else None
+                    )
+                )
+                hasLocalWork = (
+                    self._scanWorker is not None
+                    or self._scanThread is not None
+                    or (
+                        operation is not None
+                        and not operation['event'].is_set()
+                    )
+                )
+                if generation is not None and hasLocalWork:
+                    self._finishAcks.setdefault(
+                        generation, []
+                    ).append(acknowledge)
+                    queued = True
+                else:
+                    queued = False
+            succeeded = self._teardownScan(raiseErrors=False)
+            if not queued:
+                acknowledge()
+            elif not succeeded and self.cancelFinishScan(acknowledge):
+                # The bounded attempt failed. Let the coordinator release the
+                # lease so strict stopAcquisition can quarantine the detector
+                # instead of wedging forever when no timeout scheduler exists.
+                acknowledge()
+            return
+
+        with self._scanLifecycleLock:
+            operation = self._scanTeardownOperation
+            generation = (
+                self._activeScanGeneration
+                or self._preparedScanGeneration
+                or (
+                    operation['generation']
+                    if operation is not None else None
+                )
+            )
+            hasLocalWork = (
+                self._scanWorker is not None
+                or self._scanThread is not None
+                or generation in self._tearingDownScanGenerations
+                or (
+                    operation is not None
+                    and not operation['event'].is_set()
+                )
+            )
+            if (generation is None
+                    or generation in self._completedScanGenerations
+                    or not hasLocalWork):
+                acknowledgeImmediately = True
+            else:
+                self._finishAcks.setdefault(generation, []).append(acknowledge)
+                acknowledgeImmediately = False
+        if acknowledgeImmediately:
+            acknowledge()
+
+    def cancelFinishScan(self, acknowledge):
+        self._ensureScanLifecycleState()
+        removed = False
+        with self._scanLifecycleLock:
+            for generation in tuple(self._finishAcks):
+                callbacks = self._finishAcks[generation]
+                remaining = []
+                for callback in callbacks:
+                    if callback is acknowledge:
+                        removed = True
+                    else:
+                        remaining.append(callback)
+                if remaining:
+                    self._finishAcks[generation] = remaining
+                else:
+                    self._finishAcks.pop(generation, None)
+        return removed
+
+    def _ensureScanLifecycleState(self):
+        """Initialize lifecycle fields for legacy/deserialized test objects."""
+        state = object.__getattribute__(self, '__dict__')
+        state.setdefault('_scanLifecycleLock', threading.Lock())
+        state.setdefault('_scanGeneration', 0)
+        state.setdefault('_preparedScanGeneration', None)
+        state.setdefault('_activeScanGeneration', None)
+        state.setdefault('_tearingDownScanGenerations', set())
+        state.setdefault('_completedScanGenerations', set())
+        state.setdefault('_finishAcks', {})
+        state.setdefault('_scanTeardownOperation', None)
 
     def getLatestFrame(self, is_save=True):
         S = int(getattr(self, "_linestep", 1))
@@ -272,7 +653,9 @@ class APDManager(DetectorManager):
             # leading singleton axis and raise IndexError for y >= 1.
             self._image[..., y, :n] = converted
             self.__currSlice = (y_expanded,)
-            if np.random.rand()<np.min((500/np.sum(self._image.shape), UpdateRateInPixels)): # update oa every Xth pixel, less for big datasets
+            # Time-throttled live preview: bound the redraw rate deterministically
+            # instead of gating on image size with a random draw per line.
+            if self._liveThrottle.due():
                 self.sigImageUpdated.emit(self._image, True, self.scale)
             return
 
@@ -336,17 +719,58 @@ class APDManager(DetectorManager):
         return np.expand_dims(self._image_display, axis=0).copy()
 
     def flushBuffers(self):
-        pass
+        self.__newFrameReady = False
 
-    def _onFrameBoundary(self):
+    def _acceptScanWorkerGeneration(self, generation):
+        """Whether a queued worker callback still belongs to local state."""
+        if generation is None:
+            return True
+        with self._scanLifecycleLock:
+            operation = self._scanTeardownOperation
+            operationActive = (
+                operation is not None
+                and operation.get('generation') == generation
+                and not operation['event'].is_set()
+            )
+            return (
+                self._activeScanGeneration == generation
+                or self._preparedScanGeneration == generation
+                or operationActive
+            ) and generation not in self._completedScanGenerations
+
+    def _onScanPixels(self, pixels, pos, generation):
+        if self._acceptScanWorkerGeneration(generation):
+            self.updateImage(pixels, pos)
+
+    def _onFrameBoundary(self, generation=None):
         """
         Called by ScanWorker.d3Step at the end of a full frame.
         Updates display buffer and triggers GUI redraw once per frame.
         """
+        if not self._acceptScanWorkerGeneration(generation):
+            if int(getattr(self, "_linestep", 1)) > 1:
+                self.__logger.warning(
+                    "[LineStepDiag][APD:%s] frame_boundary_rejected "
+                    "generation=%s active=%s prepared=%s completed=%s",
+                    self._name,
+                    generation,
+                    self._activeScanGeneration,
+                    self._preparedScanGeneration,
+                    sorted(self._completedScanGenerations),
+                )
+            return
         if self._image_display.size == 0:
             return
 
         S = int(getattr(self, "_linestep", 1))
+        if S > 1:
+            self.__logger.info(
+                "[LineStepDiag][APD:%s] frame_boundary_received "
+                "generation=%s raw_shape=%s",
+                self._name,
+                generation,
+                np.shape(self._image),
+            )
         if S > 1:
             raw = np.squeeze(self._image)  # (S,..,Ny,Nx)
             mode = getattr(self, "_linestep_view_mode", None)
@@ -366,9 +790,21 @@ class APDManager(DetectorManager):
             im = np.squeeze(im[0])
 
         self._image_display = im
-        self.updateLatestFrame(True)
+        # Publish the boundary before asking the shared latest-frame broker to
+        # drain it.  If a previous frame was still flagged, doing this in the
+        # opposite order drains the new pixels under the old flag and then
+        # re-flags those same pixels, duplicating one frame for every consumer.
         self.__newFrameReady = True
+        self.updateLatestFrame(True)
         self.sigNewFrame.emit()
+        if S > 1:
+            self.__logger.info(
+                "[LineStepDiag][APD:%s] frame_published generation=%s "
+                "published_shape=%s",
+                self._name,
+                generation,
+                np.shape(self._image_display),
+            )
 
     @property
     def shape(self):
@@ -378,12 +814,16 @@ class APDManager(DetectorManager):
         self.__shape = tuple(img_dims)
 
     @property
+    def isScanDriven(self):
+        return True
+
+    @property
     def scale(self):
         return self.__pixel_sizes[::-1]
 
     @property
     def pixelSizeUm(self):
-        return [1, *self.__pixel_sizes]
+        return scanPixelSizesToZYX(self.__pixel_sizes)
 
     def setPixelSize(self, pixel_sizes: list):
         # pixel_sizes: list of low dim to high dim
@@ -421,9 +861,9 @@ class APDManager(DetectorManager):
 
 
 class ScanWorker(Worker):
-    d2Step = Signal(np.ndarray, tuple)
-    d3Step = Signal()
-    acqDoneSignal = Signal()
+    d2Step = Signal(np.ndarray, tuple, int)
+    d3Step = Signal(int)
+    acqDoneSignal = Signal(int)
 
     def __init__(self, manager, scanInfoDict, signalDict):
         super().__init__()
@@ -434,6 +874,11 @@ class ScanWorker(Worker):
         self._manager = manager
         self._name = self._manager._name
         self._channel = self._manager._channel
+        self.scanGeneration = int(
+            getattr(manager, '_preparedScanGeneration', 0) or 0
+        )
+        self._inputTaskGeneration = None
+        self._inputTaskClosed = False
 
         # time step of scanning, in s
         self._scan_dwell_time = scanInfoDict['dwell_time']
@@ -470,6 +915,7 @@ class ScanWorker(Worker):
 
         # Y is the slow scan axis
         y_idx = scan_axes.index("y") if "y" in scan_axes else 1
+        self._y_idx = y_idx
 
         # Loop dims: expand Y by linestep (Ny -> Ny*S), keep other dims unchanged
         self._img_dims = scan_dims  # recursion uses physical scan axes only (x,y,z,...)
@@ -504,25 +950,105 @@ class ScanWorker(Worker):
         self._throw_init_smooth = (pad_initpos + self._throw_settling + self._throw_startacc)
         # initiate parameter for thrown samples for smooth higher dimensions step init
         self._throw_init_higher_d = False
+        self._pending_read = None
+
+        self._logLinestepReadPlan(scanInfoDict)
 
         if not self._manager._simulation_mode:
-            self._manager._nidaqManager.startInputTask(self._name, 'ci', self._channel, 'finite',
-                                                       self._manager._nidaq_clock_source,
-                                                       self._manager._detection_samplerate,
-                                                       self._samples_total, True, 'ao/StartTrigger',
-                                                       self._manager._terminal)
+            self._inputTaskGeneration = (
+                self._manager._nidaqManager.startInputTask(
+                    self._name, 'ci', self._channel, 'finite',
+                    self._manager._nidaq_clock_source,
+                    self._manager._detection_samplerate,
+                    self._samples_total, True, 'ao/StartTrigger',
+                    self._manager._terminal,
+                )
+            )
         self._manager.initiateImage(self._output_image_dims)
         self._manager.setPixelSize(scanInfoDict['pixel_sizes'])  # 'pixel_sizes' order: low dim to high dim
+
+    def _logLinestepReadPlan(self, scanInfoDict):
+        if self._linestep <= 1:
+            return
+
+        expandedLines = int(self._loop_dims[self._y_idx])
+        exact2dPlan = None
+        exact2dMargin = None
+        if len(self._loop_dims) == 2:
+            higherInit = 0
+            if len(self._scan_pads_initpos) > 1 and any(
+                np.greater(
+                    self._scan_pads_initpos[1:],
+                    self._scan_pads_initpos[0],
+                )
+            ):
+                higherInit = int(
+                    np.max(self._scan_pads_initpos[1:])
+                    - self._scan_pads_initpos[0]
+                )
+            exact2dPlan = int(
+                self._phase_delay
+                + self._throw_startzero
+                + higherInit
+                + self._throw_init_smooth
+                + max(0, expandedLines - 1) * self._samples_d2_period
+                + self._samples_d_scanstep[1]
+            )
+            exact2dMargin = int(self._samples_total - exact2dPlan)
+
+        mismatch = (
+            exact2dMargin is not None and exact2dMargin < 0
+        )
+        self.__logger.info(
+            "[LineStepDiag][APD:%s] scan_S=%s img_dims=%s "
+            "loop_dims=%s output_dims=%s expanded_Y_lines=%s "
+            "scan_samples_total=%s CI_finite_samples=%s "
+            "line_samples=%s line_period_samples=%s "
+            "initial_throw_samples=%s exact_2D_read_plan=%s "
+            "remaining_samples=%s status=%s",
+            self._name,
+            self._linestep,
+            scanInfoDict.get("img_dims"),
+            self._loop_dims,
+            self._output_image_dims,
+            expandedLines,
+            scanInfoDict.get("scan_samples_total"),
+            self._samples_total,
+            (
+                self._samples_d_scanstep[1]
+                if len(self._samples_d_scanstep) > 1 else None
+            ),
+            self._samples_d2_period,
+            int(
+                self._phase_delay
+                + self._throw_startzero
+                + self._throw_init_smooth
+            ),
+            exact2dPlan,
+            exact2dMargin,
+            (
+                "MISMATCH: APD read plan exceeds finite task"
+                if mismatch else "OK"
+            ),
+        )
 
     def throwdata(self, datalen):
         """ Throw away data with length datalen, save the last value,
         and add length of data to total samples_read length.
         """
         if datalen > 0:
+            self._pending_read = {
+                "kind": "throw",
+                "start": int(self._samples_read),
+                "count": int(datalen),
+            }
             if self._manager._simulation_mode:
                 throwdata = self.randomInput(datalen)
             else:
-                throwdata = self._manager._nidaqManager.readInputTask(self._name, datalen)
+                throwdata = self._manager._nidaqManager.readInputTask(
+                    self._name, datalen,
+                    generation=self._inputTaskGeneration,
+                )
             if self._manager._debug_mode:
                 self.__plot_curves(plot=True, xvals=range(int((self._samples_read) / 10),
                                                           int((self._samples_read + datalen) / 10)),
@@ -530,20 +1056,30 @@ class ScanWorker(Worker):
                                    style='r-')
             self._last_value = throwdata[-1]
             self._samples_read += datalen
+            self._pending_read = None
 
     def readdata(self, datalen):
         """ Read data with length datalen and add length of data to total samples_read length.
         """
+        self._pending_read = {
+            "kind": "line",
+            "start": int(self._samples_read),
+            "count": int(datalen),
+        }
         if self._manager._simulation_mode:
             data = self.randomInput(datalen)
         else:
-            data = self._manager._nidaqManager.readInputTask(self._name, datalen)
+            data = self._manager._nidaqManager.readInputTask(
+                self._name, datalen,
+                generation=self._inputTaskGeneration,
+            )
         if self._manager._debug_mode:
             self.__plot_curves(plot=True, xvals=range(int((self._samples_read) / 10),
                                                       int((self._samples_read + datalen) / 10)),
                                signal=self._ploty * np.ones(int((datalen) / 10)),
                                style='k-')
         self._samples_read += datalen
+        self._pending_read = None
         return data
 
     def samples_to_pixels(self, line_samples):
@@ -572,6 +1108,47 @@ class ScanWorker(Worker):
                 self._ploty = 1
 
     def run(self):
+        try:
+            if self._linestep > 1:
+                self.__logger.info(
+                    "[LineStepDiag][APD:%s] worker_start generation=%s "
+                    "samples_read=%s/%s loop_dims=%s",
+                    self._name,
+                    self.scanGeneration,
+                    self._samples_read,
+                    self._samples_total,
+                    self._loop_dims,
+                )
+            self._runAcquisition()
+            if self._linestep > 1:
+                self.__logger.info(
+                    "[LineStepDiag][APD:%s] worker_complete generation=%s "
+                    "samples_read=%s/%s final_pos=%s",
+                    self._name,
+                    self.scanGeneration,
+                    self._samples_read,
+                    self._samples_total,
+                    getattr(self, "_pos", None),
+                )
+        except Exception:
+            # An exception escaping a Qt worker slot can terminate the process.
+            # Convert it into the same generation-tagged local completion path
+            # used by a normal scan instead.
+            self.__logger.exception(
+                "[LineStepDiag][APD:%s] worker_failed generation=%s "
+                "samples_read=%s/%s pos=%s pending_read=%s",
+                self._name,
+                self.scanGeneration,
+                self._samples_read,
+                self._samples_total,
+                getattr(self, "_pos", None),
+                self._pending_read,
+            )
+        finally:
+            self.scanning = False
+            self.acqDoneSignal.emit(int(self.scanGeneration))
+
+    def _runAcquisition(self):
         """ Main run for acquisition.
         """
         if self._manager._debug_mode:
@@ -591,17 +1168,6 @@ class ScanWorker(Worker):
             self.throwdata(self._throw_init_smooth)
         # loop through all dimensions to record data, starting with the outermost dimension
         self.run_loop_dx(dim=len(self._loop_dims))
-        if (self._manager._simulation_mode
-                and not getattr(self._manager._nidaqManager, 'isSimulated', False)):
-            # Legacy explicit detector simulation against a real NI-DAQ manager.
-            # In NI-DAQ simulation mode, ScanSimulationCoordinator owns scan
-            # completion and detector workers must not race it.
-            self._manager._nidaqManager.finishExternalMock()
-        self.scanning = False
-        if self._manager._scanThread is not None:
-            self._manager._scanThread.quit()
-        # emit acquisition done signal
-        self.acqDoneSignal.emit()
 
     def run_loop_dx(self, dim):
         """ Recursive looping through all scanning dimensions, actually read samples at dim = 2,
@@ -631,7 +1197,7 @@ class ScanWorker(Worker):
                     if throwdatalen > 0:
                         self.throwdata(throwdatalen)
                     if dim == 3:
-                        self.d3Step.emit()
+                        self.d3Step.emit(self.scanGeneration)
             else:
                 self.run_loop_d2()
             self._pos[dim - 1] += 1
@@ -669,16 +1235,23 @@ class ScanWorker(Worker):
             # resample sample array to pixel counts array
             pixels = self.samples_to_pixels(line_samples)
             # signal new line of pixels, and the insertion position in all dimensions
-            self.d2Step.emit(pixels, tuple(np.flip(self._pos[1:])))
+            self.d2Step.emit(
+                pixels,
+                tuple(np.flip(self._pos[1:])),
+                self.scanGeneration,
+            )
             if len(self._loop_dims) == 2 and self._pos[1] == self._loop_dims[1] - 1:
-                self.d3Step.emit()
+                self.d3Step.emit(self.scanGeneration)
         else:
             self.__logger.debug('Close data reading: not scanning any longer')
             self.close()
 
     def close(self):
-        if not self._manager._simulation_mode:
-            self._manager._nidaqManager.inputTaskDone(self._name)
+        if not self._manager._simulation_mode and not self._inputTaskClosed:
+            self._manager._nidaqManager.inputTaskDone(
+                self._name, self._inputTaskGeneration
+            )
+            self._inputTaskClosed = True
 
     def randomInput(self, datalen):
         datalen = int(datalen)

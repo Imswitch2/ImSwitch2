@@ -11,6 +11,10 @@ from .basewidgets import Widget
 class RecordingWidget(Widget):
     """ Widget to control image or sequence recording. """
 
+    #: Valueless first entry of the scan-source chooser. Selecting it is not a
+    #: choice, and a timelapse scan is refused while it is showing.
+    SCAN_SOURCE_PLACEHOLDER = 'Select scan source...'
+
     sigDetectorModeChanged = QtCore.Signal()
     sigDetectorSpecificChanged = QtCore.Signal()
     sigOpenRecFolderClicked = QtCore.Signal()
@@ -85,14 +89,28 @@ class RecordingWidget(Widget):
                                        QtCore.Qt.AlignVCenter))
         self.timeToRec = QtWidgets.QLineEdit('1')
         
-        self.recTimelapseBtn = QtWidgets.QRadioButton('Timelapse')
+        self.recTimelapseBtn = QtWidgets.QRadioButton('Camera timelapse')
         self.currentTimelapseFrame = QtWidgets.QLabel('0 / ')
         self.timelapseFramesEdit = QtWidgets.QLineEdit('5')
-        self.timelapseFrameTimeLabel = QtWidgets.QLabel('Frame time [s]')
+        self.timelapseFrameTimeLabel = QtWidgets.QLabel('Interval [s]')
         self.timelapseFrameTimeEdit = QtWidgets.QLineEdit('0')
         self.lasersList = QtWidgets.QComboBox()
 
         self.recScanOnceBtn = QtWidgets.QRadioButton('Scan once')
+
+        # Which scan widget a timelapse scan drives. Scan-once needs no choice:
+        # it is armed and then started from a scan widget, so the operator's
+        # own button press identifies the scanner. A timelapse scan is started
+        # by the recording itself and therefore has to be told.
+        self.scanSourceLabel = QtWidgets.QLabel('Scan source')
+        self.scanSourceList = QtWidgets.QComboBox()
+        _scanSourceTip = (
+            'Scan widget that a timelapse scan drives. Only shown when the '
+            'setup has more than one scan widget capable of driving a '
+            'recording.'
+        )
+        self.scanSourceLabel.setToolTip(_scanSourceTip)
+        self.scanSourceList.setToolTip(_scanSourceTip)
 
         self.recScanLapseBtn = QtWidgets.QRadioButton('Timelapse scan')
         self.currentLapse = QtWidgets.QLabel('0 / ')
@@ -100,7 +118,9 @@ class RecordingWidget(Widget):
         self.freqLabel = QtWidgets.QLabel('Freq [s]')
         self.freqEdit = QtWidgets.QLineEdit('0')
 
-        self.singleFileLapseBox = QtWidgets.QCheckBox('Save all scans in a single file')
+        self.singleFileLapseBox = QtWidgets.QCheckBox(
+            'Save all timepoints in a single file'
+        )
 
         self.untilSTOPbtn = QtWidgets.QRadioButton('Run until STOP')
 
@@ -178,18 +198,10 @@ class RecordingWidget(Widget):
         recGrid.addWidget(self.timelapseFrameTimeLabel, gridRow, 3)
         recGrid.addWidget(self.timelapseFrameTimeEdit, gridRow, 4)
         recGrid.addWidget(self.lasersList, gridRow, 5)
-        # Plain camera-only timelapse is not backed by RecordingManager. Keep
-        # the legacy widgets for saved-state compatibility, but do not offer a
-        # mode that cannot start successfully.
-        for widget in (
-            self.recTimelapseBtn,
-            self.currentTimelapseFrame,
-            self.timelapseFramesEdit,
-            self.timelapseFrameTimeLabel,
-            self.timelapseFrameTimeEdit,
-            self.lasersList,
-        ):
-            widget.setVisible(False)
+        # Automatic illumination switching was part of the abandoned legacy
+        # prototype but never had a safe implementation. Camera timelapse uses
+        # the illumination state selected elsewhere in ImControl.
+        self.lasersList.setVisible(False)
         gridRow += 1
 
         recGrid.addWidget(self.recScanOnceBtn, gridRow, 0, 1, 5)
@@ -202,6 +214,10 @@ class RecordingWidget(Widget):
         recGrid.addWidget(self.freqEdit, gridRow, 4)
         gridRow += 1
         recGrid.addWidget(self.singleFileLapseBox, gridRow, 1, 1, -1)
+        gridRow += 1
+        recGrid.addWidget(self.scanSourceLabel, gridRow, 0)
+        recGrid.addWidget(self.scanSourceList, gridRow, 1, 1, -1)
+        self.setScanSourceVisible(False)
         gridRow += 1
 
         recGrid.addWidget(self.untilSTOPbtn, gridRow, 0, 1, -1)
@@ -327,6 +343,36 @@ class RecordingWidget(Widget):
     def getSpecTimelapseLaser(self):
         return self.lasersList.currentText()
 
+    def getScanSource(self):
+        """Widget key of the chosen timelapse-scan source, or '' if none."""
+        return self.scanSourceList.currentData() or ''
+
+    def setScanSourceOptions(self, sourceKeys, current=None):
+        """Populate the chooser, preserving the current pick where possible.
+
+        Entries are labelled with the widget key, which is what titles the
+        scan dock the operator picks between. The first entry is always a
+        valueless placeholder: repopulating a combo box selects index zero, so
+        without it a saved choice that disappeared — or a rig seen for the
+        first time — would silently arm whichever scanner happens to be
+        registered first, and a timelapse would then drive that hardware.
+        """
+        previous = current if current else self.getScanSource()
+        self.scanSourceList.blockSignals(True)
+        try:
+            self.scanSourceList.clear()
+            self.scanSourceList.addItem(self.SCAN_SOURCE_PLACEHOLDER, '')
+            for key in sourceKeys:
+                self.scanSourceList.addItem(key, key)
+            index = self.scanSourceList.findData(previous) if previous else -1
+            self.scanSourceList.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.scanSourceList.blockSignals(False)
+
+    def setScanSourceVisible(self, visible):
+        self.scanSourceLabel.setVisible(visible)
+        self.scanSourceList.setVisible(visible)
+
     def setDetectorList(self, detectorModels):
         self.detectorModeList.addItem('Current detector at start', -1)
 
@@ -419,15 +465,17 @@ class RecordingWidget(Widget):
     def setFieldsEnabled(self, enabled):
         self.recGridContainer.setEnabled(enabled)
 
-    def setEnabledParams(self, specFrames=False, specTime=False, scanLapse=False, specLapse=False):
+    def setEnabledParams(self, specFrames=False, specTime=False,
+                         scanLapse=False, specLapse=False):
         self.numExpositionsEdit.setEnabled(specFrames)
         self.timeToRec.setEnabled(specTime)
         self.timeLapseEdit.setEnabled(scanLapse)
         self.freqEdit.setEnabled(scanLapse)
-        self.singleFileLapseBox.setEnabled(scanLapse)
+        self.scanSourceList.setEnabled(scanLapse)
+        self.singleFileLapseBox.setEnabled(scanLapse or specLapse)
         self.timelapseFramesEdit.setEnabled(specLapse)
         self.timelapseFrameTimeEdit.setEnabled(specLapse)
-        self.lasersList.setEnabled(specLapse)
+        self.lasersList.setEnabled(False)
 
     def setRecButtonChecked(self, checked):
         self.recButton.setChecked(checked)
@@ -447,6 +495,12 @@ class RecordingWidget(Widget):
     def setTimelapseSingleFile(self, singleFile):
         self.singleFileLapseBox.setChecked(singleFile)
 
+    def setCameraTimelapseNumFrames(self, numFrames):
+        self.timelapseFramesEdit.setText(str(numFrames))
+
+    def setCameraTimelapseInterval(self, intervalSeconds):
+        self.timelapseFrameTimeEdit.setText(str(intervalSeconds))
+
     def updateRecFrameNum(self, recFrameNum):
         self.currentFrame.setText(str(recFrameNum) + ' /')
 
@@ -455,6 +509,9 @@ class RecordingWidget(Widget):
 
     def updateRecLapseNum(self, lapseNum):
         self.currentLapse.setText(str(lapseNum) + ' /')
+
+    def updateCameraLapseNum(self, lapseNum):
+        self.currentTimelapseFrame.setText(str(lapseNum) + ' /')
 
     @shortcut(actionId="recording.toggleRecord", defaultKey="Ctrl+R",
               displayName="Record", initiallyBound=True)

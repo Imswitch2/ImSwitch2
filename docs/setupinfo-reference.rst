@@ -117,6 +117,50 @@ Each laser requires:
 * ``valueRangeMin`` / ``valueRangeMax``: Power/intensity range
 * ``analogChannel`` / ``digitalLine``: NI-DAQ channels if applicable
 
+Optional:
+
+* ``powerDevice``: name of another laser entry that sets this one's emission
+  power, when gate and power are separate hardware (see below)
+
+**Split gate and power devices**
+
+Some beam paths spread one physical laser line across two entries: one owns
+the digital line a scan gates (often a bare placeholder with no power of its
+own), while an attenuator such as an AOTF channel sets the power over a serial
+link.  Naming the partner in ``powerDevice`` lets a scan switch the power
+device on for the duration of the scan, instead of the laser emitting only
+when the user happens to have enabled it by hand:
+
+.. code-block:: json
+
+   "lasers": {
+       "561": {
+           "analogChannel": null,
+           "digitalLine": "Dev1/port0/line1",
+           "managerName": "NidaqLaserManager",
+           "managerProperties": {},
+           "valueRangeMin": 0,
+           "valueRangeMax": 1,
+           "wavelength": 561,
+           "powerDevice": "561AOTF"
+       },
+       "561AOTF": {
+           "analogChannel": null,
+           "digitalLine": null,
+           "managerName": "AAAOTFLaserManager",
+           "managerProperties": {"rs232device": "aaaotf", "channel": 1},
+           "valueRangeMin": 0,
+           "valueRangeMax": 1023,
+           "wavelength": 561
+       }
+   }
+
+(The gate/AOTF pairing above is the layout shipped in
+``example_sted.json``; ``powerDevice`` is what links the two.)
+
+Leave it ``null`` (the default) when one entry owns both gate and power — an
+AOM with its own analog channel and digital line, for instance.
+
 **Example** (Cobolt laser on COM11):
 
 .. code-block:: json

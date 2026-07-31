@@ -31,6 +31,7 @@ class ScanControllerMoNaLISA(SuperScanController):
         self.updateScanTTLAttrs()
 
         self.awaitingPipeline = False
+        self._pipelineRunToken = None
         self.autoAxial = False
         self.pipeline_timeout_ms = 3000
 
@@ -106,13 +107,19 @@ class ScanControllerMoNaLISA(SuperScanController):
                         sigScanStartingEmitted,axialFollowUp=False):
         """ Runs a scan with the set scanning parameters. """
 
-        if not axialFollowUp:
-            self.checkAxialAutoScan()
-            if self.autoAxial:
-                self.setupAxial()
         try:
+            if self._beginScanRun(
+                sigScanStartingEmitted=sigScanStartingEmitted
+            ) is None:
+                return
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
+            # Do not mutate axial buffers until this exact start has acquired
+            # run ownership. A duplicate user/API start while another
+            # iteration is active must be a side-effect-free refusal.
+            if not axialFollowUp:
+                self.checkAxialAutoScan()
+                if self.autoAxial:
+                    self.setupAxial()
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
@@ -123,13 +130,11 @@ class ScanControllerMoNaLISA(SuperScanController):
                     )
                 except TypeError:
                     self._logger.error(traceback.format_exc())
-                    self.isRunning = False
+                    self.scanFailed()
                     return
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
 
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
             # set positions of scanners not in scan from centerpos
             for index, positionerName in enumerate(self._analogParameterDict['target_device']):
                 if positionerName not in self._positionersScan:
@@ -137,10 +142,10 @@ class ScanControllerMoNaLISA(SuperScanController):
                     self._master.positionersManager[positionerName].setPosition(position, 0)
                     self._logger.debug(f'set {positionerName} center to {position} before scan')
             # run scan
-            self._master.nidaqManager.runScan(self.signalDict, self.scanInfoDict)
+            self._armScanIteration(self.signalDict, self.scanInfoDict)
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
+            self.scanFailed()
 
     def resetPositioners(self):
         """ For when 'center' is not 0: put back positioner in position before the scan.
@@ -153,26 +158,43 @@ class ScanControllerMoNaLISA(SuperScanController):
 
     def scanDone(self):
         self.isRunning = False
-        self.resetPositioners()
-        if self.autoAxial and len(self.axialListBuffer)!=0:
-            self.nextAxial = self.axialListBuffer.pop(0)
-            self.emitScanSignal(self._commChannel.sigScanEnded)
-            if self.centerCoord is None:
-                self.getCenterCoord()
-            else:
-                self.runNextAxialScan()
+        try:
+            self.resetPositioners()
+            if self.autoAxial and len(self.axialListBuffer)!=0:
+                self.nextAxial = self.axialListBuffer.pop(0)
+                if self.centerCoord is None:
+                    self.getCenterCoord()
+                else:
+                    self.runNextAxialScan()
 
-        else:
-            if self.autoAxial:
-                self.resetAfterAutoAxialFinished()
-
-            if not self._widget.isContLaserMode() and not self._widget.repeatEnabled():
-                self.emitScanSignal(self._commChannel.sigScanDone)
-                if not self.doingNonFinalPartOfSequence:
-                    self._widget.setScanButtonChecked(False)
-                    self.emitScanSignal(self._commChannel.sigScanEnded)
             else:
-                self.runScanAdvanced(sigScanStartingEmitted=True)
+                if self.autoAxial:
+                    self.resetAfterAutoAxialFinished()
+
+                if not self._widget.isContLaserMode() and not self._widget.repeatEnabled():
+                    isFinalPart = not self.doingNonFinalPartOfSequence
+                    if isFinalPart:
+                        try:
+                            self._widget.setScanButtonChecked(False)
+                        except Exception:
+                            self._logger.error(
+                                'Failed to reset the scan widget after '
+                                'completion',
+                                exc_info=True,
+                            )
+                    self._publishScanDone(isFinalPart=isFinalPart)
+                else:
+                    # Defer the re-arm so the finished scan's NI-DAQ tasks and
+                    # detector threads tear down first (see _armRepeatScan).
+                    self._armRepeatScan()
+        except Exception:
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
+
+    def _shouldContinueRepeat(self) -> bool:
+        if getattr(self, '_scanStopRequested', False):
+            return False
+        return self._widget.isContLaserMode() or self._widget.repeatEnabled()
 
     def getCenterCoord(self):
         if self.centerSearchMode == "Manual":
@@ -182,35 +204,88 @@ class ScanControllerMoNaLISA(SuperScanController):
             self.runNextAxialScan()
         else:
             self.awaitingPipeline = True
+            self._pipelineRunToken = self.__dict__.get('_scanRunToken')
             self._commChannel.beadRecWorkflow.query_center_coord(self.centerSearchMode)
             self.pipelineTimeoutTimer.start(self.pipeline_timeout_ms)# Start timeout
 
     def centerCoordPipelineFinished(self,coord):
-        if not self.awaitingPipeline:
+        pipelineRunToken = self.__dict__.get('_pipelineRunToken')
+        if (
+            not self.awaitingPipeline
+            or pipelineRunToken is None
+            or self.__dict__.get('_scanRunToken') is not pipelineRunToken
+            or self._scanCoordinator.runForOwner(self) is not pipelineRunToken
+        ):
             return
-        self.pipelineTimeoutTimer.stop()
-        self.awaitingPipeline = False
-        if coord is None:
-            self.axialListBuffer = []
-            self.scanDone()
-        else:
-            self._widget.yCenterEdit.setText(str(int(coord[0])))
-            self._widget.xCenterEdit.setText(str(int(coord[1])))
-            self.centerCoord = self.convertToUm(coord)
-            self.runNextAxialScan()
+        try:
+            self.pipelineTimeoutTimer.stop()
+            self.awaitingPipeline = False
+            self._pipelineRunToken = None
+            if coord is None:
+                self.axialListBuffer = []
+                self.scanDone()
+            else:
+                self._widget.yCenterEdit.setText(str(int(coord[0])))
+                self._widget.xCenterEdit.setText(str(int(coord[1])))
+                self.centerCoord = self.convertToUm(coord)
+                self.runNextAxialScan()
+        except Exception:
+            # The active NI iteration has already finished while this run token
+            # is intentionally retained for the axial follow-up. Any callback
+            # failure must terminalize that idle reservation.
+            self.awaitingPipeline = False
+            self._pipelineRunToken = None
+            try:
+                self.pipelineTimeoutTimer.stop()
+            except Exception:
+                pass
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
 
     def onPipelineTimeout(self):
-        if self.awaitingPipeline:
+        pipelineRunToken = self.__dict__.get('_pipelineRunToken')
+        if (
+            self.awaitingPipeline
+            and pipelineRunToken is not None
+            and self.__dict__.get('_scanRunToken') is pipelineRunToken
+            and self._scanCoordinator.runForOwner(self) is pipelineRunToken
+        ):
             self._logger.warning("Pipeline analysis timed out! Proceeding without axial scan.")
             self.awaitingPipeline = False
+            self._pipelineRunToken = None
             self.axialListBuffer = []
             self.scanDone()
         else:
             return
 
     def runNextAxialScan(self):
-        self.updateScanParamForAxial()
-        self.runScanAdvanced(sigScanStartingEmitted=False,axialFollowUp=True)
+        try:
+            isNonFinalPartOfSequence = (
+                self.doingNonFinalPartOfSequence
+            )
+            self.updateScanParamForAxial()
+            # autoAxial is one user-visible run made of several scan
+            # iterations. sigScanStarting was emitted before the first
+            # iteration and sigScanEnded is emitted only after the final one.
+            self.runScanAdvanced(
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+                sigScanStartingEmitted=True,
+                axialFollowUp=True,
+            )
+        except Exception:
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
+
+    def abortScan(self):
+        """Cancel delayed axial callbacks before releasing run ownership."""
+        self.awaitingPipeline = False
+        self._pipelineRunToken = None
+        self.axialListBuffer = []
+        try:
+            self.pipelineTimeoutTimer.stop()
+        except Exception:
+            pass
+        super().abortScan()
 
     def checkAxialAutoScan(self):
         try:

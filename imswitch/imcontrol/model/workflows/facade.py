@@ -25,12 +25,15 @@ tests or partial setups.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import inspect
 import threading
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.timeresolved import (
     TimeResolvedScanConfig,
     TimeResolvedScanProducts,
@@ -123,11 +126,41 @@ class CamFacade:
     / ``getLatestFrame`` / ``getChunk`` and the ``Exposure`` parameter.
     """
 
-    def __init__(self, detector) -> None:
+    def __init__(self, detector, detectorsManager=None, detectorName=None) -> None:
         self._detector = detector
         self._n_planned: Optional[int] = None
+        # When the DetectorsManager is supplied, the camera is held through a
+        # WORKFLOW lease instead of raw start/stop on the sub-manager, so a
+        # workflow can no longer disarm a detector another consumer is using
+        # (and vice versa). Without it we fall back to the legacy raw calls.
+        # Both are needed to lease; the detector's own name is deliberately
+        # NOT read here — construction must not touch the detector object.
+        self._detectorsManager = detectorsManager
+        self._detectorName = detectorName
+        self._acqHandle = None
 
     # Acquisition lifecycle ------------------------------------------------
+
+    @property
+    def _leases(self) -> bool:
+        return self._detectorsManager is not None and self._detectorName is not None
+
+    def _arm(self) -> None:
+        if not self._leases:
+            self._detector.startAcquisition()
+            return
+        if self._acqHandle is None:  # idempotent: workflows re-arm per plane
+            self._acqHandle = self._detectorsManager.acquire(
+                [self._detectorName], LeasePurpose.WORKFLOW
+            )
+
+    def _disarm(self) -> None:
+        if not self._leases:
+            self._detector.stopAcquisition()
+            return
+        if self._acqHandle is not None:
+            self._detectorsManager.release(self._acqHandle)
+            self._acqHandle = None
 
     def prepare_acquisition(self, n_frames: int) -> None:
         self._n_planned = int(n_frames)
@@ -135,10 +168,10 @@ class CamFacade:
         self._detector.releaseChunkConsumer(_WORKFLOW_CHUNK_CONSUMER)
 
     def start_acquisition(self) -> None:
-        self._detector.startAcquisition()
+        self._arm()
 
     def stop_acquisition(self) -> None:
-        self._detector.stopAcquisition()
+        self._disarm()
         self._n_planned = None
 
     def prepare_live(self) -> None:
@@ -146,10 +179,10 @@ class CamFacade:
         self._detector.releaseChunkConsumer(_WORKFLOW_CHUNK_CONSUMER)
 
     def start_live(self) -> None:
-        self._detector.startAcquisition()
+        self._arm()
 
     def stop_live(self) -> None:
-        self._detector.stopAcquisition()
+        self._disarm()
 
     # Data ----------------------------------------------------------------
 
@@ -169,7 +202,7 @@ class CamFacade:
         import time
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            frame = self._detector.getLatestFrame()
+            frame = self._detector.getLatestFrameShared()
             if frame is not None and getattr(frame, "size", 0) > 0:
                 return True
             time.sleep(0.01)
@@ -206,7 +239,8 @@ class TimeResolvedDetectorFacade:
         "clearTimeResolvedProducts",
     )
 
-    def __init__(self, detector) -> None:
+    def __init__(self, detector, *, detectorsManager=None,
+                 detectorName: str | None = None) -> None:
         missing = [
             name for name in self._REQUIRED_METHODS
             if not callable(getattr(detector, name, None))
@@ -217,6 +251,24 @@ class TimeResolvedDetectorFacade:
                 "missing: " + ", ".join(missing)
             )
         self._detector = detector
+        self._detectorsManager = detectorsManager
+        self._detectorName = detectorName
+
+    @contextmanager
+    def acquisition_lease(self):
+        """Keep the time-resolved detector armed through final-product drain."""
+        if self._detectorsManager is None or self._detectorName is None:
+            # Compatibility for standalone facade construction in tests and
+            # third-party integrations that already own detector acquisition.
+            yield
+            return
+        handle = self._detectorsManager.acquire(
+            [self._detectorName], LeasePurpose.WORKFLOW
+        )
+        try:
+            yield
+        finally:
+            self._detectorsManager.release(handle)
 
     def configure(self, config: TimeResolvedScanConfig) -> None:
         self._detector.configureTimeResolvedProducts(config)
@@ -264,39 +316,255 @@ class ScanWorkflowFacade:
         timeout_s: float | None = None,
         notify_starting: bool = True,
     ) -> None:
-        """Trigger one existing scan and optionally wait for ``sigScanDone``."""
+        """Trigger one existing scan and optionally wait for completion.
+
+        Coordinator-aware controllers reject synchronously and report an exact
+        request terminal bound to their accepted run token. Legacy receivers
+        retain the original global-signal wait path. With no
+        ``scan_done_signal`` configured, ``wait=True`` preserves the historical
+        fire-and-return behavior.
+        ``notify_starting=False`` is reserved for a continuation whose first
+        part already published the run-level start.
+        When ``wait`` is true, call this from a workflow/background thread if
+        completion is delivered through queued Qt signals; blocking the Qt UI
+        thread would prevent those callbacks from running.
+        """
+        shouldWait = wait and self._scan_done_signal is not None
+        if shouldWait:
+            isUiThread = getattr(
+                self._scan_workflow, 'is_ui_thread', None
+            )
+            if callable(isUiThread) and isUiThread():
+                raise RuntimeError(
+                    'A blocking scan cannot run on the UI thread. Run it from '
+                    'a script/background thread or pass wait=False.'
+                )
+            exactWaitSupported = getattr(
+                self._scan_workflow, 'exact_wait_supported', None
+            )
+            if (
+                callable(exactWaitSupported)
+                and not exactWaitSupported()
+            ):
+                raise RuntimeError(
+                    'Blocking scan completion requires one exact-capable scan '
+                    'source. Select a coordinated Scan controller or pass '
+                    'wait=False.'
+                )
 
         done = threading.Event()
+        scan_ended_during_request = threading.Event()
+        ended_before_done = threading.Event()
+        terminal = threading.Event()
 
         def _on_done(*_args, **_kwargs):
             done.set()
+            terminal.set()
+
+        def _on_scan_ended(*_args, **_kwargs):
+            if not done.is_set():
+                ended_before_done.set()
+            scan_ended_during_request.set()
+            terminal.set()
 
         connected = False
+        scan_ended_signal = self._scan_ended_signal()
+        scan_ended_connected = False
         if wait and self._scan_done_signal is not None:
-            connected = self._connect(self._scan_done_signal, _on_done)
+            connected = self._connect(
+                self._scan_done_signal, _on_done, direct=True
+            )
+        if scan_ended_signal is not None:
+            scan_ended_connected = self._connect(
+                scan_ended_signal, _on_scan_ended, direct=True
+            )
 
         try:
-            notify = getattr(self._scan_workflow, "notify_scan_starting", None)
-            if notify_starting and callable(notify):
-                notify()
-            self._scan_workflow.run_scan(
-                bool(recalculate_signals),
-                bool(is_non_final_part_of_sequence),
+            runPrepared = getattr(
+                self._scan_workflow, "run_scan_prepared", None
             )
-            if connected and not done.wait(timeout=timeout_s):
-                raise TimeoutError("Timed out waiting for scan workflow completion")
+            notify = getattr(self._scan_workflow, "notify_scan_starting", None)
+            starting_notified = False
+            usePreparedRun = callable(runPrepared)
+            if (
+                notify_starting
+                and not usePreparedRun
+                and callable(notify)
+            ):
+                notify()
+                starting_notified = True
+            try:
+                if usePreparedRun:
+                    request_result = runPrepared(
+                        bool(recalculate_signals),
+                        bool(is_non_final_part_of_sequence),
+                        bool(notify_starting),
+                    )
+                    starting_notified = bool(
+                        getattr(
+                            request_result,
+                            'startingPublished',
+                            False,
+                        )
+                    )
+                else:
+                    request_result = self._scan_workflow.run_scan(
+                        bool(recalculate_signals),
+                        bool(is_non_final_part_of_sequence),
+                    )
+            except Exception as error:
+                failed_request = getattr(
+                    error, 'scanRequestResult', None
+                )
+                try:
+                    starting_notified = (
+                        starting_notified
+                        or bool(
+                            getattr(
+                                failed_request,
+                                'startingPublished',
+                                False,
+                            )
+                        )
+                    )
+                except Exception:
+                    # A malformed error envelope cannot prove a lifecycle start.
+                    pass
+                try:
+                    ending_notified = bool(
+                        getattr(
+                            failed_request,
+                            'endingPublished',
+                            False,
+                        )
+                    )
+                except Exception:
+                    ending_notified = False
+                failed_handled, failed_accepted = (
+                    self._request_acceptance_state(failed_request)
+                )
+                if failed_handled and failed_accepted:
+                    # Dispatch can raise after the controller has reserved and
+                    # reported an exact run. That controller now owns the end;
+                    # never forge an early global sigScanEnded while its
+                    # detector barrier may still be draining.
+                    try:
+                        self._consume_accepted_request(
+                            failed_request,
+                            shouldWait=shouldWait,
+                            timeout_s=timeout_s,
+                            requireSuccessful=False,
+                        )
+                    except Exception as completionError:
+                        raise completionError from error
+                    raise
+                if (
+                    starting_notified
+                    and not ending_notified
+                    and not scan_ended_during_request.is_set()
+                    and not (
+                        failed_request is not None
+                        and self._rejected_request_already_ended(
+                            failed_request
+                        )
+                    )
+                ):
+                    notify_ended = getattr(
+                        self._scan_workflow, "notify_scan_ended", None
+                    )
+                    if callable(notify_ended):
+                        notify_ended()
+                raise
+            handled, accepted = self._request_acceptance_state(
+                request_result
+            )
+            if handled and not accepted:
+                try:
+                    ending_notified = bool(
+                        getattr(
+                            request_result,
+                            'endingPublished',
+                            False,
+                        )
+                    )
+                except Exception:
+                    ending_notified = False
+                if (
+                    starting_notified
+                    and not ending_notified
+                    and not scan_ended_during_request.is_set()
+                    and not self._rejected_request_already_ended(
+                        request_result
+                    )
+                ):
+                    notify_ended = getattr(
+                        self._scan_workflow, "notify_scan_ended", None
+                    )
+                    if callable(notify_ended):
+                        notify_ended()
+                message = getattr(
+                    request_result,
+                    "rejectionMessage",
+                    "No scan controller accepted the request.",
+                )
+                raise RuntimeError(f"Scan request rejected: {message}")
+
+            if shouldWait and handled:
+                self._consume_accepted_request(
+                    request_result,
+                    shouldWait=True,
+                    timeout_s=timeout_s,
+                    requireSuccessful=True,
+                )
+            elif handled:
+                # Even fire-and-return mode validates that an accepted source
+                # supplied one usable exact terminal. Malformed acceptance is
+                # unsafe regardless of whether this caller waits.
+                self._consume_accepted_request(
+                    request_result,
+                    shouldWait=False,
+                    timeout_s=timeout_s,
+                    requireSuccessful=False,
+                )
+            elif shouldWait and connected:
+                if not terminal.wait(timeout=timeout_s):
+                    raise TimeoutError(
+                        "Timed out waiting for scan workflow completion"
+                    )
+                if ended_before_done.is_set():
+                    raise RuntimeError(
+                        'Scan ended before reporting successful completion.'
+                    )
         finally:
             if connected:
                 self._disconnect(self._scan_done_signal, _on_done)
+            if scan_ended_connected:
+                self._disconnect(scan_ended_signal, _on_scan_ended)
 
     def __call__(self) -> None:
         self.run_once()
 
     @staticmethod
-    def _connect(signal, slot) -> bool:
+    def _connect(signal, slot, *, direct: bool = False) -> bool:
         connect = getattr(signal, "connect", None)
         if not callable(connect):
             return False
+        if direct:
+            try:
+                from qtpy import QtCore
+
+                connectionType = getattr(
+                    QtCore.Qt, 'ConnectionType', QtCore.Qt
+                ).DirectConnection
+                try:
+                    connect(slot, type=connectionType)
+                except TypeError:
+                    connect(slot, connectionType)
+                return True
+            except (ImportError, AttributeError, TypeError):
+                # Lightweight test/legacy signal implementations often expose
+                # only connect(slot). They are already synchronous.
+                pass
         connect(slot)
         return True
 
@@ -309,6 +577,287 @@ class ScanWorkflowFacade:
             disconnect(slot)
         except Exception:
             pass
+
+    def _scan_ended_signal(self):
+        """Return the service's lifecycle-end signal when it is discoverable."""
+        comm_channel = getattr(self._scan_workflow, "_comm_channel", None)
+        return getattr(comm_channel, "sigScanEnded", None)
+
+    @staticmethod
+    def _accepted_request_completion(request_result):
+        """Require the one exact terminal supplied by an accepting owner."""
+        acceptedOwners = [
+            owner
+            for owner, accepted, _message
+            in tuple(getattr(request_result, 'reports', ()) or ())
+            if accepted
+        ]
+        if len(acceptedOwners) != 1:
+            raise RuntimeError(
+                'A handled scan request must have exactly one accepting owner.'
+            )
+        owner = acceptedOwners[0]
+        tokenEntries = tuple(
+            getattr(request_result, 'acceptedTokens', ()) or ()
+        )
+        acceptedTokens = [
+            runToken
+            for tokenOwner, runToken
+            in tokenEntries
+            if tokenOwner is owner and runToken is not None
+        ]
+        if len(acceptedTokens) != 1:
+            raise RuntimeError(
+                'The accepting scan controller did not report one exact '
+                'run token.'
+            )
+        runToken = acceptedTokens[0]
+        for tokenOwner, extraToken in tokenEntries:
+            if tokenOwner is not owner or extraToken is not runToken:
+                raise RuntimeError(
+                    'Multiple scan controllers reported accepted run tokens.'
+                )
+        entries = tuple(
+            getattr(request_result, 'acceptedCompletions', ()) or ()
+        )
+        completions = [
+            completion
+            for completionOwner, completionToken, completion in entries
+            if completionOwner is owner and completionToken is runToken
+        ]
+        if len(completions) != 1 or completions[0] is None:
+            raise RuntimeError(
+                'The accepting scan controller did not report one exact '
+                'request terminal.'
+            )
+        completion = completions[0]
+        if (
+            getattr(completion, 'owner', None) is not owner
+            or getattr(completion, 'runToken', None) is not runToken
+        ):
+            raise RuntimeError(
+                'Scan controller reported a mismatched request terminal.'
+            )
+        if not callable(getattr(completion, 'wait', None)):
+            raise RuntimeError(
+                'The accepting scan controller reported a non-waitable exact '
+                'request terminal.'
+            )
+        coordinator = getattr(owner, '_scanCoordinator', None)
+        runForOwner = getattr(coordinator, 'runForOwner', None)
+        if callable(runForOwner):
+            try:
+                activeRunToken = runForOwner(owner)
+            except Exception as error:
+                raise RuntimeError(
+                    'Unable to verify the accepting scan controller run token.'
+                ) from error
+            if (
+                activeRunToken is not runToken
+                and not completion.wait(timeout=0)
+            ):
+                raise RuntimeError(
+                    'The accepting scan controller reported a run token that '
+                    'does not match its active reservation.'
+                )
+        for completionOwner, completionToken, extra in entries:
+            if (
+                extra is not None
+                and (
+                    completionOwner is not owner
+                    or completionToken is not runToken
+                    or extra is not completion
+                )
+            ):
+                raise RuntimeError(
+                    'Multiple scan controllers accepted one workflow request.'
+                )
+        return completion
+
+    def _request_acceptance_state(self, request_result):
+        """Read a result envelope or abort identities retained in broken fields."""
+        try:
+            return (
+                bool(getattr(request_result, 'handled', False)),
+                bool(getattr(request_result, 'accepted', False)),
+            )
+        except Exception:
+            self._abort_accepted_request(request_result)
+            raise
+
+    def _consume_accepted_request(
+        self, request_result, *, shouldWait: bool,
+        timeout_s, requireSuccessful: bool,
+    ):
+        """Validate and optionally consume one accepted exact terminal.
+
+        Any malformed or exceptional wait path fails closed with a targeted
+        abort. A terminal that cleanly reports failure is already physically
+        complete, so its source-provided message is surfaced without a
+        redundant abort.
+        """
+        try:
+            completion = self._accepted_request_completion(request_result)
+        except Exception:
+            # Acceptance means hardware may already be armed. A malformed
+            # extension report must therefore target every identity it says
+            # accepted; broadcasting could stop an unrelated scan.
+            self._abort_accepted_request(request_result)
+            raise
+        if not shouldWait:
+            return completion
+
+        try:
+            completed = completion.wait(timeout=timeout_s)
+        except Exception:
+            self._abort_accepted_request(request_result)
+            raise
+        if not completed:
+            self._abort_accepted_request(request_result)
+            raise TimeoutError(
+                'Timed out waiting for scan workflow completion'
+            )
+        if not requireSuccessful:
+            return completion
+
+        try:
+            successful = getattr(completion, 'successful', None)
+            message = getattr(completion, 'message', '')
+        except Exception:
+            self._abort_accepted_request(request_result)
+            raise
+        if successful is not True:
+            raise RuntimeError(
+                message or 'Scan ended before successful completion.'
+            )
+        return completion
+
+    def _abort_accepted_request(self, request_result) -> None:
+        """Best-effort targeted cleanup for a malformed accepted request.
+
+        Contract validation deliberately happens after dispatch, so a broken
+        controller may already own hardware. Recover every unique owner named
+        by the accepted report/token/completion fields and abort only those
+        owners. Cleanup errors are suppressed to preserve the validation error
+        that explains why the request could not be coordinated.
+        """
+        targets = []
+
+        def retain(owner, runToken=None) -> None:
+            if owner is None:
+                return
+            if all(
+                candidate is not owner or candidateToken is not runToken
+                for candidate, candidateToken in targets
+            ):
+                targets.append((owner, runToken))
+
+        try:
+            reports = tuple(getattr(request_result, 'reports', ()) or ())
+        except Exception:
+            reports = ()
+        for report in reports:
+            try:
+                owner, accepted, _message = report
+            except Exception:
+                continue
+            if accepted:
+                retain(owner)
+
+        try:
+            tokenEntries = tuple(
+                getattr(request_result, 'acceptedTokens', ()) or ()
+            )
+        except Exception:
+            tokenEntries = ()
+        for entry in tokenEntries:
+            try:
+                owner, runToken = entry
+            except Exception:
+                continue
+            retain(owner, runToken)
+
+        try:
+            completionEntries = tuple(
+                getattr(request_result, 'acceptedCompletions', ()) or ()
+            )
+        except Exception:
+            completionEntries = ()
+        for entry in completionEntries:
+            try:
+                owner, runToken, _completion = entry
+            except Exception:
+                continue
+            retain(owner, runToken)
+
+        # A report can name an accepted owner but omit its token. Snapshot any
+        # discoverable current identity now, then carry it into the queued UI
+        # abort. Never let an owner-only stale cleanup kill a later generation.
+        concreteOwners = [
+            owner for owner, runToken in targets if runToken is not None
+        ]
+        normalizedTargets = []
+        for owner, runToken in targets:
+            if runToken is None:
+                if any(candidate is owner for candidate in concreteOwners):
+                    continue
+                coordinator = getattr(owner, '_scanCoordinator', None)
+                runForOwner = getattr(coordinator, 'runForOwner', None)
+                if callable(runForOwner):
+                    try:
+                        runToken = runForOwner(owner)
+                    except Exception:
+                        runToken = None
+                if runToken is None:
+                    runToken = getattr(owner, '_scanRunToken', None)
+            normalizedTargets.append((owner, runToken))
+
+        abortFrom = getattr(self._scan_workflow, 'abort_scan_from', None)
+        for owner, runToken in normalizedTargets:
+            if callable(abortFrom):
+                try:
+                    try:
+                        inspect.signature(abortFrom).bind(
+                            owner, runToken
+                        )
+                    except (TypeError, ValueError):
+                        abortFrom(owner)
+                    else:
+                        abortFrom(owner, runToken)
+                except Exception:
+                    pass
+                # A production service owns UI-thread marshalling. Never fall
+                # through to a direct worker-thread QWidget path if that
+                # service reports an abort error.
+                continue
+            abortScan = getattr(owner, 'abortScan', None)
+            if callable(abortScan):
+                try:
+                    abortScan()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _rejected_request_already_ended(request_result) -> bool:
+        """Infer a synchronously claimed-and-finished controller lifecycle.
+
+        The normal application service exposes ``sigScanEnded``, which is the
+        authoritative observation. This fallback covers lightweight service
+        adapters that expose acceptance reports but not their signal channel.
+        """
+        for report in getattr(request_result, "reports", ()):
+            if not report:
+                continue
+            owner = report[0]
+            if (
+                bool(getattr(owner, "_externalScanRequestAccepted", False))
+                and getattr(owner, "_scanRunToken", None) is None
+                and not bool(
+                    getattr(owner, "_scanRunStartingPublished", False)
+                )
+            ):
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -824,11 +1373,17 @@ def build_facade_from_master(
         facade.laser_con = LaserConFacade(lasers)
 
     if detector_name is not None:
-        facade.cam = CamFacade(master.detectorsManager[detector_name])
+        facade.cam = CamFacade(
+            master.detectorsManager[detector_name],
+            detectorsManager=master.detectorsManager,
+            detectorName=detector_name,
+        )
 
     if time_resolved_detector_name is not None:
         facade.time_resolved = TimeResolvedDetectorFacade(
-            master.detectorsManager[time_resolved_detector_name]
+            master.detectorsManager[time_resolved_detector_name],
+            detectorsManager=master.detectorsManager,
+            detectorName=time_resolved_detector_name,
         )
 
     if scan_workflow is not None:

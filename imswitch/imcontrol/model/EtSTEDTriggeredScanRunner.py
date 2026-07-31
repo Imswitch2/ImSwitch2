@@ -12,6 +12,7 @@ class EtSTEDTriggeredScanResult:
     message: str = ''
     signal_dict: dict | None = None
     scan_info_dict: dict | None = None
+    scan_token: object | None = None
 
 
 class EtSTEDTriggeredScanRunner:
@@ -79,21 +80,52 @@ class EtSTEDTriggeredScanRunner:
         scan_info_dict=None,
         comm_channel=None,
         scan_workflow=None,
+        scan_coordinator=None,
+        scan_owner=None,
     ) -> EtSTEDTriggeredScanResult:
-        """Trigger a previously prepared slow scan."""
+        """Trigger a previously prepared slow scan.
+
+        ScanWidget initiation always arms through the shared scan coordinator,
+        so this entry point gets the same participant snapshot / SCAN lease /
+        exactly-once completion as the scan-widget controllers.
+        """
         if scan_initiation_mode == self.scan_widget_mode:
-            if nidaq_manager is None:
-                return EtSTEDTriggeredScanResult(False, 'ScanWidget trigger requires a nidaq manager.')
+            if scan_coordinator is None:
+                return EtSTEDTriggeredScanResult(
+                    False,
+                    'ScanWidget trigger requires a scan execution coordinator.',
+                )
+            if scan_owner is None:
+                return EtSTEDTriggeredScanResult(
+                    False,
+                    'ScanWidget trigger requires a non-None scan owner.',
+                )
             if signal_dict is None or scan_info_dict is None:
                 return EtSTEDTriggeredScanResult(False, 'ScanWidget trigger requires prepared scan signals.')
-            nidaq_manager.runScan(signal_dict, scan_info_dict)
-            return EtSTEDTriggeredScanResult(True)
+            try:
+                token = scan_coordinator.arm(
+                    signal_dict, scan_info_dict, owner=scan_owner
+                )
+            except Exception as e:
+                # Busy refusal, hardware startup failure and unexpected
+                # coordinator errors all cross a Qt callback boundary here.
+                # Return an ordinary failed trigger so the controller can pair
+                # its run-level lifecycle and recover safely.
+                return EtSTEDTriggeredScanResult(
+                    False, f'Failed to trigger ScanWidget scan: {e}'
+                )
+            return EtSTEDTriggeredScanResult(True, scan_token=token)
 
         if scan_initiation_mode == self.recording_widget_mode:
             scan_workflow = self._resolve_scan_workflow(scan_workflow, comm_channel)
             if scan_workflow is None:
                 return EtSTEDTriggeredScanResult(False, 'RecordingWidget trigger requires a scan workflow.')
-            scan_workflow.start_external_recording()
+            try:
+                scan_workflow.start_external_recording()
+            except Exception as e:
+                return EtSTEDTriggeredScanResult(
+                    False, f'Failed to trigger RecordingWidget scan: {e}'
+                )
             return EtSTEDTriggeredScanResult(True)
 
         return EtSTEDTriggeredScanResult(False, f'Unknown scan initiation mode: {scan_initiation_mode}')

@@ -1,5 +1,7 @@
 import numpy as np
 
+from imswitch.improcess.model.plane_navigation import extract_plane, plane_count
+
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -15,16 +17,21 @@ class DataEditController(ImProcessWidgetController):
 
     def setData(self, inDataObj):
         self._dataObj = inDataObj
-        self._meanData = np.array(np.mean(self._dataObj.data, 0), dtype=np.float32)
+        self._meanData = self._dataObj.getMeanData()
         self.showMean()
         self._widget.updateDataProperties(self._dataObj.name, self._dataObj.datasetName,
                                           self._dataObj.numFrames)
 
     def setImgSlice(self, frameNumber):
-        if self._dataObj is None or frameNumber >= len(self._dataObj.data):
+        if self._dataObj is None:
             return
 
-        self._widget.setImage(self._dataObj.data[frameNumber], autoLevels=False)
+        data = self._dataObj.data
+        labels = getattr(self._dataObj, "axis_labels", None)
+        if frameNumber >= plane_count(np.shape(data), labels):
+            return
+
+        self._widget.setImage(extract_plane(data, frameNumber, labels), autoLevels=False)
 
     def setDarkFrame(self):
         # self.dataObj.data = self.dataObj.data[0:100]

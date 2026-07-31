@@ -49,6 +49,36 @@ them — leave them out (or ``null``).
     }
 
 
+Camera pixel size
+-----------------
+
+Every camera manager accepts ``cameraPixelSizeUm`` in its
+``managerProperties``.  This is the *optically effective* pixel size at
+the sample plane — the physical sensor pitch divided by the total
+magnification — in micrometers, **not** the sensor pitch itself.  It is
+exposed at runtime as the ``Camera pixel size`` detector parameter and is
+what calibrates recorded files (OME ``PhysicalSize``, Fiji
+``element_size_um``), the napari layer scale, scale bars, tiling and
+stitching.  Scan-driven detectors (APD, PMT, TimeTagger) ignore it and
+derive their pixel size from the scan step instead.
+
+.. code-block:: json
+
+    "managerProperties": { "cameraPixelSizeUm": 0.082 }
+
+Omitting the key falls back to 0.15 µm.  A misspelled key
+(``camerapixelsizeum``) or an unparseable value (``"0,082"`` — a decimal
+comma) also falls back to 0.15 µm, but logs a warning naming the mistake.
+
+**The setup file wins over saved widget state.**  When
+``cameraPixelSizeUm`` is set, the parameter is treated as instrument
+calibration owned by the config: it is neither written into
+``imcontrol_widget_states`` nor restored from it, so editing the setup
+file takes effect on the next start.  Without the key the value is an
+editable runtime setting like any other and does round-trip through
+state persistence.
+
+
 APDManager
 ==========
 
@@ -94,12 +124,25 @@ scan driven by ``NidaqManager``.
      - str
      - ``"Dev1"``
      - NI-DAQ device prefix used when ``ctrInputLine`` is given as an int.
+   * - ``liveUpdateIntervalMs``
+     - float
+     - ``50.0``
+     - Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  The image is filled in line by line, but pushing every line to the viewer floods the GUI on fast scans; this bounds the redraw rate independently of line rate and image size.  Raise it if the GUI still lags on a very fast rig, lower it for a more fluid preview on slow scans.  Does not affect acquired or recorded data.
 
 **Low-level dependencies**
 
 * ``nidaqManager`` — required.  The manager connects to its
   ``sigScanBuilt`` and ``sigScanStarted`` signals to drive image
   acquisition during scans.
+
+**Line-step scans**
+
+When the Advanced scanning widget runs a scan with more than one line step,
+each physical line is scanned once per step and the manager keeps the steps
+as a separate axis: the frame handed to the recording is
+``(1, S, Ny, Nx)`` — saved as ``(T, C, Y, X)``, one channel per line step.
+``PMTManager`` instead sums the line steps into a single 2D image before
+publishing.
 
 **Vendor library**
 
@@ -500,12 +543,22 @@ card.  Image is built during a scan driven by ``NidaqManager``.
      - float
      - ``0.0``
      - Voltage offset subtracted from each sample before being treated as signal.
+   * - ``liveUpdateIntervalMs``
+     - float
+     - ``50.0``
+     - Minimum wall-clock gap between live-preview redraws during a scan (50 ms = 20 Hz).  Same meaning as for ``APDManager``; bounds GUI redraws only, never acquired data.
 
 **Low-level dependencies**
 
 * ``nidaqManager`` — required.  The manager connects to its
   ``sigScanBuilt`` and ``sigScanStarted`` signals to drive image
   acquisition during scans.
+
+**Line-step scans**
+
+Unlike ``APDManager``, which keeps the line steps as separate channels, this
+manager **sums** them into one 2D image before publishing, so a multi-line-step
+scan yields a single ``(1, Ny, Nx)`` frame.
 
 **Vendor library**
 

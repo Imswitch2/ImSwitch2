@@ -32,6 +32,7 @@ MODE_SCAN_LAPSE = 'scan_lapse' # ScanLapse
 _RECMODE_TO_MODE = {
     'SpecFrames': MODE_TIMELAPSE,
     'SpecTime': MODE_TIMELAPSE,
+    'CameraLapse': MODE_TIMELAPSE,
     'UntilStop': MODE_TIMELAPSE,
     'ScanOnce': MODE_SCAN,
     'ScanLapse': MODE_SCAN_LAPSE,
@@ -114,14 +115,36 @@ class OmeImageMeta:
         return ''.join(a.name.upper() for a in self.axes)
 
     def padded_to(self, ndim: int) -> 'OmeImageMeta':
-        """Return a copy whose axes/scale are padded with a leading ``t`` axis
-        (scale 1) or truncated to ``ndim``. For stores that always carry a
-        leading frame axis (Zarr/HDF5 keep a 2D snap as ``(1, Y, X)``)."""
+        """Return a copy whose axes/scale match ``ndim``.
+
+        Missing leading dimensions follow OME's ``T, C, Z, Y, X`` order.
+        This matters for scan-driven detector frames shaped ``(T, C, Y, X)``,
+        where ``C`` represents separately retained line-step planes.
+        """
         axes = list(self.axes)
         scale = list(self.scale)
-        while len(axes) < ndim:
-            axes.insert(0, OmeAxis('t', 'time', _TIME_UNIT))
-            scale.insert(0, 1.0)
+        missing = max(0, ndim - len(axes))
+        existing = {axis.name for axis in axes}
+        candidates = [
+            OmeAxis('t', 'time', _TIME_UNIT),
+            OmeAxis('c', 'channel'),
+            OmeAxis('z', 'space', _SPACE_UNIT),
+        ]
+        additions = [
+            axis for axis in candidates if axis.name not in existing
+        ][:missing]
+        while len(additions) < missing:
+            additions.insert(0, OmeAxis('t', 'time', _TIME_UNIT))
+        axes = additions + axes
+        scale = [1.0] * len(additions) + scale
+        canonical = {'t': 0, 'c': 1, 'z': 2, 'y': 3, 'x': 4}
+        if len({axis.name for axis in axes}) == len(axes):
+            ordered = sorted(
+                zip(axes, scale),
+                key=lambda item: canonical.get(item[0].name, 99),
+            )
+            axes = [item[0] for item in ordered]
+            scale = [item[1] for item in ordered]
         if len(axes) > ndim:
             axes = axes[len(axes) - ndim:]
             scale = scale[len(scale) - ndim:]

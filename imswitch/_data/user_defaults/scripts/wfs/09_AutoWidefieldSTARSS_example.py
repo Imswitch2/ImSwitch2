@@ -52,7 +52,7 @@ facade = api.imcontrol.buildWorkflowFacade(
 # 1. Read current FOV from the camera
 # ---------------------------------------------------------------------------
 detector = api.imcontrol.detectorsManager["Kiralux"]
-sample_frame = detector.getLatestFrame()
+sample_frame = detector.getLatestFrameShared()
 if sample_frame is None or sample_frame.size == 0:
     raise RuntimeError("No frame available from camera — start a live view first.")
 

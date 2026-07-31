@@ -216,6 +216,47 @@ def test_time_resolved_facade_rejects_missing_contract():
         TimeResolvedDetectorFacade(object())
 
 
+def test_time_resolved_facade_workflow_lease_is_scoped_and_released():
+    from imswitch.imcontrol.model.managers._acquisition_leases import (
+        LeasePurpose,
+    )
+    from imswitch.imcontrol.model.workflows.facade import (
+        TimeResolvedDetectorFacade,
+    )
+
+    class Detector:
+        timeResolvedCapabilities = lambda self: {}
+        configureTimeResolvedProducts = lambda self, config: None
+        waitForFinalTimeResolvedProducts = lambda self, timeout: None
+        getLastTimeResolvedProducts = lambda self, copy=True: None
+        clearTimeResolvedProducts = lambda self: None
+
+    class Manager:
+        def __init__(self):
+            self.events = []
+
+        def acquire(self, names, purpose):
+            self.events.append(('acquire', tuple(names), purpose))
+            return 'lease'
+
+        def release(self, handle):
+            self.events.append(('release', handle))
+
+    manager = Manager()
+    facade = TimeResolvedDetectorFacade(
+        Detector(), detectorsManager=manager, detectorName='TT'
+    )
+
+    with facade.acquisition_lease():
+        manager.events.append(('work',))
+
+    assert manager.events == [
+        ('acquire', ('TT',), LeasePurpose.WORKFLOW),
+        ('work',),
+        ('release', 'lease'),
+    ]
+
+
 def test_mock_scan_records_default_run_once():
     f = build_mock_facade()
 
@@ -282,6 +323,970 @@ def test_scan_workflow_facade_runs_and_waits_for_done_signal():
         ("run_scan", True, False),
     ]
     assert signal.slots == []
+
+
+def test_scan_workflow_facade_rejection_is_synchronous_and_pairs_start():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+    class Rejected:
+        handled = True
+        accepted = False
+        rejectionMessage = "scanner is already reserved"
+        reports = ()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.calls = []
+
+        def notify_scan_starting(self):
+            self.calls.append("starting")
+
+        def notify_scan_ended(self):
+            self.calls.append("ended")
+
+        def run_scan(self, *_args):
+            self.calls.append("run")
+            return Rejected()
+
+    done_signal = Signal()
+    scan_workflow = ScanWorkflow()
+    facade = ScanWorkflowFacade(scan_workflow, done_signal)
+
+    with pytest.raises(
+        RuntimeError, match="Scan request rejected: scanner is already reserved"
+    ):
+        facade.run_once(timeout_s=60)
+
+    assert scan_workflow.calls == ["starting", "run", "ended"]
+    assert done_signal.slots == []
+
+
+def test_scan_workflow_facade_legacy_fallback_publishes_start_then_runs():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.calls = []
+
+        def prepare_scan_start(self):
+            self.calls.append('obsolete-split-preflight')
+
+        def notify_scan_starting(self):
+            self.calls.append('starting')
+
+        def run_scan(self, *_args):
+            self.calls.append('run')
+
+    workflow = ScanWorkflow()
+
+    ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.calls == ['starting', 'run']
+
+
+def test_scan_workflow_facade_atomic_refusal_does_not_pair_unpublished_start():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Rejected:
+        handled = True
+        accepted = False
+        rejectionMessage = 'scanner is already reserved'
+        reports = ()
+        startingPublished = False
+        endingPublished = False
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.calls = []
+
+        def run_scan_prepared(self, *_args):
+            self.calls.append('prepared-run')
+            return Rejected()
+
+        def prepare_scan_start(self):
+            self.calls.append('split-preflight')
+
+        def notify_scan_starting(self):
+            self.calls.append('legacy-starting')
+
+        def notify_scan_ended(self):
+            self.calls.append('ended')
+
+        def run_scan(self, *_args):
+            self.calls.append('legacy-run')
+
+    workflow = ScanWorkflow()
+
+    with pytest.raises(RuntimeError, match='scanner is already reserved'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.calls == ['prepared-run']
+
+
+def test_scan_workflow_facade_does_not_repair_atomic_ui_end():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Rejected:
+        handled = True
+        accepted = False
+        rejectionMessage = 'arm refused after pre-arm'
+        reports = ()
+        startingPublished = True
+        endingPublished = True
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.calls = []
+
+        def run_scan_prepared(self, *_args):
+            self.calls.append('prepared-run')
+            return Rejected()
+
+        def notify_scan_ended(self):
+            self.calls.append('duplicate-worker-end')
+
+        def run_scan(self, *_args):
+            self.calls.append('legacy-run')
+
+    workflow = ScanWorkflow()
+
+    with pytest.raises(RuntimeError, match='arm refused after pre-arm'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.calls == ['prepared-run']
+
+
+def test_scan_workflow_facade_does_not_double_end_failed_claimed_run():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+            self.emissions = 0
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+        def emit(self):
+            self.emissions += 1
+            for slot in list(self.slots):
+                slot()
+
+    class Rejected:
+        handled = True
+        accepted = False
+        rejectionMessage = "scan build failed"
+        reports = ()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self._comm_channel = type(
+                "CommChannel", (), {"sigScanEnded": Signal()}
+            )()
+            self.notify_ended_calls = 0
+
+        def notify_scan_starting(self):
+            pass
+
+        def notify_scan_ended(self):
+            self.notify_ended_calls += 1
+            self._comm_channel.sigScanEnded.emit()
+
+        def run_scan(self, *_args):
+            # A controller can reserve the caller-published lifecycle, fail
+            # while building, and publish its terminal signal before reporting
+            # the request as rejected.
+            self._comm_channel.sigScanEnded.emit()
+            return Rejected()
+
+    scan_workflow = ScanWorkflow()
+    facade = ScanWorkflowFacade(scan_workflow)
+
+    with pytest.raises(RuntimeError, match="scan build failed"):
+        facade.run_once(wait=False)
+
+    assert scan_workflow._comm_channel.sigScanEnded.emissions == 1
+    assert scan_workflow.notify_ended_calls == 0
+    assert scan_workflow._comm_channel.sigScanEnded.slots == []
+
+
+def test_scan_workflow_facade_infers_deferred_controller_end():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = type(
+        "Controller",
+        (),
+        {
+            "_externalScanRequestAccepted": True,
+            "_scanRunToken": None,
+            "_scanRunStartingPublished": False,
+        },
+    )()
+
+    class Rejected:
+        handled = True
+        accepted = False
+        rejectionMessage = "participant teardown is pending"
+        reports = ((owner, False, rejectionMessage),)
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.notify_ended_calls = 0
+
+        def notify_scan_starting(self):
+            pass
+
+        def notify_scan_ended(self):
+            self.notify_ended_calls += 1
+
+        def run_scan(self, *_args):
+            return Rejected()
+
+    scan_workflow = ScanWorkflow()
+
+    with pytest.raises(RuntimeError, match="participant teardown is pending"):
+        ScanWorkflowFacade(scan_workflow).run_once(wait=False)
+
+    # The controller cleared its local token/start state only after accepting
+    # responsibility for the terminal publication (possibly deferred behind
+    # detector teardown), so the facade must not publish a second end.
+    assert scan_workflow.notify_ended_calls == 0
+
+
+def test_scan_workflow_facade_preserves_unhandled_legacy_request():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Unhandled:
+        handled = False
+        accepted = False
+        rejectionMessage = "legacy receiver did not acknowledge"
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.ended = 0
+
+        def notify_scan_starting(self):
+            pass
+
+        def notify_scan_ended(self):
+            self.ended += 1
+
+        def run_scan(self, *_args):
+            return Unhandled()
+
+    scan_workflow = ScanWorkflow()
+    facade = ScanWorkflowFacade(scan_workflow)
+
+    facade.run_once(wait=False)
+
+    assert scan_workflow.ended == 0
+
+
+def test_scan_workflow_facade_wakes_when_legacy_scan_ends_without_done():
+    import threading
+
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+        def emit(self):
+            for slot in list(self.slots):
+                slot()
+
+    class Unhandled:
+        handled = False
+        accepted = False
+
+    ended = Signal()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self._comm_channel = type(
+                'CommChannel', (), {'sigScanEnded': ended}
+            )()
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            threading.Timer(0.01, ended.emit).start()
+            return Unhandled()
+
+    with pytest.raises(RuntimeError, match='ended before'):
+        ScanWorkflowFacade(
+            ScanWorkflow(), Signal()
+        ).run_once(timeout_s=0.2)
+
+
+def test_legacy_done_wakes_blocked_script_worker(qtbot):
+    import threading
+
+    from qtpy import QtCore
+
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Emitter(QtCore.QObject):
+        done = QtCore.Signal()
+
+    class Unhandled:
+        handled = False
+        accepted = False
+
+    ready = threading.Event()
+    errors = []
+
+    class ScanWorkflow:
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            ready.set()
+            return Unhandled()
+
+    emitter = Emitter()
+    facade = ScanWorkflowFacade(ScanWorkflow(), emitter.done)
+
+    def run():
+        try:
+            facade.run_once(timeout_s=0.5)
+        except Exception as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    qtbot.waitUntil(ready.is_set, timeout=1000)
+    emitter.done.emit()
+    qtbot.waitUntil(lambda: not thread.is_alive(), timeout=1000)
+    thread.join(timeout=0.1)
+
+    assert errors == []
+
+
+def test_scan_workflow_facade_ignores_stale_done_for_exact_request():
+    import threading
+
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+        def emit(self):
+            for slot in list(self.slots):
+                slot()
+
+    owner = object()
+    run_token = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(run_token)
+    stale_done = Signal()
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    class ScanWorkflow:
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            # This terminal belongs to an older run and must not complete the
+            # newly accepted token-scoped request.
+            stale_done.emit()
+            threading.Timer(
+                0.01,
+                lambda: completion.resolve(
+                    run_token, False, 'exact scan request failed'
+                ),
+            ).start()
+            return Accepted()
+
+    with pytest.raises(RuntimeError, match='exact scan request failed'):
+        ScanWorkflowFacade(
+            ScanWorkflow(), stale_done
+        ).run_once(timeout_s=0.2)
+
+
+def test_scan_workflow_facade_rejects_handled_acceptance_without_terminal():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = object()
+    run_token = object()
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ()
+
+    class ScanWorkflow:
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+    with pytest.raises(RuntimeError, match='exact request terminal'):
+        ScanWorkflowFacade(ScanWorkflow()).run_once(wait=False)
+
+
+def test_malformed_accepted_request_aborts_only_its_reported_owner():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = object()
+    unrelated = object()
+    run_token = object()
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''), (unrelated, False, 'not selected'))
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+        def abort_scan_from(self, source):
+            self.aborted.append(source)
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='exact request terminal'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.aborted == [owner]
+
+
+def test_non_waitable_exact_terminal_triggers_targeted_abort():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = object()
+    run_token = object()
+    malformed_completion = type(
+        'MalformedCompletion',
+        (),
+        {'owner': owner, 'runToken': run_token},
+    )()
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = (
+            (owner, run_token, malformed_completion),
+        )
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+        def abort_scan_from(self, source):
+            self.aborted.append(source)
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='non-waitable'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.aborted == [owner]
+
+
+def test_foreign_accepted_token_entry_aborts_every_reported_identity():
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = object()
+    foreign_owner = object()
+    run_token = object()
+    foreign_token = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(run_token)
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = (
+            (owner, run_token),
+            (foreign_owner, foreign_token),
+        )
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+        def abort_scan_from(self, source, token=None):
+            self.aborted.append((source, token))
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='accepted run tokens'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.aborted == [
+        (owner, run_token),
+        (foreign_owner, foreign_token),
+    ]
+
+
+def test_reported_token_must_match_unresolved_owner_reservation():
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    reported_token = object()
+    active_token = object()
+
+    class Owner:
+        pass
+
+    owner = Owner()
+    owner._scanCoordinator = type(
+        'Coordinator',
+        (),
+        {'runForOwner': lambda _self, _owner: active_token},
+    )()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(reported_token)
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, reported_token),)
+        acceptedCompletions = (
+            (owner, reported_token, completion),
+        )
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+        def abort_scan_from(self, source, token=None):
+            self.aborted.append((source, token))
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='active reservation'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.aborted == [(owner, reported_token)]
+
+
+def test_broken_acceptance_envelope_triggers_targeted_abort():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = object()
+    run_token = object()
+
+    class BrokenResult:
+        @property
+        def handled(self):
+            raise RuntimeError('broken handled property')
+
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return BrokenResult()
+
+        def abort_scan_from(self, source, token=None):
+            self.aborted.append((source, token))
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='broken handled property'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.aborted == [(owner, run_token)]
+
+
+def test_scan_workflow_facade_without_done_signal_preserves_fire_and_return():
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+        def emit(self):
+            for slot in list(self.slots):
+                slot()
+
+    owner = object()
+    run_token = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(run_token)
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    class ScanWorkflow:
+        def __init__(self):
+            self._comm_channel = type(
+                'CommChannel', (), {'sigScanEnded': Signal()}
+            )()
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            self._comm_channel.sigScanEnded.emit()
+            return Accepted()
+
+    workflow = ScanWorkflow()
+    ScanWorkflowFacade(workflow).run_once(timeout_s=0)
+
+    assert workflow._comm_channel.sigScanEnded.slots == []
+
+
+def test_scan_workflow_facade_pairs_start_when_dispatch_raises():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.started = 0
+            self.ended = 0
+
+        def notify_scan_starting(self):
+            self.started += 1
+
+        def notify_scan_ended(self):
+            self.ended += 1
+
+        def run_scan(self, *_args):
+            raise RuntimeError('dispatch failed')
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='dispatch failed'):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert workflow.started == 1
+    assert workflow.ended == 1
+
+
+def test_raised_accepted_dispatch_waits_for_exact_terminal_without_early_end():
+    import threading
+
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, slot):
+            self.slots.append(slot)
+
+        def disconnect(self, slot):
+            self.slots.remove(slot)
+
+        def emit(self):
+            for slot in list(self.slots):
+                slot()
+
+    owner = object()
+    run_token = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(run_token)
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, 'arm failed'),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    dispatch_error = RuntimeError('dispatch raised after acceptance')
+    dispatch_error.scanRequestResult = Accepted()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self._comm_channel = type(
+                'CommChannel', (), {'sigScanEnded': Signal()}
+            )()
+            self.notify_ended_calls = 0
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def notify_scan_ended(self):
+            self.notify_ended_calls += 1
+            self._comm_channel.sigScanEnded.emit()
+
+        def run_scan(self, *_args):
+            threading.Timer(
+                0.01,
+                lambda: completion.resolve(
+                    run_token, False, 'arm failed'
+                ),
+            ).start()
+            raise dispatch_error
+
+        def abort_scan_from(self, source):
+            self.aborted.append(source)
+
+    workflow = ScanWorkflow()
+    with pytest.raises(
+        RuntimeError, match='dispatch raised after acceptance'
+    ):
+        ScanWorkflowFacade(
+            workflow, Signal()
+        ).run_once(timeout_s=0.2)
+
+    assert completion.wait(timeout=0) is True
+    assert workflow.notify_ended_calls == 0
+    assert workflow.aborted == []
+
+
+def test_raised_accepted_dispatch_without_wait_never_synthesizes_end():
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    owner = object()
+    run_token = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(run_token)
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, 'arm failed'),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    dispatch_error = RuntimeError('dispatch raised after acceptance')
+    dispatch_error.scanRequestResult = Accepted()
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.notify_ended_calls = 0
+
+        def notify_scan_starting(self):
+            pass
+
+        def notify_scan_ended(self):
+            self.notify_ended_calls += 1
+
+        def run_scan(self, *_args):
+            raise dispatch_error
+
+    workflow = ScanWorkflow()
+    with pytest.raises(
+        RuntimeError, match='dispatch raised after acceptance'
+    ):
+        ScanWorkflowFacade(workflow).run_once(wait=False)
+
+    assert completion.wait(timeout=0) is False
+    assert workflow.notify_ended_calls == 0
+
+
+def test_exceptional_exact_wait_triggers_targeted_abort():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def connect(self, _slot):
+            pass
+
+        def disconnect(self, _slot):
+            pass
+
+    owner = object()
+    run_token = object()
+
+    class BrokenCompletion:
+        runToken = run_token
+
+        def __init__(self):
+            self.owner = owner
+
+        def wait(self, timeout=None):
+            raise RuntimeError('broken exact wait')
+
+    completion = BrokenCompletion()
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+        def abort_scan_from(self, source):
+            self.aborted.append(source)
+
+    workflow = ScanWorkflow()
+    with pytest.raises(RuntimeError, match='broken exact wait'):
+        ScanWorkflowFacade(
+            workflow, Signal()
+        ).run_once(timeout_s=0.1)
+
+    assert workflow.aborted == [owner]
+
+
+def test_exact_wait_timeout_triggers_targeted_abort():
+    from imswitch.imcontrol.controller.WorkflowServices import (
+        ScanRequestCompletion,
+    )
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class Signal:
+        def connect(self, _slot):
+            pass
+
+        def disconnect(self, _slot):
+            pass
+
+    owner = object()
+    run_token = object()
+    completion = ScanRequestCompletion(owner)
+    completion.bind(run_token)
+
+    class Accepted:
+        handled = True
+        accepted = True
+        reports = ((owner, True, ''),)
+        acceptedTokens = ((owner, run_token),)
+        acceptedCompletions = ((owner, run_token, completion),)
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.aborted = []
+
+        def notify_scan_starting(self):
+            pass
+
+        def run_scan(self, *_args):
+            return Accepted()
+
+        def abort_scan_from(self, source):
+            self.aborted.append(source)
+
+    workflow = ScanWorkflow()
+    with pytest.raises(TimeoutError, match='Timed out'):
+        ScanWorkflowFacade(
+            workflow, Signal()
+        ).run_once(timeout_s=0)
+
+    assert workflow.aborted == [owner]
+
+
+def test_scan_workflow_facade_allows_continuation_without_new_start():
+    from imswitch.imcontrol.model.workflows.facade import ScanWorkflowFacade
+
+    class ScanWorkflow:
+        def __init__(self):
+            self.started = 0
+            self.runs = 0
+
+        def notify_scan_starting(self):
+            self.started += 1
+
+        def run_scan(self, *_args):
+            self.runs += 1
+
+    workflow = ScanWorkflow()
+    ScanWorkflowFacade(workflow).run_once(
+        wait=False, notify_starting=False
+    )
+
+    assert workflow.started == 0
+    assert workflow.runs == 1
 
 
 def test_trig_facade_snap_uses_existing_legacy_teensy_driver():

@@ -109,5 +109,5 @@ combination is used.
   not in this repo) has the full narrative history of these findings (dates,
   diagnosis steps, related non-firmware fixes like the BeadRec ROI
   pixel-scale bug and the TISManager parameter-forwarding bug).
-- [`docs/scan_lifecycle.md`](scan_lifecycle.md) for how scan controllers
+- [`docs/scan-lifecycle.rst`](scan-lifecycle.rst) for how scan controllers
   (including the raster controller) integrate with the rest of ImSwitch2.

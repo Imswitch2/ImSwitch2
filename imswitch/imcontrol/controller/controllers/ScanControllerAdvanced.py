@@ -156,12 +156,119 @@ class ScanControllerAdvanced(SuperScanController):
             "TTLCycleSignalsDict": TTLCycleSignalsDict,
         }
 
+        self._log_linestep_scan_diagnostics(
+            TTLParameters=TTLParameters,
+            scanSignalsDict=scanSignalsDict,
+            TTLCycleSignalsDict=TTLCycleSignalsDict,
+            scanInfoDict=scanInfoDict,
+        )
+
         self._lastScanInfoDict = scanInfoDict
         self._lastSignalDict = signalDict
         self._lastTTLCycleSignalsDict = signalDict.get("TTLCycleSignalsDict", None)
         self._lastTTLParameters = copy.deepcopy(TTLParameters)
 
         return signalDict, scanInfoDict
+
+    def _log_linestep_scan_diagnostics(
+        self,
+        *,
+        TTLParameters,
+        scanSignalsDict,
+        TTLCycleSignalsDict,
+        scanInfoDict,
+    ):
+        """Log the flattened-line contract at the Advanced Scan boundary."""
+        requested_steps = max(
+            1, int((TTLParameters or {}).get("n_linesteps", 1))
+        )
+        if requested_steps <= 1:
+            return
+
+        scan_dims = [
+            int(value) for value in scanInfoDict.get("img_dims", [])
+        ]
+        scan_steps = max(
+            1, int(scanInfoDict.get("n_linesteps", 1))
+        )
+        ui_ny = (TTLParameters or {}).get("Ny")
+        physical_ny = scan_dims[1] if len(scan_dims) > 1 else None
+        expected_line_periods = (
+            int(np.prod(scan_dims[1:], dtype=np.int64)) * scan_steps
+            if len(scan_dims) > 1 else None
+        )
+
+        line_clock = np.asarray(
+            (TTLCycleSignalsDict or {}).get("line_clock", []),
+            dtype=bool,
+        ).reshape(-1)
+        line_clock_edges = (
+            int(bool(line_clock[0]))
+            + int(np.count_nonzero(line_clock[1:] & ~line_clock[:-1]))
+            if line_clock.size else None
+        )
+        scan_total = int(scanInfoDict.get("scan_samples_total", 0))
+        stage_lengths = {
+            name: int(np.asarray(signal).size)
+            for name, signal in (scanSignalsDict or {}).items()
+        }
+        ttl_lengths = {
+            name: int(np.asarray(signal).size)
+            for name, signal in (TTLCycleSignalsDict or {}).items()
+        }
+
+        mismatches = []
+        if scan_steps != requested_steps:
+            mismatches.append(
+                f"requested_S={requested_steps}!=scan_S={scan_steps}"
+            )
+        if (
+            ui_ny is not None
+            and physical_ny is not None
+            and int(ui_ny) != physical_ny
+        ):
+            mismatches.append(f"UI_Ny={ui_ny}!=physical_Ny={physical_ny}")
+        if (
+            line_clock_edges is not None
+            and expected_line_periods is not None
+            and line_clock_edges != expected_line_periods
+        ):
+            mismatches.append(
+                f"line_edges={line_clock_edges}"
+                f"!=expected={expected_line_periods}"
+            )
+        wrong_stage_lengths = {
+            name: length for name, length in stage_lengths.items()
+            if length != scan_total
+        }
+        wrong_ttl_lengths = {
+            name: length for name, length in ttl_lengths.items()
+            if length != scan_total
+        }
+        if wrong_stage_lengths:
+            mismatches.append(f"stage_lengths={wrong_stage_lengths}")
+        if wrong_ttl_lengths:
+            mismatches.append(f"TTL_lengths={wrong_ttl_lengths}")
+
+        self._logger.info(
+            "[LineStepDiag][AdvancedScan] requested_S=%s scan_S=%s "
+            "UI_Ny=%s img_dims=%s expected_flat_lines=%s "
+            "line_clock_edges=%s scan_samples_total=%s "
+            "scan_samples_d2_period=%s scan_samples=%s "
+            "stage_lengths=%s TTL_lengths=%s status=%s",
+            requested_steps,
+            scan_steps,
+            ui_ny,
+            scan_dims,
+            expected_line_periods,
+            line_clock_edges,
+            scan_total,
+            scanInfoDict.get("scan_samples_d2_period"),
+            scanInfoDict.get("scan_samples"),
+            stage_lengths,
+            ttl_lengths,
+            "OK" if not mismatches else "MISMATCH: " + "; ".join(mismatches),
+        )
 
     def _copy_positioner_line_program_to_stage_params(self, stage_param, TTLParameters):
         """Forward intra-pixel positioner program metadata to scan designers that understand it."""
@@ -469,8 +576,11 @@ class ScanControllerAdvanced(SuperScanController):
     ):
         """Runs a scan with current parameters."""
         try:
+            if self._beginScanRun(
+                sigScanStartingEmitted=sigScanStartingEmitted
+            ) is None:
+                return
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
 
             if recalculateSignals or self.signalDict is None or self.scanInfoDict is None:
                 self.getParameters()
@@ -497,16 +607,12 @@ class ScanControllerAdvanced(SuperScanController):
                     )
 
                     if self.signalDict is None:
-                        self.isRunning = False
-                        self.abortScan()
+                        self.scanFailed()
                         return
 
                     self._lastBuiltParams = paramsSnapshot
 
             self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
-
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
 
             # Set non-scanned positioners to center (same behavior as your PointScan controller)
             for index, positionerName in enumerate(self._analogParameterDict["target_device"]):
@@ -518,29 +624,43 @@ class ScanControllerAdvanced(SuperScanController):
                         self._logger.warning("Failed to set %s to center:\n%s",
                                              positionerName, traceback.format_exc())
 
-            self._master.nidaqManager.runScan(self.signalDict, self.scanInfoDict)
+            self._armScanIteration(self.signalDict, self.scanInfoDict)
 
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
-            self.abortScan()
+            self.scanFailed()
 
     def scanDone(self):
         """Called by the system when nidaq finishes."""
         self.isRunning = False
-
-        if not self._widget.repeatEnabled():
-            self.emitScanSignal(self._commChannel.sigScanDone)
-            if not getattr(self, "doingNonFinalPartOfSequence", False):
-                self._widget.setScanButtonChecked(False)
-                self.emitScanSignal(self._commChannel.sigScanEnded)
-
-            try:
-                self._resetReturnToCenterPositionersAfterScan()
-            except Exception:
-                self._logger.warning("Failed to reset positioners after scan:\n%s", traceback.format_exc())
-        else:
-            self.runScanAdvanced(sigScanStartingEmitted=True)
+        try:
+            if not self._widget.repeatEnabled():
+                isFinalPart = not getattr(
+                    self, "doingNonFinalPartOfSequence", False
+                )
+                try:
+                    self._resetReturnToCenterPositionersAfterScan()
+                except Exception:
+                    self._logger.warning(
+                        "Failed to reset positioners after scan:\n%s",
+                        traceback.format_exc(),
+                    )
+                if isFinalPart:
+                    try:
+                        self._widget.setScanButtonChecked(False)
+                    except Exception:
+                        self._logger.error(
+                            'Failed to reset the scan widget after completion',
+                            exc_info=True,
+                        )
+                self._publishScanDone(isFinalPart=isFinalPart)
+            else:
+                # Defer the re-arm so the finished scan's NI-DAQ tasks and
+                # detector threads tear down before the next frame starts.
+                self._armRepeatScan()
+        except Exception:
+            self._logger.error(traceback.format_exc())
+            self.scanFailed()
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)

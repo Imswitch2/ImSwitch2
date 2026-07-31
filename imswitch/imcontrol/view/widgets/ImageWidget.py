@@ -19,7 +19,6 @@ class ImageWidget(QtWidgets.QWidget):
         #LR: The next to widgets are etSTED specific and i.m.o. not needed --> at least for now commented
         #self.NapariResetViewWidget = naparitools.NapariResetViewWidget.addToViewer(self.napariViewer, 'right')
         #self.NapariSumImageWidget = naparitools.NapariSumImageWidget.addToViewer(self.napariViewer, 'right')
-        self.NapariShiftWidget = naparitools.NapariShiftWidget.addToViewer(self.napariViewer)
         self.imgLayers = {}
 
         # ViewerToolManager for napari Shape-based tools (ROI, line, etc.)

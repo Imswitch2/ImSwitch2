@@ -155,6 +155,11 @@ class LaserWidget(Widget):
         user. """
         self.laserModules[laserName].setEditable(editable)
 
+    def setLaserEnableEditable(self, laserName, editable):
+        """ Sets whether the specified laser's on/off button can be used,
+        leaving its power setpoint editable. """
+        self.laserModules[laserName].setEnableEditable(editable)
+
     def setValue(self, laserName, value, emitSignal=True):
         """ Sets the value of the specified laser, in the units that the laser
         uses. """
@@ -406,6 +411,15 @@ class LaserModule(QtWidgets.QWidget):
         """ Sets whether the laser's values can be edited by the user. """
         self.setPointEdit.setEnabled(editable)
         self.slider.setEnabled(editable)
+        self.enableButton.setEnabled(editable)
+
+    def setEnableEditable(self, editable):
+        """ Sets whether the on/off button can be used, leaving the power
+        setpoint editable.
+
+        A scan owns emission but not power: the scan's TTL gates the laser, so
+        the on/off button would fight it, while the setpoint stays useful for
+        tuning mid-scan. """
         self.enableButton.setEnabled(editable)
 
     def setValue(self, value, emitSignal=True):

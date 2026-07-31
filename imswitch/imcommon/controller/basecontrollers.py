@@ -1,7 +1,8 @@
 import traceback
+import time
 import weakref
 
-from imswitch.imcommon.framework import SignalInterface
+from imswitch.imcommon.framework import FrameworkUtils, SignalInterface
 from imswitch.imcommon.model import initLogger
 
 
@@ -50,15 +51,67 @@ class WidgetControllerFactory:
         self.__createdControllers.append(weakref.ref(controller))
         return controller
 
-    def closeAllCreatedControllers(self):
+    def closeAllCreatedControllers(self, waitTimeoutS=0):
+        pending = []
         for controllerRef in self.__createdControllers:
             controller = controllerRef()
             if controller is not None:
                 try:
-                    controller.closeEvent()
+                    closeResult = controller.closeEvent()
+                    shutdownComplete = getattr(
+                        controller, 'shutdownComplete', None
+                    )
+                    if (
+                        closeResult is False
+                        or (
+                            callable(shutdownComplete)
+                            and not shutdownComplete()
+                        )
+                    ):
+                        pending.append(controller)
                 except Exception:
                     self.__logger.error(f'Error closing {type(controller).__name__}')
                     self.__logger.error(traceback.format_exc())
+                    pending.append(controller)
+
+        deadline = time.monotonic() + max(0.0, float(waitTimeoutS))
+        while pending and time.monotonic() < deadline:
+            # Scan completion, QThread finished signals, and zero-delay
+            # terminal callbacks are queued onto the GUI thread.  A blocking
+            # shutdown poll that only sleeps would prevent the very callbacks
+            # it is waiting for from running.
+            try:
+                FrameworkUtils.processPendingEventsCurrThread()
+            except Exception:
+                # Unit/fallback runtimes can have no Qt event dispatcher.
+                pass
+            stillPending = []
+            for controller in pending:
+                shutdownComplete = getattr(
+                    controller, 'shutdownComplete', None
+                )
+                try:
+                    if not callable(shutdownComplete) or not shutdownComplete():
+                        stillPending.append(controller)
+                except Exception:
+                    self.__logger.error(
+                        f'Error checking shutdown of '
+                        f'{type(controller).__name__}'
+                    )
+                    self.__logger.error(traceback.format_exc())
+                    stillPending.append(controller)
+            pending = stillPending
+            if pending:
+                time.sleep(0.05)
+
+        if pending:
+            self.__logger.error(
+                'Controller shutdown barrier timed out; hardware managers '
+                'must not be finalized while these workers are still active: '
+                + ', '.join(type(controller).__name__ for controller in pending)
+            )
+            return False
+        return True
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

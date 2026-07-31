@@ -11,6 +11,8 @@ class TriggerScopeRasterWidget(Widget):
     sigSaveScanClicked = QtCore.Signal()
     sigLoadScanClicked = QtCore.Signal()
     sigRunScanClicked = QtCore.Signal()
+    sigAbortScanClicked = QtCore.Signal()
+    sigForceStopScanClicked = QtCore.Signal()
     sigSeqTimeParChanged = QtCore.Signal()
     sigStageParChanged = QtCore.Signal()
     sigSignalParChanged = QtCore.Signal()
@@ -34,6 +36,12 @@ class TriggerScopeRasterWidget(Widget):
         self.pxParValues = {}
 
         self.scanButton = guitools.BetterPushButton('Run Scan')
+        self.abortScanBtn = guitools.BetterPushButton('Stop after scan')
+        self.abortScanBtn.setEnabled(False)
+        self.abortScanBtn.setToolTip(
+            'Stop repeating after the TriggerScope finishes the current scan.'
+        )
+        self._abortPending = False
         self.repeatBox = QtWidgets.QCheckBox('Repeat')
 
         self.graph = GraphFrame()
@@ -60,6 +68,7 @@ class TriggerScopeRasterWidget(Widget):
         self.saveScanBtn.clicked.connect(self.sigSaveScanClicked)
         self.loadScanBtn.clicked.connect(self.sigLoadScanClicked)
         self.scanButton.clicked.connect(self.sigRunScanClicked)
+        self.abortScanBtn.clicked.connect(self._onAbortScanClicked)
         self.seqTimePar.textChanged.connect(self.sigSeqTimeParChanged)
 
     def initControls(self, positionerNames, TTLDeviceNames, TTLTimeUnits):
@@ -83,9 +92,10 @@ class TriggerScopeRasterWidget(Widget):
         self.grid.addItem(
             QtWidgets.QSpacerItem(40, 20,
                                   QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum),
-            currentRow, 4
+            currentRow, 3
         )
-        self.grid.addWidget(self.repeatBox, currentRow, 5)
+        self.grid.addWidget(self.repeatBox, currentRow, 4)
+        self.grid.addWidget(self.abortScanBtn, currentRow, 5)
         self.grid.addWidget(self.scanButton, currentRow, 6)
         currentRow += 1
 
@@ -196,10 +206,33 @@ class TriggerScopeRasterWidget(Widget):
     def setRepeatEnabled(self, enabled):
         self.repeatBox.setChecked(enabled)
 
+    def _onAbortScanClicked(self):
+        if self._abortPending:
+            self.sigForceStopScanClicked.emit()
+        else:
+            self.sigAbortScanClicked.emit()
+
+    def setAbortPending(self, pending):
+        self._abortPending = pending
+        if pending:
+            self.abortScanBtn.setText('Force stop / disarm')
+            self.abortScanBtn.setToolTip(
+                'Force ImSwitch to end the scan state and disarm the lasers. '
+                'The TriggerScope firmware may still be scanning.'
+            )
+        else:
+            self.abortScanBtn.setText('Stop after scan')
+            self.abortScanBtn.setToolTip(
+                'Stop repeating after the TriggerScope finishes the current scan.'
+            )
+
     def setScanButtonChecked(self, checked):
         self.scanButton.setEnabled(not checked)
         self.scanButton.setCheckable(checked)
         self.scanButton.setChecked(checked)
+        self.abortScanBtn.setEnabled(checked)
+        if not checked:
+            self.setAbortPending(False)
 
     def setScanDim(self, index, positionerName):
         scanDimPar = self.scanPar['scanDim' + str(index)]

@@ -52,7 +52,7 @@ dead once dims are a fixed `(X, Y)` tuple. Tighten when rewriting.
 > itself to the CommunicationChannel as the *active scan source*
 > (`ScanLifecycleMixin`), and `isScanRunning()` / `getDimsScan()` /
 > `getScanStepSizes()` / `getFramesPerScanPixel()` resolve against it.
-> See [scan_lifecycle.md](scan_lifecycle.md) for the current architecture,
+> See [scan-lifecycle.rst](scan-lifecycle.rst) for the current architecture,
 > the contract for new scan controllers, and the enforcing audit test.
 
 `CommunicationChannel.getDimsScan / getScanStepSizes` resolve against the

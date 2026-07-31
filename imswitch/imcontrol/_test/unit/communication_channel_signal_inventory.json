@@ -79,6 +79,12 @@
     "args": []
   },
   {
+    "name": "sigRecordingFailed",
+    "args": [
+      "str"
+    ]
+  },
+  {
     "name": "sigUpdateRecFrameNum",
     "args": [
       "int"
@@ -121,6 +127,12 @@
   {
     "name": "sigScanStarting",
     "args": []
+  },
+  {
+    "name": "sigScanDevicesResolved",
+    "args": [
+      "object"
+    ]
   },
   {
     "name": "sigScanBuilt",

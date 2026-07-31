@@ -7,6 +7,7 @@ the same small contract.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import logging
 import re
@@ -144,22 +145,25 @@ class TimeResolvedScanWorkflow:
         if detector is None:
             raise RuntimeError("Time-resolved workflow requires facade.time_resolved")
 
-        params = self.params
-        if measurement_name is not None:
-            params = replace(params, measurement_name=measurement_name)
+        leaseFactory = getattr(detector, "acquisition_lease", None)
+        leaseContext = leaseFactory() if callable(leaseFactory) else nullcontext()
+        with leaseContext:
+            params = self.params
+            if measurement_name is not None:
+                params = replace(params, measurement_name=measurement_name)
 
-        detector.clear()
-        detector.configure(params.to_scan_config())
+            detector.clear()
+            detector.configure(params.to_scan_config())
 
-        acquire = acquisition or self.acquisition
-        if acquire is None:
-            scan = getattr(self.facade, "scan", None)
-            if scan is not None and callable(getattr(scan, "run_once", None)):
-                acquire = lambda: scan.run_once(timeout_s=params.timeout_s)
-        if acquire is not None:
-            acquire()
+            acquire = acquisition or self.acquisition
+            if acquire is None:
+                scan = getattr(self.facade, "scan", None)
+                if scan is not None and callable(getattr(scan, "run_once", None)):
+                    acquire = lambda: scan.run_once(timeout_s=params.timeout_s)
+            if acquire is not None:
+                acquire()
 
-        products = detector.wait_for_final(timeout_s=params.timeout_s)
+            products = detector.wait_for_final(timeout_s=params.timeout_s)
         output_paths = self._save(products, params)
         return TimeResolvedWorkflowResult(
             products=products,

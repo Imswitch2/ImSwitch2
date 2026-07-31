@@ -86,9 +86,11 @@ class Cobolt0601NewLaserManager(LaserManager):
       for compatibility; it is expected to become a profile distinction once
       the hardware inventory verifies which controllers need watts.
     - ``simulation`` -- ``true`` to use the mock driver instead of opening the
-      port. Defaults to ``false``: a real device that cannot be initialized
-      raises instead of silently falling back to a mock, because a mock that
-      looks like a working laser is dangerous.
+      port. Defaults to ``false``.
+    - ``useMockOnFailure`` -- when a real connection cannot be opened, use the
+      in-process mock instead of aborting startup. Defaults to ``true`` for
+      compatibility with existing hardware-less setups. Set to ``false`` when
+      a missing laser must be a hard startup error.
     """
 
     def __init__(self, laserInfo, name, **_lowLevelManagers):
@@ -106,11 +108,14 @@ class Cobolt0601NewLaserManager(LaserManager):
         self._modulation_power_mw = float(
             laserInfo.managerProperties.get('modulationPowerMw', 5.0)
         )
-        # Simulation is explicit and defaults to False. Previously ANY failure
-        # to open the port silently substituted a mock, so an operator could
-        # believe they were driving real hardware.
+        # ``simulation`` explicitly skips the real transport.  A separate
+        # fallback flag preserves the long-standing behaviour for unavailable
+        # ports without making every normal startup a simulation.
         self._simulation = _as_bool(
             laserInfo.managerProperties.get('simulation', False)
+        )
+        self._use_mock_on_failure = _as_bool(
+            laserInfo.managerProperties.get('useMockOnFailure', True)
         )
         self._protocol_profile = laserInfo.managerProperties.get('protocolProfile')
         if self._protocol_profile is not None:
@@ -154,6 +159,7 @@ class Cobolt0601NewLaserManager(LaserManager):
         self._setpoint_mw = 0
         self._enabled = False
         self._real_hw = False
+        self._mock_fallback = False
         self._profiles = build_profiles(self._scpi_power_unit)
         self._firmware_version = None
         self._serial_number = None
@@ -168,12 +174,7 @@ class Cobolt0601NewLaserManager(LaserManager):
                 f'Cobolt laser {name} starting in simulation mode; '
                 f'port {self._port} will not be opened.'
             )
-            from imswitch.imcontrol.model.lantzdrivers_mock.cobolt.cobolt0601 import (
-                MockCobolt06,
-            )
-            self._laser = MockCobolt06(self._port)
-            self._laser.initialize()
-            self._real_hw = False
+            self._start_mock()
         else:
             self.__logger.debug(f'Initializing Cobolt laser {name} on {self._port}')
             try:
@@ -183,13 +184,24 @@ class Cobolt0601NewLaserManager(LaserManager):
                     f'Cobolt {name} open failure traceback:\n'
                     f'{traceback.format_exc()}'
                 )
-                raise DeviceInitializationError(
+                if not self._use_mock_on_failure:
+                    raise DeviceInitializationError(
+                        f'Cobolt laser {name!r} could not be opened on '
+                        f'{self._port}: {exc}. Check the configured port and '
+                        f'device power. To run without hardware, set '
+                        f'managerProperties.simulation to true, or set '
+                        f'useMockOnFailure to true.'
+                    ) from exc
+                self.__logger.warning(
                     f'Cobolt laser {name!r} could not be opened on '
-                    f'{self._port}: {exc}. Check the configured port and '
-                    f'device power. To run without hardware, set '
-                    f'managerProperties.simulation to true.'
-                ) from exc
-            self._real_hw = True
+                    f'{self._port}: {exc}. Falling back to MockCobolt06. '
+                    f'Set managerProperties.useMockOnFailure to false to '
+                    f'make this a hard startup error.'
+                )
+                self._start_mock()
+                self._mock_fallback = True
+            else:
+                self._real_hw = True
 
         # Profile validation and the safe state are part of initialization: if
         # either fails we must not hand back a manager that looks usable. The
@@ -203,6 +215,16 @@ class Cobolt0601NewLaserManager(LaserManager):
 
         super().__init__(laserInfo, name, isBinary=False,
                          valueUnits='mW', valueDecimals=0)
+
+    def _start_mock(self) -> None:
+        """Create the local Cobolt mock without attempting a serial port."""
+        from imswitch.imcontrol.model.lantzdrivers_mock.cobolt.cobolt0601 import (
+            MockCobolt06,
+        )
+
+        self._laser = MockCobolt06(self._port)
+        self._laser.initialize()
+        self._real_hw = False
 
     # ------------------------------------------------------------------
     # Profile bridge — the manager never builds a vendor command string.

@@ -352,32 +352,58 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         )
         self.updateSharedAttrs()
 
-    def updateParamsFromDetector(self, *, detector):
-        """ Update the parameter values from the detector. """
+    def updateParamsFromDetector(self, *, detector, blockSignals=False):
+        """ Update the parameter values from the detector.
+
+        This is a pure readback: the widget is a view of the detector's actual
+        state. Pass ``blockSignals=True`` when the caller has already configured
+        the detector itself (state restore) -- the widget params emit "user
+        intent" regardless of who wrote them, so an unblocked readback re-enters
+        setDetectorParameter/updateBinning and writes back to hardware. """
 
         params = self.allParams[detector.name]
+
+        def setValue(param, value):
+            if blockSignals:
+                param.setValue(value, blockSignal=True)
+            else:
+                param.setValue(value)
 
         # Detector parameters
         for parameterName, parameter in detector.parameters.items():
             paramInWidget = self._widget.trees[detector.name].p.param(parameter.group).param(
                 parameterName
             )
-            paramInWidget.setValue(parameter.value)
+            setValue(paramInWidget, parameter.value)
 
         # Frame
-        params.binning.setValue(detector.binning)
+        setValue(params.binning, detector.binning)
         frameStart = detector.frameStart
         shape = detector.shape
         fullShape = detector.fullShape
-        params.x0.setValue(frameStart[0])
-        params.y0.setValue(frameStart[1])
-        params.width.setValue(shape[0])
+        setValue(params.x0, frameStart[0])
+        setValue(params.y0, frameStart[1])
+        setValue(params.width, shape[0])
         params.width.setLimits((1, fullShape[0]))
-        params.height.setValue(shape[1])
+        setValue(params.height, shape[1])
         params.height.setLimits((1, fullShape[1]))
 
         # Model
-        params.model.setValue(detector.model)
+        setValue(params.model, detector.model)
+
+    def _applyFrameModeFieldState(self, detector):
+        """ Make the ROI fields editable only in 'Custom' mode, for the given
+        detector's own frame mode. Split out of updateFrame so programmatic
+        callers can get the field state right without starting an interactive
+        ROI session. """
+
+        params = self.allParams[detector.name]
+        customFrame = params.frameMode.value() == 'Custom'
+
+        for field in (params.x0, params.y0, params.width, params.height):
+            field.setWritable(customFrame)
+            # Call .show() to prevent view alignment issues
+            field.show()
 
     def updateFrame(self, *, detector=None):
         """ Change the image frame size and position in the sensor. """
@@ -387,28 +413,29 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
             return
 
         params = self.allParams[detector.name]
-        frameMode = self.getCurrentParams().frameMode.value()
+        # The frame mode of the detector being operated on -- NOT the displayed
+        # one. Reading getCurrentParams() here made every programmatic caller
+        # (__init__'s execOnAll, setDetectorROI, state restore) apply the
+        # current detector's mode to whichever detector was passed in.
+        frameMode = params.frameMode.value()
         customFrame = frameMode == 'Custom'
 
-        params.x0.setWritable(customFrame)
-        params.y0.setWritable(customFrame)
-        params.width.setWritable(customFrame)
-        params.height.setWritable(customFrame)
-        # Call .show() to prevent view alignment issues
-        params.x0.show()
-        params.y0.show()
-        params.width.show()
-        params.height.show()
+        self._applyFrameModeFieldState(detector)
 
         if customFrame:
-            ROIsize = (64, 64)
-            ROIcenter = self._commChannel.getCenterViewbox()
+            # The ROI overlay lives on the displayed image and ROIchanged()
+            # writes through getCurrentParams(), so starting an interactive ROI
+            # session for a detector that isn't displayed would overwrite the
+            # *current* detector's frame fields. Leave the existing values be.
+            if detector.name == self._master.detectorsManager.getCurrentDetectorName():
+                ROIsize = (64, 64)
+                ROIcenter = self._commChannel.getCenterViewbox()
 
-            ROIpos = (ROIcenter[0] - 0.5 * ROIsize[0],
-                      ROIcenter[1] - 0.5 * ROIsize[1])
+                ROIpos = (ROIcenter[0] - 0.5 * ROIsize[0],
+                          ROIcenter[1] - 0.5 * ROIsize[1])
 
-            self.toggleROI(True, ROIpos, ROIsize)
-            self.ROIchanged()
+                self.toggleROI(True, ROIpos, ROIsize)
+                self.ROIchanged()
 
         else:
             if frameMode == 'Full chip':
@@ -527,14 +554,20 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         (x0, y0) and shape is a tuple (width, height). """
 
         detector = self._master.detectorsManager[detectorName]
+        params = self.allParams[detectorName]
 
-        self.allParams[detectorName].frameMode.setValue('Custom')
-        self.updateFrame(detector=detector)
+        # Set the mode without going through updateFrame: its 'Custom' branch
+        # opens an interactive 64x64 ROI overlay whose geometry is written
+        # straight back over the caller-supplied frame -- and, for a detector
+        # that isn't the displayed one, over the *current* detector's fields.
+        params.frameMode.setValue('Custom', blockSignal=True)
+        self._applyFrameModeFieldState(detector)
+        self.updateFrameActionButtons(detector=detector)
 
-        self.allParams[detectorName].x0.setValue(frameStart[0])
-        self.allParams[detectorName].y0.setValue(frameStart[1])
-        self.allParams[detectorName].width.setValue(shape[0])
-        self.allParams[detectorName].height.setValue(shape[1])
+        params.x0.setValue(frameStart[0])
+        params.y0.setValue(frameStart[1])
+        params.width.setValue(shape[0])
+        params.height.setValue(shape[1])
         self.adjustFrame(detector=detector)
 
     @APIExport(runOnUIThread=True)
@@ -671,10 +704,10 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
     
     def getComponentState(self) -> dict:
         """Snapshot current detector settings for both startup and setup modes.
-        
+
         Returns detector ROI/binning/frame-mode/parameters for forAcquisition detectors only.
         Does NOT include acquisition state (running/stopped) for safety.
-        
+
         Payload shape (canonical):
         {
             'detectors': {
@@ -689,10 +722,28 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                 }
             }
         }
-        
+
+        ROI, binning and parameters are read from the DETECTOR, not from the
+        widget: the widget is a view of hardware, and applyComponentState feeds
+        these values straight back to ``crop``/``setBinning``/``setParameter``.
+        Snapshotting the widget instead would persist ROI edits the user typed
+        but never applied, and would mix widget and sensor coordinate
+        conventions across the save/restore round trip. ``frame_mode`` has no
+        hardware counterpart and necessarily comes from the widget.
+
+        Read-only parameters (e.g. 'Real exposure time', 'Readout time') are
+        camera-reported readings, not settings, so they are not persisted --
+        they are refreshed from hardware on restore.
+
+        Parameters the setup file owns (``detector.configOwnedParameters``, i.e.
+        the camera pixel size when ``cameraPixelSizeUm`` is configured) are not
+        persisted either. They are optical calibration declared in the config,
+        so the config must win on every boot; snapshotting them makes editing
+        the setup file a no-op until the state file is deleted by hand.
+
         This shape differs from the legacy SetupModesController summarizer
         (which expected roiMode/roi tuple); describeComponentState adapts to this shape.
-        
+
         Returns:
             JSON-serializable dict per schema above
         """
@@ -708,30 +759,36 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                     params = self.allParams.get(detectorName)
                     if not params:
                         continue
-                    
+
+                    frameStart = detector.frameStart
+                    shape = detector.shape
                     detector_state = {
-                        'binning': params.binning.value() if hasattr(params.binning, 'value') else None,
+                        'binning': detector.binning,
                         'frame_mode': params.frameMode.value() if hasattr(params.frameMode, 'value') else None,
-                        'x0': params.x0.value() if hasattr(params.x0, 'value') else None,
-                        'y0': params.y0.value() if hasattr(params.y0, 'value') else None,
-                        'width': params.width.value() if hasattr(params.width, 'value') else None,
-                        'height': params.height.value() if hasattr(params.height, 'value') else None,
+                        'x0': frameStart[0],
+                        'y0': frameStart[1],
+                        'width': shape[0],
+                        'height': shape[1],
                         'parameters': {}
                     }
-                    
-                    # Get detector-specific parameters (exposure, gain, etc.)
+
+                    # Get editable detector-specific parameters (exposure, gain, etc.)
+                    configOwned = getattr(detector, 'configOwnedParameters', frozenset())
                     if hasattr(detector, 'parameters'):
                         for paramName, parameter in detector.parameters.items():
+                            if not getattr(parameter, 'editable', True):
+                                continue
+                            if paramName in configOwned:
+                                continue
                             try:
-                                paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
-                                detector_state['parameters'][paramName] = paramInWidget.value()
+                                detector_state['parameters'][paramName] = parameter.value
                             except Exception as e:
                                 self._logger.debug(
                                     f'Could not save parameter {paramName} for {detectorName}: {e}'
                                 )
-                    
+
                     state['detectors'][detectorName] = detector_state
-                    
+
                 except Exception as e:
                     self._logger.warning(
                         f'Failed to save state for detector {detectorName}: {e}'
@@ -747,104 +804,157 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         
         BEHAVIOR (IDENTICAL for both STARTUP_RESTORE and SETUP_MODE_APPLY):
         - Restore ROI (x0, y0, width, height), binning, frame mode
-        - Restore detector-specific parameters (exposure, gain, etc.)
+        - Restore editable detector-specific parameters (exposure, trigger, etc.)
         - NEVER start acquisition or live view in either mode
-        
-        Per spec §2.3, detector ROI/binning are allowed in both modes.
+
+        Per spec §2.3, detector ROI/binning/trigger mode are allowed in both modes.
         Acquisition control is not part of detector settings state.
-        
+
+        The detector is configured DIRECTLY and the widget is then refreshed from
+        the resulting hardware state with signals blocked. Driving the widget
+        params and relying on their Qt signals to reach hardware does not work:
+        those handlers resolve their target through getCurrentParams() /
+        getDetectorManagerFrameExecFunc(), so they act on the *displayed*
+        detector rather than the one being restored -- silently dropping the ROI
+        entirely, applying one detector's binning to another, and (in 'Custom'
+        mode) overwriting an already-restored detector's frame with a fresh
+        64x64 overlay.
+
+        ROI values are sensor-pixel values straight from a previous
+        ``detector.crop``/``frameStart``/``shape``, so they are passed to
+        ``crop`` unconverted -- adjustFrame()'s binning multiply and modulus
+        rounding sanitize *human* input and must not be applied a second time to
+        values that already came back from hardware.
+
         Args:
             state: Dict returned by getComponentState()
             applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
-        
+
         Returns:
             List of warning strings (empty if fully successful)
         """
         warnings = []
-        
+        restoredDetectors = []
+
         try:
             detectors_state = state.get('detectors', {})
             known_detectors = set(self._master.detectorsManager.getAllDeviceNames())
-            
+
             for detectorName, detector_state in detectors_state.items():
                 if detectorName not in known_detectors:
                     warnings.append(f'Detector "{detectorName}" not present in current setup; skipped.')
                     continue
-                
+
                 detector = self._master.detectorsManager[detectorName]
                 if not detector.forAcquisition:
                     continue
-                
+
                 params = self.allParams.get(detectorName)
                 if not params:
                     warnings.append(f'Detector "{detectorName}" has no widget params; skipped.')
                     continue
-                
+
                 try:
-                    # Restore binning
-                    if 'binning' in detector_state and detector_state['binning'] is not None:
+                    # 1. Binning, on this detector (crop sizes are relative to it)
+                    binning = detector_state.get('binning')
+                    if binning is not None:
                         try:
-                            params.binning.setValue(detector_state['binning'])
+                            detector.setBinning(int(binning))
                         except Exception as e:
                             warnings.append(f'Could not restore binning for {detectorName}: {e}')
-                    
-                    # Restore frame mode
-                    if 'frame_mode' in detector_state and detector_state['frame_mode'] is not None:
-                        try:
-                            params.frameMode.setValue(detector_state['frame_mode'])
-                        except Exception as e:
-                            warnings.append(f'Could not restore frame mode for {detectorName}: {e}')
-                    
-                    # Restore ROI settings
-                    if 'x0' in detector_state and detector_state['x0'] is not None:
-                        try:
-                            params.x0.setValue(detector_state['x0'])
-                        except Exception as e:
-                            warnings.append(f'Could not restore x0 for {detectorName}: {e}')
-                    
-                    if 'y0' in detector_state and detector_state['y0'] is not None:
-                        try:
-                            params.y0.setValue(detector_state['y0'])
-                        except Exception as e:
-                            warnings.append(f'Could not restore y0 for {detectorName}: {e}')
-                    
-                    if 'width' in detector_state and detector_state['width'] is not None:
-                        try:
-                            params.width.setValue(detector_state['width'])
-                        except Exception as e:
-                            warnings.append(f'Could not restore width for {detectorName}: {e}')
-                    
-                    if 'height' in detector_state and detector_state['height'] is not None:
-                        try:
-                            params.height.setValue(detector_state['height'])
-                        except Exception as e:
-                            warnings.append(f'Could not restore height for {detectorName}: {e}')
-                    
-                    # Restore detector-specific parameters
+
+                    # 2. ROI, on this detector
+                    roi = tuple(detector_state.get(key) for key in ('x0', 'y0', 'width', 'height'))
+                    if all(value is not None for value in roi):
+                        if detector.croppable:
+                            try:
+                                detector.crop(*(int(value) for value in roi))
+                            except Exception as e:
+                                warnings.append(f'Could not restore ROI for {detectorName}: {e}')
+                        # Non-croppable detectors (APD/PMT/TimeTagger) derive their
+                        # shape from the scan; there is no ROI to restore.
+
+                    # 3. Editable parameters only. Read-only ones ('Real exposure
+                    # time', 'Readout time', ...) are camera readings, not
+                    # settings; writing a saved value would overwrite what the
+                    # hardware just reported with a stale number. Legacy state
+                    # files still contain them -- ignore those entries. Same for
+                    # setup-file-owned parameters (the camera pixel size).
                     parameters_state = detector_state.get('parameters', {})
-                    detectorParametersChanged = False
+                    configOwned = getattr(detector, 'configOwnedParameters', frozenset())
                     for paramName, value in parameters_state.items():
+                        parameter = getattr(detector, 'parameters', {}).get(paramName)
+                        if parameter is None:
+                            warnings.append(
+                                f'Parameter "{paramName}" not present on {detectorName}; skipped.'
+                            )
+                            continue
+                        if not getattr(parameter, 'editable', True):
+                            continue
+                        if paramName in configOwned:
+                            # The setup file owns this one. Snapshots written by
+                            # an older build still carry it, and restoring that
+                            # value is exactly the bug this guard exists for --
+                            # it silently reinstates the previous calibration
+                            # and every recording gets the wrong pixel size.
+                            if value != parameter.value:
+                                self._logger.info(
+                                    f'Ignoring saved {paramName}={value} for'
+                                    f' {detectorName}: the setup file sets'
+                                    f' {parameter.value}, which takes precedence.'
+                                )
+                            continue
                         try:
-                            if hasattr(detector, 'parameters') and paramName in detector.parameters:
-                                parameter = detector.parameters[paramName]
-                                paramInWidget = self._widget.trees[detectorName].p.param(parameter.group).param(paramName)
-                                detector.setParameter(paramName, value)
-                                paramInWidget.setValue(detector.parameters[paramName].value, blockSignal=True)
-                                detectorParametersChanged = True
+                            detector.setParameter(paramName, value)
                         except Exception as e:
                             warnings.append(
                                 f'Could not restore parameter {paramName} for {detectorName}: {e}'
                             )
 
-                    if detectorParametersChanged:
-                        self.updateSharedAttrs()
-                    
+                    # 4. The widget is a view of what the hardware actually took.
+                    frameMode = detector_state.get('frame_mode')
+                    if frameMode is not None:
+                        try:
+                            params.frameMode.setValue(frameMode, blockSignal=True)
+                        except Exception as e:
+                            warnings.append(f'Could not restore frame mode for {detectorName}: {e}')
+                    # The hardware is already configured at this point, so a
+                    # failure here does not undo the restore -- it leaves the
+                    # widget showing pre-restore values while the detector runs
+                    # with the restored ones. That silent divergence is worse
+                    # than the original failure: the GUI then misreports what
+                    # every recording is actually calibrated with. Report it and
+                    # keep going rather than aborting the whole detector.
+                    try:
+                        self.updateParamsFromDetector(detector=detector, blockSignals=True)
+                        self._applyFrameModeFieldState(detector)
+                        self.updateFrameActionButtons(detector=detector)
+                    except Exception as e:
+                        warnings.append(
+                            f'Restored {detectorName} but could not refresh its settings'
+                            f' display; the shown values may not match the detector: {e}'
+                        )
+
+                    restoredDetectors.append(detectorName)
+
                 except Exception as e:
                     warnings.append(f'Failed to restore state for detector {detectorName}: {e}')
-            
+
+            # 5. One shared-attribute sync once every detector is settled.
+            if restoredDetectors:
+                self.updateSharedAttrs()
+
+                # The viewer still shows the pre-restore frame geometry.
+                currentDetectorName = self._master.detectorsManager.getCurrentDetectorName()
+                if currentDetectorName in restoredDetectors:
+                    self._widget.hideROI()
+                    self._commChannel.sigAdjustFrame.emit(
+                        self._master.detectorsManager[currentDetectorName].shape
+                    )
+
         except Exception as e:
             warnings.append(f'Failed to restore detector settings state: {e}')
-        
+
         return warnings
     
     def describeComponentState(self, state: dict) -> list[str]:

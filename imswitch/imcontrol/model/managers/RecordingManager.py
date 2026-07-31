@@ -10,9 +10,11 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, Union
 
 import h5py
+import sip
 import zarr
 import numpy as np
 import tifffile as tiff
+from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Worker
 from imswitch.imcommon.model import initLogger, JSON_ATTR_PREFIX
@@ -21,6 +23,7 @@ import logging
 
 import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
+from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
 from imswitch.imcontrol.model.managers import recording_metadata as _ome
 from imswitch.imcommon.model.zarr_compat import (
     install_zarr_create_array_compat,
@@ -35,10 +38,12 @@ FRAME_POLL_INTERVAL = 0.0001  # seconds; prevents UI freezing during acquisition
 DEFAULT_STALL_TIMEOUT = 10.0  # seconds; watchdog triggers if no frames arrive within this period
 _RECORDING_CHUNK_CONSUMER = 'RecordingManager'  # readChunk consumer key (see DetectorManager.readChunk)
 RECORDING_ARM_TIMEOUT = 5.0  # seconds; max wait for detectors to arm before starting a scan
+RECORDING_THREAD_STOP_TIMEOUT_MS = 30000
 
 # Off-thread writer constants
 WRITER_QUEUE_MAXSIZE = 64  # Bounded queue size for backpressure (blocks acquisition when full)
 WRITE_BATCH_FRAMES = 32  # Number of frames to accumulate per detector before flushing to disk
+WRITER_OPEN_TIMEOUT_S = 30.0
 # SWMR requires HDF5 1.10+ object formats, but libver='latest' maps to
 # ('v200', 'v200') with HDF5 2.x. Pin the writer to the oldest SWMR-capable
 # format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
@@ -383,7 +388,9 @@ class ZarrStorer(Storer):
             shape=(0, *spatialShape),
             dtype=dtype,
             chunks=(chunk_frames, *spatialShape),
-            dimension_names=self._dimension_names(detectorName, 3),
+            dimension_names=self._dimension_names(
+                detectorName, 1 + len(spatialShape)
+            ),
         )
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._zarr_attr_value(
@@ -515,7 +522,10 @@ class ZarrStorer(Storer):
         if detectorName not in self._datasets:
             # Read the authoritative dtype from the detector (the contract's single source of truth)
             declared = self.detectorManager[detectorName].dtype
-            spatialShape = frames.shape[-2:]
+            # Everything after the leading frame axis belongs to one logical
+            # detector frame. Scan-driven point detectors may include a
+            # linestep plane axis: (N, S, Y, X).
+            spatialShape = frames.shape[1:]
             
             root = self._roots.get(self._fileDests[detectorName])
             if root is None:
@@ -544,8 +554,8 @@ class ZarrStorer(Storer):
         # Append frames to dataset (cast happens on assignment if needed)
         it = self._currentFrames[detectorName]
         newSize = it + len(frames)
-        dataset.resize((newSize, *dataset.shape[-2:]))
-        dataset[it:newSize, :, :] = frames
+        dataset.resize((newSize, *dataset.shape[1:]))
+        dataset[it:newSize, ...] = frames
         # Barrier AFTER the data: a reader seeing frames_committed=N is
         # guaranteed frames [0, N) are on disk, even though shape resized early.
         dataset.attrs['recording:frames_committed'] = newSize
@@ -558,7 +568,7 @@ class ZarrStorer(Storer):
         for detectorName, dataset in self._datasets.items():
             dataset.attrs['writing'] = False
             if currentFrames[detectorName] < 1:
-                dataset.resize((0, *dataset.shape[-2:]))
+                dataset.resize((0, *dataset.shape[1:]))
             dataset.attrs['recording:frames_committed'] = int(
                 max(0, currentFrames.get(detectorName, 0))
             )
@@ -676,7 +686,7 @@ class HDF5Storer(Storer):
         # Create data dataset
         if maxshape is not None:
             # Extendable dataset for streaming (start with 0 frames)
-            shape = maxshape[-2:]  # (Y, X)
+            shape = maxshape[1:]
             # Use multi-frame chunks for better compression ratio and fewer I/O ops
             chunk_frames = min(WRITE_BATCH_FRAMES, 32)  # Match batch size for efficiency
             dataset = det_group.create_dataset(
@@ -692,10 +702,10 @@ class HDF5Storer(Storer):
             # Fixed dataset from data (snapshot)
             if data is None:
                 raise ValueError("Must provide either maxshape or data")
-            # Ensure 3D: (T, Y, X)
+            # Ensure a leading logical-frame axis.
             if data.ndim == 2:
                 data = data[np.newaxis, ...]
-            chunks = (1, *data.shape[-2:]) if data.ndim >= 3 else True
+            chunks = (1, *data.shape[1:]) if data.ndim >= 3 else True
             dataset = det_group.create_dataset(
                 'data',
                 data=data,
@@ -896,7 +906,8 @@ class HDF5Storer(Storer):
             # .shape attribute is (X, Y) while frame arrays follow numpy's
             # (n, Y, X) convention, so using _shapes here would mis-broadcast
             # for non-square detectors.
-            spatialShape = frames.shape[-2:]
+            # Preserve all per-frame axes, including APD/PMT linesteps.
+            spatialShape = frames.shape[1:]
 
             file = self._files[detectorName]
             groupPath = self._groupPaths[detectorName]
@@ -908,7 +919,7 @@ class HDF5Storer(Storer):
                 # Create dataset with the DECLARED dtype (the contract), not frames.dtype
                 dataset = self._createDetectorGroup(
                     file, detectorName, declared, self._attrs[detectorName],
-                    maxshape=(None, *spatialShape),  # (None, Y, X)
+                    maxshape=(None, *spatialShape),
                     groupPath=groupPath
                 )
             finally:
@@ -955,7 +966,7 @@ class HDF5Storer(Storer):
         currentSize = dataset.shape[0]
         newSize = currentSize + len(frames)
         dataset.resize(newSize, axis=0)
-        dataset[currentSize:newSize, :, :] = frames
+        dataset[currentSize:newSize, ...] = frames
 
         # Flush after each write so SWMR readers see growth
         if self._saveMode in (SaveMode.Disk, SaveMode.DiskAndRAM):
@@ -1150,7 +1161,7 @@ class TiffStorer(Storer):
         """Open one plain BigTIFF per detector; OME-XML is embedded at finalize."""
         self._writers = {}
         self._paths = {}
-        self._spatial = {}            # detectorName -> (Y, X) from the first frame
+        self._spatial = {}            # detectorName -> per-frame shape
         self._dtypeWarned = set()
         for detectorName in detectorNames:
             path = fileDests[detectorName]
@@ -1179,7 +1190,9 @@ class TiffStorer(Storer):
         if frames.dtype != declared:
             frames = frames.astype(declared)
 
-        self._spatial[detectorName] = tuple(int(s) for s in frames.shape[-2:])
+        self._spatial[detectorName] = tuple(
+            int(s) for s in frames.shape[1:]
+        )
         tw = self._writers[detectorName]
         # One contiguous (N,Y,X) series: write each 2D plane appended in place.
         for frame in frames:
@@ -1187,30 +1200,52 @@ class TiffStorer(Storer):
 
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close writers, then embed OME-XML now that the frame count is known."""
+        errors = []
         for detectorName, tw in getattr(self, '_writers', {}).items():
             try:
                 tw.close()
             except Exception as e:
-                logger.warning(f'TIFF finalize: failed to close writer for {detectorName}: {e}')
+                errors.append((
+                    f'failed to close writer for "{detectorName}"', e
+                ))
+                logger.error(
+                    f'TIFF finalize: failed to close writer for '
+                    f'{detectorName}: {e}',
+                    exc_info=True,
+                )
         for detectorName, path in getattr(self, '_paths', {}).items():
-            n = int(currentFrames.get(detectorName, 0))
-            if n <= 0 or detectorName not in self._spatial:
-                continue
-            ny, nx = self._spatial[detectorName]
-            meta = self._meta_for(detectorName, n_frames=n)
-            if n == 1 and len(meta.axes) == 2:
-                stored_meta = meta
-                shape = (ny, nx)
-            else:
-                # The streamed data is physically (N, Y, X). If a caller hands
-                # us richer logical metadata, keep the TIFF valid by reducing it
-                # to the stored rank instead of writing mismatched OME-XML.
-                stored_meta = meta.padded_to(3)
-                shape = (n, ny, nx)
             try:
+                n = int(currentFrames.get(detectorName, 0))
+                if n <= 0 or detectorName not in self._spatial:
+                    continue
+                frame_shape = self._spatial[detectorName]
+                meta = self._meta_for(detectorName, n_frames=n)
+                if n == 1 and len(meta.axes) == len(frame_shape):
+                    stored_meta = meta
+                    shape = frame_shape
+                else:
+                    shape = (n, *frame_shape)
+                    stored_meta = meta.padded_to(len(shape))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
             except Exception as e:
-                logger.warning(f'Failed to embed OME-XML in {path}; left as plain TIFF: {e}')
+                errors.append((
+                    f'failed to embed OME-XML for "{detectorName}" at {path}',
+                    e,
+                ))
+                logger.error(
+                    f'Failed to embed OME-XML in {path}: {e}',
+                    exc_info=True,
+                )
+
+        if errors:
+            summary = '; '.join(
+                f'{context}: {type(error).__name__}: {error}'
+                for context, error in errors
+            )
+            raise RuntimeError(
+                f'TIFF stream finalization failed ({len(errors)} error(s)): '
+                f'{summary}'
+            ) from errors[0][1]
 
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close any open writers and delete the partial file(s)."""
@@ -1254,6 +1289,14 @@ class RecordingManager(SignalInterface):
     recordings of detector data. """
     sigRecordingStarted = Signal()
     sigRecordingEnded = Signal()
+    sigRecordingFailed = Signal(str)
+    # Internal identity-carrying companions. The legacy signals above remain
+    # stable for plugins and the CommunicationChannel, while controllers that
+    # can observe successive sessions use these to reject queued callbacks
+    # from an older recording.
+    sigRecordingStartedDetailed = Signal(int)
+    sigRecordingEndedDetailed = Signal(int)
+    sigRecordingFailedDetailed = Signal(str, int)
     sigRecordingStalled = Signal(str)  # (detectorName) - emitted when watchdog detects zero-progress stall
     sigRecordingFrameNumUpdated = Signal(int)  # (frameNumber)
     sigRecordingTimeUpdated = Signal(int)  # (recTime)
@@ -1272,24 +1315,86 @@ class RecordingManager(SignalInterface):
         self.__detectorsManager = detectorsManager
         self.__record = False
         self.__abort = False
+        self.__activeDetectorNames = ()
         self.__acqStartedEvent = threading.Event()
+        self.__acqStartFailed = False
+        self.__recordingSignalLock = threading.Lock()
+        self.__recordingGeneration = 0
+        self.__endSignalEmitted = False
+        self.__failureSignalEmitted = False
+        self.__lastRecordingError = None
+        # Scan-driven detectors publish one assembled frame only after the
+        # scan has finished. Their no-frame watchdog is therefore anchored to
+        # this completion time, not to recording arm time.
+        self.__scanExpectedCompletionGeneration = None
+        self.__scanExpectedCompletionTime = None
+        self.__scanCompletionGeneration = None
+        self.__scanCompletionTime = None
         self.__recordingWorker = None
         self.__thread = None
         self.__prepareRecordingThread()
 
     def __del__(self):
-        self.endRecording(emitSignal=False, wait=True)
+        try:
+            self.endRecording(emitSignal=False, wait=True)
+        except Exception:
+            # Destructors must not leak cleanup failures as an ignored
+            # exception. Explicit endRecording()/abortRecording() calls still
+            # surface the same failure to their caller.
+            pass
         if hasattr(super(), '__del__'):
             super().__del__()
 
     def __prepareRecordingThread(self):
         if self.__thread is not None:
-            self.__thread.quit()
-            self.__thread.wait()
+            self.__quitRecordingThread()
+            self.__waitForRecordingThread()
         self.__recordingWorker = RecordingWorker(self)
         self.__thread = Thread()
         self.__recordingWorker.moveToThread(self.__thread)
         self.__thread.started.connect(self.__recordingWorker.run)
+
+    def __quitRecordingThread(self):
+        """Request QThread shutdown, tolerating a deleted retained wrapper."""
+        if (
+            isinstance(self.__thread, QtCore.QThread)
+            and sip.isdeleted(self.__thread)
+        ):
+            return
+        try:
+            self.__thread.quit()
+        except RuntimeError:
+            if (
+                isinstance(self.__thread, QtCore.QThread)
+                and sip.isdeleted(self.__thread)
+            ):
+                return
+            raise
+
+    def __waitForRecordingThread(self):
+        """Wait for the owned QThread without ever blocking indefinitely."""
+        if isinstance(self.__thread, QtCore.QThread):
+            # A completed ImSwitch Thread may already have been deleteLater'd
+            # while its Python wrapper is still retained by this manager. The
+            # framework's unbounded wait() treats that as stopped; mirror that
+            # behavior before invoking Qt's bounded C++ method.
+            if sip.isdeleted(self.__thread):
+                return
+            try:
+                stopped = QtCore.QThread.wait(
+                    self.__thread, RECORDING_THREAD_STOP_TIMEOUT_MS
+                )
+            except RuntimeError:
+                if sip.isdeleted(self.__thread):
+                    return
+                raise
+            if not stopped:
+                raise TimeoutError(
+                    'Recording worker did not stop within 30 seconds'
+                )
+            return
+        # Lightweight test/fallback thread implementations are synchronous.
+        self.__thread.wait()
 
     @property
     def record(self):
@@ -1306,11 +1411,68 @@ class RecordingManager(SignalInterface):
     def detectorsManager(self):
         return self.__detectorsManager
 
+    def shutdownComplete(self) -> bool:
+        """Whether producer and writer workers have both left their run loops."""
+        if self.__record:
+            return False
+        thread = self.__thread
+        if thread is not None:
+            try:
+                if (
+                    isinstance(thread, QtCore.QThread)
+                    and sip.isdeleted(thread)
+                ):
+                    threadRunning = False
+                else:
+                    threadRunning = bool(thread.isRunning())
+            except RuntimeError:
+                threadRunning = False
+            except Exception:
+                return False
+            if threadRunning:
+                return False
+
+        worker = self.__recordingWorker
+        writer = getattr(worker, '_writerThread', None)
+        if writer is not None:
+            try:
+                if writer.is_alive():
+                    return False
+            except Exception:
+                return False
+            # Reap the retained identity only after termination is proven.
+            # A timed-out finish/abort deliberately leaves it here so a new
+            # recording cannot overwrite an orphan that may still own files.
+            if getattr(worker, '_writerThread', None) is writer:
+                worker._writerThread = None
+        return True
+
+    def __normalizeDetectorNames(self, detectorNames):
+        """Materialize, de-duplicate and validate a detector selection."""
+        if isinstance(detectorNames, str):
+            detectorNames = (detectorNames,)
+        try:
+            normalized = tuple(dict.fromkeys(detectorNames))
+        except TypeError as e:
+            raise ValueError(
+                'detectorNames must be an iterable of hashable detector names'
+            ) from e
+        if not normalized:
+            raise ValueError('No detectors to record specified')
+
+        # Resolve every name before mutating recording state. This makes an
+        # invalid selection fail synchronously instead of leaving record=True
+        # for a worker that can never acquire its detector.
+        for detectorName in normalized:
+            self.__detectorsManager[detectorName]
+        return normalized
+
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
                        recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
                        recLapseTotal=1, recLapseIndex=0, scanDims=None,
-                       scanStepSizes=None):
+                       scanStepSizes=None, recLapseIntervalS=None,
+                       recLapseScheduledTime=None):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
@@ -1323,15 +1485,21 @@ class RecordingManager(SignalInterface):
                          to streaming recording, not snap().
             recLapseTotal: Total timepoints in the lapse (default 1 for non-lapse).
             recLapseIndex: 0-based index of this stack within the lapse (default 0).
+            recLapseIntervalS: Requested camera-lapse interval in seconds.
+            recLapseScheduledTime: ISO-8601 planned start for this timepoint.
         """
 
         self.__logger.info('Starting recording')
         if self.__record:
             raise RuntimeError('Cannot start a new recording while one is active')
+        if not self.shutdownComplete():
+            raise RuntimeError(
+                'Cannot start a new recording while the previous producer or '
+                'writer is still shutting down'
+            )
+
+        detectorNames = self.__normalizeDetectorNames(detectorNames)
         self.__prepareRecordingThread()
-        self.__record = True
-        self.__abort = False
-        self.__acqStartedEvent.clear()
         self.__recordingWorker.detectorNames = detectorNames
         self.__recordingWorker.recMode = recMode
         self.__recordingWorker.savename = savename
@@ -1347,28 +1515,67 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.recLapseIndex = recLapseIndex
         self.__recordingWorker.scanDims = scanDims
         self.__recordingWorker.scanStepSizes = scanStepSizes
+        self.__recordingWorker.recLapseIntervalS = recLapseIntervalS
+        self.__recordingWorker.recLapseScheduledTime = recLapseScheduledTime
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
-        self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
-                                          condition=lambda c: c.forAcquisition)
-        self.__thread.start()
+
+        self.__activeDetectorNames = detectorNames
+        self.__abort = False
+        self.__acqStartedEvent.clear()
+        self.__acqStartFailed = False
+        with self.__recordingSignalLock:
+            self.__recordingGeneration += 1
+            recordingGeneration = self.__recordingGeneration
+            self.__endSignalEmitted = False
+            self.__failureSignalEmitted = False
+            self.__lastRecordingError = None
+            self.__scanExpectedCompletionGeneration = None
+            self.__scanExpectedCompletionTime = None
+            self.__scanCompletionGeneration = None
+            self.__scanCompletionTime = None
+        self.__recordingWorker.recordingGeneration = recordingGeneration
+        self.__record = True
+        try:
+            self.__thread.start()
+        except Exception as error:
+            self.__record = False
+            self.__activeDetectorNames = ()
+            self._signalRecordingFailed(error, recordingGeneration)
+            raise
+        return recordingGeneration
 
     def endRecording(self, emitSignal=True, wait=True):
         """ Ends the current recording. Unless emitSignal is false, the
         sigRecordingEnded signal will be emitted. Unless wait is False, this
         method will wait until the recording is complete before returning. """
 
-        self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
-                                          condition=lambda c: c.forAcquisition)
-
+        failure = None
         if self.__record:
             self.__logger.info('Stopping recording')
+        # Stop the producer before touching its consumer state. The previous
+        # terminal flush raced readChunk() and could discard frames that had
+        # not reached the writer yet.
         self.__record = False
+        self.__activeDetectorNames = ()
+
         if self.__thread is not None:
-            self.__thread.quit()
-        if emitSignal:
-            self.sigRecordingEnded.emit()
+            try:
+                self.__quitRecordingThread()
+            except Exception as e:
+                failure = e
         if wait and self.__thread is not None:
-            self.__thread.wait()
+            try:
+                self.__waitForRecordingThread()
+            except Exception as e:
+                failure = failure or e
+        if emitSignal and failure is None:
+            try:
+                self._signalRecordingEnded()
+            except Exception as e:
+                failure = failure or e
+
+        if failure is not None:
+            raise failure
 
     def abortRecording(self, emitSignal=True, wait=True):
         """ Aborts the current recording, DISCARDING partial output on disk.
@@ -1381,25 +1588,175 @@ class RecordingManager(SignalInterface):
         scan hardware source is not stopped here - see the source-abort design
         in docs/recording_dataflow_plan.md. """
 
-        self.__detectorsManager.execOnAll(lambda c: c.flushBuffers(),
-                                          condition=lambda c: c.forAcquisition)
-
+        failure = None
         if self.__record:
             self.__logger.info('Aborting recording')
         self.__abort = True
         self.__record = False
+        self.__activeDetectorNames = ()
+
         if self.__recordingWorker is not None:
-            self.__recordingWorker.requestWriterAbort()
+            try:
+                self.__recordingWorker.requestWriterAbort()
+            except Exception as e:
+                failure = e
         if self.__thread is not None:
-            self.__thread.quit()
-        if emitSignal:
-            self.sigRecordingEnded.emit()
+            try:
+                self.__quitRecordingThread()
+            except Exception as e:
+                failure = failure or e
         if wait and self.__thread is not None:
-            self.__thread.wait()
+            try:
+                self.__waitForRecordingThread()
+            except Exception as e:
+                failure = failure or e
+        if emitSignal and failure is None:
+            try:
+                self._signalRecordingEnded()
+            except Exception as e:
+                failure = failure or e
+
+        if failure is not None:
+            raise failure
+
+    def _signalRecordingEnded(self, generation=None, *, emitLegacy=True):
+        """Publish one identity-carrying successful terminal.
+
+        ``sigRecordingEndedDetailed`` is the manager's writer-finalization
+        boundary.  Scan-mode workers suppress the legacy UI signal because the
+        controller also waits for scan completion, but they must still publish
+        this detailed terminal after their writer has drained.
+        """
+        with self.__recordingSignalLock:
+            if generation is None:
+                generation = self.__recordingGeneration
+            if generation != self.__recordingGeneration or generation <= 0:
+                return False
+            if self.__endSignalEmitted:
+                return False
+            self.__endSignalEmitted = True
+        self.sigRecordingEndedDetailed.emit(int(generation))
+        if emitLegacy:
+            self.sigRecordingEnded.emit()
+        return True
+
+    def reportRecordingFailure(self, error, generation=None):
+        """Publish an externally detected failure for the active session."""
+        return self._signalRecordingFailed(error, generation)
+
+    def _signalRecordingStarted(self, generation=None):
+        """Publish start with identity while preserving the legacy signal."""
+        if generation is None:
+            with self.__recordingSignalLock:
+                generation = self.__recordingGeneration
+        self.sigRecordingStartedDetailed.emit(int(generation))
+        self.sigRecordingStarted.emit()
 
     def _signalAcquisitionStarted(self):
         """Called by the worker once detector acquisition has started (armed)."""
         self.__acqStartedEvent.set()
+
+    def _signalAcquisitionFailed(self):
+        """Unblock scan-start waiters when recording setup cannot be armed."""
+        self.__acqStartFailed = True
+        self.__acqStartedEvent.set()
+
+    def _signalRecordingFailed(self, error, generation=None):
+        """Publish one terminal failure without masquerading as completion."""
+        message = str(error) or type(error).__name__
+        with self.__recordingSignalLock:
+            if generation is None:
+                generation = self.__recordingGeneration
+            if generation != self.__recordingGeneration:
+                return False
+            if self.__failureSignalEmitted or self.__endSignalEmitted:
+                return False
+            self.__lastRecordingError = error
+            self.__failureSignalEmitted = True
+            # Failure replaces ordinary completion for this session. This also
+            # makes re-entrant UI cleanup unable to emit a misleading "ended".
+            self.__endSignalEmitted = True
+        self._signalAcquisitionFailed()
+        self.sigRecordingFailedDetailed.emit(message, int(generation))
+        self.sigRecordingFailed.emit(message)
+        return True
+
+    @property
+    def lastRecordingError(self):
+        with self.__recordingSignalLock:
+            return self.__lastRecordingError
+
+    @property
+    def recordingGeneration(self):
+        """Identity of the most recently started recording session."""
+        with self.__recordingSignalLock:
+            return self.__recordingGeneration
+
+    def markScanCompleted(self, generation=None):
+        """Start the final-frame watchdog for one exact scan recording.
+
+        APD/PMT/TimeTagger managers integrate the complete scan and cannot
+        produce frame progress while it is still running. RecordingController
+        calls this at the owner-scoped scan terminal so their normal stall
+        timeout measures delayed final-frame publication rather than total
+        scan duration.
+        """
+        with self.__recordingSignalLock:
+            if generation is None:
+                generation = self.__recordingGeneration
+            if (
+                generation != self.__recordingGeneration
+                or generation <= 0
+                or not self.__record
+            ):
+                return False
+            if self.__scanCompletionGeneration == generation:
+                return False
+            self.__scanCompletionGeneration = generation
+            self.__scanCompletionTime = time.time()
+            return True
+
+    def markScanStarted(self, scanInfoDict, generation=None):
+        """Set an expected end time for a scan-driven recording watchdog.
+
+        The generated sample count already includes line steps, flyback and
+        higher scan axes. Adding the ordinary stall timeout after that expected
+        duration preserves detection of a missing NI-DAQ trigger without
+        mistaking a long, healthy scan for a detector stall.
+        """
+        try:
+            duration = (
+                float(scanInfoDict['scan_samples_total'])
+                * float(scanInfoDict['scan_time_step'])
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not np.isfinite(duration) or duration < 0:
+            return False
+
+        with self.__recordingSignalLock:
+            if generation is None:
+                generation = self.__recordingGeneration
+            recMode = getattr(self.__recordingWorker, 'recMode', None)
+            if (
+                generation != self.__recordingGeneration
+                or generation <= 0
+                or not self.__record
+                or recMode not in (RecMode.ScanOnce, RecMode.ScanLapse)
+            ):
+                return False
+            self.__scanExpectedCompletionGeneration = generation
+            self.__scanExpectedCompletionTime = time.time() + duration
+            return True
+
+    def scanCompletionTime(self, generation):
+        """Return observed or expected scan completion time for ``generation``."""
+        with self.__recordingSignalLock:
+            if self.__scanCompletionGeneration == generation:
+                return self.__scanCompletionTime
+            if self.__scanExpectedCompletionGeneration == generation:
+                return self.__scanExpectedCompletionTime
+            return None
 
     def waitForAcquisitionStarted(self, timeout=None):
         """Block until the recording worker is ready for incoming frames, or
@@ -1412,20 +1769,30 @@ class RecordingManager(SignalInterface):
         directly by the worker thread, so it does not depend on the Qt event
         loop.
         """
-        return self.__acqStartedEvent.wait(timeout)
+        signaled = self.__acqStartedEvent.wait(timeout)
+        return signaled and not self.__acqStartFailed
 
     def snap(self, detectorNames, savename, saveMode, saveFormat, attrs):
         """ Saves an image with the specified detectors to a file
         with the specified name prefix, save mode, file format and attributes
         to save to the capture per detector. """
-        acqHandle = self.__detectorsManager.startAcquisition()
+        # Iterators/generators must be materialized once: acquire(), the frame
+        # loop and filename generation all consume this selection.
+        detectorNames = tuple(detectorNames)
+        # Lease exactly what is being snapped. This used to arm every
+        # forAcquisition detector for a subset snap, spinning up hardware
+        # nobody asked for.
+        acqHandle = self.__detectorsManager.acquire(detectorNames,
+                                                    LeasePurpose.SNAP)
 
+        images = {}
         try:
-            images = {}
-
             # Acquire data
             for detectorName in detectorNames:
-                images[detectorName] = self.__detectorsManager[detectorName].getLatestFrame(is_save=True)
+                images[detectorName] = (
+                    self.__detectorsManager[detectorName]
+                    .getLatestFrameShared(is_save=True)
+                )
                 image = images[detectorName]
 
             if saveFormat:
@@ -1449,9 +1816,9 @@ class RecordingManager(SignalInterface):
                         self.sigMemorySnapAvailable.emit(name, image, savename, saveMode == SaveMode.DiskAndRAM)
 
         finally:
-            self.__detectorsManager.stopAcquisition(acqHandle)
-            if saveMode == SaveMode.Numpy:
-                return images
+            self.__detectorsManager.release(acqHandle)
+        if saveMode == SaveMode.Numpy:
+            return images
 
     def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs):
         """Save a previously captured image using the appropriate Storer.
@@ -1509,23 +1876,43 @@ class RecordingManager(SignalInterface):
             pass
         return 1.0
 
+    @staticmethod
+    def _scanStep(scanStepSizes, axis) -> float:
+        """One axis of ``getScanStepSizes()`` as a magnitude, 0 when unusable."""
+        if scanStepSizes is None:
+            return 0.0
+        try:
+            return abs(float(scanStepSizes[axis]))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return 0.0
+
     def buildOmeMeta(self, detectorName, mode, nFrames, scanDims=None,
                      scanStepSizes=None, frameIntervalS=None, annotations=None):
         """Build the shared :class:`OmeImageMeta` for a detector from recording
         context. ``mode`` is a normalized recording mode (see recording_metadata),
         ``scanDims`` is ``(Nx, Ny, Nz)`` from the scan controller (for z-stack
-        axis labeling), or None for non-scan recordings."""
+        axis labeling), and ``scanStepSizes`` is ``(x, y, z)``. Scan steps are
+        authoritative spatial calibration for scan-driven detectors."""
         det = self.__detectorsManager[detectorName]
         pix = list(det.pixelSizeUm)
         py = pix[1] if len(pix) > 1 else 1.0
         px = pix[2] if len(pix) > 2 else py
         z_step = pix[0] if (pix and pix[0]) else 1.0
-        if scanStepSizes is not None and len(scanStepSizes) >= 3:
-            try:
-                if float(scanStepSizes[2]) != 0:
-                    z_step = abs(float(scanStepSizes[2]))
-            except Exception:
-                pass
+        # An inactive axis reports a 0 step (getScanStepSizes pads to 3), and 0
+        # is not a pixel size -- it would emit PhysicalSize=0 and make every
+        # downstream consumer that divides by the scale blow up. So a 0 step
+        # always leaves the detector's own value in place.
+        xStep, yStep, zStep = (self._scanStep(scanStepSizes, axis)
+                               for axis in range(3))
+        if getattr(det, 'isScanDriven', False):
+            # Scan geometry is authoritative for point detectors: their pixel
+            # size *is* the scan step. The detector's own cache is only written
+            # once the scan is built, which is after this metadata is
+            # snapshotted, so it still describes the previous scan (or the
+            # startup default) at this point.
+            px = xStep or px
+            py = yStep or py
+        z_step = zStep or z_step
         t_interval = (float(frameIntervalS) if frameIntervalS is not None
                       else self._detectorFrameIntervalSeconds(det))
         return _ome.build_ome_image_meta(
@@ -1587,7 +1974,10 @@ class WriterThread(threading.Thread):
     """
     def __init__(self, storer, fileDests, detectorNames, shapes, attrs,
                  singleMultiDetectorFile, singleLapseFile, saveMode, filePaths, recordingManager):
-        super().__init__(daemon=False, name='RecordingWriterThread')
+        # Normal shutdown still joins with a deadline and reports a failure.
+        # The daemon fail-safe prevents an uninterruptible storage-backend call
+        # from keeping the whole application process alive forever.
+        super().__init__(daemon=True, name='RecordingWriterThread')
         self._storer = storer
         self._fileDests = fileDests
         self._detectorNames = detectorNames
@@ -1620,6 +2010,30 @@ class WriterThread(threading.Thread):
         self._abort_event = threading.Event()
         self._stop_requested = threading.Event()
         self._stop_lock = threading.Lock()
+        self._stream_cleanup_done = threading.Event()
+
+    def _abort_partial_stream(self):
+        """Best-effort partial-output cleanup, owned by the writer thread."""
+        if self._stream_cleanup_done.is_set():
+            return
+        try:
+            self._storer.abortStream(
+                self._filePaths, self._fileDests, self._saveMode
+            )
+        except Exception as cleanupError:
+            logger.error(
+                f'Recording writer failed to clean up partial output: '
+                f'{cleanupError}',
+                exc_info=True,
+            )
+        finally:
+            self._stream_cleanup_done.set()
+
+    def _raise_if_failed(self):
+        if self._open_exception is not None:
+            raise self._open_exception
+        if self._write_exception is not None:
+            raise self._write_exception
 
     def run(self):
         """Writer thread main loop."""
@@ -1635,8 +2049,12 @@ class WriterThread(threading.Thread):
                 saveMode=self._saveMode
             )
         except Exception as e:
+            # openStream may have created a subset of its files/handles before
+            # failing. Clean that partial session in the writer thread, which
+            # is the only thread allowed to own those backend objects.
             # Store exception to re-raise on acquisition thread
             self._open_exception = e
+            self._abort_partial_stream()
             self._opened_event.set()
             return
         
@@ -1655,11 +2073,34 @@ class WriterThread(threading.Thread):
                         self._storer.abortStream(
                             self._filePaths, self._fileDests, self._saveMode
                         )
+                        self._stream_cleanup_done.set()
                     else:
                         self._flush_all_batches()
-                        self._storer.finalizeStream(
-                            self._currentFrames, self._filePaths, self._recordingManager, self._saveMode
-                        )
+                        # finish() can time out while a slow backend is
+                        # flushing, after which the owner escalates to
+                        # abort(). Re-check at both blocking boundaries so a
+                        # late abort cannot leave a finalized file behind
+                        # while the session reports failure/partial cleanup.
+                        if self._abort_event.is_set():
+                            self._storer.abortStream(
+                                self._filePaths,
+                                self._fileDests,
+                                self._saveMode,
+                            )
+                        else:
+                            self._storer.finalizeStream(
+                                self._currentFrames,
+                                self._filePaths,
+                                self._recordingManager,
+                                self._saveMode,
+                            )
+                            if self._abort_event.is_set():
+                                self._storer.abortStream(
+                                    self._filePaths,
+                                    self._fileDests,
+                                    self._saveMode,
+                                )
+                        self._stream_cleanup_done.set()
                     break
 
                 # Discard frames once an abort has been requested.
@@ -1684,6 +2125,10 @@ class WriterThread(threading.Thread):
             # thread never blocks forever on a full queue.
             logger.exception(f"WriterThread failed during write loop: {e}")
             self._write_exception = e
+            # A write/finalize failure is not a successful recording. Remove
+            # the partial stream in this writer thread so callers cannot
+            # mistake a truncated output for a completed acquisition.
+            self._abort_partial_stream()
     
     def _flush_batch(self, detectorName):
         """Flush accumulated frames for a detector to disk."""
@@ -1708,7 +2153,7 @@ class WriterThread(threading.Thread):
         for detectorName in self._detectorNames:
             self._flush_batch(detectorName)
     
-    def wait_for_open(self):
+    def wait_for_open(self, timeout=WRITER_OPEN_TIMEOUT_S):
         """Wait for openStream handshake and re-raise any exception.
         
         Returns:
@@ -1717,9 +2162,11 @@ class WriterThread(threading.Thread):
         Raises:
             Any exception that occurred during openStream
         """
-        self._opened_event.wait()
-        if self._open_exception is not None:
-            raise self._open_exception
+        if not self._opened_event.wait(timeout):
+            raise TimeoutError(
+                f'Recording writer did not open within {timeout:g} seconds'
+            )
+        self._raise_if_failed()
     
     def enqueue_frames(self, detectorName, frames):
         """Enqueue frames for the writer thread.
@@ -1729,10 +2176,26 @@ class WriterThread(threading.Thread):
         on the acquisition thread instead of deadlocking the producer.
         """
         while True:
+            self._raise_if_failed()
+            if not self.is_alive():
+                raise RuntimeError(
+                    'RecordingWriterThread is not running; frames cannot be '
+                    'enqueued'
+                )
             try:
                 self._queue.put((detectorName, frames), timeout=0.1)
+                # Cover the race where the writer failed while this put was
+                # completing. finish() performs the same check for a failure
+                # that occurs after the producer's final enqueue.
+                self._raise_if_failed()
+                if not self.is_alive():
+                    raise RuntimeError(
+                        'RecordingWriterThread stopped while frames were being '
+                        'enqueued'
+                    )
                 return
             except queue.Full:
+                self._raise_if_failed()
                 if not self.is_alive():
                     raise RuntimeError(
                         'RecordingWriterThread died before frames could be '
@@ -1762,32 +2225,52 @@ class WriterThread(threading.Thread):
     def _request_stop(self, abort):
         if abort:
             self._abort_event.set()
+        stopped_unexpectedly = False
         with self._stop_lock:
             if not self._stop_requested.is_set():
                 self._stop_requested.set()
-                while True:
-                    try:
-                        self._queue.put(None, timeout=0.1)
-                        break
-                    except queue.Full:
-                        if not self.is_alive():
-                            logger.error(
-                                "WriterThread died before stop sentinel could be enqueued"
-                            )
-                            return
-                        if abort:
-                            # Discard a queued item to make room for the
-                            # sentinel; abort mode deliberately does not
-                            # preserve partial output.
-                            try:
-                                self._queue.get_nowait()
-                            except queue.Empty:
-                                pass
-                        # finish() keeps waiting for the writer to drain so all
-                        # queued frames are finalized.
+                if not self.is_alive():
+                    stopped_unexpectedly = (
+                        self._open_exception is None
+                        and self._write_exception is None
+                    )
+                else:
+                    while True:
+                        try:
+                            self._queue.put(None, timeout=0.1)
+                            break
+                        except queue.Full:
+                            if not self.is_alive():
+                                stopped_unexpectedly = (
+                                    self._open_exception is None
+                                    and self._write_exception is None
+                                )
+                                break
+                            if abort:
+                                # Discard a queued item to make room for the
+                                # sentinel; abort mode deliberately does not
+                                # preserve partial output.
+                                try:
+                                    self._queue.get_nowait()
+                                except queue.Empty:
+                                    pass
+                            # finish() keeps waiting for the writer to drain so
+                            # all queued frames are finalized.
+
+        # join() itself rejects a thread that was never started. Surface that
+        # as a lifecycle error rather than silently claiming success.
+        if self.ident is None and not self.is_alive():
+            self._raise_if_failed()
+            raise RuntimeError('RecordingWriterThread was never started')
+
         self.join(timeout=30.0)
         if self.is_alive():
-            logger.error("WriterThread did not finish within timeout")
+            raise TimeoutError('RecordingWriterThread did not finish within 30 seconds')
+        self._raise_if_failed()
+        if stopped_unexpectedly:
+            raise RuntimeError(
+                'RecordingWriterThread stopped before finalization completed'
+            )
 
 
 class RecordingWorker(Worker):
@@ -1803,18 +2286,99 @@ class RecordingWorker(Worker):
         if writerThread is not None:
             writerThread.abort()
 
-    def run(self):
-        acqHandle = self.__recordingManager.detectorsManager.startAcquisition()
+    def _clearWriterReferenceIfStopped(self, writerThread):
+        """Forget a writer only after its thread is proven terminated."""
         try:
+            stopped = not writerThread.is_alive()
+        except Exception:
+            stopped = False
+        if stopped and self._writerThread is writerThread:
+            self._writerThread = None
+        return stopped
+
+    def run(self):
+        detectorsManager = self.__recordingManager.detectorsManager
+        # Lease exactly the detectors being recorded, not every
+        # forAcquisition detector. Scan-driven participants are additionally
+        # held by the scan's own SCAN lease, so a recording that names one
+        # keeps it armed across the whole recording rather than only for the
+        # scan iteration.
+        detectorNames = list(getattr(self, 'detectorNames', None) or [])
+        acqHandle = None
+        try:
+            # Keep acquisition inside the guarded lifecycle. Previously an
+            # acquire failure escaped before readiness was signalled and before
+            # RecordingManager.record was reset, wedging scan-start waiters and
+            # the recording UI.
+            if detectorNames:
+                acqHandle = detectorsManager.acquire(
+                    detectorNames, LeasePurpose.RECORDING
+                )
             self._record()
 
+        except Exception as e:
+            self.__logger.error(f'Recording failed: {e}', exc_info=True)
+            signalFailure = getattr(
+                self.__recordingManager, '_signalRecordingFailed', None
+            )
+            if callable(signalFailure):
+                signalFailure(
+                    e, getattr(self, 'recordingGeneration', None)
+                )
+
+            # If setup failed before _record announced readiness, wake any scan
+            # controller waiting to emit TTL and make that wait return False.
+            if not self.__recordingManager.waitForAcquisitionStarted(timeout=0):
+                self.__recordingManager._signalAcquisitionFailed()
+
+            # _record owns normal writer finalization once it enters its main
+            # loop. Failures before that loop (file setup, writer open, mode
+            # validation) leave RecordingManager.record True and need explicit
+            # abort/manager cleanup here.
+            if self.__recordingManager.record:
+                writerThread = self._writerThread
+                if writerThread is not None:
+                    try:
+                        writerThread.abort()
+                    except Exception as cleanupError:
+                        self.__logger.error(
+                            f'Failed to abort recording writer: {cleanupError}',
+                            exc_info=True,
+                        )
+                    finally:
+                        self._clearWriterReferenceIfStopped(writerThread)
+                try:
+                    # This callback is running on the recording worker's own
+                    # QThread. Never wait for that same thread, and do not let
+                    # a detector-flush or signal-slot failure bypass the lease
+                    # release in the outer finally.
+                    self.__recordingManager.endRecording(
+                        emitSignal=False, wait=False
+                    )
+                except Exception as cleanupError:
+                    self.__logger.error(
+                        f'Failed to finish recording manager cleanup: '
+                        f'{cleanupError}',
+                        exc_info=True,
+                    )
+
         finally:
-            self.__recordingManager.detectorsManager.stopAcquisition(acqHandle)
+            if acqHandle is not None:
+                try:
+                    detectorsManager.release(acqHandle)
+                except Exception as e:
+                    self.__logger.error(
+                        f'Failed to release recording detector lease: {e}',
+                        exc_info=True,
+                    )
     
     def _getFileDests(self):
         """Prepare file destinations and paths for streaming."""
         singleMultiDetectorFile = self.singleMultiDetectorFile
-        singleLapseFile = self.recMode == RecMode.ScanLapse and self.singleLapseFile
+        singleLapseFile = (
+            self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
+            and self.singleLapseFile
+        )
         
         fileDests = {}
         filePaths = {}
@@ -1910,10 +2474,70 @@ class RecordingWorker(Worker):
             new_attrs['recording:num_timepoints'] = int(self.recLapseTotal or 1)
             new_attrs['recording:lapse_index'] = int(self.recLapseIndex or 0)
             new_attrs['recording:single_lapse_file'] = bool(self.singleLapseFile)
+            recLapseIntervalS = getattr(
+                self, 'recLapseIntervalS', None
+            )
+            if recLapseIntervalS is not None:
+                new_attrs['recording:lapse_interval_s'] = float(
+                    recLapseIntervalS
+                )
+            recLapseScheduledTime = getattr(
+                self, 'recLapseScheduledTime', None
+            )
+            if recLapseScheduledTime:
+                new_attrs['recording:planned_start_time'] = str(
+                    recLapseScheduledTime
+                )
             
             augmented[detectorName] = new_attrs
         
         return augmented
+
+    def _isScanDrivenDetector(self, detectorName) -> bool:
+        try:
+            detector = self.__recordingManager.detectorsManager[detectorName]
+        except Exception:
+            return False
+        return bool(getattr(detector, 'isScanDriven', False))
+
+    def _expectedFramesFor(self, detectorName, recFrames, numCamTTL) -> int:
+        """How many frames this detector produces for the recording session.
+
+        The two detector families answer this completely differently, and
+        treating them alike is what made scan recordings hang or truncate:
+
+        - A **free-running/trigger-driven camera** emits one frame per scan
+          position (per camera TTL pulse), so it yields
+          ``recFrames * numCamTTL``.
+        - A **scan-driven** detector (APD, PMT, TimeTagger) integrates the
+          whole scan into a single assembled image and emits exactly ONE
+          frame per scan, whatever the position count. Expecting one frame
+          per position means waiting for frames that are never produced.
+
+        In the lapse modes each session covers one scan, so the scan-driven
+        answer stays 1 there too; the per-timepoint loop supplies the
+        repetition.
+        """
+        if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse) and \
+                self._isScanDrivenDetector(detectorName):
+            return 1
+        return recFrames * numCamTTL.get(detectorName, 1)
+
+    def _stallReferenceTimeFor(self, detectorName, lastFrameTime):
+        """Return when no-frame timing may begin, or ``None`` while scanning."""
+        if (
+            self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse)
+            and self._isScanDrivenDetector(detectorName)
+        ):
+            completionTime = getattr(
+                self.__recordingManager, 'scanCompletionTime', None
+            )
+            if not callable(completionTime):
+                return None
+            return completionTime(
+                getattr(self, 'recordingGeneration', None)
+            )
+        return lastFrameTime
 
     def _record(self):
         """Unified streaming recording loop delegating all I/O to Storer.
@@ -1946,16 +2570,35 @@ class RecordingWorker(Worker):
                 shapes[detectorName] = shape[-2:]
         
         expected_frames = None
-        if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+        if self.recMode in [
+            RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse,
+            RecMode.CameraLapse,
+        ]:
             recFrames = self.recFrames
             if recFrames is None:
-                raise ValueError('recFrames must be specified in SpecFrames, ScanOnce or ScanLapse mode')
+                raise ValueError(
+                    'recFrames must be specified in SpecFrames, ScanOnce, '
+                    'ScanLapse or CameraLapse mode'
+                )
 
             numCamTTL = self.numCamTTL if self.numCamTTL is not None else {}
             expected_frames = {
-                detectorName: recFrames * numCamTTL.get(detectorName, 1)
+                detectorName: self._expectedFramesFor(detectorName, recFrames,
+                                                      numCamTTL)
                 for detectorName in self.detectorNames
             }
+            # A recording that stalls or truncates almost always comes down to
+            # this number being wrong for one detector: a scan-driven detector
+            # emits ONE assembled frame per scan while a camera emits one per
+            # position, so log what is actually being waited for, per detector.
+            self.__logger.debug(
+                f'{self.recMode.name} recording expects: '
+                + ', '.join(
+                    f'{name} {count} frame(s)'
+                    f'{" [scan-driven]" if self._isScanDrivenDetector(name) else ""}'
+                    for name, count in expected_frames.items()
+                )
+            )
 
         # Augment attrs with recording metadata (exposure, version, timestamp)
         augmented_attrs = self._augment_attrs_with_recording_metadata(
@@ -1970,12 +2613,17 @@ class RecordingWorker(Worker):
         mode = _ome.normalize_mode(self.recMode.name)
         scanDims = getattr(self, 'scanDims', None)
         scanStepSizes = getattr(self, 'scanStepSizes', None)
+        frameIntervalS = (
+            getattr(self, 'recLapseIntervalS', None)
+            if self.recMode == RecMode.CameraLapse else None
+        )
         storer.omeMeta = {
             detectorName: self.__recordingManager.buildOmeMeta(
                 detectorName, mode,
                 max(2, int((expected_frames or {}).get(detectorName, 2))),
                 scanDims=scanDims,
-                scanStepSizes=scanStepSizes)
+                scanStepSizes=scanStepSizes,
+                frameIntervalS=frameIntervalS)
             for detectorName in self.detectorNames
         }
 
@@ -1987,7 +2635,10 @@ class RecordingWorker(Worker):
             shapes=shapes,
             attrs=augmented_attrs,
             singleMultiDetectorFile=self.singleMultiDetectorFile,
-            singleLapseFile=self.recMode == RecMode.ScanLapse and self.singleLapseFile,
+            singleLapseFile=(
+                self.recMode in (RecMode.ScanLapse, RecMode.CameraLapse)
+                and self.singleLapseFile
+            ),
             saveMode=self.saveMode,
             filePaths=filePaths,
             recordingManager=self.__recordingManager
@@ -1999,7 +2650,10 @@ class RecordingWorker(Worker):
         writerThread.wait_for_open()
         
         # Determine stop condition based on recMode
-        if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+        if self.recMode in [
+            RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse,
+            RecMode.CameraLapse,
+        ]:
             nFramesPerDetector = expected_frames
             
             def should_stop():
@@ -2023,21 +2677,44 @@ class RecordingWorker(Worker):
         else:
             raise ValueError('Unsupported recording mode specified')
         
-        # Unified acquisition loop. Start each detector's chunk-consumer
-        # queue fresh so no stale frames from a previous recording leak in
-        # (buffers were flushed in startRecording).
-        for detectorName in self.detectorNames:
-            self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
-                _RECORDING_CHUNK_CONSUMER
-            )
-        self.__recordingManager._signalAcquisitionStarted()
-        self.__recordingManager.sigRecordingStarted.emit()
+        startedConsumers = []
+        recordingSucceeded = False
         shouldStopNext = False
         try:
+            # Establish an atomic per-consumer boundary after detector
+            # ownership and writer readiness. Existing consumers retain
+            # pre-boundary frames; this recording sees only frames captured
+            # after it is fully armed. Registration is part of the guarded
+            # transaction so a later detector failing cannot leak earlier
+            # consumer queues.
+            for detectorName in self.detectorNames:
+                detector = (
+                    self.__recordingManager.detectorsManager[detectorName]
+                )
+                startConsumer = getattr(
+                    detector, 'startChunkConsumer', None
+                )
+                if callable(startConsumer):
+                    startConsumer(_RECORDING_CHUNK_CONSUMER)
+                else:
+                    # Compatibility for out-of-tree detector implementations
+                    # that have not yet adopted the atomic boundary API.
+                    detector.releaseChunkConsumer(
+                        _RECORDING_CHUNK_CONSUMER
+                    )
+                startedConsumers.append(detectorName)
+            self.__recordingManager._signalAcquisitionStarted()
+            self.__recordingManager._signalRecordingStarted(
+                getattr(self, 'recordingGeneration', None)
+            )
+
             while self.__recordingManager.record and not shouldStopNext:
                 for detectorName in self.detectorNames:
                     # Skip detector if it has reached its frame target
-                    if (self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse] and
+                    if (self.recMode in [
+                            RecMode.SpecFrames, RecMode.ScanOnce,
+                            RecMode.ScanLapse, RecMode.CameraLapse,
+                    ] and
                             currentFrame[detectorName] >= nFramesPerDetector[detectorName]):
                         continue
                     
@@ -2046,7 +2723,10 @@ class RecordingWorker(Worker):
                     n = len(newFrames)
                     if n > 0:
                         # Clip frames if needed for SpecFrames mode
-                        if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                        if self.recMode in [
+                            RecMode.SpecFrames, RecMode.ScanOnce,
+                            RecMode.ScanLapse, RecMode.CameraLapse,
+                        ]:
                             remaining = nFramesPerDetector[detectorName] - currentFrame[detectorName]
                             if n > remaining:
                                 newFrames = newFrames[:remaining]
@@ -2058,7 +2738,10 @@ class RecordingWorker(Worker):
                         lastFrameTime[detectorName] = time.time()  # Update watchdog timestamp
                 
                 # Emit progress signals based on recMode
-                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                if self.recMode in [
+                    RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse,
+                    RecMode.CameraLapse,
+                ]:
                     # Report the lowest frame number (for multi-detector)
                     self.__recordingManager.sigRecordingFrameNumUpdated.emit(
                         min(list(currentFrame.values()))
@@ -2073,25 +2756,56 @@ class RecordingWorker(Worker):
                     )
                 
                 # Check for stalled detectors (only for modes with frame targets)
-                if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+                if self.recMode in [
+                    RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse,
+                    RecMode.CameraLapse,
+                ]:
                     now = time.time()
                     for detectorName in self.detectorNames:
                         # Skip detectors that have already reached their target
                         if currentFrame[detectorName] >= nFramesPerDetector[detectorName]:
                             continue
-                        
-                        elapsed = now - lastFrameTime[detectorName]
+
+                        referenceTime = self._stallReferenceTimeFor(
+                            detectorName, lastFrameTime[detectorName]
+                        )
+                        if referenceTime is None:
+                            # A scan-driven detector has no frame-level
+                            # progress to report before the full scan ends.
+                            continue
+
+                        elapsed = now - referenceTime
                         if elapsed > self.stallTimeout:
-                            # Stall detected - log diagnostics and abort
-                            self.__logger.error(
-                                f"Detector '{detectorName}' stalled: no frames received for {elapsed:.1f}s "
-                                f"(timeout: {self.stallTimeout}s). Current: {currentFrame[detectorName]} frames, "
-                                f"expected: {nFramesPerDetector[detectorName]} frames. "
-                                f"Check camera triggering and numCamTTL configuration."
-                            )
+                            if self._isScanDrivenDetector(detectorName):
+                                message = (
+                                    f"Detector '{detectorName}' stalled: no "
+                                    f"assembled frame received for "
+                                    f"{elapsed:.1f}s after scan completion "
+                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"Current: {currentFrame[detectorName]} "
+                                    f"frames, expected: "
+                                    f"{nFramesPerDetector[detectorName]} "
+                                    f"frames. Check the detector input, scan "
+                                    f"trigger, and sample-clock configuration."
+                                )
+                            else:
+                                message = (
+                                    f"Detector '{detectorName}' stalled: no "
+                                    f"frames received for {elapsed:.1f}s "
+                                    f"(timeout: {self.stallTimeout}s). "
+                                    f"Current: {currentFrame[detectorName]} "
+                                    f"frames, expected: "
+                                    f"{nFramesPerDetector[detectorName]} "
+                                    f"frames. Check camera triggering and "
+                                    f"numCamTTL configuration."
+                                )
+                            self.__logger.error(message)
                             self.__recordingManager.sigRecordingStalled.emit(detectorName)
-                            shouldStopNext = True
-                            break
+                            # A truncated stream is a recording failure, not a
+                            # successful short file. Raising routes through the
+                            # abort/partial-output cleanup and distinct failure
+                            # signal.
+                            raise RuntimeError(message)
                 
                 # Check stop condition
                 if should_stop():
@@ -2100,43 +2814,89 @@ class RecordingWorker(Worker):
                 time.sleep(FRAME_POLL_INTERVAL)  # Yield to event loop to prevent UI freezing
             
             # Reset progress signals
-            if self.recMode in [RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse]:
+            if self.recMode in [
+                RecMode.SpecFrames, RecMode.ScanOnce, RecMode.ScanLapse,
+                RecMode.CameraLapse,
+            ]:
                 self.__recordingManager.sigRecordingFrameNumUpdated.emit(0)
             elif self.recMode == RecMode.SpecTime:
                 self.__recordingManager.sigRecordingTimeUpdated.emit(0)
+            recordingSucceeded = True
         
         finally:
             # Stop retaining frames for this consumer now that the recording
             # is over (other readChunk consumers may keep draining).
-            for detectorName in self.detectorNames:
-                self.__recordingManager.detectorsManager[detectorName].releaseChunkConsumer(
-                    _RECORDING_CHUNK_CONSUMER
-                )
+            cleanupErrors = []
+            for detectorName in startedConsumers:
+                try:
+                    self.__recordingManager.detectorsManager[
+                        detectorName
+                    ].releaseChunkConsumer(_RECORDING_CHUNK_CONSUMER)
+                except Exception as error:
+                    cleanupErrors.append(error)
+                    self.__logger.error(
+                        f'Failed to release recording frame consumer for '
+                        f'"{detectorName}": {error}',
+                        exc_info=True,
+                    )
             
             # Tear down the writer thread. On abort, discard partial output;
             # otherwise drain the queue and finalize. Both enqueue a sentinel and
             # join, so finalize/abortStream completes before _record returns.
-            aborting = self.__recordingManager.aborting
-            if aborting:
-                writerThread.abort()
-            else:
-                writerThread.finish()
-            self._writerThread = None
+            aborting = (
+                self.__recordingManager.aborting
+                or not recordingSucceeded
+                or bool(cleanupErrors)
+            )
+            try:
+                if aborting:
+                    writerThread.abort()
+                else:
+                    writerThread.finish()
+            except Exception as error:
+                cleanupErrors.append(error)
+                self.__logger.error(
+                    f'Failed to finalize recording writer: {error}',
+                    exc_info=True,
+                )
+                if not aborting:
+                    try:
+                        writerThread.abort()
+                    except Exception as abortError:
+                        cleanupErrors.append(abortError)
+                        self.__logger.error(
+                            f'Failed to abort writer after finalization '
+                            f'failure: {abortError}',
+                            exc_info=True,
+                        )
+                aborting = True
+            finally:
+                self._clearWriterReferenceIfStopped(writerThread)
 
             # End recording. When aborting, abortRecording() already emitted
-            # sigRecordingEnded, so suppress it here to avoid a double emit.
+            # its requested terminal signal (or a failure terminal was
+            # published), so suppress success here.
             if aborting:
                 self.__recordingManager.endRecording(emitSignal=False, wait=False)
             else:
-                # Scan-driven modes finish their widget cycle via sigScanDone
-                # (see RecordingController.scanDone), so suppress the duplicate
-                # sigRecordingEnded for them. SpecFrames/SpecTime have no scan,
-                # so they MUST emit it - otherwise the controller never runs
-                # recordingCycleEnded() and the REC button stays stuck checked.
-                emitSignal = True
-                if self.recMode in [RecMode.ScanOnce, RecMode.ScanLapse]:
-                    emitSignal = False
-                self.__recordingManager.endRecording(emitSignal=emitSignal, wait=False)
+                # The detailed signal is the authoritative writer-drained
+                # boundary for every mode. Scan-driven modes suppress only the
+                # legacy UI signal; RecordingController waits for both this
+                # terminal and sigScanDone before advancing/resetting.
+                emitLegacy = self.recMode not in [
+                    RecMode.ScanOnce, RecMode.ScanLapse
+                ]
+                self.__recordingManager.endRecording(
+                    emitSignal=False, wait=False
+                )
+                self.__recordingManager._signalRecordingEnded(
+                    self.recordingGeneration,
+                    emitLegacy=emitLegacy,
+                )
+            if cleanupErrors:
+                raise RuntimeError(
+                    'Recording cleanup failed; partial output was aborted'
+                ) from cleanupErrors[0]
 
     def _getNewFrames(self, detectorName):
         # readChunk (not getChunk): the destructive getChunk would steal
@@ -2161,6 +2921,7 @@ class RecMode(enum.Enum):
     ScanOnce = 3
     ScanLapse = 4
     UntilStop = 5
+    CameraLapse = 6
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

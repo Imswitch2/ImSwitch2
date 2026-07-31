@@ -112,7 +112,13 @@ class _ManualDetectorsManager:
             if condition(detector)
         }
 
-    def startAcquisition(self, liveView=False):
+    def getAllDeviceNames(self, condition=None):
+        if condition is None:
+            condition = lambda detector: True
+        return [name for name, detector in self._detectors.items()
+                if condition(detector)]
+
+    def acquire(self, detectorNames, purpose):
         if not self._active:
             self.execOnAll(
                 lambda detector: detector.startAcquisition(),
@@ -121,7 +127,7 @@ class _ManualDetectorsManager:
             self._active = True
         return object()
 
-    def stopAcquisition(self, handle, liveView=False):
+    def release(self, handle):
         if self._active:
             self.execOnAll(
                 lambda detector: detector.stopAcquisition(),
@@ -137,6 +143,63 @@ def _recorded_dataset(memory_recordings, detector_name):
             h5file = h5py.File(file)
             return file, h5file, h5file[detector_name]['data']
     raise AssertionError(f'No memory recording for detector {detector_name}')
+
+
+def test_detector_state_provider_setter_does_not_tear_down_task_waiters():
+    """Binding simulator state is configuration, not manager shutdown."""
+    class _Waiter:
+        def __init__(self):
+            self.quitCalls = 0
+            self.waitCalls = 0
+            self.running = True
+            self.threadRunning = True
+
+        def quit(self):
+            self.quitCalls += 1
+
+        def wait(self, _timeout):
+            self.waitCalls += 1
+            self.threadRunning = False
+            return True
+
+        def isRunning(self):
+            return self.threadRunning
+
+    class _Simulator:
+        def __init__(self):
+            self.provider = None
+            self.stopCalls = 0
+
+        def setDetectorStateProvider(self, provider):
+            self.provider = provider
+
+        def stop(self, wait):
+            assert wait is False
+            self.stopCalls += 1
+
+    manager = NidaqManager.__new__(NidaqManager)
+    simulator = _Simulator()
+    waiter = _Waiter()
+    manager._NidaqManager__scanSimulator = simulator
+    manager.doTaskWaiter = waiter
+    manager.aoTaskWaiter = None
+    manager.timerTaskWaiter = None
+    provider = lambda _name: True
+
+    manager.setScanSimulationDetectorStateProvider(provider)
+
+    assert simulator.provider is provider
+    assert waiter.quitCalls == 0
+    assert waiter.waitCalls == 0
+
+    manager.__del__()
+    assert simulator.stopCalls == 1
+    assert waiter.quitCalls == 1
+    assert waiter.waitCalls == 1
+
+    # Prevent a second observable cleanup if Python invokes __del__ at GC.
+    manager._NidaqManager__scanSimulator = None
+    manager.doTaskWaiter = None
 
 
 def test_simulated_scan_plan_counts_ttl_edges_and_fallback_frames():
@@ -164,6 +227,25 @@ def test_simulated_scan_plan_counts_ttl_edges_and_fallback_frames():
         'Camera': 2,
         'APD': 12,
     }
+
+
+def test_simulated_scan_plan_only_emits_for_currently_armed_detectors():
+    setup_info = SimpleNamespace(
+        scan=SimpleNamespace(sampleRate=1000),
+        detectors={
+            'Camera': SimpleNamespace(forAcquisition=True),
+            'UnusedCamera': SimpleNamespace(forAcquisition=True),
+        },
+    )
+
+    plan = SimulatedScanPlan.fromScan(
+        setup_info,
+        {'TTLCycleSignalsDict': {}},
+        {'img_dims': [2, 2], 'scan_samples_total': 100},
+        detectorIsArmed=lambda name: name == 'Camera',
+    )
+
+    assert plan.frameCounts == {'Camera': 4}
 
 
 def test_simulated_scan_worker_stop_aborts_before_duration_cap():
@@ -651,6 +733,84 @@ def test_hamamatsu_mock_scan_once_recording_reaches_rec_frames(tmp_path):
             mem_file.close()
     finally:
         recording.endRecording(emitSignal=False, wait=True)
+
+
+def test_two_apds_record_both_linesteps_as_one_frame_each(tmp_path):
+    detector_json = {
+        name: {
+            'analogChannel': None,
+            'digitalLine': None,
+            'managerName': 'APDManager',
+            'managerProperties': {
+                'ctrInputLine': f'Dev1/ctr{index}',
+                'terminal': f'/Dev1/PFI{index}',
+                'mockRandomSeed': index + 1,
+            },
+            'forAcquisition': True,
+        }
+        for index, name in enumerate(('APDred', 'APDgreen'))
+    }
+    setup_info = _minimal_simulated_setup(detector_json)
+    nidaq = NidaqManager(setup_info)
+    apds = {
+        name: APDManager(info, name, nidaq)
+        for name, info in setup_info.detectors.items()
+    }
+    recording = RecordingManager(_ManualDetectorsManager(apds))
+    memory_recordings = []
+    recording.sigMemoryRecordingAvailable.connect(
+        lambda name, file, path, saved: memory_recordings.append(
+            (name, file, path, saved)
+        )
+    )
+
+    recording.startRecording(
+        detectorNames=['APDred', 'APDgreen'],
+        recMode=RecMode.ScanOnce,
+        savename=str(tmp_path / 'two_apd_linesteps'),
+        saveMode=SaveMode.RAM,
+        saveFormat=SaveFormat.HDF5,
+        attrs={'APDred': {}, 'APDgreen': {}},
+        recFrames=1,
+        stallTimeout=1.0,
+    )
+    assert recording.waitForAcquisitionStarted(2.0)
+
+    scan_info = _minimal_scan_info()
+    scan_info.update({
+        'n_linesteps': 2,
+        'scan_samples': [1, 2, 8],
+        'scan_samples_total': 8,
+    })
+    generation = recording.recordingGeneration
+    assert recording.markScanStarted(scan_info, generation)
+
+    try:
+        nidaq.runScan(
+            {
+                'scanSignalsDict': {},
+                'TTLCycleSignalsDict': {},
+            },
+            scan_info,
+        )
+
+        assert _wait_for(lambda: len(memory_recordings) == 2, timeout=3.0)
+        open_files = []
+        try:
+            for detector_name in ('APDred', 'APDgreen'):
+                mem_file, h5file, dataset = _recorded_dataset(
+                    memory_recordings, detector_name
+                )
+                open_files.extend([h5file, mem_file])
+                assert dataset.shape == (1, 2, 2, 2)
+                assert dataset.attrs['axes'] == 'TCYX'
+                assert np.count_nonzero(dataset[:]) > 0
+        finally:
+            for file in open_files:
+                file.close()
+    finally:
+        recording.endRecording(emitSignal=False, wait=True)
+        nidaq.finalize()
 
 
 def test_mixed_hamamatsu_apd_mock_scan_once_records_each_target(tmp_path):

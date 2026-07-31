@@ -9,11 +9,12 @@ from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools
 from ..basecontrollers import (
     ImConWidgetController,
-    ScanLifecycleMixin,
     StatefulComponentMixin,
     ComponentStateApplyMode,
     SetupModeApplyPriority
 )
+from ._triggerscope_scan_geometry import TriggerScopeScanGeometryMixin
+from ._triggerscope_scan_lifecycle import TriggerScopeScanLifecycleMixin
 
 
 _attrCategoryScan = 'MS-RESOLFT_Scan'
@@ -325,7 +326,12 @@ class _PLSRMulticolorAdapter(_ScanModeAdapter):
         return devices
 
 
-class TriggerScopeScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
+class TriggerScopeScanController(
+    StatefulComponentMixin,
+    TriggerScopeScanGeometryMixin,
+    TriggerScopeScanLifecycleMixin,
+    ImConWidgetController,
+):
     """Unified controller for the two RESOLFT-family TriggerScope scans.
 
     Hosts a multicolor light-sheet panel and a pLS-RESOLFT multicolor panel
@@ -376,11 +382,7 @@ class TriggerScopeScanController(StatefulComponentMixin, ScanLifecycleMixin, ImC
 
         self.updateScanParDict()
 
-        # ScanManagerTriggerScope signals
-        self._master.scanManager.sigScanStarted.connect(
-            lambda: self.emitScanSignal(self._commChannel.sigScanStarted)
-        )
-        self._master.scanManager.sigScanDone.connect(self.scanDone)
+        self._initTriggerScopeScanLifecycle()
 
         self._commChannel.sigRunScan.connect(self.runScanExternal)
         self._commChannel.sigAbortScan.connect(self.abortScan)
@@ -406,6 +408,17 @@ class TriggerScopeScanController(StatefulComponentMixin, ScanLifecycleMixin, ImC
 
     def _activeAdapter(self):
         return self._adapters[self._widget.currentMode()]
+
+    def _triggerScopeGeometryParameters(self):
+        """Report the recording geometry of the mode the widget is showing.
+
+        Each adapter owns its own parameter dicts, so a recording armed against
+        this controller must read the mode that will actually run rather than a
+        controller-level dict that does not exist here.
+        """
+        adapter = self._activeAdapter()
+        adapter.getParameters()
+        return adapter.scanParameterDict, adapter.deviceParameterDict
 
     # ------------------------------------------------------------------
     # Save / load (per visible mode)
@@ -462,26 +475,20 @@ class TriggerScopeScanController(StatefulComponentMixin, ScanLifecycleMixin, ImC
     def runScanAdvanced(self, *, recalculateSignals=True, isNonFinalPartOfSequence=False,
                         sigScanStartingEmitted):
         """Runs a scan with the set scanning parameters of the visible mode."""
-        if self._widget.autoStartRec.isChecked():
-            self._commChannel.sigStartRecording.emit()
         try:
             adapter = self._activeAdapter()
             self._widget.setScanButtonChecked(True)
-            self.isRunning = True
-            self.doingNonFinalPartOfSequence = isNonFinalPartOfSequence
-            if not sigScanStartingEmitted:
-                self.emitScanSignal(self._commChannel.sigScanStarting)
-            # Declare which lasers participate so the LaserController can arm
-            # them (digital-modulation / external-control) and leave the rest
-            # off. TriggerScope runs the scan autonomously, so this signal is
-            # emitted here rather than from the DAQ manager.
-            self.emitScanSignal(self._commChannel.sigScanBuilt,
-                                adapter.getScanLaserDevices())
             params = adapter.getTriggerScopeParameters()
-            self._master.scanManager.runScan(params, scan_type=adapter.scanType)
+            self._startTriggerScopeScan(
+                parameters=params,
+                scanType=adapter.scanType,
+                laserDevices=adapter.getScanLaserDevices(),
+                sigScanStartingEmitted=sigScanStartingEmitted,
+                isNonFinalPartOfSequence=isNonFinalPartOfSequence,
+            )
         except Exception:
             self._logger.error(traceback.format_exc())
-            self.isRunning = False
+            self.scanFailed()
 
     def runScan(self) -> None:
         """Runs a scan with the set scanning parameters of the visible mode."""
@@ -498,33 +505,14 @@ class TriggerScopeScanController(StatefulComponentMixin, ScanLifecycleMixin, ImC
         self.runScan()
 
     def abortScan(self):
-        self.doingNonFinalPartOfSequence = False
-        if not self.isRunning:
-            self.scanFailed()
+        self._requestTriggerScopeStop()
 
     def scanDone(self):
-        # All TriggerScope scan controllers share the board-level sigScanDone, so
-        # every one of them receives this when the firmware reports end-of-scan.
-        # Only the controller that actually started the scan should tear down;
-        # the rest must ignore it (their isRunning is False) to avoid redundant
-        # laser disarm rounds and duplicate sigScanEnded emissions.
-        if not self.isRunning:
-            return
-        self._logger.debug('Scan done')
-        self.isRunning = False
-        self.emitScanSignal(self._commChannel.sigScanDone)
-        if not self.doingNonFinalPartOfSequence:
-            self._widget.setScanButtonChecked(False)
-            self.emitScanSignal(self._commChannel.sigScanEnded)
-        if self._widget.autoStopRec.isChecked():
-            self._commChannel.sigStopRecording.emit()
+        self._onTriggerScopeScanDone()
 
     def scanFailed(self):
         self._logger.error('Scan failed')
-        self.isRunning = False
-        self.doingNonFinalPartOfSequence = False
-        self._widget.setScanButtonChecked(False)
-        self.emitScanSignal(self._commChannel.sigScanEnded)
+        self._failTriggerScopeScan()
 
     def emitScanSignal(self, signal, *args):
         signal.emit(*args)
