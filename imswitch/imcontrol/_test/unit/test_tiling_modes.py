@@ -311,17 +311,53 @@ def test_triggered_source_survives_a_raising_scan_request():
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize('shape', [(8, 8), (1, 8, 8), (1, 3, 8, 8)])
-def test_scan_frame_collapses_to_two_dimensions(shape):
-    """Scan detectors add frame and line-step axes; the mosaic wants a plane."""
+@pytest.mark.parametrize('shape', [(8, 8), (1, 8, 8), (1, 1, 8, 8)])
+def test_scan_frame_drops_the_leading_frame_wrapper(shape):
+    """Scan detectors wrap their raster in a frame axis; that goes."""
     ctrl = _controller()
     detector = _ScanDetector(np.ones(shape, dtype=np.uint16))
 
     frame = TilingController._scanFrame(ctrl, detector)
 
     assert frame is not None
-    assert frame.ndim == 2
     assert frame.shape == (8, 8)
+
+
+def test_scan_frame_keeps_a_real_z_stack():
+    """A 3D scan's tile is the whole stack — dropping planes loses the data."""
+    ctrl = _controller()
+    detector = _ScanDetector(np.ones((1, 5, 8, 8), dtype=np.uint16))
+
+    frame = TilingController._scanFrame(ctrl, detector)
+
+    assert frame.shape == (5, 8, 8)
+
+
+def test_display_plane_max_projects_a_stack():
+    stack = np.zeros((4, 6, 6), dtype=np.uint16)
+    stack[2, 3, 3] = 900  # only visible in one plane
+
+    plane = TilingController._displayPlane(stack)
+
+    assert plane.shape == (6, 6)
+    assert plane[3, 3] == 900
+
+
+def test_display_plane_passes_a_2d_tile_through():
+    tile = np.ones((6, 6), dtype=np.uint16)
+
+    assert TilingController._displayPlane(tile) is tile
+
+
+@pytest.mark.parametrize('sizes, expected', [
+    ([0.3, 0.05, 0.05], 0.3),
+    ([0.0, 0.05, 0.05], 0.0),
+    ([0.05, 0.05], 0.0),
+])
+def test_detector_z_step_comes_from_the_scan_calibration(sizes, expected):
+    detector = SimpleNamespace(pixelSizeUm=sizes)
+
+    assert TilingController._detectorZStepUm(detector) == expected
 
 
 def test_scan_frame_returns_none_for_an_empty_read():

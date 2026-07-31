@@ -70,6 +70,8 @@ class TileDataset:
     pixel_size_um: Tuple[float, float] = (1.0, 1.0)   # (y, x)
     step_um: float = 0.0
     tile_shape_px: Tuple[int, int] = (0, 0)           # (h, w)
+    tile_depth: int = 1                               # planes per tile (Z)
+    z_step_um: float = 0.0
     orientation: Tuple[bool, bool, bool] = (False, False, False)
     tiles: List[TileRecord] = field(default_factory=list)
     extra: Dict = field(default_factory=dict)
@@ -123,7 +125,9 @@ class TileDataset:
             'tile_shape_px': {
                 'height': int(self.tile_shape_px[0]),
                 'width': int(self.tile_shape_px[1]),
+                'depth': int(self.tile_depth),
             },
+            'z_step_um': float(self.z_step_um),
             'orientation': {
                 'flip_x': bool(flip_x),
                 'flip_y': bool(flip_y),

@@ -353,7 +353,7 @@ def test_saved_dataset_manifest_matches_the_run(tmp_path, monkeypatch):
     payload = json.loads((folder / MANIFEST_NAME).read_text())
     assert payload['completed'] is True
     assert payload['tile_step_um'] == 64.0
-    assert payload['tile_shape_px'] == {'height': 32, 'width': 32}
+    assert payload['tile_shape_px'] == {'height': 32, 'width': 32, 'depth': 1}
     assert len(payload['tiles']) == 4
     # Every listed file must actually exist, or the dataset is not usable.
     for entry in payload['tiles']:

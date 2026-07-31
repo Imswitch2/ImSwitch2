@@ -1821,7 +1821,7 @@ class RecordingManager(SignalInterface):
             return images
 
     def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs,
-                      stagePositionUm=None):
+                      stagePositionUm=None, zStepUm=None):
         """Save a previously captured image using the appropriate Storer.
         
         Routes through Storer.snap() for unified snapshot saving logic.
@@ -1853,8 +1853,19 @@ class RecordingManager(SignalInterface):
         # Wrap single detector in dict for storer interface
         images = {detectorName: image}
         nf = 1 if np.asarray(image).ndim == 2 else int(np.asarray(image).shape[0])
-        store.omeMeta = {detectorName: self.buildOmeMeta(
-            detectorName, _ome.MODE_SNAP, nf, stagePositionUm=stagePositionUm)}
+        # A caller that knows its planes are a Z stack says so with zStepUm.
+        # Without it the leading axis is labelled T, which would mislabel every
+        # plane of a 3D tile and silently corrupt its calibration.
+        if zStepUm:
+            omeMeta = self.buildOmeMeta(
+                detectorName, _ome.MODE_SCAN, nf, scanDims=(1, 1, nf),
+                scanStepSizes=(0, 0, zStepUm),
+                stagePositionUm=stagePositionUm)
+        else:
+            omeMeta = self.buildOmeMeta(
+                detectorName, _ome.MODE_SNAP, nf,
+                stagePositionUm=stagePositionUm)
+        store.omeMeta = {detectorName: omeMeta}
         store.snap(images, attrs)
         return savePaths
 

@@ -495,6 +495,10 @@ class TilingController(ImConWidgetController):
                 if not wasFresh:
                     staleFrames += 1
 
+                # A 3D tile is stitched as a projection for the live preview;
+                # `frame` keeps every plane for saving.
+                displayFrame = self._displayPlane(frame)
+
                 # Lazy stitcher init after first frame (we need tile_size_px)
                 if self._stitcher is None:
                     pixel_size_um = self._detectorPixelSizeUm(detector)
@@ -502,7 +506,7 @@ class TilingController(ImConWidgetController):
                         tile_size_px=None,
                         tile_step_um=step_um,
                         px_per_um=None,
-                        tile_shape_px=frame.shape[:2],
+                        tile_shape_px=displayFrame.shape[:2],
                         pixel_size_um=pixel_size_um,
                         blend_overlaps=blend_overlaps,
                         intensity_correction=intensity_correction,
@@ -513,8 +517,8 @@ class TilingController(ImConWidgetController):
                         getattr(tilingInfo, 'registrationMaxShiftFraction', 0.5),
                     )
                     if register_tiles and (
-                        self._stitcher.step_x_px >= frame.shape[1]
-                        or self._stitcher.step_y_px >= frame.shape[0]
+                        self._stitcher.step_x_px >= displayFrame.shape[1]
+                        or self._stitcher.step_y_px >= displayFrame.shape[0]
                     ):
                         register_tiles = False
                         self._logger.warning(
@@ -530,10 +534,10 @@ class TilingController(ImConWidgetController):
                 offset_px = (0.0, 0.0)
                 if register_tiles:
                     offset_px = self._registerTile(
-                        frame, ix, iy, registration, maxShiftPx
+                        displayFrame, ix, iy, registration, maxShiftPx
                     )
 
-                self._stitcher.add_tile(frame, ix, iy, offset_px)
+                self._stitcher.add_tile(displayFrame, ix, iy, offset_px)
                 self._gridPositions.append((gx, gy))
 
                 if save_tiles:
@@ -546,7 +550,12 @@ class TilingController(ImConWidgetController):
                             1.0 / self._stitcher.px_per_um_x,
                         )
                         dataset.step_um = step_um
-                        dataset.tile_shape_px = tuple(frame.shape[:2])
+                        dataset.tile_shape_px = tuple(displayFrame.shape[:2])
+                        dataset.tile_depth = (
+                            int(frame.shape[0]) if frame.ndim > 2 else 1
+                        )
+                        if dataset.tile_depth > 1:
+                            dataset.z_step_um = self._detectorZStepUm(detector)
                         dataset.orientation = orientation
                     stage_xy = (
                         origin_xy[0] + gx * step_um,
@@ -705,7 +714,7 @@ class TilingController(ImConWidgetController):
             stage_dx, stage_dy = stage_dy, stage_dx
         return stage_dx, stage_dy
 
-    def _saveTile(self, frame, detectorName, gx, gy, stage_xy, dataset, folder):
+    def _saveTile(self, frame, detectorName, gx, gy, stage_xy, dataset, folder):  # noqa: D401
         """Write one tile as an OME image carrying its own stage position.
 
         Goes through RecordingManager's storer layer rather than writing files
@@ -720,6 +729,7 @@ class TilingController(ImConWidgetController):
             written = self._master.recordingManager.snapImagePrev(
                 detectorName, savename, self._saveFormat, frame, attrs,
                 stagePositionUm=(stage_xy[0], stage_xy[1], 0.0),
+                zStepUm=dataset.z_step_um or None,
             )
         except Exception as e:
             self._logger.error(f'Tiling: failed to save tile {name}: {e}',
@@ -937,6 +947,22 @@ class TilingController(ImConWidgetController):
             if getattr(info, 'forScanning', False)
         }
 
+    @staticmethod
+    def _detectorZStepUm(detector) -> float:
+        """Z spacing of a stacked tile, from the detector's own calibration.
+
+        For a scan-driven detector this is the scan's Z step, published as the
+        leading entry of ``pixelSizeUm`` ([Z, Y, X]).
+        """
+        try:
+            sizes = list(detector.pixelSizeUm)
+        except Exception:
+            return 0.0
+        if len(sizes) >= 3:
+            step = float(sizes[0])
+            return step if step > 0 else 0.0
+        return 0.0
+
     def _saveRoot(self, tilingInfo):
         """Where tiling datasets go, in order of precedence.
 
@@ -1000,11 +1026,13 @@ class TilingController(ImConWidgetController):
         )
 
     def _scanFrame(self, detector):
-        """Read the image a completed scan produced, as 2-D.
+        """Read the image a completed scan produced.
 
-        Scan-driven detectors report their raster with a leading frame axis
-        (and, with line-stepping active, a plane axis). The mosaic wants one
-        plane, so anything above 2-D collapses to its last frame.
+        Scan-driven detectors report their raster behind a leading frame axis.
+        That wrapper is dropped, but a real Z stack is kept: a 3D scan's tile
+        is the whole stack, and throwing away all but one plane here would
+        silently discard most of the acquisition. The mosaic preview projects
+        it; saving keeps every plane.
         """
         try:
             frame = detector.getLatestFrameShared()
@@ -1016,9 +1044,23 @@ class TilingController(ImConWidgetController):
             return None
 
         frame = np.asarray(frame)
-        while frame.ndim > 2:
-            frame = frame[-1]
-        return frame if frame.ndim == 2 and frame.size else None
+        while frame.ndim > 2 and frame.shape[0] == 1:
+            frame = frame[0]
+        return frame if frame.ndim >= 2 and frame.size else None
+
+    @staticmethod
+    def _displayPlane(frame):
+        """Collapse a tile to the 2-D plane the mosaic preview shows.
+
+        A 3D tile is shown as a maximum projection — the conventional way to
+        make a stack legible at a glance, and the one that keeps sparse
+        structure visible where a mid-slice would miss it. The saved tile and
+        the offline reconstruction still use every plane.
+        """
+        frame = np.asarray(frame)
+        if frame.ndim <= 2:
+            return frame
+        return frame.max(axis=tuple(range(frame.ndim - 2)))
 
     def _grabSettledFrame(self, detector):
         """Return ``(frame, was_fresh)`` for a tile, avoiding in-motion frames.
