@@ -5,6 +5,11 @@ from qtpy import QtCore, QtWidgets
 from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
 
+#: Acquisition timing models offered by the widget. The mechanism behind
+#: 'triggered' depends on the detector, which the controller works out.
+MODE_FREE_RUNNING = 'free-running'
+MODE_TRIGGERED = 'triggered'
+
 
 class TilingWidget(Widget):
     """Widget for controlling spiral tiling scans."""
@@ -15,6 +20,7 @@ class TilingWidget(Widget):
     sigClickOnOverview = QtCore.Signal(int, int)  # row, col in stitched canvas
     sigTuneSegmentation = QtCore.Signal()
     sigRunCellTargeting = QtCore.Signal()
+    sigModeChanged = QtCore.Signal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -70,23 +76,48 @@ class TilingWidget(Widget):
         )
         layout.addWidget(self.registerTilesCheck, 1, 2, 1, 2)
 
-        # Row 2: Start, Stop buttons and navigate toggle
+        # Row 2: acquisition mode. Which timing model to use is the operator's
+        # call; which mechanism implements it follows from the detector.
+        layout.addWidget(QtWidgets.QLabel('Mode:'), 2, 0)
+        self.modeCombo = QtWidgets.QComboBox()
+        self.modeCombo.addItem('Free-running', MODE_FREE_RUNNING)
+        self.modeCombo.addItem('Triggered', MODE_TRIGGERED)
+        self.modeCombo.setToolTip(
+            'Free-running: grab a frame from a continuously running camera.\n'
+            'Triggered: run one scan per tile — this drives a scanned\n'
+            'detector (APD/PMT) directly, and clocks a camera wired to the\n'
+            'scan trigger.'
+        )
+        layout.addWidget(self.modeCombo, 2, 1)
+
+        self.scanSourceLabel = QtWidgets.QLabel('Scan:')
+        self.scanSourceCombo = QtWidgets.QComboBox()
+        self.scanSourceCombo.setToolTip(
+            'Which scan controller to trigger. Only shown when the setup has\n'
+            'more than one; the scan itself is configured in its own widget.'
+        )
+        layout.addWidget(self.scanSourceLabel, 2, 2)
+        layout.addWidget(self.scanSourceCombo, 2, 3)
+        self.scanSourceLabel.setVisible(False)
+        self.scanSourceCombo.setVisible(False)
+
+        # Row 3: Start, Stop buttons and navigate toggle
         self.startButton = guitools.BetterPushButton('Start Tiling')
         self.stopButton = guitools.BetterPushButton('Stop')
         self.stopButton.setEnabled(False)
         self.navigateToggle = QtWidgets.QCheckBox('Navigate on click')
-        layout.addWidget(self.startButton, 2, 0, 1, 2)
-        layout.addWidget(self.stopButton, 2, 2)
-        layout.addWidget(self.navigateToggle, 2, 3)
+        layout.addWidget(self.startButton, 3, 0, 1, 2)
+        layout.addWidget(self.stopButton, 3, 2)
+        layout.addWidget(self.navigateToggle, 3, 3)
 
-        # Row 3: Stitching options
+        # Row 4: Stitching options
         self.blendOverlapsCheck = QtWidgets.QCheckBox('Mean overlaps')
         self.blendOverlapsCheck.setChecked(True)
         self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
-        layout.addWidget(self.blendOverlapsCheck, 3, 0, 1, 2)
-        layout.addWidget(self.intensityCorrectionCheck, 3, 2, 1, 2)
+        layout.addWidget(self.blendOverlapsCheck, 4, 0, 1, 2)
+        layout.addWidget(self.intensityCorrectionCheck, 4, 2, 1, 2)
 
-        # Row 4: mosaic orientation. Which way the overview grows depends on
+        # Row 5: mosaic orientation. Which way the overview grows depends on
         # the camera mounting and the stage sign convention, so it has to be
         # settable per rig rather than assumed.
         orientationBox = QtWidgets.QHBoxLayout()
@@ -107,28 +138,28 @@ class TilingWidget(Widget):
         orientationBox.addStretch(1)
         orientationWidget = QtWidgets.QWidget()
         orientationWidget.setLayout(orientationBox)
-        layout.addWidget(orientationWidget, 4, 0, 1, 4)
+        layout.addWidget(orientationWidget, 5, 0, 1, 4)
 
-        # Row 5: Progress label
+        # Row 6: Progress label
         self.progressLabel = QtWidgets.QLabel('')
         self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(self.progressLabel, 5, 0, 1, 4)
+        layout.addWidget(self.progressLabel, 6, 0, 1, 4)
 
-        # Row 6: registration and orientation diagnostics, filled after a run
+        # Row 7: registration diagnostics, filled after a run
         self.registrationLabel = QtWidgets.QLabel('')
         self.registrationLabel.setWordWrap(True)
         self.registrationLabel.setAlignment(QtCore.Qt.AlignLeft)
-        layout.addWidget(self.registrationLabel, 6, 0, 1, 4)
+        layout.addWidget(self.registrationLabel, 7, 0, 1, 4)
 
-        # Row 7: Cell targeting controls
+        # Row 8: Cell targeting controls
         self.tuneSegmentationButton = guitools.BetterPushButton('Tune segmentation...')
         self.tuneSegmentationButton.setEnabled(False)
         self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
         self.runCellTargetingButton.setEnabled(False)
-        layout.addWidget(self.tuneSegmentationButton, 7, 0, 1, 2)
-        layout.addWidget(self.runCellTargetingButton, 7, 2, 1, 2)
+        layout.addWidget(self.tuneSegmentationButton, 8, 0, 1, 2)
+        layout.addWidget(self.runCellTargetingButton, 8, 2, 1, 2)
 
-        # Rows 8+: Stitched overview display
+        # Rows 9+: Stitched overview display
         self.overviewView = pg.GraphicsLayoutWidget()
         self.overviewItem = pg.ImageItem()
         self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
@@ -148,7 +179,7 @@ class TilingWidget(Widget):
         self._overviewVB.addItem(self.currentCellMarker)
         self._cellPositions = None  # Store positions for highlightCurrentCell
         
-        layout.addWidget(self.overviewView, 8, 0, 4, 4)
+        layout.addWidget(self.overviewView, 9, 0, 4, 4)
 
         # Wire signals
         self.startButton.clicked.connect(self.sigStartTiling)
@@ -162,6 +193,8 @@ class TilingWidget(Widget):
         self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
         self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.modeCombo.currentIndexChanged.connect(self._onModeChanged)
+        self.scanSourceCombo.currentIndexChanged.connect(self.sigParamsChanged)
         self.flipXCheck.stateChanged.connect(self.sigParamsChanged)
         self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
         self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
@@ -207,6 +240,45 @@ class TilingWidget(Widget):
 
     def getSaveTiles(self) -> bool:
         return self.saveTilesCheck.isChecked()
+
+    def _onModeChanged(self) -> None:
+        self.sigParamsChanged.emit()
+        self.sigModeChanged.emit(self.getMode())
+
+    def getMode(self) -> str:
+        return self.modeCombo.currentData() or MODE_FREE_RUNNING
+
+    def setMode(self, mode: str) -> None:
+        index = self.modeCombo.findData(mode)
+        if index >= 0:
+            self.modeCombo.setCurrentIndex(index)
+
+    def getScanSource(self):
+        """Selected scan-source widget key, or None to let the app resolve it."""
+        if not self.scanSourceCombo.isVisible():
+            return None
+        return self.scanSourceCombo.currentData()
+
+    def setScanSource(self, key: str) -> None:
+        index = self.scanSourceCombo.findData(key)
+        if index >= 0:
+            self.scanSourceCombo.setCurrentIndex(index)
+
+    def setScanSources(self, keys) -> None:
+        """Offer a scan-source choice, but only when there is one to make.
+
+        A rig with a single scanner is never asked to pick it.
+        """
+        keys = list(keys or [])
+        self.scanSourceCombo.blockSignals(True)
+        self.scanSourceCombo.clear()
+        for key in keys:
+            self.scanSourceCombo.addItem(key, key)
+        self.scanSourceCombo.blockSignals(False)
+
+        showChoice = len(keys) > 1
+        self.scanSourceLabel.setVisible(showChoice)
+        self.scanSourceCombo.setVisible(showChoice)
 
     def getTileOrientation(self) -> tuple:
         """Return ``(flip_x, flip_y, swap_axes)`` for mosaic assembly."""

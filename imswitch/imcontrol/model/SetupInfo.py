@@ -278,6 +278,21 @@ class TilingInfo:
     while the stage is still ringing, which shows up as a mosaic that will not
     overlap cleanly. The widget can override this per run. """
 
+    mode: str = "free-running"
+    """ Default acquisition timing model: ``free-running`` (grab a frame from a
+    continuously running camera) or ``triggered`` (run one scan per tile).
+
+    Triggered mode covers both scanned detectors, which build their image as
+    the scan runs, and a camera wired to the scan's trigger output. """
+
+    scanSource: str = ""
+    """ Widget key of the scan controller to trigger in ``triggered`` mode.
+    Empty resolves automatically, which is unambiguous unless the setup has
+    several scan controllers. """
+
+    scanTimeoutS: float = 300.0
+    """ How long to wait for one tile's scan to finish before giving up. """
+
     saveTiles: bool = False
     """ Save every tile, plus the stitched mosaic and stitching sidecars, as
     each run proceeds.

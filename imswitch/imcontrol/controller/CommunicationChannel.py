@@ -20,16 +20,31 @@ RECORDING_SCAN_SOURCE_METHODS = (
 )
 
 
-def _recordingScanSourceMatches(controllers):
-    """``[(key, controller)]`` for every controller a recording could drive."""
+#: Methods a controller must expose merely to be *run* once by a workflow.
+#: Strictly weaker than RECORDING_SCAN_SOURCE_METHODS, which additionally
+#: demands the scan geometry a recording must be armed with. A consumer that
+#: only needs "run one scan, then stop" — tiling, for one — would wrongly
+#: exclude a capable controller by testing the recording set.
+SCAN_SOURCE_METHODS = (
+    'runScanExternal',
+    'abortScan',
+)
+
+
+def _scanSourceMatches(controllers, methods):
     return [
         (key, controller)
         for key, controller in controllers.items()
         if controller is not None and all(
             callable(getattr(controller, methodName, None))
-            for methodName in RECORDING_SCAN_SOURCE_METHODS
+            for methodName in methods
         )
     ]
+
+
+def _recordingScanSourceMatches(controllers):
+    """``[(key, controller)]`` for every controller a recording could drive."""
+    return _scanSourceMatches(controllers, RECORDING_SCAN_SOURCE_METHODS)
 
 
 class CommunicationChannel(SignalInterface):
@@ -310,6 +325,60 @@ class CommunicationChannel(SignalInterface):
             key
             for key, _controller in _recordingScanSourceMatches(controllers)
         ]
+
+    def getScanSourceNames(self):
+        """Widget keys of every controller a workflow could run one scan on.
+
+        Wider than :meth:`getRecordingScanSourceNames` — it does not require
+        the scan-geometry accessors a recording needs.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        return [
+            key
+            for key, _controller in _scanSourceMatches(
+                controllers, SCAN_SOURCE_METHODS
+            )
+        ]
+
+    def getScanSource(self, preferredKey=None):
+        """Resolve one controller to run a single scan on.
+
+        Same safety rule as :meth:`getRecordingScanSource`: an explicit choice
+        wins, then the canonical ``Scan`` controller, then a lone capable
+        controller. Several capable controllers with no choice made raises,
+        because broadcasting to all of them would command hardware on
+        scanners the operator did not select.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        matches = _scanSourceMatches(controllers, SCAN_SOURCE_METHODS)
+
+        if preferredKey:
+            for key, controller in matches:
+                if key == preferredKey:
+                    return controller
+            raise RuntimeError(
+                f'The selected scan source "{preferredKey}" is not available '
+                'or no longer exposes runScanExternal. Pick another scan '
+                'source.'
+            )
+
+        for key, controller in matches:
+            if key == 'Scan':
+                return controller
+
+        if len(matches) == 1:
+            return matches[0][1]
+
+        candidates = [key for key, _controller in matches]
+        if candidates:
+            raise RuntimeError(
+                'Several scan controllers are registered '
+                f'({candidates}); select which one to trigger.'
+            )
+        raise RuntimeError(
+            'No controller exposes runScanExternal, so no scan can be '
+            'triggered on this setup.'
+        )
 
     def getRecordingScanSource(self, preferredKey=None):
         """Resolve one controller that can safely drive scan recording.

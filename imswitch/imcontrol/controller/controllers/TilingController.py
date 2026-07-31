@@ -21,6 +21,10 @@ from imswitch.imcontrol.model.workflows.tile_registration import (
     estimate_shift,
     max_shift_for_step,
 )
+from imswitch.imcontrol.view.widgets.TilingWidget import (
+    MODE_FREE_RUNNING,
+    MODE_TRIGGERED,
+)
 from ..basecontrollers import ImConWidgetController
 
 _SETTLE_S = 0.15  # stage settle time after each move (seconds)
@@ -29,7 +33,134 @@ _FRESH_FRAME_TIMEOUT_S = 5.0  # max wait for a post-settle frame, per tile
 _FRAME_POLL_S = 0.005
 _OVERVIEW_EMIT_INTERVAL_S = 0.2  # throttle live overview repaints
 _CHUNK_CONSUMER_KEY = 'tiling'
+_SCAN_TIMEOUT_S = 300.0  # generous: one tile is a whole scan
 CellFeatureCallback = Callable[[int, dict, Tuple[float, float]], None]
+
+
+class _FreeRunningTileSource:
+    """One tile = one frame plucked from a continuously running camera.
+
+    The camera is armed for the whole run and each tile takes whatever frame
+    is provably newer than the stage move (see
+    :meth:`TilingController._grabSettledFrame`).
+    """
+
+    needsSettleWait = True
+
+    def __init__(self, controller, detector):
+        self._controller = controller
+        self._detector = detector
+
+    def prepare(self) -> None:
+        pass
+
+    def acquire(self):
+        """Return ``(frame, wasFresh)``."""
+        return self._controller._grabSettledFrame(self._detector)
+
+    def finish(self) -> None:
+        try:
+            self._detector.releaseChunkConsumer(_CHUNK_CONSUMER_KEY)
+        except Exception as e:
+            self._controller._logger.error(
+                f'Failed to release tiling chunk consumer: {e}', exc_info=True
+            )
+
+
+class _TriggeredTileSource:
+    """One tile = one scan.
+
+    This covers both triggered cases with the same code, because they are the
+    same event: a scan-driven detector (APD/PMT) builds its image *as* the scan
+    runs, and a camera wired to the scan's trigger output is clocked by that
+    same scan. Either way the tile is ready when the scan reports completion —
+    an exact signal, so unlike free-running mode there is no stale-frame risk
+    to guard against.
+    """
+
+    needsSettleWait = True
+
+    def __init__(self, controller, detector, scanSource):
+        self._controller = controller
+        self._detector = detector
+        self._scanSource = scanSource
+        self._first = True
+
+    def prepare(self) -> None:
+        pass
+
+    def acquire(self):
+        controller = self._controller
+        completion = self._runScan()
+        if completion is None:
+            return None, False
+
+        timeout = controller._scanTimeoutS()
+        if not completion.wait(timeout):
+            controller._logger.error(
+                f'Tiling: scan did not finish within {timeout:g} s'
+            )
+            self._abort()
+            return None, False
+        if not completion.successful:
+            controller._logger.error(
+                f'Tiling: scan failed — {completion.message}'
+            )
+            return None, False
+
+        frame = controller._scanFrame(self._detector)
+        return frame, frame is not None
+
+    def _runScan(self):
+        """Request one scan and return its completion terminal, or None."""
+        controller = self._controller
+        try:
+            # Signals are recalculated only for the first tile: the scan
+            # geometry does not change between tiles, and rebuilding it every
+            # time would add its own latency to each one.
+            result = controller._commChannel.scanWorkflow.run_scan_from(
+                self._scanSource,
+                recalculate_signals=self._first,
+                is_non_final_part_of_sequence=False,
+            )
+        except Exception as e:
+            controller._logger.error(f'Tiling: could not start scan: {e}',
+                                     exc_info=True)
+            return None
+        self._first = False
+
+        if not result.accepted:
+            controller._logger.error(
+                f'Tiling: scan request refused — {result.rejectionMessage}'
+            )
+            return None
+
+        completions = [
+            completion
+            for _owner, _token, completion in result.acceptedCompletions
+            if completion is not None
+        ]
+        if not completions:
+            controller._logger.error(
+                'Tiling: the scan controller accepted the request but exposes '
+                'no completion terminal, so tile timing cannot be trusted. '
+                'Use a coordinated Scan controller for triggered tiling.'
+            )
+            return None
+        return completions[0]
+
+    def _abort(self) -> None:
+        try:
+            self._controller._commChannel.scanWorkflow.abort_scan_from(
+                self._scanSource
+            )
+        except Exception as e:
+            self._controller._logger.error(
+                f'Tiling: failed to abort a stalled scan: {e}', exc_info=True
+            )
+
+    def finish(self) -> None:
+        pass
 
 
 class TilingController(ImConWidgetController):
@@ -78,6 +209,8 @@ class TilingController(ImConWidgetController):
             getattr(tilingInfo, 'registerTiles', False)
         )
         self._widget.setDefaultSaveTiles(getattr(tilingInfo, 'saveTiles', False))
+        self._widget.setMode(getattr(tilingInfo, 'mode', MODE_FREE_RUNNING))
+        self._populateScanSources(getattr(tilingInfo, 'scanSource', ''))
         self._widget.setDefaultTileOrientation(
             getattr(tilingInfo, 'flipTileAxisX', False),
             getattr(tilingInfo, 'flipTileAxisY', False),
@@ -96,6 +229,7 @@ class TilingController(ImConWidgetController):
         self.sigHighlightCell.connect(self._widget.highlightCurrentCell)
         self.sigCellTargetingEnabled.connect(self._widget.setCellTargetingEnabled)
         self.sigRegistrationSummary.connect(self._widget.setRegistrationSummary)
+        self._widget.sigModeChanged.connect(self._onModeChanged)
 
     # ------------------------------------------------------------------
     # Public API
@@ -131,6 +265,8 @@ class TilingController(ImConWidgetController):
             register_tiles = self._widget.getRegisterTiles()
             orientation = self._widget.getTileOrientation()
             save_tiles = self._widget.getSaveTiles()
+            mode = self._widget.getMode()
+            scan_source_key = self._widget.getScanSource()
 
             self._stitcher = None
             self._originXY = None
@@ -152,7 +288,7 @@ class TilingController(ImConWidgetController):
                 args=(
                     tilingInfo, n_tiles, step_um, blend_overlaps,
                     intensity_correction, settle_s, register_tiles,
-                    orientation, save_tiles,
+                    orientation, save_tiles, mode, scan_source_key,
                 ),
                 daemon=True,
             )
@@ -260,6 +396,8 @@ class TilingController(ImConWidgetController):
         register_tiles: bool = False,
         orientation: Tuple[bool, bool, bool] = (False, False, False),
         save_tiles: bool = False,
+        mode: str = MODE_FREE_RUNNING,
+        scan_source_key=None,
     ) -> None:
         acqHandle = None
         positioner = None
@@ -281,6 +419,7 @@ class TilingController(ImConWidgetController):
         maxShiftPx = 0.0
         dataset = TileDataset()
         saveFolder = None
+        tileSource = None
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -297,11 +436,17 @@ class TilingController(ImConWidgetController):
             # returned stale or empty frames. A WORKFLOW lease over the whole
             # loop arms the camera for the scan's duration and releases it in
             # the finally, whatever path the loop exits by.
+            tileSource = self._makeTileSource(
+                mode, detector, tilingInfo, scan_source_key
+            )
+
             acqHandle = self._master.detectorsManager.acquire(
                 [camera], LeasePurpose.WORKFLOW
             )
             with self._getActivityLock():
                 self._scanAcqHandle = acqHandle
+
+            tileSource.prepare()
 
             # Give a newly armed camera one normal settle interval before the
             # first tile. Subsequent tiles already wait after each stage move;
@@ -339,7 +484,7 @@ class TilingController(ImConWidgetController):
                 gx += dx
                 gy += dy
 
-                frame, wasFresh = self._grabSettledFrame(detector)
+                frame, wasFresh = tileSource.acquire()
                 if frame is None:
                     self._logger.error(
                         'Tiling: no frame available for tile '
@@ -487,12 +632,12 @@ class TilingController(ImConWidgetController):
                             exc_info=True,
                         )
 
-            if detector is not None:
+            if tileSource is not None:
                 try:
-                    detector.releaseChunkConsumer(_CHUNK_CONSUMER_KEY)
+                    tileSource.finish()
                 except Exception as e:
                     self._logger.error(
-                        f'Failed to release tiling chunk consumer: {e}',
+                        f'Failed to release the tiling tile source: {e}',
                         exc_info=True,
                     )
 
@@ -717,6 +862,134 @@ class TilingController(ImConWidgetController):
                 f'Tiling: tile {(gx, gy)} not registered — {reason}'
             )
         return shift if accepted else (0.0, 0.0)
+
+    # ------------------------------------------------------------------
+    # Tile sources: how one tile's worth of signal is obtained
+    # ------------------------------------------------------------------
+
+    def _makeTileSource(self, mode, detector, tilingInfo, scanSourceKey):
+        """Pick the acquisition strategy for this run.
+
+        The operator chooses the *timing model* (free-running or triggered);
+        which mechanism implements it follows from the detector, so nobody has
+        to know whether their detector happens to be scan-driven.
+        """
+        if mode != MODE_TRIGGERED:
+            if getattr(detector, 'isScanDriven', False):
+                raise RuntimeError(
+                    f'Detector "{detector.name}" is scan-driven: it only '
+                    'produces an image while a scan runs, so it cannot be '
+                    'tiled in free-running mode. Switch Mode to Triggered.'
+                )
+            return _FreeRunningTileSource(self, detector)
+
+        source = self._resolveScanSource(scanSourceKey)
+        self._assertScanDoesNotOwnTilingStage(tilingInfo, source)
+        return _TriggeredTileSource(self, detector, source)
+
+    def _resolveScanSource(self, preferredKey):
+        resolve = getattr(self._commChannel, 'getScanSource', None)
+        if not callable(resolve):
+            raise RuntimeError(
+                'This build has no scan-source resolution, so triggered '
+                'tiling is unavailable.'
+            )
+        return resolve(preferredKey)
+
+    def _assertScanDoesNotOwnTilingStage(self, tilingInfo, scanSource) -> None:
+        """Refuse when the scan drives the very axes tiling steps between tiles.
+
+        A stage scan and tiling would both command the same positioner — one
+        stepping between tiles, the other rastering within one — and the run
+        would fail confusingly partway through a sample. Galvo scanning is the
+        combination that works: the scan covers the tile, the stage moves
+        between tiles.
+        """
+        tilingPositioner = getattr(tilingInfo, 'xyPositioner', None)
+        if not tilingPositioner:
+            return
+
+        scanPositioners = self._scanPositionerNames(scanSource)
+        if tilingPositioner in scanPositioners:
+            raise RuntimeError(
+                f'The selected scan drives positioner "{tilingPositioner}", '
+                'which is the same one tiling steps between tiles. A stage '
+                'scan cannot be tiled this way — use a galvo/beam scan for '
+                'the tile, or tile with a different positioner.'
+            )
+
+    def _scanPositionerNames(self, scanSource) -> set:
+        """Positioners the given scan source drives, best-effort.
+
+        Falls back to every ``forScanning`` positioner in the setup when the
+        controller cannot report its own devices — conservative, since a false
+        positive only blocks a combination that is very likely broken anyway.
+        """
+        for accessor in ('getScanPositionerNames', 'getScanDevices'):
+            getter = getattr(scanSource, accessor, None)
+            if callable(getter):
+                try:
+                    return {str(name) for name in (getter() or ())}
+                except Exception:
+                    break
+
+        return {
+            name
+            for name, info in self._setupInfo.positioners.items()
+            if getattr(info, 'forScanning', False)
+        }
+
+    def _populateScanSources(self, preferredKey: str) -> None:
+        """Offer the scan-source choice, but only when there is one to make."""
+        names = []
+        getNames = getattr(self._commChannel, 'getScanSourceNames', None)
+        if callable(getNames):
+            try:
+                names = list(getNames() or [])
+            except Exception as e:
+                self._logger.warning(f'Could not list scan sources: {e}')
+        self._widget.setScanSources(names)
+        if preferredKey and preferredKey in names:
+            self._widget.setScanSource(preferredKey)
+
+    def _onModeChanged(self, mode: str) -> None:
+        """Re-list scan sources when triggered mode is selected.
+
+        Controllers register as the app starts, and the tiling controller may
+        be constructed before the scan controllers exist, so the list is
+        refreshed at the moment it becomes relevant.
+        """
+        if mode == MODE_TRIGGERED:
+            self._populateScanSources(
+                getattr(self._setupInfo.tiling, 'scanSource', '')
+            )
+
+    def _scanTimeoutS(self) -> float:
+        return float(
+            getattr(self._setupInfo.tiling, 'scanTimeoutS', _SCAN_TIMEOUT_S)
+            or _SCAN_TIMEOUT_S
+        )
+
+    def _scanFrame(self, detector):
+        """Read the image a completed scan produced, as 2-D.
+
+        Scan-driven detectors report their raster with a leading frame axis
+        (and, with line-stepping active, a plane axis). The mosaic wants one
+        plane, so anything above 2-D collapses to its last frame.
+        """
+        try:
+            frame = detector.getLatestFrameShared()
+        except Exception as e:
+            self._logger.error(f'Tiling: could not read the scan frame: {e}',
+                               exc_info=True)
+            return None
+        if frame is None:
+            return None
+
+        frame = np.asarray(frame)
+        while frame.ndim > 2:
+            frame = frame[-1]
+        return frame if frame.ndim == 2 and frame.size else None
 
     def _grabSettledFrame(self, detector):
         """Return ``(frame, was_fresh)`` for a tile, avoiding in-motion frames.
@@ -1050,11 +1323,15 @@ class TilingController(ImConWidgetController):
                 f'Detector {detector.name} has invalid pixelSizeUm: {pixel_size_um}'
             )
 
+        # Binning is a camera concept. A scan-driven detector's pixel size IS
+        # the scan step (see scanPixelSizesToZYX), already in the value above,
+        # so scaling it by the inherited binning field would corrupt it.
         binning = 1
-        try:
-            binning = max(1, int(getattr(detector, 'binning', 1) or 1))
-        except (TypeError, ValueError):
-            binning = 1
+        if not getattr(detector, 'isScanDriven', False):
+            try:
+                binning = max(1, int(getattr(detector, 'binning', 1) or 1))
+            except (TypeError, ValueError):
+                binning = 1
         if binning != 1:
             self._logger.info(
                 f'Tiling: detector binning {binning} — effective tile pixel '
