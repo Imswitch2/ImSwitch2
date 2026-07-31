@@ -1,4 +1,4 @@
-from .SharedAttributes import SharedAttributes
+from .SharedAttributes import SharedAttributes, JSON_ATTR_PREFIX
 from .VFileCollection import VFileItem, VFileCollection
 from .api import APIExport, generateAPI
 from .logging import initLogger
