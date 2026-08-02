@@ -122,7 +122,14 @@ class HamamatsuManager(DetectorManager):
             self.mockTrigger(nFrames)
 
     def crop(self, hpos, vpos, hsize, vsize):
-        """Method to crop the frame read out by the camera. """
+        """Crop the camera readout and keep the manager in sync with DCAM.
+
+        Hamamatsu cameras collapse the writable subarray ranges to the full
+        sensor while ``subarray_mode`` is off.  State restore runs before the
+        first acquisition, so it cannot rely on ``captureSetup()`` to enable
+        that mode: it must be enabled before writing a custom ROI.  Conversely,
+        returning to the full chip explicitly disables subarray mode.
+        """
 
         # DCAM's dcam_setgetpropertyvalue (called by CameraTIS/HamamatsuCamera's
         # setPropertyValue) sets AND reads back the value in one call, returning
@@ -137,49 +144,126 @@ class HamamatsuManager(DetectorManager):
         # what was asked for and what frames actually look like (intermittent:
         # only shows up for off-step ROIs, not every crop). Now the
         # driver-applied values are used instead.
-        applied = {'hpos': hpos, 'vpos': vpos, 'hsize': hsize, 'vsize': vsize}
+        requested = (int(hpos), int(vpos), int(hsize), int(vsize))
+        fullFrame = (0, 0, int(self.fullShape[0]), int(self.fullShape[1]))
+        isFullFrame = requested == fullFrame
 
         def cropAction():
+            # DCAM must see ON before any custom subarray write.  Inferring the
+            # mode from the current hsize/vsize (HamamatsuCamera.setSubArrayMode)
+            # is a chicken-and-egg problem on a cold start: with mode OFF those
+            # sizes can only read back as the full sensor.
+            if not isFullFrame:
+                self._camera.setPropertyValue('subarray_mode', b'ON')
+
             self._camera.setPropertyValue('subarray_vpos', 0)
             self._camera.setPropertyValue('subarray_hpos', 0)
             self._camera.setPropertyValue('subarray_vsize', self.fullShape[1])
             self._camera.setPropertyValue('subarray_hsize', self.fullShape[0])
 
-            if (hsize, vsize) != self.fullShape:
-                applied['vsize'] = self._camera.setPropertyValue('subarray_vsize', vsize)
-                applied['hsize'] = self._camera.setPropertyValue('subarray_hsize', hsize)
-                applied['vpos'] = self._camera.setPropertyValue('subarray_vpos', vpos)
-                applied['hpos'] = self._camera.setPropertyValue('subarray_hpos', hpos)
+            if not isFullFrame:
+                self._camera.setPropertyValue('subarray_vsize', requested[3])
+                self._camera.setPropertyValue('subarray_hsize', requested[2])
+                self._camera.setPropertyValue('subarray_vpos', requested[1])
+                self._camera.setPropertyValue('subarray_hpos', requested[0])
+            else:
+                # Switch OFF only after positions and sizes are back at their
+                # full-frame values, while those values are still writable.
+                self._camera.setPropertyValue('subarray_mode', b'OFF')
 
         self._performSafeCameraAction(cropAction)
 
-        # setPropertyValue returns False (not a number) if the driver rejected the
-        # property outright; fall back to the requested value rather than
-        # corrupting frameStart/shape with int(False) == 0.
-        def _resolved(key, requested):
-            value = applied[key]
-            if isinstance(value, bool) or value is None:
-                return requested
-            return int(value)
+        # Read the final hardware state rather than trusting either the request
+        # or an individual set call.  This catches both normal DCAM step snapping
+        # and writes that were accepted by the API but rejected/clamped by the
+        # camera.
+        applied = self._readSubarrayGeometry()
+        modeIsOn = self._readSubarrayMode()
 
-        appliedHpos = _resolved('hpos', hpos)
-        appliedVpos = _resolved('vpos', vpos)
-        appliedHsize = _resolved('hsize', hsize)
-        appliedVsize = _resolved('vsize', vsize)
+        # Keep the internal geometry truthful even when the restore is rejected;
+        # SettingsController will refresh the widget from these values after it
+        # records the raised exception as a restore warning.
+        self._frameStart = applied[:2]
+        self._shape = applied[2:]
 
-        if (appliedHpos, appliedVpos, appliedHsize, appliedVsize) != (hpos, vpos, hsize, vsize):
+        expectedModeIsOn = not isFullFrame
+
+        if expectedModeIsOn and applied == fullFrame:
+            raise RuntimeError(
+                f'Hamamatsu camera rejected requested ROI '
+                f'(hpos={requested[0]}, vpos={requested[1]}, hsize={requested[2]}, '
+                f'vsize={requested[3]}); the camera remained at full frame '
+                f'(hpos=0, vpos=0, hsize={fullFrame[2]}, vsize={fullFrame[3]}).'
+            )
+
+        # modeIsOn is None on a camera that reports no subarray mode at all;
+        # there is then nothing to cross-check, and the geometry read above is
+        # the only evidence of what the ROI actually is.
+        if modeIsOn is not None and modeIsOn != expectedModeIsOn:
+            expectedMode = 'ON' if expectedModeIsOn else 'OFF'
+            raise RuntimeError(
+                f'Hamamatsu camera did not set subarray_mode={expectedMode} for requested ROI '
+                f'(hpos={requested[0]}, vpos={requested[1]}, hsize={requested[2]}, '
+                f'vsize={requested[3]}); hardware reports '
+                f'subarray_mode={"ON" if modeIsOn else "OFF"}.'
+            )
+
+        if applied != requested:
             self.__logger.warning(
                 f'Hamamatsu camera snapped the requested ROI '
-                f'(hpos={hpos}, vpos={vpos}, hsize={hsize}, vsize={vsize}) to '
-                f'(hpos={appliedHpos}, vpos={appliedVpos}, hsize={appliedHsize}, '
-                f'vsize={appliedVsize}) due to hardware step/range constraints; '
+                f'(hpos={requested[0]}, vpos={requested[1]}, hsize={requested[2]}, '
+                f'vsize={requested[3]}) to '
+                f'(hpos={applied[0]}, vpos={applied[1]}, hsize={applied[2]}, '
+                f'vsize={applied[3]}) due to hardware step constraints; '
                 f'using the actually-applied values.'
             )
 
-        # This should be the only place where self.frameStart is changed
-        self._frameStart = (appliedHpos, appliedVpos)
-        # Only place self.shapes is changed
-        self._shape = (appliedHsize, appliedVsize)
+    def _readSubarrayGeometry(self):
+        """The ROI as ``(hpos, vpos, hsize, vsize)``, as the camera reports it.
+
+        ``HamamatsuCamera.getPropertyValue`` returns a bare ``False`` -- not a
+        ``(value, type)`` pair -- for a property the camera does not expose, and
+        some cameras omit ``subarray_hpos``/``subarray_vpos`` entirely while
+        subarray mode is off. Subscripting that result would make every crop
+        raise ``TypeError`` on those cameras, including the full-chip crop
+        SettingsController performs while starting up, which would leave
+        ImSwitch unable to start at all. A missing position therefore reads as
+        0 and a missing size as the full chip -- which is what a camera that
+        does not report them is actually doing.
+        """
+
+        def read(propertyName, fallback):
+            try:
+                return int(self._camera.getPropertyValue(propertyName)[0])
+            except Exception:
+                return fallback
+
+        return (read('subarray_hpos', 0),
+                read('subarray_vpos', 0),
+                read('subarray_hsize', self.fullShape[0]),
+                read('subarray_vsize', self.fullShape[1]))
+
+    def _readSubarrayMode(self):
+        """``True``/``False`` for a reported subarray mode, ``None`` when the
+        camera exposes none (DCAM text form is ``ON``/``OFF``, numeric form is
+        ``DCAMPROP_MODE__ON == 2``). ``None`` means "nothing to verify", not
+        "off": treating an unreported mode as off would fail every custom ROI
+        on such a camera. """
+        try:
+            value = self._camera.getPropertyValue('subarray_mode')[0]
+        except Exception:
+            return None
+
+        if isinstance(value, bytes):
+            value = value.decode(errors='replace')
+        if isinstance(value, str):
+            text = value.strip().upper()
+            return text == 'ON' if text in ('ON', 'OFF') else None
+
+        try:
+            return int(value) == 2
+        except (TypeError, ValueError):
+            return None
 
     def setBinning(self, binning):
         super().setBinning(binning)
@@ -192,13 +276,35 @@ class HamamatsuManager(DetectorManager):
         )
 
     def setParameter(self, name, value):
-        super().setParameter(name, value)
-
         if name == 'Set exposure time':
             self._setExposure(value)
             self._updatePropertiesFromCamera()
+            # Exposure can be quantized by the camera.  Cache the read-back,
+            # never a value that was merely requested.
+            super().setParameter(name, self.parameters['Real exposure time'].value)
         elif name == 'Trigger source':
-            self._setTriggerSource(value)
+            try:
+                self._setTriggerSource(value)
+            except Exception:
+                # A multi-property trigger write can fail part-way through.
+                # Best-effort read-back keeps the cache truthful before the
+                # exception is surfaced to SettingsController.
+                try:
+                    self._updateTriggerSourceFromCamera()
+                except Exception as readbackError:
+                    self.__logger.warning(
+                        f'Could not read trigger state after a failed write: {readbackError}'
+                    )
+                raise
+
+            actual = self._updateTriggerSourceFromCamera()
+            if actual != value:
+                raise RuntimeError(
+                    f'Hamamatsu camera rejected trigger source {value!r}; '
+                    f'hardware remains at {actual!r}.'
+                )
+        else:
+            super().setParameter(name, value)
 
         return self.parameters
 
@@ -325,25 +431,9 @@ class HamamatsuManager(DetectorManager):
         Missing properties (some cameras omit ``subarray_hpos`` / ``subarray_vpos``
         when subarray mode is off) are treated as 0 / full-chip size.
         """
-        try:
-            hpos = int(self._camera.getPropertyValue('subarray_hpos')[0])
-        except Exception:
-            hpos = 0
-        try:
-            vpos = int(self._camera.getPropertyValue('subarray_vpos')[0])
-        except Exception:
-            vpos = 0
-        try:
-            hsize = int(self._camera.getPropertyValue('subarray_hsize')[0])
-        except Exception:
-            hsize = self.fullShape[0]
-        try:
-            vsize = int(self._camera.getPropertyValue('subarray_vsize')[0])
-        except Exception:
-            vsize = self.fullShape[1]
-
-        self._frameStart = (hpos, vpos)
-        self._shape = (hsize, vsize)
+        geometry = self._readSubarrayGeometry()
+        self._frameStart = geometry[:2]
+        self._shape = geometry[2:]
         self.__logger.debug(
             f'Synced subarray state: frameStart={self._frameStart}, shape={self._shape}'
         )
@@ -359,27 +449,22 @@ class HamamatsuManager(DetectorManager):
 
     def _setTriggerSource(self, source):
         if source == 'Internal trigger':
-            self._performSafeCameraAction(
-                lambda: self._camera.setPropertyValue('trigger_source', 1)
-            )
+            def triggerAction():
+                self._camera.setPropertyValue('trigger_source', 1)
 
         elif source == 'External "start-trigger"':
-            self._performSafeCameraAction(
-                lambda: self._camera.setPropertyValue('trigger_source', 2)
-            )
-            self._performSafeCameraAction(
-                lambda: self._camera.setPropertyValue('trigger_mode', 6)
-            )
+            def triggerAction():
+                self._camera.setPropertyValue('trigger_source', 2)
+                self._camera.setPropertyValue('trigger_mode', 6)
 
         elif source == 'External "frame-trigger"':
-            self._performSafeCameraAction(
-                lambda: self._camera.setPropertyValue('trigger_source', 2)
-            )
-            self._performSafeCameraAction(
-                lambda: self._camera.setPropertyValue('trigger_mode', 1)
-            )
+            def triggerAction():
+                self._camera.setPropertyValue('trigger_source', 2)
+                self._camera.setPropertyValue('trigger_mode', 1)
         else:
             raise ValueError(f'Invalid trigger source "{source}"')
+
+        self._performSafeCameraAction(triggerAction)
 
     def _performSafeCameraAction(self, function):
         """ This method is used to change those camera properties that need
@@ -400,23 +485,34 @@ class HamamatsuManager(DetectorManager):
         self.setParameter('Internal frame rate',
                           self._camera.getPropertyValue('internal_frame_rate')[0])
 
-        # getPropertyValue returns (value, type) -- the [0] is not optional.
-        # Without it these compared a tuple against an int, so every branch was
-        # dead and 'Trigger source' was never refreshed from the camera: the
-        # settings tree kept showing whatever ImSwitch last wrote, even when the
-        # camera was actually in a different trigger mode.
+        try:
+            self._updateTriggerSourceFromCamera()
+        except RuntimeError as error:
+            # Some camera/setup combinations expose trigger states that are not
+            # represented by the three UI choices.  Do not make an unrelated
+            # timing refresh or manager construction fail because of that.
+            self.__logger.warning(f'Could not map camera trigger state to the UI: {error}')
+
+    def _updateTriggerSourceFromCamera(self):
+        """Read the trigger configuration and make the cache authoritative."""
         triggerSource = self._camera.getPropertyValue('trigger_source')[0]
-        # super(), not self: this is a read-back, and self.setParameter would
-        # route 'Trigger source' straight back into _setTriggerSource and
-        # re-write the hardware properties we just read (cf. _setExposure).
         if triggerSource == 1:
-            super().setParameter('Trigger source', 'Internal trigger')
+            actual = 'Internal trigger'
         else:
             triggerMode = self._camera.getPropertyValue('trigger_mode')[0]
             if triggerSource == 2 and triggerMode == 6:
-                super().setParameter('Trigger source', 'External "start-trigger"')
+                actual = 'External "start-trigger"'
             elif triggerSource == 2 and triggerMode == 1:
-                super().setParameter('Trigger source', 'External "frame-trigger"')
+                actual = 'External "frame-trigger"'
+            else:
+                raise RuntimeError(
+                    f'Unsupported Hamamatsu trigger state '
+                    f'(trigger_source={triggerSource}, trigger_mode={triggerMode}).'
+                )
+
+        # super(), not self: this is a read-back and must not write the hardware.
+        super().setParameter('Trigger source', actual)
+        return actual
 
     def _getCameraObj(self, cameraId):
         try:

@@ -30,6 +30,19 @@ def test_close_state_prompt_defaults_to_yes():
     assert question.call_args.args[4] == QtWidgets.QMessageBox.Yes
 
 
+def test_restore_warnings_are_shown_to_the_operator():
+    controller = _close_ready_controller()
+
+    with patch.object(QtWidgets.QMessageBox, 'warning') as warning:
+        controller._showWidgetStateRestoreWarnings(
+            'Some settings could not be restored',
+            ['Settings: Could not restore Trigger source for Camera1'],
+        )
+
+    warning.assert_called_once()
+    assert 'Trigger source' in warning.call_args.args[2]
+
+
 def test_close_event_saves_default_state_when_prompt_accepts():
     controller = _close_ready_controller()
     persistence = Mock()
