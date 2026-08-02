@@ -22,6 +22,7 @@ Unreleased
 
 **Bug Fixes**
 
+- The focus lock's safety unlock no longer issues the oversized correction it exists to prevent. When the computed step exceeded the 3 µm threshold, the loop dropped the lock but still reported that step to its caller, which applied it — so tripping the guard drove the piezo by more than 3 µm in a single tick instead of stopping it. The guard now reports no motion, and a correction is never applied to a lock that was dropped mid-tick. Most likely to be hit on the first tick after a Z scan, where the accumulated spot excursion is largest.
 - FLIM lifetimes from the three fit methods (moment, phasor, exp1) no longer diverge when the IRF peak is offset from t=0. The worker now auto-detects the IRF peak bin from the aggregated decay each frame and compensates each fitter: moment subtracts ``t_peak`` from the mean, exp1 restricts the fit to bins ≥ peak with a shifted time axis, phasor rotates the measured (g, s) by −ω·t_peak. On known dyes the three methods now converge toward the true lifetime.
 - Phasor fit previously assumed the laser repetition period equalled ``n_bins * binwidth_ps``, which silently scaled τ by an arbitrary factor whenever the histogram window did not happen to span exactly one laser period
 - The tiling GUI cell-detection path no longer iterates the stage through every detected target. Stage iteration is reserved for explicit automated/API cell targeting calls or manual click-to-navigate.

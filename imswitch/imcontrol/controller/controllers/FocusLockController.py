@@ -399,7 +399,11 @@ class FocusLockController(ImConWidgetController):
             pass
         elif self.locked:
             value_move = self.updatePI(timestamp)
-            if self.noStepVar and abs(value_move) > 0.002:
+            # updatePI can drop the lock mid-tick (safety trip, z-step
+            # handover). Re-read the flag rather than trusting the branch this
+            # tick was entered on, so a correction is never applied to a lock
+            # that no longer exists.
+            if self.locked and self.noStepVar and abs(value_move) > 0.002:
                 self.movePositioner(value_move)
         elif self.aboutToLock:
            self.aboutToLockUpdate()
@@ -455,6 +459,11 @@ class FocusLockController(ImConWidgetController):
         if abs(move) > 3:
             self._logger.warning(f'Safety unlocking! Current move step: {move:.3f}.')
             self.unlockFocus()
+            # Report no motion, not the step that tripped the guard. The caller
+            # applies whatever this returns, so returning `move` here made the
+            # safety unlock self-defeating: it dropped the lock and then issued
+            # the very oversized move it exists to prevent, on the way out.
+            return 0.0
         elif self.zStackVar:
             if self.stepDistance > self.zStepLimLo:
                 self.unlockFocus()
