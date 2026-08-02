@@ -4,6 +4,7 @@ from .LiveModeController import LiveModeController
 from .MemoryLiveController import MemoryLiveController
 from .ReconstructionViewController import ReconstructionViewController
 from .GraphController import GraphController
+from .MetadataController import MetadataController
 from .ScanParamsController import ScanParamsController
 from .WidefieldStarssBatchController import WidefieldStarssBatchController
 from .FileIOController import FileIOController
@@ -42,6 +43,11 @@ class ImProcessMainViewController(ImProcessWidgetController):
         if self._widget.graphWidget is not None:
             self.graphController = self._factory.createController(
                 GraphController, self._widget.graphWidget
+            )
+        self.metadataController = None
+        if self._widget.metadataWidget is not None:
+            self.metadataController = self._factory.createController(
+                MetadataController, self._widget.metadataWidget
             )
         self.scanParamsController = self._factory.createController(
             ScanParamsController, self._widget.scanParamsDialog

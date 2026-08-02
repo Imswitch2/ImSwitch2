@@ -1,6 +1,7 @@
 from .ColocalizationWidget import ColocalizationWidget
 from .ImProcessMainView import ImProcessMainView
 from .GraphWidget import GraphWidget
+from .MetadataWidget import MetadataWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget

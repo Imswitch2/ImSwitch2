@@ -20,6 +20,7 @@ Unreleased
 - Added the ``liveUpdateIntervalMs`` manager property for APD/PMT detectors to tune the live-preview redraw rate per rig (default 50 ms). See :doc:`devices/detectors`.
 - Line-step scans emit ``[LineStepDiag]`` diagnostics from the scan controller, NI-DAQ manager and APD manager — expanded line count, sample budget, clock edges and read plan — for verifying line-step timing against the generated waveform on a real rig.
 - BeadRec fitting in both ImControl and the ImProcess reconstructor now includes an isotropic 2D exponential-decay model and a one-dimensional sine model with fitted wavelength, phase and arbitrary image-plane angle.
+- Added an ImProcess **Metadata** panel that shows a measurement file's full metadata hierarchy as a tree. The reader is layout-agnostic — it descends whatever structure the container actually has (HDF5 groups/datasets, Zarr groups/arrays, TIFF series/pages/tag blocks) and reports every attribute it finds, so files from a future storer or another program display without code changes. Nested values, and string attributes carrying JSON or XML (OME-XML included), are expanded into subtrees. The panel follows the current data item, can read any file without loading its pixels, filters by name/value/type, and copies or exports to JSON/CSV or the shared Results dock. Enable at startup with ``"metadataPanel": true``, or open it from the Tools toolbar. See :doc:`improcess`.
 
 **Bug Fixes**
 

@@ -137,7 +137,8 @@ reconstruction list. Split stack and split channels publish multiple
 ``ProcessingResult`` objects and make the final split result current.
 
 The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for Graph,
-Profile, ROI manager, ROI statistics, Projection, Segmentation and Results.
+Profile, ROI manager, ROI statistics, Projection, Segmentation, Metadata and
+Results.
 Runtime-backed buttons use the same loading path as the *Load tool* combo, so
 opening a panel registers its processor when needed, raises an existing dock
 when it already exists and preserves the runtime-loaded panel in the
@@ -447,6 +448,52 @@ area-vs-anisotropy scatter plot.  ``frc`` results expose the FRC curve,
 threshold curve and cutoff marker.  The same graph contract is intended for
 future processing units such as batch summaries, FLIM traces and line-profile
 tools.
+
+File metadata panel
+===================
+
+Set ``"metadataPanel": true`` in the ``processing`` block to show the file
+metadata panel, or open it at any time from the **Tools** toolbar / menu
+(``panel.metadata``, unbound by default).  It shows the complete metadata
+hierarchy of a measurement file as a collapsible tree with *Name*, *Value* and
+*Type* columns.
+
+The reader is deliberately **layout-agnostic**: it walks whatever hierarchy the
+container actually has and reports every attribute it finds on the way down.
+Nothing in it encodes the ImSwitch recording layout, so files written by a
+future storer — or by another program entirely — display without any code
+change:
+
+* **HDF5** — every group and dataset is descended recursively; group and
+  dataset attributes appear as leaves, arrays additionally show shape and
+  dtype.
+* **Zarr / OME-NGFF** — the same walk over Zarr groups and arrays, including
+  ``.zattrs`` content such as ``multiscales``.
+* **TIFF / OME-TIFF** — the format flags tifffile detected, every
+  ``*_metadata`` block it exposes (OME, ImageJ, ScanImage, and any vendor
+  block a newer tifffile learns about), plus per-series axes/shape/dtype and
+  the TIFF tags of each series' first page.
+
+Structured values are opened up rather than shown as one unreadable line:
+nested dicts and lists become subtrees, and string attributes that actually
+carry a JSON document or an XML document (OME-XML, for example) are parsed and
+expanded, with the raw string kept on the parent node.
+
+The panel follows the current data item, so loading a file shows its metadata.
+*Open file...* reads the metadata of any supported file without loading its
+pixels, and *Reload* re-reads the current one — useful while a recording is
+still being written.  The filter box matches names, values and types, keeping
+the ancestors of each match visible so a hit deep in the hierarchy stays
+readable in context.  *Copy* and the right-click menu copy a row, a value, a
+path or a whole subtree as JSON; *Export...* writes the tree as JSON or as a
+flat ``path``/``value``/``type`` CSV; *To Results* sends the currently visible
+entries to the shared Results dock, where they can be accumulated across files.
+
+Pathological containers cannot freeze the GUI: depth, per-node child count and
+total node count are bounded, and every limit that trips inserts a visible
+"… not shown" marker instead of silently dropping content.  Attribute values
+are materialized during the walk, so the tree stays readable after the file is
+closed.
 
 Projection panel
 ================
@@ -807,6 +854,7 @@ to your Imcontrol setup file (the same JSON you select via
             "currentDataPanel": true,
             "resultsPanel": true,
             "graphPanel": true,
+            "metadataPanel": true,
             "projectionPanel": true,
             "segmentationPanel": true,
             "psfResolutionPanel": true,
@@ -884,6 +932,7 @@ The MoNaLISA preset has the same shape as the others::
             "resultsPanel": true,
             "graphPanel": true,
             "profilePanel": true,
+            "metadataPanel": true,
             "projectionPanel": true,
             "segmentationPanel": true,
             "psfResolutionPanel": true,

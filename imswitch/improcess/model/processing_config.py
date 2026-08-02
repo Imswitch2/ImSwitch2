@@ -120,6 +120,11 @@ def is_colocalization_panel_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("colocalizationPanel", False))
 
 
+def is_metadata_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the optional ImProcess file-metadata panel should be shown."""
+    return bool(processing_config.get("metadataPanel", False))
+
+
 def is_multicolor_panel_enabled(processing_config: dict[str, Any]) -> bool:
     """Return whether the optional ImProcess multicolor alignment panel should be shown."""
     return bool(processing_config.get("multicolorPanel", False))
