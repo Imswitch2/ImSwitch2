@@ -1409,6 +1409,17 @@ def test_focus_process_thread_snapshots_shared_camera_frame():
 
 
 def test_focus_scan_pause_does_not_integrate_the_paused_interval():
+    """The PI must never see the scan's duration as one integration step.
+
+    The resume side of this moved: ``scanLockFocus`` no longer flips ``locked``
+    straight back on, because doing so also retained the pre-scan integrator.
+    It now starts a reacquisition barrier, and the eventual re-engagement
+    builds a fresh controller -- which clears the stale timestamp as a
+    by-product rather than as a special case. See
+    test_focus_lock_scan_interlock.py for the barrier itself.
+    """
+    import threading
+
     class _Checked:
         def __init__(self, checked):
             self._checked = checked
@@ -1416,14 +1427,43 @@ def test_focus_scan_pause_does_not_integrate_the_paused_interval():
         def isChecked(self):
             return self._checked
 
+        def setChecked(self, value):
+            self._checked = value
+
+        def setText(self, value):
+            pass
+
     ctrl = FocusLockController.__new__(FocusLockController)
     ctrl._shutdownComplete = False
     ctrl._lastPIUpdate = 123.0
     ctrl.locked = True
+    ctrl.aboutToLock = False
+    ctrl.pi = None
+    ctrl.setPointSignal = 7.0
     ctrl._widget = SimpleNamespace(
         ScanBlock=_Checked(True),
         lockButton=_Checked(True),
+        kpEdit=SimpleNamespace(text=lambda: '1'),
+        kiEdit=SimpleNamespace(text=lambda: '0'),
     )
+    ctrl.focusTime = 100.0
+    ctrl.aboutToLockDiffMax = 0.4
+    ctrl.reacquireTimeoutS = 1.0
+    ctrl.reacquireTolerancePx = 0.5
+    ctrl.reacquireSampleCount = 2
+    ctrl.getPositionerAbs = lambda: 0.0
+    ctrl._logger = SimpleNamespace(
+        warning=lambda *a, **k: None, error=lambda *a, **k: None
+    )
+    ctrl._scanSuspendDepth = 0
+    ctrl._scanOwnsFocusActuator = True
+    ctrl._suspendedLock = False
+    ctrl._preScanSetPoint = None
+    ctrl._reacquireDeadline = None
+    ctrl._reacquireSamples = None
+    ctrl._reacquireFailed = False
+    ctrl._reacquireDone = threading.Event()
+    ctrl._reacquireDone.set()
 
     ctrl.scanUnlockFocus()
     assert ctrl.locked is False
@@ -1431,5 +1471,9 @@ def test_focus_scan_pause_does_not_integrate_the_paused_interval():
 
     ctrl._lastPIUpdate = 456.0
     ctrl.scanLockFocus()
+    assert ctrl.locked is False, 'resume must go through the reacquisition barrier'
+
+    for _ in range(ctrl.reacquireSampleCount):
+        ctrl.aboutToLockUpdate()
     assert ctrl.locked is True
     assert ctrl._lastPIUpdate is None

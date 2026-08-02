@@ -493,6 +493,47 @@ Key fields:
 * ``swapImageAxes`` (bool): Swap camera image axes when grabbing frame
 * ``piKp`` (float): Default kp (proportional gain) of feedback loop
 * ``piKi`` (float): Default ki (integral gain) of feedback loop
+* ``reacquireTimeoutS`` (float, default ``1.0``): How long to wait for the focus
+  signal to come back after a scan released the actuator, before giving up
+* ``reacquireTolerancePx`` (float, default ``0.5``): How close the signal must
+  return to its pre-scan setpoint before the lock re-engages, in camera pixels
+* ``reacquireSamples`` (int, default ``5``): Consecutive estimates averaged
+  before deciding the signal has settled
+
+.. _focuslock-scan-arbitration:
+
+Scan arbitration
+^^^^^^^^^^^^^^^^
+
+The focus lock and a hardware Z scan can drive the *same physical actuator*.
+The STED example reaches one piezo twice: as the analog scanner ``ND-PiezoZ``
+and as the serial positioner ``PiezoZ``. An actively correcting lock will
+oppose the intentional Z waveform.
+
+ImSwitch therefore suspends focus actuation for the duration of any scan that
+can reach the lock's axis, and does not resume the instant the scan ends: it
+first waits for the signal to settle *and* to return within
+``reacquireTolerancePx`` of the setpoint it was holding. On timeout the lock is
+left off and a warning is logged, rather than correcting against a signal that
+never came back. The **Pause during scans** checkbox opts out of this.
+
+Whether a scan conflicts is decided automatically:
+
+#. the lock's own positioner is among the scan's positioners, or
+#. both positioners declare the same ``physicalActuator``, or
+#. a scanned positioner carries the lock's axis.
+
+Rule 3 covers the STED case with no configuration at all. Where two Z
+positioners really are separate devices, give them **different**
+``physicalActuator`` ids to say so — that suppresses rule 3 and keeps the lock
+running through those scans.
+
+.. warning::
+
+   ``reacquireTolerancePx`` ships with a placeholder default that has not been
+   measured on hardware. Its meaningful value depends on your rig's pixel-to-µm
+   calibration: too loose re-engages against a defocused sample, too tight
+   times out on every tile. Calibrate it before relying on 3D tiling.
 
 **Example**:
 

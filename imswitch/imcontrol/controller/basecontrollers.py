@@ -274,6 +274,59 @@ class ScanLifecycleMixin:
             self._commChannel.clearActiveScanSource(self)
 
 
+    def _resolveScanActuators(self):
+        """Positioners this run will drive, or None when that is not knowable.
+
+        Both sets count. ``_positionersScan`` are the axes the waveform sweeps;
+        ``target_device`` additionally covers scanners that are merely parked
+        at their centre position before arming, which is still a hardware move
+        on that actuator.
+
+        Returning None rather than an empty list matters: this runs before
+        ``getParameters``, so the parameter dict can legitimately be empty on a
+        very first start. A consumer yielding hardware to the scan must read
+        that as "unknown" and stay yielded, never as "the scan drives nothing".
+        """
+        analogParameterDict = getattr(self, '_analogParameterDict', None) or {}
+        scannedPositioners = getattr(self, '_positionersScan', None) or []
+        targetDevices = analogParameterDict.get('target_device') or []
+        if not targetDevices and not scannedPositioners:
+            return None
+
+        actuators = set()
+        for name in list(scannedPositioners) + list(targetDevices):
+            if name and str(name) != 'None':
+                actuators.add(str(name))
+        return sorted(actuators)
+
+    def _publishScanActuators(self):
+        """Announce the positioners this run owns, before it writes to them.
+
+        A failure to resolve must not block the scan: the scan does not depend
+        on this publication, only its consumers do. Staying silent leaves them
+        on their safe default.
+        """
+        try:
+            actuators = self._resolveScanActuators()
+        except Exception:
+            self._logger.error(
+                'Could not resolve the scan actuator list; consumers that '
+                f'yield hardware to the scan are not being notified:\n'
+                f'{traceback.format_exc()}'
+            )
+            return
+        if actuators is None:
+            return
+        try:
+            self.emitScanSignal(
+                self._commChannel.sigScanActuatorsResolved, actuators
+            )
+        except Exception:
+            self._logger.error(
+                'A scan-actuator listener failed', exc_info=True
+            )
+
+
 class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     componentName = 'Scan'
     supportsExactScanRequestCompletion = True
@@ -962,6 +1015,14 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             # failure path.
             self._scanRunStartingPublished = True
             self.emitScanSignal(self._commChannel.sigScanStarting)
+        if isNewRun:
+            # getattr, in keeping with the rest of this method: it is invoked
+            # against minimal controller stand-ins that implement only the
+            # ownership protocol. A controller without the publisher simply
+            # leaves its consumers on their safe default.
+            publishActuators = getattr(self, '_publishScanActuators', None)
+            if callable(publishActuators):
+                publishActuators()
         return token
 
     def _scanRunReleaseProven(self, token) -> bool:

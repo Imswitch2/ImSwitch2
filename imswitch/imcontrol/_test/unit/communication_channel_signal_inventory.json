@@ -135,6 +135,12 @@
     ]
   },
   {
+    "name": "sigScanActuatorsResolved",
+    "args": [
+      "object"
+    ]
+  },
+  {
     "name": "sigScanBuilt",
     "args": [
       "object"

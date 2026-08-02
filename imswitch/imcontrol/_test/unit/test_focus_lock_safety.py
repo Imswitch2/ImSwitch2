@@ -11,6 +11,8 @@ the entire scan-induced spot excursion, which is exactly the case that trips
 the guard.
 """
 
+import threading
+
 import numpy as np
 import pytest
 
@@ -111,6 +113,18 @@ def _makeController(*, currentValue, kp, ki=0.0):
     ctrl.lastPosition = 0.0
     ctrl.currentPosition = 0.0
     ctrl._lastPIUpdate = None
+
+    # Scan-arbitration state: unlockFocus abandons any reacquisition in flight,
+    # and the safety trip reaches it through updatePI.
+    ctrl._scanSuspendDepth = 0
+    ctrl._scanOwnsFocusActuator = True
+    ctrl._suspendedLock = False
+    ctrl._preScanSetPoint = None
+    ctrl._reacquireDeadline = None
+    ctrl._reacquireSamples = None
+    ctrl._reacquireFailed = False
+    ctrl._reacquireDone = threading.Event()
+    ctrl._reacquireDone.set()
 
     # Set point 0 with a feedback value of `currentValue` gives error
     # `-currentValue`; the PI's first step is out = kp * error.

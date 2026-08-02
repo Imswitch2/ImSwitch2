@@ -233,6 +233,33 @@ class FocusLockInfo:
     """ Positioner axis used for focus-lock movements. Defaults to ``"Z"`` if
     available on the configured positioner, otherwise ``0``. """
 
+    reacquireTimeoutS: float = 1.0
+    """ How long to wait for the focus signal to come back after a scan
+    released the actuator, before giving up, in seconds.
+
+    The lock is suspended for the duration of any scan that can reach its axis
+    and does not resume the instant the scan ends -- it first waits for the
+    signal to settle *and* to return near the setpoint it was holding. On
+    timeout the lock is left off and a warning is logged, rather than
+    re-engaging against a signal that never came back.
+
+    At the default ``updateFreq`` this is only a handful of estimates, so raise
+    it on rigs whose piezo takes longer to settle than the camera takes to
+    deliver ``reacquireSamples`` frames. """
+
+    reacquireTolerancePx: float = 0.5
+    """ How close the focus signal must return to its pre-scan setpoint before
+    the lock re-engages, in camera pixels.
+
+    PLACEHOLDER DEFAULT -- chosen to match ``aboutToLockDiffMax`` and not
+    measured on hardware. The meaningful value depends on the rig's px-to-µm
+    calibration; too loose re-engages against a defocused sample, too tight
+    times out on every tile. Calibrate this before relying on 3D tiling. """
+
+    reacquireSamples: int = 5
+    """ Number of consecutive focus estimates the reacquisition barrier
+    averages before deciding the signal has settled. """
+
 @dataclass(frozen=True)
 class AutofocusInfo:
     camera: str

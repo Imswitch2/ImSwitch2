@@ -121,6 +121,15 @@ class CommunicationChannel(SignalInterface):
     # sigScanBuilt: NI-DAQ publishes that after claiming the manager, while
     # autonomous firmware backends use it only as a compatibility boundary.
     sigScanDevicesResolved = Signal(object)
+    # (positionerNameList) — the positioners the imminent run will drive,
+    # published right after the run reservation and therefore before the scan
+    # writes to any of them. sigScanDevicesResolved cannot serve this purpose:
+    # it carries TTL-programmed device names only, so no positioner ever
+    # appears in it. Consumers that must yield an actuator to the scan (the
+    # focus lock, above all) suspend on sigScanStarting and use this to decide
+    # whether the suspension was actually necessary. Absence means "unknown",
+    # never "nothing" — a consumer that never receives it must stay suspended.
+    sigScanActuatorsResolved = Signal(object)
     sigScanBuilt = Signal(object)  # (deviceList)
     sigScanStarted = Signal()
     sigScanDone = Signal()
@@ -217,6 +226,7 @@ class CommunicationChannel(SignalInterface):
             'abortScan': self.sigAbortScan,
             'scanStarting': self.sigScanStarting,
             'scanDevicesResolved': self.sigScanDevicesResolved,
+            'scanActuatorsResolved': self.sigScanActuatorsResolved,
             'scanBuilt': self.sigScanBuilt,
             'scanStarted': self.sigScanStarted,
             'scanDone': self.sigScanDone,
