@@ -105,6 +105,9 @@ class FocusLockController(ImConWidgetController):
             self.scanActuatorsResolved
         )
         self._commChannel.sigScanEnded.connect(self.scanLockFocus)
+        # Announce ourselves so acquisition orchestrators (tiling above all)
+        # can gate the next tile on the lock actually holding again.
+        self._commChannel.registerFocusLock(self)
 
         self.setPointSignal = 0
         self._lastPIUpdate = None
@@ -178,6 +181,10 @@ class FocusLockController(ImConWidgetController):
 
         comm = self.__dict__.get('_commChannel')
         if comm is not None:
+            try:
+                comm.unregisterFocusLock(self)
+            except Exception:
+                pass
             for signalName, slot in (
                 ('sigScanStarting', self.scanUnlockFocus),
                 ('sigScanActuatorsResolved', self.scanActuatorsResolved),
@@ -381,6 +388,16 @@ class FocusLockController(ImConWidgetController):
             if not calibThread.isRunning():
                 return
             calibThread.stopAndYieldActuator()
+            # Wait for it to actually leave the axis. Setting the flag and
+            # returning would let the scan start while a setAbsolutePosition
+            # was still in flight, so the two would drive the piezo together.
+            # Bounded: blocking a scan indefinitely on a wedged serial call is
+            # worse than the overlap it prevents.
+            if not self._waitForThread(calibThread):
+                self._logger.error(
+                    'Focus calibration did not release the axis before the '
+                    'scan started; the two may briefly drive it together.'
+                )
         except Exception:
             self._logger.error(
                 'Failed to cancel focus calibration for an imminent scan',
@@ -557,7 +574,11 @@ class FocusLockController(ImConWidgetController):
                 'Focus lock could not read its PI gains while re-engaging; '
                 'leaving the lock off.'
             )
-            self._endReacquire()
+            self._preScanSetPoint = None
+            self._endReacquire(notify=False)
+            self._reacquireFailed = True
+            self._setLockButton(checked=False)
+            self._publishFocusLockState()
             return
 
         # Deliberately no positioner read here. ``lockPosition`` is write-only
@@ -570,11 +591,7 @@ class FocusLockController(ImConWidgetController):
         self.locked = True
         self._reacquireFailed = False
         self._endReacquire(notify=False)
-        try:
-            self._widget.lockButton.setChecked(True)
-            self._widget.lockButton.setText('Unlock')
-        except Exception:
-            pass
+        self._setLockButton(checked=True)
         self._publishFocusLockState()
 
     def focusLockState(self) -> str:
@@ -640,7 +657,7 @@ class FocusLockController(ImConWidgetController):
         if self.locked:
             self.locked = False
             self._lastPIUpdate = None
-            self._widget.lockButton.setChecked(False)
+            self._setLockButton(checked=False)
             lineLock = getattr(
                 self._widget.focusLockGraph, 'lineLock', None
             )
@@ -777,6 +794,13 @@ class FocusLockController(ImConWidgetController):
             # No estimate has completed since the last tick — either the camera
             # has not produced a frame yet, or the worker is still busy. Skip
             # rather than block the GUI thread waiting for it.
+            #
+            # The barrier's deadline still has to advance. A stalled or faulted
+            # focus camera produces no estimates at all, which is precisely
+            # when reacquisition can never succeed -- and would otherwise sit
+            # in "Reacquiring" for ever with anything waiting on it blocked.
+            if self.aboutToLock:
+                self._failReacquireIfOverdue()
             return
 
         img, setPointSignal, timestamp = result
@@ -822,6 +846,12 @@ class FocusLockController(ImConWidgetController):
         self._reacquireSamples = np.roll(self._reacquireSamples, 1)
         self._reacquireSamples[0] = self.setPointSignal
 
+        # Deadline first. Accepting a window that only completed after the
+        # timeout had already passed would make the timeout advisory, and would
+        # re-engage on evidence the operator was told had been rejected.
+        if self._failReacquireIfOverdue():
+            return
+
         if not np.isnan(self._reacquireSamples).any():
             settled = np.std(self._reacquireSamples) < self.aboutToLockDiffMax
             target = self._preScanSetPoint
@@ -831,28 +861,28 @@ class FocusLockController(ImConWidgetController):
             )
             if settled and offset <= self.reacquireTolerancePx:
                 self._reengageLock(setPoint=target)
-                return
 
-        if (
-            self._reacquireDeadline is not None
-            and perf_counter() > self._reacquireDeadline
-        ):
-            self._logger.warning(
-                f'Focus lock did not reacquire within '
-                f'{self.reacquireTimeoutS:.2f} s of the scan ending; leaving '
-                f'the lock off. Raise reacquireTimeoutS if the piezo needs '
-                f'longer to settle, or reacquireTolerancePx if it settles '
-                f'off-setpoint by design.'
-            )
-            self._preScanSetPoint = None
-            self._endReacquire(notify=False)
-            self._reacquireFailed = True
-            self._publishFocusLockState()
-            try:
-                self._widget.lockButton.setChecked(False)
-                self._widget.lockButton.setText('Lock')
-            except Exception:
-                pass
+    def _failReacquireIfOverdue(self) -> bool:
+        """Give up on reacquisition once its deadline has passed.
+
+        Returns whether it gave up, so callers can stop advancing the barrier.
+        """
+        deadline = self._reacquireDeadline
+        if deadline is None or perf_counter() <= deadline:
+            return False
+        self._logger.warning(
+            f'Focus lock did not reacquire within '
+            f'{self.reacquireTimeoutS:.2f} s of the scan ending; leaving '
+            f'the lock off. Raise reacquireTimeoutS if the piezo needs '
+            f'longer to settle, or reacquireTolerancePx if it settles '
+            f'off-setpoint by design.'
+        )
+        self._preScanSetPoint = None
+        self._endReacquire(notify=False)
+        self._reacquireFailed = True
+        self._setLockButton(checked=False)
+        self._publishFocusLockState()
+        return True
 
     def updateSetPointData(self):
         if self.currPoint < self.buffer:
@@ -900,7 +930,21 @@ class FocusLockController(ImConWidgetController):
             self._widget.focusLockGraph.lineLock = self._widget.focusPlot.addLine(
                 y=self.setPointSignal, pen='r'
             )
-            self._widget.lockButton.setChecked(True)
+            self._setLockButton(checked=True)
+
+    def _setLockButton(self, *, checked):
+        """Keep the button's checked state and its caption in step.
+
+        They were set from different places, so a safety unlock or a
+        gain-change unlock left a button that was unchecked but still read
+        "Unlock" -- the one control an operator glances at, disagreeing with
+        itself.
+        """
+        try:
+            self._widget.lockButton.setChecked(checked)
+            self._widget.lockButton.setText('Unlock' if checked else 'Lock')
+        except Exception:
+            pass
 
     def _resolvePositionerAxis(self):
         """Resolve which axis to use for focus-lock movements."""

@@ -192,6 +192,7 @@ class CommunicationChannel(SignalInterface):
         self.__logger = initLogger(self)
         self._scriptExecution = False
         self._activeScanSource = None
+        self._focusLock = None
         self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
         self.beadRecWorkflow = BeadRecWorkflowService(self)
@@ -306,6 +307,35 @@ class CommunicationChannel(SignalInterface):
     def getActiveScanSource(self):
         """ Return the controller currently running a scan, or None. """
         return self._activeScanSource
+
+    def registerFocusLock(self, controller) -> None:
+        """ Announce the focus-lock controller, so acquisition orchestrators
+        can wait for it to reacquire after a scan released its axis. """
+        self._focusLock = controller
+
+    def unregisterFocusLock(self, controller) -> None:
+        """ Withdraw the focus-lock controller. Identity-guarded. """
+        if getattr(self, '_focusLock', None) is controller:
+            self._focusLock = None
+
+    def waitForFocusReacquired(self, timeoutS: float = 10.0) -> bool:
+        """ Block until the focus lock is holding again, or gives up.
+
+        Returns True when there is nothing to wait for -- no focus lock
+        configured, or one that was not engaged -- so callers can gate on this
+        unconditionally. Never call it from the GUI thread: the reacquisition
+        barrier is advanced by the focus lock's timer, which runs there.
+        """
+        controller = getattr(self, '_focusLock', None)
+        if controller is None:
+            return True
+        try:
+            return bool(controller.waitForFocusReacquired(timeoutS))
+        except Exception:
+            self.__logger.error(
+                'Failed to wait for focus-lock reacquisition', exc_info=True
+            )
+            return True
 
     def isScanRunning(self) -> bool:
         """

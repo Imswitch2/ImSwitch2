@@ -109,7 +109,40 @@ class _TriggeredTileSource:
             return None, False
 
         frame = controller._scanFrame(self._detector)
+        self._waitForFocus()
         return frame, frame is not None
+
+    def _waitForFocus(self) -> None:
+        """Hold the tile loop until the focus lock is holding again.
+
+        Each tile's scan suspends the lock, and the scan's completion resolves
+        as soon as the terminal is published -- while reacquisition is only
+        just starting. Without this the loop moves the stage and fires the next
+        scan straight through the barrier, which cancels it. At the shipped
+        10 Hz estimate rate a five-sample window needs ~0.5 s against a 0.15 s
+        settle, so every tile would cancel the previous tile's reacquisition
+        and the lock would stay inactive for the entire run -- silently, since
+        each individual step looks like it succeeded.
+
+        Runs on the tiling worker thread, which is what makes the wait legal:
+        the barrier is advanced by the focus lock's timer on the GUI thread.
+        """
+        controller = self._controller
+        try:
+            reacquired = controller._commChannel.waitForFocusReacquired(
+                controller._focusReacquireTimeoutS()
+            )
+        except Exception as e:
+            controller._logger.error(
+                f'Tiling: failed to wait for focus reacquisition: {e}',
+                exc_info=True,
+            )
+            return
+        if not reacquired:
+            controller._logger.warning(
+                'Tiling: focus lock did not reacquire before the next tile; '
+                'continuing unlocked. Subsequent tiles may drift out of focus.'
+            )
 
     def _runScan(self):
         """Request one scan and return its completion terminal, or None."""
@@ -1024,6 +1057,20 @@ class TilingController(ImConWidgetController):
             getattr(self._setupInfo.tiling, 'scanTimeoutS', _SCAN_TIMEOUT_S)
             or _SCAN_TIMEOUT_S
         )
+
+    def _focusReacquireTimeoutS(self) -> float:
+        """How long a tile may wait for the focus lock to come back.
+
+        Generously longer than the focus lock's own ``reacquireTimeoutS``: the
+        lock decides when to give up, and this only has to outlast that
+        decision so the tile loop observes the verdict rather than timing out
+        first and drawing its own.
+        """
+        focusLock = getattr(self._setupInfo, 'focusLock', None)
+        lockTimeout = float(
+            getattr(focusLock, 'reacquireTimeoutS', 1.0) or 1.0
+        )
+        return lockTimeout * 2.0 + 1.0
 
     def _scanFrame(self, detector):
         """Read the image a completed scan produced.

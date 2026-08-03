@@ -282,10 +282,20 @@ class ScanLifecycleMixin:
         at their centre position before arming, which is still a hardware move
         on that actuator.
 
-        Returning None rather than an empty list matters: this runs before
-        ``getParameters``, so the parameter dict can legitimately be empty on a
-        very first start. A consumer yielding hardware to the scan must read
-        that as "unknown" and stay yielded, never as "the scan drives nothing".
+        Returning None rather than an empty list matters: a consumer yielding
+        hardware to the scan must read that as "unknown" and stay yielded,
+        never as "the scan drives nothing".
+
+        KNOWN LIMITATION. Only controllers that populate
+        ``_analogParameterDict['target_device']`` are understood, which among
+        the TriggerScope family is the raster controller alone; the pLS-RESOLFT,
+        LSXYR, galvo-detection and multicolor controllers keep their geometry
+        elsewhere and so resolve to None. Those scans are therefore treated as
+        conflicting and the focus lock suspends and reacquires around every one
+        of them -- safe, but pessimistic. Override this in a controller that
+        knows its own positioners to get the precise answer; deliberately not
+        guessed at here, since reporting "no conflict" wrongly is the one
+        failure this whole mechanism exists to prevent.
         """
         analogParameterDict = getattr(self, '_analogParameterDict', None) or {}
         scannedPositioners = getattr(self, '_positionersScan', None) or []
@@ -379,6 +389,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # cleared. Close, failure and completion paths can otherwise race,
         # capture the same token, and publish the same run-level end twice.
         self._scanRunTerminalLock = threading.RLock()
+        # True means "nothing to park". Only _armScanIteration clears it, so a
+        # run that fails in getParameters or signal construction -- and never
+        # drove a waveform -- does not have its terminal issue a hardware move,
+        # possibly from a half-rebuilt parameter dict.
+        self._scanPositionersRestored = True
 
         self.positioners = {
             pName: pManager for pName, pManager in self._setupInfo.positioners.items()
@@ -1635,8 +1650,24 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         return getattr(positionerInfo, 'managerProperties', {}) or {}
 
     def _getReturnToCenterAxis(self, positionerName):
+        """Axis to park on, defaulting to the positioner's own first axis.
+
+        The default used to be the integer ``0``. Managers key their tracked
+        position by axis *name* -- ``NidaqPositionerManager`` builds
+        ``{axis: 0 for axis in axes}`` -- so parking an unconfigured positioner
+        still wrote the voltage but recorded it under a brand-new ``0`` key,
+        leaving ``position["Z"]`` stale and any later relative move computed
+        from the wrong origin. ``example_sted.json`` sets
+        ``returnToCenterAfterScan`` without an axis, so this was the shipped
+        path.
+        """
         properties = self._getPositionerManagerProperties(positionerName)
-        return properties.get('returnToCenterAfterScanAxis', 0)
+        axis = properties.get('returnToCenterAfterScanAxis')
+        if axis is not None:
+            return axis
+        positionerInfo = self._setupInfo.positioners.get(positionerName)
+        axes = list(getattr(positionerInfo, 'axes', None) or [])
+        return axes[0] if axes else 0
 
     def _positionerReturnsToCenterAfterScan(self, positionerName):
         properties = self._getPositionerManagerProperties(positionerName)
@@ -1694,7 +1725,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         repeat sequence still parks per part exactly as before and this adds
         no second hardware write.
         """
-        if self.__dict__.get('_scanPositionersRestored', False):
+        if self.__dict__.get('_scanPositionersRestored', True):
             return
         self._restoreScanPositioners()
 

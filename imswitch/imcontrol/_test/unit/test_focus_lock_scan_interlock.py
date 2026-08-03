@@ -697,3 +697,77 @@ def test_re_engaging_does_not_query_the_positioner():
 
     assert ctrl.locked is True
     assert ctrl.positionerReads == 0
+
+
+# --------------------------------------------------------------------------
+# Barrier robustness (review findings 3 and 7)
+# --------------------------------------------------------------------------
+
+def test_the_deadline_still_expires_when_estimates_stop_arriving():
+    """A stalled focus camera produces no samples -- exactly when
+    reacquisition can never succeed. The barrier used to sit in
+    "Reacquiring" for ever, with anything waiting on it blocked."""
+    ctrl = _makeController(setPoint=10.0, timeoutS=0.0)
+    ctrl._FocusLockController__processDataThread = _NoResultThread()
+
+    _suspend(ctrl)
+    _end(ctrl)
+    assert FocusLockController.focusLockState(ctrl) == STATE_REACQUIRING
+
+    FocusLockController.update(ctrl)
+
+    assert FocusLockController.focusLockState(ctrl) == STATE_REACQUIRE_FAILED
+    assert FocusLockController.waitForFocusReacquired(ctrl, 0.01) is False
+
+
+class _NoResultThread:
+    def takeResult(self):
+        return None
+
+
+def test_an_expired_deadline_is_not_overridden_by_a_late_good_window():
+    """Otherwise the timeout is advisory, and the lock re-engages on evidence
+    the operator was already told had been rejected."""
+    ctrl = _makeController(setPoint=10.0, timeoutS=0.0)
+
+    _suspend(ctrl)
+    _end(ctrl)
+    _feed(ctrl, 10.0, n=ctrl.reacquireSampleCount)
+
+    assert ctrl.locked is False
+    assert FocusLockController.focusLockState(ctrl) == STATE_REACQUIRE_FAILED
+
+
+def test_giving_up_leaves_the_button_reading_lock():
+    ctrl = _makeController(setPoint=10.0, timeoutS=0.0)
+
+    _suspend(ctrl)
+    _end(ctrl)
+    _feed(ctrl, 15.0, n=ctrl.reacquireSampleCount)
+
+    assert ctrl._widget.lockButton.checked is False
+    assert ctrl._widget.lockButton.text == 'Lock'
+
+
+def test_unlocking_leaves_the_button_caption_and_state_in_step():
+    """The safety trip unchecked the button but left it reading "Unlock"."""
+    ctrl = _makeController()
+
+    FocusLockController.unlockFocus(ctrl)
+
+    assert ctrl._widget.lockButton.checked is False
+    assert ctrl._widget.lockButton.text == 'Lock'
+
+
+def test_unreadable_gains_on_re_engage_are_reported_not_silent():
+    ctrl = _makeController(setPoint=10.0)
+    ctrl._widget.kpEdit = _Edit('not a number')
+
+    _suspend(ctrl)
+    _end(ctrl)
+    _feed(ctrl, 10.0, n=ctrl.reacquireSampleCount)
+
+    assert ctrl.locked is False
+    assert FocusLockController.focusLockState(ctrl) == STATE_REACQUIRE_FAILED
+    assert ctrl._widget.lockButton.checked is False
+    assert FocusLockController.waitForFocusReacquired(ctrl, 0.01) is False

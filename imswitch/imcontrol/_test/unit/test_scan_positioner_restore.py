@@ -88,7 +88,7 @@ def _makeController(*, parks=True, failing=False):
         ),
     }
     ctrl._setupInfo = SimpleNamespace(positioners={
-        name: SimpleNamespace(managerProperties=props)
+        name: SimpleNamespace(managerProperties=props, axes=['Z'])
         for name, props in properties.items()
     })
 
@@ -186,3 +186,42 @@ def test_missing_center_position_is_reported_not_guessed():
 
     assert ctrl.moves == []
     assert ctrl._logger.warnings
+
+
+def test_a_run_that_never_armed_does_not_move_the_stage():
+    """A build failure in getParameters or signal construction publishes a
+    terminal without ever driving a waveform. Treating the unset flag as
+    "pending" made that terminal issue a hardware move anyway, possibly from a
+    half-rebuilt parameter dict."""
+    ctrl = _makeController()
+    del ctrl._scanPositionersRestored   # never armed, so never cleared
+
+    _restoreIfPending(ctrl)
+
+    assert ctrl.moves == []
+
+
+def test_an_unconfigured_axis_parks_under_the_positioner_own_axis_name():
+    """Managers key tracked position by axis *name*. Defaulting to integer 0
+    still wrote the voltage but recorded it under a brand-new 0 key, leaving
+    position["Z"] stale for the next relative move. example_sted.json ships
+    returnToCenterAfterScan with no axis, so this was the shipped path."""
+    ctrl = _makeController()
+    del ctrl._setupInfo.positioners['ND-PiezoZ'].managerProperties[
+        'returnToCenterAfterScanAxis'
+    ]
+
+    _restore(ctrl)
+
+    assert ctrl.moves == [('ND-PiezoZ', 25.0, 'Z')]
+
+
+def test_an_explicit_axis_still_wins():
+    ctrl = _makeController()
+    ctrl._setupInfo.positioners['ND-PiezoZ'].managerProperties[
+        'returnToCenterAfterScanAxis'
+    ] = 'W'
+
+    _restore(ctrl)
+
+    assert ctrl.moves == [('ND-PiezoZ', 25.0, 'W')]

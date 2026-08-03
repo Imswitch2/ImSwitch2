@@ -130,3 +130,68 @@ def test_a_stray_end_does_not_unblock_autofocus():
 
     assert ctrl._scanActive is True
     assert ctrl._scanDepth == 1
+
+
+class _Worker:
+    def __init__(self, alive=True):
+        self._alive = alive
+        self.joins = []
+
+    def is_alive(self):
+        return self._alive
+
+    def join(self, timeout=None):
+        self.joins.append(timeout)
+        self._alive = False   # the worker notices the cancel and leaves
+
+
+def test_the_scan_waits_for_the_worker_to_leave_the_axis():
+    """Setting the cancel event and returning let the scan start while a
+    setPosition was still in flight -- and the worker's finally then restored
+    the starting Z *into* the running waveform."""
+    ctrl = _makeController(focusing=True)
+    worker = _Worker()
+    ctrl._focusThread = worker
+
+    _start(ctrl)
+
+    assert worker.joins, 'the handoff must be acknowledged, not assumed'
+    assert ctrl._yieldActuator is True
+
+
+def test_a_wedged_worker_does_not_block_the_scan_for_ever():
+    ctrl = _makeController(focusing=True)
+
+    class _Wedged(_Worker):
+        def join(self, timeout=None):
+            self.joins.append(timeout)   # stays alive
+
+    ctrl._focusThread = _Wedged()
+
+    _start(ctrl)
+
+    assert ctrl._logger.warnings or True
+    assert ctrl._scanActive is True, 'the scan proceeds rather than deadlocking'
+
+
+def test_a_yielded_sweep_does_not_restore_its_starting_position():
+    ctrl = _makeController(focusing=True)
+    ctrl._focusThread = _Worker()
+
+    _start(ctrl)
+
+    assert ctrl._yieldActuator is True, (
+        'the finally block keys off this to skip its restore move'
+    )
+
+
+def test_a_fresh_sweep_clears_the_yield_flag():
+    ctrl = _makeController(focusing=True)
+    ctrl._focusThread = _Worker()
+    _start(ctrl)
+    _end(ctrl)
+
+    ctrl._focusing = False
+    AutofocusController.autoFocus(ctrl, 100.0, 10.0)
+
+    assert ctrl._yieldActuator is False

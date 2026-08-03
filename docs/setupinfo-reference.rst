@@ -536,6 +536,19 @@ positioners really are separate devices, give them **different**
 ``physicalActuator`` ids to say so — that suppresses rule 3 and keeps the lock
 running through those scans.
 
+Triggered tiling holds each tile until the lock is holding again before firing
+the next scan. Without that gate the loop would cancel its own reacquisition:
+at ``updateFreq: 10`` a five-sample window needs ~0.5 s, against a default
+0.15 s tile settle.
+
+.. note::
+
+   Scan controllers that do not populate ``target_device`` publish no actuator
+   list, so the lock treats their scans as conflicting and suspends around each
+   one. Among the TriggerScope family only the raster controller publishes;
+   pLS-RESOLFT, LSXYR, galvo-detection and multicolor scans therefore always
+   suspend the lock. This is safe but pessimistic.
+
 .. warning::
 
    ``reacquireTolerancePx`` ships with a placeholder default that has not been
