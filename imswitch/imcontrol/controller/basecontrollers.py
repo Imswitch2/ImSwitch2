@@ -1126,6 +1126,15 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 if callbackDelivered:
                     return
                 callbackDelivered = True
+            # Park before the terminal, not after: sigScanEnded is what hands
+            # the focus axis back to the focus lock, which must not start
+            # correcting against an actuator the scan left mid-waveform. A
+            # no-op when the success path already did it for this run.
+            restorePositioners = getattr(
+                self, '_restoreScanPositionersIfPending', None
+            )
+            if callable(restorePositioners):
+                restorePositioners()
             endError = None
             try:
                 if startingPublished:
@@ -1326,6 +1335,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _armScanIteration(self, signalDict, scanInfoDict):
         """Publish the participating device list, then arm the iteration.
 
+        Arming an iteration means this one has not parked its positioners yet.
+        Clearing the flag here (rather than per run) keeps multi-part and
+        repeat sequences parking per part exactly as they always have, while
+        still letting the run terminal park a run that never reached its
+        completion path at all.
+
         The publication has to happen HERE, before ``arm``. ``runScan`` marks
         the NI-DAQ manager busy and only then emits ``sigScanBuilt``, so any
         consumer that must issue a one-shot DAQ write in response to scan
@@ -1336,6 +1351,7 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         A failure to resolve the device list must not block the scan: the scan
         itself does not depend on this, only the consumers do.
         """
+        self._scanPositionersRestored = False
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
         except Exception:
@@ -1646,6 +1662,42 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             position = centerPositions[index]
             axis = self._getReturnToCenterAxis(positionerName)
             self._master.positionersManager[positionerName].setPosition(position, axis)
+
+    def _restoreScanPositioners(self):
+        """Park marked positioners at their centre after an iteration.
+
+        Two orderings have to hold at once. The parked stage must be real
+        before ``sigScanDone``, which per-iteration consumers and the UI react
+        to; and before ``sigScanEnded``, which is what hands the focus axis
+        back to the focus lock -- resuming a lock against an actuator still
+        sitting wherever the waveform ended is the whole problem this exists
+        to avoid.
+
+        A stage that refuses to park is a warning, never a reason to strand
+        the run without a terminal.
+        """
+        self._scanPositionersRestored = True
+        try:
+            self._resetReturnToCenterPositionersAfterScan()
+        except Exception:
+            self._logger.warning(
+                "Failed to reset positioners after scan:\n%s",
+                traceback.format_exc(),
+            )
+
+    def _restoreScanPositionersIfPending(self):
+        """Park at the run terminal, unless the finished iteration already did.
+
+        Only the completion path used to park, and only in two of the scan
+        controllers, so a failed or aborted run released the actuator wherever
+        the waveform left it -- and then released the focus lock onto it. The
+        flag is cleared as each iteration arms, so a normal multi-part or
+        repeat sequence still parks per part exactly as before and this adds
+        no second hardware write.
+        """
+        if self.__dict__.get('_scanPositionersRestored', False):
+            return
+        self._restoreScanPositioners()
 
     def getComponentState(self) -> dict:
         """Snapshot the current scan parameter dictionaries for component state persistence."""

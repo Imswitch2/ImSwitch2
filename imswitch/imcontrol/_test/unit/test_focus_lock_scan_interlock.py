@@ -148,12 +148,8 @@ def _makeController(*, scanBlock=True, locked=True, setPoint=10.0,
     ctrl.setPointSignal = setPoint
     ctrl.locked = locked
     ctrl.aboutToLock = False
-    ctrl.noStepVar = True
-    ctrl.zStackVar = False
     ctrl._lastPIUpdate = None
     ctrl.lockPosition = 0.0
-    ctrl.currentPosition = 0.0
-    ctrl.lastPosition = 0.0
 
     if locked:
         ctrl.pi = PI(setPoint, 0.001, 1.0, 0.0, nominalDt=0.1)
@@ -498,3 +494,92 @@ def test_a_new_scan_during_reacquisition_re_suspends_cleanly():
     assert ctrl._preScanSetPoint == 10.0, (
         'the setpoint to return to must survive a scan arriving mid-barrier'
     )
+
+
+# --------------------------------------------------------------------------
+# Calibration interlock
+# --------------------------------------------------------------------------
+
+class _CalibThread:
+    def __init__(self, running=True):
+        self.running = running
+        self.stopped = False
+        self.yielded = False
+
+    def isRunning(self):
+        return self.running
+
+    def stopAndYieldActuator(self):
+        self.stopped = True
+        self.yielded = True
+
+    def configure(self, *args):  # pragma: no cover - unused here
+        pass
+
+    def start(self):  # pragma: no cover - unused here
+        pass
+
+
+def _withCalibThread(ctrl, thread):
+    ctrl._FocusLockController__focusCalibThread = thread
+    return thread
+
+
+def test_a_scan_cancels_a_calibration_sweep_in_flight():
+    """Calibration drove absolute Z moves straight through a scan waveform."""
+    ctrl = _makeController()
+    thread = _withCalibThread(ctrl, _CalibThread(running=True))
+
+    _suspend(ctrl)
+
+    assert thread.stopped is True
+
+
+def test_the_cancelled_sweep_does_not_restore_its_own_position():
+    """Restoring would be one more command fighting the scan."""
+    ctrl = _makeController()
+    thread = _withCalibThread(ctrl, _CalibThread(running=True))
+
+    _suspend(ctrl)
+
+    assert thread.yielded is True
+
+
+def test_an_idle_calibration_thread_is_left_alone():
+    ctrl = _makeController()
+    thread = _withCalibThread(ctrl, _CalibThread(running=False))
+
+    _suspend(ctrl)
+
+    assert thread.stopped is False
+
+
+def test_calibration_refuses_to_start_while_a_scan_owns_the_axis():
+    ctrl = _makeController()
+    _withCalibThread(ctrl, _CalibThread(running=False))
+    ctrl._widget.calibFromEdit = _Edit('-1')
+    ctrl._widget.calibToEdit = _Edit('1')
+    ctrl._widget.focusCalibButton = _Button()
+    ctrl._focusCalibrationActive = False
+
+    _suspend(ctrl)
+    FocusLockController.focusCalibrationStart(ctrl)
+
+    assert ctrl._focusCalibrationActive is False
+    assert ctrl._logger.warnings
+
+
+def test_calibration_starts_normally_when_no_scan_is_running():
+    ctrl = _makeController()
+    thread = _withCalibThread(ctrl, _CalibThread(running=False))
+    started = []
+    thread.start = lambda: started.append(True)
+    ctrl._widget.calibFromEdit = _Edit('-1')
+    ctrl._widget.calibToEdit = _Edit('1')
+    ctrl._widget.focusCalibButton = _Button()
+    ctrl._focusCalibrationActive = False
+
+    FocusLockController.focusCalibrationStart(ctrl)
+
+    assert started == [True]
+    assert ctrl._focusCalibrationActive is True

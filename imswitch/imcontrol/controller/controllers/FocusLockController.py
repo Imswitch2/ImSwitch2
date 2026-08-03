@@ -98,7 +98,6 @@ class FocusLockController(ImConWidgetController):
         self._widget.focusCalibButton.clicked.connect(self.focusCalibrationStart)
         self._widget.calibCurveButton.clicked.connect(self.showCalibrationCurve)
 
-        self._widget.zStackBox.stateChanged.connect(self.zStackVarChange)
         self._widget.twoFociBox.stateChanged.connect(self.twoFociVarChange)
 
         self._commChannel.sigScanStarting.connect(self.scanUnlockFocus)
@@ -111,11 +110,8 @@ class FocusLockController(ImConWidgetController):
         self._lastPIUpdate = None
         self.locked = False
         self.aboutToLock = False
-        self.zStackVar = False
         self.twoFociVar = False
-        self.noStepVar = True
         self.focusTime = 1000 / self.updateFreq  # focus signal update interval (ms)
-        self.zStepLimLo = 0
         self.aboutToLockDiffMax = 0.4
         self.reacquireTimeoutS = float(
             self._setupInfo.focusLock.reacquireTimeoutS
@@ -127,8 +123,6 @@ class FocusLockController(ImConWidgetController):
             2, int(self._setupInfo.focusLock.reacquireSamples)
         )
         self.lockPosition = 0
-        self.currentPosition = 0
-        self.lastPosition = 0
         self.buffer = 40
         self.currPoint = 0
         self.setPointData = np.zeros(self.buffer)
@@ -362,7 +356,30 @@ class FocusLockController(ImConWidgetController):
         self.aboutToLock = False
         self._lastPIUpdate = None
         self._endReacquire(notify=False)
+        self._cancelCalibrationForScan()
         self._publishFocusLockState()
+
+    def _cancelCalibrationForScan(self):
+        """Abandon a calibration sweep that a scan is about to interrupt.
+
+        Calibration drives the focus axis with absolute moves from a worker
+        thread and had no scan interlock at all, so it would keep stepping
+        straight through the waveform.
+        """
+        calibThread = self.__dict__.get(
+            '_FocusLockController__focusCalibThread'
+        )
+        if calibThread is None:
+            return
+        try:
+            if not calibThread.isRunning():
+                return
+            calibThread.stopAndYieldActuator()
+        except Exception:
+            self._logger.error(
+                'Failed to cancel focus calibration for an imminent scan',
+                exc_info=True,
+            )
 
     def scanActuatorsResolved(self, actuators):
         """``sigScanActuatorsResolved``: hand the actuator back if it is safe.
@@ -628,6 +645,15 @@ class FocusLockController(ImConWidgetController):
     def focusCalibrationStart(self):
         if self.__dict__.get('_shutdownComplete', False):
             return
+        if self.__dict__.get('_scanSuspendDepth', 0) > 0:
+            # Calibration sweeps the focus axis with ~20 absolute moves. Doing
+            # that while a scan owns the actuator is the same conflict the
+            # lock itself yields for, minus the yielding.
+            self._logger.warning(
+                'Focus calibration cannot start while a scan owns the focus '
+                'axis. Wait for the scan to finish.'
+            )
+            return
         try:
             fromVal = float(self._widget.calibFromEdit.text())
             toVal = float(self._widget.calibToEdit.text())
@@ -685,12 +711,6 @@ class FocusLockController(ImConWidgetController):
     def showCalibrationCurve(self):
         self._widget.showCalibrationCurve(self.__focusCalibThread.getData())
 
-    def zStackVarChange(self):
-        if self.zStackVar:
-            self.zStackVar = False
-        else:
-            self.zStackVar = True
-
     def twoFociVarChange(self):
         if self.twoFociVar:
             self.twoFociVar = False
@@ -727,7 +747,7 @@ class FocusLockController(ImConWidgetController):
             # handover). Re-read the flag rather than trusting the branch this
             # tick was entered on, so a correction is never applied to a lock
             # that no longer exists.
-            if self.locked and self.noStepVar and abs(value_move) > 0.002:
+            if self.locked and abs(value_move) > 0.002:
                 self.movePositioner(value_move)
         elif self.aboutToLock:
            self.aboutToLockUpdate()
@@ -803,12 +823,6 @@ class FocusLockController(ImConWidgetController):
         self.currPoint += 1
 
     def updatePI(self, timestamp=None):
-        if not self.noStepVar:
-            self.noStepVar = True
-        #self.currentPosition = self._master.positionersManager[self.positioner].get_abs()
-        #self.stepDistance = np.abs(self.currentPosition - self.lastPosition)
-        #distance = self.currentPosition - self.lockPosition
-
         # Feed the true interval since the last correction. The integral term
         # is a rate, so with a fixed implicit dt the loop silently detuned
         # whenever ticks were delayed or dropped — exactly when the GUI thread
@@ -820,7 +834,6 @@ class FocusLockController(ImConWidgetController):
             self._lastPIUpdate = timestamp
 
         move = self.pi.update(self.setPointSignal, dt)
-        self.lastPosition = self.currentPosition
 
         if abs(move) > 3:
             self._logger.warning(f'Safety unlocking! Current move step: {move:.3f}.')
@@ -830,12 +843,6 @@ class FocusLockController(ImConWidgetController):
             # safety unlock self-defeating: it dropped the lock and then issued
             # the very oversized move it exists to prevent, on the way out.
             return 0.0
-        elif self.zStackVar:
-            if self.stepDistance > self.zStepLimLo:
-                self.unlockFocus()
-                self._preScanSetPoint = self.pi.setPoint
-                self._beginReacquire()
-                self.noStepVar = False
         return move
 
     def lockFocus(self, zpos):
@@ -851,10 +858,6 @@ class FocusLockController(ImConWidgetController):
                 y=self.setPointSignal, pen='r'
             )
             self._widget.lockButton.setChecked(True)
-            self.updateZStepLimits()
-
-    def updateZStepLimits(self):
-        self.zStepLimLo = 0.001 * float(self._widget.zStepFromEdit.text())
 
     def _resolvePositionerAxis(self):
         """Resolve which axis to use for focus-lock movements."""
@@ -1018,6 +1021,7 @@ class FocusCalibThread(Thread):
 
         self._controller = controller
         self._stopRequested = threading.Event()
+        self._yieldActuator = threading.Event()
         self._dataLock = threading.Lock()
         self.fromVal = None
         self.toVal = None
@@ -1031,8 +1035,22 @@ class FocusCalibThread(Thread):
         self.fromVal = float(fromVal)
         self.toVal = float(toVal)
         self._stopRequested.clear()
+        self._yieldActuator.clear()
 
     def stop(self):
+        self._stopRequested.set()
+
+    def stopAndYieldActuator(self):
+        """Cancel without the usual restore-to-start move.
+
+        Normal cancellation ends by driving the axis back to where calibration
+        found it. That is exactly wrong when the reason for cancelling is that
+        a scan has taken the actuator: the restore would be one more command
+        fighting the scan waveform, issued from a worker thread. The scan owns
+        the axis from here, so this abandons the sweep where it stands and
+        lets the scan's own return-to-center define the final position.
+        """
+        self._yieldActuator.set()
         self._stopRequested.set()
 
     def run(self):
@@ -1088,7 +1106,15 @@ class FocusCalibThread(Thread):
                 f'Focus calibration failed: {e}', exc_info=True
             )
         finally:
-            if startPosition is not None:
+            if self._yieldActuator.is_set():
+                # A scan took the axis. Restoring our own start position here
+                # would be one more command fighting the scan waveform.
+                self._controller._logger.warning(
+                    'Focus calibration was cancelled because a scan took the '
+                    'focus axis; its results are discarded and the axis is '
+                    'left to the scan.'
+                )
+            elif startPosition is not None:
                 try:
                     setAbsolutePosition(startPosition)
                 except Exception as e:

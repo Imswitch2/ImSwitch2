@@ -116,6 +116,21 @@ class PositionerInfo(DeviceInfo):
     Ctrl+Shift+Arrow set; ``null`` (default) keeps the legacy behaviour where the
     first positioner declaring a given axis claims the Ctrl+Arrow set. """
 
+    physicalActuator: Optional[str] = None
+    """ Identity of the physical device this positioner drives.
+
+    Two positioners sharing the same non-null value are declared to be *one
+    piece of hardware reached two ways* -- the STED setup does exactly this,
+    addressing one piezo as the analog scanner ``ND-PiezoZ`` and as the serial
+    ``PiezoZ``. Consumers that must not drive an actuator concurrently with a
+    scan (the focus lock) use this to decide whether they conflict.
+
+    The identifier is arbitrary; only equality between positioners matters.
+    Leaving it unset falls back to comparing axis names, which is conservative
+    -- two positioners carrying the same axis are assumed to be the same
+    device. Giving two same-axis positioners **different** ids is therefore
+    the way to declare that they really are independent stages. """
+
 
 
 

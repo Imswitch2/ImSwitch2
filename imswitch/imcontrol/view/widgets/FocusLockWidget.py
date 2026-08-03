@@ -33,7 +33,6 @@ class FocusLockWidget(Widget):
             'Unchecking this lets the lock oppose the scan waveform when both '
             'reach the same actuator.'
         )
-        self.zStackBox = QtWidgets.QCheckBox('Z-stack')
         self.twoFociBox = QtWidgets.QCheckBox('Two foci')
 
         self.lockStateLabel = QtWidgets.QLabel('')
@@ -42,9 +41,6 @@ class FocusLockWidget(Widget):
             'focus axis; "Reacquiring" means it is waiting for the focus '
             'signal to return before correcting again.'
         )
-
-        self.zStepFromEdit = QtWidgets.QLineEdit('40')
-        self.zStepFromLabel = QtWidgets.QLabel('Min z-stack step (nm)')
 
         self.camDialogButton = guitools.BetterPushButton('Camera Dialog')
 
@@ -92,11 +88,8 @@ class FocusLockWidget(Widget):
         grid.addWidget(self.kiLabel, 2, 3)
         grid.addWidget(self.kiEdit, 2, 4)
         grid.addWidget(self.lockButton, 1, 5, 2, 1)
-        # grid.addWidget(self.zStackBox, 3, 6)
         grid.addWidget(self.ScanBlock, 3, 6)
         grid.addWidget(self.twoFociBox, 2, 6)
-        grid.addWidget(self.zStepFromLabel, 3, 4)
-        grid.addWidget(self.zStepFromEdit, 3, 5)
         grid.addWidget(self.calibFromLabel, 1, 0)
         grid.addWidget(self.calibFromEdit, 1, 1)
         grid.addWidget(self.calibToLabel, 2, 0)

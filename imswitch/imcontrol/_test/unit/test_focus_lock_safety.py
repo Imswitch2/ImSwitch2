@@ -108,10 +108,6 @@ def _makeController(*, currentValue, kp, ki=0.0):
 
     ctrl.locked = True
     ctrl.aboutToLock = False
-    ctrl.noStepVar = True
-    ctrl.zStackVar = False
-    ctrl.lastPosition = 0.0
-    ctrl.currentPosition = 0.0
     ctrl._lastPIUpdate = None
 
     # Scan-arbitration state: unlockFocus abandons any reacquisition in flight,

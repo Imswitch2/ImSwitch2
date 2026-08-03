@@ -1363,7 +1363,6 @@ def test_focus_lock_pauses_pi_motion_while_calibrating():
     ctrl.twoFociVar = False
     ctrl.locked = True
     ctrl.aboutToLock = False
-    ctrl.noStepVar = True
     ctrl.currPoint = 0
     ctrl.buffer = 2
     ctrl.setPointData = np.zeros(2)

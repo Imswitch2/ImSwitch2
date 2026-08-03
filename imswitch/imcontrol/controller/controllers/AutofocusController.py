@@ -27,6 +27,10 @@ class AutofocusController(ImConWidgetController):
         self._focusLeaseLock = threading.Lock()
         self._closed = False
         self._focusing = False
+        # Depth-counted like the focus lock's: workflows publish these signals
+        # themselves, so a duplicate start must not be cleared by a single end.
+        self._scanDepth = 0
+        self._scanActive = False
 
         if self._setupInfo.autofocus is None:
             return
@@ -46,8 +50,49 @@ class AutofocusController(ImConWidgetController):
         self.sigFocusDone.connect(self._onFocusDone)
         self.sigFocusStopped.connect(self._onFocusStopped)
 
+        self._commChannel.sigScanStarting.connect(self._onScanStarting)
+        self._commChannel.sigScanEnded.connect(self._onScanEnded)
+
+    def _onScanStarting(self):
+        """A scan is about to take the hardware; cancel any sweep in flight."""
+        if self.__dict__.get('_closed', False):
+            return
+        self._scanDepth = self.__dict__.get('_scanDepth', 0) + 1
+        self._scanActive = True
+        if self.__dict__.get('_focusing', False):
+            self._logger.warning(
+                'Autofocus cancelled: a scan took the Z axis.'
+            )
+            cancel = self.__dict__.get('_focusCancel')
+            if cancel is not None:
+                cancel.set()
+
+    def _onScanEnded(self):
+        if self.__dict__.get('_closed', False):
+            return
+        depth = self.__dict__.get('_scanDepth', 0)
+        if depth <= 0:
+            # Never clear on an end we did not see a start for.
+            return
+        self._scanDepth = depth - 1
+        self._scanActive = self._scanDepth > 0
+
     def closeEvent(self) -> bool:
         self._closed = True
+
+        comm = self.__dict__.get('_commChannel')
+        if comm is not None:
+            for signalName, slot in (
+                ('sigScanStarting', self._onScanStarting),
+                ('sigScanEnded', self._onScanEnded),
+            ):
+                signal = getattr(comm, signalName, None)
+                if signal is not None:
+                    try:
+                        signal.disconnect(slot)
+                    except Exception:
+                        pass
+
         cancel = self.__dict__.get('_focusCancel')
         if cancel is not None:
             cancel.set()
@@ -144,6 +189,17 @@ class AutofocusController(ImConWidgetController):
             return
         rangez, resolutionz = values
         if self._focusing or self.__dict__.get('_closed', False):
+            return
+        if self.__dict__.get('_scanActive', False):
+            # Autofocus sweeps Z from a worker thread. On a rig where it
+            # targets the same actuator a scan is driving, that is the same
+            # conflict the focus lock yields for.
+            self._logger.warning(
+                'Autofocus cannot start while a scan is running; it would '
+                'drive the Z axis against the scan waveform.'
+            )
+            if not self.__dict__.get('_closed', False):
+                self._onFocusStopped()
             return
         self._focusCancel.clear()
         self._focusing = True

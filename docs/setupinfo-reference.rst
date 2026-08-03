@@ -201,6 +201,14 @@ Each positioner requires:
   on a first-come basis per axis. This only sets the *defaults*; individual jog
   actions (``positioner.<name>.<axis>.plus`` / ``.minus``) can be rebound to any
   key via the ``shortcuts`` section below.
+* ``physicalActuator`` (optional str): identity of the physical device this
+  positioner drives. Two positioners with the same non-null value are declared
+  to be *one piece of hardware reached two ways* — the STED example addresses a
+  single piezo as the analog ``ND-PiezoZ`` and as the serial ``PiezoZ``. The
+  focus lock uses this to decide whether a scan conflicts with it; see
+  :ref:`focuslock-scan-arbitration`. The identifier is arbitrary, only equality
+  between positioners matters, and giving two same-axis positioners *different*
+  ids is how you declare that they really are independent stages.
 
 **Example** (mock XY stage):
 
