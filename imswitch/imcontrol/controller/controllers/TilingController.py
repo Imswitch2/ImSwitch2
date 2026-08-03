@@ -244,6 +244,8 @@ class TilingController(ImConWidgetController):
         self._widget.setDefaultSaveTiles(getattr(tilingInfo, 'saveTiles', False))
         self._widget.setMode(getattr(tilingInfo, 'mode', MODE_FREE_RUNNING))
         self._populateScanSources(getattr(tilingInfo, 'scanSource', ''))
+        self._populateDetectors(getattr(tilingInfo, 'camera', ''))
+        self._widget.sigDetectorChanged.connect(self._onDetectorChanged)
         self._widget.setDefaultTileOrientation(
             getattr(tilingInfo, 'flipTileAxisX', False),
             getattr(tilingInfo, 'flipTileAxisY', False),
@@ -300,6 +302,7 @@ class TilingController(ImConWidgetController):
             save_tiles = self._widget.getSaveTiles()
             mode = self._widget.getMode()
             scan_source_key = self._widget.getScanSource()
+            detector_name = self._widget.getDetector()
 
             self._stitcher = None
             self._originXY = None
@@ -322,6 +325,7 @@ class TilingController(ImConWidgetController):
                     tilingInfo, n_tiles, step_um, blend_overlaps,
                     intensity_correction, settle_s, register_tiles,
                     orientation, save_tiles, mode, scan_source_key,
+                    detector_name,
                 ),
                 daemon=True,
             )
@@ -431,6 +435,7 @@ class TilingController(ImConWidgetController):
         save_tiles: bool = False,
         mode: str = MODE_FREE_RUNNING,
         scan_source_key=None,
+        detector_name=None,
     ) -> None:
         acqHandle = None
         positioner = None
@@ -459,9 +464,13 @@ class TilingController(ImConWidgetController):
             x_axis, y_axis = axes[0], axes[1]
             applied_um = {x_axis: 0.0, y_axis: 0.0}
 
-            camera = (tilingInfo.camera
-                      if tilingInfo.camera
-                      else self._defaultCamera())
+            # Precedence: this run's widget selection, then the setup file,
+            # then the first acquisition detector. The widget only returns a
+            # name when the setup actually offered a choice, so a single-camera
+            # rig behaves exactly as before.
+            camera = (detector_name
+                      or tilingInfo.camera
+                      or self._defaultCamera())
             detector = self._master.detectorsManager[camera]
 
             # Tiling used to arm nothing at all and silently depend on live
@@ -1039,6 +1048,47 @@ class TilingController(ImConWidgetController):
         self._widget.setScanSources(names)
         if preferredKey and preferredKey in names:
             self._widget.setScanSource(preferredKey)
+
+    def _populateDetectors(self, preferredName: str) -> None:
+        """Offer the detector choice, but only when there is one to make.
+
+        Deliberately *not* persisted with the widget state. The setup file is
+        the default every session and the combo is a session override; saving
+        the selection would silently outrank ``tiling.camera`` at every
+        startup, which is the failure this codebase already hit once with
+        ``cameraPixelSizeUm``.
+        """
+        names = [
+            name for name, info in self._setupInfo.detectors.items()
+            if getattr(info, 'forAcquisition', False)
+        ]
+        self._widget.setDetectors(names)
+        if preferredName and preferredName in names:
+            self._widget.setDetector(preferredName)
+
+    def _onDetectorChanged(self) -> None:
+        """Discard an overview that the new detector cannot be placed against.
+
+        The mosaic's geometry comes from the detector's pixel size, and
+        click-to-navigate maps overview pixels back to stage coordinates
+        through it. Keeping a mosaic built with a different pixel size would
+        send the stage somewhere other than where the operator clicked.
+        """
+        if self.__dict__.get('_scanning', False):
+            return
+        if self._stitcher is None:
+            return
+        self._stitcher = None
+        self._originXY = None
+        self._gridPositions = []
+        self._cellPositionsRC = None
+        self._cellProps = None
+        self._widget.clearCellMarkers()
+        self._widget.setCellTargetingEnabled(False)
+        self._logger.info(
+            'Tiling: detector changed, so the previous overview was discarded '
+            '— its pixel size no longer applies.'
+        )
 
     def _onModeChanged(self, mode: str) -> None:
         """Re-list scan sources when triggered mode is selected.

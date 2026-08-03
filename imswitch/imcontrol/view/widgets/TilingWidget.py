@@ -21,6 +21,7 @@ class TilingWidget(Widget):
     sigTuneSegmentation = QtCore.Signal()
     sigRunCellTargeting = QtCore.Signal()
     sigModeChanged = QtCore.Signal(str)
+    sigDetectorChanged = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -100,6 +101,21 @@ class TilingWidget(Widget):
         layout.addWidget(self.scanSourceCombo, 2, 3)
         self.scanSourceLabel.setVisible(False)
         self.scanSourceCombo.setVisible(False)
+
+        self.detectorLabel = QtWidgets.QLabel('Detector:')
+        self.detectorCombo = QtWidgets.QComboBox()
+        self.detectorCombo.setToolTip(
+            'Which detector supplies the tiles. The setup file chooses the\n'
+            'default; this overrides it for the current session.\n'
+            'Only shown when the setup has more than one to pick from.\n'
+            'Changing it discards the current overview: a different detector\n'
+            'means a different pixel size, so the existing mosaic no longer\n'
+            'maps to stage coordinates.'
+        )
+        layout.addWidget(self.detectorLabel, 2, 4)
+        layout.addWidget(self.detectorCombo, 2, 5)
+        self.detectorLabel.setVisible(False)
+        self.detectorCombo.setVisible(False)
 
         # Row 3: Start, Stop buttons and navigate toggle
         self.startButton = guitools.BetterPushButton('Start Tiling')
@@ -195,6 +211,8 @@ class TilingWidget(Widget):
         self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
         self.modeCombo.currentIndexChanged.connect(self._onModeChanged)
         self.scanSourceCombo.currentIndexChanged.connect(self.sigParamsChanged)
+        self.detectorCombo.currentIndexChanged.connect(self.sigParamsChanged)
+        self.detectorCombo.currentIndexChanged.connect(self.sigDetectorChanged)
         self.flipXCheck.stateChanged.connect(self.sigParamsChanged)
         self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
         self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
@@ -279,6 +297,34 @@ class TilingWidget(Widget):
         showChoice = len(keys) > 1
         self.scanSourceLabel.setVisible(showChoice)
         self.scanSourceCombo.setVisible(showChoice)
+
+    def getDetector(self):
+        """Selected detector name, or None to let the controller resolve it.
+
+        None when the setup offers no choice, so the setup-file value (and its
+        fallback) stays the single authority on rigs with one camera.
+        """
+        if not self.detectorCombo.isVisible():
+            return None
+        return self.detectorCombo.currentData()
+
+    def setDetector(self, name: str) -> None:
+        index = self.detectorCombo.findData(name)
+        if index >= 0:
+            self.detectorCombo.setCurrentIndex(index)
+
+    def setDetectors(self, names) -> None:
+        """Offer a detector choice, but only when there is one to make."""
+        names = list(names or [])
+        self.detectorCombo.blockSignals(True)
+        self.detectorCombo.clear()
+        for name in names:
+            self.detectorCombo.addItem(name, name)
+        self.detectorCombo.blockSignals(False)
+
+        showChoice = len(names) > 1
+        self.detectorLabel.setVisible(showChoice)
+        self.detectorCombo.setVisible(showChoice)
 
     def getTileOrientation(self) -> tuple:
         """Return ``(flip_x, flip_y, swap_axes)`` for mosaic assembly."""

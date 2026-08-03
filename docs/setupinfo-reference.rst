@@ -622,7 +622,7 @@ Key fields:
 
 * ``xyPositioner`` (str): Name of the XY positioner (must match a positioner in the setup)
 * ``zPositioner`` (str, optional): Name of the Z positioner for per-tile autofocus (empty string = disabled)
-* ``camera`` (str, optional): Detector to use for tile acquisition (empty string = first ``forAcquisition`` detector)
+* ``camera`` (str, optional): Detector to use for tile acquisition (empty string = first ``forAcquisition`` detector). This is the *default*, not a fixed choice: on a rig with more than one acquisition detector the widget shows a **Detector** combo that overrides it for the session. The override is not persisted, so this field stays the value every session starts from. Switching detectors discards the current overview, because the mosaic's geometry comes from the detector's pixel size.
 * ``defaultTileStepUm`` (float): Default stage step between tile centres in micrometers
 
 **Example**:
