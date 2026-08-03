@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 from imswitch.imcommon.model import dirtools, initLogger
+# Imported from the submodule, not the package: this module is itself imported
+# from the package __init__, so only names bound before it are available there.
+from imswitch.imcommon.model.state_contracts import rewordRestoreWarning
 
 
 class WidgetStatePersistence:
@@ -272,7 +275,8 @@ class WidgetStatePersistence:
             return False
     
     def loadWidgetState(self, controller_name: str, state_name: str = 'default',
-                       apply_immediately: bool = True) -> Optional[Dict[str, Any]]:
+                       apply_immediately: bool = True,
+                       warnings_out: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """
         Load a saved state for a specific widget controller (legacy API).
         
@@ -280,6 +284,7 @@ class WidgetStatePersistence:
             controller_name: Name of the controller to load state for (accepts aliases)
             state_name: Name of the state snapshot to load
             apply_immediately: If True, apply state to controller immediately
+            warnings_out: Optional list that receives user-facing restore warnings
         
         Returns:
             The loaded state dict if successful, None otherwise
@@ -331,6 +336,11 @@ class WidgetStatePersistence:
                     self._logger.warning(
                         f'Warnings while applying {controller_name}/{state_name}: {warnings}'
                     )
+                    if warnings_out is not None:
+                        warnings_out.extend(
+                            rewordRestoreWarning(warning, f'{canonical_name}: {warning}')
+                            for warning in warnings
+                        )
                 self._logger.debug(f'Loaded and applied widget state: {controller_name}/{state_name}')
             else:
                 self._logger.debug(f'Loaded widget state (not applied): {controller_name}/{state_name}')
@@ -364,12 +374,14 @@ class WidgetStatePersistence:
         self._logger.info(f'Saved {success_count}/{len(self._registry)} widget states')
         return success_count
     
-    def loadAllWidgetStates(self, state_name: str = 'default') -> int:
+    def loadAllWidgetStates(self, state_name: str = 'default',
+                            warnings_out: Optional[List[str]] = None) -> int:
         """
         Load states for all registered controllers (legacy API).
         
         Args:
             state_name: Name of the state snapshot to load
+            warnings_out: Optional list that receives user-facing restore warnings
         
         Returns:
             Number of controllers successfully loaded
@@ -378,7 +390,12 @@ class WidgetStatePersistence:
         for canonical_name in list(self._registry.keys()):
             # Try original registration key first
             original_key = self._registrationKeys.get(canonical_name, canonical_name)
-            if self.loadWidgetState(original_key, state_name, apply_immediately=True) is not None:
+            if self.loadWidgetState(
+                original_key,
+                state_name,
+                apply_immediately=True,
+                warnings_out=warnings_out,
+            ) is not None:
                 success_count += 1
         
         self._logger.info(f'Loaded {success_count}/{len(self._registry)} widget states')
@@ -471,13 +488,18 @@ class WidgetStatePersistence:
             json.dump(bundle, f, indent=2)
         self._logger.info(f'Widget states exported to {file_path}')
 
-    def load_from_file(self, file_path: str) -> int:
+    def load_from_file(self, file_path: str,
+                       warnings_out: Optional[List[str]] = None) -> int:
         """Import controller states from a file written by save_to_file() (legacy API).
 
         Resolves legacy keys via alias table.
 
         Returns:
             Number of controllers successfully restored.
+
+        ``warnings_out`` receives warnings from component restores so a GUI
+        caller can report partial failures instead of announcing unconditional
+        success.
         """
         with open(file_path, 'r') as f:
             bundle = json.load(f)
@@ -500,6 +522,11 @@ class WidgetStatePersistence:
                 )
                 if warnings:
                     self._logger.warning(f'Warnings while importing {name}: {warnings}')
+                    if warnings_out is not None:
+                        warnings_out.extend(
+                            rewordRestoreWarning(warning, f'{canonical_name}: {warning}')
+                            for warning in warnings
+                        )
                 count += 1
             except Exception as e:
                 self._logger.warning(f'Failed to apply imported state for {name}: {e}')

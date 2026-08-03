@@ -23,6 +23,7 @@ from .MulticolorWidget import MulticolorWidget
 from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
+from .MetadataWidget import MetadataWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
@@ -100,6 +101,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showResultsPanel: bool = True,
         showGraphPanel: bool = True,
         showProfilePanel: bool = True,
+        showMetadataPanel: bool = False,
         showFRCPanel: bool = False,
         showROIStatsPanel: bool = False,
         showProjectionPanel: bool = False,
@@ -282,6 +284,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if showProfilePanel
             else None
         )
+        self.metadataWidget = MetadataWidget() if showMetadataPanel else None
         # Registry-backed startup panels are created by the controller after
         # plugin registration. The view is constructed first, so building
         # ResultProcessorWidget instances here would race an empty registry.
@@ -451,6 +454,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         analysisPanels = [
             ('Graph', self.graphWidget),
             ('Profile', self.profileWidget),
+            ('Metadata', self.metadataWidget),
             ('Results', self.resultsTableWidget),
             ('Projection', self.projectionWidget),
             ('Segmentation', self.segmentationWidget),
@@ -511,6 +515,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._connectResultPusher(self.profileWidget)
         self._connectResultPusher(self.roiStatsWidget)
         self._connectResultPusher(self.graphWidget)
+        self._connectResultPusher(self.metadataWidget)
 
     def requestFilePathFromUser(self, caption=None, defaultFolder=None, nameFilter=None,
                                 isSaving=False):
@@ -813,7 +818,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             setattr(self, spec.attribute, widget)
             if spec.widget_kind == 'roi-manager':
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata'):
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -1192,6 +1197,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             ),
             'graph': lambda: GraphWidget(),
             'profile': lambda: ProfileWidget(viewer),
+            'metadata': lambda: MetadataWidget(),
             'segmentation': lambda: SegmentationWidget(
                 viewer,
                 roiManagerWidget=self.roiManagerWidget,

@@ -73,6 +73,7 @@ _PANEL_SPECS = (
     ("panel.roi-stats", "ROI stats panel", "Ctrl+M", "roi-stats"),
     ("panel.projection", "Projection panel", None, "projection"),
     ("panel.segmentation", "Segmentation panel", None, "segmentation"),
+    ("panel.metadata", "Metadata panel", None, "metadata"),
 )
 
 

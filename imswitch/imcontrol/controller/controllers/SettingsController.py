@@ -3,7 +3,7 @@ from typing import Any, List, Tuple, Dict
 
 import numpy as np
 
-from imswitch.imcommon.model import APIExport
+from imswitch.imcommon.model import APIExport, RestoreWarning
 from imswitch.imcontrol.model import configfiletools, getWidgetStatePersistence
 from imswitch.imcontrol.view import guitools as guitools
 from ..basecontrollers import (
@@ -148,7 +148,7 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                 params = self.allParams[detectorName]
                 params.binning.sigValueChanged.connect(self.updateBinning)
                 params.frameMode.sigValueChanged.connect(self.updateFrame)
-                params.applyROI.sigActivated.connect(self.adjustFrame)
+                params.applyROI.sigActivated.connect(self.applyROIClicked)
                 params.newROI.sigActivated.connect(self.updateFrame)
                 params.abortROI.sigActivated.connect(self.abortROI)
                 params.saveMode.sigActivated.connect(self.saveMode)
@@ -185,11 +185,24 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                 paramInWidget.sigActivated.connect(action.func)
 
     def adjustFrame(self, *, detector=None):
-        """ Crop detector and adjust frame. """
+        """ Crop detector and adjust frame.
+
+        Returns a list of ``(detectorName, error)`` for detectors that refused
+        the ROI -- empty when everything applied. A refusal must not propagate:
+        this runs from ``__init__``'s execOnAll, so an exception here would
+        abort controller construction and take the whole application down with
+        it. The frame fields are refreshed from hardware either way, so a
+        refused ROI is visible rather than left displayed as if applied. """
 
         if detector is None:
-            self.getDetectorManagerFrameExecFunc()(lambda c: self.adjustFrame(detector=c))
-            return
+            results = self.getDetectorManagerFrameExecFunc()(
+                lambda c: self.adjustFrame(detector=c)
+            )
+            # execOnAll returns a dict of per-detector results; execOnCurrent
+            # returns the single detector's result.
+            if isinstance(results, dict):
+                return [failure for result in results.values() for failure in (result or [])]
+            return list(results or [])
 
         # Adjust frame
         params = self.allParams[detector.name]
@@ -212,7 +225,16 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
         vsize = int(vmodulus * np.ceil(vsize / vmodulus))
         hsize = int(hmodulus * np.ceil(hsize / hmodulus))
 
-        detector.crop(hpos, vpos, hsize, vsize)
+        failures = []
+        try:
+            detector.crop(hpos, vpos, hsize, vsize)
+        except Exception as e:
+            # The detector refused the ROI outright (as opposed to snapping it
+            # to a hardware step, which crop() reports by returning normally).
+            # Fall through: the refresh below then shows the geometry the
+            # detector really has instead of the ROI that was never applied.
+            self._logger.error(f'Could not apply ROI to {detector.name}: {e}')
+            failures.append((detector.name, str(e)))
 
         # Final shape values might differ from the user-specified one because of detector limitation
         # x128
@@ -222,6 +244,24 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
         self.updateParamsFromDetector(detector=detector)
         self.updateSharedAttrs()
+        return failures
+
+    def applyROIClicked(self, *_):
+        """ Apply button. The user is watching this one, so a camera that
+        refuses the ROI has to say so -- otherwise the frame fields just snap
+        back to the previous geometry with no explanation. """
+
+        failures = self.adjustFrame()
+        if not failures:
+            return
+
+        guitools.showWarning(
+            self._widget,
+            'ROI not applied',
+            'The camera did not accept the requested ROI:\n\n'
+            + '\n'.join(f'• {name}: {error}' for name, error in failures)
+            + '\n\nThe settings now show the ROI the camera is actually using.'
+        )
 
     def ROIchanged(self):
         """ Update parameters according to ROI. """
@@ -831,10 +871,18 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
             applyMode: ComponentStateApplyMode.STARTUP_RESTORE or SETUP_MODE_APPLY
 
         Returns:
-            List of warning strings (empty if fully successful)
+            List of RestoreWarning strings (empty if fully successful). Ones
+            that mean hardware did not take a setting are marked critical;
+            entries the saved state simply no longer applies to are not, so a
+            state file that predates a setup change does not raise an alarm
+            the operator learns to click away.
         """
         warnings = []
         restoredDetectors = []
+
+        def skipped(message):
+            """The saved state does not apply here; no hardware was left wrong."""
+            return RestoreWarning(message, critical=False)
 
         try:
             detectors_state = state.get('detectors', {})
@@ -842,7 +890,8 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
             for detectorName, detector_state in detectors_state.items():
                 if detectorName not in known_detectors:
-                    warnings.append(f'Detector "{detectorName}" not present in current setup; skipped.')
+                    warnings.append(skipped(
+                        f'Detector "{detectorName}" not present in current setup; skipped.'))
                     continue
 
                 detector = self._master.detectorsManager[detectorName]
@@ -851,7 +900,8 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
 
                 params = self.allParams.get(detectorName)
                 if not params:
-                    warnings.append(f'Detector "{detectorName}" has no widget params; skipped.')
+                    warnings.append(skipped(
+                        f'Detector "{detectorName}" has no widget params; skipped.'))
                     continue
 
                 try:
@@ -885,9 +935,9 @@ class SettingsController(ImConWidgetController, StatefulComponentMixin):
                     for paramName, value in parameters_state.items():
                         parameter = getattr(detector, 'parameters', {}).get(paramName)
                         if parameter is None:
-                            warnings.append(
+                            warnings.append(skipped(
                                 f'Parameter "{paramName}" not present on {detectorName}; skipped.'
-                            )
+                            ))
                             continue
                         if not getattr(parameter, 'editable', True):
                             continue

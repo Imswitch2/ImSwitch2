@@ -110,6 +110,7 @@ def test_runtime_analysis_panel_shortcuts_cover_fiji_like_panels():
         "roi-stats",
         "projection",
         "segmentation",
+        "metadata",
     ]
     assert len({shortcut.id for shortcut in shortcuts}) == len(shortcuts)
     specs = runtime_analysis_tool_specs()
