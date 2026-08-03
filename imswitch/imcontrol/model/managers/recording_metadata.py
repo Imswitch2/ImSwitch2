@@ -160,8 +160,14 @@ class OmeImageMeta:
 
     # ---- serializers -------------------------------------------------------
 
-    def tiff_metadata(self) -> Dict[str, Any]:
-        """``metadata=`` dict for ``tifffile.imwrite(..., ome=True, metadata=...)``."""
+    def tiff_metadata(self, shape: Optional[Sequence[int]] = None) -> Dict[str, Any]:
+        """``metadata=`` dict for ``tifffile.imwrite(..., ome=True, metadata=...)``.
+
+        Pass the shape of the array being written whenever stage positions are
+        attached: OME records one position per plane, and tifffile indexes that
+        list per plane, so a 3D tile written with a single-entry list raises
+        ``IndexError: list index out of range for attribute 'PositionX'``.
+        """
         md: Dict[str, Any] = {'axes': self.axes_string}
         for axis, size in zip(self.axes, self.scale):
             if axis.name == 'x':
@@ -174,29 +180,42 @@ class OmeImageMeta:
                 md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
         if self.channels:
             md['Channel'] = {'Name': [c.get('name', self.name) for c in self.channels]}
-        md.update(self.plane_position_metadata())
+        md.update(self.plane_position_metadata(shape))
         return md
 
-    def n_planes(self) -> int:
-        """Number of OME planes, i.e. the product of the non-YX axis sizes.
+    def n_planes(self, shape: Optional[Sequence[int]] = None) -> int:
+        """Number of OME planes: the product of every non-YX dimension.
 
-        The scale list carries physical sizes, not counts, so this is derived
-        from the axis names alone: anything beyond Y and X contributes planes.
-        Without a real frame count the safe answer is one plane.
+        ``shape`` is the array actually being written and is authoritative.
+        The axis list says which dimensions exist but not how many samples
+        each holds -- the scale list carries physical sizes, not counts -- so
+        the plane count genuinely cannot be derived from the metadata alone.
+        This used to return a hardcoded ``1`` regardless, which is right for a
+        single-plane snap and wrong for every Z stack: a 5-plane tile got one
+        stage-position entry where tifffile indexes five.
+
+        Without a shape the only safe answer is still one plane.
         """
-        return 1
+        if shape is None:
+            return 1
+        planes = 1
+        for size in tuple(int(s) for s in shape)[:-2]:
+            planes *= max(1, size)
+        return max(1, planes)
 
-    def plane_position_metadata(self) -> Dict[str, Any]:
+    def plane_position_metadata(
+        self, shape: Optional[Sequence[int]] = None
+    ) -> Dict[str, Any]:
         """``Plane`` position entries for tifffile's OME metadata dict.
 
-        OME records stage position per *plane*, so the values are lists. Empty
-        when no position is known, which keeps the metadata identical to before
-        for every non-tiled recording.
+        OME records stage position per *plane*, so the values are lists, one
+        entry per plane of ``shape``. Empty when no position is known, which
+        keeps the metadata identical to before for every non-tiled recording.
         """
         if self.stage_position_um is None:
             return {}
         x, y, z = self.stage_position_um
-        n = max(1, self.n_planes())
+        n = self.n_planes(shape)
         plane: Dict[str, Any] = {
             'PositionX': [float(x)] * n,
             'PositionXUnit': [_SPACE_UNIT] * n,
@@ -287,7 +306,7 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
         elif axis.name == 't':
             md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
 
-    md.update(meta.plane_position_metadata())
+    md.update(meta.plane_position_metadata(shp))
 
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
     xml = tifffile.OmeXml()

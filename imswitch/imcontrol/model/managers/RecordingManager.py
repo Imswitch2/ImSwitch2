@@ -1153,7 +1153,7 @@ class TiffStorer(Storer):
             with AsTemporaryFile(f'{self.filepath}_{channel}.ome.tiff') as path:
                 meta = self._meta_for(channel, image=image)
                 tiff.imwrite(path, image, ome=True, bigtiff=True,
-                             metadata=meta.tiff_metadata())
+                             metadata=meta.tiff_metadata(image.shape))
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
     
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,

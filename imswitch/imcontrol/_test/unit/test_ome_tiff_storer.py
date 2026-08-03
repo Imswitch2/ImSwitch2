@@ -112,3 +112,65 @@ def test_abort_removes_partial_file(detman, tmp_path):
     storer.writeFrames('Cam', np.zeros((3, 16, 16), np.uint16))
     storer.abortStream({'Cam': path}, {'Cam': path}, None)
     assert not os.path.exists(path)
+
+
+def test_3d_tile_writes_one_stage_position_per_plane(tmp_path):
+    """OME records stage position per plane and tifffile indexes that list per
+    plane, so a Z stack whose position lists held a single entry raised
+    ``IndexError: list index out of range for attribute 'PositionX'`` and no
+    tile was saved at all. n_planes() returned a hardcoded 1 regardless of the
+    data -- correct for a single-plane snap, wrong for every 3D tile.
+    """
+    import numpy as np
+    import tifffile
+
+    from imswitch.imcontrol.model.managers import recording_metadata as _ome
+
+    meta = _ome.build_ome_image_meta(
+        'Tile', _ome.MODE_SCAN, 5, scan_dims=(1, 1, 5), z_step_um=0.5,
+        pixel_size_yx_um=(0.1, 0.1), dtype=np.uint16,
+        stage_position_um=(100.0, 200.0, 40.0),
+    )
+    image = np.zeros((5, 64, 64), np.uint16)
+
+    assert meta.n_planes(image.shape) == 5
+    md = meta.tiff_metadata(image.shape)
+    assert len(md['Plane']['PositionX']) == 5
+    assert len(md['Plane']['PositionZ']) == 5
+
+    path = tmp_path / 'tile.ome.tiff'
+    tifffile.imwrite(str(path), image, ome=True, bigtiff=True, metadata=md)
+
+    with tifffile.TiffFile(str(path)) as handle:
+        xml = handle.ome_metadata
+        assert handle.series[0].shape == (5, 64, 64)
+    assert 'SizeZ="5"' in xml
+    assert xml.count('PositionX=') == 5
+
+
+def test_a_plain_2d_snap_still_gets_exactly_one_position():
+    import numpy as np
+
+    from imswitch.imcontrol.model.managers import recording_metadata as _ome
+
+    meta = _ome.build_ome_image_meta(
+        'Snap', _ome.MODE_SNAP, 1, pixel_size_yx_um=(0.1, 0.1),
+        dtype=np.uint16, stage_position_um=(1.0, 2.0, 3.0),
+    )
+
+    md = meta.tiff_metadata((64, 64))
+
+    assert len(md['Plane']['PositionX']) == 1
+
+
+def test_a_recording_without_a_stage_position_is_unchanged():
+    import numpy as np
+
+    from imswitch.imcontrol.model.managers import recording_metadata as _ome
+
+    meta = _ome.build_ome_image_meta(
+        'Cam', _ome.MODE_TIMELAPSE, 10, pixel_size_yx_um=(0.1, 0.1),
+        dtype=np.uint16,
+    )
+
+    assert 'Plane' not in meta.tiff_metadata((10, 64, 64))
