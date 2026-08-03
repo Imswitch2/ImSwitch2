@@ -1093,10 +1093,18 @@ class ProcessDataThread(Thread):
 
         imagearraygfsub = imagearraygf[xlow:xhigh, ylow:yhigh]
         massCenter = np.array(ndi.center_of_mass(imagearraygfsub))
-        # add the information about where the center of the subarray is
-        massCenterGlobal = massCenter[0] + centercoords2[0]  # - subsizey - self.sensorSize[1] / 2
-        #self._controller._widget.center.setValue(massCenterGlobal)
-        #print(massCenterGlobal)
+        # Re-reference the window-local centroid to the frame by adding where
+        # the window actually starts. This added the *peak* coordinate instead,
+        # which is 'subsizex' further along, so the reported position sat a
+        # constant 50 px from the spot -- visible as the marker line never
+        # lining up with the maximum.
+        #
+        # Worse than cosmetic within 'subsizex' of the low edge, where the
+        # window is clipped and the peak coordinate stops tracking the window
+        # start: there the error became signal-dependent and the loop gain
+        # nearly doubled, so the lock was non-linear exactly where the spot
+        # ran close to the edge of the crop.
+        massCenterGlobal = massCenter[0] + xlow
         return massCenterGlobal
 
 
