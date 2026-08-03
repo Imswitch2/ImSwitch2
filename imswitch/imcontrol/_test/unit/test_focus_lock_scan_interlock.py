@@ -583,3 +583,117 @@ def test_calibration_starts_normally_when_no_scan_is_running():
 
     assert started == [True]
     assert ctrl._focusCalibrationActive is True
+
+
+# --------------------------------------------------------------------------
+# Interactions that must not defeat the suspension
+# --------------------------------------------------------------------------
+
+def test_editing_gains_during_a_scan_keeps_the_pending_restore():
+    """Regression: kp/ki edits were wired straight to unlockFocus.
+
+    That cleared the suspension bookkeeping, so the lock never came back after
+    the scan -- while the button went on claiming it was engaged.
+    """
+    ctrl = _makeController(setPoint=10.0)
+
+    _suspend(ctrl)
+    FocusLockController.gainsChanged(ctrl)
+    _end(ctrl)
+
+    assert FocusLockController.focusLockState(ctrl) == STATE_REACQUIRING
+    assert ctrl._preScanSetPoint == 10.0
+
+
+def test_editing_gains_while_locked_still_drops_the_lock():
+    """The historical behaviour, so new gains take effect on the next lock."""
+    ctrl = _makeController()
+
+    FocusLockController.gainsChanged(ctrl)
+
+    assert ctrl.locked is False
+
+
+def test_the_lock_button_does_not_engage_into_a_running_scan():
+    """Clicking Lock mid-scan used to arm the loop against the waveform."""
+    ctrl = _makeController(locked=False)
+    ctrl._widget.lockButton.checked = True
+
+    _suspend(ctrl)
+    FocusLockController.toggleFocus(ctrl)
+
+    assert ctrl.locked is False
+    assert ctrl._suspendedLock is True, 'the intent must be remembered'
+    assert ctrl.positionerReads == 0, 'no hardware read while a scan owns it'
+
+
+def test_a_lock_requested_mid_scan_engages_once_the_scan_releases():
+    ctrl = _makeController(locked=False)
+    ctrl._widget.lockButton.checked = True
+
+    _suspend(ctrl)
+    FocusLockController.toggleFocus(ctrl)
+    _end(ctrl)
+    # No pre-scan setpoint to return to, so the barrier only waits for settle.
+    _feed(ctrl, 4.0, n=ctrl.reacquireSampleCount)
+
+    assert ctrl.locked is True
+    assert ctrl.pi.setPoint == 4.0
+
+
+def test_unlocking_mid_scan_cancels_the_pending_restore():
+    ctrl = _makeController()
+    ctrl._widget.lockButton.checked = False
+
+    _suspend(ctrl)
+    FocusLockController.toggleFocus(ctrl)
+    _end(ctrl)
+
+    assert ctrl.locked is False
+    assert FocusLockController.focusLockState(ctrl) == STATE_UNLOCKED
+
+
+def test_a_second_scan_re_suspends_a_lock_an_earlier_one_handed_back():
+    """The early release is per-scan, not a latch."""
+    ctrl = _makeController()
+
+    _suspend(ctrl)
+    FocusLockController.scanActuatorsResolved(ctrl, ['ND-GalvoX'])
+    assert ctrl.locked is True
+
+    _suspend(ctrl)          # a second, unknown scan
+
+    assert ctrl.locked is False
+    assert ctrl._scanOwnsFocusActuator is True
+
+
+def test_no_early_release_while_more_than_one_scan_is_active():
+    """One flag cannot prove every concurrent scan is harmless."""
+    ctrl = _makeController()
+
+    _suspend(ctrl)
+    _suspend(ctrl)
+    FocusLockController.scanActuatorsResolved(ctrl, ['ND-GalvoX'])
+
+    assert ctrl.locked is False
+
+
+def test_a_scan_with_no_lock_is_not_reported_as_suspended():
+    ctrl = _makeController(locked=False)
+
+    _suspend(ctrl)
+
+    assert FocusLockController.focusLockState(ctrl) == STATE_UNLOCKED
+
+
+def test_re_engaging_does_not_query_the_positioner():
+    """lockPosition is write-only state; reading it would cost an RS232
+    round trip on the GUI thread for every tile in a run."""
+    ctrl = _makeController(setPoint=10.0)
+
+    _suspend(ctrl)
+    _end(ctrl)
+    _feed(ctrl, 10.0, n=ctrl.reacquireSampleCount)
+
+    assert ctrl.locked is True
+    assert ctrl.positionerReads == 0

@@ -1015,14 +1015,6 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             # failure path.
             self._scanRunStartingPublished = True
             self.emitScanSignal(self._commChannel.sigScanStarting)
-        if isNewRun:
-            # getattr, in keeping with the rest of this method: it is invoked
-            # against minimal controller stand-ins that implement only the
-            # ownership protocol. A controller without the publisher simply
-            # leaves its consumers on their safe default.
-            publishActuators = getattr(self, '_publishScanActuators', None)
-            if callable(publishActuators):
-                publishActuators()
         return token
 
     def _scanRunReleaseProven(self, token) -> bool:
@@ -1352,6 +1344,13 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         itself does not depend on this, only the consumers do.
         """
         self._scanPositionersRestored = False
+        # Published here rather than alongside sigScanStarting, which fires
+        # from _beginScanRun *before* getParameters has run: the parameter
+        # dicts still describe the previous scan at that point, so a run that
+        # newly added a Z axis could have been announced as not touching it.
+        # Consumers have already yielded on sigScanStarting and this only ever
+        # releases them, so arriving later is safe -- arriving wrong is not.
+        self._publishScanActuators()
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
         except Exception:

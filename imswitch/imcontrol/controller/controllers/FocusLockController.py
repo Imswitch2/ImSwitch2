@@ -90,8 +90,8 @@ class FocusLockController(ImConWidgetController):
         self._widget.setKi(self._setupInfo.focusLock.piKi)
 
         # Connect FocusLockWidget buttons
-        self._widget.kpEdit.textChanged.connect(self.unlockFocus)
-        self._widget.kiEdit.textChanged.connect(self.unlockFocus)
+        self._widget.kpEdit.textChanged.connect(self.gainsChanged)
+        self._widget.kiEdit.textChanged.connect(self.gainsChanged)
 
         self._widget.lockButton.clicked.connect(self.toggleFocus)
         self._widget.camDialogButton.clicked.connect(self.cameraDialog)
@@ -336,14 +336,20 @@ class FocusLockController(ImConWidgetController):
             return
 
         self._scanSuspendDepth += 1
-        if self._scanSuspendDepth > 1:
-            # Already yielded. A nested or duplicate start must not overwrite
-            # the setpoint captured when the first one arrived.
-            return
-
+        # Deliberately no early-out on a nested start. An earlier concurrent
+        # scan may have proved itself harmless and handed the lock back; this
+        # new one is unknown until its own actuator list arrives, so it has to
+        # yield again. Re-capturing the setpoint is safe: either the lock is
+        # already suspended (nothing to capture) or it was re-engaged on the
+        # same setpoint we stored.
         self._scanOwnsFocusActuator = True
         self._reacquireFailed = False
-        self._suspendedLock = bool(self.locked) or bool(self.aboutToLock)
+        # Sticky: once a lock has been yielded it stays wanted until the run
+        # terminal or an explicit unlock. A nested start sees `locked` already
+        # False and must not read that as "there was nothing to give up".
+        self._suspendedLock = (
+            self._suspendedLock or bool(self.locked) or bool(self.aboutToLock)
+        )
         if self.locked and getattr(self, 'pi', None) is not None:
             self._preScanSetPoint = self.pi.setPoint
         elif self._preScanSetPoint is None:
@@ -390,7 +396,11 @@ class FocusLockController(ImConWidgetController):
         """
         if self.__dict__.get('_shutdownComplete', False):
             return
-        if self._scanSuspendDepth <= 0 or not self._scanOwnsFocusActuator:
+        if self._scanSuspendDepth != 1 or not self._scanOwnsFocusActuator:
+            # Exactly one scan active, or we cannot reason about it. A single
+            # flag cannot say "every concurrent scan is harmless", and getting
+            # that wrong means correcting into a live waveform -- so with more
+            # than one in flight the lock simply stays yielded.
             return
         if self.scanTouchesFocusActuator(actuators):
             return
@@ -550,14 +560,13 @@ class FocusLockController(ImConWidgetController):
             self._endReacquire()
             return
 
+        # Deliberately no positioner read here. ``lockPosition`` is write-only
+        # state -- its only reader was the distance calculation that was
+        # commented out along with the position polling -- so querying it would
+        # cost an RS232 round trip on the GUI thread for every tile in a run,
+        # to store a number nothing consults.
         self.pi = PI(target, 0.001, kp, ki, nominalDt=self.focusTime / 1000.0)
         self._lastPIUpdate = None
-        try:
-            self.lockPosition = self.getPositionerAbs()
-        except Exception as e:
-            self._logger.warning(
-                f'Focus lock could not read the positioner while re-engaging: {e}'
-            )
         self.locked = True
         self._reacquireFailed = False
         self._endReacquire(notify=False)
@@ -574,7 +583,12 @@ class FocusLockController(ImConWidgetController):
             return STATE_LOCKED
         if self.aboutToLock:
             return STATE_REACQUIRING
-        if self.__dict__.get('_scanSuspendDepth', 0) > 0:
+        if (
+            self.__dict__.get('_scanSuspendDepth', 0) > 0
+            and self.__dict__.get('_suspendedLock', False)
+        ):
+            # Only when a lock is actually being held for us. A scan running
+            # while the user never asked for a lock is not "suspended".
             return STATE_SUSPENDED
         if self.__dict__.get('_reacquireFailed', False):
             # Distinct from UNLOCKED on purpose: the operator asked for a lock
@@ -609,6 +623,19 @@ class FocusLockController(ImConWidgetController):
                 'Failed to display the focus-lock state', exc_info=True
             )
 
+    def gainsChanged(self):
+        """Editing kp/ki drops an *active* lock so the new gains take effect.
+
+        It must not also cancel a suspension: the gains are re-read from the
+        widget every time the loop is re-armed, so a lock a scan is holding
+        for us picks them up by itself. Routing this straight to
+        ``unlockFocus`` meant typing in the kp box mid-scan silently abandoned
+        the pending restore -- the lock never came back, and the button went
+        on claiming it was engaged.
+        """
+        if self.locked:
+            self.unlockFocus()
+
     def unlockFocus(self):
         if self.locked:
             self.locked = False
@@ -629,15 +656,32 @@ class FocusLockController(ImConWidgetController):
         self._endReacquire()
 
     def toggleFocus(self):
-        self.aboutToLock = False
-        self._suspendedLock = False
+        # Abandon any barrier in flight, and release anything waiting on it,
+        # before acting on the new intent.
+        self._endReacquire(notify=False)
         if self._widget.lockButton.isChecked():
+            if (
+                self.__dict__.get('_scanSuspendDepth', 0) > 0
+                and self._scanOwnsFocusActuator
+            ):
+                # A scan owns the axis. Record that a lock is wanted and
+                # engage once it is released, rather than locking against the
+                # running waveform -- which is the very thing the suspension
+                # exists to prevent, arrived at through the button instead.
+                # No pre-scan setpoint: there was no lock to return to, so
+                # reacquisition waits for the signal to settle and locks there.
+                self._suspendedLock = True
+                self._preScanSetPoint = None
+                self._widget.lockButton.setText('Unlock')
+                self._publishFocusLockState()
+                return
             zpos = self.getPositionerAbs()
             self.lockFocus(zpos)
             self._widget.lockButton.setText('Unlock')
         else:
             self.unlockFocus()
             self._widget.lockButton.setText('Lock')
+        self._publishFocusLockState()
 
     def cameraDialog(self):
         self._master.detectorsManager[self.camera].openPropertiesDialog()
@@ -743,10 +787,9 @@ class FocusLockController(ImConWidgetController):
             pass
         elif self.locked:
             value_move = self.updatePI(timestamp)
-            # updatePI can drop the lock mid-tick (safety trip, z-step
-            # handover). Re-read the flag rather than trusting the branch this
-            # tick was entered on, so a correction is never applied to a lock
-            # that no longer exists.
+            # updatePI drops the lock mid-tick on a safety trip. Re-read the
+            # flag rather than trusting the branch this tick was entered on,
+            # so a correction is never applied to a lock that no longer exists.
             if self.locked and abs(value_move) > 0.002:
                 self.movePositioner(value_move)
         elif self.aboutToLock:
