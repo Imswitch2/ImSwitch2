@@ -120,6 +120,7 @@ def _build_manager(laser: FakeLaser, modulation_power_mw: float = 5.0,
     m._scpi = None
     m._pause_mode = pause_mode
     m._emission_control = 'pause' if pause_mode else 'master'
+    m._startup_control = 'external'
     m._protocol_profile = None
     m._profiles = build_profiles('mw')
     m._profile = None
@@ -156,6 +157,7 @@ def test_detect_firmware_records_identity():
         'requestedEmissionControl': 'master',
         'resolvedEmissionControl': 'master',
         'emissionControl': 'master',
+        'startupControl': 'external',
         'scpiPowerUnit': 'mW',
     }
     assert laser.cmds[:3] == ['gfv?', 'sn?', 'glm?']
@@ -528,6 +530,67 @@ def test_pause_mode_init_gated_and_paused_without_autostart():
     assert 'l0' not in laser.cmds
     assert '@cobas 0' not in laser.cmds
     assert m._enabled is False
+
+
+def test_software_start_init_gates_then_starts_once_and_pauses():
+    """The opt-in controller start is bracketed by the safe modulation gate
+    and emission pause. It is not repeated by later GUI enable transitions."""
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, modulation_power_mw=5.0, pause_mode=True)
+    m._scpi = True
+    m._startup_control = 'software'
+
+    m._init_safe_state()
+    m._setpoint_mw = 50
+    m.setEnabled(True)
+
+    assert laser.cmds[:5] == [
+        'LASer:PowerModulation:POWer:SETPoint 5.0',
+        'LASer:RUNMode PowerModulation',
+        'las:pm:dig:ena 1',
+        '@cob1',
+        'las:paus 1',
+    ]
+    assert laser.cmds.count('@cob1') == 1
+    assert 'l0' not in laser.cmds
+    assert 'l1' not in laser.cmds
+
+
+def test_software_start_is_not_attempted_without_a_safe_modulation_gate():
+    laser = FakeLaser(
+        firmware='scpi',
+        failed_cmds={'las:pm:dig:ena 1', 'sdmes 1'},
+    )
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._startup_control = 'software'
+
+    with pytest.raises(DeviceInitializationError, match='not attempted'):
+        m._init_safe_state()
+
+    assert '@cob1' not in laser.cmds
+
+
+def test_failed_software_start_requests_pause_and_aborts_initialization():
+    laser = FakeLaser(firmware='scpi', failed_cmds={'@cob1'})
+    m = _build_manager(laser, pause_mode=True)
+    m._scpi = True
+    m._startup_control = 'software'
+
+    with pytest.raises(DeviceInitializationError, match='start failed'):
+        m._init_safe_state()
+
+    assert laser.cmds[-2:] == ['@cob1', 'las:paus 1']
+
+
+def test_software_start_requires_pause_emission_control():
+    laser = FakeLaser(firmware='scpi')
+    m = _build_manager(laser, pause_mode=False)
+    m._scpi = True
+    m._startup_control = 'software'
+
+    with pytest.raises(DeviceInitializationError, match='requires.*pause'):
+        m._validate_profile_capabilities()
 
 
 def test_pause_mode_enable_resumes_without_l1():
@@ -964,6 +1027,7 @@ def test_manager_builds_no_vendor_command_strings():
     }
 
     vendor_commands = {'l0', 'l1', 'cp', 'em', 'las:paus 1', 'las:paus 0',
+                       '@cob1',
                        '@cobas 0', 'sdmes 1', 'glmp?', 'l?', 'gam?'}
     leaked = vendor_commands & literals
     assert not leaked, (

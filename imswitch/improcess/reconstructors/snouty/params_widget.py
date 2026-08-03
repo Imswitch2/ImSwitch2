@@ -3,7 +3,7 @@
 from pyqtgraph.parametertree import Parameter, ParameterTree
 from qtpy import QtWidgets
 
-from .metadata import snouty_params_from_attrs, DEFAULT_PARAMS
+from .metadata import snouty_param_overrides_from_attrs, DEFAULT_PARAMS
 
 
 class SnoutyParamsWidget(QtWidgets.QWidget):
@@ -20,7 +20,7 @@ class SnoutyParamsWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # Create parameter tree with Mini_Recon defaults
+        # Create parameter tree with ImProcess defaults
         params = [
             {'name': 'Device', 'type': 'list', 'values': ['CPU', 'GPU'], 'value': 'CPU'},
             {'name': 'Timepoints', 'type': 'int', 'value': 1, 'limits': (1, 9999)},
@@ -97,22 +97,21 @@ class SnoutyParamsWidget(QtWidgets.QWidget):
         Args:
             attrs: DataObj.attrs dict (merged root + dataset HDF5 attributes)
         """
-        params = snouty_params_from_attrs(attrs)
+        params = snouty_param_overrides_from_attrs(attrs)
 
-        # Update geometry
+        # Update only fields that the selected dataset explicitly provides.
+        # All other values remain as entered by the user.
         geom = self.p.param('Geometry')
-        geom.param('Camera pixel size').setValue(params['c_px'])
-        geom.param('Tilt angle').setValue(params['alpha_deg'])
-        geom.param('Scan step').setValue(params['dy'])
-        geom.param('Output voxel size').setValue(params['sample_vx_size'])
+        if 'c_px' in params:
+            geom.param('Camera pixel size').setValue(params['c_px'])
+        if 'dy' in params:
+            geom.param('Scan step').setValue(params['dy'])
 
-        # Update acquisition
         acq = self.p.param('Acquisition')
-        acq.param('Camera offset').setValue(params['camera_offset'])
-        acq.param('Flip data').setValue(params['flip_data'])
-        acq.param('Cycles').setValue(params['cycles'])
-        acq.param('Planes per cycle').setValue(params['planes_in_cycle'])
-        acq.param('Restack').setValue(params['restack'])
+        if 'cycles' in params:
+            acq.param('Cycles').setValue(params['cycles'])
+        if 'planes_in_cycle' in params:
+            acq.param('Planes per cycle').setValue(params['planes_in_cycle'])
 
     # Backward-compatible alias used by unit tests and any direct callers.
     set_from_attrs = load_from_attrs

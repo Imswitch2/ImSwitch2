@@ -9,6 +9,7 @@ from imswitch.improcess.reconstructors.beadrec import (
     infer_scan_dims,
     reconstruct_bead_image,
 )
+from imswitch.improcess.reconstructors.beadrec.reconstructor import _FIT_CHOICES
 
 
 def _uniform_frames(values, frame=5):
@@ -76,6 +77,27 @@ def test_process_without_fit_and_bad_fit_is_tolerant():
         types.SimpleNamespace(name="s", data=flat), {"fit_model": "gaussian2d"}
     )
     assert "fit_error" in r2.metadata
+
+
+@pytest.mark.parametrize("model_name", ["exponential2d", "sine1d"])
+def test_process_exposes_and_runs_new_shared_fits(model_name):
+    size = 32
+    yy, xx = np.indices((size, size), dtype=float)
+    if model_name == "exponential2d":
+        image = 80.0 * np.exp(-np.hypot(xx - 15.2, yy - 16.1) / 4.5) + 6.0
+    else:
+        theta = np.deg2rad(24.0)
+        u = xx * np.cos(theta) + yy * np.sin(theta)
+        image = 20.0 * np.sin(2 * np.pi * u / 10.5 + 0.3) + 50.0
+
+    result = BeadRecReconstructor().process(
+        types.SimpleNamespace(name="scan", data=_uniform_frames(image.ravel())),
+        {"scan_x": size, "scan_y": size, "fit_model": model_name},
+    )
+
+    assert model_name in _FIT_CHOICES
+    assert result.metadata["fit"]["model"] == model_name
+    assert result.metadata["fit"]["r_squared"] > 0.99
 
 
 def test_beadrec_registered_as_builtin():

@@ -432,6 +432,14 @@ panel is controlled by the setup JSON and is hidden unless
 ``"graphPanel": true`` is set.  When enabled, it renders optional plot payloads
 exposed by the currently selected ``ProcessingResult``.
 
+Use *Measure Δx* to place a draggable horizontal interval between two graph
+features.  The live readout reports both marker positions and their distance.
+*Push to table* appends that measurement to the shared Results dock, where it
+can be accumulated with other measurements and saved through *Save CSV...*.
+The Profile panel offers the same *Measure Δx* interaction; its existing
+*Push to table* and *Save CSV...* actions include the manual distance together
+with the profile statistics and optional fit results.
+
 Built-in graph producers include ``drift-correct`` and ``widefield-starss``.
 Drift-corrected results expose Y and X drift traces over frame number.
 WidefieldSTARSS results expose an anisotropy histogram and region
