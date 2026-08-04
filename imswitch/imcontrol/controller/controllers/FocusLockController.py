@@ -14,6 +14,11 @@ from ..basecontrollers import ImConWidgetController
 
 _CLOSE_WAIT_TIMEOUT_MS = 2000
 
+#: Most maxima the two-foci search will consider. It only ever picks between
+#: the two brightest, and an unbounded search is what let a plateaued frame
+#: stall the estimator worker.
+_MAX_FOCI_CANDIDATES = 8
+
 # Focus-lock lifecycle states, as reported by ``focusLockState()``.
 STATE_UNLOCKED = 'unlocked'
 STATE_LOCKED = 'locked'
@@ -1049,33 +1054,49 @@ class ProcessDataThread(Thread):
         return self.latestimg
 
     def update(self, twoFociVar):
-        # Gaussian filter the image, to remove noise and so on, to get a better center estimate
-        imagearraygf = ndi.gaussian_filter(self.latestimg, 7)
+        # Filter in floating point. gaussian_filter preserves its input dtype,
+        # so a uint16 camera frame stayed uint16 and integer truncation
+        # collapsed it into broad flat plateaus -- on a representative 400x400
+        # two-spot frame, 117k distinct values down to 683.
+        #
+        # That was ruinous for the two-foci peak search: plateaus produce many
+        # near-coincident candidates, and enforcing the minimum spacing between
+        # them cost 574 ms per frame against 2.4 ms for the same scene in
+        # float32. scipy.ndimage holds the GIL, and the worker is asked for a
+        # new estimate every focusTime (100 ms by default), so the GUI was
+        # starved for as long as the option stayed ticked.
+        #
+        # It also quantized the centre of mass that *both* paths depend on.
+        imagearraygf = ndi.gaussian_filter(
+            np.asarray(self.latestimg, dtype=np.float32), 7
+        )
 
         # Update the focus signal
         if twoFociVar:
-            allmaxcoords = peak_local_max(imagearraygf, min_distance=60)
-            size = allmaxcoords.shape
-            maxvals = np.zeros(size[0])
-            maxvalpos = np.zeros(2)
-            for n in range(0, size[0]):
-                if imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]] > maxvals[0]:
-                    if imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]] > maxvals[1]:
-                        tempval = maxvals[1]
-                        maxvals[0] = tempval
-                        maxvals[1] = imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]]
-                        tempval = maxvalpos[1]
-                        maxvalpos[0] = tempval
-                        maxvalpos[1] = n
-                    else:
-                        maxvals[0] = imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]]
-                        maxvalpos[0] = n
-            xcenter = allmaxcoords[int(maxvalpos[0])][0]
-            ycenter = allmaxcoords[int(maxvalpos[0])][1]
-            if allmaxcoords[int(maxvalpos[1])][0] < xcenter:
-                xcenter = allmaxcoords[int(maxvalpos[1])][0]
-                ycenter = allmaxcoords[int(maxvalpos[1])][1]
-            centercoords2 = np.array([xcenter, ycenter])
+            # num_peaks bounds the spacing work whatever the frame looks like,
+            # so a saturated or low-contrast image can no longer stall the
+            # worker. Two foci need only a handful of candidates to choose
+            # between.
+            allmaxcoords = peak_local_max(
+                imagearraygf, min_distance=60, num_peaks=_MAX_FOCI_CANDIDATES
+            )
+            if len(allmaxcoords) == 0:
+                # No distinct maximum: fall back to the plain global peak
+                # rather than raising every frame.
+                centercoords = np.where(imagearraygf == imagearraygf.max())
+                centercoords2 = np.array(
+                    [centercoords[0][0], centercoords[1][0]]
+                )
+            else:
+                # Of the two brightest maxima, take the upper one. The previous
+                # hand-rolled selection raised IndexError whenever fewer than
+                # two peaks were found, which the worker then logged with a
+                # full traceback on every tick.
+                intensities = imagearraygf[
+                    allmaxcoords[:, 0], allmaxcoords[:, 1]
+                ]
+                brightest = allmaxcoords[np.argsort(intensities)[-2:]]
+                centercoords2 = brightest[np.argmin(brightest[:, 0])]
         else:
             centercoords = np.where(imagearraygf == np.array(imagearraygf.max()))
             centercoords2 = np.array([centercoords[0][0], centercoords[1][0]])

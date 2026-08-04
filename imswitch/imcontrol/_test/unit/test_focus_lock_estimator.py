@@ -67,3 +67,74 @@ def test_the_estimate_stays_inside_the_frame():
     for row in (20, 30, 45, 200, 370, 385):
         value = _estimate(_spot(row))
         assert 0.0 <= value <= 400.0
+
+
+# --------------------------------------------------------------------------
+# Two-foci selection
+# --------------------------------------------------------------------------
+
+def _thread(img):
+    from imswitch.imcontrol.controller.controllers.FocusLockController import (
+        ProcessDataThread,
+    )
+    worker = ProcessDataThread.__new__(ProcessDataThread)
+    worker.latestimg = img
+    return worker, ProcessDataThread
+
+
+def _scene(spots, dtype=np.uint16, shape=(400, 400)):
+    y, x = np.mgrid[0:shape[0], 0:shape[1]]
+    img = np.zeros(shape, float)
+    for row, col, amp in spots:
+        img += amp * np.exp(-(((y - row) ** 2 + (x - col) ** 2) / (2 * 18.0 ** 2)))
+    img += 120.0
+    return np.clip(img, 0, 65535).astype(dtype)
+
+
+def test_the_filter_runs_in_floating_point():
+    """gaussian_filter keeps its input dtype, so a uint16 frame stayed uint16
+    and integer truncation collapsed it into plateaus -- which is what made
+    the two-foci peak search cost 574 ms a frame instead of 2.4 ms, holding
+    the GIL on the estimator worker."""
+    img = _scene([(320, 120, 800), (320, 190, 600)], dtype=np.uint16)
+
+    filtered = ndi.gaussian_filter(np.asarray(img, dtype=np.float32), 7)
+
+    assert filtered.dtype == np.float32
+    # The truncated version loses almost all of its distinct values.
+    assert len(np.unique(filtered)) > 10 * len(np.unique(ndi.gaussian_filter(img, 7)))
+
+
+def test_two_foci_picks_the_upper_of_the_two_brightest():
+    img = _scene([(300, 120, 900), (200, 120, 700), (330, 300, 200)])
+    worker, cls = _thread(img)
+
+    value = cls.update(worker, True)
+
+    # The two brightest are at rows 300 and 200; the upper one is 200.
+    assert value == pytest.approx(200, abs=15)
+
+
+@pytest.mark.parametrize('spots', [
+    [(300, 120, 900)],          # only one focus visible
+    [],                         # nothing but background
+])
+def test_two_foci_does_not_raise_when_there_are_not_two(spots):
+    """The hand-rolled selection indexed maxvals[1] unconditionally, so fewer
+    than two peaks raised IndexError -- logged with a full traceback on every
+    tick, which is its own kind of hang."""
+    worker, cls = _thread(_scene(spots))
+
+    value = cls.update(worker, True)
+
+    assert np.isfinite(value)
+
+
+def test_two_foci_agrees_with_the_single_focus_path_on_one_spot():
+    img = _scene([(300, 120, 900)])
+    worker_a, cls = _thread(img)
+    worker_b, _ = _thread(img)
+
+    assert cls.update(worker_a, True) == pytest.approx(
+        cls.update(worker_b, False), abs=5
+    )
