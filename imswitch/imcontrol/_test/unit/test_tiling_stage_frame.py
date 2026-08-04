@@ -488,13 +488,22 @@ def test_pi_integral_scales_with_elapsed_time():
 
 
 def test_pi_without_dt_keeps_historical_behaviour():
+    """Without dt the integral term is unscaled, as it always was.
+
+    ``update`` returns the *increment* to apply, because the positioner
+    integrates relative moves; the running command it accumulates to is still
+    exposed as ``out``. Applying that running command as a relative move made
+    the actuator integrate an already-integrated signal, which is what turned
+    the loop into a divergent double integrator.
+    """
     legacy = PI(setPoint=0.0, multiplier=1, kp=0.5, ki=1.0)
 
     first = legacy.update(-1.0)
     second = legacy.update(-1.0)
 
-    assert first == pytest.approx(0.5)
-    assert second == pytest.approx(1.5)
+    assert first == pytest.approx(0.5)          # kp * error
+    assert second == pytest.approx(1.0)         # kp * dError + ki * error
+    assert legacy.out == pytest.approx(1.5)     # the running command
 
 
 def test_pi_clamps_a_pathological_gap():

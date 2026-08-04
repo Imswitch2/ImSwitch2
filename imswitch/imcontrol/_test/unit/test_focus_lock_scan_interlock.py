@@ -140,6 +140,7 @@ def _makeController(*, scanBlock=True, locked=True, setPoint=10.0,
     ctrl._reacquireDeadline = None
     ctrl._reacquireSamples = None
     ctrl._reacquireFailed = False
+    ctrl._pendingMove = 0.0
 
     import threading
     ctrl._reacquireDone = threading.Event()

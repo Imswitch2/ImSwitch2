@@ -119,6 +119,7 @@ def _makeController(*, currentValue, kp, ki=0.0):
     ctrl._reacquireDeadline = None
     ctrl._reacquireSamples = None
     ctrl._reacquireFailed = False
+    ctrl._pendingMove = 0.0
     ctrl._reacquireDone = threading.Event()
     ctrl._reacquireDone.set()
 
@@ -225,3 +226,64 @@ def test_update_does_not_correct_a_lock_dropped_mid_tick():
     FocusLockController.update(ctrl)
 
     assert ctrl.moves == []
+
+
+# --------------------------------------------------------------------------
+# Velocity-form output and the carried-forward correction
+# --------------------------------------------------------------------------
+
+def test_the_loop_reports_an_increment_not_its_running_command():
+    """The positioner integrates relative moves, so applying the running
+    command as one made the actuator integrate an already-integrated signal.
+    Simulated against the rig's calibration, that loop diverges at the shipped
+    gains; returning the increment settles to a few nm.
+    """
+    pi = PI(0.0, multiplier=1, kp=1.0, ki=0.0, nominalDt=0.1)
+
+    first = pi.update(-1.0, 0.1)
+    second = pi.update(-1.0, 0.1)
+
+    assert first == pytest.approx(1.0)
+    # Error unchanged, so a proportional loop asks for no further movement.
+    assert second == pytest.approx(0.0)
+    # The running command is still tracked, for diagnostics.
+    assert pi.out == pytest.approx(1.0)
+
+
+def test_sub_threshold_corrections_accumulate_rather_than_vanish():
+    """The integral term alone is routinely below the smallest worthwhile
+    move. Discarding it would throw the integral action away and leave a
+    standing error the loop could never work off."""
+    ctrl = _makeController(currentValue=0.0, kp=1.0)
+    step = DEADBAND_UM * 0.4
+
+    for _ in range(2):
+        FocusLockController._applyCorrection(ctrl, step)
+    assert ctrl.moves == [], 'not yet worth a hardware command'
+
+    FocusLockController._applyCorrection(ctrl, step)
+
+    assert ctrl.moves == [pytest.approx(step * 3)]
+    assert ctrl._pendingMove == 0.0
+
+
+def test_opposing_sub_threshold_corrections_cancel():
+    ctrl = _makeController(currentValue=0.0, kp=1.0)
+
+    FocusLockController._applyCorrection(ctrl, DEADBAND_UM * 0.9)
+    FocusLockController._applyCorrection(ctrl, -DEADBAND_UM * 0.9)
+
+    assert ctrl.moves == []
+    assert ctrl._pendingMove == pytest.approx(0.0)
+
+
+def test_a_carried_correction_is_dropped_when_the_loop_restarts():
+    """A fragment computed against an old setpoint must not be applied after
+    the loop is re-armed against a new one."""
+    ctrl = _makeController(currentValue=0.0, kp=1.0)
+    FocusLockController._applyCorrection(ctrl, DEADBAND_UM * 0.9)
+    assert ctrl._pendingMove != 0.0
+
+    FocusLockController._clearPendingCorrection(ctrl)
+
+    assert ctrl._pendingMove == 0.0

@@ -36,8 +36,9 @@ from qtpy import QtWidgets
 from imswitch.imcommon.algorithms.tile_mosaic import (
     assemble,
     load_dataset,
-    refine_positions,
+    refine_layout,
 )
+from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.reconstructors.base import Reconstructor
 
@@ -81,9 +82,10 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         self.refineCheck = QtWidgets.QCheckBox("Refine alignment")
         self.refineCheck.setChecked(True)
         self.refineCheck.setToolTip(
-            "Cross-correlate each tile against its neighbours instead of\n"
-            "trusting the recorded stage positions. Slower, but recovers\n"
-            "stage error the live preview could not."
+            "Cross-correlate every overlapping pair of tiles and solve for\n"
+            "all positions at once, instead of trusting the recorded stage\n"
+            "positions. Slower than the live preview's one-neighbour pass,\n"
+            "but a single bad match cannot displace the rest of the run."
         )
         layout.addWidget(self.refineCheck)
 
@@ -139,6 +141,10 @@ class TilingReconstructor(Reconstructor):
     description = "Reassemble a saved tiling run into a stitched mosaic"
     default_save_subdir = "mosaic"
 
+    def __init__(self):
+        super().__init__()
+        self._logger = initLogger(self)
+
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         return _TilingParamsWidget(parent)
 
@@ -160,7 +166,12 @@ class TilingReconstructor(Reconstructor):
 
         moved = 0
         if params.get("refine", True):
-            moved = refine_positions(dataset, params.get("max_shift_px"))
+            report = refine_layout(dataset, params.get("max_shift_px"))
+            moved = report.moved
+            # The summary is the diagnosis when a mosaic still looks wrong:
+            # how many links held, how far they disagree, and whether the run
+            # fell into groups that could not be tied to each other.
+            self._logger.info(report.summary())
 
         mosaic = assemble(dataset, blend=params.get("blend", True))
 

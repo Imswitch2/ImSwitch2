@@ -11,8 +11,10 @@ from imswitch.imcommon.algorithms.tile_mosaic import (
     MosaicTile,
     assemble,
     assemble_dataset,
+    TileLink,
     find_manifest,
     load_dataset,
+    refine_layout,
     refine_positions,
 )
 
@@ -244,6 +246,120 @@ def test_refine_aligns_volumes_on_their_projection():
 
 def test_refine_is_a_no_op_for_a_single_tile():
     assert refine_positions(_dataset([('a', np.ones((8, 8)), (0.0, 0.0))])) == 0
+
+
+# ----------------------------------------------------------------------
+# Global refinement
+# ----------------------------------------------------------------------
+
+
+def _grid_2x2(seed, positions=None):
+    """Four 64x64 tiles overlapping by 32 px, cut from one 128x128 scene."""
+    scene = _texture((128, 128), seed=seed)
+    truth = [(0.0, 0.0), (0.0, 32.0), (32.0, 0.0), (32.0, 32.0)]
+    return _dataset([
+        (name, scene[int(row):int(row) + 64, int(col):int(col) + 64], stored)
+        for name, (row, col), stored
+        in zip('abcd', truth, positions or truth)
+    ])
+
+
+def test_refine_measures_every_overlapping_pair_not_just_consecutive():
+    """A 2x2 grid offers six overlaps; a chain would only ever use three."""
+    report = refine_layout(_grid_2x2(seed=11))
+
+    assert len(report.links) == 6
+    assert {(link.i, link.j) for link in report.links} == {
+        (0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3),
+    }
+    assert all(link.accepted for link in report.links)
+    assert report.moved == 0
+    assert report.residual_rms() < 0.5   # sub-pixel disagreement only
+
+
+def test_refine_places_a_tile_by_all_of_its_neighbours():
+    """Three neighbours agree where the last tile belongs; it goes there."""
+    dataset = _grid_2x2(seed=12, positions=[
+        (0.0, 0.0), (0.0, 32.0), (32.0, 0.0), (32.0, 40.0),   # 8 px off
+    ])
+
+    report = refine_layout(dataset)
+
+    assert report.moved == 1
+    assert dataset.tiles[3].position[0] == pytest.approx(32.0, abs=0.5)
+    assert dataset.tiles[3].position[1] == pytest.approx(32.0, abs=0.5)
+    assert len(report.components) == 1
+
+
+def test_refine_leaves_an_unreachable_tile_where_the_stage_said():
+    """A tile nothing overlaps is not guessed at — it keeps its position."""
+    scene = _texture((128, 128), seed=13)
+    dataset = _dataset([
+        ('a', scene[0:64, 0:64], (0.0, 0.0)),
+        ('b', scene[0:64, 32:96], (0.0, 32.0)),
+        ('far', _texture((64, 64), seed=14), (900.0, 900.0)),
+    ])
+
+    report = refine_layout(dataset)
+
+    assert dataset.tiles[2].position == (900.0, 900.0)
+    assert report.components == [2, 1]
+    assert 'disconnected groups' in report.summary()
+
+
+def test_solve_spreads_a_loop_closure_error_over_the_whole_loop():
+    """The point of solving globally: no tile carries the whole discrepancy.
+
+    Four tiles round a square, where the link closing the loop disagrees with
+    the three chained ones by 2 px. Aligning each tile to its predecessor would
+    dump all 2 px on the last tile; least squares shares it out.
+    """
+    from imswitch.imcommon.algorithms.tile_mosaic import _solve
+
+    nominal = [(0.0, 0.0), (0.0, 100.0), (100.0, 100.0), (100.0, 0.0)]
+    links = [
+        TileLink(0, 1, (0.0, 100.0), 1.0, (0.0, 0.0)),
+        TileLink(1, 2, (100.0, 0.0), 1.0, (0.0, 0.0)),
+        TileLink(2, 3, (0.0, -100.0), 1.0, (0.0, 0.0)),
+        TileLink(0, 3, (100.0, 2.0), 1.0, (0.0, 2.0)),   # closure disagrees
+    ]
+
+    solved = _solve(nominal, links)
+
+    assert solved[0] == (0.0, 0.0)                                # anchor
+    assert solved[1][1] == pytest.approx(100.5, abs=1e-6)
+    assert solved[2][1] == pytest.approx(101.0, abs=1e-6)
+    assert solved[3][1] == pytest.approx(1.5, abs=1e-6)
+    # The consistent axis is reproduced exactly.
+    assert [round(pos[0], 6) for pos in solved] == [0.0, 0.0, 100.0, 100.0]
+
+
+def test_a_link_that_contradicts_the_consensus_is_dropped():
+    from imswitch.imcommon.algorithms.tile_mosaic import _drop_outliers
+
+    links = [TileLink(i, i + 1, (0.0, 0.0), 1.0, (0.0, 0.0))
+             for i in range(5)]
+    for link, residual in zip(links, [0.2, 0.3, 0.25, 0.4, 12.0]):
+        link.residual = residual
+
+    kept = _drop_outliers(links)
+
+    assert len(kept) == 4
+    assert links[4] not in kept
+    assert links[4].accepted is False
+    assert all(link.accepted for link in links[:4])
+
+
+def test_ordinary_residual_scatter_is_not_mistaken_for_outliers():
+    from imswitch.imcommon.algorithms.tile_mosaic import _drop_outliers
+
+    links = [TileLink(i, i + 1, (0.0, 0.0), 1.0, (0.0, 0.0))
+             for i in range(5)]
+    for link, residual in zip(links, [0.2, 0.3, 0.25, 0.4, 0.5]):
+        link.residual = residual
+
+    assert _drop_outliers(links) == links
+    assert all(link.accepted for link in links)
 
 
 # ----------------------------------------------------------------------
