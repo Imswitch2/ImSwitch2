@@ -350,6 +350,92 @@ def test_a_link_that_contradicts_the_consensus_is_dropped():
     assert all(link.accepted for link in links[:4])
 
 
+def _write_staged_dataset(folder, tiles, orientation, pixel_um=0.5):
+    """A dataset whose saved pixel positions disagree with its stage positions."""
+    import tifffile
+
+    folder.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for name, data, stage_um, pixel_xy in tiles:
+        tifffile.imwrite(str(folder / name), data)
+        entries.append({
+            'filename': name,
+            'grid': [0, 0],
+            'stage_um': list(stage_um),
+            'pixel_xy': list(pixel_xy),
+            'correction_px': [0.0, 0.0],
+        })
+    (folder / MANIFEST_NAME).write_text(json.dumps({
+        'format': 'imswitch-tiling/1',
+        'pixel_size_um': {'y': pixel_um, 'x': pixel_um},
+        'tile_step_um': 10.0,
+        'tile_shape_px': {'height': 64, 'width': 64, 'depth': 1},
+        'z_step_um': 0.0,
+        'orientation': orientation,
+        'tiles': entries,
+    }), encoding='utf-8')
+    return folder
+
+
+@pytest.mark.parametrize('orientation,expected', [
+    ({'flip_x': False, 'flip_y': False, 'swap_axes': False}, (0.0, 64.0)),
+    ({'flip_x': True, 'flip_y': False, 'swap_axes': False}, (0.0, -64.0)),
+    ({'flip_x': False, 'flip_y': True, 'swap_axes': False}, (0.0, 64.0)),
+    ({'flip_x': False, 'flip_y': False, 'swap_axes': True}, (64.0, 0.0)),
+    ({'flip_x': False, 'flip_y': True, 'swap_axes': True}, (-64.0, 0.0)),
+])
+def test_stage_layout_follows_the_configured_orientation(tmp_path, orientation,
+                                                         expected):
+    """The same transform the acquisition side applies: swap, then flip."""
+    tile = np.zeros((64, 64), np.uint16)
+    folder = _write_staged_dataset(tmp_path / str(id(orientation)), [
+        ('a.tiff', tile, (100.0, 200.0), (0, 0)),
+        # +32 um along stage X, at 0.5 um/px, is 64 px somewhere.
+        ('b.tiff', tile, (132.0, 200.0), (0, 0)),
+    ], orientation)
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+    moved = (dataset.tiles[1].position[0] - dataset.tiles[0].position[0],
+             dataset.tiles[1].position[1] - dataset.tiles[0].position[1])
+
+    assert moved == pytest.approx(expected)
+
+
+def test_stage_layout_overrides_a_bad_saved_position(tmp_path):
+    """Live registration's corrections must not survive into the offline pass.
+
+    A live correction larger than the overlap leaves tiles that no longer meet,
+    and refinement crops its correlation windows from those same positions, so
+    it cannot recover on its own. The commanded stage coordinates carry no such
+    history.
+    """
+    tile = np.zeros((64, 64), np.uint16)
+    folder = _write_staged_dataset(tmp_path / 'run', [
+        ('a.tiff', tile, (0.0, 0.0), (0, 0)),
+        ('b.tiff', tile, (16.0, 0.0), (999, 999)),   # saved position is junk
+    ], {'flip_x': False, 'flip_y': False, 'swap_axes': False})
+
+    from_stage = load_dataset(folder, progress=lambda _m: None)
+    assert from_stage.tiles[1].position == pytest.approx((0.0, 32.0))
+
+    as_saved = load_dataset(folder, progress=lambda _m: None,
+                            prefer_stage_positions=False)
+    assert as_saved.tiles[1].position == pytest.approx((999.0, 999.0))
+
+
+def test_layout_falls_back_when_stage_positions_say_nothing(tmp_path):
+    """Older manifests put the same coordinate on every tile."""
+    tile = np.zeros((64, 64), np.uint16)
+    folder = _write_staged_dataset(tmp_path / 'run', [
+        ('a.tiff', tile, (0.0, 0.0), (0, 0)),
+        ('b.tiff', tile, (0.0, 0.0), (48, 0)),
+    ], {'flip_x': False, 'flip_y': False, 'swap_axes': False})
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.tiles[1].position == pytest.approx((0.0, 48.0))
+
+
 def _vignette(shape, strength=0.6):
     """Radial falloff fixed to the camera, so identical in every tile."""
     yy, xx = np.mgrid[0:shape[0], 0:shape[1]].astype(np.float32)

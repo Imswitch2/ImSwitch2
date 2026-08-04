@@ -200,6 +200,59 @@ def _squeeze_leading(array: np.ndarray) -> np.ndarray:
     return array
 
 
+def _positions_from_stage(payload: Dict, entries: List[Dict],
+                          pixel_size_um: Tuple[float, float]):
+    """Tile positions derived from the commanded stage coordinates.
+
+    Preferred over the manifest's ``pixel_xy``, because that is written *after*
+    the live registration pass and therefore has any correction that pass made
+    baked into it. A bad live correction is not something refinement can undo:
+    it crops its correlation windows from these very positions, so a tile that
+    starts far enough out is measured against the wrong part of its neighbour,
+    or is no longer seen to overlap it at all. Observed on a real run: live
+    corrections up to 111 px where the tiles overlapped by only 46, leaving the
+    mosaic in five pieces that no measurement could tie together.
+
+    The stage coordinates carry no such history — they are what the stage was
+    told — so refinement starts from the commanded layout and does its own
+    alignment. Returns None when the manifest cannot support this, leaving the
+    caller to fall back on ``pixel_xy``.
+    """
+    stage = []
+    for entry in entries:
+        value = entry.get('stage_um')
+        if value is None or len(value) < 2:
+            return None
+        stage.append((float(value[0]), float(value[1])))
+
+    # Older writers, and rigs that never reported a position, put the same
+    # coordinate on every tile; that says nothing about the layout.
+    if len({(round(x, 6), round(y, 6)) for x, y in stage}) < 2:
+        return None
+
+    pixel_y, pixel_x = pixel_size_um
+    if not pixel_y or not pixel_x:
+        return None
+
+    orientation = payload.get('orientation') or {}
+    flip_x = bool(orientation.get('flip_x', False))
+    flip_y = bool(orientation.get('flip_y', False))
+    swap_axes = bool(orientation.get('swap_axes', False))
+
+    origin_x, origin_y = stage[0]
+    positions = []
+    for stage_x, stage_y in stage:
+        # The same transform the acquisition side applies in
+        # TilingController._gridToImage: swap first, then the sign flips.
+        delta_x, delta_y = stage_x - origin_x, stage_y - origin_y
+        if swap_axes:
+            delta_x, delta_y = delta_y, delta_x
+        column = -delta_x if flip_x else delta_x
+        row = -delta_y if flip_y else delta_y
+        positions.append((row / pixel_y, column / pixel_x))
+    return positions
+
+
 def _reporter(progress: Optional[Callable[[str], None]]):
     """Where to send stage/progress messages.
 
@@ -211,9 +264,15 @@ def _reporter(progress: Optional[Callable[[str], None]]):
 
 
 def load_dataset(path: Path | str,
-                 progress: Optional[Callable[[str], None]] = None
-                 ) -> MosaicDataset:
+                 progress: Optional[Callable[[str], None]] = None,
+                 prefer_stage_positions: bool = True) -> MosaicDataset:
     """Load a tiling dataset from its manifest.
+
+    ``prefer_stage_positions`` starts the layout from the commanded stage
+    coordinates rather than the manifest's saved pixel positions, which carry
+    whatever the live registration pass did during acquisition — see
+    :func:`_positions_from_stage`. Set it False to reconstruct exactly the
+    layout that was saved.
 
     Raises FileNotFoundError when ``path`` is not part of a tiling dataset, and
     ValueError when the manifest lists no readable tile.
@@ -244,6 +303,15 @@ def load_dataset(path: Path | str,
     entries = [entry for entry in payload.get('tiles', []) if entry.get('filename')]
     report(f'Reading {len(entries)} tiles from {folder.name}...')
 
+    stage_positions = (
+        _positions_from_stage(payload, entries, dataset.pixel_size_um)
+        if prefer_stage_positions else None
+    )
+    if stage_positions is not None:
+        report('  laying out from the commanded stage positions')
+    elif prefer_stage_positions:
+        report('  no usable stage positions; using the saved pixel positions')
+
     missing = []
     for index, entry in enumerate(entries):
         filename = entry['filename']
@@ -257,12 +325,16 @@ def load_dataset(path: Path | str,
             continue
         if index and index % 25 == 0:
             report(f'  read {index}/{len(entries)} tiles')
-        # TileConfiguration stores (x, y); the mosaic works in (row, col).
-        x, y = entry.get('pixel_xy', (0.0, 0.0))
+        if stage_positions is not None:
+            position = stage_positions[index]
+        else:
+            # TileConfiguration stores (x, y); the mosaic works in (row, col).
+            x, y = entry.get('pixel_xy', (0.0, 0.0))
+            position = (float(y), float(x))
         dataset.tiles.append(MosaicTile(
             name=filename,
             data=_squeeze_leading(data),
-            position=(float(y), float(x)),
+            position=position,
             grid=tuple(entry.get('grid', (0, 0))),
         ))
 

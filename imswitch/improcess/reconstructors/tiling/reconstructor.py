@@ -89,6 +89,18 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         )
         layout.addWidget(self.refineCheck)
 
+        self.stageCheck = QtWidgets.QCheckBox("Start from stage positions")
+        self.stageCheck.setChecked(True)
+        self.stageCheck.setToolTip(
+            "Lay the tiles out from the stage coordinates the run commanded,\n"
+            "rather than the pixel positions it saved. The saved positions\n"
+            "include whatever the live 'Align tiles' pass did during\n"
+            "acquisition, and a bad live correction cannot be undone here:\n"
+            "the tiles are correlated where those positions say they overlap.\n"
+            "Uncheck to reassemble exactly the layout that was saved."
+        )
+        layout.addWidget(self.stageCheck)
+
         self.blendCheck = QtWidgets.QCheckBox("Mean overlaps")
         self.blendCheck.setChecked(True)
         self.blendCheck.setToolTip(
@@ -129,6 +141,7 @@ class _TilingParamsWidget(QtWidgets.QWidget):
             "blend": self.blendCheck.isChecked(),
             "max_shift_px": maxShift if maxShift > 0 else None,
             "project": self.projectCheck.isChecked(),
+            "stage_positions": self.stageCheck.isChecked(),
         }
 
 
@@ -170,7 +183,10 @@ class TilingReconstructor(Reconstructor):
         # into groups that could not be tied to each other.
         progress = self._logger.info
 
-        dataset = load_dataset(Path(source), progress=progress)
+        dataset = load_dataset(
+            Path(source), progress=progress,
+            prefer_stage_positions=params.get("stage_positions", True),
+        )
 
         moved = 0
         if params.get("refine", True):
