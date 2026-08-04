@@ -378,6 +378,24 @@ class TilingInfo:
     measured corrections are also reported after each run, which distinguishes
     stage error from a wrong sample-plane pixel size. """
 
+    advancedAlignment: bool = True
+    """ Align each tile against every neighbour it overlaps rather than against
+    one canvas region, and re-solve the whole layout once the run finishes.
+    Only has an effect when ``registerTiles`` is on.
+
+    A spiral gives most tiles two to four already-placed neighbours; the plain
+    pass uses one, so a false match decides that tile's placement on its own
+    and every later tile is placed relative to it. Measuring each neighbour
+    separately lets the consensus outvote a bad one, and the end-of-run solve
+    fits all the measurements at once instead of chaining them in acquisition
+    order. The solved layout is the one that gets saved.
+
+    Default because it is both more accurate and *faster*: correlating against
+    three small neighbours beats correlating against the whole mosaic, which
+    the plain pass rebuilds and copies once per tile. Measured on 100-tile
+    spirals at 273-1024 px tiles, it ran in 0.41-0.49x the time. Set False to
+    reproduce the older single-neighbour behaviour. """
+
     registrationMaxShiftFraction: float = 0.5
     """ Reject registration corrections larger than this fraction of the tile
     step. Guards against false matches on periodic sample structure. """

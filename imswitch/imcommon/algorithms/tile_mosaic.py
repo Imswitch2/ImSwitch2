@@ -715,6 +715,35 @@ def _drop_outliers(links: List[TileLink]) -> List[TileLink]:
     return kept
 
 
+def solve_links(nominal: Sequence[Tuple[float, float]],
+                links: List[TileLink],
+                progress: Optional[Callable[[str], None]] = None,
+                rounds: int = MAX_SOLVE_ROUNDS):
+    """Solve a layout from measured links, rejecting the inconsistent ones.
+
+    The solver on its own, for callers that measured their own links — the live
+    acquisition path does, one tile at a time, and wants the same global answer
+    at the end of a run that the offline path gives. ``links`` is annotated in
+    place with each link's residual and whether it survived.
+
+    Returns ``(positions, accepted_links)``.
+    """
+    emit = _reporter(progress)
+    active = list(links)
+    positions = _solve(nominal, active)
+    for round_index in range(rounds):
+        _update_residuals(links, positions)
+        kept = _drop_outliers(active)
+        if len(kept) == len(active) or not kept:
+            break
+        emit(f'  solve round {round_index + 1}: dropped '
+             f'{len(active) - len(kept)} inconsistent link(s), re-solving')
+        active = kept
+        positions = _solve(nominal, active)
+    _update_residuals(links, positions)
+    return positions, active
+
+
 def refine_layout(dataset: MosaicDataset,
                   max_shift_px: Optional[float] = None,
                   progress: Optional[Callable[[str], None]] = None
@@ -744,18 +773,7 @@ def refine_layout(dataset: MosaicDataset,
         emit('No tile pair could be correlated; keeping the stage positions.')
         return report
 
-    active = list(report.links)
-    positions = _solve(nominal, active)
-    for round_index in range(MAX_SOLVE_ROUNDS):
-        _update_residuals(report.links, positions)
-        kept = _drop_outliers(active)
-        if len(kept) == len(active) or not kept:
-            break
-        emit(f'  solve round {round_index + 1}: dropped '
-             f'{len(active) - len(kept)} inconsistent link(s), re-solving')
-        active = kept
-        positions = _solve(nominal, active)
-    _update_residuals(report.links, positions)
+    positions, active = solve_links(nominal, report.links, progress)
 
     for tile, position, before in zip(dataset.tiles, positions, nominal):
         tile.position = position

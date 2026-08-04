@@ -7,6 +7,7 @@ import numpy as np
 from qtpy import QtCore
 
 from imswitch.imcommon.model import APIExport
+from imswitch.imcommon.algorithms.tile_mosaic import TileLink, solve_links
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
@@ -229,6 +230,10 @@ class TilingController(ImConWidgetController):
         self._registrationReport = None
         self._orientation = (False, False, False)
         self._lastSaveFolder = None
+        # Every pairwise measurement taken during a run, kept for the
+        # whole-run solve that advanced alignment ends with.
+        self._alignmentLinks = []
+        self._alignmentIndex = {}
 
         tilingInfo = self._setupInfo.tiling
         if tilingInfo is None:
@@ -240,6 +245,9 @@ class TilingController(ImConWidgetController):
         )
         self._widget.setDefaultRegisterTiles(
             getattr(tilingInfo, 'registerTiles', False)
+        )
+        self._widget.setDefaultAdvancedAlignment(
+            getattr(tilingInfo, 'advancedAlignment', True)
         )
         self._widget.setDefaultSaveTiles(getattr(tilingInfo, 'saveTiles', False))
         self._widget.setMode(getattr(tilingInfo, 'mode', MODE_FREE_RUNNING))
@@ -298,6 +306,7 @@ class TilingController(ImConWidgetController):
             intensity_correction = self._widget.getIntensityCorrection()
             settle_s = max(0.0, self._widget.getSettleTimeMs() / 1000.0)
             register_tiles = self._widget.getRegisterTiles()
+            advanced_align = self._widget.getAdvancedAlignment()
             orientation = self._widget.getTileOrientation()
             save_tiles = self._widget.getSaveTiles()
             mode = self._widget.getMode()
@@ -319,13 +328,21 @@ class TilingController(ImConWidgetController):
             self._cellPositionsRC = None
             self._cellProps = None
 
+            # By keyword: this argument list is long enough that inserting one
+            # in the middle would otherwise silently shift the rest along.
             self._scanThread = threading.Thread(
                 target=self._runScan,
-                args=(
-                    tilingInfo, n_tiles, step_um, blend_overlaps,
-                    intensity_correction, settle_s, register_tiles,
-                    orientation, save_tiles, mode, scan_source_key,
-                    detector_name,
+                args=(tilingInfo, n_tiles, step_um, blend_overlaps,
+                      intensity_correction),
+                kwargs=dict(
+                    settle_s=settle_s,
+                    register_tiles=register_tiles,
+                    advanced_align=advanced_align,
+                    orientation=orientation,
+                    save_tiles=save_tiles,
+                    mode=mode,
+                    scan_source_key=scan_source_key,
+                    detector_name=detector_name,
                 ),
                 daemon=True,
             )
@@ -431,6 +448,7 @@ class TilingController(ImConWidgetController):
         intensity_correction: bool,
         settle_s: float = _SETTLE_S,
         register_tiles: bool = False,
+        advanced_align: bool = False,
         orientation: Tuple[bool, bool, bool] = (False, False, False),
         save_tiles: bool = False,
         mode: str = MODE_FREE_RUNNING,
@@ -454,6 +472,8 @@ class TilingController(ImConWidgetController):
         staleFrames = 0
         frameFailure = False
         registration = RegistrationReport()
+        self._alignmentLinks = []
+        self._alignmentIndex = {}
         maxShiftPx = 0.0
         dataset = TileDataset()
         saveFolder = None
@@ -575,7 +595,9 @@ class TilingController(ImConWidgetController):
 
                 offset_px = (0.0, 0.0)
                 if register_tiles:
-                    offset_px = self._registerTile(
+                    register = (self._registerTileAdvanced if advanced_align
+                                else self._registerTile)
+                    offset_px = register(
                         displayFrame, ix, iy, registration, maxShiftPx
                     )
 
@@ -623,6 +645,15 @@ class TilingController(ImConWidgetController):
                     self.sigProgressUpdated.emit(i + 1, n_tiles)
 
             scan_completed = not self._stopRequested and not frameFailure
+
+            if register_tiles and advanced_align and self._stitcher is not None:
+                # Before anything is written: the solved layout is the one that
+                # should reach the mosaic, the sidecars and the operator's
+                # screen, not the one the live pass arrived at tile by tile.
+                self._resolveLayout(registration)
+                self._syncDatasetPlacements(dataset)
+                if not getattr(self, '_closed', False):
+                    self.sigOverviewUpdated.emit(self._stitcher.get_overview())
 
             if save_tiles and saveFolder is not None:
                 # The mosaic and the sidecars are written even for a stopped or
@@ -912,6 +943,136 @@ class TilingController(ImConWidgetController):
                 f'Tiling: tile {(gx, gy)} not registered — {reason}'
             )
         return shift if accepted else (0.0, 0.0)
+
+    def _registerTileAdvanced(self, frame, gx, gy, report, maxShiftPx):
+        """Register a tile against every placed neighbour, not just the canvas.
+
+        The plain path correlates once, against the canvas region the commanded
+        position points at, and applies whatever comes back. A spiral gives most
+        tiles two to four already-placed neighbours, so that throws away the
+        redundancy that would have caught a bad match — and a bad match here is
+        not confined to its own tile: it is written into the saved layout and
+        every later tile is placed relative to it.
+
+        Each neighbour is correlated separately and the placement is the
+        confidence-weighted consensus of what they imply. The individual
+        measurements are kept for the whole-run solve at the end.
+        """
+        neighbours = self._stitcher.placed_neighbours(gx, gy)
+        if not neighbours:
+            return (0.0, 0.0)
+
+        moving = np.asarray(frame, dtype=np.float32)
+        nominal = self._stitcher.nominal_placement(gx, gy)
+        index = self._alignmentIndex.setdefault(
+            (gx, gy), len(self._alignmentIndex)
+        )
+
+        implied, weights, best = [], [], None
+        for key, tile, nominalOffset in neighbours:
+            shift, confidence, reason = estimate_shift(
+                tile, moving, nominalOffset, max_shift_px=maxShiftPx,
+            )
+            if reason:
+                continue
+            measured = (nominalOffset[0] + shift[0], nominalOffset[1] + shift[1])
+            placement = self._stitcher.placement(*key)
+            implied.append((placement[0] + measured[0],
+                            placement[1] + measured[1]))
+            weights.append(max(confidence, 1e-3))
+            if best is None or confidence > best[1]:
+                best = (shift, confidence, nominalOffset)
+
+            neighbourIndex = self._alignmentIndex.setdefault(
+                key, len(self._alignmentIndex)
+            )
+            self._alignmentLinks.append(TileLink(
+                i=neighbourIndex, j=index, offset=measured,
+                confidence=confidence,
+                correction=(shift[0], shift[1]),
+            ))
+
+        if not implied:
+            report.add(TileShift(
+                grid=(gx, gy), applied=(0.0, 0.0), measured=(0.0, 0.0),
+                expected=neighbours[0][2], confidence=0.0, accepted=False,
+                reason='no neighbour could be registered',
+            ))
+            return (0.0, 0.0)
+
+        weightArray = np.asarray(weights, dtype=np.float64)
+        consensus = np.average(np.asarray(implied, dtype=np.float64),
+                               axis=0, weights=weightArray)
+        applied = (float(consensus[0] - nominal[0]),
+                   float(consensus[1] - nominal[1]))
+        report.add(TileShift(
+            grid=(gx, gy), applied=applied, measured=best[0],
+            expected=best[2], confidence=float(np.max(weightArray)),
+            accepted=True,
+            reason='',
+        ))
+        return applied
+
+    def _resolveLayout(self, report):
+        """Re-solve the whole layout once every tile is in hand.
+
+        The live pass can only ever align a tile to what came before it, so its
+        errors accumulate along the acquisition order. With the run finished
+        there is no such constraint: every measurement taken along the way goes
+        into one least-squares fit, inconsistent ones are rejected against the
+        consensus rather than against nothing, and the tiles are moved to where
+        the whole set agrees they belong.
+        """
+        if len(self._alignmentIndex) < 2 or not self._alignmentLinks:
+            return
+
+        keys = sorted(self._alignmentIndex, key=self._alignmentIndex.get)
+        nominal = [self._stitcher.nominal_placement(*key) for key in keys]
+        live = [self._stitcher.placement(*key) or nominal[i]
+                for i, key in enumerate(keys)]
+
+        positions, accepted = solve_links(
+            nominal, self._alignmentLinks, progress=self._logger.debug
+        )
+        # Measured before the move, or every tile compares equal to itself.
+        moved = sum(
+            1 for was, now in zip(live, positions)
+            if abs(now[0] - was[0]) > 0.5 or abs(now[1] - was[1]) > 0.5
+        )
+        self._stitcher.set_placements(dict(zip(keys, positions)))
+        rejected = len(self._alignmentLinks) - len(accepted)
+        report.globalSolve = (
+            f'Whole-run solve: {len(keys)} tiles from '
+            f'{len(accepted)} measurement(s)'
+            + (f', {rejected} rejected as inconsistent' if rejected else '')
+            + f', {moved} still disagreed with the live placement.'
+        )
+        self._logger.info(f'Tiling: {report.globalSolve}')
+
+    def _syncDatasetPlacements(self, dataset) -> None:
+        """Rewrite the manifest's pixel positions from the solved layout.
+
+        Each record was written as its tile was acquired, so it carries the
+        placement the live pass had reached by then. Leaving those in place
+        would save a layout the run itself no longer agrees with — and that
+        layout is what a stitcher, or this project's own offline reconstructor,
+        starts from.
+        """
+        for record in dataset.tiles:
+            placement = self._stitcher.placement(
+                *self._gridToImage(record.grid[0], record.grid[1],
+                                   self._orientation)
+            )
+            if placement is None:
+                continue
+            nominal = self._stitcher.nominal_placement(
+                *self._gridToImage(record.grid[0], record.grid[1],
+                                   self._orientation)
+            )
+            # TileConfiguration.txt wants (x, y) = (col, row).
+            record.pixel_xy = (float(placement[1]), float(placement[0]))
+            record.correction_px = (float(placement[0] - nominal[0]),
+                                    float(placement[1] - nominal[1]))
 
     # ------------------------------------------------------------------
     # Tile sources: how one tile's worth of signal is obtained

@@ -121,6 +121,66 @@ class StitchedImage:
             col0 + offset_px[1] - self._canvas_col0,
         )
 
+    def placed_neighbours(
+        self,
+        grid_x: int,
+        grid_y: int,
+        offset_px: Tuple[float, float] = (0.0, 0.0),
+        min_overlap_px: int = 16,
+    ):
+        """Already-placed tiles that overlap where a new tile is about to go.
+
+        Returns ``[(key, tile, nominal_offset), ...]``, where ``nominal_offset``
+        is the incoming tile's origin expressed in that neighbour's own pixel
+        coordinates — what :func:`estimate_shift` wants as its expected offset.
+
+        Registering against each neighbour separately, rather than against the
+        one canvas region, is what makes a spiral's redundancy usable: most
+        tiles touch two to four already-placed ones, so a single bad match can
+        be outvoted instead of deciding the placement by itself.
+        """
+        if not self._placements:
+            return []
+
+        row0, col0 = self.nominal_placement(grid_x, grid_y)
+        row0 += offset_px[0]
+        col0 += offset_px[1]
+        height, width = self.tile_shape_px
+
+        found = []
+        for key, placement in self._placements.items():
+            if key == (grid_x, grid_y):
+                continue
+            tile = self._tiles.get(key)
+            if tile is None:
+                continue
+            offset = (row0 - placement[0], col0 - placement[1])
+            shared_rows = min(tile.shape[0], offset[0] + height) - max(0, offset[0])
+            shared_cols = min(tile.shape[1], offset[1] + width) - max(0, offset[1])
+            if shared_rows < min_overlap_px or shared_cols < min_overlap_px:
+                continue
+            found.append((key, tile, offset))
+        return found
+
+    def set_placements(self, placements: Dict[Tuple[int, int], Tuple[int, int]]
+                       ) -> None:
+        """Move already-placed tiles wholesale, then redraw.
+
+        For a post-run global solve, which revisits every tile at once rather
+        than one at a time. Keys not already placed are ignored.
+        """
+        changed = False
+        for key, placement in placements.items():
+            if key not in self._placements:
+                continue
+            rounded = (int(round(placement[0])), int(round(placement[1])))
+            if self._placements[key] != rounded:
+                self._placements[key] = rounded
+                changed = True
+        if changed:
+            self._overview_cache = None
+            self._rebuild_canvas()
+
     def add_tile(
         self,
         image: np.ndarray,

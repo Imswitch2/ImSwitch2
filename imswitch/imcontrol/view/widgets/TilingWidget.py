@@ -26,29 +26,83 @@ class TilingWidget(Widget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        layout = QtWidgets.QGridLayout()
+        # One column of labelled blocks over a full-width overview. The
+        # controls are grouped by the question they answer — how far to scan,
+        # how to acquire, how to lay the tiles down, how to draw them — so a
+        # setting can be found by what it does rather than by where it landed.
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         self.setLayout(layout)
 
-        # Row 0: N tiles and step size
-        layout.addWidget(QtWidgets.QLabel('N tiles:'), 0, 0)
+        layout.addWidget(self._buildScanGroup())
+        layout.addWidget(self._buildAcquisitionGroup())
+        layout.addWidget(self._buildAlignmentGroup())
+        layout.addWidget(self._buildDisplayGroup())
+        layout.addLayout(self._buildRunRow())
+        layout.addWidget(self._buildStatusBlock())
+        # The overview is the point of the widget, so it takes every pixel the
+        # controls above it do not need, and all of the width.
+        layout.addWidget(self._buildOverview(), 1)
+        layout.addLayout(self._buildTargetingRow())
+
+        # Wire signals
+        self.startButton.clicked.connect(self.sigStartTiling)
+        self.stopButton.clicked.connect(self.sigStopTiling)
+        self.tuneSegmentationButton.clicked.connect(self.sigTuneSegmentation)
+        self.runCellTargetingButton.clicked.connect(self.sigRunCellTargeting)
+        self.nTilesSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
+        self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
+        self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.advancedAlignCheck.stateChanged.connect(self.sigParamsChanged)
+        self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.modeCombo.currentIndexChanged.connect(self._onModeChanged)
+        self.scanSourceCombo.currentIndexChanged.connect(self.sigParamsChanged)
+        self.detectorCombo.currentIndexChanged.connect(self.sigParamsChanged)
+        self.detectorCombo.currentIndexChanged.connect(self.sigDetectorChanged)
+        self.flipXCheck.stateChanged.connect(self.sigParamsChanged)
+        self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
+        self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
+        self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
+
+    # ------------------------------------------------------------------
+    # Layout blocks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _group(title: str, inner: QtWidgets.QLayout) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox(title)
+        inner.setContentsMargins(8, 4, 8, 6)
+        inner.setSpacing(6)
+        box.setLayout(inner)
+        return box
+
+    def _buildScanGroup(self) -> QtWidgets.QGroupBox:
+        """How much ground to cover, and how settled the stage must be."""
+        grid = QtWidgets.QGridLayout()
+
+        grid.addWidget(QtWidgets.QLabel('N tiles:'), 0, 0)
         self.nTilesSpinbox = QtWidgets.QSpinBox()
         self.nTilesSpinbox.setMinimum(1)
         self.nTilesSpinbox.setMaximum(10000)
         self.nTilesSpinbox.setValue(9)
-        layout.addWidget(self.nTilesSpinbox, 0, 1)
+        grid.addWidget(self.nTilesSpinbox, 0, 1)
 
-        layout.addWidget(QtWidgets.QLabel('Step (µm):'), 0, 2)
+        grid.addWidget(QtWidgets.QLabel('Step (µm):'), 0, 2)
         self.tileStepSpinbox = QtWidgets.QDoubleSpinBox()
         self.tileStepSpinbox.setMinimum(1.0)
         self.tileStepSpinbox.setMaximum(50000.0)
         self.tileStepSpinbox.setSingleStep(10.0)
         self.tileStepSpinbox.setDecimals(1)
         self.tileStepSpinbox.setValue(100.0)
-        layout.addWidget(self.tileStepSpinbox, 0, 3)
+        grid.addWidget(self.tileStepSpinbox, 0, 3)
 
-        # Row 1: Settle time — the knob to reach for when the mosaic does not
-        # line up: too short and tiles are grabbed while the stage still rings.
-        layout.addWidget(QtWidgets.QLabel('Settle (ms):'), 1, 0)
+        # The knob to reach for when the mosaic does not line up: too short and
+        # tiles are grabbed while the stage is still ringing.
+        grid.addWidget(QtWidgets.QLabel('Settle (ms):'), 1, 0)
         self.settleTimeSpinbox = QtWidgets.QDoubleSpinBox()
         self.settleTimeSpinbox.setMinimum(0.0)
         self.settleTimeSpinbox.setMaximum(10000.0)
@@ -59,27 +113,17 @@ class TilingWidget(Widget):
             'Wait after each stage move before capturing a tile.\n'
             'Increase this first if tiles do not overlap cleanly.'
         )
-        layout.addWidget(self.settleTimeSpinbox, 1, 1)
+        grid.addWidget(self.settleTimeSpinbox, 1, 1)
+        grid.setColumnStretch(4, 1)
+        return self._group('Scan', grid)
 
-        self.saveTilesCheck = QtWidgets.QCheckBox('Save')
-        self.saveTilesCheck.setToolTip(
-            'Save each tile as an OME image as it is acquired, plus the\n'
-            'stitched mosaic and a TileConfiguration.txt for Fiji/BigStitcher.\n'
-            'Every tile carries its stage position in OME metadata.'
-        )
-        layout.addWidget(self.saveTilesCheck, 0, 4)
+    def _buildAcquisitionGroup(self) -> QtWidgets.QGroupBox:
+        """Where each tile's signal comes from, and on whose clock."""
+        grid = QtWidgets.QGridLayout()
 
-        self.registerTilesCheck = QtWidgets.QCheckBox('Align tiles')
-        self.registerTilesCheck.setToolTip(
-            'Refine each tile by cross-correlating it with its already-placed\n'
-            'neighbours instead of trusting the stage position alone.\n'
-            'Also reports how far off the commanded positions were.'
-        )
-        layout.addWidget(self.registerTilesCheck, 1, 2, 1, 2)
-
-        # Row 2: acquisition mode. Which timing model to use is the operator's
-        # call; which mechanism implements it follows from the detector.
-        layout.addWidget(QtWidgets.QLabel('Mode:'), 2, 0)
+        # The operator chooses the timing model; which mechanism implements it
+        # follows from the detector, which the controller works out.
+        grid.addWidget(QtWidgets.QLabel('Mode:'), 0, 0)
         self.modeCombo = QtWidgets.QComboBox()
         self.modeCombo.addItem('Free-running', MODE_FREE_RUNNING)
         self.modeCombo.addItem('Triggered', MODE_TRIGGERED)
@@ -89,7 +133,7 @@ class TilingWidget(Widget):
             'detector (APD/PMT) directly, and clocks a camera wired to the\n'
             'scan trigger.'
         )
-        layout.addWidget(self.modeCombo, 2, 1)
+        grid.addWidget(self.modeCombo, 0, 1)
 
         self.scanSourceLabel = QtWidgets.QLabel('Scan:')
         self.scanSourceCombo = QtWidgets.QComboBox()
@@ -97,8 +141,8 @@ class TilingWidget(Widget):
             'Which scan controller to trigger. Only shown when the setup has\n'
             'more than one; the scan itself is configured in its own widget.'
         )
-        layout.addWidget(self.scanSourceLabel, 2, 2)
-        layout.addWidget(self.scanSourceCombo, 2, 3)
+        grid.addWidget(self.scanSourceLabel, 0, 2)
+        grid.addWidget(self.scanSourceCombo, 0, 3)
         self.scanSourceLabel.setVisible(False)
         self.scanSourceCombo.setVisible(False)
 
@@ -112,32 +156,54 @@ class TilingWidget(Widget):
             'means a different pixel size, so the existing mosaic no longer\n'
             'maps to stage coordinates.'
         )
-        layout.addWidget(self.detectorLabel, 2, 4)
-        layout.addWidget(self.detectorCombo, 2, 5)
+        grid.addWidget(self.detectorLabel, 1, 0)
+        grid.addWidget(self.detectorCombo, 1, 1)
         self.detectorLabel.setVisible(False)
         self.detectorCombo.setVisible(False)
 
-        # Row 3: Start, Stop buttons and navigate toggle
-        self.startButton = guitools.BetterPushButton('Start Tiling')
-        self.stopButton = guitools.BetterPushButton('Stop')
-        self.stopButton.setEnabled(False)
-        self.navigateToggle = QtWidgets.QCheckBox('Navigate on click')
-        layout.addWidget(self.startButton, 3, 0, 1, 2)
-        layout.addWidget(self.stopButton, 3, 2)
-        layout.addWidget(self.navigateToggle, 3, 3)
+        self.saveTilesCheck = QtWidgets.QCheckBox('Save tiles')
+        self.saveTilesCheck.setToolTip(
+            'Save each tile as an OME image as it is acquired, plus the\n'
+            'stitched mosaic and a TileConfiguration.txt for Fiji/BigStitcher.\n'
+            'Every tile carries its stage position in OME metadata.'
+        )
+        grid.addWidget(self.saveTilesCheck, 1, 2, 1, 2)
+        grid.setColumnStretch(4, 1)
+        return self._group('Acquisition', grid)
 
-        # Row 4: Stitching options
-        self.blendOverlapsCheck = QtWidgets.QCheckBox('Mean overlaps')
-        self.blendOverlapsCheck.setChecked(True)
-        self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
-        layout.addWidget(self.blendOverlapsCheck, 4, 0, 1, 2)
-        layout.addWidget(self.intensityCorrectionCheck, 4, 2, 1, 2)
+    def _buildAlignmentGroup(self) -> QtWidgets.QGroupBox:
+        """Where each tile is laid down, and which way the mosaic grows."""
+        outer = QtWidgets.QVBoxLayout()
 
-        # Row 5: mosaic orientation. Which way the overview grows depends on
-        # the camera mounting and the stage sign convention, so it has to be
-        # settable per rig rather than assumed.
-        orientationBox = QtWidgets.QHBoxLayout()
-        orientationBox.addWidget(QtWidgets.QLabel('Orientation:'))
+        row = QtWidgets.QHBoxLayout()
+        self.registerTilesCheck = QtWidgets.QCheckBox('Align tiles')
+        self.registerTilesCheck.setToolTip(
+            'Refine each tile by cross-correlating it with its already-placed\n'
+            'neighbours instead of trusting the stage position alone.\n'
+            'Also reports how far off the commanded positions were.'
+        )
+        row.addWidget(self.registerTilesCheck)
+
+        self.advancedAlignCheck = QtWidgets.QCheckBox('Advanced alignment')
+        self.advancedAlignCheck.setChecked(True)
+        self.advancedAlignCheck.setToolTip(
+            'Align each tile against every neighbour it overlaps, not just\n'
+            'the one canvas region, and solve the whole layout again once the\n'
+            'run finishes — so no tile is left where a single bad match put\n'
+            'it, and the solved layout is the one that gets saved.\n'
+            '\n'
+            'Also faster: it correlates against a few small neighbours rather\n'
+            'than against the whole mosaic, which the plain pass rebuilds for\n'
+            'every tile. Untick only to reproduce the older behaviour.'
+        )
+        row.addWidget(self.advancedAlignCheck)
+        row.addStretch(1)
+        outer.addLayout(row)
+
+        # Which way the overview grows depends on the camera mounting and the
+        # stage sign convention, so it has to be settable per rig.
+        orientation = QtWidgets.QHBoxLayout()
+        orientation.addWidget(QtWidgets.QLabel('Orientation:'))
         self.flipXCheck = QtWidgets.QCheckBox('Flip X')
         self.flipXCheck.setToolTip(
             'Mirror the mosaic left/right.\n'
@@ -150,40 +216,80 @@ class TilingWidget(Widget):
             'Exchange the mosaic axes, for a camera mounted at 90° to the stage.'
         )
         for check in (self.flipXCheck, self.flipYCheck, self.swapAxesCheck):
-            orientationBox.addWidget(check)
-        orientationBox.addStretch(1)
-        orientationWidget = QtWidgets.QWidget()
-        orientationWidget.setLayout(orientationBox)
-        layout.addWidget(orientationWidget, 5, 0, 1, 4)
+            orientation.addWidget(check)
+        orientation.addStretch(1)
+        outer.addLayout(orientation)
 
-        # Row 6: Progress label
+        # Advanced alignment refines what plain alignment measures, so it has
+        # nothing to do on its own.
+        self.registerTilesCheck.toggled.connect(
+            self.advancedAlignCheck.setEnabled
+        )
+        self.advancedAlignCheck.setEnabled(self.registerTilesCheck.isChecked())
+        return self._group('Alignment', outer)
+
+    def _buildDisplayGroup(self) -> QtWidgets.QGroupBox:
+        """How the placed tiles are drawn into one image."""
+        row = QtWidgets.QHBoxLayout()
+        self.blendOverlapsCheck = QtWidgets.QCheckBox('Mean overlaps')
+        self.blendOverlapsCheck.setChecked(True)
+        self.blendOverlapsCheck.setToolTip(
+            'Average overlapping pixels instead of letting the newer tile win.'
+        )
+        self.intensityCorrectionCheck = QtWidgets.QCheckBox('Intensity correction')
+        self.intensityCorrectionCheck.setToolTip(
+            'Match each tile to its neighbours\' brightness where they overlap.'
+        )
+        row.addWidget(self.blendOverlapsCheck)
+        row.addWidget(self.intensityCorrectionCheck)
+        row.addStretch(1)
+        return self._group('Stitching', row)
+
+    def _buildRunRow(self) -> QtWidgets.QHBoxLayout:
+        row = QtWidgets.QHBoxLayout()
+        self.startButton = guitools.BetterPushButton('Start Tiling')
+        self.stopButton = guitools.BetterPushButton('Stop')
+        self.stopButton.setEnabled(False)
+        self.navigateToggle = QtWidgets.QCheckBox('Navigate on click')
+        self.navigateToggle.setToolTip(
+            'Click anywhere on the overview to drive the stage there.'
+        )
+        row.addWidget(self.startButton, 2)
+        row.addWidget(self.stopButton, 1)
+        row.addWidget(self.navigateToggle)
+        return row
+
+    def _buildStatusBlock(self) -> QtWidgets.QWidget:
+        holder = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
+
         self.progressLabel = QtWidgets.QLabel('')
         self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(self.progressLabel, 6, 0, 1, 4)
+        column.addWidget(self.progressLabel)
 
-        # Row 7: registration diagnostics, filled after a run
+        # Filled after a run: how far the commanded positions were off, and
+        # whether the layout held together.
         self.registrationLabel = QtWidgets.QLabel('')
         self.registrationLabel.setWordWrap(True)
         self.registrationLabel.setAlignment(QtCore.Qt.AlignLeft)
-        layout.addWidget(self.registrationLabel, 7, 0, 1, 4)
+        column.addWidget(self.registrationLabel)
+        return holder
 
-        # Row 8: Cell targeting controls
-        self.tuneSegmentationButton = guitools.BetterPushButton('Tune segmentation...')
-        self.tuneSegmentationButton.setEnabled(False)
-        self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
-        self.runCellTargetingButton.setEnabled(False)
-        layout.addWidget(self.tuneSegmentationButton, 8, 0, 1, 2)
-        layout.addWidget(self.runCellTargetingButton, 8, 2, 1, 2)
-
-        # Rows 9+: Stitched overview display
+    def _buildOverview(self) -> QtWidgets.QWidget:
         self.overviewView = pg.GraphicsLayoutWidget()
+        self.overviewView.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        self.overviewView.setMinimumHeight(240)
         self.overviewItem = pg.ImageItem()
         self.overviewItem.setImage(np.zeros((64, 64), dtype=np.float32))
         self._overviewVB = self.overviewView.addViewBox()
         self._overviewVB.setAspectLocked(True)
         self._overviewVB.invertY(True)
         self._overviewVB.addItem(self.overviewItem)
-        
+
         # Cell marker overlays
         self.cellMarkers = pg.ScatterPlotItem(
             symbol='+', size=14, pen=pg.mkPen('y', width=2), brush=None
@@ -194,29 +300,20 @@ class TilingWidget(Widget):
         self._overviewVB.addItem(self.cellMarkers)
         self._overviewVB.addItem(self.currentCellMarker)
         self._cellPositions = None  # Store positions for highlightCurrentCell
-        
-        layout.addWidget(self.overviewView, 9, 0, 4, 4)
+        return self.overviewView
 
-        # Wire signals
-        self.startButton.clicked.connect(self.sigStartTiling)
-        self.stopButton.clicked.connect(self.sigStopTiling)
-        self.tuneSegmentationButton.clicked.connect(self.sigTuneSegmentation)
-        self.runCellTargetingButton.clicked.connect(self.sigRunCellTargeting)
-        self.nTilesSpinbox.valueChanged.connect(self.sigParamsChanged)
-        self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
-        self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
-        self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
-        self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
-        self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
-        self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
-        self.modeCombo.currentIndexChanged.connect(self._onModeChanged)
-        self.scanSourceCombo.currentIndexChanged.connect(self.sigParamsChanged)
-        self.detectorCombo.currentIndexChanged.connect(self.sigParamsChanged)
-        self.detectorCombo.currentIndexChanged.connect(self.sigDetectorChanged)
-        self.flipXCheck.stateChanged.connect(self.sigParamsChanged)
-        self.flipYCheck.stateChanged.connect(self.sigParamsChanged)
-        self.swapAxesCheck.stateChanged.connect(self.sigParamsChanged)
-        self.overviewItem.scene().sigMouseClicked.connect(self._onSceneClicked)
+    def _buildTargetingRow(self) -> QtWidgets.QHBoxLayout:
+        """Acts on the finished overview, so it sits under it."""
+        row = QtWidgets.QHBoxLayout()
+        self.tuneSegmentationButton = guitools.BetterPushButton(
+            'Tune segmentation...'
+        )
+        self.tuneSegmentationButton.setEnabled(False)
+        self.runCellTargetingButton = guitools.BetterPushButton('Detect cells')
+        self.runCellTargetingButton.setEnabled(False)
+        row.addWidget(self.tuneSegmentationButton)
+        row.addWidget(self.runCellTargetingButton)
+        return row
 
     def _onSceneClicked(self, event):
         if not self.navigateToggle.isChecked():
@@ -255,6 +352,15 @@ class TilingWidget(Widget):
 
     def getRegisterTiles(self) -> bool:
         return self.registerTilesCheck.isChecked()
+
+    def getAdvancedAlignment(self) -> bool:
+        """Whether to align against every neighbour and re-solve at the end.
+
+        False unless plain alignment is on too, since it has nothing to refine
+        on its own.
+        """
+        return (self.registerTilesCheck.isChecked()
+                and self.advancedAlignCheck.isChecked())
 
     def getSaveTiles(self) -> bool:
         return self.saveTilesCheck.isChecked()
@@ -342,6 +448,9 @@ class TilingWidget(Widget):
 
     def setDefaultRegisterTiles(self, enabled: bool) -> None:
         self.registerTilesCheck.setChecked(bool(enabled))
+
+    def setDefaultAdvancedAlignment(self, enabled: bool) -> None:
+        self.advancedAlignCheck.setChecked(bool(enabled))
 
     def setDefaultSaveTiles(self, enabled: bool) -> None:
         self.saveTilesCheck.setChecked(bool(enabled))

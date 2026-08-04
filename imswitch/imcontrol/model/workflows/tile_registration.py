@@ -79,6 +79,9 @@ class RegistrationReport:
     """Aggregate diagnostics over a whole tiling run."""
 
     shifts: list = field(default_factory=list)
+    #: Set by advanced alignment's end-of-run solve, which reconsiders every
+    #: tile at once. Empty when only the per-tile pass ran.
+    globalSolve: str = ''
 
     def add(self, shift: TileShift) -> None:
         self.shifts.append(shift)
@@ -138,6 +141,8 @@ class RegistrationReport:
             f'registered, RMS correction {rms:.1f} px, '
             f'worst {np.hypot(*worst.applied):.1f} px at grid {worst.grid}.'
         ]
+        if self.globalSolve:
+            parts.append(self.globalSolve)
         if scale is not None and abs(scale - 1.0) > 0.05:
             parts.append(
                 f'Measured spacing is {scale:.3f}x the nominal spacing. A '
