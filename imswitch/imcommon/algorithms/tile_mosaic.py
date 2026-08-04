@@ -55,8 +55,20 @@ MANIFEST_NAME = 'tiles.json'
 MIN_OVERLAP_PX = 16
 
 #: Normalized cross-correlation, measured where a link claims the tiles line
-#: up, below which the measurement is not worth putting into the solve.
+#: up, below which the measurement is not worth putting into the solve. Scored
+#: after :func:`_bandpass`, so this is agreement on sample structure and not on
+#: the illumination profile the tiles share.
+#:
+#: Kept deliberately permissive. Measured end to end, admitting a weak link and
+#: letting the global solve outvote it beats excluding it: a rejected link can
+#: disconnect a tile, and a disconnected tile falls back to its raw stage
+#: position, which is the larger error. Raising this to 0.35 or 0.5 made
+#: placement worse in every case tried.
 MIN_LINK_CONFIDENCE = 0.15
+
+#: Structure varying over more than this fraction of the shared region's short
+#: side is illumination, not sample, and is removed before correlating.
+BACKGROUND_SCALE_FRACTION = 0.25
 
 #: A link is dropped as an outlier when its residual exceeds the median
 #: residual by this many robust standard deviations.
@@ -337,10 +349,12 @@ class RefinementReport:
             parts.append(f'{rejected} link(s) rejected as inconsistent')
         if len(self.components) > 1:
             parts.append(
-                f'{len(self.components)} disconnected groups '
-                f'({", ".join(str(size) for size in self.components[:4])}'
+                f'{len(self.components)} groups nothing could be measured '
+                f'across ({", ".join(str(size) for size in self.components[:4])}'
                 f'{", ..." if len(self.components) > 4 else ""} tiles) — each '
-                'is internally aligned but placed by its stage position'
+                'is aligned within itself but placed by its stage position, '
+                'so the groups are only as well placed relative to each other '
+                'as the stage was'
             )
         return '; '.join(parts) + '.'
 
@@ -374,6 +388,31 @@ def _ncc(first: np.ndarray, second: np.ndarray) -> float:
     return float(np.clip(np.mean(first * second), -1.0, 1.0))
 
 
+def _bandpass(patch: np.ndarray) -> np.ndarray:
+    """Strip the illumination profile and the pixel noise from a patch.
+
+    Vignetting is fixed to the camera, not the sample, so where two tiles meet
+    they show the *same* shading curve at *different* points on it — the
+    falloff at one tile's right edge against the rise toward the other's
+    centre. Those ramp in opposite directions and anti-correlate hard enough to
+    bury the sample underneath: measured NCC of -0.99 on overlaps whose
+    structure had in fact aligned to a third of a pixel. Left in, that costs
+    good links, and losing links fragments the mosaic into groups that each
+    fall back to raw stage coordinates — an internally fine region landing in
+    the wrong place, which is exactly the artefact this module exists to stop.
+
+    Subtracting a coarse local mean leaves the structure alignment actually
+    rides on, and makes the score mean what it claims to.
+    """
+    from scipy.ndimage import gaussian_filter, uniform_filter
+
+    arr = np.asarray(patch, dtype=np.float32)
+    size = max(16, int(min(arr.shape) * BACKGROUND_SCALE_FRACTION))
+    # A running-sum box mean rather than a Gaussian: at a radius this large a
+    # Gaussian kernel would cost more than the correlation it prepares for.
+    return gaussian_filter(arr, 1.0) - uniform_filter(arr, size=size)
+
+
 def _measure_link(reference, moving, offset, max_shift_px):
     """Measure where ``moving`` actually sits relative to ``reference``.
 
@@ -391,8 +430,8 @@ def _measure_link(reference, moving, offset, max_shift_px):
         return None
 
     ref_slices, mov_slices = box
-    ref_patch = _normalize(reference[ref_slices])
-    mov_patch = _normalize(moving[mov_slices])
+    ref_patch = _normalize(_bandpass(reference[ref_slices]))
+    mov_patch = _normalize(_bandpass(moving[mov_slices]))
     if ref_patch.std() <= 1e-6 or mov_patch.std() <= 1e-6:
         return None
 
@@ -419,7 +458,8 @@ def _measure_link(reference, moving, offset, max_shift_px):
     check = _overlap_box(reference.shape, moving.shape, measured)
     if check is None:
         return None
-    confidence = _ncc(reference[check[0]], moving[check[1]])
+    confidence = _ncc(_bandpass(reference[check[0]]),
+                      _bandpass(moving[check[1]]))
     if confidence < MIN_LINK_CONFIDENCE:
         return None
 

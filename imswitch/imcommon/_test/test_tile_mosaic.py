@@ -304,7 +304,7 @@ def test_refine_leaves_an_unreachable_tile_where_the_stage_said():
 
     assert dataset.tiles[2].position == (900.0, 900.0)
     assert report.components == [2, 1]
-    assert 'disconnected groups' in report.summary()
+    assert 'groups nothing could be measured across' in report.summary()
 
 
 def test_solve_spreads_a_loop_closure_error_over_the_whole_loop():
@@ -348,6 +348,35 @@ def test_a_link_that_contradicts_the_consensus_is_dropped():
     assert links[4] not in kept
     assert links[4].accepted is False
     assert all(link.accepted for link in links[:4])
+
+
+def _vignette(shape, strength=0.6):
+    """Radial falloff fixed to the camera, so identical in every tile."""
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]].astype(np.float32)
+    cy, cx = (shape[0] - 1) / 2, (shape[1] - 1) / 2
+    radius = ((yy - cy) / cy) ** 2 + ((xx - cx) / cx) ** 2
+    return (1.0 - strength * radius / 2).clip(0.05, 1.0)
+
+
+def test_shading_does_not_cost_the_link():
+    """Vignetting anti-correlates two tiles' shared edges; ignore it.
+
+    Where tiles meet, one shows the falloff at its right edge and the other the
+    rise toward its centre. Those ramp opposite ways and correlate at about -1,
+    which scored as a hopeless match and threw away links whose sample
+    structure had in fact aligned. Losing links fragments the mosaic.
+    """
+    scene = _texture((128, 128), seed=16)
+    shading = _vignette((64, 64))
+    left = (scene[0:64, 0:64] + 0.15) * shading
+    right = (scene[0:64, 32:96] + 0.15) * shading
+
+    report = refine_layout(_dataset([
+        ('a', left, (0.0, 0.0)), ('b', right, (0.0, 37.0)),
+    ]))
+
+    assert len(report.links) == 1, 'shading must not cost the link'
+    assert report.links[0].confidence > 0.5
 
 
 def test_every_stage_reports_progress(tmp_path):
