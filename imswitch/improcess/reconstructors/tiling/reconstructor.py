@@ -162,18 +162,26 @@ class TilingReconstructor(Reconstructor):
                 "from the tiling run's folder."
             )
 
-        dataset = load_dataset(Path(source))
+        # A hundred multi-megapixel tiles take tens of seconds, and this runs
+        # on the calling thread, so every stage reports as it goes: without it
+        # a working run is indistinguishable from a frozen one. The refinement
+        # summary doubles as the diagnosis when a mosaic still looks wrong —
+        # how many links held, how far they disagree, and whether the run fell
+        # into groups that could not be tied to each other.
+        progress = self._logger.info
+
+        dataset = load_dataset(Path(source), progress=progress)
 
         moved = 0
         if params.get("refine", True):
-            report = refine_layout(dataset, params.get("max_shift_px"))
+            report = refine_layout(
+                dataset, params.get("max_shift_px"), progress=progress
+            )
             moved = report.moved
-            # The summary is the diagnosis when a mosaic still looks wrong:
-            # how many links held, how far they disagree, and whether the run
-            # fell into groups that could not be tied to each other.
-            self._logger.info(report.summary())
 
-        mosaic = assemble(dataset, blend=params.get("blend", True))
+        mosaic = assemble(
+            dataset, blend=params.get("blend", True), progress=progress
+        )
 
         pixel_y, pixel_x = dataset.pixel_size_um
         if mosaic.ndim == 3 and params.get("project", False):

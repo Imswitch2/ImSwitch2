@@ -350,6 +350,38 @@ def test_a_link_that_contradicts_the_consensus_is_dropped():
     assert all(link.accepted for link in links[:4])
 
 
+def test_every_stage_reports_progress(tmp_path):
+    """A long run must be distinguishable from a hung one."""
+    scene = _texture((128, 128), seed=15)
+    folder = _write_dataset(tmp_path / 'run', [
+        ('a.tiff', (scene[0:64, 0:64] * 65535).astype(np.uint16), (0, 0), (0, 0)),
+        ('b.tiff', (scene[0:64, 32:96] * 65535).astype(np.uint16), (0, 32), (1, 0)),
+    ])
+
+    said = []
+    dataset = load_dataset(folder, progress=said.append)
+    refine_layout(dataset, progress=said.append)
+    assemble(dataset, progress=said.append)
+
+    joined = '\n'.join(said)
+    assert 'Reading 2 tiles' in joined
+    assert 'Correlating 1 overlapping tile pairs' in joined
+    assert 'Tiling refinement:' in joined
+    assert 'Assembling 2 tiles into a 64x96 mosaic' in joined
+
+
+def test_assembly_reports_its_memory_before_allocating_it():
+    """The operator sees what a large mosaic will cost before it is asked for."""
+    said = []
+    assemble(_dataset([
+        ('a', np.zeros((1000, 1000), np.float32), (0.0, 0.0)),
+        ('b', np.zeros((1000, 1000), np.float32), (0.0, 900.0)),
+    ]), progress=said.append)
+
+    # 1000 x 1900 float32 mosaic + uint16 weights = 7.6 MB + 3.8 MB.
+    assert any('1000x1900 mosaic (0.01 GB)' in message for message in said)
+
+
 def test_ordinary_residual_scatter_is_not_mistaken_for_outliers():
     from imswitch.imcommon.algorithms.tile_mosaic import _drop_outliers
 

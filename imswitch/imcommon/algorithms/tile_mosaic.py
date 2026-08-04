@@ -43,7 +43,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -188,12 +188,25 @@ def _squeeze_leading(array: np.ndarray) -> np.ndarray:
     return array
 
 
-def load_dataset(path: Path | str) -> MosaicDataset:
+def _reporter(progress: Optional[Callable[[str], None]]):
+    """Where to send stage/progress messages.
+
+    A real tiling run is a hundred multi-megapixel tiles, and every stage here
+    takes long enough to look like a hang. Callers pass their own logger so the
+    messages carry their prefix; otherwise these land on the module logger.
+    """
+    return logger.info if progress is None else progress
+
+
+def load_dataset(path: Path | str,
+                 progress: Optional[Callable[[str], None]] = None
+                 ) -> MosaicDataset:
     """Load a tiling dataset from its manifest.
 
     Raises FileNotFoundError when ``path`` is not part of a tiling dataset, and
     ValueError when the manifest lists no readable tile.
     """
+    report = _reporter(progress)
     manifest_path = find_manifest(path)
     if manifest_path is None:
         raise FileNotFoundError(
@@ -216,11 +229,12 @@ def load_dataset(path: Path | str) -> MosaicDataset:
         metadata=payload,
     )
 
+    entries = [entry for entry in payload.get('tiles', []) if entry.get('filename')]
+    report(f'Reading {len(entries)} tiles from {folder.name}...')
+
     missing = []
-    for entry in payload.get('tiles', []):
-        filename = entry.get('filename')
-        if not filename:
-            continue
+    for index, entry in enumerate(entries):
+        filename = entry['filename']
         tile_path = folder / filename
         if not tile_path.exists():
             missing.append(filename)
@@ -229,6 +243,8 @@ def load_dataset(path: Path | str) -> MosaicDataset:
         if data is None:
             missing.append(filename)
             continue
+        if index and index % 25 == 0:
+            report(f'  read {index}/{len(entries)} tiles')
         # TileConfiguration stores (x, y); the mosaic works in (row, col).
         x, y = entry.get('pixel_xy', (0.0, 0.0))
         dataset.tiles.append(MosaicTile(
@@ -244,6 +260,10 @@ def load_dataset(path: Path | str) -> MosaicDataset:
     if not dataset.tiles:
         raise ValueError(f'No readable tiles found for {manifest_path}')
 
+    first = dataset.tiles[0]
+    report(f'Read {len(dataset.tiles)} tiles of {first.plane_shape[0]}x'
+           f'{first.plane_shape[1]} px'
+           + (f' x {dataset.depth} planes' if dataset.is_volumetric else ''))
     return dataset
 
 
@@ -406,31 +426,46 @@ def _measure_link(reference, moving, offset, max_shift_px):
     return measured, confidence
 
 
-def _build_links(dataset: MosaicDataset, max_shift_px: float) -> List[TileLink]:
+def _build_links(dataset: MosaicDataset, max_shift_px: float,
+                 progress: Optional[Callable[[str], None]] = None
+                 ) -> List[TileLink]:
     """Measure every pair of tiles the recorded layout says should overlap.
 
     This is the point of the offline path: a spiral gives most tiles two to
     four overlapping neighbours, and the tile that closes a ring sits next to
     the one that opened it. Every one of those pairs is a constraint.
+
+    Correlating them is by far the slowest part of a run — the pair count grows
+    with the mosaic and each one is an FFT over the shared region — so progress
+    is reported as it goes.
     """
+    report = _reporter(progress)
     projections = [tile.projection() for tile in dataset.tiles]
     positions = [tile.position for tile in dataset.tiles]
     shapes = [tile.plane_shape for tile in dataset.tiles]
 
-    links: List[TileLink] = []
+    # Finding the candidates is pure bounding-box arithmetic, so do it up front
+    # to know how much work there is before starting any of it.
+    candidates = []
     for i in range(len(dataset.tiles)):
         for j in range(i + 1, len(dataset.tiles)):
             offset = (
                 positions[j][0] - positions[i][0],
                 positions[j][1] - positions[i][1],
             )
-            if _overlap_box(shapes[i], shapes[j], offset) is None:
-                continue
-            measured = _measure_link(
-                projections[i], projections[j], offset, max_shift_px
-            )
-            if measured is None:
-                continue
+            if _overlap_box(shapes[i], shapes[j], offset) is not None:
+                candidates.append((i, j, offset))
+
+    report(f'Correlating {len(candidates)} overlapping tile pairs '
+           f'({len(dataset.tiles)} tiles)...')
+    step = max(1, len(candidates) // 10)
+
+    links: List[TileLink] = []
+    for done, (i, j, offset) in enumerate(candidates, start=1):
+        measured = _measure_link(
+            projections[i], projections[j], offset, max_shift_px
+        )
+        if measured is not None:
             offset_measured, confidence = measured
             links.append(TileLink(
                 i=i, j=j,
@@ -439,6 +474,9 @@ def _build_links(dataset: MosaicDataset, max_shift_px: float) -> List[TileLink]:
                 correction=(offset_measured[0] - offset[0],
                             offset_measured[1] - offset[1]),
             ))
+        if done % step == 0 or done == len(candidates):
+            report(f'  correlated {done}/{len(candidates)} pairs, '
+                   f'{len(links)} usable')
     return links
 
 
@@ -566,7 +604,9 @@ def _drop_outliers(links: List[TileLink]) -> List[TileLink]:
 
 
 def refine_layout(dataset: MosaicDataset,
-                  max_shift_px: Optional[float] = None) -> RefinementReport:
+                  max_shift_px: Optional[float] = None,
+                  progress: Optional[Callable[[str], None]] = None
+                  ) -> RefinementReport:
     """Solve for every tile position at once, and report what it took.
 
     Every overlapping pair is correlated, not just consecutive ones, and the
@@ -585,18 +625,22 @@ def refine_layout(dataset: MosaicDataset,
         heights = [tile.plane_shape[0] for tile in dataset.tiles]
         max_shift_px = max(MIN_OVERLAP_PX, 0.25 * float(min(heights)))
 
+    emit = _reporter(progress)
     nominal = [tile.position for tile in dataset.tiles]
-    report.links = _build_links(dataset, max_shift_px)
+    report.links = _build_links(dataset, max_shift_px, progress)
     if not report.links:
+        emit('No tile pair could be correlated; keeping the stage positions.')
         return report
 
     active = list(report.links)
     positions = _solve(nominal, active)
-    for _round in range(MAX_SOLVE_ROUNDS):
+    for round_index in range(MAX_SOLVE_ROUNDS):
         _update_residuals(report.links, positions)
         kept = _drop_outliers(active)
         if len(kept) == len(active) or not kept:
             break
+        emit(f'  solve round {round_index + 1}: dropped '
+             f'{len(active) - len(kept)} inconsistent link(s), re-solving')
         active = kept
         positions = _solve(nominal, active)
     _update_residuals(report.links, positions)
@@ -610,6 +654,7 @@ def refine_layout(dataset: MosaicDataset,
     report.components = [
         len(nodes) for nodes in _components(len(dataset.tiles), active)
     ]
+    emit(report.summary())
     return report
 
 
@@ -628,7 +673,8 @@ def refine_positions(dataset: MosaicDataset,
 # ----------------------------------------------------------------------
 
 
-def assemble(dataset: MosaicDataset, blend: bool = True) -> np.ndarray:
+def assemble(dataset: MosaicDataset, blend: bool = True,
+             progress: Optional[Callable[[str], None]] = None) -> np.ndarray:
     """Paste every tile into one array.
 
     Returns ``(Y, X)`` for 2D tiles and ``(Z, Y, X)`` when the dataset is
@@ -637,6 +683,7 @@ def assemble(dataset: MosaicDataset, blend: bool = True) -> np.ndarray:
     """
     if not dataset.tiles:
         raise ValueError('Cannot assemble an empty dataset')
+    report = _reporter(progress)
 
     rows = [tile.position[0] for tile in dataset.tiles]
     cols = [tile.position[1] for tile in dataset.tiles]
@@ -653,8 +700,19 @@ def assemble(dataset: MosaicDataset, blend: bool = True) -> np.ndarray:
     depth = dataset.depth
     shape = (depth, height, width) if depth > 1 else (height, width)
 
+    # A hundred 2000x2000 tiles make a ~15000x15000 mosaic, so say how much
+    # memory is about to be asked for before asking for it: an allocation that
+    # fails, or starts the machine swapping, is otherwise a silent hang.
+    footprint = (np.float32().itemsize * int(np.prod(shape))
+                 + np.uint16().itemsize * height * width)
+    report(f'Assembling {len(dataset.tiles)} tiles into a '
+           f'{"x".join(str(size) for size in shape)} mosaic '
+           f'({footprint / 1e9:.2f} GB)...')
+
     canvas_sum = np.zeros(shape, dtype=np.float32)
-    canvas_weight = np.zeros((height, width), dtype=np.float32)
+    # Overlap counts, so a small integer type is exact and halves this array
+    # against the mosaic it accompanies.
+    canvas_weight = np.zeros((height, width), dtype=np.uint16)
 
     for tile in dataset.tiles:
         top = int(round(tile.position[0])) - row0
@@ -681,18 +739,21 @@ def assemble(dataset: MosaicDataset, blend: bool = True) -> np.ndarray:
 
         if blend:
             target += source
-            weight_view += 1.0
+            weight_view += 1
         else:
             target[:] = source
-            weight_view[:] = 1.0
+            weight_view[:] = 1
 
-    out = np.zeros_like(canvas_sum)
-    safe = np.where(canvas_weight > 0, canvas_weight, 1.0)
-    if depth > 1:
-        np.divide(canvas_sum, safe[None, :, :], out=out)
-    else:
-        np.divide(canvas_sum, safe, out=out)
-    return out
+    # Divide in place. Allocating a separate quotient and a separate
+    # divide-safe copy of the weights costs two more arrays the size of the
+    # mosaic, which on a large run is gigabytes for nothing: the weights are
+    # counts, so clamping them to a minimum of one both avoids the zero divide
+    # and leaves uncovered pixels at the zero they already hold.
+    np.maximum(canvas_weight, 1, out=canvas_weight)
+    divisor = canvas_weight[None, :, :] if depth > 1 else canvas_weight
+    np.divide(canvas_sum, divisor, out=canvas_sum)
+    report('Mosaic assembled.')
+    return canvas_sum
 
 
 def assemble_dataset(path: Path | str, *, blend: bool = True,
