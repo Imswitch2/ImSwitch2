@@ -520,7 +520,11 @@ How BeadRec consumes this
   calls ``.getChunk()`` directly outside the detector layer.
 * On ``sigScanStarted``, ``BeadRecController.updateParameters()`` reads
   ``getDimsScan()`` / ``getScanStepSizes()`` / ``getFramesPerScanPixel()`` —
-  all resolved from the announcing controller.
+  all resolved from the announcing controller. Advanced Scan currently reports
+  one BeadRec frame per camera-enabled line step; it does not count multiple
+  camera pulses inside one line step. Ordinary Scan-once recording separately
+  counts the actual TTL rising edges and is not subject to that BeadRec-only
+  assumption. See :doc:`advanced-scanning`.
 * If no scan source exists at all, ``getDimsScan()`` still raises
   ``RuntimeError`` and BeadRec logs its one-shot "inactive" warning;
   ``isScanRunning()`` returns ``False`` instead of raising.

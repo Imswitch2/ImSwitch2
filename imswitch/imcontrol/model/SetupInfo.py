@@ -305,10 +305,17 @@ class TilingInfo:
     """ Name of the XY positioner (must match a positioner in the setup). """
 
     zPositioner: str = ""
-    """ Name of the Z positioner used for per-tile autofocus. Empty = disabled. """
+    """ Reserved Z-positioner reference for compatibility/site extensions.
+
+    The built-in Tiling controller and TilingWorkflow do not consume this field
+    and therefore do not perform per-tile autofocus from it. """
 
     camera: str = ""
-    """ Detector to use for tile acquisition. Empty = first forAcquisition detector. """
+    """ Detector used to build and align the mosaic.
+
+    Empty selects the first forAcquisition detector. Other detectors selected
+    in the Recording widget may also be saved when ``detectorTransforms``
+    declares their relationship to this reference detector. """
 
     defaultTileStepUm: float = 100.0
     """ Default stage step between tile centres, in µm. """
@@ -339,10 +346,11 @@ class TilingInfo:
     """ Save every tile, plus the stitched mosaic and stitching sidecars, as
     each run proceeds.
 
-    Tiles are written through the ordinary recording/storer layer, so each one
-    is an OME image carrying its own stage position in ``Plane/@PositionX|Y``.
-    A ``TileConfiguration.txt`` (Fiji Grid/Collection Stitching, BigStitcher)
-    and a ``tiles.json`` manifest are written alongside them. """
+    Tiles are written through the ordinary recording/storer layer in
+    ``saveFormat``. OME-TIFF carries its stage position in
+    ``Plane/@PositionX|Y``. A ``TileConfiguration.txt`` (Fiji Grid/Collection
+    Stitching, BigStitcher) and a ``tiles.json`` manifest are written alongside
+    the tile files. """
 
     saveFormat: str = "TIFF"
     """ Format for saved tiles: ``TIFF`` (OME-TIFF), ``HDF5`` or ``ZARR``
@@ -378,27 +386,29 @@ class TilingInfo:
     measured corrections are also reported after each run, which distinguishes
     stage error from a wrong sample-plane pixel size. """
 
-    advancedAlignment: bool = True
-    """ Align each tile against every neighbour it overlaps rather than against
-    one canvas region, and re-solve the whole layout once the run finishes.
-    Only has an effect when ``registerTiles`` is on.
-
-    A spiral gives most tiles two to four already-placed neighbours; the plain
-    pass uses one, so a false match decides that tile's placement on its own
-    and every later tile is placed relative to it. Measuring each neighbour
-    separately lets the consensus outvote a bad one, and the end-of-run solve
-    fits all the measurements at once instead of chaining them in acquisition
-    order. The solved layout is the one that gets saved.
-
-    Default because it is both more accurate and *faster*: correlating against
-    three small neighbours beats correlating against the whole mosaic, which
-    the plain pass rebuilds and copies once per tile. Measured on 100-tile
-    spirals at 273-1024 px tiles, it ran in 0.41-0.49x the time. Set False to
-    reproduce the older single-neighbour behaviour. """
-
     registrationMaxShiftFraction: float = 0.5
     """ Reject registration corrections larger than this fraction of the tile
     step. Guards against false matches on periodic sample structure. """
+
+    detectorTransforms: Dict[str, str] = field(default_factory=dict)
+    """ How each additionally-saved detector's pixels relate to the one tiling
+    aligns on, as ``{"DetectorName": "identity"}``.
+
+    A tiling run can save several detectors at each position, but sharing a
+    stage position establishes only the *tile grid* -- not pixel-level
+    agreement between detectors. Sensor origin, ROI, orientation, rotation and
+    optical-path offsets all differ independently, so equal pixel sizes prove
+    nothing on their own.
+
+    The relationship therefore has to be *declared* rather than inferred, and
+    declaring ``identity`` is a statement about the rig that the person who
+    wrote it owns. A detector in the save set with no entry here is **refused**
+    rather than assumed aligned: silently producing a mosaic that is offset
+    between channels is worse than not producing one.
+
+    Only ``"identity"`` is accepted for now; calibrated cross-detector
+    transforms will supply real values here without anything else moving. The
+    detector tiling aligns on needs no entry -- it is the reference. """
 
 
 @dataclass(frozen=True)

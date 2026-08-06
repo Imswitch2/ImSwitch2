@@ -8,6 +8,9 @@ from qtpy import QtCore
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcommon.algorithms.tile_mosaic import TileLink, solve_links
+from imswitch.imcontrol.model.workflows.positioning_request import (
+    PositioningRequest,
+)
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
@@ -47,6 +50,8 @@ class _FreeRunningTileSource:
     """
 
     needsSettleWait = True
+    #: Other detectors in the save set must prove their frame is post-move.
+    needsFreshFrame = True
 
     def __init__(self, controller, detector):
         self._controller = controller
@@ -80,18 +85,37 @@ class _TriggeredTileSource:
     """
 
     needsSettleWait = True
+    #: The scan that produced the tile clocked every detector it drives, so
+    #: their frames are already the right ones -- no handshake needed.
+    needsFreshFrame = False
 
     def __init__(self, controller, detector, scanSource):
         self._controller = controller
         self._detector = detector
         self._scanSource = scanSource
         self._first = True
+        #: Set while a recording session owns scan dispatch for this run. The
+        #: two must never both arm: tiling calling ``run_scan_from`` while a
+        #: lapse also starts one would command the same firmware twice.
+        self._dispatcher = None
+        self._pointIndex = 0
+
+    def useDispatcher(self, dispatcher) -> None:
+        """Hand scan dispatch to a recording session for this run.
+
+        With one set, tiling stops starting scans: it says where the stage is
+        and waits for the point the session runs there. Without one it keeps
+        driving its own scans, which is what a run that saves no payload does.
+        """
+        self._dispatcher = dispatcher
 
     def prepare(self) -> None:
         pass
 
     def acquire(self):
         controller = self._controller
+        if self._dispatcher is not None:
+            return self._acquireFromDispatcher()
         completion = self._runScan()
         if completion is None:
             return None, False
@@ -106,6 +130,46 @@ class _TriggeredTileSource:
         if not completion.successful:
             controller._logger.error(
                 f'Tiling: scan failed — {completion.message}'
+            )
+            return None, False
+
+        frame = controller._scanFrame(self._detector)
+        self._waitForFocus()
+        return frame, frame is not None
+
+    def _acquireFromDispatcher(self):
+        """One point, run by the recording session that owns dispatch.
+
+        The stage is already where this tile belongs -- the caller moved and
+        settled it before asking -- so the positioning request is resolved
+        immediately. It is still expressed as a request rather than skipped:
+        the session refuses to arm on anything but a resolved one, and that
+        refusal is the guarantee that a point is never acquired somewhere the
+        stage was not.
+        """
+        controller = self._controller
+        request = PositioningRequest(
+            self._pointIndex, timeout_s=controller._scanTimeoutS()
+        )
+        request.resolve()
+        self._pointIndex += 1
+
+        completion = self._dispatcher.runPoint(request)
+        if completion is None:
+            controller._logger.error(
+                'Tiling: the recording session did not run this point'
+            )
+            return None, False
+
+        timeout = controller._scanTimeoutS()
+        if not completion.wait(timeout):
+            controller._logger.error(
+                f'Tiling: point did not finish within {timeout:g} s'
+            )
+            return None, False
+        if not completion.successful:
+            controller._logger.error(
+                f'Tiling: point failed — {completion.message}'
             )
             return None, False
 
@@ -246,9 +310,6 @@ class TilingController(ImConWidgetController):
         self._widget.setDefaultRegisterTiles(
             getattr(tilingInfo, 'registerTiles', False)
         )
-        self._widget.setDefaultAdvancedAlignment(
-            getattr(tilingInfo, 'advancedAlignment', True)
-        )
         self._widget.setDefaultSaveTiles(getattr(tilingInfo, 'saveTiles', False))
         self._widget.setMode(getattr(tilingInfo, 'mode', MODE_FREE_RUNNING))
         self._populateScanSources(getattr(tilingInfo, 'scanSource', ''))
@@ -306,7 +367,6 @@ class TilingController(ImConWidgetController):
             intensity_correction = self._widget.getIntensityCorrection()
             settle_s = max(0.0, self._widget.getSettleTimeMs() / 1000.0)
             register_tiles = self._widget.getRegisterTiles()
-            advanced_align = self._widget.getAdvancedAlignment()
             orientation = self._widget.getTileOrientation()
             save_tiles = self._widget.getSaveTiles()
             mode = self._widget.getMode()
@@ -337,7 +397,6 @@ class TilingController(ImConWidgetController):
                 kwargs=dict(
                     settle_s=settle_s,
                     register_tiles=register_tiles,
-                    advanced_align=advanced_align,
                     orientation=orientation,
                     save_tiles=save_tiles,
                     mode=mode,
@@ -448,7 +507,6 @@ class TilingController(ImConWidgetController):
         intensity_correction: bool,
         settle_s: float = _SETTLE_S,
         register_tiles: bool = False,
-        advanced_align: bool = False,
         orientation: Tuple[bool, bool, bool] = (False, False, False),
         save_tiles: bool = False,
         mode: str = MODE_FREE_RUNNING,
@@ -502,8 +560,18 @@ class TilingController(ImConWidgetController):
                 mode, detector, tilingInfo, scan_source_key
             )
 
+            # Pinned once, before the first tile: the manifest describes one
+            # set of detectors for the whole dataset, so it must not follow the
+            # Recording widget if the operator changes it mid-run.
+            saveSet = self._resolveSaveSet(tilingInfo, camera, mode)
+
+            # Every detector in the set is leased for the whole run, not just
+            # the one being aligned on. An unleased detector is not armed, and
+            # would hand back whatever was last in its buffer. Leases are
+            # reference-counted, so this composes with anything else holding
+            # them.
             acqHandle = self._master.detectorsManager.acquire(
-                [camera], LeasePurpose.WORKFLOW
+                saveSet, LeasePurpose.WORKFLOW
             )
             with self._getActivityLock():
                 self._scanAcqHandle = acqHandle
@@ -595,9 +663,7 @@ class TilingController(ImConWidgetController):
 
                 offset_px = (0.0, 0.0)
                 if register_tiles:
-                    register = (self._registerTileAdvanced if advanced_align
-                                else self._registerTile)
-                    offset_px = register(
+                    offset_px = self._registerTile(
                         displayFrame, ix, iy, registration, maxShiftPx
                     )
 
@@ -625,7 +691,12 @@ class TilingController(ImConWidgetController):
                         origin_xy[0] + gx * step_um,
                         origin_xy[1] + gy * step_um,
                     )
-                    self._saveTile(frame, camera, gx, gy, stage_xy,
+                    # Every detector's image for this position, captured before
+                    # anything is written and before the stage may move again.
+                    images = self._captureSaveSet(
+                        saveSet, camera, frame, tileSource
+                    )
+                    self._saveTile(images, camera, gx, gy, stage_xy,
                                    dataset, saveFolder)
 
                 # Repainting the whole mosaic on the GUI thread after every
@@ -646,7 +717,7 @@ class TilingController(ImConWidgetController):
 
             scan_completed = not self._stopRequested and not frameFailure
 
-            if register_tiles and advanced_align and self._stitcher is not None:
+            if register_tiles and self._stitcher is not None:
                 # Before anything is written: the solved layout is the one that
                 # should reach the mosaic, the sidecars and the operator's
                 # screen, not the one the live pass arrived at tile by tile.
@@ -787,20 +858,29 @@ class TilingController(ImConWidgetController):
             stage_dx, stage_dy = stage_dy, stage_dx
         return stage_dx, stage_dy
 
-    def _saveTile(self, frame, detectorName, gx, gy, stage_xy, dataset, folder):  # noqa: D401
-        """Write one tile as an OME image carrying its own stage position.
+    def _saveTile(self, images, alignmentDetector, gx, gy, stage_xy, dataset,
+                  folder):  # noqa: D401
+        """Write one tile — every selected detector — with its stage position.
 
         Goes through RecordingManager's storer layer rather than writing files
         here, so tiles land in the same OME formats as everything else the
         instrument records, and the stage position rides along in the standard
         ``Plane/@PositionX|Y`` fields that make the set re-stitchable.
+
+        ``images`` maps detector name to the array captured at this position.
+        They all carry the same stage position, which is what lets a reader
+        rebuild one mosaic per detector from a single solved layout.
         """
+        if not images:
+            return None
+
         name = f'tile_x{gx:+03d}_y{gy:+03d}'
         savename = str(Path(folder) / name)
-        attrs = {detectorName: self._tileAttrs(gx, gy, stage_xy)}
+        attrs = {detectorName: self._tileAttrs(gx, gy, stage_xy)
+                 for detectorName in images}
         try:
-            written = self._master.recordingManager.snapImagePrev(
-                detectorName, savename, self._saveFormat, frame, attrs,
+            written = self._master.recordingManager.snapImagesPrev(
+                images, savename, self._saveFormat, attrs,
                 stagePositionUm=(stage_xy[0], stage_xy[1], 0.0),
                 zStepUm=dataset.z_step_um or None,
             )
@@ -809,14 +889,27 @@ class TilingController(ImConWidgetController):
                                exc_info=True)
             return None
 
-        # The storer decides the final name (it appends the detector name and
+        # What the container actually wrote. HDF5 gives a 2-D snapshot a
+        # leading frame axis and OME-TIFF does not, so this is the writer's to
+        # report -- deriving it from the array that went in would describe the
+        # wrong file for one of the two formats.
+        try:
+            storedShapes = self._master.recordingManager.lastSnapStoredShapes()
+        except Exception:
+            storedShapes = {}
+
+        # The storer decides the final names (it appends the detector name and
         # its own extension, and de-duplicates). The manifest and
-        # TileConfiguration.txt must name the file that actually exists, or no
-        # stitcher will find it.
-        if written:
-            filename = Path(written[0]).name
-        else:
-            filename = f'{name}_{detectorName}{self._saveExtension}'
+        # TileConfiguration.txt must name files that actually exist, or no
+        # stitcher will find them.
+        writtenByDetector = {}
+        for index, detectorName in enumerate(images):
+            if written and index < len(written):
+                writtenByDetector[detectorName] = Path(written[index]).name
+            else:
+                writtenByDetector[detectorName] = (
+                    f'{name}_{detectorName}{self._saveExtension}'
+                )
 
         placement = self._stitcher.placement(
             *self._gridToImage(gx, gy, self._orientation)
@@ -825,7 +918,10 @@ class TilingController(ImConWidgetController):
             *self._gridToImage(gx, gy, self._orientation)
         )
         dataset.add(TileRecord(
-            filename=filename,
+            # The alignment detector's file stays the record's own filename, so
+            # a reader that knows nothing of save sets still finds the tile the
+            # mosaic is built from.
+            filename=writtenByDetector[alignmentDetector],
             grid=(int(gx), int(gy)),
             stage_um=(float(stage_xy[0]), float(stage_xy[1])),
             # TileConfiguration.txt wants (x, y) = (col, row).
@@ -834,8 +930,77 @@ class TilingController(ImConWidgetController):
                 float(placement[0] - nominal[0]),
                 float(placement[1] - nominal[1]),
             ),
+            alignment=dict(
+                detector=alignmentDetector,
+                filename=writtenByDetector[alignmentDetector],
+                **self._tileAxes(images[alignmentDetector], dataset,
+                                 storedShapes.get(alignmentDetector)),
+            ),
+            # Phase 1 has no separate payload recording, so each detector's
+            # snapshot *is* its payload; a locator names it the same way a
+            # recording's would, minus the group and generation only a
+            # finalised writer can supply.
+            payloads={
+                detectorName: dict(
+                    path=writtenByDetector[detectorName],
+                    group=None,
+                    complete=True,
+                    transform_to_alignment=(
+                        'reference' if detectorName == alignmentDetector
+                        else 'identity'
+                    ),
+                    **self._tileAxes(image, dataset,
+                                     storedShapes.get(detectorName)),
+                )
+                for detectorName, image in images.items()
+            },
+            **self._tileAxes(images[alignmentDetector], dataset,
+                             storedShapes.get(alignmentDetector)),
         ))
         return name
+
+    @staticmethod
+    def _tileAxes(frame, dataset, storedShape=None) -> dict:
+        """Name the axes of a saved tile, for the manifest.
+
+        A scan-driven tile's leading axis is a line step's channels, not
+        planes, whenever the scan ran with more than one line step — and the
+        manifest could previously only call it depth and give it a Z spacing,
+        which mislabels a channel as a distance for every reader downstream.
+
+        The two are told apart by the detector's own calibration: it publishes
+        a Z spacing only when the scan actually moved in Z, which is the same
+        fact ``_detectorZStepUm`` already relies on. Anything this cannot
+        justify is left undescribed rather than guessed at, and a reader falls
+        back to the older assumption.
+        """
+        array = np.asarray(frame)
+        if array.ndim < 2:
+            return {}
+
+        leading = array.ndim - 2
+        stepped_in_z = dataset.z_step_um > 0
+        if leading == 0:
+            axes = 'YX'
+        elif leading == 1:
+            axes = ('Z' if stepped_in_z else 'C') + 'YX'
+        elif leading == 2 and stepped_in_z:
+            axes = 'CZYX'
+        else:
+            return {}
+
+        # `axes` and `shape` describe what was captured. `stored_axes` describes
+        # the file, which only the writer knows -- some containers add axes of
+        # their own -- so it is filled in from what the storer reported and
+        # omitted when it reported nothing, rather than assumed equal to `axes`
+        # and thereby contradicting the file for those formats.
+        descriptor = {'axes': axes,
+                      'shape': tuple(int(size) for size in array.shape)}
+        if storedShape is not None and len(storedShape) >= len(axes):
+            extra = len(storedShape) - len(axes)
+            descriptor['stored_axes'] = 'T' * extra + axes
+            descriptor['stored_shape'] = tuple(int(s) for s in storedShape)
+        return descriptor
 
     @property
     def _saveFormat(self):
@@ -912,39 +1077,6 @@ class TilingController(ImConWidgetController):
                                exc_info=True)
 
     def _registerTile(self, frame, gx, gy, report, maxShiftPx):
-        """Measure where a tile really belongs and return its correction.
-
-        Correlates the incoming tile against the canvas built so far, over the
-        region the commanded position says they share. Returns ``(dy, dx)`` in
-        canvas pixels, or ``(0, 0)`` when there is nothing to register against
-        or the match is not trustworthy.
-        """
-        region = self._stitcher.canvas_region_for(gx, gy)
-        if region is None:
-            return (0.0, 0.0)
-
-        canvas, nominal_offset = region
-        shift, confidence, reason = estimate_shift(
-            canvas, np.asarray(frame, dtype=np.float32), nominal_offset,
-            max_shift_px=maxShiftPx,
-        )
-        accepted = not reason
-        report.add(TileShift(
-            grid=(gx, gy),
-            applied=shift if accepted else (0.0, 0.0),
-            measured=shift,
-            expected=nominal_offset,
-            confidence=confidence,
-            accepted=accepted,
-            reason=reason,
-        ))
-        if not accepted:
-            self._logger.debug(
-                f'Tiling: tile {(gx, gy)} not registered — {reason}'
-            )
-        return shift if accepted else (0.0, 0.0)
-
-    def _registerTileAdvanced(self, frame, gx, gy, report, maxShiftPx):
         """Register a tile against every placed neighbour, not just the canvas.
 
         The plain path correlates once, against the canvas region the commanded
@@ -1048,6 +1180,135 @@ class TilingController(ImConWidgetController):
             + f', {moved} still disagreed with the live placement.'
         )
         self._logger.info(f'Tiling: {report.globalSolve}')
+
+    def _resolveSaveSet(self, tilingInfo, alignmentDetector, mode):
+        """Which detectors this run saves at each position.
+
+        The alignment detector always saves — it is the one the mosaic is built
+        from. The rest come from the Recording widget, which is where the
+        operator already says what their data is; tiling keeping a second,
+        private answer to that question is how the two drift apart.
+
+        Every extra detector must declare how its pixels relate to the
+        alignment detector's, and must be able to participate in the run's
+        timing model. Anything that cannot is dropped with a reason, because a
+        mosaic that is silently offset between channels is worse than one
+        channel fewer.
+        """
+        selected = []
+        try:
+            selected = self._commChannel.getRecordingDetectors() or []
+        except Exception as e:
+            self._logger.warning(
+                f'Tiling: could not read the recording detector selection '
+                f'({e}); saving only {alignmentDetector}.'
+            )
+
+        transforms = dict(getattr(tilingInfo, 'detectorTransforms', None) or {})
+        saveSet = [alignmentDetector]
+        for name in selected:
+            if name == alignmentDetector or name in saveSet:
+                continue
+            reason = self._rejectFromSaveSet(name, transforms, mode,
+                                             alignmentDetector)
+            if reason:
+                self._logger.warning(f'Tiling: not saving "{name}" — {reason}')
+                continue
+            saveSet.append(name)
+
+        if len(saveSet) > 1:
+            self._logger.info(
+                f'Tiling: saving {len(saveSet)} detectors per tile '
+                f'({", ".join(saveSet)}); aligning on {alignmentDetector}.'
+            )
+        return saveSet
+
+    def _rejectFromSaveSet(self, name, transforms, mode, alignmentDetector):
+        """Why ``name`` cannot join the save set, or None if it can."""
+        try:
+            detector = self._master.detectorsManager[name]
+        except Exception:
+            return 'no such detector'
+
+        declared = str(transforms.get(name, '')).strip().lower()
+        if not declared:
+            return (
+                'no detectorTransforms entry says how its pixels relate to '
+                f'{alignmentDetector}. Add "{name}": "identity" to the tiling '
+                'section once you have checked that they really do line up'
+            )
+        if declared != 'identity':
+            return (
+                f'transform "{declared}" is declared, but only "identity" is '
+                'supported so far'
+            )
+
+        # A contradiction test, not evidence of registration: a detector that
+        # claims identity while reporting a different pixel size is certainly
+        # misconfigured, but agreeing here proves nothing on its own.
+        try:
+            reference = self._master.detectorsManager[alignmentDetector]
+            if (self._detectorPixelSizeUm(detector)
+                    != self._detectorPixelSizeUm(reference)):
+                return ('it declares identity but reports a different pixel '
+                        'size, so one of the two is wrong')
+            if tuple(detector.shape) != tuple(reference.shape):
+                return ('it declares identity but has a different frame shape, '
+                        'so one of the two is wrong')
+        except Exception:
+            pass
+
+        if mode != MODE_TRIGGERED and getattr(detector, 'isScanDriven', False):
+            return ('it is scan-driven, so it only produces an image while a '
+                    'scan runs; free-running tiling cannot clock it')
+        return None
+
+    def _captureSaveSet(self, saveSet, alignmentDetector, alignmentFrame,
+                        tileSource):
+        """One image per detector, all taken with the stage standing still.
+
+        The alignment detector's frame is already in hand; the others are
+        grabbed now, before the caller is allowed to move on. Each gets the
+        same fresh-frame proof the alignment detector gets, so a second camera
+        cannot contribute a frame left over from the previous tile or exposed
+        during the move.
+
+        The whole set is returned at once: nothing may be saved until the
+        slowest camera has produced its frame, which is also what sets the
+        per-tile cost.
+        """
+        images = {alignmentDetector: alignmentFrame}
+        stale = []
+        for name in saveSet:
+            if name == alignmentDetector:
+                continue
+            try:
+                detector = self._master.detectorsManager[name]
+            except Exception as e:
+                self._logger.error(f'Tiling: cannot read "{name}": {e}')
+                continue
+
+            if getattr(tileSource, 'needsFreshFrame', True):
+                frame, fresh = self._grabSettledFrame(detector)
+            else:
+                # Triggered: the scan that produced the tile clocked this
+                # detector too, so its frame is already the right one.
+                frame, fresh = self._scanFrame(detector), True
+            if frame is None:
+                self._logger.warning(
+                    f'Tiling: "{name}" produced no frame for this tile'
+                )
+                continue
+            if not fresh:
+                stale.append(name)
+            images[name] = frame
+
+        if stale:
+            self._logger.warning(
+                f'Tiling: {", ".join(stale)} fell back to a buffered frame for '
+                'this tile; it may belong to the previous position'
+            )
+        return images
 
     def _syncDatasetPlacements(self, dataset) -> None:
         """Rewrite the manifest's pixel positions from the solved layout.

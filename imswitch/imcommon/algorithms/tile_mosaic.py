@@ -85,6 +85,11 @@ MIN_OUTLIER_PX = 1.0
 #: Solve/reject rounds. Convergence is normally reached in two.
 MAX_SOLVE_ROUNDS = 4
 
+#: Axis names assumed for a tile's leading axes when the manifest does not say,
+#: ordered outermost-first so the last entry sits nearest Y/X. One leading axis
+#: has always meant Z here; a second is a line-step scan's channels.
+_DEFAULT_LEADING_AXES = 'CZ'
+
 #: Position change below which a tile is not considered to have moved. A
 #: global solve gives almost every tile some sub-pixel nudge as it shares out
 #: the disagreement, and ``assemble`` pastes on whole pixels, so anything under
@@ -97,17 +102,28 @@ class MosaicTile:
     """One tile of a saved dataset: its pixels and where they belong."""
 
     name: str
-    data: np.ndarray                 # (Y, X) or (Z, Y, X)
+    data: np.ndarray                 # (..., Y, X)
     #: Top-left position in mosaic pixels, as ``(row, col)``.
     position: Tuple[float, float]
     grid: Tuple[int, int] = (0, 0)
+    #: Axis names for ``data``, ending in ``YX``. A tile may carry any number
+    #: of leading axes — ``Z`` for a stack, ``C`` for a line-step scan's
+    #: channels, both for a scan that does each. Empty when the manifest did
+    #: not say, in which case a leading axis is assumed to be Z, as before.
+    axes: str = ''
 
     @property
     def plane_shape(self) -> Tuple[int, int]:
         return tuple(self.data.shape[-2:])
 
+    @property
+    def leading_shape(self) -> Tuple[int, ...]:
+        """Everything before Y/X: ``()`` for a plain image."""
+        return tuple(self.data.shape[:-2])
+
     def projection(self) -> np.ndarray:
-        """The 2-D view used for alignment: a max projection of a stack."""
+        """The 2-D view used for alignment: a max projection over every
+        leading axis, whatever those axes happen to mean."""
         if self.data.ndim <= 2:
             return self.data
         return self.data.max(axis=tuple(range(self.data.ndim - 2)))
@@ -125,15 +141,46 @@ class MosaicDataset:
     metadata: Dict = field(default_factory=dict)
 
     @property
-    def depth(self) -> int:
+    def leading_shape(self) -> Tuple[int, ...]:
+        """The leading axes the mosaic must carry, over every tile.
+
+        A dataset need not be uniform — a tile whose stack came up short still
+        belongs in the mosaic — so this takes the largest extent seen on each
+        axis. Shapes of differing rank are right-aligned, so a ``(Z, Y, X)``
+        tile sitting among ``(C, Z, Y, X)`` ones contributes to Z, not to C.
+        """
+        shapes = [tile.leading_shape for tile in self.tiles if tile.leading_shape]
+        if not shapes:
+            return ()
+        rank = max(len(shape) for shape in shapes)
+        aligned = [(1,) * (rank - len(shape)) + shape for shape in shapes]
+        return tuple(max(extents) for extents in zip(*aligned))
+
+    @property
+    def axes(self) -> str:
+        """Axis names for the assembled mosaic, ending in ``YX``."""
         for tile in self.tiles:
-            if tile.data.ndim > 2:
-                return int(tile.data.shape[0])
-        return 1
+            if tile.axes and len(tile.axes) == tile.data.ndim:
+                return tile.axes
+        # No descriptor to go on. One leading axis has always meant Z here, and
+        # a second is a line-step scan's channels; anything beyond that cannot
+        # be guessed and is named so it reads as unknown rather than wrong.
+        rank = len(self.leading_shape)
+        if rank == 0:
+            return 'YX'
+        if rank <= len(_DEFAULT_LEADING_AXES):
+            return _DEFAULT_LEADING_AXES[-rank:] + 'YX'
+        return '?' * (rank - len(_DEFAULT_LEADING_AXES)) + _DEFAULT_LEADING_AXES + 'YX'
+
+    @property
+    def depth(self) -> int:
+        """Extent of the first leading axis; 1 when the tiles are plain."""
+        leading = self.leading_shape
+        return int(leading[0]) if leading else 1
 
     @property
     def is_volumetric(self) -> bool:
-        return self.depth > 1
+        return bool(self.leading_shape) and self.depth > 1
 
 
 # ----------------------------------------------------------------------
@@ -194,10 +241,126 @@ def _read_image(path: Path) -> Optional[np.ndarray]:
 
 
 def _squeeze_leading(array: np.ndarray) -> np.ndarray:
-    """Drop leading singleton axes a container added around the real data."""
+    """Drop leading singleton axes a container added around the real data.
+
+    The undescribed fallback. It cannot tell a container's wrapper axis from a
+    real one that happens to have a single channel or plane, so it destroys the
+    latter — which is exactly why a descriptor is worth having.
+    """
     while array.ndim > 2 and array.shape[0] == 1:
         array = array[0]
     return array
+
+
+def _file_descriptor(entry: Dict, detector: Optional[str]) -> Dict:
+    """The entry describing one tile file, for ``detector`` or the default.
+
+    Three manifest layouts are read, oldest last:
+
+    * ``alignment`` + ``payloads`` — the current one. The alignment image is
+      singular; payloads are per detector and carry a locator rather than a
+      bare filename.
+    * ``files`` — an interim layout keyed by detector.
+    * a flat ``filename`` on the entry itself — the original.
+
+    Asking for a detector a tile does not have returns nothing, so that tile is
+    skipped rather than silently substituted with a different detector's image.
+    """
+    if not detector:
+        alignment = entry.get('alignment')
+        if isinstance(alignment, dict) and alignment.get('filename'):
+            return alignment
+
+    payloads = entry.get('payloads')
+    if isinstance(payloads, dict) and payloads:
+        if detector:
+            found = payloads.get(detector)
+            if not isinstance(found, dict):
+                return {}
+            # A locator names its file under `path`; the loader wants the
+            # same key every layout uses.
+            resolved = dict(found)
+            resolved.setdefault('filename', resolved.get('path'))
+            return resolved
+        # No detector asked for and no alignment entry: fall through.
+
+    files = entry.get('files')
+    if isinstance(files, dict) and files:
+        if detector:
+            found = files.get(detector)
+            return found if isinstance(found, dict) else {}
+        return entry
+
+    return {} if detector else entry
+
+
+def detectors_in(payload: Dict) -> List[str]:
+    """Every detector a manifest saved, in the order it first saw them."""
+    names: List[str] = []
+    for entry in payload.get('tiles', []) or []:
+        for key in ('payloads', 'files'):
+            group = entry.get(key)
+            if not isinstance(group, dict):
+                continue
+            for name in group:
+                if name not in names:
+                    names.append(str(name))
+    return names
+
+
+def _apply_descriptor(array: np.ndarray, descriptor: Dict, name: str):
+    """Reduce a stored array to the logical one its descriptor promises.
+
+    ``axes`` is what a reader should end up with. What is actually on disk is
+    taken from the array in hand, not from the manifest: a container adds
+    axes of its own — the HDF5 snapshot writer gives every 2-D image a leading
+    frame axis — so a manifest written before saving cannot know the stored
+    rank, and one that guessed would contradict the file it describes.
+    ``stored_axes`` is therefore treated as a hint and cross-checked, never
+    trusted.
+
+    Only leading axes may be dropped, only at length 1, and the result is
+    validated against the declared ``shape``. Anything else raises: a tile
+    whose shape contradicts its own manifest is not a tile to reinterpret.
+
+    Returns ``(array, axes)``.
+    """
+    axes = str(descriptor.get('axes') or '')
+    if not axes:
+        return _squeeze_leading(array), ''
+
+    extra = array.ndim - len(axes)
+    if extra < 0:
+        raise ValueError(
+            f'{name}: manifest declares {axes!r} ({len(axes)} axes) but the '
+            f'file has only {array.ndim}'
+        )
+    for position in range(extra):
+        if array.shape[position] != 1:
+            raise ValueError(
+                f'{name}: the file has {array.ndim} axes where {axes!r} needs '
+                f'{len(axes)}, and the extra axis at position {position} has '
+                f'length {array.shape[position]} — dropping it would discard '
+                'data'
+            )
+    reduced = array.reshape(array.shape[extra:])
+
+    declared = tuple(descriptor.get('shape') or ())
+    if declared and tuple(reduced.shape) != declared:
+        raise ValueError(
+            f'{name}: manifest declares shape {declared} for {axes!r} but the '
+            f'file holds {tuple(reduced.shape)}'
+        )
+
+    # When the writer reported what it stored, a disagreement is a real
+    # contradiction rather than a stale guess, and is refused like any other.
+    stored = str(descriptor.get('stored_axes') or '')
+    if stored and len(stored) != array.ndim:
+        raise ValueError(
+            f'{name}: the writer reported stored axes {stored!r} '
+            f'({len(stored)}) but the file has {array.ndim}'
+        )
+    return reduced, axes
 
 
 def _positions_from_stage(payload: Dict, entries: List[Dict],
@@ -265,7 +428,8 @@ def _reporter(progress: Optional[Callable[[str], None]]):
 
 def load_dataset(path: Path | str,
                  progress: Optional[Callable[[str], None]] = None,
-                 prefer_stage_positions: bool = True) -> MosaicDataset:
+                 prefer_stage_positions: bool = True,
+                 detector: Optional[str] = None) -> MosaicDataset:
     """Load a tiling dataset from its manifest.
 
     ``prefer_stage_positions`` starts the layout from the commanded stage
@@ -273,6 +437,11 @@ def load_dataset(path: Path | str,
     whatever the live registration pass did during acquisition — see
     :func:`_positions_from_stage`. Set it False to reconstruct exactly the
     layout that was saved.
+
+    ``detector`` picks one detector out of a run that saved several. They were
+    all captured at the same stage positions, so every detector shares one
+    layout — solve it once on any of them and the rest follow. None loads the
+    detector the run aligned on, which is what a single-detector dataset has.
 
     Raises FileNotFoundError when ``path`` is not part of a tiling dataset, and
     ValueError when the manifest lists no readable tile.
@@ -312,9 +481,20 @@ def load_dataset(path: Path | str,
     elif prefer_stage_positions:
         report('  no usable stage positions; using the saved pixel positions')
 
+    if detector:
+        report(f'  reading the {detector} images')
+
     missing = []
     for index, entry in enumerate(entries):
-        filename = entry['filename']
+        # A multi-detector run names one file per detector; a single-detector
+        # one names it flat, as it always did.
+        descriptor = _file_descriptor(entry, detector)
+        filename = descriptor.get('filename') or (
+            entry['filename'] if not detector else ''
+        )
+        if not filename:
+            missing.append(f'{entry["filename"]} ({detector})')
+            continue
         tile_path = folder / filename
         if not tile_path.exists():
             missing.append(filename)
@@ -331,11 +511,22 @@ def load_dataset(path: Path | str,
             # TileConfiguration stores (x, y); the mosaic works in (row, col).
             x, y = entry.get('pixel_xy', (0.0, 0.0))
             position = (float(y), float(x))
+
+        # The descriptor says what the file holds; without one, fall back to
+        # the old guess that leading singletons are container padding.
+        # A descriptor that contradicts its own file is not a tile to skip.
+        # Skipping means a mosaic that assembles, looks plausible and is quietly
+        # missing data — the failure mode this whole descriptor exists to stop.
+        # A *missing* file is different, and stays a skip: nothing about the
+        # remaining tiles is in doubt.
+        data, axes = _apply_descriptor(data, descriptor, filename)
+
         dataset.tiles.append(MosaicTile(
             name=filename,
-            data=_squeeze_leading(data),
+            data=data,
             position=position,
             grid=tuple(entry.get('grid', (0, 0))),
+            axes=axes,
         ))
 
     if missing:
@@ -807,9 +998,14 @@ def assemble(dataset: MosaicDataset, blend: bool = True,
              progress: Optional[Callable[[str], None]] = None) -> np.ndarray:
     """Paste every tile into one array.
 
-    Returns ``(Y, X)`` for 2D tiles and ``(Z, Y, X)`` when the dataset is
-    volumetric. Overlaps are averaged when ``blend`` is set, otherwise later
-    tiles overwrite earlier ones.
+    The mosaic keeps whatever leading axes the tiles have — none for a plain
+    image, ``Z`` for a stack, ``CZ`` for a line-step scan of one — and the
+    tiles are laid out in Y/X regardless. Overlaps are averaged when ``blend``
+    is set, otherwise later tiles overwrite earlier ones.
+
+    Tiles need not all be the same rank: one that came up short is broadcast
+    over the axes it lacks, so a plain image in a volumetric set contributes to
+    every plane rather than being dropped or forcing the mosaic flat.
     """
     if not dataset.tiles:
         raise ValueError('Cannot assemble an empty dataset')
@@ -827,22 +1023,32 @@ def assemble(dataset: MosaicDataset, blend: bool = True,
     )))
 
     height, width = max(1, row1 - row0), max(1, col1 - col0)
-    depth = dataset.depth
-    shape = (depth, height, width) if depth > 1 else (height, width)
+    leading = dataset.leading_shape
+    shape = leading + (height, width)
+
+    # Overlap counts, so a small integer type is exact.
+    #
+    # The weights need the mosaic's leading rank whenever the tiles disagree
+    # about it: a tile covering fewer planes than the mosaic still overlaps in
+    # Y/X, so a plane-blind count would credit every plane with a contributor
+    # that only reached one of them, and divide the rest down. When every tile
+    # covers the same leading extent, coverage is identical on every plane and
+    # one Y/X plane of counts is exactly right -- which is the ordinary case,
+    # and worth keeping cheap.
+    uniform = len({tile.leading_shape for tile in dataset.tiles}) <= 1
+    weight_shape = (height, width) if uniform else shape
 
     # A hundred 2000x2000 tiles make a ~15000x15000 mosaic, so say how much
     # memory is about to be asked for before asking for it: an allocation that
     # fails, or starts the machine swapping, is otherwise a silent hang.
     footprint = (np.float32().itemsize * int(np.prod(shape))
-                 + np.uint16().itemsize * height * width)
+                 + np.uint16().itemsize * int(np.prod(weight_shape)))
     report(f'Assembling {len(dataset.tiles)} tiles into a '
            f'{"x".join(str(size) for size in shape)} mosaic '
            f'({footprint / 1e9:.2f} GB)...')
 
     canvas_sum = np.zeros(shape, dtype=np.float32)
-    # Overlap counts, so a small integer type is exact and halves this array
-    # against the mosaic it accompanies.
-    canvas_weight = np.zeros((height, width), dtype=np.uint16)
+    canvas_weight = np.zeros(weight_shape, dtype=np.uint16)
 
     for tile in dataset.tiles:
         top = int(round(tile.position[0])) - row0
@@ -854,24 +1060,37 @@ def assemble(dataset: MosaicDataset, blend: bool = True,
             continue
 
         data = np.asarray(tile.data, dtype=np.float32)
-        weight_view = canvas_weight[top:top + tile_h, left:left + tile_w]
 
-        if depth > 1:
-            if data.ndim == 2:
-                # A 2D tile in a volumetric set contributes to every plane.
-                data = np.broadcast_to(data, (depth,) + data.shape)
-            planes = min(depth, data.shape[0])
-            target = canvas_sum[:planes, top:top + tile_h, left:left + tile_w]
-            source = data[:planes, :tile_h, :tile_w]
-        else:
-            target = canvas_sum[top:top + tile_h, left:left + tile_w]
-            source = data[:tile_h, :tile_w]
+        # Crop Y/X to what fits, then match the mosaic's leading rank. A tile
+        # with fewer leading axes is broadcast over the ones it lacks; one with
+        # a shorter extent fills only as far as it goes, so the rest of that
+        # axis keeps whatever other tiles put there.
+        source = data[..., :tile_h, :tile_w]
+        missing = len(shape) - source.ndim
+        if missing > 0:
+            # Fewer leading axes than the mosaic has. The tile says nothing
+            # about the axes it lacks, so it contributes equally to all of
+            # them — a plain image in a volumetric set belongs on every plane.
+            # This is not the same as a genuine length-1 axis, which covers
+            # one position and must not be spread across the rest.
+            source = np.broadcast_to(source, leading[:missing] + source.shape)
+        covered = tuple(
+            slice(0, min(extent, size))
+            for extent, size in zip(source.shape[:-2], leading)
+        )
+        window = (slice(top, top + tile_h), slice(left, left + tile_w))
+        source = source[covered + (slice(None), slice(None))]
+        target = canvas_sum[covered + window]
+        # The weights are indexed the same way as the pixels they divide, so a
+        # tile can only ever credit the planes it actually contributed to.
+        weight_view = (canvas_weight[window] if uniform
+                       else canvas_weight[covered + window])
 
         if blend:
             target += source
             weight_view += 1
         else:
-            target[:] = source
+            target[...] = source
             weight_view[:] = 1
 
     # Divide in place. Allocating a separate quotient and a separate
@@ -880,7 +1099,8 @@ def assemble(dataset: MosaicDataset, blend: bool = True,
     # counts, so clamping them to a minimum of one both avoids the zero divide
     # and leaves uncovered pixels at the zero they already hold.
     np.maximum(canvas_weight, 1, out=canvas_weight)
-    divisor = canvas_weight[None, :, :] if depth > 1 else canvas_weight
+    divisor = (canvas_weight[(np.newaxis,) * len(leading) + (Ellipsis,)]
+               if uniform else canvas_weight)
     np.divide(canvas_sum, divisor, out=canvas_sum)
     report('Mosaic assembled.')
     return canvas_sum

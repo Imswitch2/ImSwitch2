@@ -64,7 +64,6 @@ class StitchedImage:
         self.px_per_um_x = px_per_um_x
         self.px_per_um_y = px_per_um_y
         self.overlap = overlap
-        self.effective_tile_step_px = step_x_px
         self.step_x_px = step_x_px
         self.step_y_px = step_y_px
         self.blend_overlaps = blend_overlaps
@@ -102,24 +101,6 @@ class StitchedImage:
     def placement(self, grid_x: int, grid_y: int) -> Tuple[int, int] | None:
         """Where a placed tile actually sits, in virtual pixels."""
         return self._placements.get((grid_x, grid_y))
-
-    def canvas_region_for(
-        self, grid_x: int, grid_y: int, offset_px: Tuple[float, float] = (0.0, 0.0)
-    ):
-        """Return ``(canvas_patch, nominal_offset)`` for registering a new tile.
-
-        ``canvas_patch`` is the current canvas, and ``nominal_offset`` is where
-        the incoming tile's origin would land inside it. Returns None before
-        any tile has been placed.
-        """
-        if self._canvas_sum is None:
-            return None
-        row0, col0 = self.nominal_placement(grid_x, grid_y)
-        overview = self.get_overview()
-        return overview, (
-            row0 + offset_px[0] - self._canvas_row0,
-            col0 + offset_px[1] - self._canvas_col0,
-        )
 
     def placed_neighbours(
         self,
@@ -386,22 +367,3 @@ class StitchedImage:
         stage_y = origin_stage_xy[1] + row / self.px_per_um_y
 
         return (stage_x, stage_y)
-
-    def stage_to_pixel(
-        self, stage_x: float, stage_y: float, origin_stage_xy: Tuple[float, float]
-    ) -> Tuple[int, int]:
-        """Inverse of pixel_to_stage.
-
-        Args:
-            stage_x: Stage X position in µm.
-            stage_y: Stage Y position in µm.
-            origin_stage_xy: Stage position (x, y) of the top-left corner of the canvas.
-
-        Returns:
-            Tuple of (row, col) in the overview canvas.
-        """
-        # Convert µm offset to pixel offset
-        col = int((stage_x - origin_stage_xy[0]) * self.px_per_um_x)
-        row = int((stage_y - origin_stage_xy[1]) * self.px_per_um_y)
-
-        return (row, col)

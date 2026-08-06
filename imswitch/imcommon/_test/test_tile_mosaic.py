@@ -12,6 +12,7 @@ from imswitch.imcommon.algorithms.tile_mosaic import (
     assemble,
     assemble_dataset,
     TileLink,
+    detectors_in,
     find_manifest,
     load_dataset,
     refine_layout,
@@ -25,21 +26,30 @@ def _texture(shape, seed=0):
     return gaussian_filter(rng.random(shape).astype(np.float32), 2.0)
 
 
-def _write_dataset(folder, tiles, extra=None, depth=1, z_step=0.0):
-    """Write a minimal tiling dataset: tiles plus a manifest."""
+def _write_dataset(folder, tiles, extra=None, depth=1, z_step=0.0,
+                   descriptor=None):
+    """Write a minimal tiling dataset: tiles plus a manifest.
+
+    ``descriptor`` adds ``axes``/``stored_axes``/``shape`` to every tile entry,
+    for the descriptor-aware read path; omitting it exercises the older
+    manifests that carry no such thing.
+    """
     import tifffile
 
     folder.mkdir(parents=True, exist_ok=True)
     entries = []
     for name, data, (row, col), grid in tiles:
         tifffile.imwrite(str(folder / name), data)
-        entries.append({
+        entry = {
             'filename': name,
             'grid': list(grid),
             'stage_um': [0.0, 0.0],
             'pixel_xy': [float(col), float(row)],
             'correction_px': [0.0, 0.0],
-        })
+        }
+        if descriptor:
+            entry.update(descriptor)
+        entries.append(entry)
 
     payload = {
         'format': 'imswitch-tiling/1',
@@ -434,6 +444,313 @@ def test_layout_falls_back_when_stage_positions_say_nothing(tmp_path):
     dataset = load_dataset(folder, progress=lambda _m: None)
 
     assert dataset.tiles[1].position == pytest.approx((0.0, 48.0))
+
+
+# ----------------------------------------------------------------------
+# N-dimensional tiles (Phase 0 acceptance)
+# ----------------------------------------------------------------------
+
+
+def test_assemble_places_tiles_of_any_leading_rank():
+    """CZYX assembles; the mosaic keeps both leading axes."""
+    left = np.arange(2 * 3 * 8 * 8, dtype=np.float32).reshape(2, 3, 8, 8)
+    right = left + 1000.0
+
+    mosaic = assemble(_dataset([
+        ('a', left, (0.0, 0.0)), ('b', right, (0.0, 8.0)),
+    ]))
+
+    assert mosaic.shape == (2, 3, 8, 16)
+    assert mosaic[..., :8] == pytest.approx(left)
+    assert mosaic[..., 8:] == pytest.approx(right)
+
+
+def test_a_length_one_channel_axis_survives_a_round_trip(tmp_path):
+    """The old loader squeezed leading singletons, destroying a 1-channel axis."""
+    tile = np.arange(1 * 4 * 8 * 8, dtype=np.uint16).reshape(1, 4, 8, 8)
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', tile, (0, 0), (0, 0))],
+        descriptor={'axes': 'CZYX', 'stored_axes': 'CZYX',
+                    'shape': [1, 4, 8, 8]},
+    )
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.tiles[0].data.shape == (1, 4, 8, 8)
+    assert dataset.axes == 'CZYX'
+    assert assemble(dataset, progress=lambda _m: None).shape == (1, 4, 8, 8)
+
+
+def test_the_mosaic_is_labelled_from_the_manifest(tmp_path):
+    """A line-step run's leading axis is C, and must not be called Z."""
+    tile = np.zeros((3, 8, 8), np.uint16)
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', tile, (0, 0), (0, 0))],
+        descriptor={'axes': 'CYX', 'stored_axes': 'CYX', 'shape': [3, 8, 8]},
+    )
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.axes == 'CYX'
+
+
+def test_stored_axes_equal_to_axes_are_read_unchanged(tmp_path):
+    """The camera case: a scan with Nz>1 is stored ZYX, with no leading T."""
+    tile = np.zeros((5, 8, 8), np.uint16)
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', tile, (0, 0), (0, 0))],
+        descriptor={'axes': 'ZYX', 'stored_axes': 'ZYX', 'shape': [5, 8, 8]},
+    )
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.tiles[0].data.shape == (5, 8, 8)
+    assert dataset.axes == 'ZYX'
+
+
+def test_a_stored_axis_the_logical_view_drops_is_squeezed(tmp_path):
+    """The APD case: stored TCZYX, read as CZYX."""
+    tile = np.zeros((1, 2, 3, 8, 8), np.uint16)
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', tile, (0, 0), (0, 0))],
+        descriptor={'axes': 'CZYX', 'stored_axes': 'TCZYX',
+                    'shape': [2, 3, 8, 8]},
+    )
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.tiles[0].data.shape == (2, 3, 8, 8)
+    assert dataset.axes == 'CZYX'
+
+
+def test_squeezing_an_axis_that_holds_data_is_refused(tmp_path):
+    """Dropping a length-4 axis would discard three quarters of the tile."""
+    tile = np.zeros((4, 3, 8, 8), np.uint16)
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', tile, (0, 0), (0, 0))],
+        descriptor={'axes': 'ZYX', 'stored_axes': 'TZYX', 'shape': [3, 8, 8]},
+    )
+
+    # Loud, not skipped: skipping would assemble a mosaic that looks fine and
+    # is quietly missing this tile's data.
+    with pytest.raises(ValueError, match='would discard data'):
+        load_dataset(folder, progress=lambda _m: None)
+
+
+def test_a_manifest_without_descriptors_reads_exactly_as_before(tmp_path):
+    """Back-compat: the old shape, the old squeeze, the old axis names."""
+    scene = _texture((128, 128), seed=21)
+    folder = _write_dataset(tmp_path / 'run', [
+        ('a.tiff', (scene[0:64, 0:64] * 65535).astype(np.uint16), (0, 0), (0, 0)),
+        ('b.tiff', (scene[0:64, 32:96] * 65535).astype(np.uint16), (0, 32), (1, 0)),
+    ])
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+    mosaic = assemble(dataset, progress=lambda _m: None)
+
+    assert dataset.axes == 'YX'
+    assert mosaic.shape == (64, 96)
+    assert dataset.tiles[0].data.ndim == 2
+
+
+def test_a_flat_tile_among_stacks_contributes_to_every_plane():
+    """Rank need not be uniform; a short tile is broadcast, not dropped."""
+    stack = np.full((3, 8, 8), 4.0, np.float32)
+    flat = np.full((8, 8), 10.0, np.float32)
+
+    mosaic = assemble(_dataset([
+        ('a', stack, (0.0, 0.0)), ('b', flat, (0.0, 8.0)),
+    ]), blend=False)
+
+    assert mosaic.shape == (3, 8, 16)
+    assert mosaic[:, :, 8:] == pytest.approx(10.0)
+
+
+# ----------------------------------------------------------------------
+# Multi-detector datasets (Phase 1)
+# ----------------------------------------------------------------------
+
+
+def _write_multidetector(folder, detectors, positions):
+    """A run that saved several detectors at each stage position."""
+    import tifffile
+
+    folder.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for index, (row, col) in enumerate(positions):
+        files = {}
+        for name, (data, axes) in detectors.items():
+            filename = f'tile{index}_{name}.tiff'
+            tifffile.imwrite(str(folder / filename), data)
+            files[name] = {
+                'filename': filename, 'axes': axes, 'stored_axes': axes,
+                'shape': list(data.shape),
+                'transform_to_alignment': (
+                    'reference' if name == next(iter(detectors)) else 'identity'
+                ),
+            }
+        reference = next(iter(detectors))
+        entries.append({
+            'filename': files[reference]['filename'],
+            'grid': [index, 0],
+            'stage_um': [float(col), float(row)],
+            'pixel_xy': [float(col), float(row)],
+            'correction_px': [0.0, 0.0],
+            'alignment': dict(files[reference], detector=reference),
+            'payloads': {
+                name: dict(descriptor, path=descriptor['filename'],
+                           group=None, complete=True)
+                for name, descriptor in files.items()
+            },
+        })
+
+    (folder / MANIFEST_NAME).write_text(json.dumps({
+        'format': 'imswitch-tiling/2',
+        'pixel_size_um': {'y': 1.0, 'x': 1.0},
+        'tile_step_um': 8.0,
+        'tile_shape_px': {'height': 16, 'width': 16, 'depth': 1},
+        'z_step_um': 0.0,
+        'orientation': {'flip_x': False, 'flip_y': False, 'swap_axes': False},
+        'tiles': entries,
+    }), encoding='utf-8')
+    return folder
+
+
+def test_a_run_lists_the_detectors_it_saved(tmp_path):
+    folder = _write_multidetector(tmp_path / 'run', {
+        'APDred': (np.zeros((2, 16, 16), np.uint16), 'CYX'),
+        'Camera': (np.zeros((16, 16), np.uint16), 'YX'),
+    }, [(0, 0), (0, 8)])
+
+    payload = json.loads((folder / MANIFEST_NAME).read_text())
+
+    assert detectors_in(payload) == ['APDred', 'Camera']
+
+
+def test_each_detector_loads_its_own_files_and_axes(tmp_path):
+    folder = _write_multidetector(tmp_path / 'run', {
+        'APDred': (np.full((2, 16, 16), 7, np.uint16), 'CYX'),
+        'Camera': (np.full((16, 16), 9, np.uint16), 'YX'),
+    }, [(0, 0), (0, 8)])
+
+    apd = load_dataset(folder, progress=lambda _m: None, detector='APDred')
+    camera = load_dataset(folder, progress=lambda _m: None, detector='Camera')
+
+    assert apd.axes == 'CYX'
+    assert apd.tiles[0].data.shape == (2, 16, 16)
+    assert camera.axes == 'YX'
+    assert camera.tiles[0].data.shape == (16, 16)
+    # One run, one geometry: the layouts must agree.
+    assert [t.position for t in apd.tiles] == [t.position for t in camera.tiles]
+
+
+def test_detectors_share_one_layout_so_mosaics_line_up(tmp_path):
+    folder = _write_multidetector(tmp_path / 'run', {
+        'APDred': (np.full((16, 16), 3, np.uint16), 'YX'),
+        'Camera': (np.full((16, 16), 5, np.uint16), 'YX'),
+    }, [(0, 0), (0, 8)])
+
+    shapes = {
+        name: assemble(
+            load_dataset(folder, progress=lambda _m: None, detector=name),
+            progress=lambda _m: None,
+        ).shape
+        for name in ('APDred', 'Camera')
+    }
+
+    assert shapes['APDred'] == shapes['Camera'] == (16, 24)
+
+
+def test_the_aligned_on_detector_loads_without_naming_it(tmp_path):
+    """A reader that knows nothing of save sets still finds the tile."""
+    folder = _write_multidetector(tmp_path / 'run', {
+        'APDred': (np.full((16, 16), 3, np.uint16), 'YX'),
+        'Camera': (np.full((16, 16), 5, np.uint16), 'YX'),
+    }, [(0, 0), (0, 8)])
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.tiles[0].data[0, 0] == 3      # the reference detector
+
+
+def test_asking_for_a_detector_the_run_did_not_save_is_not_substituted(tmp_path):
+    """Better to fail than to quietly assemble a different detector."""
+    folder = _write_multidetector(tmp_path / 'run', {
+        'APDred': (np.zeros((16, 16), np.uint16), 'YX'),
+    }, [(0, 0), (0, 8)])
+
+    with pytest.raises(ValueError, match='No readable tiles'):
+        load_dataset(folder, progress=lambda _m: None, detector='Nonexistent')
+
+
+def test_blending_credits_only_the_planes_a_tile_reached():
+    """A short tile must not darken the planes it never contributed to.
+
+    The weights count contributors. Counting them per Y/X pixel only, while
+    summing pixels per plane, lets a one-plane tile claim credit on every
+    plane of the stack it overlaps — and the division then halves the planes
+    it never touched.
+    """
+    stack = np.full((3, 8, 8), 10.0, np.float32)
+    short = np.full((1, 8, 8), 10.0, np.float32)
+
+    mosaic = assemble(_dataset([
+        ('a', stack, (0.0, 0.0)), ('b', short, (0.0, 4.0)),
+    ]), blend=True)
+
+    assert mosaic.shape == (3, 8, 12)
+    assert mosaic[0, :, 4:8] == pytest.approx(10.0)   # both contributed
+    assert mosaic[1, :, 4:8] == pytest.approx(10.0)   # only the stack did
+    assert mosaic[2, :, 4:8] == pytest.approx(10.0)
+
+
+def test_blending_is_unchanged_when_every_tile_covers_the_same_planes():
+    """The ordinary case keeps the cheap plane-blind weights."""
+    left = np.full((2, 8, 8), 4.0, np.float32)
+    right = np.full((2, 8, 8), 8.0, np.float32)
+
+    mosaic = assemble(_dataset([
+        ('a', left, (0.0, 0.0)), ('b', right, (0.0, 4.0)),
+    ]), blend=True)
+
+    assert mosaic[:, :, 4:8] == pytest.approx(6.0)    # (4 + 8) / 2
+
+
+def test_a_descriptor_contradicting_its_file_fails_the_load(tmp_path):
+    """Skipping it would assemble a plausible mosaic that is missing data."""
+    good = np.zeros((8, 8), np.uint16)
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', good, (0, 0), (0, 0)), ('b.tiff', good, (0, 4), (1, 0))],
+        descriptor={'axes': 'YX', 'stored_axes': 'YX', 'shape': [16, 16]},
+    )
+
+    with pytest.raises(ValueError, match='declares shape'):
+        load_dataset(folder, progress=lambda _m: None)
+
+
+def test_a_container_that_adds_a_leading_axis_is_reconciled(tmp_path):
+    """HDF5 gives every 2-D image a frame axis; the manifest cannot know that.
+
+    So the stored rank comes from the file in hand, not from the manifest, and
+    a declared ``YX`` still loads from a ``(1, Y, X)`` array.
+    """
+    stored = np.zeros((1, 8, 8), np.uint16)          # as a container wrote it
+    folder = _write_dataset(
+        tmp_path / 'run',
+        [('a.tiff', stored, (0, 0), (0, 0))],
+        descriptor={'axes': 'YX', 'shape': [8, 8]},
+    )
+
+    dataset = load_dataset(folder, progress=lambda _m: None)
+
+    assert dataset.tiles[0].data.shape == (8, 8)
+    assert dataset.axes == 'YX'
 
 
 def _vignette(shape, strength=0.6):

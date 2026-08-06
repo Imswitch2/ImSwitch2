@@ -125,6 +125,20 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         shiftRow.addStretch()
         layout.addLayout(shiftRow)
 
+        detectorRow = QtWidgets.QHBoxLayout()
+        detectorRow.addWidget(QtWidgets.QLabel("Detector:"))
+        self.detectorCombo = QtWidgets.QComboBox()
+        self.detectorCombo.addItem("Aligned on", "")
+        self.detectorCombo.setToolTip(
+            "Which detector to assemble, for a run that saved several.\n"
+            "They were all captured at the same stage positions, so they\n"
+            "share one layout — it is solved once and every detector follows.\n"
+            "'Aligned on' is the detector the run built its mosaic from."
+        )
+        detectorRow.addWidget(self.detectorCombo)
+        detectorRow.addStretch()
+        layout.addLayout(detectorRow)
+
         self.projectCheck = QtWidgets.QCheckBox("Project volumes to 2D")
         self.projectCheck.setToolTip(
             "Maximum-project a volumetric mosaic instead of keeping every\n"
@@ -142,7 +156,21 @@ class _TilingParamsWidget(QtWidgets.QWidget):
             "max_shift_px": maxShift if maxShift > 0 else None,
             "project": self.projectCheck.isChecked(),
             "stage_positions": self.stageCheck.isChecked(),
+            "detector": self.detectorCombo.currentData() or None,
         }
+
+    def setDetectors(self, names) -> None:
+        """Offer the detectors a dataset saved, keeping the current choice."""
+        previous = self.detectorCombo.currentData()
+        self.detectorCombo.blockSignals(True)
+        self.detectorCombo.clear()
+        self.detectorCombo.addItem("Aligned on", "")
+        for name in names or []:
+            self.detectorCombo.addItem(name, name)
+        index = self.detectorCombo.findData(previous)
+        self.detectorCombo.setCurrentIndex(max(0, index))
+        self.detectorCombo.blockSignals(False)
+        self.detectorCombo.setVisible(bool(names))
 
 
 class TilingReconstructor(Reconstructor):
@@ -186,6 +214,7 @@ class TilingReconstructor(Reconstructor):
         dataset = load_dataset(
             Path(source), progress=progress,
             prefer_stage_positions=params.get("stage_positions", True),
+            detector=params.get("detector"),
         )
 
         moved = 0
@@ -200,15 +229,28 @@ class TilingReconstructor(Reconstructor):
         )
 
         pixel_y, pixel_x = dataset.pixel_size_um
-        if mosaic.ndim == 3 and params.get("project", False):
-            mosaic = mosaic.max(axis=0)
+        axes = dataset.axes
+        if mosaic.ndim > 2 and params.get("project", False):
+            # Project every leading axis, whatever they are, down to the plane.
+            mosaic = mosaic.max(axis=tuple(range(mosaic.ndim - 2)))
+            axes = "YX"
 
-        if mosaic.ndim == 3:
-            axis_labels = ["Z", "Y", "X"]
-            axis_scales = [dataset.z_step_um or 1.0, pixel_y, pixel_x]
-        else:
-            axis_labels = ["Y", "X"]
-            axis_scales = [pixel_y, pixel_x]
+        # Labelled from the manifest, not from the rank: a line-step run's
+        # leading axis is C, and calling it Z would put a channel spacing in
+        # the Z scale and mislabel it for every reader downstream.
+        axis_labels = list(axes[-mosaic.ndim:])
+        axis_scales = []
+        for label in axis_labels:
+            if label == "Y":
+                axis_scales.append(pixel_y)
+            elif label == "X":
+                axis_scales.append(pixel_x)
+            elif label == "Z":
+                axis_scales.append(dataset.z_step_um or 1.0)
+            else:
+                # C, T or an axis the manifest could not name: index-valued,
+                # so a unit spacing is the only honest answer.
+                axis_scales.append(1.0)
 
         name = f"{Path(source).parent.name} mosaic"
         if moved:

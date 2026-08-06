@@ -61,6 +61,33 @@ class TileRecord:
     pixel_xy: Tuple[float, float]
     #: Registration correction applied to this tile, in pixels ``(dy, dx)``.
     correction_px: Tuple[float, float] = (0.0, 0.0)
+    #: Axis names for the array a reader should end up with, ending in ``YX``.
+    #: Empty when unknown, which a reader treats as the old guess that a single
+    #: leading axis is Z.
+    axes: str = ''
+    #: Axis names for the array actually on disk. Differs from ``axes`` only
+    #: where a container added a wrapper axis that should be squeezed; equal
+    #: otherwise. Never assumed — taken from what was written.
+    stored_axes: str = ''
+    #: Shape of the logical array named by ``axes``.
+    shape: Tuple[int, ...] = ()
+    #: Shape actually written, as the storer reported it. Differs from
+    #: ``shape`` only where the container added axes of its own.
+    stored_shape: Tuple[int, ...] = ()
+    #: The one image the mosaic is built and aligned from, as
+    #: ``{detector, filename, axes, shape}``. Singular by construction: a
+    #: layout is solved from one thing, so this cannot be a map.
+    alignment: Dict = field(default_factory=dict)
+    #: The full measurement at this position, per detector, as
+    #: ``{name: {path, group, axes, stored_axes, shape, generation, complete,
+    #: transform_to_alignment}}``. A *locator* rather than a filename: grouped
+    #: containers need the group, and a path may have been de-duplicated
+    #: against an existing file.
+    #:
+    #: Kept apart from ``alignment`` because the two have different producers,
+    #: lifetimes and shapes -- the alignment image exists as soon as the tile
+    #: is captured, a payload only once its writer has finalised.
+    payloads: Dict[str, Dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -116,7 +143,11 @@ class TileDataset:
         path = folder / MANIFEST_NAME
         flip_x, flip_y, swap_axes = self.orientation
         payload = {
-            'format': 'imswitch-tiling/1',
+            # Version 2 adds per-file axis descriptors and, when a run saves
+            # more than one detector, a per-tile `files` map. A version-1
+            # reader still finds `filename` and `pixel_xy` where it expects
+            # them, so the bump announces what was added rather than moved.
+            'format': 'imswitch-tiling/2',
             'pixel_size_um': {
                 'y': float(self.pixel_size_um[0]),
                 'x': float(self.pixel_size_um[1]),

@@ -271,11 +271,13 @@ confocal processing remain the main open modality targets.
 - ✅ **Generic analysis panels.** Optional graph, profile, projection, FRC,
   segmentation, PSF resolution, colocalization, ROI manager and ROI statistics
   panels are available through the `processing:` config block.
-- 🔄 **Flip controllers onto the registry (Phase B.2 — pending).**
-  Plugin code is in place but `ImProcessMainViewController` and
-  `ReconstructionViewController` still use the legacy direct-call path.
-  Verification needs Windows + `GPU_acc_recon.dll`; lands when that
-  setup is available.
+- ✅ **Registry-backed controllers (Phase B.2).** Offline reconstruction
+  dispatches through the active reconstructor plugin, except for the legacy
+  coefficient-based MoNaLISA method; Fast Gauss MoNaLISA uses the plugin path.
+  Live reconstruction uses a plugin streaming session where available and the
+  plugin's batch `process()` method otherwise. The remaining MoNaLISA exception
+  is tracked as a narrow legacy-path follow-up, not as an unimplemented
+  registry migration.
 - 🔄 **Per-modality reconstructors.** Surface-level targets — flesh out
   with owners later:
   - STED / confocal: frame-averaging, drift correction, lifetime overlay

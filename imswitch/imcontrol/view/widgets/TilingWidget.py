@@ -57,7 +57,6 @@ class TilingWidget(Widget):
         self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
         self.settleTimeSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.registerTilesCheck.stateChanged.connect(self.sigParamsChanged)
-        self.advancedAlignCheck.stateChanged.connect(self.sigParamsChanged)
         self.saveTilesCheck.stateChanged.connect(self.sigParamsChanged)
         self.modeCombo.currentIndexChanged.connect(self._onModeChanged)
         self.scanSourceCombo.currentIndexChanged.connect(self.sigParamsChanged)
@@ -146,12 +145,17 @@ class TilingWidget(Widget):
         self.scanSourceLabel.setVisible(False)
         self.scanSourceCombo.setVisible(False)
 
-        self.detectorLabel = QtWidgets.QLabel('Detector:')
+        self.detectorLabel = QtWidgets.QLabel('Align on:')
         self.detectorCombo = QtWidgets.QComboBox()
         self.detectorCombo.setToolTip(
-            'Which detector supplies the tiles. The setup file chooses the\n'
-            'default; this overrides it for the current session.\n'
+            'Which detector the mosaic is built and aligned from. The setup\n'
+            'file chooses the default; this overrides it for the session.\n'
             'Only shown when the setup has more than one to pick from.\n'
+            '\n'
+            'This is not the only detector saved: a run also saves whatever\n'
+            'the Recording widget is set to capture, at every tile position,\n'
+            'so long as each one declares how its pixels relate to this one.\n'
+            '\n'
             'Changing it discards the current overview: a different detector\n'
             'means a different pixel size, so the existing mosaic no longer\n'
             'maps to stage coordinates.'
@@ -184,19 +188,6 @@ class TilingWidget(Widget):
         )
         row.addWidget(self.registerTilesCheck)
 
-        self.advancedAlignCheck = QtWidgets.QCheckBox('Advanced alignment')
-        self.advancedAlignCheck.setChecked(True)
-        self.advancedAlignCheck.setToolTip(
-            'Align each tile against every neighbour it overlaps, not just\n'
-            'the one canvas region, and solve the whole layout again once the\n'
-            'run finishes — so no tile is left where a single bad match put\n'
-            'it, and the solved layout is the one that gets saved.\n'
-            '\n'
-            'Also faster: it correlates against a few small neighbours rather\n'
-            'than against the whole mosaic, which the plain pass rebuilds for\n'
-            'every tile. Untick only to reproduce the older behaviour.'
-        )
-        row.addWidget(self.advancedAlignCheck)
         row.addStretch(1)
         outer.addLayout(row)
 
@@ -219,13 +210,6 @@ class TilingWidget(Widget):
             orientation.addWidget(check)
         orientation.addStretch(1)
         outer.addLayout(orientation)
-
-        # Advanced alignment refines what plain alignment measures, so it has
-        # nothing to do on its own.
-        self.registerTilesCheck.toggled.connect(
-            self.advancedAlignCheck.setEnabled
-        )
-        self.advancedAlignCheck.setEnabled(self.registerTilesCheck.isChecked())
         return self._group('Alignment', outer)
 
     def _buildDisplayGroup(self) -> QtWidgets.QGroupBox:
@@ -353,15 +337,6 @@ class TilingWidget(Widget):
     def getRegisterTiles(self) -> bool:
         return self.registerTilesCheck.isChecked()
 
-    def getAdvancedAlignment(self) -> bool:
-        """Whether to align against every neighbour and re-solve at the end.
-
-        False unless plain alignment is on too, since it has nothing to refine
-        on its own.
-        """
-        return (self.registerTilesCheck.isChecked()
-                and self.advancedAlignCheck.isChecked())
-
     def getSaveTiles(self) -> bool:
         return self.saveTilesCheck.isChecked()
 
@@ -448,9 +423,6 @@ class TilingWidget(Widget):
 
     def setDefaultRegisterTiles(self, enabled: bool) -> None:
         self.registerTilesCheck.setChecked(bool(enabled))
-
-    def setDefaultAdvancedAlignment(self, enabled: bool) -> None:
-        self.advancedAlignCheck.setChecked(bool(enabled))
 
     def setDefaultSaveTiles(self, enabled: bool) -> None:
         self.saveTilesCheck.setChecked(bool(enabled))

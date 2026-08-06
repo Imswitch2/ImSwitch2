@@ -532,6 +532,7 @@ def _recording_shell(detectors, events):
     manager._RecordingManager__endSignalEmitted = False
     manager._RecordingManager__failureSignalEmitted = False
     manager._RecordingManager__lastRecordingError = None
+    manager._RecordingManager__payloadLocators = {}
     manager._RecordingManager__recordingWorker = None
     manager._RecordingManager__thread = None
 
@@ -654,6 +655,7 @@ def test_recording_failure_is_distinct_and_terminal_exactly_once():
     manager = _recording_shell({}, [])
     manager.sigRecordingFailed = _CaptureSignal()
     manager.sigRecordingFailedDetailed = _CaptureSignal()
+    manager.sigRecordingFailedTyped = _CaptureSignal()
     manager.sigRecordingEnded = _CaptureSignal()
 
     assert manager._signalRecordingFailed(RuntimeError('disk full')) is True

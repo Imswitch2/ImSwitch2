@@ -385,6 +385,29 @@ class CommunicationChannel(SignalInterface):
             return None
         return str(folder) if folder else None
 
+    def getRecordingDetectors(self):
+        """The detectors the Recording widget is currently set to capture.
+
+        The counterpart to :meth:`getRecordingFolder`: that answers "where my
+        data goes", this answers "what gets saved". Anything else that writes
+        the operator's data should take both from here rather than keep a
+        private idea of either. Returns None when there is no Recording widget
+        or it cannot answer, leaving the caller to fall back on its own
+        detector.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        controller = controllers.get('Recording')
+        getter = getattr(controller, 'getDetectorNamesToCapture', None)
+        if not callable(getter):
+            return None
+        try:
+            names = getter()
+        except Exception:
+            return None
+        if not names:
+            return None
+        return [str(name) for name in names]
+
     def getScanSourceNames(self):
         """Widget keys of every controller a workflow could run one scan on.
 

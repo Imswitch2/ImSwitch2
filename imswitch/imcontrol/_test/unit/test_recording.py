@@ -8,7 +8,7 @@ import zarr
 
 from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
 from imswitch.imcontrol.model.managers.RecordingManager import (
-    HDF5Storer, HDF5_STREAM_LIBVER, ZarrStorer,
+    FailureKind, HDF5Storer, HDF5_STREAM_LIBVER, ZarrStorer,
 )
 from imswitch.imcontrol.model.managers.recording_metadata import MODE_SCAN, MODE_TIMELAPSE
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
@@ -2924,7 +2924,9 @@ def test_scanlapse_source_resolution_fails_before_recording_is_armed():
     assert events == [
         (
             'ambiguous scan source',
-            {'abortManager': False},
+            # Classified: a caller that survives some failures must be told
+            # this one was the scan, not the writer, so it cannot continue.
+            {'abortManager': False, 'kind': FailureKind.SCAN},
         )
     ]
 

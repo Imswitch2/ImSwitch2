@@ -1,10 +1,9 @@
-"""Advanced alignment: many neighbours per tile, and a whole-run solve.
+"""Tile alignment: many neighbours per tile, and a whole-run solve.
 
-The plain live pass aligns each tile to one canvas region and applies whatever
-comes back, so a single false match places that tile *and* every tile placed
-relative to it afterwards. These cover the two things advanced alignment adds:
-correlating against every overlapping neighbour, and re-fitting the whole
-layout once the run is over.
+Aligning each tile to one region of the canvas and applying whatever comes back
+lets a single false match place that tile *and* every tile placed relative to
+it afterwards. These cover what replaced that: correlating against every
+overlapping neighbour, and re-fitting the whole layout once the run is over.
 """
 
 import numpy as np
