@@ -399,10 +399,13 @@ class ScanWorkflowService(SignalInterface):
                 is_non_final_part_of_sequence,
                 notify_starting=notify_starting,
             )
-        return self._dispatch_scan_request(
+        # The broadcast lands on ``runScanExternal`` exactly as the targeted
+        # path does, so it makes the same assertion and owes the same start.
+        return self._dispatch_with_lifecycle(
             lambda: self._comm_channel.sigRunScan.emit(
                 recalculate_signals, is_non_final_part_of_sequence
-            )
+            ),
+            notify_starting,
         )
 
     def exact_wait_supported(self) -> bool:
@@ -454,55 +457,102 @@ class ScanWorkflowService(SignalInterface):
         duration of a scan -- the focus lock above all -- go on driving an
         actuator the waveform is sweeping. Callers that own the lifecycle
         themselves pass ``notify_starting=False``.
-
-        The emission happens inside the dispatched action so it lands on the UI
-        thread ahead of the arm. Emitted from a worker it would merely *queue*
-        the consumer slots, and the scan would be running before anything had
-        yielded to it.
         """
         runScan = getattr(source, 'runScanExternal', None)
         if not callable(runScan):
             raise TypeError(
                 'The selected scan source does not expose runScanExternal'
             )
-        published = []
 
-        def startThenRun():
-            if notify_starting:
-                # Mark first: a failing start listener must still be paired.
-                published.append(True)
-                self._comm_channel.sigScanStarting.emit()
-            return runScan(
+        return self._dispatch_with_lifecycle(
+            lambda: runScan(
                 recalculate_signals, is_non_final_part_of_sequence
-            )
+            ),
+            notify_starting,
+        )
 
-        try:
-            result = self._dispatch_scan_request(startThenRun)
-        except Exception as error:
-            if published:
-                self._pair_unowned_scan_start(
-                    getattr(error, 'scanRequestResult', None)
-                )
-            raise
-        if published:
-            self._pair_unowned_scan_start(result)
-        return result
+    def _dispatch_with_lifecycle(self, action, notify_starting: bool):
+        """Dispatch ``action``, publishing and pairing the run-level start.
 
-    def _pair_unowned_scan_start(self, result) -> None:
+        The emission happens inside the dispatched action so it lands on this
+        service's UI thread ahead of the arm. Emitted from the calling worker it
+        would merely *queue* the consumer slots, and the scan would already be
+        running by the time anything had yielded to it.
+        """
+        def startThenRun():
+            request = self._activeScanRequest
+            endedSignal = getattr(self._comm_channel, 'sigScanEnded', None)
+            observing = False
+            if notify_starting and request is not None:
+                # Watching for the end lets a controller that publishes its own
+                # terminal inside this same call be recognised as the owner,
+                # rather than collecting a second end on top of it.
+                def observeEnd(*_args, **_kwargs):
+                    request.endingPublished = True
+
+                connect = getattr(endedSignal, 'connect', None)
+                if callable(connect):
+                    try:
+                        connect(observeEnd)
+                        observing = True
+                    except Exception:
+                        # Duplicate-suppression metadata only. Losing it must
+                        # not stop the scan from being dispatched.
+                        pass
+            dispatchError = None
+            try:
+                if notify_starting:
+                    # Mark first, so a failing start listener is still paired.
+                    if request is not None:
+                        request.startingPublished = True
+                    self._comm_channel.sigScanStarting.emit()
+                return action()
+            except Exception as error:
+                dispatchError = error
+                raise
+            finally:
+                try:
+                    self._pair_unowned_scan_start(request, dispatchError)
+                finally:
+                    if observing:
+                        disconnect = getattr(endedSignal, 'disconnect', None)
+                        if callable(disconnect):
+                            try:
+                                disconnect(observeEnd)
+                            except Exception:
+                                pass
+
+        return self._dispatch_scan_request(startThenRun)
+
+    def _pair_unowned_scan_start(self, request, dispatchError=None) -> None:
         """Publish the end of a start no controller took responsibility for.
 
-        Acceptance is the exact predicate: a controller marks the request
-        accepted in the same call that records it owes a terminal, so an
-        accepted request already has an end coming and a refused one never
-        will.
+        Deliberately narrow, and identical to the rule ``run_scan_prepared``
+        already applies. A start is paired here only when a controller actually
+        *reported* on the request and refused it: an accepted one already owes a
+        terminal, and an unhandled one belongs to a legacy receiver that may
+        well have started and will publish its own end, which an early one here
+        would race. A dispatch that raised is paired on the same footing as a
+        report, since the caller is left with an exception rather than a
+        request it could reason about.
         """
-        if result is not None and getattr(result, 'accepted', False):
+        if request is None or not request.startingPublished:
             return
+        if request.accepted or request.endingPublished:
+            return
+        if not (request.handled or dispatchError is not None):
+            return
+        endedSignal = getattr(self._comm_channel, 'sigScanEnded', None)
+        if endedSignal is None:
+            return
+        # Mark before emitting so a failing end listener cannot make a later
+        # path attempt a second publication.
+        request.endingPublished = True
         try:
-            self._comm_channel.sigScanEnded.emit()
+            endedSignal.emit()
         except Exception:
             initLogger(self).error(
-                'Failed to pair an unaccepted scan request with its lifecycle '
+                'Failed to pair a refused scan request with its lifecycle '
                 'end; consumers may stay yielded to a scan that never ran.',
                 exc_info=True,
             )

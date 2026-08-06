@@ -26,34 +26,57 @@ from imswitch.imcontrol.controller.controllers.FocusLockController import (
 )
 
 
+class _Signal:
+    """Enough of a Qt signal to be connected to and emitted synchronously."""
+
+    def __init__(self, log, name):
+        self._log = log
+        self._name = name
+        self._slots = []
+
+    def connect(self, slot):
+        self._slots.append(slot)
+
+    def disconnect(self, slot):
+        self._slots.remove(slot)
+
+    def emit(self, *args):
+        self._log.append(self._name)
+        for slot in list(self._slots):
+            slot(*args)
+
+
 class _Channel:
-    """Records the lifecycle in order, and dispatches synchronously."""
+    """Records the lifecycle in order."""
 
     def __init__(self):
         self.lifecycle = []
-        self.sigScanStarting = SimpleNamespace(
-            emit=lambda: self.lifecycle.append('start')
-        )
-        self.sigScanEnded = SimpleNamespace(
-            emit=lambda: self.lifecycle.append('end')
-        )
+        self.sigScanStarting = _Signal(self.lifecycle, 'start')
+        self.sigScanEnded = _Signal(self.lifecycle, 'end')
 
 
-def _service(channel, *, accepted=True, onRun=None):
+def _service(channel, *, report='accept'):
+    """A service whose dispatch runs synchronously.
+
+    ``report`` is the distinction the pairing rule turns on: ``'accept'`` (a
+    controller owns the terminal), ``'refuse'`` (it reported and declined, so
+    nobody does) and ``None`` (a legacy receiver that implements no
+    acknowledgement contract and may have started anyway).
+    """
     service = ScanWorkflowService.__new__(ScanWorkflowService)
     service.__dict__.update(_comm_channel=channel, _activeScanRequest=None)
 
     def dispatch(action):
-        # The real service marshals onto the UI thread; here the point is only
-        # that the action runs synchronously and reports through the envelope.
         request = ScanRequestResult()
         service.__dict__['_activeScanRequest'] = request
+        if report is not None:
+            # Controllers report while the request is being delivered, i.e.
+            # before the action returns -- not after it.
+            request.report(object(), report == 'accept', 'declined')
         try:
             action()
         finally:
             service.__dict__['_activeScanRequest'] = None
-        if accepted:
-            request.report(object(), True)
         return request
 
     service.__dict__['_dispatch_scan_request'] = dispatch
@@ -97,7 +120,7 @@ def test_the_start_precedes_the_arm_rather_than_racing_it():
 def test_a_refused_request_still_pairs_the_start_it_published():
     """Nobody accepted, so no controller owes an end -- the dispatcher does."""
     channel = _Channel()
-    service = _service(channel, accepted=False)
+    service = _service(channel, report='refuse')
     refused = SimpleNamespace(
         runScanExternal=lambda _recalculate, _nonFinal: None
     )
@@ -107,9 +130,40 @@ def test_a_refused_request_still_pairs_the_start_it_published():
     assert channel.lifecycle == ['start', 'end']
 
 
+def test_an_unreported_legacy_receiver_keeps_its_own_end():
+    """Silence is not a refusal.
+
+    A receiver that implements no acknowledgement contract may still have
+    started, and will publish its own end when it finishes. Pairing here would
+    race that -- telling every consumer the scan was over while it ran.
+    """
+    channel = _Channel()
+    service = _service(channel, report=None)
+    legacy = SimpleNamespace(
+        runScanExternal=lambda _recalculate, _nonFinal: None
+    )
+
+    service.run_scan_from(legacy, False, False)
+
+    assert channel.lifecycle == ['start']
+
+
+def test_a_controller_that_ends_within_the_call_is_not_ended_twice():
+    """An end observed during dispatch means the terminal already has an owner."""
+    channel = _Channel()
+    service = _service(channel, report='refuse')
+    # Refuses the request, but publishes a terminal anyway -- the shape that
+    # would otherwise collect a second end on top of its own.
+    endsItself = _source(channel)
+
+    service.run_scan_from(endsItself, False, False)
+
+    assert channel.lifecycle == ['start', 'end']
+
+
 def test_a_raising_dispatch_still_pairs_the_start_it_published():
     channel = _Channel()
-    service = _service(channel, accepted=False)
+    service = _service(channel, report='refuse')
 
     def explode(_recalculate, _nonFinal):
         raise RuntimeError('the scan controller refused mid-arm')
@@ -226,3 +280,35 @@ def test_a_lapse_publishes_a_start_for_every_timepoint_not_only_the_first():
         'the scan start is published under a condition; a lapse point that '
         'skips it still publishes an end, and consumers resume mid-scan'
     )
+
+
+def test_the_legacy_broadcast_publishes_a_start_as_well():
+    """``sigRunScan`` lands on ``runScanExternal`` exactly as targeting does.
+
+    Same assertion, same owed start. The broadcast is the fallback for setups
+    without source resolution, so it is the one most likely to be running
+    unattended when it goes wrong.
+    """
+    channel = _Channel()
+    channel.sigRunScan = _Signal(channel.lifecycle, 'run')
+    channel.sigRunScan.connect(
+        lambda *_args: channel.sigScanEnded.emit()   # the receiver's terminal
+    )
+    service = _service(channel)
+    service.__dict__['_resolved_scan_source'] = lambda: None
+
+    service.run_scan(False, False)
+
+    assert channel.lifecycle == ['start', 'run', 'end']
+
+
+def test_the_broadcast_honours_a_caller_that_owns_the_lifecycle():
+    channel = _Channel()
+    channel.sigRunScan = _Signal(channel.lifecycle, 'run')
+    channel.sigRunScan.connect(lambda *_args: channel.sigScanEnded.emit())
+    service = _service(channel)
+    service.__dict__['_resolved_scan_source'] = lambda: None
+
+    service.run_scan(False, False, notify_starting=False)
+
+    assert channel.lifecycle == ['run', 'end']
