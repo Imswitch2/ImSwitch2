@@ -147,6 +147,14 @@ class DataFrame(QtWidgets.QFrame):
     def setDatasetName(self, value):
         self.datasetName.setText(f'Dataset: {value}')
 
+    def setImageControlsEnabled(self, enabled):
+        """Disable pixel-only actions while a metadata source is current."""
+        enabled = bool(enabled)
+        self.showMeanBtn.setEnabled(enabled)
+        self.adjustDataBtn.setEnabled(enabled)
+        self.slider.setEnabled(enabled)
+        self.frameNum.setEnabled(enabled)
+
 
 # Copyright (C) 2020-2021 ImSwitch developers
 # This file is part of ImSwitch.

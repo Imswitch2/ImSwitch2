@@ -109,7 +109,9 @@ class MonalisaReconstructor(StreamingReconstructor):
         self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
                          f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     
-    def process(self, data_obj: 'DataObj', params: dict) -> MonalisaProcessingResult:
+    def process(
+        self, data_obj: 'DataObj', params: dict, context=None
+    ) -> MonalisaProcessingResult:
         """
         Reconstruct MoNaLISA SIM data.
         

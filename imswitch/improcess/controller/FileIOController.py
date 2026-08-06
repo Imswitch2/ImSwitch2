@@ -11,6 +11,7 @@ from imswitch.imcommon.controller import PickDatasetsController
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
     LOCATOR_DIRECTORY,
+    TILING_MANIFEST_SPEC,
     file_dialog_filter,
     preferred_source_spec,
     resolve_dataset_source,
@@ -186,6 +187,8 @@ class FileIOController(ImProcessWidgetController):
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
+            if source.format_id == TILING_MANIFEST_SPEC.id:
+                return self._loadMetadataAsCurrent(source)
             datasetsInFile = DataObj.getDatasetNames(dataPath)
         except Exception as exc:
             self._logger.error(f"Could not read datasets from {dataPath}: {exc}")
@@ -227,6 +230,38 @@ class FileIOController(ImProcessWidgetController):
             )
         return 'multidata'
 
+    def _loadMetadataAsCurrent(self, source) -> str:
+        """Inspect and route a non-array source without asking DataObj to open it."""
+        from imswitch.imcommon.algorithms.tile_mosaic import (
+            inspect_dataset,
+            manifest_fingerprint,
+        )
+
+        try:
+            index, completeness = inspect_dataset(source.path)
+            data_obj = DataObj.fromMetadataSource(
+                source.path.parent.name,
+                source.path,
+                source.format_id,
+                index,
+            )
+            data_obj.sourceSummary = completeness
+            data_obj.sourceFingerprint = manifest_fingerprint(source.path)
+        except Exception as exc:
+            self._logger.error(
+                f"Could not inspect tiling source {source.original_path}: {exc}"
+            )
+            return 'empty'
+
+        if self._main._currentDataObj is not None:
+            self._main._currentDataObj.checkAndUnloadData()
+        self._main._currentDataObj = data_obj
+        if data_obj.sourceReady:
+            self._commChannel.sigCurrentDataChanged.emit(data_obj)
+            self._widget.raiseCurrentDataDock()
+            return 'current'
+        return 'empty'
+
     def _loadAsCurrent(self, name, datasetName, dataPath, *, virtual: bool = False):
         """Promote a dataset to the current DataObj and emit sigCurrentDataChanged.
 
@@ -238,10 +273,14 @@ class FileIOController(ImProcessWidgetController):
         self._main._currentDataObj = DataObj(name, datasetName, path=dataPath)
         if virtual:
             self._main._currentDataObj.checkAndOpenData()
-            ready = self._main._currentDataObj.sourceLoaded
         else:
             self._main._currentDataObj.checkAndLoadData()
-            ready = self._main._currentDataObj.dataLoaded
+        ready = getattr(self._main._currentDataObj, 'sourceReady', None)
+        if ready is None:
+            ready = (
+                self._main._currentDataObj.sourceLoaded
+                if virtual else self._main._currentDataObj.dataLoaded
+            )
         if ready:
             self._commChannel.sigCurrentDataChanged.emit(self._main._currentDataObj)
             self._widget.raiseCurrentDataDock()

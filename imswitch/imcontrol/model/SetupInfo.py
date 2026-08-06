@@ -390,9 +390,10 @@ class TilingInfo:
     """ Reject registration corrections larger than this fraction of the tile
     step. Guards against false matches on periodic sample structure. """
 
-    detectorTransforms: Dict[str, str] = field(default_factory=dict)
+    detectorTransforms: Dict[str, object] = field(default_factory=dict)
     """ How each additionally-saved detector's pixels relate to the one tiling
-    aligns on, as ``{"DetectorName": "identity"}``.
+    aligns on, either as ``{"DetectorName": "identity"}`` shorthand or a
+    transform schema containing ``kind``, ``matrix`` and calibration provenance.
 
     A tiling run can save several detectors at each position, but sharing a
     stage position establishes only the *tile grid* -- not pixel-level
@@ -406,9 +407,10 @@ class TilingInfo:
     rather than assumed aligned: silently producing a mosaic that is offset
     between channels is worse than not producing one.
 
-    Only ``"identity"`` is accepted for now; calibrated cross-detector
-    transforms will supply real values here without anything else moving. The
-    detector tiling aligns on needs no entry -- it is the reference. """
+    Only transforms that resolve to identity are accepted for acquisition for
+    now; affine records can already be parsed and preserved for future readers,
+    but tiling refuses to acquire them until calibrated placement is available.
+    The detector tiling aligns on needs no entry -- it is the reference. """
 
 
 @dataclass(frozen=True)

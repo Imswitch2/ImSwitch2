@@ -1,5 +1,13 @@
 import copy
 
+from qtpy import QtCore
+
+from .reconstruction_worker import (
+    ReconstructionWorker,
+    ReconstructionWorkerFailure,
+    ReconstructionWorkerJob,
+    ReconstructionWorkerOutcome,
+)
 from .basecontrollers import ImProcessWidgetController
 
 
@@ -16,6 +24,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def __init__(self, *args, mainController=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._main = mainController
+        self._reconstructionThread = None
+        self._reconstructionWorker = None
+        self._reconstructionWorkerReconstructor = None
 
     def initActiveReconstructor(self):
         """Select, install, and publish the default reconstructor. Called once
@@ -45,7 +56,11 @@ class ReconstructorManagerController(ImProcessWidgetController):
         try:
             from imswitch.improcess.reconstructors.registry import get_registry
 
-            choices = [(r.id, r.name) for r in get_registry().reconstructors()]
+            choices = [
+                (r.id, r.name)
+                for r in get_registry().reconstructors()
+                if self._accepts_current_source(r)
+            ]
             current = self._main._activeReconstructor.id if self._main._activeReconstructor else None
             self._widget.setReconstructorChoices(choices, current)
         except AttributeError:
@@ -53,6 +68,55 @@ class ReconstructorManagerController(ImProcessWidgetController):
         except Exception as exc:
             self._logger.debug(
                 f"Could not publish reconstructor choices to view: {exc}"
+            )
+
+    def _accepts_current_source(self, reconstructor) -> bool:
+        data_obj = getattr(self._main, '_currentDataObj', None)
+        source_kind = getattr(data_obj, 'sourceKind', 'image')
+        accepted = tuple(
+            getattr(reconstructor, 'accepted_source_kinds', ('image',))
+        )
+        return source_kind in accepted
+
+    def currentDataChanged(self, data_obj) -> None:
+        """Select a compatible plugin and pass it a metadata-only inspection."""
+        from imswitch.improcess.reconstructors.registry import get_registry
+
+        active = self._main._activeReconstructor
+        if active is None or not self._accepts_current_source(active):
+            compatible = [
+                candidate for candidate in get_registry().reconstructors()
+                if self._accepts_current_source(candidate)
+            ]
+            if not compatible:
+                self._logger.warning(
+                    f"No reconstructor accepts source kind "
+                    f"{getattr(data_obj, 'sourceKind', 'image')!r}"
+                )
+                self._main._activeReconstructor = None
+                self._publishReconstructorChoices()
+                return
+            self._main._activeReconstructor = compatible[0]
+            self._install_reconstructor_params(compatible[0])
+
+        self._publishReconstructorChoices()
+        self._inspect_current_source()
+
+    def _inspect_current_source(self) -> None:
+        reconstructor = self._main._activeReconstructor
+        data_obj = getattr(self._main, '_currentDataObj', None)
+        if reconstructor is None or data_obj is None:
+            return
+        try:
+            inspection = reconstructor.inspect_source(data_obj)
+            widget = getattr(self._widget, 'parTree', None)
+            setter = getattr(widget, 'set_source_inspection', None)
+            if callable(setter):
+                setter(inspection)
+        except Exception as exc:
+            self._logger.warning(
+                f"Could not inspect {getattr(data_obj, 'name', 'source')} "
+                f"for {reconstructor.id}: {exc}"
             )
 
     def _on_user_changed_reconstructor(self, plugin_id: str):
@@ -66,10 +130,18 @@ class ReconstructorManagerController(ImProcessWidgetController):
 
         for candidate in get_registry().reconstructors():
             if candidate.id == plugin_id:
+                if not self._accepts_current_source(candidate):
+                    self._logger.warning(
+                        f"Reconstructor {candidate.id!r} does not accept the "
+                        "current source kind"
+                    )
+                    self._publishReconstructorChoices()
+                    return
                 if self._main._activeReconstructor is candidate:
                     return
                 self._main._activeReconstructor = candidate
                 self._install_reconstructor_params(candidate)
+                self._inspect_current_source()
                 if (
                     getattr(candidate, 'is_pass_through', False)
                     and self._main._currentDataObj is not None
@@ -164,6 +236,8 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         widget = reconstructor.make_param_widget(self._widget)
         self._widget.setParameterWidget(widget)
+        if getattr(self._main, '_currentDataObj', None) is not None:
+            self._inspect_current_source()
         # NOTE: Special-case by ID retained because widefield-starss batch signals
         # are plugin-specific and cannot be generically wired through the registry.
         if reconstructor.id == "widefield-starss" and hasattr(widget, "sigRunBatchRequested"):
@@ -234,14 +308,15 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
             consolidate = False
 
+        if getattr(reconstructor, 'execution_policy', 'inline') == 'worker':
+            self._start_worker_reconstruction(
+                reconstructor, list(dataObjs), consolidate
+            )
+            return
+
         collected = []
         for dataObj in dataObjs:
-            params = self._widget.getReconstructionParams()
-            if reconstructor.id == "monalisa":
-                params = dict(params)
-                params['scan_params'] = copy.deepcopy(
-                    self._main.monalisaController._scanParDict
-                )
+            params = self._params_for_data_obj(reconstructor)
             self._logger.info(
                 f"Running {reconstructor.id} reconstruction for {dataObj.name}"
             )
@@ -266,12 +341,186 @@ class ReconstructorManagerController(ImProcessWidgetController):
             return
         self._publishPluginResult(merged, f'{merged.name}_multi')
 
-    def _publishPluginResult(self, result, displayName):
+    def _params_for_data_obj(self, reconstructor):
+        params = self._widget.getReconstructionParams()
+        if reconstructor.id == "monalisa":
+            params = dict(params)
+            params['scan_params'] = copy.deepcopy(
+                self._main.monalisaController._scanParDict
+            )
+        return params
+
+    @staticmethod
+    def _default_memory_budget_bytes() -> int:
+        """Reserve headroom for Qt, readers and one materialized input tile."""
+        try:
+            import psutil
+
+            available = int(psutil.virtual_memory().available)
+        except Exception:
+            available = 2 * 1024 ** 3
+        return max(256 * 1024 ** 2, int(available * 0.6))
+
+    def _start_worker_reconstruction(self, reconstructor, data_objs, consolidate):
+        if self._reconstructionThread is not None:
+            self._logger.warning("A reconstruction job is already running")
+            self._set_reconstruction_job_state(
+                True, status="A reconstruction is already running."
+            )
+            return
+        if not data_objs:
+            return
+
+        budget = self._default_memory_budget_bytes()
+        jobs = []
+        for data_obj in data_objs:
+            params = self._params_for_data_obj(reconstructor)
+            try:
+                estimate = reconstructor.estimate_resources(data_obj, params)
+            except Exception as exc:
+                self._logger.error(f"Reconstruction preflight failed: {exc}")
+                self._set_reconstruction_job_state(
+                    False, status=f"Preflight failed: {exc}"
+                )
+                return
+            confirmed = False
+            if estimate is not None and estimate.required_bytes > budget:
+                confirmer = getattr(
+                    self._widget, 'confirmReconstructionMemory', None
+                )
+                confirmed = bool(
+                    callable(confirmer) and confirmer(estimate, budget)
+                )
+                if not confirmed:
+                    self._logger.info(
+                        "Reconstruction not started because its memory estimate "
+                        "was not confirmed"
+                    )
+                    self._set_reconstruction_job_state(
+                        False,
+                        status="Reconstruction not started: memory estimate declined.",
+                    )
+                    return
+            jobs.append(ReconstructionWorkerJob(
+                data_obj=data_obj,
+                params=dict(params),
+                memory_budget_bytes=budget,
+                confirmed_over_budget=confirmed,
+            ))
+
+        thread = QtCore.QThread()
+        worker = ReconstructionWorker(
+            reconstructor, jobs, consolidate=consolidate
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_reconstruction_progress)
+        worker.finished.connect(self._on_reconstruction_finished)
+        worker.failed.connect(self._on_reconstruction_failed)
+        worker.cancelled.connect(self._on_reconstruction_cancelled)
+        for signal in (worker.finished, worker.failed, worker.cancelled):
+            signal.connect(worker.deleteLater)
+            signal.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(
+            lambda: self._clear_reconstruction_worker_refs(thread)
+        )
+
+        self._reconstructionThread = thread
+        self._reconstructionWorker = worker
+        self._reconstructionWorkerReconstructor = reconstructor
+        self._set_reconstruction_job_state(
+            True, progress=0.0, status=f"Starting {reconstructor.name}..."
+        )
+        thread.start()
+
+    def cancelReconstruction(self):
+        worker = self._reconstructionWorker
+        if worker is None:
+            return
+        worker.request_cancel()
+        thread = self._reconstructionThread
+        if thread is not None:
+            thread.requestInterruption()
+        self._set_reconstruction_job_state(
+            True, status="Cancelling after the current read or processing step..."
+        )
+
+    @QtCore.Slot(object)
+    def _on_reconstruction_progress(self, progress):
+        status = progress.message or progress.phase.capitalize()
+        self._set_reconstruction_job_state(
+            True, progress=progress.fraction, status=status
+        )
+
+    @QtCore.Slot(object)
+    def _on_reconstruction_finished(self, outcome: ReconstructionWorkerOutcome):
+        reconstructor = self._reconstructionWorkerReconstructor
+        if outcome.merged is not None:
+            self._publishPluginResult(
+                outcome.merged,
+                f'{outcome.merged.name}_multi',
+                reconstructor=reconstructor,
+            )
+        else:
+            if outcome.consolidation_error:
+                self._logger.error(
+                    "Consolidation failed; publishing individual results: "
+                    f"{outcome.consolidation_error}"
+                )
+            for result in outcome.results:
+                self._publishPluginResult(
+                    result, result.name, reconstructor=reconstructor
+                )
+        self._set_reconstruction_job_state(
+            False, progress=1.0, status="Reconstruction complete."
+        )
+
+    @QtCore.Slot(object)
+    def _on_reconstruction_failed(self, failure: ReconstructionWorkerFailure):
+        self._logger.error(
+            f"Reconstruction failed: {failure.message}\n{failure.traceback}"
+        )
+        self._set_reconstruction_job_state(
+            False, status=f"Reconstruction failed: {failure.message}"
+        )
+
+    @QtCore.Slot(str)
+    def _on_reconstruction_cancelled(self, message):
+        self._logger.info(message or "Reconstruction cancelled")
+        self._set_reconstruction_job_state(
+            False, status="Reconstruction cancelled."
+        )
+
+    def _clear_reconstruction_worker_refs(self, thread):
+        if self._reconstructionThread is thread:
+            self._reconstructionThread = None
+            self._reconstructionWorker = None
+            self._reconstructionWorkerReconstructor = None
+
+    def _set_reconstruction_job_state(
+        self, running, *, progress=None, status=""
+    ):
+        setter = getattr(self._widget, 'setReconstructionJobState', None)
+        if callable(setter):
+            setter(
+                bool(running), progress=progress, status=str(status or "")
+            )
+
+    def closeEvent(self):
+        self.cancelReconstruction()
+        return self.shutdownComplete()
+
+    def shutdownComplete(self):
+        return self._reconstructionThread is None
+
+    def _publishPluginResult(self, result, displayName, reconstructor=None):
         self._commChannel.sigResultProduced.emit(result, displayName)
         self._commChannel.sigCurrentResultChanged.emit(result)
         # NOTE: Special-case by ID retained because widefield-starss batch result
         # collection is plugin-specific and not part of the generic plugin API.
-        if self._main._activeReconstructor.id == "widefield-starss":
+        producer = reconstructor or self._main._activeReconstructor
+        if producer is not None and producer.id == "widefield-starss":
             self._main.wfsBatchController.appendSingleResult(result)
         # Push reconstruction-derived metadata (e.g. MoNaLISA's computed
         # output pixel size) back into the active parameter widget so

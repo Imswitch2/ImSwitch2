@@ -55,6 +55,24 @@ WRITER_OPEN_TIMEOUT_S = 30.0
 HDF5_STREAM_LIBVER = ('v110', 'v110')
 
 
+@dataclass(frozen=True)
+class StreamPayloadInfo:
+    """Exact container location and shape of one finalising stream.
+
+    This is deliberately reported while the backend is still open.  HDF5 and
+    Zarr handles no longer expose their datasets after finalisation, while a
+    manifest needs the exact detector group and the shape actually committed
+    to disk rather than a prediction made from the acquisition settings.
+    """
+
+    group: Optional[str]
+    stored_shape: Tuple[int, ...]
+    #: Whether the container stores the writer's outer frame dimension.  A
+    #: singleton outer dimension is storage detail and is removed from the
+    #: logical payload descriptor; a multi-frame dimension remains logical.
+    frame_axis_stored: bool
+
+
 class AsTemporaryFile(object):
     """ A temporary file that when exiting the context manager is renamed to its original name. """
     def __init__(self, filepath, tmp_extension='.tmp'):
@@ -152,6 +170,16 @@ class Storer(abc.ABC):
             saveMode: SaveMode enum value
         """
         raise NotImplementedError
+
+    def streamPayloadInfo(
+        self, detectorName: str, currentFrames: Dict[str, int]
+    ) -> Optional[StreamPayloadInfo]:
+        """Describe a stream immediately before finalisation.
+
+        Third-party storers predating payload manifests may return ``None``;
+        the built-in storers override this with an exact locator.
+        """
+        return None
 
     def abortStream(self, filePaths: Dict[str, str],
                     fileDests: Dict[str, Union[str, 'BytesIO']], saveMode) -> None:
@@ -594,6 +622,18 @@ class ZarrStorer(Storer):
 
         for store in self._stores.values():
             self._close_store(store)
+
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        dataset = getattr(self, '_datasets', {}).get(detectorName)
+        if dataset is None:
+            return None
+        parent = getattr(self, '_groupPaths', {}).get(detectorName)
+        group = f'{parent}/{detectorName}' if parent else detectorName
+        return StreamPayloadInfo(
+            group=group,
+            stored_shape=tuple(int(size) for size in dataset.shape),
+            frame_axis_stored=True,
+        )
 
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close Zarr stores and remove the partial .zarr directories."""
@@ -1142,6 +1182,18 @@ class HDF5Storer(Storer):
                 except Exception as e:
                     logger.warning(f'HDF5 abort: failed to remove {path}: {e}')
 
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        dataset = getattr(self, '_datasets', {}).get(detectorName)
+        if dataset is None:
+            return None
+        parent = getattr(self, '_groupPaths', {}).get(detectorName)
+        group = f'{parent}/{detectorName}' if parent else detectorName
+        return StreamPayloadInfo(
+            group=group,
+            stored_shape=tuple(int(size) for size in dataset.shape),
+            frame_axis_stored=True,
+        )
+
 
 class TiffStorer(Storer):
     """Storer for OME-TIFF.
@@ -1275,6 +1327,21 @@ class TiffStorer(Storer):
                 f'{summary}'
             ) from errors[0][1]
 
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        frame_shape = getattr(self, '_spatial', {}).get(detectorName)
+        n_frames = int(currentFrames.get(detectorName, 0))
+        if frame_shape is None or n_frames < 1:
+            return None
+        stored_shape = (
+            tuple(frame_shape) if n_frames == 1
+            else (n_frames, *tuple(frame_shape))
+        )
+        return StreamPayloadInfo(
+            group=None,
+            stored_shape=stored_shape,
+            frame_axis_stored=n_frames > 1,
+        )
+
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close any open writers and delete the partial file(s)."""
         for tw in getattr(self, '_writers', {}).values():
@@ -1341,6 +1408,7 @@ class PayloadLocator:
     axes: str = ''
     stored_axes: str = ''
     shape: Tuple[int, ...] = ()
+    stored_shape: Tuple[int, ...] = ()
     generation: Optional[int] = None
     complete: bool = False
 
@@ -1352,6 +1420,7 @@ class PayloadLocator:
             'axes': self.axes,
             'stored_axes': self.stored_axes,
             'shape': list(self.shape),
+            'stored_shape': list(self.stored_shape),
             'generation': self.generation,
             'complete': self.complete,
         }
@@ -1777,6 +1846,7 @@ class RecordingManager(SignalInterface):
                 path=locator.path, detector=locator.detector,
                 group=locator.group, axes=locator.axes,
                 stored_axes=locator.stored_axes, shape=locator.shape,
+                stored_shape=locator.stored_shape,
                 generation=int(generation), complete=complete,
             )
             for name, locator in found.items()
@@ -2208,7 +2278,10 @@ class WriterThread(threading.Thread):
     queue from the acquisition loop. Batches frames per detector for efficiency.
     """
     def __init__(self, storer, fileDests, detectorNames, shapes, attrs,
-                 singleMultiDetectorFile, singleLapseFile, saveMode, filePaths, recordingManager):
+                 singleMultiDetectorFile, singleLapseFile, saveMode, filePaths,
+                 recordingManager, *, recordingGeneration=None,
+                 recordingMode=_ome.MODE_TIMELAPSE, scanDims=None,
+                 scanDrivenDetectors=None):
         # Normal shutdown still joins with a deadline and reports a failure.
         # The daemon fail-safe prevents an uninterruptible storage-backend call
         # from keeping the whole application process alive forever.
@@ -2223,6 +2296,10 @@ class WriterThread(threading.Thread):
         self._saveMode = saveMode
         self._filePaths = filePaths
         self._recordingManager = recordingManager
+        self._recordingGeneration = recordingGeneration
+        self._recordingMode = recordingMode
+        self._scanDims = scanDims
+        self._scanDrivenDetectors = dict(scanDrivenDetectors or {})
         
         # Bounded queue for backpressure (put() blocks when full)
         self._queue = queue.Queue(maxsize=WRITER_QUEUE_MAXSIZE)
@@ -2270,6 +2347,85 @@ class WriterThread(threading.Thread):
         if self._write_exception is not None:
             raise self._write_exception
 
+    @staticmethod
+    def _logical_axes(mode, n_frames, scan_dims, logical_rank, scan_driven):
+        """Name the dimensions the acquisition produced, not writer wrappers."""
+        if logical_rank < 2:
+            raise ValueError(
+                f'A recorded image needs at least Y/X, got rank {logical_rank}'
+            )
+        base = ''.join(
+            axis.upper()
+            for axis in _ome.axes_for_recording(mode, n_frames, scan_dims)
+        )
+        target_leading = logical_rank - 2
+        leading = list(base[:-2])
+        # A scan-driven detector returns one assembled raw frame. Extra axes in
+        # that frame are channels first, then Z. For an actual sequence of
+        # assembled frames, the writer's outer dimension is logical time.
+        candidates = (
+            (('T', 'C', 'Z') if scan_driven else ('T', 'Z', 'C'))
+            if n_frames > 1
+            else (('C', 'Z') if scan_driven else ('Z', 'C'))
+        )
+        for axis in candidates:
+            if len(leading) >= target_leading:
+                break
+            if axis not in leading:
+                leading.append(axis)
+        if len(leading) != target_leading:
+            raise ValueError(
+                f'Cannot describe rank-{logical_rank} recording payload with '
+                'the supported T/C/Z/Y/X axis model'
+            )
+        order = {'T': 0, 'C': 1, 'Z': 2}
+        leading.sort(key=order.__getitem__)
+        return ''.join(leading) + 'YX'
+
+    def _final_payload_locators(self, payload_info):
+        locators = {}
+        for detectorName, info in payload_info.items():
+            if info is None:
+                # Preserve the resolved path for compatibility. There is no
+                # exact group/shape to publish when a detector wrote no array.
+                locators[detectorName] = PayloadLocator(
+                    path=str(self._filePaths[detectorName]),
+                    detector=detectorName,
+                )
+                continue
+            n_frames = int(self._currentFrames.get(detectorName, 0))
+            stored_shape = tuple(int(size) for size in info.stored_shape)
+            remove_frame_wrapper = bool(
+                info.frame_axis_stored and n_frames == 1
+            )
+            logical_shape = (
+                stored_shape[1:] if remove_frame_wrapper else stored_shape
+            )
+            axes = self._logical_axes(
+                self._recordingMode,
+                n_frames,
+                self._scanDims,
+                len(logical_shape),
+                self._scanDrivenDetectors.get(detectorName, False),
+            )
+            stored_axes = f'T{axes}' if remove_frame_wrapper else axes
+            if len(set(stored_axes)) != len(stored_axes):
+                raise ValueError(
+                    f'Payload for {detectorName!r} needs a logical T axis '
+                    'inside a singleton writer frame; the recording model '
+                    'cannot name both dimensions without ambiguity'
+                )
+            locators[detectorName] = PayloadLocator(
+                path=str(self._filePaths[detectorName]),
+                detector=detectorName,
+                group=info.group,
+                axes=axes,
+                stored_axes=stored_axes,
+                shape=logical_shape,
+                stored_shape=stored_shape,
+            )
+        return locators
+
     def run(self):
         """Writer thread main loop."""
         try:
@@ -2311,6 +2467,15 @@ class WriterThread(threading.Thread):
                         self._stream_cleanup_done.set()
                     else:
                         self._flush_all_batches()
+                        payloadInfo = {
+                            detectorName: self._storer.streamPayloadInfo(
+                                detectorName, self._currentFrames
+                            )
+                            if hasattr(self._storer, 'streamPayloadInfo')
+                            else None
+                            for detectorName in self._detectorNames
+                        }
+                        finalLocators = self._final_payload_locators(payloadInfo)
                         # finish() can time out while a slow backend is
                         # flushing, after which the owner escalates to
                         # abort(). Re-check at both blocking boundaries so a
@@ -2334,6 +2499,11 @@ class WriterThread(threading.Thread):
                                     self._filePaths,
                                     self._fileDests,
                                     self._saveMode,
+                                )
+                            elif self._recordingManager is not None:
+                                self._recordingManager.registerPayloadLocators(
+                                    self._recordingGeneration,
+                                    finalLocators,
                                 )
                         self._stream_cleanup_done.set()
                     break
@@ -2893,7 +3063,14 @@ class RecordingWorker(Worker):
             ),
             saveMode=self.saveMode,
             filePaths=filePaths,
-            recordingManager=self.__recordingManager
+            recordingManager=self.__recordingManager,
+            recordingGeneration=getattr(self, 'recordingGeneration', None),
+            recordingMode=mode,
+            scanDims=scanDims,
+            scanDrivenDetectors={
+                detectorName: self._isScanDrivenDetector(detectorName)
+                for detectorName in self.detectorNames
+            },
         )
         self._writerThread = writerThread
         writerThread.start()

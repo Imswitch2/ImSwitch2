@@ -6,7 +6,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from imswitch.imcommon.algorithms.tile_mosaic import MANIFEST_NAME
+from imswitch.imcommon.algorithms.tile_mosaic import (
+    MANIFEST_NAME,
+    AlignmentArtifact,
+    IndexedTile,
+    MosaicDataset,
+    MosaicLayout,
+    MosaicTile,
+    RefinementReport,
+    TilingDatasetIndex,
+)
 from imswitch.improcess.reconstructors import (
     _AVAILABLE_RECONSTRUCTOR_CLASSES,
     available_reconstructor_ids,
@@ -172,3 +181,183 @@ def test_result_saves_as_ome_tiff_with_its_calibration(tmp_path):
     assert out.exists()
     xml = tifffile.tiffcomment(str(out))
     assert 'PhysicalSizeX="0.25"' in xml
+
+
+def test_v2_detector_changes_reuse_alignment_only_layout(monkeypatch, tmp_path):
+    """Payload intensity/selection cannot trigger a second geometry solve."""
+    import importlib
+
+    module = importlib.import_module(
+        'imswitch.improcess.reconstructors.tiling.reconstructor'
+    )
+    manifest = tmp_path / MANIFEST_NAME
+    manifest.write_text('{}', encoding='utf-8')
+    alignment = tmp_path / 'alignment.tiff'
+    alignment.write_bytes(b'alignment fingerprint')
+    artifact = AlignmentArtifact(
+        alignment, 'AlignmentCamera', 'YX', 'YX', (4, 4), (4, 4)
+    )
+    indexed_tile = IndexedTile(
+        tile_id=0,
+        grid=(0, 0),
+        stage_um=(0.0, 0.0),
+        saved_position_yx=(0.0, 0.0),
+        alignment=artifact,
+        payloads={},
+    )
+    index = TilingDatasetIndex(
+        manifest=manifest,
+        alignment_detector='AlignmentCamera',
+        pixel_size_yx_um=(1.0, 1.0),
+        z_step_um=0.0,
+        tiles=(indexed_tile,),
+        detectors=('Red', 'Green'),
+        format='imswitch-tiling/2',
+    )
+    solves = []
+
+    monkeypatch.setattr(module, 'inspect_dataset', lambda _path: (index, None))
+
+    def fake_solve(
+        _index,
+        options,
+        progress=None,
+        check_cancelled=None,
+        phase_progress=None,
+    ):
+        solves.append(options)
+        return MosaicLayout(
+            {0: (0.0, 0.0)}, 'stage', RefinementReport(tiles=1)
+        )
+
+    def fake_assemble(_index, _layout, selection, options):
+        value = 10 if selection.detector == 'Red' else 20
+        return SimpleNamespace(
+            data=np.full((4, 4), value, np.float32),
+            axes='YX',
+            scales=(1.0, 1.0),
+            origin_yx=(0, 0),
+            provenance=SimpleNamespace(detector=selection.detector),
+        )
+
+    monkeypatch.setattr(module, 'solve_layout', fake_solve)
+    monkeypatch.setattr(module, 'assemble_payload', fake_assemble)
+    reconstructor = TilingReconstructor()
+    data_obj = SimpleNamespace(dataPath=str(manifest))
+
+    red = reconstructor.process(data_obj, _params(detector='Red'))
+    green = reconstructor.process(data_obj, _params(detector='Green'))
+
+    assert len(solves) == 1
+    assert np.all(red.data == 10)
+    assert np.all(green.data == 20)
+
+
+def test_v2_defaults_to_full_alignment_detector_payload(tmp_path):
+    import tifffile
+
+    folder = tmp_path / 'tiling_v2'
+    folder.mkdir()
+    alignment = np.ones((8, 8), np.uint16)
+    payload = np.full((8, 8), 19, np.uint16)
+    tifffile.imwrite(str(folder / 'alignment.tiff'), alignment)
+    tifffile.imwrite(str(folder / 'payload.tiff'), payload)
+    manifest = folder / MANIFEST_NAME
+    manifest.write_text(json.dumps({
+        'format': 'imswitch-tiling/2',
+        'pixel_size_um': {'y': 0.5, 'x': 0.25},
+        'z_step_um': 0.0,
+        'orientation': {
+            'flip_x': False, 'flip_y': False, 'swap_axes': False,
+        },
+        'tiles': [{
+            'grid': [0, 0],
+            'stage_um': [0.0, 0.0],
+            'pixel_xy': [0.0, 0.0],
+            'alignment': {
+                'detector': 'Camera',
+                'filename': 'alignment.tiff',
+                'axes': 'YX',
+                'stored_axes': 'YX',
+                'shape': [8, 8],
+                'stored_shape': [8, 8],
+            },
+            'payloads': {
+                'Camera': {
+                    'path': 'payload.tiff',
+                    'group': None,
+                    'detector': 'Camera',
+                    'axes': 'YX',
+                    'stored_axes': 'YX',
+                    'shape': [8, 8],
+                    'stored_shape': [8, 8],
+                    'generation': 1,
+                    'complete': True,
+                    'transform_to_alignment': 'identity',
+                },
+            },
+        }],
+    }), encoding='utf-8')
+    data_obj = SimpleNamespace(dataPath=str(manifest))
+    reconstructor = TilingReconstructor()
+
+    result = reconstructor.process(data_obj, _params(refine=False))
+    diagnostic = reconstructor.process(
+        data_obj, _params(refine=False, alignment_diagnostic=True)
+    )
+
+    assert np.all(result.data == 19)
+    assert result.provenance.detector == 'Camera'
+    assert result.axis_labels == ['Y', 'X']
+    assert result.axis_scales == [0.5, 0.25]
+    assert np.all(diagnostic.data == 1)
+    assert diagnostic.provenance.detector == '__alignment__'
+    assert diagnostic.provenance.placement_path == 'alignment-diagnostic'
+
+
+def test_layout_cache_key_tracks_geometry_inputs_only(tmp_path):
+    manifest = tmp_path / MANIFEST_NAME
+    manifest.write_text('{}', encoding='utf-8')
+    alignment = tmp_path / 'alignment.tiff'
+    alignment.write_bytes(b'first')
+    artifact = AlignmentArtifact(
+        alignment, 'Camera', 'YX', 'YX', (4, 4), (4, 4)
+    )
+    index = TilingDatasetIndex(
+        manifest, 'Camera', (1.0, 1.0), 0.0,
+        (IndexedTile(
+            0, (0, 0), (0.0, 0.0), (0.0, 0.0), artifact, {},
+        ),),
+        ('Red', 'Green'),
+        format='imswitch-tiling/2',
+    )
+    first = TilingReconstructor._layout_cache_key(index, {
+        'stage_positions': True,
+        'refine': True,
+        'max_shift_px': 12,
+        'detector': 'Red',
+        'blend': True,
+    })
+    selection_changed = TilingReconstructor._layout_cache_key(index, {
+        'stage_positions': True,
+        'refine': True,
+        'max_shift_px': 12,
+        'detector': 'Green',
+        'blend': False,
+        'project': True,
+    })
+    option_changed = TilingReconstructor._layout_cache_key(index, {
+        'stage_positions': False,
+        'refine': True,
+        'max_shift_px': 12,
+    })
+    alignment.write_bytes(b'a different alignment artifact')
+    artifact_changed = TilingReconstructor._layout_cache_key(index, {
+        'stage_positions': True,
+        'refine': True,
+        'max_shift_px': 12,
+    })
+
+    assert selection_changed == first
+    assert option_changed != first
+    assert artifact_changed != first

@@ -55,6 +55,7 @@ def test_a_locator_carries_what_a_filename_cannot():
     locator = PayloadLocator(
         path='/data/tile_000.h5', detector='APDred', group='scan0/APDred',
         axes='CZYX', stored_axes='TCZYX', shape=(2, 21, 273, 273),
+        stored_shape=(1, 2, 21, 273, 273),
         generation=17, complete=True,
     )
 
@@ -64,6 +65,7 @@ def test_a_locator_carries_what_a_filename_cannot():
     assert payload['axes'] == 'CZYX'
     assert payload['stored_axes'] == 'TCZYX'
     assert payload['shape'] == [2, 21, 273, 273]
+    assert payload['stored_shape'] == [1, 2, 21, 273, 273]
     assert payload['generation'] == 17
     assert payload['complete'] is True
 

@@ -2,6 +2,30 @@
 
 This directory contains standalone utility scripts for ImSwitch maintenance and development.
 
+## aa_aotf_calibration.py
+
+**Purpose:** Find and save the RF frequency and power calibration for every AA
+Opto-Electronic AOTF declared in an ImSwitch setup.
+
+Close ImSwitch first so the utility can own the serial ports, then run:
+
+```bash
+python utility_scripts/aa_aotf_calibration.py /path/to/setup.json
+```
+
+The window can connect all distinct AA AOTF serial devices from the setup,
+manually test frequency/power, find the peak frequency with a Thorlabs PM100D,
+and acquire the power LUT. Saving updates only the selected laser with:
+
+- `protocolProfile: "aa.frequency-startup"`
+- `frequencyMHz`
+- `valueRangeMin` and `valueRangeMax`
+- `calibCsvPath`
+
+The setup is backed up to a timestamped `.bak` before it is atomically updated.
+Connecting alone never enables a channel; test/sweep actions are explicit and
+the utility switches the channel off after a sweep or failure.
+
 ## scopeaid_seed_from_config.py
 
 **Purpose:** Convert ImSwitch setup JSON configs into ScopeAId microscope knowledge base seed files.

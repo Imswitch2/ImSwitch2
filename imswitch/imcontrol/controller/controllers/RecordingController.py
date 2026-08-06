@@ -423,7 +423,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     if not self._requestScanStart(True, False):
                         return
             elif self.recMode == RecMode.ScanLapse:
-                self.recordingArgs['singleLapseFile'] = self._widget.getTimelapseSingleFile()
+                singleFile = self._widget.getTimelapseSingleFile()
+                if singleFile and SaveFormat(
+                    self._widget.getSaveFormat()
+                ) == SaveFormat.TIFF:
+                    # The same rule the camera timelapse already enforces: a
+                    # grouped lapse file has to be reopened per timepoint, and
+                    # TIFF cannot be reopened safely.
+                    self._handleRecordingFailure(
+                        'Single-file scan timelapse supports HDF5 and ZARR; '
+                        'select separate files for TIFF.',
+                        abortManager=False, kind=FailureKind.WRITER,
+                    )
+                    return
+                self.recordingArgs['singleLapseFile'] = singleFile
                 self.lapseTotal = self._widget.getTimelapseTime()
                 self.lapseCurrent = 0
                 if not self.nextLapse():
@@ -588,7 +601,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             )
         if singleLapseFile and saveFormat == SaveFormat.TIFF:
             raise ValueError(
-                'Single-file camera timelapse supports HDF5 and ZARR; '
+                'Single-file timelapse supports HDF5 and ZARR; '
                 'select separate files for TIFF.'
             )
 
@@ -994,6 +1007,16 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
     def clearPositioningProvider(self) -> None:
         self._positioningProvider = None
         self._pendingPositioning = None
+        self._cycleTerminalCallback = None
+
+    def setCycleTerminalCallback(self, callback) -> None:
+        """Called when a point is wholly finished -- writer *and* scan.
+
+        The manager's writer terminal fires earlier, while scan lifecycle
+        cleanup is still running, so a caller that may move hardware must wait
+        for this one instead.
+        """
+        self._cycleTerminalCallback = callback
 
     def _awaitPositioning(self):
         """True to proceed, False to stop; re-arms the timer while pending."""
@@ -2164,6 +2187,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         ):
             return
         self._recordingCycleTerminalHandled = True
+
+        # The point is finished here and not before: this terminal is reached
+        # only once the writer has drained *and* the scan has completed. A
+        # workflow that moves the stage on the writer terminal alone would move
+        # it while scan lifecycle cleanup was still running.
+        onCycleTerminal = self.__dict__.get('_cycleTerminalCallback')
+        if callable(onCycleTerminal):
+            try:
+                onCycleTerminal()
+            except Exception:
+                self.__logger.error(
+                    'Recording cycle-terminal callback failed', exc_info=True
+                )
 
         scheduleNext = False
         nextDelayMs = 0

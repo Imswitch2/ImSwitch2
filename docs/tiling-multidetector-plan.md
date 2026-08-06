@@ -1,6 +1,18 @@
 # Tiling: multi-detector, multi-channel, and where the two halves diverge
 
-**Status:** reviewed and approved; implementation started at Phase 0. Revision 6. Work in progress — durable
+**Status:** Phases 0, 1, 1a and 1b implemented (not rig-validated). Phases 2a
+through 2e are implemented: finalized writers publish exact payload locators;
+alignment-only geometry is a cached, detector-independent value keyed by tile
+identity; and selected payload assembly now supports named C/Z reduction,
+identity/affine composition, strict partial handling and provenance while
+materializing one tile at a time. Tiling runs now open in ImProcess as
+metadata-only sources, populate detector/channel/Z/completeness and memory
+estimates without loading payloads, guard image-only controls, revalidate the
+manifest before work, and preserve provenance in saved OME-TIFF metadata.
+Tiling reconstruction now opts into generic worker dispatch with named-phase
+progress, cooperative cancellation, GUI-thread memory confirmation and an
+exact pre-allocation budget check; other reconstructors remain inline by
+default. Phase 2f is next. Revision 9. Work in progress — durable
 documentation belongs in `docs/tiling.rst` once this lands.
 
 Revision history worth keeping, because two claims here were wrong before they
@@ -20,6 +32,21 @@ were right:
 * **Rev 6** corrects revs 3-5's claim that a recording always writes a leading
   `T`. `axes_for_recording` labels a scan with `Nz > 1` as `ZYX` with no `T`;
   `stored_axes` is whatever the finalized writer reports.
+* **Rev 7** adds the Phase 2 specification, and records that the projection
+  defect there is a max rather than a sum, that the reader's locator type
+  collides by name with the acquisition-side one, and that reconstruction runs
+  on the GUI thread — which Phase 2 makes considerably more expensive.
+* **Rev 8** closes Phase 2's remaining implementation choices: the read-side
+  locator is `ManifestPayloadRef`; metadata-only sources have an explicit
+  `DataObj` lifecycle; affine resampling has pixel, bounds and mask semantics;
+  reconstruction runs on a cancellable worker; and triggered versus
+  free-running compatibility artifacts are enumerated separately.
+* **Rev 9** leaves the door open for the forthcoming transform module: the
+  transform becomes a schema rather than a bare string, the manifest's copy is
+  descriptive rather than authoritative so a later calibration can be applied
+  to an older run, and parsing lives in one shared place. Also records that a
+  mosaic uses one placement path throughout, which is what makes the affine
+  path's dtype rule safe to state.
 
 ## Goal
 
@@ -226,19 +253,36 @@ array, so today's TIFF already carries the stack. If the alignment image simply
 became that file in 2-D, every 3-D run would lose its stack the moment Phase 1
 shipped and before payloads existed.
 
-So:
+The artifact set is deliberately different in the two modes:
 
-* The **full-dimensional tile keeps being written exactly as today.** Nothing
-  regresses, and it doubles as the payload wherever no recording is made — which
-  is the whole free-running case.
-* The **alignment image is an additional small file**, the 2-D projection, in
-  the same OME-TIFF format. For a genuinely 2-D detector it is the same content
-  as the tile, so one file is written and both descriptors point at it.
+* **Free-running:** the full-dimensional snapshot for each selected detector
+  keeps being written exactly as today and is that detector's payload. The
+  alignment detector additionally gets the small 2-D alignment projection.
+* **Triggered:** the finalized recording locator is the authoritative payload
+  for each selected detector. The existing full-dimensional snapshots are
+  retained as explicitly redundant compatibility artifacts for the current
+  alignment-only/offline readers, but a version-2 reader must not mistake them
+  for the payload when a finalized recording locator exists. The alignment
+  detector additionally gets the small 2-D alignment projection.
+* **Genuinely 2-D alignment detector:** its compatibility snapshot and
+  alignment projection have identical content, so they may be one physical
+  file with both descriptors pointing at it.
 
-The cost of the extra file is trivial next to what it buys: a 273×273 plane is
-~150 kB against a 21-plane stack at ~3 MB, and reading a hundred of the former
-instead of a hundred of the latter is what keeps the offline solve at fifteen
-seconds.
+This duplication in triggered mode is an intentional compatibility cost, not
+an accidental third measurement. Removing the redundant snapshots is a later
+format-compatibility decision; Phase 2 reads the recording payload and the 2-D
+alignment artifact, never the redundant snapshot as a substitute for either.
+In a version-2 `TileRecord`, the legacy top-level `filename` names the alignment
+detector's compatibility snapshot, `alignment.filename` names the 2-D
+projection, and each `payloads[detector]` names either the free-running snapshot
+or finalized triggered recording according to the rules above.
+
+The cost of the additional 2-D alignment file is trivial next to what it buys:
+a 273×273 plane is ~150 kB against a 21-plane stack at ~3 MB, and reading a
+hundred of the former instead of a hundred of the latter is what keeps the
+offline solve at fifteen seconds. The redundant triggered compatibility
+snapshots are not trivial; the pre-run disk estimate must include them until the
+legacy format is retired.
 
 The existing offline path keeps working because the file it reads today is
 still there and still has the same shape.
@@ -253,8 +297,10 @@ different locator shapes, and a single `files` map hid that:
 
 ```json
 {
-  "alignment": {"detector": "APDred", "filename": "tile_x+00_y+00.ome.tiff",
-                "axes": "YX"},
+  "filename": "tile_x+00_y+00_APDred.ome.tiff",
+  "alignment": {"detector": "APDred",
+                "filename": "tile_x+00_y+00_alignment_APDred.ome.tiff",
+                "axes": "YX", "shape": [273, 273], "stored_axes": "YX"},
   "payloads": {
     "APDred": {"path": "payloads/tile_000.h5", "group": "scan0/APDred",
                "axes": "CZYX", "shape": [4, 21, 273, 273],
@@ -630,17 +676,562 @@ and the same rule applies here rather than a new one.
 
 ### Phase 2 — ImProcess assembles it
 
-* `load_dataset` groups tiles by detector and resolves each to its alignment
-  image or its payload.
-* **Solve the layout once**, on the alignment images, then apply that geometry
-  **composed with each detector's persisted `transform_to_alignment`** to every
-  payload. With Phase 1's declared identity the composition is a no-op; writing
-  it as a composition anyway is what lets calibrated transforms drop in without
-  touching assembly. Everything at one tile shares one
-  stage position, so it shares one layout by construction. Solving on the
-  alignment images is also what keeps this affordable — correlating full stacks
-  would multiply the current fifteen seconds for no additional information.
-* Channel and detector selection live here, on the payload.
+Phase 2 is not just "let `load_dataset` take a detector name". The current
+reader combines four jobs which have different inputs and lifetimes: parsing the
+manifest, reading pixels, solving positions and assembling the result. That was
+adequate while one tile file was both the alignment image and the measurement,
+but it gives the wrong architecture for full payloads:
+
+* `_read_image` searches an HDF5/Zarr container for the first array instead of
+  following a locator's exact `group`;
+* selecting a detector loads that detector first and `refine_layout` therefore
+  correlates its payload, not the alignment images. This is live today:
+  `load_dataset(..., detector=X)` returns X's arrays and the reconstructor hands
+  exactly those to `refine_layout`, so **the geometry a run produces depends on
+  which detector was picked** — two detectors from one acquisition can come out
+  on different layouts, which is the one thing a shared stage position was
+  supposed to guarantee against;
+* the detector picker exists, but nothing populates it from the current run;
+* **Project volumes to 2D** max-projects *every* leading axis
+  (`mosaic.max(axis=tuple(range(mosaic.ndim - 2)))`), so a `CZYX` mosaic
+  collapses its channels along with its planes. Not the PMT bug's summation,
+  but the same class of error: an axis nobody asked to collapse is collapsed
+  because it happens to precede Y/X; and
+* every selected payload is materialized before the output canvas is allocated,
+  which is the wrong peak-memory shape for `CZYX` tiles.
+
+The implementation should separate **indexing**, **geometry** and **payload
+assembly**. The public compatibility wrapper can remain, but those must be real
+internal boundaries rather than flags on one increasingly ambiguous loader.
+
+#### Phase 2 invariants
+
+1. **One manifest entry is one tile identity.** Until the manifest grows an
+   explicit ID, its zero-based entry index is the stable identity. Filenames are
+   not identities: several tiles in a one-file lapse share a path and differ
+   only by group.
+
+   The identity is assigned while **parsing**, before anything is read and
+   therefore before anything can be skipped. Today's loader drops unreadable
+   tiles from its list, which silently renumbers every tile after the gap — so
+   an index taken after loading is not an identity at all, and a layout keyed by
+   one would shift the moment a single file went missing. Indexing must include
+   entries it cannot read, marked unreadable.
+2. **Geometry belongs to the run, not to a detector output.** A layout is a map
+   from tile identity to an alignment-grid position. It is solved from the
+   singular alignment artifacts and then frozen.
+3. **Payloads never participate in correlation.** Their intensity distribution,
+   rank and resolution are allowed to differ. Reading a payload must happen
+   after the layout has been solved or recovered from cache.
+4. **The output grid is the alignment detector's Y/X pixel grid.** A detector's
+   local pixels enter that grid through its persisted
+   `transform_to_alignment`; leading axes are carried along unchanged.
+5. **No guessed container traversal for version-2 payloads.** `path`, `group`,
+   `stored_axes`, `axes`, `shape` and `complete` are a contract. A reader may use
+   legacy discovery for a legacy manifest, but must not silently substitute it
+   for a malformed current locator.
+6. **Partial means declared partial.** A payload marked incomplete may be skipped
+   with a report. A payload marked complete but contradicting its locator or
+   descriptor is corruption and fails loudly.
+
+#### Target internal model
+
+Add a manifest-only index in `imcommon.algorithms.tile_mosaic`; it must not open
+or materialize image arrays:
+
+```python
+@dataclass(frozen=True)
+class AlignmentArtifact:
+    path: Path                 # resolved from alignment.filename
+    detector: str
+    axes: str
+    stored_axes: str
+    shape: tuple[int, ...]
+    stored_shape: tuple[int, ...] | None
+
+@dataclass(frozen=True)
+class ManifestPayloadRef:
+    path: Path                 # resolved below the manifest folder
+    group: str | None
+    detector: str
+    axes: str                  # logical axes
+    stored_axes: str           # axes in the container
+    shape: tuple[int, ...]     # logical shape
+    stored_shape: tuple[int, ...] | None
+    generation: int | None
+    complete: bool
+    #: Parsed, not the raw manifest string: a 3x3 homogeneous matrix in
+    #: (row, col, 1) order, so composition is matrix multiplication and the
+    #: identity fast path is a property of the value rather than of the string
+    #: that produced it. `"identity"` parses to the identity matrix.
+    transform_to_alignment: object
+
+@dataclass(frozen=True)
+class IndexedTile:
+    tile_id: int
+    grid: tuple[int, int]
+    stage_um: tuple[float, float]
+    saved_position_yx: tuple[float, float]
+    alignment: AlignmentArtifact
+    payloads: dict[str, ManifestPayloadRef]
+
+@dataclass(frozen=True)
+class TilingDatasetIndex:
+    manifest: Path
+    alignment_detector: str
+    pixel_size_yx_um: tuple[float, float]
+    z_step_um: float
+    tiles: tuple[IndexedTile, ...]
+    detectors: tuple[str, ...]
+```
+
+`RecordingManager.PayloadLocator` remains the acquisition-side value written
+when a session finalises. `ManifestPayloadRef` is deliberately a different
+read-side type in imcommon; its docstring names the write-side counterpart and
+the version-2 manifest fields that must stay in step. imcommon never imports
+imcontrol.
+
+Manifest parsing is the single authority for detector enumeration.
+`inspect_dataset(path)` parses once and returns `index.detectors`;
+`detectors_in(payload)` becomes a compatibility wrapper over that parsed index,
+not a second raw-dictionary enumerator that can disagree with validation.
+
+The chosen names and their separation are normative. `inspect_dataset(path)`
+returns this index and a completeness summary without reading tile pixels.
+`load_dataset` remains as the legacy/alignment convenience wrapper so current
+scripts and version-1 tests do not change behavior.
+
+The solved result is another explicit value:
+
+```python
+@dataclass(frozen=True)
+class MosaicLayout:
+    positions_yx: dict[int, tuple[float, float]]
+    source: str                # "stage", "saved" or "refined"
+    report: RefinementReport
+```
+
+It contains no detector arrays. That makes it impossible for assembling the
+second detector to accidentally solve a second layout.
+
+#### Exact locator loading
+
+Replace `_read_image(path)` for current manifests with a locator reader that can
+inspect shape/dtype and read data separately:
+
+* TIFF requires `group is None` and reads its one declared series.
+* HDF5 opens exactly `group`; when the locator names the detector group, its
+  image is exactly `<group>/data`. It never walks the file looking for the first
+  dataset.
+* Zarr follows the same rule: the locator selects a group or array and structured
+  detector groups resolve their `data` array explicitly.
+* A relative `path` is resolved against the manifest directory. `..` traversal,
+  symlink resolution outside the run folder and absolute paths are rejected for
+  `imswitch-tiling/2`. Transitional absolute locators may be handled by a
+  deliberately named compatibility option, never silently.
+* A missing group is different from a missing file only diagnostically; if the
+  locator says `complete: true`, either is a hard error.
+* `stored_axes` must name the stored rank. Logical normalization removes only
+  axes present in `stored_axes` but absent from `axes`, only when their extent is
+  one. It then verifies logical `shape`. A length-one `C` or `Z` axis survives.
+
+Keep the old recursive/first-array behavior only behind the version-1/interim
+manifest path. That is compatibility, not recovery for a broken version-2 run.
+
+#### Solve alignment geometry once
+
+`solve_layout(index, options) -> MosaicLayout` performs these steps:
+
+1. Derive a nominal position for **every tile identity** from stage coordinates,
+   using the recorded orientation and alignment pixel size. Fall back to saved
+   pixel positions under the same rule used today.
+2. Read only the singular alignment artifact for each tile. If it has leading
+   axes, make the alignment projection explicitly; payload selection never
+   changes this projection.
+3. Run the existing all-pairs correlation, outlier rejection and weighted
+   least-squares solve on the readable alignment images.
+4. Write solved positions back by tile identity. A tile whose alignment image is
+   unavailable keeps its nominal stage/saved position, so a recoverable payload
+   or alignment-file failure does not shift later identities or discard a good
+   payload.
+5. Freeze and return the layout. Do not retain the alignment arrays once the
+   solve is complete.
+
+Cache this value in `TilingReconstructor`, keyed by the resolved manifest path,
+manifest modification identity, the alignment artifacts' size/mtime fingerprint
+and every geometry-affecting option (`stage_positions`, refinement enabled and
+maximum shift). Changing detector, channel, projection or blending must reuse
+the cache. Changing the manifest, an alignment artifact or an alignment option
+invalidates it. The cache holds only the index, positions and report — never the
+full payload arrays.
+
+If refinement is requested but no alignment image is readable, fail with an
+actionable message telling the operator to disable refinement and use the
+nominal layout. Do not claim that an unrefined layout was refined.
+
+#### Compose detector geometry, do not copy positions
+
+Represent placement internally as homogeneous matrices in **row/column** order.
+For tile `i` and detector `d`:
+
+```text
+[mosaic row]                       [detector-local row]
+[mosaic col] = T(layout[i]) @ A(d) [detector-local col]
+[     1    ]                       [        1         ]
+```
+
+`A(d)` is the parsed `transform_to_alignment`; `T` translates the alignment
+tile's origin to its solved mosaic position. The transform acts only on Y/X.
+`C`, `Z`, `T` and any other leading axes are not resampled or reordered.
+
+The output's Y/X scale is therefore the **alignment** detector's pixel size, for
+every detector, because that is the grid being composed into. Under Phase 1's
+enforced identity the two are equal anyway; the distinction only becomes visible
+when a calibrated transform carries a scale, and stating it now is what stops
+someone later labelling a resampled mosaic with the source detector's pixel
+size. `Z` scale continues to come from the manifest's `z_step_um`.
+
+The normative Phase 1 contract emits only `"identity"`, including for the
+alignment detector. An interim writer may already have emitted `"reference"`
+there; accept it only on the manifest's named alignment detector as a documented
+compatibility alias for identity. Still route both through matrix composition.
+The assembler has a bit-for-bit fast path for identity plus integer translation
+and a tested affine resampling path behind the same placed-tile interface.
+
+The affine path has these normative conventions:
+
+* Integer Y/X coordinates denote **pixel centres**. `A(d)` maps a
+  detector-local pixel centre into the alignment pixel-centre coordinate system;
+  `T` then maps it into mosaic coordinates.
+* Bounds come from the four outer footprint corners at half-pixel offsets
+  (`-0.5` through `size - 0.5`), transformed by the composed matrix and rounded
+  outward to alignment-grid pixel edges. The result records the output origin,
+  so a negative or sub-pixel transform does not disappear into array indexing.
+* Resampling is inverse mapped: each output pixel centre is mapped through the
+  inverse composed affine to detector-local coordinates. Intensity uses linear
+  interpolation; outside samples contribute zero value and zero weight.
+* A unit validity mask is transformed with nearest-neighbour interpolation.
+  The overlap taper is multiplied by that mask before accumulation, and the
+  output is divided only by accumulated valid weight. Warped empty corners must
+  therefore never darken another tile.
+* Every remaining leading-axis plane uses the same spatial map. No leading axis
+  is interpolated, reordered or projected by the affine implementation.
+* The affine accumulator, weights and affine-path result are `float32`. The
+  identity/integer fast path does no interpolation and preserves the current
+  assembler's dtype and values bit for bit.
+* **One mosaic uses one path, never both.** A mosaic assembles a single
+  detector, and a detector has a single `A(d)`, so the choice of path is a
+  property of the output rather than of a tile. That is what makes the dtype
+  split above safe to state: no mosaic can contain some tiles resampled and
+  others copied, and no reader has to ask which of its pixels were which.
+
+A future calibrated transform consequently adds a manifest parser/schema case,
+not a second mosaic implementation. Unknown, singular or malformed transforms
+fail during header inspection, before allocation. A synthetic affine test locks
+the centre convention, outward bounds, mask behavior and output origin.
+
+#### Leaving the door open for a transform module
+
+A separate module is expected to own detector-to-detector transforms and their
+calibration. Tiling should end up a *consumer* of that rather than a second
+place where such things are configured and stored. Three decisions now decide
+whether that is a small change later or a migration.
+
+**Widen the transform to a schema before anything depends on the string.**
+`TilingInfo.detectorTransforms` is `Dict[str, str]` and Phase 1 accepts only
+`"identity"`. A bare string cannot carry a matrix, a calibration identity or a
+date, so the format has to grow — and growing it after datasets exist means
+reading two shapes forever. Accept both now, with the string as shorthand:
+
+```json
+"detectorTransforms": {
+  "Camera": "identity",
+  "Widefield": {
+    "kind": "affine",
+    "matrix": [[1, 0, 12.5], [0, 1, -3.0], [0, 0, 1]],
+    "source": "transform-module",
+    "calibration_id": "2026-08-04-widefield-apd",
+    "measured": "2026-08-04T11:03:00Z"
+  }
+}
+```
+
+Phase 1 keeps rejecting anything whose resolved kind is not identity; it simply
+rejects it after parsing a schema instead of after comparing a string. The
+manifest stores the resolved object, so a dataset says which calibration it was
+written under rather than only that one existed.
+
+**The manifest records what was believed then; the reader may be told
+otherwise.** A calibration measured after a run is often better than the one in
+force during it, and a rig's configuration will have moved on. So the stored
+transform is provenance, not a lock: `assemble_payload` takes an optional
+transform resolver, and when one is supplied its value is used *and recorded* —
+`transform_source: "manifest" | "override"` alongside the calibration identity —
+so a mosaic always says which geometry produced it. Absent a resolver the
+manifest's own value is used, unchanged. This is the whole of the coupling: one
+optional argument and one provenance field.
+
+**Parse in exactly one place.** Everything downstream already consumes a 3x3
+matrix, so a transform module plugs in by supplying that matrix — not by
+teaching the assembler a second notion of geometry. Keep the parser a single
+function in imcommon with no imcontrol import, so both the acquisition side
+(validating a save set) and the reader (composing placement) call the same one
+and cannot disagree about what a transform means.
+
+Two things worth writing down now because they are cheap now and awkward later:
+
+* A calibration naturally describes a **pair** of detectors, while the manifest
+  describes each detector *relative to that run's alignment detector*. A module
+  speaking pairs must therefore resolve against the manifest's named alignment
+  detector, and two runs that aligned on different detectors will legitimately
+  store different matrices for the same physical relationship.
+* Resampling is lossy, so a transform is best applied once. If a module later
+  offers to transform detectors onto a common frame *before* tiling, that is a
+  different and better pipeline than tiling resampling afterwards — worth
+  leaving room for, and worth not foreclosing by making the manifest's stored
+  transform authoritative rather than descriptive.
+
+#### Load and assemble the selected payload
+
+`assemble_payload(index, layout, selection, options)` should:
+
+1. Select one detector and join its locators to `layout.positions_yx` by
+   `tile_id`, never by path, filename or generation.
+2. Skip only locators explicitly absent or `complete: false`, recording the tile
+   IDs and reasons. If no payload remains, raise a detector-specific error.
+3. Validate that all remaining tiles agree on logical axis names and rank.
+   Extents may differ — for example a short Z stack — but a `CYX` tile must not
+   be right-aligned into a `CZYX` dataset as though its `C` were `Z`.
+4. Apply channel selection after stored-to-logical normalization and before
+   mosaic allocation. Selecting one `C` index removes `C`; selecting **All**
+   preserves it, including a length-one channel axis.
+5. Apply projection by named axis. The first UI version needs **Keep Z** and
+   **Max-project Z**; it must never project `C` or `T` merely because they lead
+   Y/X. If there is no `Z`, the projection option is disabled.
+6. Compose each tile's spatial transform with the frozen layout, then assemble
+   every remaining leading plane with the same spatial geometry.
+7. Return axes, scales and a provenance summary together with the array: selected
+   detector/channel, skipped tile IDs, manifest path, layout-cache key and
+   refinement report.
+
+The default output should be the **alignment detector's full payload**, when it
+exists — not its small alignment snapshot. Keep a separately labelled
+**Alignment images (diagnostic)** choice for reproducing the current mosaic and
+debugging registration.
+
+#### ImProcess integration and controls
+
+The parameter widget cannot populate itself today because it is installed before
+it knows the current `DataObj`. Add a small optional, generic reconstructor hook
+for source inspection rather than another `if reconstructor.id == ...` branch in
+the manager. `Reconstructor.accepted_source_kinds` defaults to `("image",)`;
+tiling declares `("image", "tiling-manifest")`. Its optional
+`inspect_source(data_obj) -> SourceInspection` hook describes dynamic choices
+and estimates without loading pixels. On `sigCurrentDataChanged`, the manager
+disables reconstructors that do not accept the current source kind, calls the
+active reconstructor's hook and gives the returned inspection to its parameter
+widget. The tiling implementation populates:
+
+* output source: full-payload detector names plus the alignment diagnostic;
+* logical axes and representative shape for the current detector;
+* channel choice when `C` is present;
+* Z projection choice when `Z` is present;
+* complete/total payload count and an estimated output shape/footprint; and
+* why refinement is unavailable when alignment artifacts are missing.
+
+Changing the detector refreshes only selection metadata; it does not load the
+payload or solve the layout. The reconstruction result name includes detector
+and channel, and `TilingMosaicResult` carries the provenance summary so saving
+and later inspection do not lose which payload was assembled.
+
+Opening a tile, `tiles.json` or the run folder should all identify the same
+manifest. The source-spec layer currently knows file containers and Zarr stores
+but not a tiling run directory; add an explicit tiling-manifest source spec
+instead of relying on a `.json` extension being mistaken for an image dataset.
+That source is metadata-only, with an explicit generic lifecycle:
+
+* `DataObj.sourceKind` defaults to `"image"`; a tiling run uses
+  `"tiling-manifest"`. `DataObj.sourceReady` is the routing-ready flag: the
+  existing eager image path sets it from `dataLoaded`, the virtual image path
+  sets it from `sourceLoaded`, and a successfully inspected metadata source sets
+  it directly. It does not change the meanings of `sourceLoaded` (an
+  array-backed source is open) or `dataLoaded` (pixels are materialized).
+* `DataObj.fromMetadataSource(name, path, sourceKind, sourceMetadata)` creates a
+  lightweight current object. For a tiling run, `sourceMetadata` is the parsed
+  `TilingDatasetIndex`; its state has `sourceReady` true, `sourceLoaded` false
+  and `dataLoaded` false. It never asks `DataObj._open` to enumerate JSON as
+  though it were HDF5.
+* `_loadAsCurrent` emits `sigCurrentDataChanged` when `sourceReady` is true.
+  Image viewers and edit/mean/frame controls must guard on image source kind;
+  for metadata-only sources they clear the image and disable those
+  actions instead of dereferencing `data` or `numFrames`. The reconstructor
+  manager still receives the signal and offers only reconstructors whose
+  optional source-inspection hook accepts the source kind.
+* `Reconstructor.process(data_obj, params, ...)` remains the processing entry
+  point. The tiling reconstructor consumes the already parsed index from
+  `data_obj.sourceMetadata` and revalidates its fingerprint before work starts.
+  Other reconstructors continue to receive ordinary image `DataObj` instances.
+
+This requires a small metadata-source path in `FileIOController` and listener
+guards in `DataFrameController` and the current-data controls; adding a suffix
+to `file_extensions` alone is insufficient. Opening a tile first walks upward
+to the owning manifest, while opening the manifest or run folder resolves it
+directly. Ambiguous nested manifests fail with a choice rather than selecting
+one arbitrarily.
+
+#### Memory and performance contract
+
+Full payloads make the current eager shape unacceptable. Keep alignment loading
+simple, but assemble payloads with a two-pass reader:
+
+1. inspect locator headers, logical shapes and transforms to calculate bounds,
+   output shape and exact canvas/weight memory;
+2. allocate once, read one payload tile (or one leading-axis slab) at a time,
+   place it and release it.
+
+Do not keep a list of materialized payload arrays beside the output canvas.
+Preserve the existing cheap Y/X-only overlap weights when leading coverage is
+uniform and use per-plane weights only when it is not.
+
+**Time is the other budget, and it is already overspent.**
+`ReconstructorManagerController._reconstruct_with_plugin` calls `process()`
+synchronously on the calling thread, which is the GUI thread — there is no
+worker and no progress channel for any reconstructor. A 100-tile alignment-only
+mosaic already freezes the interface for about fifteen seconds; that is why
+every stage logs. Phase 2 replaces small alignment tiles with full payloads, so
+the same run becomes minutes.
+
+Phase 2 therefore moves **tiling reconstruction** to a worker without silently
+changing the execution behavior of every existing plugin. Add an
+`execution_policy` capability whose default is `"inline"`; tiling opts into
+`"worker"`. Add an optional `ReconstructionContext` keyword to the base
+`process` contract; registered reconstructors accept it and may ignore it,
+while tiling uses its progress callback, cancellation token, memory budget and
+confirmed-over-budget flag. The manager owns the reusable worker dispatch,
+publishes progress to the GUI and returns the result or error to the GUI thread;
+a worker never calls a widget directly. Later expensive reconstructors can opt
+in without another manager-specific branch.
+
+Cancellation is cooperative and checked between header reads, alignment-tile
+reads, refinement batches and every payload tile or leading-axis slab. A
+cancelled job closes the current container, releases its partial canvas, emits
+one cancelled terminal and publishes no partial `ProcessingResult`. Progress
+has named phases (`inspect`, `align`, `allocate`, `assemble`, `finalize`) plus
+completed/total work, so phase transitions do not make the percentage move
+backwards.
+
+The cheap source-inspection pass computes the estimate before the worker is
+launched. ImProcess defaults the memory budget from available memory and asks
+for explicit confirmation on the GUI thread before setting the context's
+confirmed-over-budget flag. The worker repeats header validation immediately
+before allocation; if the manifest changed or the recomputed requirement now
+exceeds an unconfirmed budget, it fails instead of opening a dialog from the
+worker. The error reports output shape, canvas bytes, weight bytes and the
+selections that can reduce them (one channel or Z projection).
+An out-of-core result/export is useful later, but is not smuggled into this phase:
+`ProcessingResult` still owns an in-memory array.
+
+#### Failure matrix
+
+| Condition | Phase 2 behavior |
+|---|---|
+| Payload absent or `complete: false` | Skip that tile for that detector and report it |
+| No complete payload for the selected detector | Fail with detector name and completeness summary |
+| `complete: true`, but path/group is missing | Fail loudly; the manifest contradicts the run folder |
+| Stored rank/axes/shape contradict descriptor | Fail loudly; never assemble a plausible partial result |
+| Alignment image missing for some tiles | Refine readable subset; missing identities keep nominal positions |
+| No alignment image and refinement requested | Refuse refinement; nominal assembly remains available explicitly |
+| Detector axes differ between tiles | Fail before allocation |
+| Unknown, singular or malformed transform | Fail before allocation |
+| Legacy manifest without descriptors | Use the existing compatibility path unchanged |
+| Detector selected, refinement on | Correlate the **alignment** images, never the selected payload |
+| Selected detector missing from some tiles | Skip those tiles for that detector; the layout is unaffected |
+| User cancels reconstruction | Close readers, discard the partial canvas and publish no result |
+
+#### Implementation order
+
+**Phase 2a — index and exact readers.** Add the manifest-only dataclasses,
+strict version-2 validation, exact TIFF/HDF5/Zarr locator opening and cheap
+inspection. Keep `load_dataset` as a compatibility wrapper.
+
+**Phase 2b — geometry as a value.** Extract nominal layout and alignment-only
+refinement into `solve_layout`; key everything by tile identity and add the
+layout cache. At the end of 2b, selecting a detector cannot affect solved
+positions even before payload assembly is changed.
+
+**Phase 2c — payload selection and assembly.** Add named-axis normalization,
+channel/Z selection, transform composition, the one-tile-at-a-time assembler and
+strict partial/corrupt behavior.
+
+**Phase 2d — metadata source, ImProcess UX and provenance.** Add the
+`tiling-manifest` source kind and listener guards, populate the controls from
+source inspection, expose estimates/completeness, reuse cached geometry and
+label/save the result with its selection and layout report.
+
+**Phase 2e — worker execution and resource contract.** Add
+`ReconstructionContext`, opt-in worker dispatch, phase/tile progress,
+cooperative cancellation and GUI-thread memory confirmation. Exercise large
+synthetic payloads without retaining every tile or publishing partial cancelled
+results; verify that default-inline reconstructors keep their existing dispatch.
+
+**Phase 2f — compatibility hardening.** Run the legacy fixtures through the
+unchanged wrapper, verify the intentional triggered/free-running artifact rules
+and keep image-only reconstructors unchanged for ordinary `DataObj` sources.
+
+#### Phase 2 acceptance criteria
+
+1. Two tiles stored in one HDF5 or Zarr path under different groups load the
+   exact groups named by their locators; changing group changes the tile read.
+2. A TIFF payload is accepted only with a null group, and version-2 paths cannot
+   escape the run folder.
+3. `TCZYX -> CZYX` squeezes only the declared singleton `T`; a length-one `C` or
+   `Z` survives. A rank or shape contradiction raises.
+4. Layout refinement reads only alignment artifacts. A payload with blank,
+   shifted or unrelated intensities still receives the alignment-solved
+   geometry.
+5. Reconstructing two detectors or two channel selections with unchanged
+   geometry options performs one layout solve and produces spatially coincident
+   mosaics.
+6. Identity composition reproduces today's integer placement bit for bit. A
+   synthetic non-identity internal affine fixture verifies pixel-centre mapping,
+   outward half-pixel bounds, recorded output origin, linear intensity sampling
+   and nearest-neighbour validity masking without touching leading axes or
+   darkening overlap through empty warped corners.
+7. `CZYX` assembles with all channels; selecting channel `k` yields `ZYX` with
+   exactly that channel. Z projection yields `CYX` or `YX` and never collapses C.
+8. An explicitly incomplete payload is omitted and reported; a supposedly
+   complete but missing group, wrong shape or unknown transform fails loudly.
+9. A tile with a missing alignment image retains its nominal position and can
+   still contribute a complete payload.
+10. Opening a tile, `tiles.json` or its run folder produces one metadata-only
+    `DataObj` with `sourceKind == "tiling-manifest"`, `sourceReady == true` and
+    no loaded pixels. Image viewers clear safely, while detector/channel controls
+    populate from the selected manifest before reconstruction; the result records
+    the selection and skipped tiles.
+11. Peak payload memory is output canvas plus weights plus approximately one tile,
+    not output plus every materialized tile; over-budget work is refused before
+    allocation with an actionable estimate.
+12. Existing version-1/interim manifests, alignment-only reconstruction and
+    `assemble_dataset` produce the same arrays and axis labels as before.
+13. Removing one tile's file from a run does not move any other tile: identities
+    and solved positions are unchanged, and only the affected tile is reported
+    skipped. (The index is built before reading, so it cannot renumber.)
+14. Tiling reconstruction runs off the GUI thread, reports monotonically
+    advancing named-phase and per-tile/slab progress, and remains cancellable.
+    Cancellation closes readers, frees partial allocations, emits one cancelled
+    terminal and publishes no `ProcessingResult`; a default-inline reconstructor
+    still follows its existing synchronous path.
+15. In free-running mode, detector snapshots are the payload locators. In
+    triggered mode, finalized recording locators are the payloads and redundant
+    compatibility snapshots are never selected in their place. A genuinely 2-D
+    alignment snapshot may satisfy both compatibility and alignment descriptors.
+
+**Not in Phase 2:** live assembly while acquisition is still writing, solving Z
+offsets, *measuring* calibrated cross-detector transforms, non-affine warps and
+out-of-core mosaic results. Phase 2 defines how a transform is **carried,
+resolved and applied**; producing one is the transform module's job, and the
+seam above is deliberately the whole of what tiling needs from it. Phase 2 consumes finalized artifacts and builds the
+2-D spatial layout on which those later extensions depend.
 
 ### Phase 3 — 3D (deferred)
 

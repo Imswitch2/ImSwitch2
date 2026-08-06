@@ -82,6 +82,7 @@ filter, controlled over RS232.
             "managerProperties": {
                 "rs232device": "aotfRS232",
                 "channel": 1,
+                "protocolProfile": "aa.compatibility",
                 "toggleTrueExternal": false,
                 "ttlToggling": false
             },
@@ -109,6 +110,18 @@ filter, controlled over RS232.
      - int
      - **required**
      - AOTF channel index (1-based) this manager drives.
+   * - ``protocolProfile``
+     - str
+     - ``"aa.compatibility"``
+     - Command profile. Use ``"aa.frequency-startup"`` only for a controller
+       whose RF frequency resets at power-up.
+   * - ``frequencyMHz``
+     - float
+     - ``0`` (disabled)
+     - Optional fixed RF frequency to restore at startup. Requires
+       ``protocolProfile: "aa.frequency-startup"``. When omitted, no global
+       ``I0`` or frequency command is sent. ``0`` is also treated as omitted
+       so setup-editor defaults preserve the legacy startup behavior.
    * - ``toggleTrueExternal``
      - bool
      - ``false``
@@ -133,7 +146,8 @@ filter, controlled over RS232.
 **Low-level dependencies**
 
 * ``rs232sManager[<rs232device>]`` — RS232 channel used for the
-  ``L<ch>O<0|1>`` / ``L<ch>P<v>`` commands.
+  ``L<ch>O<0|1>`` / ``L<ch>P<v>`` commands. The optional frequency-startup
+  profile additionally sends ``I0`` followed by ``L<ch>F<frequencyMHz>``.
 
 **Vendor library**
 

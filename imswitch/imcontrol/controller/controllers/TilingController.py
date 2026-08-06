@@ -8,10 +8,14 @@ from qtpy import QtCore
 
 from imswitch.imcommon.model import APIExport
 from imswitch.imcommon.algorithms.tile_mosaic import TileLink, solve_links
+from imswitch.imcommon.algorithms.detector_transform import (
+    parse_detector_transform,
+)
 from imswitch.imcontrol.model.workflows.positioning_request import (
     PositioningRequest,
 )
 from imswitch.imcontrol.model.managers import LeasePurpose
+from imswitch.imcontrol.model.managers.RecordingManager import FailureKind
 from imswitch.imcontrol.model.workflows import StitchedImage
 from imswitch.imcontrol.model.workflows.spiral import spiral_moves
 from imswitch.imcontrol.model.workflows.tile_dataset import (
@@ -71,6 +75,167 @@ class _FreeRunningTileSource:
             self._controller._logger.error(
                 f'Failed to release tiling chunk consumer: {e}', exc_info=True
             )
+
+
+class _PointOutcome:
+    """One tile's recording, as the tiling worker waits on it.
+
+    Shaped like a scan completion because that is what it replaces: the caller
+    was already waiting on one of those, and only the thing producing it moved.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self.successful = False
+        self.message = ''
+
+    def wait(self, timeout=None) -> bool:
+        return self._event.wait(timeout)
+
+    def resolve(self, successful: bool, message: str = '') -> None:
+        if self._event.is_set():
+            return
+        self.successful = bool(successful)
+        self.message = str(message)
+        self._event.set()
+
+
+class _RecordingDispatcher:
+    """Runs each tile's scan inside one recording session.
+
+    The two halves meet here. Tiling owns the stage and knows when a tile's
+    position is reached; the recording session owns the scan and the writer.
+    Neither drives the other: tiling hands over a resolved positioning request
+    and waits, while the session -- advancing on its own timers, on the GUI
+    thread -- picks it up, arms, and reports the point finished.
+
+    That rendezvous is the reason tiling no longer starts scans itself. Two
+    dispatchers would command the same firmware for one tile, and whichever
+    arrived second would be scanning a stage the first had already moved.
+    """
+
+    def __init__(self, controller, recordingController, pointTimeoutS,
+                 folder=None):
+        self._controller = controller
+        self._recording = recordingController
+        self._timeout = pointTimeoutS
+        #: The run folder every payload lives under, so its locator can be
+        #: recorded relative to the manifest beside it. An absolute path would
+        #: break the moment the dataset is moved or archived.
+        self._folder = Path(folder) if folder is not None else None
+        self._lock = threading.Lock()
+        self._awaiting = None      # request the gate is polling
+        self._queued = None        # request tiling supplied early
+        self._outcome = None       # the point tiling is waiting on
+        self._locators = {}
+        self._lastFailureKind = None
+
+    # -- asked by the recording session, on its thread -----------------
+
+    def provider(self, index):
+        """A request for point ``index``, resolved once the stage is there."""
+        with self._lock:
+            queued, self._queued = self._queued, None
+            request = queued or PositioningRequest(index, self._timeout)
+            self._awaiting = None if request.settled else request
+            return request
+
+    # -- called by the tiling worker, on its thread --------------------
+
+    def runPoint(self, request):
+        """Hand over a positioned point and get something to wait on."""
+        outcome = _PointOutcome()
+        with self._lock:
+            self._outcome = outcome
+            awaiting = self._awaiting
+            if awaiting is None:
+                # The session has not asked yet; it will take this on its next
+                # pass rather than manufacture its own.
+                self._queued = request
+            else:
+                self._awaiting = None
+        if awaiting is not None:
+            # Mirror the terminal rather than assume one. Releasing the gate
+            # on an unresolved request would arm the point without the stage
+            # having reported arrival -- the single thing this handshake is
+            # here to prevent. A request still in flight is simply left
+            # pending, and the gate's own timeout covers a stage that never
+            # answers.
+            if request.mayProceed:
+                awaiting.resolve()
+            elif request.settled:
+                awaiting.fail(request.message or request.outcome.value)
+        return outcome
+
+    def locatorsForLastPoint(self):
+        with self._lock:
+            return dict(self._locators)
+
+    # -- terminals published by the recording manager ------------------
+
+    def onWriterFinalised(self, generation):
+        """The writer has drained: its locators are authoritative now.
+
+        Not the point of completion, though — the scan's own lifecycle cleanup
+        is still running, and moving the stage into that would corrupt the tile
+        that is still being torn down.
+        """
+        try:
+            locators = self._recording._master.recordingManager.payloadLocators(
+                generation
+            )
+        except Exception:
+            locators = {}
+        with self._lock:
+            self._locators = {
+                name: self._relative(locator)
+                for name, locator in locators.items()
+            }
+
+    def _relative(self, locator):
+        """Re-root a locator's path under the run folder, when it is beneath it."""
+        if self._folder is None or not hasattr(locator, 'path'):
+            return locator
+        try:
+            relative = Path(locator.path).relative_to(self._folder)
+        except (ValueError, TypeError):
+            return locator
+        return type(locator)(**{**locator.asdict(), 'path': str(relative)})
+
+    def onPointFinished(self):
+        """Writer drained *and* scan complete: the stage may move again."""
+        with self._lock:
+            outcome = self._outcome
+        if outcome is not None:
+            outcome.resolve(True)
+
+    def onPointFailed(self, message, _generation, kind):
+        with self._lock:
+            self._locators = {}
+            outcome = self._outcome
+            self._lastFailureKind = kind
+        if outcome is not None:
+            outcome.resolve(False, f'{kind}: {message}')
+
+    def lastFailureWasRecoverable(self, message='') -> bool:
+        """Whether the run may reasonably carry on past the last failure.
+
+        Only a writer failure: the measurement happened and the file did not,
+        so the remaining tiles are unaffected. Anything touching acquisition,
+        the scan or the hardware means the data itself is suspect, and an
+        unclassified failure is treated as the unsafe kind.
+
+        Storage exhaustion is excluded even though it *is* a writer failure:
+        the next tile's payload and its alignment image would fail identically,
+        so a run would grind through the rest of the trajectory producing
+        nothing but errors.
+        """
+        with self._lock:
+            kind = self._lastFailureKind
+        if str(kind) != FailureKind.WRITER.value:
+            return False
+        exhausted = ('no space', 'disk full', 'quota', 'errno 28')
+        return not any(token in message.lower() for token in exhausted)
 
 
 class _TriggeredTileSource:
@@ -168,6 +333,15 @@ class _TriggeredTileSource:
             )
             return None, False
         if not completion.successful:
+            if self._dispatcher.lastFailureWasRecoverable(completion.message):
+                controller._logger.warning(
+                    f'Tiling: this tile has no payload — {completion.message}. '
+                    'The measurement itself was fine, so the run continues; '
+                    'the manifest records the tile without one.'
+                )
+                frame = controller._scanFrame(self._detector)
+                self._waitForFocus()
+                return frame, frame is not None
             controller._logger.error(
                 f'Tiling: point failed — {completion.message}'
             )
@@ -536,6 +710,7 @@ class TilingController(ImConWidgetController):
         dataset = TileDataset()
         saveFolder = None
         tileSource = None
+        dispatcher = None
         try:
             positioner = self._master.positionersManager[tilingInfo.xyPositioner]
             axes = list(self._setupInfo.positioners[tilingInfo.xyPositioner].axes)
@@ -575,6 +750,24 @@ class TilingController(ImConWidgetController):
             )
             with self._getActivityLock():
                 self._scanAcqHandle = acqHandle
+
+            # Payloads mean a recording per tile, and a recording per tile
+            # means the session -- not tiling -- dispatches the scans. Only
+            # triggered mode: free-running has no scan for a session to run,
+            # and its payload is the snapshot it already saves.
+            if save_tiles:
+                # Allocated before the first acquisition, not on the first
+                # tile: a recording session started before the folder existed
+                # would write its payloads somewhere else, and every locator
+                # in the manifest would then point outside the dataset.
+                saveFolder = tiling_folder(self._saveRoot(tilingInfo))
+                saveFolder.mkdir(parents=True, exist_ok=True)
+                self._logger.info(f'Tiling: saving to {saveFolder}')
+
+            if save_tiles and mode == MODE_TRIGGERED:
+                dispatcher = self._startPayloadSession(
+                    saveSet, n_tiles, tileSource, saveFolder
+                )
 
             tileSource.prepare()
 
@@ -671,10 +864,7 @@ class TilingController(ImConWidgetController):
                 self._gridPositions.append((gx, gy))
 
                 if save_tiles:
-                    if saveFolder is None:
-                        saveFolder = tiling_folder(self._saveRoot(tilingInfo))
-                        saveFolder.mkdir(parents=True, exist_ok=True)
-                        self._logger.info(f'Tiling: saving to {saveFolder}')
+                    if not dataset.tiles and dataset.tile_shape_px == (0, 0):
                         dataset.pixel_size_um = self._stitcher and (
                             1.0 / self._stitcher.px_per_um_y,
                             1.0 / self._stitcher.px_per_um_x,
@@ -696,8 +886,13 @@ class TilingController(ImConWidgetController):
                     images = self._captureSaveSet(
                         saveSet, camera, frame, tileSource
                     )
-                    self._saveTile(images, camera, gx, gy, stage_xy,
-                                   dataset, saveFolder)
+                    self._saveTile(
+                        images, camera, gx, gy, stage_xy, dataset, saveFolder,
+                        # Where this tile's recording finalised, if one ran.
+                        # Read after its terminal, never guessed at dispatch.
+                        payloads=(dispatcher.locatorsForLastPoint()
+                                  if dispatcher is not None else None),
+                    )
 
                 # Repainting the whole mosaic on the GUI thread after every
                 # tile starved other GUI-thread work — most visibly the focus
@@ -783,6 +978,15 @@ class TilingController(ImConWidgetController):
                             exc_info=True,
                         )
 
+            if dispatcher is not None:
+                try:
+                    self._endPayloadSession(dispatcher)
+                except Exception as e:
+                    self._logger.error(
+                        f'Failed to close the tiling payload session: {e}',
+                        exc_info=True,
+                    )
+
             if tileSource is not None:
                 try:
                     tileSource.finish()
@@ -859,7 +1063,7 @@ class TilingController(ImConWidgetController):
         return stage_dx, stage_dy
 
     def _saveTile(self, images, alignmentDetector, gx, gy, stage_xy, dataset,
-                  folder):  # noqa: D401
+                  folder, payloads=None):  # noqa: D401
         """Write one tile — every selected detector — with its stage position.
 
         Goes through RecordingManager's storer layer rather than writing files
@@ -942,15 +1146,23 @@ class TilingController(ImConWidgetController):
             # finalised writer can supply.
             payloads={
                 detectorName: dict(
-                    path=writtenByDetector[detectorName],
-                    group=None,
-                    complete=True,
-                    transform_to_alignment=(
-                        'reference' if detectorName == alignmentDetector
-                        else 'identity'
+                    # Snapshot-derived axes first, so a writer that described
+                    # what it wrote overrides them rather than the other way
+                    # round.
+                    self._tileAxes(image, dataset,
+                                   storedShapes.get(detectorName)),
+                    # Persist the normalized descriptive schema pinned when
+                    # the save set was resolved. The reader may later override
+                    # it with a newer calibration, but must always know what
+                    # acquisition believed for this run.
+                    transform_to_alignment=self.__dict__.get(
+                        '_saveSetTransforms', {}
+                    ).get(
+                        detectorName,
+                        parse_detector_transform('identity').as_manifest(),
                     ),
-                    **self._tileAxes(image, dataset,
-                                     storedShapes.get(detectorName)),
+                    **self._payloadLocator(payloads, detectorName,
+                                           writtenByDetector[detectorName]),
                 )
                 for detectorName, image in images.items()
             },
@@ -958,6 +1170,31 @@ class TilingController(ImConWidgetController):
                              storedShapes.get(alignmentDetector)),
         ))
         return name
+
+    @staticmethod
+    def _payloadLocator(locators, detectorName, snapshotFilename) -> dict:
+        """Where this detector's payload for this tile actually is.
+
+        A recording's locator when one ran and finalised — it carries the group
+        within a container and the generation, which a filename cannot — and
+        otherwise the snapshot that *is* the payload for a run without one.
+        ``complete`` distinguishes the two rather than leaving a reader to
+        infer it from which fields happen to be filled.
+        """
+        found = (locators or {}).get(detectorName)
+        if found is None:
+            return {'path': snapshotFilename, 'group': None, 'complete': True}
+        locator = found.asdict() if hasattr(found, 'asdict') else dict(found)
+        locator.pop('detector', None)
+        # The writer's own axis description wins where it has one. Replacing it
+        # with axes derived from the alignment snapshot would describe the
+        # wrong array: the snapshot is a reduced view, and the payload is the
+        # recording -- they need not share a rank, let alone axis names.
+        locator = {key: value for key, value in locator.items()
+                   if not (key in ('axes', 'stored_axes', 'shape',
+                                   'stored_shape')
+                           and not value)}
+        return locator
 
     @staticmethod
     def _tileAxes(frame, dataset, storedShape=None) -> dict:
@@ -1181,6 +1418,67 @@ class TilingController(ImConWidgetController):
         )
         self._logger.info(f'Tiling: {report.globalSolve}')
 
+    def _startPayloadSession(self, saveSet, nTiles, tileSource, folder):
+        """Open one recording session for the run and hand it scan dispatch.
+
+        The session is a lapse of ``nTiles`` points differing by where the
+        stage is rather than by when a timer fires, which is what a tiling run
+        already was. Returns the dispatcher, or None when the Recording
+        controller cannot host one -- in which case tiling keeps dispatching
+        its own scans and saves snapshots, exactly as before.
+        """
+        controllers = getattr(self._commChannel.__dict__.get('_main', None),
+                              'controllers', None) or {}
+        recording = controllers.get('Recording')
+        if recording is None or not hasattr(recording, 'setPositioningProvider'):
+            self._logger.info(
+                'Tiling: no Recording controller can host a per-tile payload '
+                'session; saving snapshots only.'
+            )
+            return None
+
+        dispatcher = _RecordingDispatcher(self, recording, self._scanTimeoutS(),
+                                          folder)
+        manager = self._master.recordingManager
+        try:
+            recording.setPositioningProvider(dispatcher.provider)
+            recording.setCycleTerminalCallback(dispatcher.onPointFinished)
+            manager.sigRecordingEndedDetailed.connect(
+                dispatcher.onWriterFinalised)
+            manager.sigRecordingFailedTyped.connect(dispatcher.onPointFailed)
+        except Exception as e:
+            self._logger.error(
+                f'Tiling: could not start the payload session ({e}); '
+                'saving snapshots only.', exc_info=True
+            )
+            self._endPayloadSession(dispatcher)
+            return None
+
+        tileSource.useDispatcher(dispatcher)
+        self._logger.info(
+            f'Tiling: recording a payload per tile for {nTiles} tiles '
+            f'({", ".join(saveSet)}).'
+        )
+        return dispatcher
+
+    def _endPayloadSession(self, dispatcher) -> None:
+        """Release dispatch and stop listening, whatever the run did."""
+        recording = dispatcher._recording
+        manager = self._master.recordingManager
+        for disconnect in (
+            lambda: manager.sigRecordingEndedDetailed.disconnect(
+                dispatcher.onWriterFinalised),
+            lambda: manager.sigRecordingFailedTyped.disconnect(
+                dispatcher.onPointFailed),
+            lambda: recording.clearPositioningProvider(),
+        ):
+            try:
+                disconnect()
+            except Exception:
+                # Already gone, or never connected: either way this run no
+                # longer owns it.
+                pass
+
     def _resolveSaveSet(self, tilingInfo, alignmentDetector, mode):
         """Which detectors this run saves at each position.
 
@@ -1205,6 +1503,9 @@ class TilingController(ImConWidgetController):
             )
 
         transforms = dict(getattr(tilingInfo, 'detectorTransforms', None) or {})
+        self._saveSetTransforms = {
+            alignmentDetector: parse_detector_transform('identity').as_manifest()
+        }
         saveSet = [alignmentDetector]
         for name in selected:
             if name == alignmentDetector or name in saveSet:
@@ -1215,6 +1516,9 @@ class TilingController(ImConWidgetController):
                 self._logger.warning(f'Tiling: not saving "{name}" — {reason}')
                 continue
             saveSet.append(name)
+            self._saveSetTransforms[name] = parse_detector_transform(
+                transforms[name], label=f'detectorTransforms[{name!r}]'
+            ).as_manifest()
 
         if len(saveSet) > 1:
             self._logger.info(
@@ -1230,17 +1534,23 @@ class TilingController(ImConWidgetController):
         except Exception:
             return 'no such detector'
 
-        declared = str(transforms.get(name, '')).strip().lower()
-        if not declared:
+        declared = transforms.get(name)
+        if declared is None or declared == '':
             return (
                 'no detectorTransforms entry says how its pixels relate to '
                 f'{alignmentDetector}. Add "{name}": "identity" to the tiling '
                 'section once you have checked that they really do line up'
             )
-        if declared != 'identity':
+        try:
+            transform = parse_detector_transform(
+                declared, label=f'detectorTransforms[{name!r}]'
+            )
+        except ValueError as exc:
+            return str(exc)
+        if not transform.is_identity:
             return (
-                f'transform "{declared}" is declared, but only "identity" is '
-                'supported so far'
+                f'transform {transform.kind!r} is declared, but only identity '
+                'is supported so far'
             )
 
         # A contradiction test, not evidence of registration: a detector that
