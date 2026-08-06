@@ -283,6 +283,8 @@ def test_manager_selects_only_a_source_compatible_reconstructor(monkeypatch):
     )
     for method in (
         "_accepts_current_source",
+        "_offerable",
+        "_reopen_path_for",
         "_publishReconstructorChoices",
         "_inspect_current_source",
         "currentDataChanged",

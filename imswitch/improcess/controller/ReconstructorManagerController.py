@@ -59,7 +59,7 @@ class ReconstructorManagerController(ImProcessWidgetController):
             choices = [
                 (r.id, r.name)
                 for r in get_registry().reconstructors()
-                if self._accepts_current_source(r)
+                if self._offerable(r)
             ]
             current = self._main._activeReconstructor.id if self._main._activeReconstructor else None
             self._widget.setReconstructorChoices(choices, current)
@@ -77,6 +77,54 @@ class ReconstructorManagerController(ImProcessWidgetController):
             getattr(reconstructor, 'accepted_source_kinds', ('image',))
         )
         return source_kind in accepted
+
+    def _offerable(self, reconstructor) -> bool:
+        """Whether the picker should list ``reconstructor`` at all.
+
+        Filtering strictly on the *resolved* source kind is what made this a
+        dead end: opening any file inside a tiling run resolves to that run's
+        manifest, only the tiling reconstructor accepts a manifest, so the
+        picker collapsed to a single entry and nothing in that folder could
+        ever restore an image source. Offering what the user's own selection
+        could still be opened as is the way out -- and choosing it re-resolves
+        that path, so the offer is real rather than an entry that errors.
+        """
+        return (
+            self._accepts_current_source(reconstructor)
+            or self._reopen_path_for(reconstructor) is not None
+        )
+
+    def _reopen_path_for(self, reconstructor):
+        """The user's selected path, if this reconstructor would accept it.
+
+        Returns None when there is nothing to reopen -- no selection recorded,
+        the selection is what is already loaded, or it resolves to a kind this
+        reconstructor does not take.
+        """
+        from imswitch.improcess.model.dataset_sources import (
+            resolve_dataset_source,
+            source_kind_for,
+            specs_for_reconstructor,
+        )
+
+        data_obj = getattr(self._main, '_currentDataObj', None)
+        selected = getattr(data_obj, 'sourceOriginalPath', None)
+        if not selected or selected == getattr(data_obj, 'dataPath', None):
+            return None
+        accepted = tuple(
+            getattr(reconstructor, 'accepted_source_kinds', ('image',))
+        )
+        try:
+            resolved = resolve_dataset_source(
+                selected, allowed_specs=specs_for_reconstructor(reconstructor)
+            )
+        except Exception:
+            return None
+        return (
+            selected
+            if source_kind_for(resolved.format_id) in accepted
+            else None
+        )
 
     def currentDataChanged(self, data_obj) -> None:
         """Select a compatible plugin and pass it a metadata-only inspection."""
@@ -131,11 +179,24 @@ class ReconstructorManagerController(ImProcessWidgetController):
         for candidate in get_registry().reconstructors():
             if candidate.id == plugin_id:
                 if not self._accepts_current_source(candidate):
-                    self._logger.warning(
-                        f"Reconstructor {candidate.id!r} does not accept the "
-                        "current source kind"
-                    )
-                    self._publishReconstructorChoices()
+                    # The picker only offers a reconstructor that cannot take
+                    # the loaded source when the user's own selection could be
+                    # reopened for it. Make the active choice first: reopening
+                    # resolves the path under whichever reconstructor is
+                    # active, so doing it the other way round would land on the
+                    # same source again.
+                    reopen = self._reopen_path_for(candidate)
+                    if reopen is None:
+                        self._logger.warning(
+                            f"Reconstructor {candidate.id!r} does not accept "
+                            "the current source kind"
+                        )
+                        self._publishReconstructorChoices()
+                        return
+                    self._main._activeReconstructor = candidate
+                    self._install_reconstructor_params(candidate)
+                    if not self._reopen_current_source(reopen):
+                        self._publishReconstructorChoices()
                     return
                 if self._main._activeReconstructor is candidate:
                     return
@@ -156,6 +217,26 @@ class ReconstructorManagerController(ImProcessWidgetController):
         self._logger.warning(
             f"Reconstructor {plugin_id!r} requested by view picker is not registered"
         )
+
+    def _reopen_current_source(self, path) -> bool:
+        """Reload ``path`` now that a different reconstructor is active."""
+        fileIO = getattr(self._main, 'fileIOController', None)
+        loader = getattr(fileIO, 'loadFromPath', None) or getattr(
+            fileIO, '_loadFromPath', None
+        )
+        if not callable(loader):
+            self._logger.warning(
+                'Cannot reopen the selected source: no file loader available'
+            )
+            return False
+        try:
+            # Promote it: the user asked to view this source, not to add it to
+            # the multi-data list and leave the manifest current.
+            loader(str(path), prefer_as_current=True)
+        except Exception as exc:
+            self._logger.warning(f"Could not reopen {path}: {exc}")
+            return False
+        return True
 
     def _install_reconstructor_params(self, reconstructor):
         # Always reflect the active reconstructor in the Parameters dock so

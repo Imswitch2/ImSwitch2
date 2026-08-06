@@ -96,6 +96,21 @@ def _normalized_extension(extension: str | None) -> str | None:
     return text or None
 
 
+def source_kind_for(spec_id: str) -> str:
+    """The ``DataObj.sourceKind`` a resolved spec produces.
+
+    Spec ids name the *container* -- "tiff", "hdf5", "zarr" -- while source
+    kinds name what a reconstructor is handed. Every array container is an
+    "image"; the tiling manifest is the one source that is metadata instead.
+    Kept here so the two vocabularies cannot drift apart silently.
+    """
+    return (
+        TILING_MANIFEST_SPEC.id
+        if spec_id == TILING_MANIFEST_SPEC.id
+        else "image"
+    )
+
+
 def spec_for_extension(extension: str | None) -> SourceSpec | None:
     normalized = _normalized_extension(extension)
     if normalized is None:

@@ -61,11 +61,21 @@ class DataObj:
 
     @classmethod
     def fromMetadataSource(
-        cls, name, path, sourceKind, sourceMetadata
+        cls, name, path, sourceKind, sourceMetadata, originalPath=None
     ):
-        """Create a routing-ready source without opening an image container."""
+        """Create a routing-ready source without opening an image container.
+
+        ``originalPath`` is what the user actually selected, which is not
+        always ``path``: opening any file inside a tiling run resolves to that
+        run's manifest. Keeping it means a later choice of a reconstructor that
+        wants the file itself can still be honoured, instead of the inferred
+        source kind becoming permanent.
+        """
         obj = cls(name, sourceKind)
         obj.dataPath = str(path)
+        obj.sourceOriginalPath = str(
+            path if originalPath is None else originalPath
+        )
         obj.sourceKind = str(sourceKind)
         obj.sourceMetadata = sourceMetadata
         obj._attrs = {}

@@ -244,6 +244,7 @@ class FileIOController(ImProcessWidgetController):
                 source.path,
                 source.format_id,
                 index,
+                originalPath=source.original_path,
             )
             data_obj.sourceSummary = completeness
             data_obj.sourceFingerprint = manifest_fingerprint(source.path)
