@@ -888,6 +888,7 @@ class TilingController(ImConWidgetController):
                     )
                     self._saveTile(
                         images, camera, gx, gy, stage_xy, dataset, saveFolder,
+                        alignmentImage=displayFrame,
                         # Where this tile's recording finalised, if one ran.
                         # Read after its terminal, never guessed at dispatch.
                         payloads=(dispatcher.locatorsForLastPoint()
@@ -1063,7 +1064,7 @@ class TilingController(ImConWidgetController):
         return stage_dx, stage_dy
 
     def _saveTile(self, images, alignmentDetector, gx, gy, stage_xy, dataset,
-                  folder, payloads=None):  # noqa: D401
+                  folder, payloads=None, alignmentImage=None):  # noqa: D401
         """Write one tile — every selected detector — with its stage position.
 
         Goes through RecordingManager's storer layer rather than writing files
@@ -1108,11 +1109,69 @@ class TilingController(ImConWidgetController):
         # stitcher will find them.
         writtenByDetector = {}
         for index, detectorName in enumerate(images):
-            if written and index < len(written):
+            if written and self._saveFormat.name == 'ZARR':
+                # One structured store contains every detector group.
+                writtenByDetector[detectorName] = Path(written[0]).name
+            elif written and index < len(written):
                 writtenByDetector[detectorName] = Path(written[index]).name
             else:
                 writtenByDetector[detectorName] = (
                     f'{name}_{detectorName}{self._saveExtension}'
+                )
+
+        # Keep the full-dimensional alignment-detector snapshot above: it is
+        # the top-level compatibility artifact and, in free-running mode, its
+        # payload.  Geometry gets a separate, genuinely 2-D projection so the
+        # offline solve never has to materialize a full C/Z stack.  A source
+        # that was already 2-D can safely let both descriptors share one file.
+        alignmentArray = np.asarray(
+            alignmentImage
+            if alignmentImage is not None
+            else self._displayPlane(images[alignmentDetector])
+        )
+        if alignmentArray.ndim != 2:
+            alignmentArray = self._displayPlane(alignmentArray)
+        alignmentFilename = writtenByDetector[alignmentDetector]
+        alignmentStoredShape = storedShapes.get(alignmentDetector)
+        if np.asarray(images[alignmentDetector]).ndim > 2:
+            alignmentStoredShape = None
+            alignmentBase = f'{name}_alignment'
+            if self._saveFormat.name == 'ZARR':
+                alignmentFilename = f'{alignmentBase}.zarr'
+            else:
+                alignmentFilename = (
+                    f'{alignmentBase}_{alignmentDetector}'
+                    f'{self._saveExtension}'
+                )
+            try:
+                alignmentWritten = (
+                    self._master.recordingManager.snapImagePrev(
+                        alignmentDetector,
+                        str(Path(folder) / alignmentBase),
+                        self._saveFormat,
+                        alignmentArray,
+                        {alignmentDetector: attrs[alignmentDetector]},
+                        stagePositionUm=(stage_xy[0], stage_xy[1], 0.0),
+                    )
+                )
+                if alignmentWritten:
+                    alignmentFilename = Path(alignmentWritten[0]).name
+                try:
+                    alignmentStoredShape = (
+                        self._master.recordingManager
+                        .lastSnapStoredShapes()
+                        .get(alignmentDetector)
+                    )
+                except Exception:
+                    alignmentStoredShape = None
+            except Exception as e:
+                # Keep the tile identity and payloads in the manifest.  The
+                # predicted alignment path remains absent, so refinement skips
+                # this one tile and leaves its nominal position intact instead
+                # of substituting the full compatibility stack silently.
+                self._logger.error(
+                    f'Tiling: failed to save 2-D alignment image for {name}: '
+                    f'{e}', exc_info=True
                 )
 
         placement = self._stitcher.placement(
@@ -1136,9 +1195,10 @@ class TilingController(ImConWidgetController):
             ),
             alignment=dict(
                 detector=alignmentDetector,
-                filename=writtenByDetector[alignmentDetector],
-                **self._tileAxes(images[alignmentDetector], dataset,
-                                 storedShapes.get(alignmentDetector)),
+                filename=alignmentFilename,
+                **self._tileAxes(
+                    alignmentArray, dataset, alignmentStoredShape
+                ),
             ),
             # Phase 1 has no separate payload recording, so each detector's
             # snapshot *is* its payload; a locator names it the same way a
@@ -1162,7 +1222,12 @@ class TilingController(ImConWidgetController):
                         parse_detector_transform('identity').as_manifest(),
                     ),
                     **self._payloadLocator(payloads, detectorName,
-                                           writtenByDetector[detectorName]),
+                                           writtenByDetector[detectorName],
+                                           snapshotGroup=(
+                                               None
+                                               if self._saveFormat.name == 'TIFF'
+                                               else detectorName
+                                           )),
                 )
                 for detectorName, image in images.items()
             },
@@ -1172,7 +1237,9 @@ class TilingController(ImConWidgetController):
         return name
 
     @staticmethod
-    def _payloadLocator(locators, detectorName, snapshotFilename) -> dict:
+    def _payloadLocator(
+        locators, detectorName, snapshotFilename, snapshotGroup=None
+    ) -> dict:
         """Where this detector's payload for this tile actually is.
 
         A recording's locator when one ran and finalised — it carries the group
@@ -1181,9 +1248,23 @@ class TilingController(ImConWidgetController):
         ``complete`` distinguishes the two rather than leaving a reader to
         infer it from which fields happen to be filled.
         """
-        found = (locators or {}).get(detectorName)
+        if locators is None:
+            return {
+                'path': snapshotFilename,
+                'group': snapshotGroup,
+                'complete': True,
+            }
+        found = locators.get(detectorName)
         if found is None:
-            return {'path': snapshotFilename, 'group': None, 'complete': True}
+            # A recording session ran, but this detector produced no finalized
+            # locator (for example a recoverable writer failure).  Keep the
+            # compatibility snapshot named for diagnostics while explicitly
+            # preventing a version-2 reader from selecting it as the payload.
+            return {
+                'path': snapshotFilename,
+                'group': snapshotGroup,
+                'complete': False,
+            }
         locator = found.asdict() if hasattr(found, 'asdict') else dict(found)
         locator.pop('detector', None)
         # The writer's own axis description wins where it has one. Replacing it
@@ -1263,10 +1344,10 @@ class TilingController(ImConWidgetController):
     def _saveExtension(self) -> str:
         from imswitch.imcontrol.model.managers.RecordingManager import SaveFormat
         return {
-            SaveFormat.TIFF: '.ome.tif',
+            SaveFormat.TIFF: '.ome.tiff',
             SaveFormat.HDF5: '.h5',
             SaveFormat.ZARR: '.zarr',
-        }.get(self._saveFormat, '.ome.tif')
+        }.get(self._saveFormat, '.ome.tiff')
 
     def _canvasOriginStage(self) -> Optional[Tuple[float, float]]:
         """Stage position of canvas pixel (0, 0), for the mosaic's metadata."""
@@ -1487,11 +1568,21 @@ class TilingController(ImConWidgetController):
         operator already says what their data is; tiling keeping a second,
         private answer to that question is how the two drift apart.
 
-        Every extra detector must declare how its pixels relate to the
-        alignment detector's, and must be able to participate in the run's
-        timing model. Anything that cannot is dropped with a reason, because a
-        mosaic that is silently offset between channels is worse than one
-        channel fewer.
+        A detector is dropped only when it *cannot produce a tile here* — it
+        does not exist, or the run's timing model cannot clock it. Everything
+        else is saved.
+
+        In particular, not knowing how a detector's pixels relate to the
+        alignment detector's is **not** grounds for refusing to save it.
+        Writing pixels needs a stage position and nothing more; the
+        relationship only matters when something tries to overlay two
+        detectors, which happens offline where there is freedom to measure or
+        declare it. Refusing here destroyed data to answer a question nobody
+        had asked yet — and of the two options, only "did not save it" is
+        irreversible.
+
+        What the relationship *is*, or that nobody said, is recorded per tile
+        so a reader can tell an assertion from its absence.
         """
         selected = []
         try:
@@ -1515,10 +1606,31 @@ class TilingController(ImConWidgetController):
             if reason:
                 self._logger.warning(f'Tiling: not saving "{name}" — {reason}')
                 continue
+
+            # A declaration when there is one, "unknown" when there is not.
+            # Either way the data is saved; the manifest simply says which of
+            # the two a later overlay is working from.
+            declared = transforms.get(name)
+            try:
+                transform = parse_detector_transform(
+                    declared, label=f'detectorTransforms[{name!r}]'
+                )
+            except ValueError as exc:
+                self._logger.warning(
+                    f'Tiling: saving "{name}" with no usable transform — '
+                    f'{exc}. Recorded as unknown; set it in the tiling '
+                    'section, or align the detectors in ImProcess.'
+                )
+                transform = parse_detector_transform(None)
+            if not transform.is_declared:
+                self._logger.info(
+                    f'Tiling: saving "{name}", but nothing declares how its '
+                    f'pixels relate to {alignmentDetector}. Recorded as '
+                    'unknown — overlaying the two needs a transform, which '
+                    'ImProcess can supply.'
+                )
             saveSet.append(name)
-            self._saveSetTransforms[name] = parse_detector_transform(
-                transforms[name], label=f'detectorTransforms[{name!r}]'
-            ).as_manifest()
+            self._saveSetTransforms[name] = transform.as_manifest()
 
         if len(saveSet) > 1:
             self._logger.info(
@@ -1528,49 +1640,57 @@ class TilingController(ImConWidgetController):
         return saveSet
 
     def _rejectFromSaveSet(self, name, transforms, mode, alignmentDetector):
-        """Why ``name`` cannot join the save set, or None if it can."""
+        """Why ``name`` cannot produce a tile here, or None if it can.
+
+        Capability only. Whether two detectors can be *overlaid* is a
+        registration question, answered offline against a transform that may
+        not exist yet — and answering it here by discarding the data is the
+        one choice that cannot be undone later.
+        """
         try:
             detector = self._master.detectorsManager[name]
         except Exception:
             return 'no such detector'
 
+        if mode != MODE_TRIGGERED and getattr(detector, 'isScanDriven', False):
+            return ('it is scan-driven, so it only produces an image while a '
+                    'scan runs; free-running tiling cannot clock it')
+
+        # Geometry disagreements are worth saying out loud — a detector whose
+        # declared identity contradicts its own pixel size is misconfigured —
+        # but they describe how the data may be *combined*, not whether it is
+        # worth keeping, so they annotate rather than refuse.
         declared = transforms.get(name)
-        if declared is None or declared == '':
-            return (
-                'no detectorTransforms entry says how its pixels relate to '
-                f'{alignmentDetector}. Add "{name}": "identity" to the tiling '
-                'section once you have checked that they really do line up'
-            )
+        if declared in (None, ''):
+            return None
         try:
             transform = parse_detector_transform(
                 declared, label=f'detectorTransforms[{name!r}]'
             )
-        except ValueError as exc:
-            return str(exc)
-        if not transform.is_identity:
-            return (
-                f'transform {transform.kind!r} is declared, but only identity '
-                'is supported so far'
-            )
+        except ValueError:
+            return None   # reported, and recorded as unknown, by the caller
+        # ``unknown`` also carries the identity matrix, but claims nothing, so
+        # there is no claim for the geometry to contradict.
+        if not (transform.is_declared and transform.is_identity):
+            return None
 
-        # A contradiction test, not evidence of registration: a detector that
-        # claims identity while reporting a different pixel size is certainly
-        # misconfigured, but agreeing here proves nothing on its own.
         try:
             reference = self._master.detectorsManager[alignmentDetector]
             if (self._detectorPixelSizeUm(detector)
                     != self._detectorPixelSizeUm(reference)):
-                return ('it declares identity but reports a different pixel '
-                        'size, so one of the two is wrong')
-            if tuple(detector.shape) != tuple(reference.shape):
-                return ('it declares identity but has a different frame shape, '
-                        'so one of the two is wrong')
+                self._logger.warning(
+                    f'Tiling: "{name}" declares identity to {alignmentDetector} '
+                    'but reports a different pixel size. Saving it anyway; one '
+                    'of the two is wrong, and overlaying them will be off.'
+                )
+            elif tuple(detector.shape) != tuple(reference.shape):
+                self._logger.warning(
+                    f'Tiling: "{name}" declares identity to {alignmentDetector} '
+                    'but has a different frame shape. Saving it anyway; '
+                    'overlaying them will be off.'
+                )
         except Exception:
             pass
-
-        if mode != MODE_TRIGGERED and getattr(detector, 'isScanDriven', False):
-            return ('it is scan-driven, so it only produces an image while a '
-                    'scan runs; free-running tiling cannot clock it')
         return None
 
     def _captureSaveSet(self, saveSet, alignmentDetector, alignmentFrame,

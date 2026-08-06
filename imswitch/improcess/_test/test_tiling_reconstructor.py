@@ -237,7 +237,12 @@ def test_v2_detector_changes_reuse_alignment_only_layout(monkeypatch, tmp_path):
             axes='YX',
             scales=(1.0, 1.0),
             origin_yx=(0, 0),
-            provenance=SimpleNamespace(detector=selection.detector),
+            provenance=SimpleNamespace(
+                detector=selection.detector,
+                # The real PayloadProvenance always carries this: it is how a
+                # reader tells a declared transform from an assumed one.
+                transform_source='manifest',
+            ),
         )
 
     monkeypatch.setattr(module, 'solve_layout', fake_solve)

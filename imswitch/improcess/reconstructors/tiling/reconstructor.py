@@ -850,6 +850,16 @@ class TilingReconstructor(Reconstructor):
                 mosaic = payload_result.data
                 axes = payload_result.axes
                 axis_scales = list(payload_result.scales)
+                if payload_result.provenance.transform_source == 'assumed':
+                    # The pixels are placed either way; what the operator needs
+                    # to know is that their alignment to the reference detector
+                    # is a default nobody stated, not a measured fact.
+                    progress(
+                        f'Nothing declares how {detector} relates to '
+                        f'{index.alignment_detector}; placing it as if the two '
+                        'were identical. Overlays between them are only as '
+                        'good as that assumption.'
+                    )
                 channel_suffix = (
                     ' (all channels)' if channel is None and 'C' in axes
                     else (f' (channel {channel})' if channel is not None else '')

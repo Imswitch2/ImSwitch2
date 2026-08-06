@@ -8,7 +8,8 @@
   "fields": [
     {"key": "xyPositioner",     "label": "XY Positioner",      "type": "ref",  "default": "",   "req": true,  "grp": "Devices", "tip": "Stage that moves between tile centres (must match a positioner in the setup).", "opts": ["positioners"]},
     {"key": "zPositioner",      "label": "Z Positioner (opt.)","type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Z positioner used for per-tile autofocus. Leave empty to disable.", "opts": ["positioners"]},
-    {"key": "camera",           "label": "Detector (opt.)",    "type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Detector for tile capture. Empty = first forAcquisition detector.", "opts": ["detectors"]},
+    {"key": "camera",           "label": "Align on (opt.)",    "type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Detector used for tile alignment. Empty = first forAcquisition detector.", "opts": ["detectors"]},
+    {"key": "detectorTransforms","label": "Detector transforms","type": "json", "default": "{}", "req": false, "grp": "Devices", "tip": "Optional. How each additionally saved detector's pixels relate to the aligned-on one, e.g. {\"APD1\": \"identity\"} after confirming pixel registration. Detectors left out are still saved, recorded as 'unknown'.", "opts": []},
     {"key": "defaultTileStepUm","label": "Default tile step (µm)","type": "float","default": 100.0,"req": false,"grp": "Basic",  "tip": "Default stage step between tile centres, in micrometres.", "opts": []}
   ]
 }

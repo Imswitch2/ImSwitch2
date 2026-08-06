@@ -25,6 +25,25 @@ _LAPSE_RECORDING_DRAIN_RETRY_MS = 25
 _MAX_LAPSE_TIMER_MS = 2_147_000_000
 
 
+def _dispatchWithoutLifecycle(dispatch, *args):
+    """Dispatch a scan without letting the dispatcher publish its start.
+
+    A dispatcher predating ``notify_starting`` never published one, which
+    is exactly what is being asked for -- so falling back to the positional
+    call is the requested behaviour, not a degraded approximation of it.
+    The fallback is narrowed to this call's own signature mismatch: an
+    adapter that accepts the keyword and then raises ``TypeError`` from
+    inside must not be silently re-dispatched, which would start the scan
+    twice.
+    """
+    try:
+        return dispatch(*args, notify_starting=False)
+    except TypeError as error:
+        if 'notify_starting' not in str(error):
+            raise
+    return dispatch(*args)
+
+
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
     """ Linked to RecordingWidget. """
 
@@ -932,7 +951,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         try:
             if isFirstLapse:
-                self._notifyScanStarting()
                 self.recordingArgs['attrs'] = {  # Update
                     detectorName:
                         self._commChannel.sharedAttrs.getHDF5Attributes()
@@ -973,6 +991,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             positioning = await_positioning()
             if positioning is not True:
                 return positioning
+
+        # Every timepoint, not just the first. Each one runs its own scan and
+        # publishes its own ``sigScanEnded``, so a start published once for the
+        # whole lapse leaves every later point ending a scan that never began:
+        # the focus lock yields for timepoint one, resumes at its end, and then
+        # drives the focus axis straight through timepoint two's waveform. The
+        # published flag is cleared as each end arrives, so this stays one
+        # start per point rather than one per re-entry of this method.
+        #
+        # After the positioning gate, deliberately. Placing the sample is not
+        # part of the scan, and consumers that hold an axis for us should keep
+        # holding it while the stage travels -- yielding early would spend the
+        # move unlocked for no benefit.
+        self._notifyScanStarting()
 
         if not self._startManagerRecording():
             return False
@@ -1568,14 +1600,21 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         'Targeted scan dispatch is unavailable for the '
                         'selected recording source.'
                     )
-                result = runFrom(
+                # This controller published the start itself, one per
+                # timepoint, and its own bookkeeping pairs it. Letting the
+                # dispatcher publish a second one would leave every consumer
+                # yielded a level deeper than the single end can unwind.
+                result = _dispatchWithoutLifecycle(
+                    runFrom,
                     source,
                     recalculateSignals,
                     isNonFinalPartOfSequence,
                 )
             else:
-                result = self._commChannel.scanWorkflow.run_scan(
-                    recalculateSignals, isNonFinalPartOfSequence
+                result = _dispatchWithoutLifecycle(
+                    self._commChannel.scanWorkflow.run_scan,
+                    recalculateSignals,
+                    isNonFinalPartOfSequence,
                 )
         except Exception as error:
             # The exact targeted source may have partially started before

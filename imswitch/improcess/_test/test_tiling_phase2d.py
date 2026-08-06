@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from xml.etree import ElementTree
 
 import numpy as np
 import pytest
@@ -327,6 +328,13 @@ def test_saved_ome_tiff_embeds_payload_provenance(tmp_path):
 
     with tifffile.TiffFile(output) as handle:
         ome = handle.ome_metadata
-    assert "imswitch-tiling-mosaic-provenance/1" in ome
-    assert '"detector": "Camera"' in ome
-    assert '"tile_id": 3' in ome
+    root = ElementTree.fromstring(ome)
+    description = next(
+        element.text
+        for element in root.iter()
+        if element.tag.endswith("Description")
+    )
+    saved = json.loads(description)
+    assert saved["kind"] == "imswitch-tiling-mosaic-provenance/1"
+    assert saved["detector"] == "Camera"
+    assert saved["skipped"] == [{"reason": "incomplete", "tile_id": 3}]

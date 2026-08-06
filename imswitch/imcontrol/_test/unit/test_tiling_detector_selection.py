@@ -8,6 +8,8 @@ stays the default, and an overview built with a different pixel size is not
 left on screen for click-to-navigate to misread.
 """
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +17,7 @@ import pytest
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
+from imswitch.imcontrol.view.widgets.TilingWidget import MODE_TRIGGERED
 
 
 class _Logger:
@@ -146,3 +149,94 @@ def test_the_selection_is_read_before_the_worker_starts():
 
     worker = inspect.getsource(TilingController._runScan)
     assert 'getDetector()' not in worker
+
+
+def test_config_editor_exposes_the_required_detector_transform_map():
+    template = (
+        Path(__file__).parents[4]
+        / 'utility_scripts/builtin_templates/sections/tiling.json'
+    )
+    fields = {
+        field['key']: field
+        for field in json.loads(template.read_text(encoding='utf-8'))['fields']
+    }
+
+    assert fields['camera']['label'] == 'Align on (opt.)'
+    assert fields['detectorTransforms']['type'] == 'json'
+    assert fields['detectorTransforms']['default'] == '{}'
+
+
+@pytest.mark.parametrize('alignment, expected', [
+    ('APD1', ['APD1', 'APD2']),
+    ('APD2', ['APD2', 'APD1']),
+])
+def test_all_recording_detectors_join_when_registration_is_declared(
+        alignment, expected):
+    """Either registered APD can be the alignment detector for the run."""
+    ctrl = _makeController({'APD1': True, 'APD2': True})
+    ctrl._commChannel = SimpleNamespace(
+        getRecordingDetectors=lambda: ['APD1', 'APD2'],
+    )
+    detector = lambda name: SimpleNamespace(  # noqa: E731
+        name=name,
+        pixelSizeUm=[1.0, 0.05, 0.05],
+        shape=(64, 64),
+        isScanDriven=True,
+    )
+    ctrl._master = SimpleNamespace(detectorsManager={
+        'APD1': detector('APD1'),
+        'APD2': detector('APD2'),
+    })
+    tiling = SimpleNamespace(detectorTransforms={
+        'APD1': 'identity',
+        'APD2': 'identity',
+    })
+
+    save_set = TilingController._resolveSaveSet(
+        ctrl, tiling, alignment, MODE_TRIGGERED,
+    )
+
+    assert save_set == expected
+    assert set(ctrl._saveSetTransforms) == {'APD1', 'APD2'}
+
+
+def test_an_undeclared_recording_detector_is_still_saved():
+    """Not knowing how to overlay two detectors is no reason to discard one.
+
+    Writing pixels needs a stage position and nothing more. Whether two
+    detectors can be laid over each other is answered offline, against a
+    transform that may not exist yet — and of "saved it without knowing" and
+    "did not save it", only the second cannot be undone.
+    """
+    ctrl = _makeController({'APD1': True, 'APD2': True})
+    ctrl._commChannel = SimpleNamespace(
+        getRecordingDetectors=lambda: ['APD1', 'APD2'],
+    )
+    detector = SimpleNamespace(
+        name='APD',
+        pixelSizeUm=[1.0, 0.05, 0.05],
+        shape=(64, 64),
+        isScanDriven=True,
+    )
+    ctrl._master = SimpleNamespace(detectorsManager={
+        'APD1': detector,
+        'APD2': detector,
+    })
+
+    save_set = TilingController._resolveSaveSet(
+        ctrl,
+        SimpleNamespace(detectorTransforms={}),
+        'APD1',
+        MODE_TRIGGERED,
+    )
+
+    assert save_set == ['APD1', 'APD2']
+    # Saved, and recorded as unknown rather than as an assertion of identity:
+    # a reader must be able to tell the absence of a claim from a claim.
+    assert ctrl._saveSetTransforms['APD2']['kind'] == 'unknown'
+    assert ctrl._saveSetTransforms['APD1']['kind'] == 'identity'
+    # And it says so, because a silently unregistered channel is a trap of a
+    # different kind: the operator should learn it now, not when an overlay
+    # comes out misaligned.
+    assert any('APD2' in message and 'unknown' in message
+               for message in ctrl._logger.messages)

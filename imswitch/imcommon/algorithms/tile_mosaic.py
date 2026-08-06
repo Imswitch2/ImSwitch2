@@ -640,7 +640,12 @@ def _parse_v2_index(payload: Mapping[str, Any], manifest: Path, *,
     )
 
 
-def _parse_legacy_index(payload: Mapping[str, Any], manifest: Path) -> TilingDatasetIndex:
+def _parse_legacy_index(
+    payload: Mapping[str, Any],
+    manifest: Path,
+    *,
+    format_override: Optional[str] = None,
+) -> TilingDatasetIndex:
     """Index legacy manifests without changing their permissive read behavior."""
     raw_tiles = payload.get('tiles') or []
     if not isinstance(raw_tiles, list):
@@ -751,14 +756,46 @@ def _parse_legacy_index(payload: Mapping[str, Any], manifest: Path) -> TilingDat
             bool(orientation.get('flip_y', False)),
             bool(orientation.get('swap_axes', False)),
         ),
-        format=str(payload.get('format') or ''),
+        format=(
+            str(format_override)
+            if format_override is not None
+            else str(payload.get('format') or '')
+        ),
     )
+
+
+def _is_interim_v2_manifest(payload: Mapping[str, Any]) -> bool:
+    """Whether a nominal v2 file is the short-lived ``files`` layout.
+
+    The interim writer bumped the format before the singular ``alignment`` and
+    exact ``payloads`` contracts existed.  It is recognized only by its
+    unmistakable shape: every tile has the old detector-keyed ``files`` map and
+    none has either current field.  A malformed current manifest must still
+    fail strict parsing rather than falling back to permissive discovery.
+    """
+    raw_tiles = payload.get('tiles')
+    if not isinstance(raw_tiles, list) or not raw_tiles:
+        return False
+    for raw_entry in raw_tiles:
+        if not isinstance(raw_entry, Mapping):
+            return False
+        if 'alignment' in raw_entry or 'payloads' in raw_entry:
+            return False
+        if not isinstance(raw_entry.get('files'), Mapping):
+            return False
+    return True
 
 
 def _index_manifest(payload: Mapping[str, Any], manifest: Path, *,
                     allow_absolute_v2_paths: bool = False) -> TilingDatasetIndex:
     manifest_format = str(payload.get('format') or '')
     if manifest_format == 'imswitch-tiling/2':
+        if _is_interim_v2_manifest(payload):
+            return _parse_legacy_index(
+                payload,
+                manifest,
+                format_override='imswitch-tiling/2-interim',
+            )
         return _parse_v2_index(
             payload, manifest,
             allow_absolute_paths=allow_absolute_v2_paths,
@@ -1475,16 +1512,17 @@ def load_dataset(path: Path | str,
 
     if payload.get('format') == 'imswitch-tiling/2':
         index = _index_manifest(payload, manifest_path)
-        report(f'Reading {len(index.tiles)} tiles from {folder.name}...')
-        return _load_v2_dataset(
-            payload,
-            index,
-            report=report,
-            prefer_stage_positions=prefer_stage_positions,
-            detector=detector,
-            check_cancelled=check_cancelled,
-            phase_progress=phase_progress,
-        )
+        if index.format == 'imswitch-tiling/2':
+            report(f'Reading {len(index.tiles)} tiles from {folder.name}...')
+            return _load_v2_dataset(
+                payload,
+                index,
+                report=report,
+                prefer_stage_positions=prefer_stage_positions,
+                detector=detector,
+                check_cancelled=check_cancelled,
+                phase_progress=phase_progress,
+            )
 
     pixel = payload.get('pixel_size_um') or {}
     dataset = MosaicDataset(
@@ -2428,7 +2466,13 @@ def _payload_transform(
                     f'Detector {selection.detector!r} does not have one '
                     'consistent transform across the run'
                 )
-        return manifest_transform, 'manifest'
+        # An undeclared transform still resolves to identity, because a payload
+        # that cannot be placed relative to the alignment detector is more
+        # useful placed naively than not returned at all. What must not happen
+        # is passing that off as a statement about the rig, so it is reported
+        # as assumed rather than read from the manifest.
+        source = 'manifest' if manifest_transform.is_declared else 'assumed'
+        return manifest_transform, source
 
     resolved = resolver(
         selection.detector, index.alignment_detector, manifest_transform

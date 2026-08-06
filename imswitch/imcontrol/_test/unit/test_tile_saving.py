@@ -7,6 +7,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from imswitch.imcommon.algorithms.tile_mosaic import (
+    inspect_dataset,
+    read_manifest_payload,
+)
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
@@ -153,6 +157,173 @@ def test_write_creates_the_folder(tmp_path):
     assert {p.name for p in written} == {TILE_CONFIG_NAME, MANIFEST_NAME}
 
 
+def test_payload_locator_distinguishes_free_running_from_failed_triggered():
+    snapshot = "tile_Camera.ome.tiff"
+
+    free_running = TilingController._payloadLocator(None, "Camera", snapshot)
+    missing_triggered = TilingController._payloadLocator({}, "Camera", snapshot)
+    finalized = TilingController._payloadLocator({
+        "Camera": {
+            "path": "payloads/tile.h5",
+            "group": "scan0/Camera",
+            "axes": "ZYX",
+            "stored_axes": "TZYX",
+            "shape": [3, 4, 5],
+            "stored_shape": [1, 3, 4, 5],
+            "generation": 17,
+            "complete": True,
+        }
+    }, "Camera", snapshot)
+
+    assert free_running == {
+        "path": snapshot, "group": None, "complete": True
+    }
+    assert missing_triggered == {
+        "path": snapshot, "group": None, "complete": False
+    }
+    assert finalized["path"] == "payloads/tile.h5"
+    assert finalized["group"] == "scan0/Camera"
+    assert finalized["complete"] is True
+
+
+def test_stack_tile_saves_separate_2d_alignment_and_recording_payload(tmp_path):
+    class _RecordingManager:
+        def __init__(self):
+            self.calls = []
+            self.stored = {}
+
+        def snapImagesPrev(
+            self, images, savename, _save_format, _attrs, **_kwargs
+        ):
+            copied = {name: np.asarray(image).copy()
+                      for name, image in images.items()}
+            self.calls.append(("compatibility", copied))
+            self.stored = {
+                name: tuple(image.shape) for name, image in copied.items()
+            }
+            return [
+                f"{savename}_{name}.ome.tiff" for name in copied
+            ]
+
+        def snapImagePrev(
+            self, detector, savename, _save_format, image, _attrs, **_kwargs
+        ):
+            copied = np.asarray(image).copy()
+            self.calls.append(("alignment", {detector: copied}))
+            self.stored = {detector: tuple(copied.shape)}
+            return [f"{savename}_{detector}.ome.tiff"]
+
+        def lastSnapStoredShapes(self):
+            return dict(self.stored)
+
+    manager = _RecordingManager()
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._master = SimpleNamespace(recordingManager=manager)
+    ctrl._setupInfo = SimpleNamespace(
+        tiling=SimpleNamespace(saveFormat="TIFF")
+    )
+    ctrl._logger = _Logger()
+    ctrl._orientation = (False, False, False)
+    ctrl._saveSetTransforms = {}
+    ctrl._stitcher = SimpleNamespace(
+        placement=lambda *_args: (0, 0),
+        nominal_placement=lambda *_args: (0, 0),
+    )
+    stack = np.arange(2 * 4 * 5, dtype=np.uint16).reshape(2, 4, 5)
+    projection = stack.max(axis=0)
+    dataset = TileDataset(pixel_size_um=(1.0, 1.0))
+    recording_locator = {
+        "Camera": {
+            "path": "payloads/tile-0.h5",
+            "group": "scan0/Camera",
+            "axes": "CYX",
+            "stored_axes": "TCYX",
+            "shape": [2, 4, 5],
+            "stored_shape": [1, 2, 4, 5],
+            "generation": 23,
+            "complete": True,
+        }
+    }
+
+    ctrl._saveTile(
+        {"Camera": stack},
+        "Camera",
+        0,
+        0,
+        (0.0, 0.0),
+        dataset,
+        tmp_path,
+        payloads=recording_locator,
+        alignmentImage=projection,
+    )
+
+    record = dataset.tiles[0]
+    assert [kind for kind, _images in manager.calls] == [
+        "compatibility", "alignment"
+    ]
+    np.testing.assert_array_equal(manager.calls[0][1]["Camera"], stack)
+    np.testing.assert_array_equal(manager.calls[1][1]["Camera"], projection)
+    assert record.filename == "tile_x+00_y+00_Camera.ome.tiff"
+    assert record.alignment["filename"] == (
+        "tile_x+00_y+00_alignment_Camera.ome.tiff"
+    )
+    assert record.alignment["axes"] == "YX"
+    assert record.alignment["shape"] == (4, 5)
+    assert record.payloads["Camera"]["path"] == "payloads/tile-0.h5"
+    assert record.payloads["Camera"]["complete"] is True
+
+
+def test_multidetector_zarr_snapshot_uses_shared_path_and_exact_groups(tmp_path):
+    class _RecordingManager:
+        def snapImagesPrev(
+            self, images, savename, _save_format, _attrs, **_kwargs
+        ):
+            self.shapes = {
+                name: (1, *np.asarray(image).shape)
+                for name, image in images.items()
+            }
+            return [f"{savename}.zarr"]
+
+        def lastSnapStoredShapes(self):
+            return dict(self.shapes)
+
+    ctrl = TilingController.__new__(TilingController)
+    ctrl._master = SimpleNamespace(recordingManager=_RecordingManager())
+    ctrl._setupInfo = SimpleNamespace(
+        tiling=SimpleNamespace(saveFormat="ZARR")
+    )
+    ctrl._logger = _Logger()
+    ctrl._orientation = (False, False, False)
+    ctrl._saveSetTransforms = {}
+    ctrl._stitcher = SimpleNamespace(
+        placement=lambda *_args: (0, 0),
+        nominal_placement=lambda *_args: (0, 0),
+    )
+    dataset = TileDataset(pixel_size_um=(1.0, 1.0))
+    images = {
+        "APD1": np.ones((4, 5), np.uint16),
+        "APD2": np.full((4, 5), 2, np.uint16),
+    }
+
+    ctrl._saveTile(
+        images,
+        "APD1",
+        0,
+        0,
+        (0.0, 0.0),
+        dataset,
+        tmp_path,
+        payloads=None,
+        alignmentImage=images["APD1"],
+    )
+
+    payloads = dataset.tiles[0].payloads
+    assert payloads["APD1"]["path"] == "tile_x+00_y+00.zarr"
+    assert payloads["APD2"]["path"] == "tile_x+00_y+00.zarr"
+    assert payloads["APD1"]["group"] == "APD1"
+    assert payloads["APD2"]["group"] == "APD2"
+
+
 # ----------------------------------------------------------------------
 # Where datasets are written
 # ----------------------------------------------------------------------
@@ -238,11 +409,15 @@ class _Stage:
         self.position[axis] += value
 
 
-def _runSavingScan(tmp_path, monkeypatch, n_tiles=4, step_um=64.0):
+def _runSavingScan(
+    tmp_path, monkeypatch, n_tiles=4, step_um=64.0, tile=None,
+    save_format='TIFF',
+):
     """Run a scan with saving on, against the real RecordingManager storer."""
     from imswitch.imcontrol.model.managers.RecordingManager import RecordingManager
 
-    tile = np.arange(32 * 32, dtype=np.uint16).reshape(32, 32)
+    if tile is None:
+        tile = np.arange(32 * 32, dtype=np.uint16).reshape(32, 32)
 
     class _Detector:
         name = 'CAM'
@@ -276,7 +451,7 @@ def _runSavingScan(tmp_path, monkeypatch, n_tiles=4, step_um=64.0):
     )
     ctrl._setupInfo = SimpleNamespace(
         positioners={'STAGE': SimpleNamespace(axes=['X', 'Y'])},
-        tiling=SimpleNamespace(saveFormat='TIFF'),
+        tiling=SimpleNamespace(saveFormat=save_format),
     )
     ctrl._commChannel = SimpleNamespace(getRecordingFolder=lambda: str(tmp_path))
     ctrl._stopRequested = False
@@ -305,7 +480,7 @@ def _runSavingScan(tmp_path, monkeypatch, n_tiles=4, step_um=64.0):
     TilingController._runScan(
         ctrl,
         SimpleNamespace(xyPositioner='STAGE', camera='CAM',
-                        saveFormat='TIFF', measurementsRoot=''),
+                        saveFormat=save_format, measurementsRoot=''),
         n_tiles=n_tiles, step_um=step_um,
         blend_overlaps=False, intensity_correction=False,
         settle_s=0.0, register_tiles=False,
@@ -358,6 +533,57 @@ def test_saved_dataset_manifest_matches_the_run(tmp_path, monkeypatch):
     # Every listed file must actually exist, or the dataset is not usable.
     for entry in payload['tiles']:
         assert (folder / entry['filename']).exists()
+        # A genuinely 2-D detector needs no duplicate alignment file.
+        assert entry['alignment']['filename'] == entry['filename']
+        assert entry['alignment']['axes'] == 'YX'
+
+
+def test_real_stack_save_keeps_compatibility_and_2d_alignment_artifacts(
+    tmp_path, monkeypatch
+):
+    stack = np.arange(3 * 32 * 32, dtype=np.uint16).reshape(3, 32, 32)
+    _ctrl, folder = _runSavingScan(
+        tmp_path, monkeypatch, n_tiles=1, tile=stack
+    )
+    manifest = json.loads((folder / MANIFEST_NAME).read_text())
+    entry = manifest['tiles'][0]
+    compatibility_path = folder / entry['filename']
+    alignment_path = folder / entry['alignment']['filename']
+
+    assert compatibility_path != alignment_path
+    assert compatibility_path.exists()
+    assert alignment_path.exists()
+    assert entry['alignment']['axes'] == 'YX'
+    assert entry['alignment']['shape'] == [32, 32]
+    assert entry['payloads']['CAM']['path'] == entry['filename']
+    assert entry['payloads']['CAM']['complete'] is True
+
+    tifffile = pytest.importorskip('tifffile')
+    np.testing.assert_array_equal(tifffile.imread(compatibility_path), stack)
+    np.testing.assert_array_equal(
+        tifffile.imread(alignment_path), stack.max(axis=0)
+    )
+
+
+@pytest.mark.parametrize('save_format', ['HDF5', 'ZARR'])
+def test_structured_free_running_payload_names_its_detector_group(
+    tmp_path, monkeypatch, save_format
+):
+    image = np.arange(32 * 32, dtype=np.uint16).reshape(32, 32)
+    _ctrl, folder = _runSavingScan(
+        tmp_path,
+        monkeypatch,
+        n_tiles=1,
+        tile=image,
+        save_format=save_format,
+    )
+
+    index, _completeness = inspect_dataset(folder)
+    payload = index.tiles[0].payloads['CAM']
+
+    assert payload.group == 'CAM'
+    assert payload.path.exists()
+    np.testing.assert_array_equal(read_manifest_payload(payload), image)
 
 
 def test_nothing_is_written_when_saving_is_off(tmp_path, monkeypatch):

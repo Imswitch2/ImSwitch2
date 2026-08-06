@@ -45,7 +45,18 @@ class DetectorTransform:
 
     @property
     def is_identity(self) -> bool:
+        """Whether this transform *acts* as identity, however it was declared.
+
+        True for ``unknown`` as well: its matrix is the identity, because that
+        is the only usable assumption. Use :attr:`is_declared` to tell an
+        assertion from the absence of one.
+        """
         return bool(np.array_equal(self.as_array(), np.eye(3, dtype=np.float64)))
+
+    @property
+    def is_declared(self) -> bool:
+        """Whether anyone actually stated this relationship."""
+        return self.kind != 'unknown'
 
     def as_manifest(self) -> dict[str, Any]:
         """Return the normalized schema plus its descriptive provenance."""
@@ -98,7 +109,23 @@ def parse_detector_transform(
     only when the caller has established that this is the manifest's named
     alignment detector; it is normalized to identity and retained in
     provenance as a compatibility spelling.
+
+    ``"unknown"`` -- or ``None``, which a manifest writes when nobody declared
+    anything -- is a *value*, not an error.  It carries the identity matrix,
+    because that is the only usable assumption, but it is deliberately
+    distinguishable from a declared identity: one is an assertion about the
+    rig, the other is the absence of one, and a reader that overlays two
+    detectors should be able to say which it had.  Refusing to parse it would
+    push the decision back to acquisition, where the data would be discarded
+    rather than merely unlabelled.
     """
+
+    if value is None:
+        return DetectorTransform(
+            kind='unknown',
+            matrix=_matrix_tuple(np.eye(3), label=label),
+            provenance={'declared': None},
+        )
 
     if isinstance(value, str):
         declared = value.strip().lower()
@@ -111,6 +138,12 @@ def parse_detector_transform(
                 kind='identity',
                 matrix=_matrix_tuple(np.eye(3), label=label),
                 provenance={'declared': 'reference'},
+            )
+        if declared == 'unknown':
+            return DetectorTransform(
+                kind='unknown',
+                matrix=_matrix_tuple(np.eye(3), label=label),
+                provenance={'declared': 'unknown'},
             )
         if declared != 'identity':
             raise ValueError(f'{label}: unknown transform kind {value!r}')
@@ -127,6 +160,12 @@ def parse_detector_transform(
         )
 
     declared_kind = str(value.get('kind') or '').strip().lower()
+    if declared_kind == 'unknown':
+        return DetectorTransform(
+            kind='unknown',
+            matrix=_matrix_tuple(np.eye(3), label=label),
+            provenance=dict(value),
+        )
     if declared_kind not in ('identity', 'affine'):
         shown = declared_kind or '<missing>'
         raise ValueError(f'{label}: unknown transform kind {shown!r}')

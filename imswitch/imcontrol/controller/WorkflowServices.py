@@ -377,7 +377,9 @@ class ScanWorkflowService(SignalInterface):
 
         return self._dispatch_scan_request(preflightNotifyAndRun)
 
-    def run_scan(self, recalculate_signals: bool, is_non_final_part_of_sequence: bool) -> ScanRequestResult:
+    def run_scan(self, recalculate_signals: bool,
+                 is_non_final_part_of_sequence: bool,
+                 notify_starting: bool = True) -> ScanRequestResult:
         """Target one resolved source, or use the legacy broadcast transport.
 
         Dispatch is marshalled onto this service's UI-thread affinity, where
@@ -395,6 +397,7 @@ class ScanWorkflowService(SignalInterface):
                 source,
                 recalculate_signals,
                 is_non_final_part_of_sequence,
+                notify_starting=notify_starting,
             )
         return self._dispatch_scan_request(
             lambda: self._comm_channel.sigRunScan.emit(
@@ -434,23 +437,75 @@ class ScanWorkflowService(SignalInterface):
         return source
 
     def run_scan_from(self, source, recalculate_signals: bool,
-                      is_non_final_part_of_sequence: bool) -> ScanRequestResult:
+                      is_non_final_part_of_sequence: bool,
+                      notify_starting: bool = True) -> ScanRequestResult:
         """Invoke exactly one pre-resolved scan source.
 
         This is the safe path for ScanLapse: standalone scan setups can have
         several receivers on the legacy broadcast, each of which would command
         hardware before ambiguity could be detected.
+
+        Publishing ``sigScanStarting`` is part of the job, not a courtesy.
+        ``runScanExternal`` arms with ``sigScanStartingEmitted=True`` -- it
+        *asserts* the run-level start is already on the channel, and its
+        terminal publishes ``sigScanEnded`` on the strength of that assertion.
+        A dispatch that skips the start therefore produces a scan that ends
+        without ever having begun, and consumers that yield hardware for the
+        duration of a scan -- the focus lock above all -- go on driving an
+        actuator the waveform is sweeping. Callers that own the lifecycle
+        themselves pass ``notify_starting=False``.
+
+        The emission happens inside the dispatched action so it lands on the UI
+        thread ahead of the arm. Emitted from a worker it would merely *queue*
+        the consumer slots, and the scan would be running before anything had
+        yielded to it.
         """
         runScan = getattr(source, 'runScanExternal', None)
         if not callable(runScan):
             raise TypeError(
                 'The selected scan source does not expose runScanExternal'
             )
-        return self._dispatch_scan_request(
-            lambda: runScan(
+        published = []
+
+        def startThenRun():
+            if notify_starting:
+                # Mark first: a failing start listener must still be paired.
+                published.append(True)
+                self._comm_channel.sigScanStarting.emit()
+            return runScan(
                 recalculate_signals, is_non_final_part_of_sequence
             )
-        )
+
+        try:
+            result = self._dispatch_scan_request(startThenRun)
+        except Exception as error:
+            if published:
+                self._pair_unowned_scan_start(
+                    getattr(error, 'scanRequestResult', None)
+                )
+            raise
+        if published:
+            self._pair_unowned_scan_start(result)
+        return result
+
+    def _pair_unowned_scan_start(self, result) -> None:
+        """Publish the end of a start no controller took responsibility for.
+
+        Acceptance is the exact predicate: a controller marks the request
+        accepted in the same call that records it owes a terminal, so an
+        accepted request already has an end coming and a refused one never
+        will.
+        """
+        if result is not None and getattr(result, 'accepted', False):
+            return
+        try:
+            self._comm_channel.sigScanEnded.emit()
+        except Exception:
+            initLogger(self).error(
+                'Failed to pair an unaccepted scan request with its lifecycle '
+                'end; consumers may stay yielded to a scan that never ran.',
+                exc_info=True,
+            )
 
     def _dispatch_scan_request(self, action) -> ScanRequestResult:
         """Run controller-facing dispatch on this service's UI thread.

@@ -1,7 +1,14 @@
 # Tiling: multi-detector, multi-channel, and where the two halves diverge
 
-**Status:** Phases 0, 1, 1a and 1b implemented (not rig-validated). Phases 2a
-through 2e are implemented: finalized writers publish exact payload locators;
+**Status:** Phases 0, 1 and 1a are implemented. Phase 1b's recording lifecycle,
+positioning handshake and locator pieces are implemented, but live validation
+exposed one remaining integration prerequisite: tiling's session entry still
+uses a non-production Recording-controller lookup and therefore falls back to
+compatibility snapshots instead of opening the full per-tile payload session.
+That lookup and explicit session startup/ownership must be corrected together;
+changing the lookup alone would hand scan dispatch to an inactive session and
+stall the run. Phases 2a through 2f are implemented: finalized writers publish
+exact payload locators;
 alignment-only geometry is a cached, detector-independent value keyed by tile
 identity; and selected payload assembly now supports named C/Z reduction,
 identity/affine composition, strict partial handling and provenance while
@@ -12,8 +19,15 @@ manifest before work, and preserve provenance in saved OME-TIFF metadata.
 Tiling reconstruction now opts into generic worker dispatch with named-phase
 progress, cooperative cancellation, GUI-thread memory confirmation and an
 exact pre-allocation budget check; other reconstructors remain inline by
-default. Phase 2f is next. Revision 9. Work in progress — durable
-documentation belongs in `docs/tiling.rst` once this lands.
+default. Compatibility hardening preserves the version-1 and interim-v2
+readers, writes a separate 2-D alignment artifact for dimensional tiles,
+refuses to substitute redundant triggered snapshots for missing recording
+payloads, records exact HDF5/Zarr detector groups (including shared Zarr
+stores), and leaves ordinary image reconstructors on their established path.
+Phase 2 implementation is complete; end-to-end rig validation remains blocked
+on the Phase 1b session-entry prerequisite above.
+Revision 9. Work in progress — durable documentation belongs in
+`docs/tiling.rst` once this lands.
 
 Revision history worth keeping, because two claims here were wrong before they
 were right:
@@ -421,30 +435,49 @@ detectors can pass all three and still be offset by a different sensor origin,
 a different ROI within the sensor, or an optical-path offset. Equality of those
 three properties is necessary and nowhere near sufficient.
 
-**So the transform must be declared, not inferred.** Each detector in a save set
-carries a configured transform relative to the alignment detector, and a
-declaration of `identity` is a statement the rig owner makes — one that can be
-wrong, and that they are responsible for. Absence of a declaration **fails
-closed**: the save set is refused rather than assumed aligned. The three
-equality checks stay as a cheap contradiction test — a detector declaring
-identity while reporting a different pixel size is certainly misconfigured — but
-they are a guard against obvious error, not evidence of registration.
+**So the transform must be declared, not inferred** — but a missing declaration
+is a reason to *record ignorance*, not to discard data. Acquisition's job is to
+write down what the instrument produced; how two detectors overlay is a question
+that only arises when something tries to combine them, which happens offline,
+where there is freedom to measure the relationship or state it after the fact.
+Of "saved it without knowing how it maps" and "did not save it", only the second
+is irreversible, and the rig only passes this sample once.
+
+So the manifest distinguishes the two cases rather than collapsing them:
+
+* `"identity"` is an assertion about the rig that whoever configured it owns.
+* `"unknown"` is the absence of one. It resolves to identity when something has
+  to place the pixels somewhere, and every reader is told that it did.
+
+The three equality checks stay, demoted from gate to annotation: a detector
+declaring identity while reporting a different pixel size is certainly
+misconfigured, and that is worth a warning, but it describes how the tiles may
+be *combined* rather than whether they are worth keeping.
 
 **The declaration is persisted, not just checked.** Each payload descriptor
 carries `transform_to_alignment`, so a dataset records how its detectors were
 believed to relate rather than leaving a reader to re-derive it from a rig
 config that may since have changed. Concretely:
 
-* **Phase 1 accepts only `"identity"`.** Anything else is refused at run start,
-  before a single tile is acquired.
-* **A missing declaration fails closed** — refused, not assumed identity.
+* **Phase 1 records `"identity"` or `"unknown"`.** A detector is dropped from
+  the save set only when it *cannot produce a tile* — no such detector, or
+  scan-driven in free-running mode. Anything unparseable is logged and recorded
+  as `"unknown"`.
 * **Phase 2 composes** the solved tile placement with each detector's persisted
-  transform. Under Phase 1 that composition is with identity and therefore a
+  transform, and reports `transform_source` as `manifest` (declared),
+  `assumed` (unknown, defaulted to identity) or `override` (supplied by a
+  resolver). Under Phase 1 the composition is with identity and therefore a
   no-op, but writing it as a composition from the start is what makes calibrated
   transforms a fill-in later rather than a rewrite of the assembly path.
 
 That is the whole point of declaring it: the calibrated cross-detector
-registration that comes later supplies a value, and nothing else has to move.
+registration that comes later — the transform module, whose natural shape here
+is a `TransformResolver` supplying values Phase 2 already knows how to consume —
+fills in a value, and nothing else has to move. Aligning each detector
+independently is not the alternative: detectors see different signal from the
+same sample, so an independent solve would answer a different question per
+channel and silently break their mutual registration. One detector aligns; the
+rest inherit its geometry.
 
 ### Phase 1a — fix the chunk contract (prerequisite for 1b)
 

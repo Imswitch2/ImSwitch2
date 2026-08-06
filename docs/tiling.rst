@@ -158,7 +158,8 @@ Saving more than one detector
 A run saves the detector it aligns on, plus whatever the **Recording** widget is
 set to capture. That selection is the operator's existing answer to "what is my
 data", and tiling reads it rather than keeping a second one — the same
-arrangement as the output folder.
+arrangement as the output folder. The checkboxes in **Image Controls** only
+control which live views are shown; they do not select files for recording.
 
 Each extra detector is captured at the same stage position as the tile, before
 the stage is allowed to move again, and gets the same fresh-frame proof the
@@ -177,15 +178,35 @@ via ``tiling.detectorTransforms``:
        "detectorTransforms": {"Camera": "identity"}
    }
 
-**A detector with no declaration is refused, not assumed aligned.** Sharing a
-stage position establishes the *tile grid*; it says nothing about whether two
-detectors agree pixel for pixel. Sensor origin, ROI, orientation, rotation and
-optical-path offsets all differ independently, so equal pixel sizes prove
-nothing on their own — which is why the relationship is declared rather than
-measured, and why declaring ``identity`` is a statement about the rig that the
-person writing it owns. Only ``identity`` is supported so far; a detector that
-declares it while reporting a different pixel size or frame shape is rejected
-as self-contradictory.
+If either of two registered APDs may be selected as the alignment detector for
+a run, declare both. The entry for the detector currently used for alignment is
+ignored, while the other one authorizes that detector to join the saved set:
+
+.. code-block:: json
+
+   "detectorTransforms": {
+       "APD1": "identity",
+       "APD2": "identity"
+   }
+
+**A detector with no declaration is still saved, and recorded as unknown.**
+Writing pixels needs a stage position and nothing more, so not knowing how two
+detectors relate is no reason to discard one of them — that question only
+arises when something tries to overlay them, which happens offline where there
+is freedom to measure or declare the relationship. Of "saved it without
+knowing" and "did not save it", only the second cannot be undone later.
+
+What the manifest records is the difference between the two: ``identity`` is an
+assertion about the rig that whoever wrote it owns, and ``unknown`` is the
+absence of one. A reader can then default to identity *and say so* rather than
+silently. Sharing a stage position establishes the *tile grid*; it says nothing
+about whether two detectors agree pixel for pixel, since sensor origin, ROI,
+orientation, rotation and optical-path offsets all differ independently.
+
+A detector that declares ``identity`` while reporting a different pixel size or
+frame shape is contradicting itself; that is logged as a warning and the data
+is still saved, because the contradiction affects how the tiles may be combined
+rather than whether they are worth keeping.
 
 Detectors that cannot participate are dropped with a reason in the log rather
 than silently included — a scan-driven detector in free-running mode, for

@@ -483,8 +483,9 @@ class ZarrStorer(Storer):
         return recording_attrs, other_attrs
 
     def snap(self, images: Dict[str, np.ndarray],
-             attrs: Dict[str, Dict[str, Any]] = None) -> None:
+             attrs: Dict[str, Dict[str, Any]] = None):
         attrs = attrs or {}
+        storedShapes = {}
         with AsTemporaryFile(f'{self.filepath}.zarr') as path:
             store = self._make_store(path)
             root = zarr.group(store=store, overwrite=True)
@@ -500,8 +501,13 @@ class ZarrStorer(Storer):
                     channel_attrs,
                     data=image,
                 )
+                array = np.asarray(image)
+                storedShapes[channel] = (
+                    (1,) + array.shape if array.ndim == 2 else array.shape
+                )
             self._close_store(store)
             logger.info(f"Saved image to zarr store {path} with structured layout")
+        return storedShapes
     
     def openStream(self, fileDests: Dict[str, Union[str, BytesIO]],
                    detectorNames: List[str], shapes: Dict[str, tuple],
