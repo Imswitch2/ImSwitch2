@@ -74,6 +74,9 @@ Stitching
     tile win. ``Intensity correction`` matches each tile's brightness to its
     neighbours where they overlap.
 
+Offline, the **Tiling mosaic** reconstructor additionally offers ``Correct
+vignetting``, which is described under `Correcting uneven illumination`_.
+
 
 Navigating and detecting cells
 ==============================
@@ -148,6 +151,44 @@ some tiles share no measurable overlap with the rest, usually because that
 overlap is empty background. Each group is aligned within itself but positioned
 by its stage coordinates, so the groups are only as well placed relative to
 each other as the stage was.
+
+
+Correcting uneven illumination
+==============================
+
+``Correct vignetting`` in the offline reconstructor estimates the illumination
+profile from the run itself and divides it out of every tile. It is off by
+default and costs one extra read pass.
+
+It works because shading is fixed to the *detector* — whatever the stage does,
+the same corner is dim in every tile — while the sample is not: the spiral
+visits a different piece of specimen at each stop. Averaging every tile in
+detector coordinates therefore lets the specimen cancel and leaves the
+illumination envelope, which heavy smoothing then separates from whatever
+structure is left. Nothing assumes the profile is centred or radial, so a
+one-sided falloff is handled as readily as a vignette.
+
+Each tile is divided by its own mean before it is averaged in, so tiles
+contribute their *shape* and not their brightness; one very bright field cannot
+set the profile for the run. The profile is normalised to its median, so
+correcting flattens the falloff without rescaling the mosaic.
+
+The estimate is **skipped, with the reason in the log, rather than applied when
+it cannot be trusted**:
+
+* fewer than four usable tiles — the sample has not averaged out, so the
+  "profile" would largely be the specimen. Between four and nine it is applied
+  but the log says how few contributed.
+* tiles that are not all the same shape, which means there is no common
+  detector frame to estimate in.
+* a result spanning more than 0.2–5× its median. An illumination envelope is
+  gentle; something that steep is a specimen gradient, and dividing by it would
+  burn that gradient into the mosaic inverted.
+
+This is a different correction from the acquisition widget's ``Intensity
+correction``, which matches whole tiles to their neighbours by a single scale
+factor. That fixes tile-to-tile steps; this fixes the gradient *within* each
+tile, and they can be used together.
 
 
 .. _tiling-multiple-detectors:

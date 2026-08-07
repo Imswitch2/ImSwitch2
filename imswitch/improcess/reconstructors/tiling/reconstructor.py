@@ -187,6 +187,22 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         )
         layout.addWidget(self.blendCheck)
 
+        self.shadingCheck = QtWidgets.QCheckBox("Correct vignetting")
+        self.shadingCheck.setChecked(False)
+        self.shadingCheck.setToolTip(
+            "Estimate the illumination profile from the run itself and divide\n"
+            "it out of every tile.\n\n"
+            "Shading is fixed to the detector — the same corner is dim in\n"
+            "every tile — while the sample is not, so averaging the tiles in\n"
+            "detector coordinates lets the specimen cancel and leaves the\n"
+            "illumination. No shape is assumed, so one-sided falloff is\n"
+            "handled as readily as a radial one.\n\n"
+            "Needs enough tiles for the sample to average out, and is skipped\n"
+            "with a reason in the log when the estimate cannot be trusted.\n"
+            "Costs one extra read pass over the tiles."
+        )
+        layout.addWidget(self.shadingCheck)
+
         shiftRow = QtWidgets.QHBoxLayout()
         shiftRow.addWidget(QtWidgets.QLabel("Max shift (px):"))
         self.maxShiftSpin = QtWidgets.QDoubleSpinBox()
@@ -250,6 +266,7 @@ class _TilingParamsWidget(QtWidgets.QWidget):
         return {
             "refine": self.refineCheck.isChecked(),
             "blend": self.blendCheck.isChecked(),
+            "shading_correction": self.shadingCheck.isChecked(),
             "max_shift_px": maxShift if maxShift > 0 else None,
             "project": self.projectCheck.isChecked(),
             "stage_positions": self.stageCheck.isChecked(),
@@ -834,6 +851,9 @@ class TilingReconstructor(Reconstructor):
                     ),
                     PayloadAssemblyOptions(
                         blend=params.get("blend", True),
+                        shading_correction=params.get(
+                            "shading_correction", False
+                        ),
                         transform_resolver=params.get("transform_resolver"),
                         layout_cache_key=cache_key,
                         progress=progress,
@@ -954,6 +974,7 @@ class TilingReconstructor(Reconstructor):
             dataset,
             blend=params.get("blend", True),
             progress=progress,
+            shading_correction=params.get("shading_correction", False),
             check_cancelled=check_cancelled,
             phase_progress=phase_progress,
             memory_budget_bytes=(

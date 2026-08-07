@@ -45,7 +45,9 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple,
+)
 
 import numpy as np
 
@@ -73,6 +75,19 @@ MIN_LINK_CONFIDENCE = 0.15
 #: Structure varying over more than this fraction of the shared region's short
 #: side is illumination, not sample, and is removed before correlating.
 BACKGROUND_SCALE_FRACTION = 0.25
+
+#: Gaussian sigma for the shading estimate, as a fraction of the tile's short
+#: side. Large on purpose: the estimate must keep the illumination envelope and
+#: discard everything that is sample.
+SHADING_SMOOTH_FRACTION = 0.15
+#: Below this many tiles the sample has not averaged out and the "profile"
+#: would largely be the specimen.
+SHADING_MIN_TILES = 4
+#: Below this many, it is estimated but worth saying out loud.
+SHADING_TRUSTWORTHY_TILES = 9
+#: A profile is a gentle envelope. Anything outside this is a failed estimate,
+#: and dividing by it would do more damage than the shading it corrects.
+SHADING_CLIP = (0.2, 5.0)
 
 #: A link is dropped as an outlier when its residual exceeds the median
 #: residual by this many robust standard deviations.
@@ -1755,6 +1770,10 @@ class PayloadAssemblyOptions:
     """Assembly choices that do not alter the frozen tile layout."""
 
     blend: bool = True
+    #: Divide every tile by an illumination profile estimated from the run
+    #: itself (see :func:`estimate_shading_profile`). Costs one extra read
+    #: pass over the payload, so it is opt-in.
+    shading_correction: bool = False
     transform_resolver: Optional[TransformResolver] = None
     layout_cache_key: Any = None
     progress: Optional[Callable[[str], None]] = field(
@@ -1845,6 +1864,115 @@ def _ncc(first: np.ndarray, second: np.ndarray) -> float:
     if first.std() <= 1e-6 or second.std() <= 1e-6:
         return 0.0
     return float(np.clip(np.mean(first * second), -1.0, 1.0))
+
+
+def estimate_shading_profile(
+    planes: Iterable[np.ndarray],
+    *,
+    smooth_fraction: float = SHADING_SMOOTH_FRACTION,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Optional[np.ndarray]:
+    """Estimate the illumination profile every tile shares, or None.
+
+    Shading is fixed to the *detector*: whatever the stage does, the same
+    corner is dim in every tile. The sample is not -- a spiral visits a
+    different piece of specimen at each stop. So averaging many tiles in
+    detector coordinates lets the specimen cancel while the illumination
+    envelope survives, and heavy smoothing removes what structure is left. An
+    arbitrary shape falls out of this, which is what makes it right for
+    one-sided vignetting: nothing here assumes the profile is centred or
+    radial.
+
+    Each tile is divided by its own mean before it is accumulated, so tiles
+    contribute their *shape* and not their brightness. Without that, one
+    bright field would set the profile for the whole run.
+
+    Returns None rather than a bad correction when the estimate cannot be
+    trusted: too few tiles for the sample to average out, tiles that are not
+    all the same shape, or a result outside :data:`SHADING_CLIP`, which means
+    the specimen dominated rather than cancelled.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    report = _reporter(progress)
+    total: Optional[np.ndarray] = None
+    shape: Optional[Tuple[int, int]] = None
+    count = 0
+
+    for plane in planes:
+        arr = np.asarray(plane, dtype=np.float32)
+        if arr.ndim > 2:
+            # Leading axes are Z planes or channels of the same field; they see
+            # the same illumination, so collapse them rather than weighting the
+            # estimate by how many a tile happens to have.
+            arr = arr.reshape(-1, *arr.shape[-2:]).mean(axis=0)
+        if arr.ndim != 2:
+            report('Shading correction skipped: tiles are not 2-D fields.')
+            return None
+        if shape is None:
+            shape = arr.shape
+            total = np.zeros(shape, dtype=np.float64)
+        elif arr.shape != shape:
+            report(
+                'Shading correction skipped: the tiles are not all the same '
+                f'shape ({shape} vs {arr.shape}), so there is no common '
+                'detector frame to estimate in.'
+            )
+            return None
+        level = float(arr.mean())
+        if not np.isfinite(level) or level <= 0.0:
+            continue
+        total += arr / level
+        count += 1
+
+    if total is None or shape is None or count < SHADING_MIN_TILES:
+        report(
+            f'Shading correction skipped: {count} usable tile(s), and below '
+            f'{SHADING_MIN_TILES} the sample does not average out -- the '
+            'estimate would be the specimen, not the illumination.'
+        )
+        return None
+
+    profile = (total / count).astype(np.float32)
+    sigma = max(4.0, min(shape) * float(smooth_fraction))
+    # ``nearest`` matters more than the sigma. The default zero-padding would
+    # pull the estimate down at the borders, i.e. invent vignetting exactly
+    # where real vignetting lives, and the correction would then brighten the
+    # edges whether or not anything was wrong with them.
+    profile = gaussian_filter(profile, sigma, mode='nearest')
+
+    median = float(np.median(profile))
+    if not np.isfinite(median) or median <= 0.0:
+        report('Shading correction skipped: the estimated profile is degenerate.')
+        return None
+    profile /= median
+
+    low, high = float(profile.min()), float(profile.max())
+    if low < SHADING_CLIP[0] or high > SHADING_CLIP[1]:
+        report(
+            f'Shading correction skipped: the estimated profile spans '
+            f'{low:.2f}-{high:.2f} of the median, which is a specimen '
+            'gradient rather than an illumination envelope.'
+        )
+        return None
+
+    report(
+        f'Shading profile estimated from {count} tiles: {low:.2f}-{high:.2f} '
+        f'of the median (sigma {sigma:.0f} px).'
+    )
+    if count < SHADING_TRUSTWORTHY_TILES:
+        report(
+            f'  only {count} tiles contributed, so some of the specimen may '
+            'be baked into the correction.'
+        )
+    return profile
+
+
+def _apply_shading(data: np.ndarray, profile: Optional[np.ndarray]):
+    """Divide out an estimated profile, broadcasting over any leading axes."""
+    if profile is None or data.shape[-2:] != profile.shape:
+        return data
+    return data / profile
 
 
 def _bandpass(patch: np.ndarray) -> np.ndarray:
@@ -2791,6 +2919,25 @@ def assemble_payload(
         f'Allocated canvas and weights for output shape {output_shape}',
     )
 
+    shading = None
+    if options.shading_correction:
+        emit(
+            'Estimating the shading profile — one extra read pass over the '
+            f'{len(placed)} payload tiles...'
+        )
+
+        def _estimation_planes():
+            for item in placed:
+                _check_cancelled(options.check_cancelled)
+                yield _select_payload_array(
+                    read_manifest_payload(item.ref), item.ref.axes, selection
+                )
+
+        shading = estimate_shading_profile(
+            _estimation_planes(), progress=options.progress
+        )
+        _check_cancelled(options.check_cancelled)
+
     if identity_path:
         for done, item in enumerate(placed, start=1):
             _check_cancelled(options.check_cancelled)
@@ -2804,7 +2951,9 @@ def assemble_payload(
                     f'between inspection and read ({item.shape} -> '
                     f'{tuple(data.shape)})'
                 )
-            source = np.asarray(data, dtype=np.float32)
+            source = _apply_shading(
+                np.asarray(data, dtype=np.float32), shading
+            )
             matrix = np.asarray(item.matrix, dtype=np.float64)
             top = int(round(float(matrix[0, 2]))) - row0
             left = int(round(float(matrix[1, 2]))) - col0
@@ -2853,7 +3002,9 @@ def assemble_payload(
                     f'between inspection and read ({item.shape} -> '
                     f'{tuple(data.shape)})'
                 )
-            source = np.asarray(data, dtype=np.float32)
+            source = _apply_shading(
+                np.asarray(data, dtype=np.float32), shading
+            )
             matrix = np.asarray(item.matrix, dtype=np.float64)
             inverse = np.linalg.inv(matrix)
             tile_row0, tile_col0, tile_row1, tile_col1 = item.bounds
@@ -2961,6 +3112,7 @@ def assemble(
     blend: bool = True,
     progress: Optional[Callable[[str], None]] = None,
     *,
+    shading_correction: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
     phase_progress: Optional[Callable[[str, int, int, str], None]] = None,
     memory_budget_bytes: Optional[int] = None,
@@ -3032,6 +3184,13 @@ def assemble(
            f'({footprint / 1e9:.2f} GB)...')
 
     _check_cancelled(check_cancelled)
+    shading = (
+        estimate_shading_profile(
+            (tile.data for tile in dataset.tiles), progress=progress
+        )
+        if shading_correction else None
+    )
+    _check_cancelled(check_cancelled)
     canvas_sum = np.zeros(shape, dtype=np.float32)
     canvas_weight = np.zeros(weight_shape, dtype=np.uint16)
     _phase_progress(
@@ -3052,7 +3211,10 @@ def assemble(
         if tile_h <= 0 or tile_w <= 0:
             continue
 
-        data = np.asarray(tile.data, dtype=np.float32)
+        # Corrected before cropping: the profile is in detector coordinates,
+        # so it has to meet the tile at its own full extent, not at whatever
+        # part of it happens to fit inside the canvas.
+        data = _apply_shading(np.asarray(tile.data, dtype=np.float32), shading)
 
         # Crop Y/X to what fits, then match the mosaic's leading rank. A tile
         # with fewer leading axes is broadcast over the ones it lacks; one with
