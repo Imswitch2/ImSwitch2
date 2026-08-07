@@ -907,7 +907,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'duplicate',
             'Duplicate',
-            'Duplicate the active result',
+            'Duplicate the selected results',
             improcessIcon('duplicate', self),
             self.sigImageDuplicateRequested,
             toolbar=self._imageOpsToolbar,
@@ -925,7 +925,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'max-projection',
             'Max projection',
-            'Create a max projection of the active result along the default stack axis',
+            'Create a max projection of each selected result along the default stack axis',
             improcessIcon('max-projection', self),
             self.sigImageMaxProjectionRequested,
             toolbar=self._imageOpsToolbar,
@@ -934,7 +934,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'split-stack',
             'Split stack',
-            'Split the active stack into one result per plane',
+            'Split each selected stack into one result per plane',
             improcessIcon('split-stack', self),
             self.sigImageSplitStackRequested,
             toolbar=self._imageOpsToolbar,
@@ -943,7 +943,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'split-channels',
             'Split channels',
-            'Split a C, Channel or Base axis into one result per channel',
+            'Split a C, Channel or Base axis of each selected result into one result per channel',
             improcessIcon('split-channels', self),
             self.sigImageSplitChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -951,9 +951,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         self._addImageAction(
             'merge-channels',
-            'Merge channels',
-            'Merge compatible results into a C-axis channel stack '
-            '(select two or more in the reconstructions list)',
+            'Merge channels...',
+            'Merge loaded results into a C-axis channel stack '
+            '(the reconstructions-list selection is pre-checked)',
             improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -962,8 +962,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'stack-combine',
             'Stack/Combine...',
-            'Stack or concatenate results into one output '
-            '(select two or more in the reconstructions list)',
+            'Stack or concatenate loaded results into one output '
+            '(the reconstructions-list selection is pre-checked)',
             improcessIcon('stack-combine', self),
             self.sigImageStackCombineRequested,
             toolbar=self._imageOpsToolbar,
@@ -981,7 +981,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'make-composite',
             'Make composite',
-            'Render a C, Channel or Base axis as colored display layers',
+            'Render a C, Channel or Base axis of each selected result as colored display layers',
             improcessIcon('make-composite', self),
             self.sigImageMakeCompositeRequested,
             toolbar=self._imageOpsToolbar,
@@ -1052,6 +1052,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     def _setImageLutFromUser(self, lut_id: str) -> None:
         self.setImageLutValue(lut_id)
         self.sigImageLutChanged.emit(str(lut_id))
+
+    def showStatusMessage(self, message: str, timeout_ms: int = 6000) -> None:
+        """Show a transient message in the status bar.
+
+        Public counterpart of ``_showStatusMessage`` for controllers: an
+        operation that fails because of what the user picked has to say so
+        somewhere, and a log line is not somewhere.
+        """
+        self._showStatusMessage(message, timeout_ms)
 
     def setImageActionsEnabled(self, enabled: bool) -> None:
         for action in self._imageActions.values():

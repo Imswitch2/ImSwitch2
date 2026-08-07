@@ -24,7 +24,8 @@ class _RecordingReconView:
 
 def _bound_resultProduced():
     """Return ``resultProduced`` bound to a fresh recording stub."""
-    stub = SimpleNamespace(_widget=_RecordingReconView())
+    stub = SimpleNamespace(_widget=_RecordingReconView(), announced=0)
+    stub._resultsChanged = lambda: setattr(stub, 'announced', stub.announced + 1)
     return ReconstructionViewController.resultProduced.__get__(stub), stub
 
 
@@ -75,9 +76,20 @@ def test_resultProduced_falls_back_to_literal_when_result_has_no_name():
     assert stub._widget.added == [(result, 'result')]
 
 
+def test_resultProduced_announces_the_changed_result_set():
+    """Panels offering multi-result operations refresh on this announcement,
+    so adding a result must publish it, not just render it."""
+    handler, stub = _bound_resultProduced()
+
+    handler(SimpleNamespace(name='one'), 'one')
+
+    assert stub.announced == 1
+
+
 def test_resultProduced_drops_none_result_silently():
     handler, stub = _bound_resultProduced()
 
     handler(None, 'whatever')
 
     assert stub._widget.added == []
+    assert stub.announced == 0

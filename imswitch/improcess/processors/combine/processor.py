@@ -35,18 +35,26 @@ class StackCombineProcessor(Processor):
     name = "Stack/Combine"
     id = "stack-combine"
     category = "Dimensions and channels"
+    min_inputs = 2
+    max_inputs = None
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
         return lambda result: len(shape_for_result(result)) >= 2
+
+    def check_inputs(self, results) -> tuple[bool, str]:
+        # Mode/axis are chosen in the dialog; the panel-level check is the
+        # stack case, which is the stricter of the two.
+        return combine_compatibility(results, mode="stack")
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget(parent)
         layout = QtWidgets.QVBoxLayout(widget)
         layout.addWidget(
             QtWidgets.QLabel(
-                "Stack/Combine uses the selected reconstruction-list results;\n"
-                "use the Stack/Combine toolbar action to choose axis and order."
+                "Stacks the checked inputs along a new axis, in the order "
+                "listed;\nuse the Stack/Combine toolbar action to concatenate "
+                "along an existing axis."
             )
         )
         layout.addStretch()

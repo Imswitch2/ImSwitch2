@@ -60,6 +60,20 @@ class Processor(ABC):
     #: Checked by accepts() BEFORE the shape/axis gate, so a table result with
     #: a 2D data array is never offered to an image processor.
     kinds: tuple[str, ...] = ("image",)
+    #: How many results this processor consumes in one run. The default 1..1
+    #: is the ordinary "one result in, one result out" processor.
+    #:
+    #: A processor with ``max_inputs != 1`` is a MULTI-INPUT processor: the UI
+    #: passes the ordered inputs as ``params["results"]`` and calls
+    #: ``apply(results[0], params)``, so ``apply`` must read its inputs from
+    #: the params rather than from the first argument alone. ``max_inputs =
+    #: None`` means unbounded (merge as many channels as you like).
+    #:
+    #: Single-input processors are run over several results by looping — the
+    #: UI's "Apply to: selected/all results" scope — which needs no opt-in
+    #: because ``apply`` is a pure function of one result.
+    min_inputs: int = 1
+    max_inputs: int | None = 1
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.
@@ -70,6 +84,35 @@ class Processor(ABC):
         image.
         """
         return result_kind(result) in self.kinds and bool(self.applies_to(result))
+
+    def check_inputs(self, results) -> tuple[bool, str]:
+        """Return ``(ok, reason)`` for running this processor on ``results``.
+
+        The reason is user-facing: UI offering a multi-input processor shows
+        it instead of presenting a silently disabled button, which is the
+        whole point of routing compatibility through one hook. Subclasses that
+        need their inputs to agree on more than count (shape, axis labels,
+        pixel scales) override this and return a reason naming the mismatch.
+
+        Must stay metadata-only — no pixel data is materialized here, so a
+        lazily-backed result can be offered without reading it from disk.
+        """
+        results = list(results or [])
+        count = len(results)
+        if count < self.min_inputs:
+            noun = "result" if self.min_inputs == 1 else "results"
+            return False, f"{self.name} needs at least {self.min_inputs} {noun}"
+        if self.max_inputs is not None and count > self.max_inputs:
+            noun = "result" if self.max_inputs == 1 else "results"
+            return False, (
+                f"{self.name} takes at most {self.max_inputs} {noun}, "
+                f"but {count} are selected"
+            )
+        for index, result in enumerate(results, start=1):
+            if not self.accepts(result):
+                name = getattr(result, "name", f"input {index}")
+                return False, f"{self.name} does not apply to '{name}'"
+        return True, ""
 
     @property
     @abstractmethod

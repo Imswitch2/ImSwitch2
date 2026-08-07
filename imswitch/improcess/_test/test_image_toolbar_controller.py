@@ -16,6 +16,8 @@ from imswitch.improcess.model.luts import IMAGE_LUTS
 from imswitch.improcess.model.result import ViewMode
 from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.ContrastBrightnessDialog import ContrastBrightnessDialog
+from imswitch.improcess.view.MergeChannelsDialog import MergeChannelsDialog
+from imswitch.improcess.view.StackCombineDialog import StackCombineDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
 
@@ -55,7 +57,11 @@ class _View:
         self.action_enabled = {}
         self.lut_enabled = []
         self.lut_values = []
+        self.messages = []
         self.reconstructionWidget = SimpleNamespace(resetView=lambda: None)
+
+    def showStatusMessage(self, message, timeout_ms=6000):
+        self.messages.append(message)
 
     def setImageActionsEnabled(self, enabled):
         self.enabled_states.append(bool(enabled))
@@ -95,6 +101,9 @@ class _ReconstructionController:
     def __init__(self, data):
         self.result = _Result(data) if data is not None else None
         self.selected_results = [self.result] if self.result is not None else []
+        # Loaded is deliberately distinct from selected: the multi-input
+        # actions offer everything loaded and only pre-check the selection.
+        self.all_results = list(self.selected_results)
         self.layer_states = []
         self.layer_visibility = {}
         self.layer_luts = {}
@@ -112,7 +121,10 @@ class _ReconstructionController:
         ]
 
     def getAllResults(self):
-        return self.getSelectedResults()
+        return [
+            (getattr(result, "name", f"result_{index}"), result)
+            for index, result in enumerate(self.all_results)
+        ]
 
     def getActiveImage(self):
         return self.result.data
@@ -492,15 +504,63 @@ def test_make_rgb_uses_composite_display_levels():
     np.testing.assert_array_equal(rgb.data[..., 0], expected_red)
 
 
-def test_merge_channels_enabled_for_selected_compatible_results_and_publishes_stack():
+def _two_result_controller():
+    """Controller with two compatible 2-D results loaded, one selected."""
     data = np.arange(2 * 2, dtype=np.float32).reshape(2, 2)
     controller, view, recon = _controller(data)
     second = _Result(data + 10)
     second.name = "second"
-    recon.selected_results = [recon.result, second]
+    recon.all_results = [recon.result, second]
+    recon.selected_results = [recon.result]
     controller.currentResultChanged(recon.result)
+    return controller, view, recon, second
+
+
+def _capture_dialog(monkeypatch, dialog_cls, params):
+    """Stand in for a modal dialog, recording what it was offered."""
+    calls = {}
+
+    def _get_params(results, parent=None, preselected=None, **kwargs):
+        calls["results"] = list(results)
+        calls["preselected"] = list(preselected or [])
+        return params
+
+    monkeypatch.setattr(dialog_cls, "get_params", _get_params)
+    return calls
+
+
+def test_merge_channels_is_enabled_from_loaded_results_not_the_selection():
+    """The action opens a picker over everything loaded, so one selected
+    result must not leave it dead — that was the whole complaint."""
+    _controller_, view, _recon, _second = _two_result_controller()
 
     assert view.action_enabled["merge-channels"] is True
+    assert view.action_enabled["stack-combine"] is True
+
+
+def test_merge_channels_offers_all_results_and_prechecks_the_selection(monkeypatch):
+    controller, _view, recon, second = _two_result_controller()
+    calls = _capture_dialog(monkeypatch, MergeChannelsDialog, None)
+
+    controller.mergeChannels()
+
+    assert calls["results"] == [recon.result, second]
+    assert calls["preselected"] == [recon.result]
+
+
+def test_merge_channels_publishes_the_stack_in_the_chosen_order(monkeypatch):
+    controller, _view, recon, second = _two_result_controller()
+    _capture_dialog(
+        monkeypatch,
+        MergeChannelsDialog,
+        {
+            "results": [second, recon.result],
+            "name": "Merged channels",
+            "axis_label": "C",
+            "composite": False,
+        },
+    )
+
     controller.mergeChannels()
 
     produced = controller._commChannel.sigResultProduced.emitted
@@ -508,4 +568,87 @@ def test_merge_channels_enabled_for_selected_compatible_results_and_publishes_st
     merged = produced[0][0]
     assert merged.name == "Merged channels"
     assert merged.axis_labels == ["C", "Y", "X"]
-    np.testing.assert_array_equal(merged.data[1], second.data)
+    np.testing.assert_array_equal(merged.data[0], second.data)
+    np.testing.assert_array_equal(merged.data[1], recon.result.data)
+
+
+def test_merge_channels_composite_replaces_the_plain_stack(monkeypatch):
+    controller, _view, recon, second = _two_result_controller()
+    _capture_dialog(
+        monkeypatch,
+        MergeChannelsDialog,
+        {
+            "results": [recon.result, second],
+            "name": "Merged channels",
+            "axis_label": "C",
+            "composite": True,
+        },
+    )
+
+    controller.mergeChannels()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 1  # one merge, one entry in the list
+    composite = produced[0][0]
+    assert composite.kind == "composite"
+    assert [layer.colormap for layer in composite.display_layers()][:2] == [
+        "red",
+        "green",
+    ]
+    np.testing.assert_array_equal(composite.data[1], second.data)
+
+
+def test_merge_channels_reports_an_incompatible_pick(monkeypatch):
+    controller, view, recon, _second = _two_result_controller()
+    mismatched = _Result(np.zeros((3, 3), dtype=np.float32))
+    mismatched.name = "mismatched"
+    _capture_dialog(
+        monkeypatch,
+        MergeChannelsDialog,
+        {"results": [recon.result, mismatched], "composite": False},
+    )
+
+    controller.mergeChannels()
+
+    assert controller._commChannel.sigResultProduced.emitted == []
+    assert view.messages and "does not match" in view.messages[0]
+
+
+def test_stack_combine_offers_all_results_and_prechecks_the_selection(monkeypatch):
+    controller, _view, recon, second = _two_result_controller()
+    calls = _capture_dialog(monkeypatch, StackCombineDialog, None)
+
+    controller.stackCombine()
+
+    assert calls["results"] == [recon.result, second]
+    assert calls["preselected"] == [recon.result]
+
+
+def test_max_projection_runs_over_every_selected_result():
+    data = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    controller, _view, recon = _controller(data)
+    second = _Result(data + 100)
+    second.name = "second"
+    recon.selected_results = [recon.result, second]
+
+    controller.maxProjection()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 2
+    np.testing.assert_array_equal(produced[0][0].data, data.max(axis=0))
+    np.testing.assert_array_equal(produced[1][0].data, (data + 100).max(axis=0))
+
+
+def test_batch_skips_results_the_processor_cannot_take():
+    """A mixed selection is normal; one 2-D result must not cancel the sweep."""
+    data = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    controller, _view, recon = _controller(data)
+    flat = _Result(np.zeros((3, 4), dtype=np.float32))
+    flat.name = "flat"
+    recon.selected_results = [recon.result, flat]
+
+    controller.maxProjection()
+
+    produced = controller._commChannel.sigResultProduced.emitted
+    assert len(produced) == 1
+    np.testing.assert_array_equal(produced[0][0].data, data.max(axis=0))

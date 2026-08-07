@@ -9,10 +9,7 @@ from imswitch.improcess.model.array_result import ArrayProcessingResult
 from imswitch.improcess.model.contrast import auto_levels, finite_range, histogram
 from imswitch.improcess.model.result import result_kind
 from imswitch.improcess.processors.base import normalize_processor_output
-from imswitch.improcess.processors.channel_merge import (
-    ChannelMergeProcessor,
-    can_merge_results,
-)
+from imswitch.improcess.processors.channel_merge import ChannelMergeProcessor
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.combine import StackCombineProcessor
 from imswitch.improcess.processors.image_calculator import ImageCalculatorProcessor
@@ -27,11 +24,36 @@ from imswitch.improcess.view.ChannelControlsDialog import ChannelControlsDialog
 from imswitch.improcess.view.ChannelPickerDialog import ChannelPickerDialog
 from imswitch.improcess.view.bulk_confirm import confirm_bulk_publish
 from imswitch.improcess.view.ImageCalculatorDialog import ImageCalculatorDialog
+from imswitch.improcess.view.MergeChannelsDialog import MergeChannelsDialog
 from imswitch.improcess.view.StackCombineDialog import StackCombineDialog
 from imswitch.improcess.view.StackSubsetDialog import StackSubsetDialog
 
 
 _RGB_CHANNEL_LABELS = ("C", "Channel", "Channels", "Base")
+
+
+def _projection_applies(result) -> bool:
+    # A 2-D image passes the projection processor's own ndim >= 2 gate, but
+    # projecting it yields a line — not what the toolbar button means.
+    return (
+        getattr(getattr(result, "data", None), "ndim", 0) > 2
+        and ProjectionProcessor().accepts(result)
+    )
+
+
+#: Actions that run one processor per result, and the gate deciding whether a
+#: given result is a valid input. One table so the enablement rule for the
+#: active result and the filter applied to a multi-result selection can never
+#: drift apart.
+_SINGLE_RESULT_ACTIONS = {
+    "duplicate": lambda result: True,
+    "max-projection": _projection_applies,
+    "crop-substack": lambda result: StackSubsetProcessor().accepts(result),
+    "split-stack": lambda result: StackSplitProcessor().accepts(result),
+    "split-channels": lambda result: ChannelSplitProcessor().accepts(result),
+    "make-composite": lambda result: MakeCompositeProcessor().accepts(result),
+    "make-rgb": lambda result: MakeRGBProcessor().accepts(result),
+}
 
 
 class ImageToolbarController:
@@ -78,36 +100,14 @@ class ImageToolbarController:
                 "channels",
                 has_image and bool(self._displayLayerStates()),
             )
-            self._view.setImageActionEnabled(
-                "max-projection",
-                has_image
-                and getattr(getattr(result, "data", None), "ndim", 0) > 2
-                and ProjectionProcessor().accepts(result),
-            )
-            self._view.setImageActionEnabled(
-                "crop-substack",
-                has_image and StackSubsetProcessor().accepts(result),
-            )
-            self._view.setImageActionEnabled(
-                "split-stack",
-                has_image and StackSplitProcessor().accepts(result),
-            )
-            self._view.setImageActionEnabled(
-                "split-channels",
-                has_image and ChannelSplitProcessor().accepts(result),
-            )
+            for action_id in _SINGLE_RESULT_ACTIONS:
+                self._view.setImageActionEnabled(
+                    action_id, self._appliesTo(action_id, result)
+                )
             self._updateMultiInputActions()
             self._view.setImageActionEnabled(
                 "image-calculator",
                 has_image,
-            )
-            self._view.setImageActionEnabled(
-                "make-composite",
-                has_image and MakeCompositeProcessor().accepts(result),
-            )
-            self._view.setImageActionEnabled(
-                "make-rgb",
-                has_image and MakeRGBProcessor().accepts(result),
             )
         if hasattr(self._view, "setImageLutEnabled"):
             self._view.setImageLutEnabled(has_image)
@@ -124,23 +124,19 @@ class ImageToolbarController:
         self._updateMultiInputActions()
 
     def _updateMultiInputActions(self) -> None:
-        """Enable merge-channels / stack-combine from the list selection.
+        """Enable merge-channels / stack-combine from what is *loaded*.
 
-        Deliberately independent of the *current* item: two selected images
-        are combinable even while a table or curve result happens to be the
-        active one.
+        Deliberately independent of both the current item and the selection:
+        these actions open a picker over every loaded result, and gating them
+        on a compatible multi-selection left the buttons dead by default with
+        nothing on screen explaining why. The dialogs report incompatibility
+        with a reason instead.
         """
         if not hasattr(self._view, "setImageActionEnabled"):
             return
-        selected = self._selectedProcessingResults()
-        self._view.setImageActionEnabled(
-            "merge-channels",
-            can_merge_results(selected),
-        )
-        self._view.setImageActionEnabled(
-            "stack-combine",
-            len(selected) >= 2,
-        )
+        loaded = self._loadedImageResults()
+        self._view.setImageActionEnabled("merge-channels", len(loaded) >= 2)
+        self._view.setImageActionEnabled("stack-combine", len(loaded) >= 2)
 
     def autoContrast(self, saturated_percent: float = 0.35) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -227,15 +223,15 @@ class ImageToolbarController:
             self._logger.exception("Could not set active image LUT")
 
     def duplicateResult(self) -> None:
-        result = self._reconstructionController.getActiveResult()
-        if not self._resultHasImage(result):
-            return
-        try:
-            duplicate = ArrayProcessingResult.duplicate(result)
-        except Exception:
-            self._logger.exception("Could not duplicate active result")
-            return
-        self._publishResult(duplicate)
+        duplicates = []
+        for result in self._selectedProcessingResults():
+            try:
+                duplicates.append(ArrayProcessingResult.duplicate(result))
+            except Exception as exc:
+                self._logger.exception("Could not duplicate result")
+                self._showMessage(f"Could not duplicate: {exc}")
+        if duplicates:
+            self._publishResults(duplicates)
 
     def cropSubstack(self) -> None:
         result = self._reconstructionController.getActiveResult()
@@ -256,60 +252,81 @@ class ImageToolbarController:
         self._runProcessor(StackSubsetProcessor(), result, params)
 
     def maxProjection(self) -> None:
-        result = self._reconstructionController.getActiveResult()
-        if not self._resultHasImage(result):
-            return
-        self._runProcessor(ProjectionProcessor(), result, {"axis": "Auto", "mode": "max"})
+        self._runProcessorOverTargets(
+            ProjectionProcessor(), {"axis": "Auto", "mode": "max"}, "max-projection"
+        )
 
     def splitStack(self) -> None:
-        result = self._reconstructionController.getActiveResult()
-        if not self._resultHasImage(result):
-            return
-        self._runProcessor(StackSplitProcessor(), result, {"axis": "Auto"})
+        self._runProcessorOverTargets(StackSplitProcessor(), {"axis": "Auto"}, "split-stack")
 
     def splitChannels(self) -> None:
-        result = self._reconstructionController.getActiveResult()
-        if not self._resultHasImage(result):
-            return
-        self._runProcessor(ChannelSplitProcessor(), result, {"axis": "Auto"})
+        self._runProcessorOverTargets(ChannelSplitProcessor(), {"axis": "Auto"}, "split-channels")
 
     def mergeChannels(self) -> None:
-        selected = self._selectedProcessingResults()
-        if len(selected) < 2:
+        loaded = self._loadedImageResults()
+        if len(loaded) < 2:
+            return
+        params = MergeChannelsDialog.get_params(
+            loaded,
+            parent=self._view,
+            preselected=self._selectedProcessingResults(),
+        )
+        if params is None:
             return
         try:
-            output = ChannelMergeProcessor().apply(
-                selected[0],
-                {"results": selected, "name": "Merged channels"},
-            )
+            output = ChannelMergeProcessor().apply(params["results"][0], params)
             results = normalize_processor_output(output)
-        except Exception:
-            self._logger.exception("Could not merge selected channel results")
+        except Exception as exc:
+            self._logger.exception("Could not merge the chosen channel results")
+            self._showMessage(f"Could not merge channels: {exc}")
             return
+        if params.get("composite"):
+            results = self._asComposites(results)
         self._publishResults(results)
 
+    def _asComposites(self, results):
+        """Render merged channel stacks as coloured layers.
+
+        The composite wraps the same data array, so it replaces the plain
+        stack rather than being published beside it — one merge, one entry in
+        the reconstruction list. A result that cannot become a composite is
+        kept as it is.
+        """
+        composites = []
+        for result in results:
+            try:
+                composite = MakeCompositeProcessor().apply(result, {"axis": "Auto"})
+            except Exception as exc:
+                self._logger.exception("Could not make a composite of the merge")
+                self._showMessage(f"Merged, but could not make a composite: {exc}")
+                composites.append(result)
+                continue
+            composites.append(composite)
+        return composites
+
     def stackCombine(self) -> None:
-        selected = self._selectedProcessingResults()
-        if len(selected) < 2:
+        loaded = self._loadedImageResults()
+        if len(loaded) < 2:
             return
-        params = StackCombineDialog.get_params(selected, parent=self._view)
+        params = StackCombineDialog.get_params(
+            loaded,
+            parent=self._view,
+            preselected=self._selectedProcessingResults(),
+        )
         if params is None:
             return
         try:
             output = StackCombineProcessor().apply(params["results"][0], params)
             results = normalize_processor_output(output)
-        except Exception:
-            self._logger.exception("Could not stack/combine selected results")
+        except Exception as exc:
+            self._logger.exception("Could not stack/combine the chosen results")
+            self._showMessage(f"Could not stack/combine: {exc}")
             return
         self._publishResults(results)
 
     def imageCalculator(self) -> None:
         # ImageJ-style: pick any two loaded results, not just the selection.
-        loaded = [
-            result
-            for _name, result in self._reconstructionController.getAllResults()
-            if self._resultHasImage(result)
-        ]
+        loaded = self._loadedImageResults()
         if not loaded:
             return
         params = ImageCalculatorDialog.get_params(
@@ -322,16 +339,16 @@ class ImageToolbarController:
         try:
             output = ImageCalculatorProcessor().apply(params["results"][0], params)
             results = normalize_processor_output(output)
-        except Exception:
+        except Exception as exc:
             self._logger.exception("Could not run the image calculator")
+            self._showMessage(f"Could not run the image calculator: {exc}")
             return
         self._publishResults(results)
 
     def makeComposite(self) -> None:
-        result = self._reconstructionController.getActiveResult()
-        if not self._resultHasImage(result):
-            return
-        self._runProcessor(MakeCompositeProcessor(), result, {"axis": "Auto"})
+        self._runProcessorOverTargets(
+            MakeCompositeProcessor(), {"axis": "Auto"}, "make-composite"
+        )
 
     def makeRgb(self) -> None:
         result = self._reconstructionController.getActiveResult()
@@ -388,13 +405,71 @@ class ImageToolbarController:
         try:
             output = processor.apply(result, params)
             results = normalize_processor_output(output)
-        except Exception:
+        except Exception as exc:
             self._logger.exception(
                 "Could not run image toolbar processor %s",
                 getattr(processor, "id", type(processor).__name__),
             )
+            self._showMessage(f"Could not run {processor.name}: {exc}")
             return
         self._publishResults(results)
+
+    def _runProcessorOverTargets(self, processor, params: dict, action_id: str) -> None:
+        """Run a parameterless op on every selected result, then publish once.
+
+        Inputs the action does not apply to are skipped rather than
+        cancelling the sweep — a selection routinely mixes results of
+        different rank, and dropping the whole run because one of them has no
+        stack axis would make the selection unusable.
+        """
+        targets = [
+            result
+            for result in self._selectedProcessingResults()
+            if self._appliesTo(action_id, result)
+        ]
+        if not targets:
+            return
+        results = []
+        failures = []
+        for target in targets:
+            try:
+                results.extend(normalize_processor_output(processor.apply(target, params)))
+            except Exception as exc:
+                self._logger.exception(
+                    "Could not run image toolbar processor %s on %s",
+                    getattr(processor, "id", type(processor).__name__),
+                    getattr(target, "name", "result"),
+                )
+                failures.append((target, str(exc)))
+        if failures:
+            name = getattr(failures[0][0], "name", "one result")
+            self._showMessage(
+                f"{processor.name} failed on {len(failures)} of {len(targets)} "
+                f"results — '{name}': {failures[0][1]}"
+            )
+        if results:
+            self._publishResults(results)
+
+    def _appliesTo(self, action_id: str, result) -> bool:
+        """Whether one image-toolbar action can run on ``result``."""
+        if not self._resultHasImage(result):
+            return False
+        gate = _SINGLE_RESULT_ACTIONS.get(action_id)
+        if gate is None:
+            return True
+        try:
+            return bool(gate(result))
+        except Exception:
+            self._logger.debug(
+                "Compatibility check failed for %s", action_id, exc_info=True
+            )
+            return False
+
+    def _showMessage(self, message: str) -> None:
+        """Surface an operation failure where the user is actually looking."""
+        show = getattr(self._view, "showStatusMessage", None)
+        if callable(show):
+            show(message)
 
     def _autoFromDialog(self, saturated_percent: float) -> None:
         data = self._activeImageForScope(self._dialogScope())
@@ -495,6 +570,11 @@ class ImageToolbarController:
         return result_kind(result) not in ("table", "curve")
 
     def _selectedProcessingResults(self):
+        """Selected image results, falling back to the active one.
+
+        This is what a single-result operation runs on: selecting nothing is
+        the ordinary case and must still act on what is on screen.
+        """
         if hasattr(self._reconstructionController, "getSelectedResults"):
             selected = [
                 result for _name, result in self._reconstructionController.getSelectedResults()
@@ -504,6 +584,15 @@ class ImageToolbarController:
                 return selected
         active = self._reconstructionController.getActiveResult()
         return [active] if self._resultHasImage(active) else []
+
+    def _loadedImageResults(self):
+        """Every loaded image result — the pool the multi-input pickers offer."""
+        try:
+            loaded = list(self._reconstructionController.getAllResults())
+        except Exception:
+            self._logger.exception("Could not enumerate the loaded results")
+            return []
+        return [result for _name, result in loaded if self._resultHasImage(result)]
 
 
 __all__ = ["ImageToolbarController"]

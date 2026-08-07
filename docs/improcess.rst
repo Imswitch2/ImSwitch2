@@ -110,17 +110,24 @@ The *Image* toolbar and matching *Image* menu provide viewer-level operations:
   persist it on the active result or display-layer component.
 * *Channels...* — show display-layer channel controls with per-layer
   visibility and LUT settings.
-* *Duplicate* — create a new array-backed result from the active result.
+* *Duplicate* — create a new array-backed result from each selected result.
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
   every result axis.
 * *Max projection* — create a max projection using the projection processor's
   default stack-axis choice.
-* *Split stack* — split the active stack into one result per plane along the
+* *Split stack* — split each selected stack into one result per plane along the
   selected stack axis.
 * *Split channels* — split a ``C``, ``Channel`` or ``Base`` axis into one
   result per channel.
-* *Merge channels* — merge selected compatible grayscale results into a new
-  ``C``-axis channel stack.
+* *Merge channels...* — merge loaded results into a new ``C``-axis channel
+  stack. The dialog lists every loaded result (and the components of
+  multi-layer results), pre-checks the reconstruction-list selection, and
+  merges in the listed order, which is the channel order. *Create composite*
+  publishes the merge as coloured display layers instead of a greyscale stack
+  with a channel slider. Inputs are whole results or named components, so the
+  channels of one multi-layer result can be merged among themselves; the
+  planes of a plain stack are not listed individually — split it first with
+  *Split stack*, which the dialog says when a single stack is checked.
 * *Make composite* — create a composite result that renders a channel-like axis
   as independently-scaled colored display layers.
 * *Make RGB* — bake a channel-like axis into a channel-last RGB visualization
@@ -135,6 +142,36 @@ pixel data.  Duplicate, crop/substack, max projection, merge channels, make
 composite and make RGB publish new ``ProcessingResult`` objects into the
 reconstruction list. Split stack and split channels publish multiple
 ``ProcessingResult`` objects and make the final split result current.
+
+.. _improcess-multi-result-operations:
+
+Operating on several reconstructions
+------------------------------------
+
+Two different things are meant by "several results", and ImProcess offers
+both:
+
+* **One operation consuming several results.** Merge channels, Stack/Combine
+  and the Image calculator take two or more results and produce one output.
+  They are enabled whenever at least two results are loaded — not only when a
+  compatible multi-selection exists — and open a picker over everything
+  loaded, with the reconstruction-list selection pre-checked. Inputs that
+  cannot be combined disable OK and name the reason (differing shape, axis
+  labels, pixel scales or scale unit) instead of leaving a silently dead
+  button. Two-image FRC works the same way and can compare two separate
+  reconstructions.
+* **One operation applied to each of several results.** Duplicate, max
+  projection, split stack, split channels and make composite run over every
+  selected result, skipping the ones the operation does not apply to.
+  Processor panels offer the same thing through their *Apply to* selector
+  (*Current result* / *Selected results* / *All results*), so a denoise or a
+  drift correction can sweep a whole session's reconstructions in one run.
+  One input failing does not discard the outputs of the others; the panel
+  reports how many failed and why. Crop/Substack and Make RGB stay
+  single-result, because their dialogs are parameterised by one result's axes.
+
+Both paths publish through the usual result pipeline, so the bulk-publish
+confirmation still guards against flooding napari with layers.
 
 The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for Graph,
 Profile, ROI manager, ROI statistics, Projection, Segmentation, Metadata and
@@ -1205,6 +1242,41 @@ The contract is the same as a built-in processor: a unique dotted ``id``,
 ``make_param_widget`` returning a widget with ``get_values() -> dict``, and a
 pure ``apply(result, params)`` returning a new ``ProcessingResult``.  Built-in
 ids always win a collision, so a stray file cannot shadow a core processor.
+
+Processors that consume several results
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Processor`` declares how many results one run consumes:
+
+.. code-block:: python
+
+    class BlendProcessor(Processor):
+        min_inputs = 2
+        max_inputs = None            # None = unbounded; the default is 1..1
+
+        def check_inputs(self, results):
+            """(ok, reason) — the reason is shown to the user."""
+            ok, reason = super().check_inputs(results)   # count + accepts()
+            if not ok:
+                return ok, reason
+            return combine_compatibility(results, mode="stack")
+
+        def apply(self, result, params):
+            inputs = params["results"]   # ordered, as picked in the UI
+            ...
+
+When ``max_inputs != 1`` the UI hands the ordered inputs to ``apply`` as
+``params["results"]`` (with ``result`` being ``results[0]``), and the generic
+processor panel shows the multi-result picker instead of a single input combo.
+``check_inputs`` is what the picker calls to decide whether *Run* is enabled;
+returning a reason is how the panel explains a refusal, so return one instead
+of a bare ``False``.  Keep the check metadata-only — it runs on every
+selection change, and materializing a lazily-backed result would read it from
+disk.
+
+Single-input processors need no opt-in to run over several reconstructions:
+because ``apply`` is a pure function of one result, the panel's *Apply to*
+scope simply calls it once per result.
 
 .. warning::
 

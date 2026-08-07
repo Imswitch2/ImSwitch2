@@ -2,48 +2,21 @@
 
 from __future__ import annotations
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtWidgets
 
-from imswitch.improcess.processors._axis_split import (
-    axis_labels_for_result,
-    shape_for_result,
-)
+from imswitch.improcess.processors._axis_split import axis_labels_for_result
 from imswitch.improcess.processors.combine import (
     STACK_AXIS_LABELS,
     combine_compatibility,
     default_stack_axis_label,
 )
+from imswitch.improcess.view.ResultInputList import (  # re-exported
+    ResultInputListWidget,
+    expand_input_choices,
+)
 
 _MODE_STACK = "stack"
 _MODE_CONCATENATE = "concatenate"
-
-
-def expand_input_choices(results):
-    """Expand results into checkable combine inputs, one per component.
-
-    A multi-layer result (``display_layers``) contributes its whole-result
-    entry plus one entry per non-context component via
-    ``processor_input_choices()``, so heterogeneous results are listed layer
-    by layer instead of hiding their components. Returns
-    ``(label, result, checked_by_default)`` tuples; whole results start
-    checked, layer components start unchecked.
-    """
-    inputs = []
-    for result in results:
-        choices_fn = getattr(result, "processor_input_choices", None)
-        choices = choices_fn() if callable(choices_fn) else None
-        if not choices:
-            inputs.append((getattr(result, "name", "result"), result, True))
-            continue
-        for choice in choices:
-            whole = choice.id == "result"
-            label = (
-                getattr(result, "name", "result")
-                if whole
-                else f"{getattr(result, 'name', 'result')} › {choice.label}"
-            )
-            inputs.append((label, choice.result, whole))
-    return inputs
 
 
 class StackCombineDialog(QtWidgets.QDialog):
@@ -56,33 +29,15 @@ class StackCombineDialog(QtWidgets.QDialog):
     so individual layers can be combined.
     """
 
-    def __init__(self, results, parent=None):
+    def __init__(self, results, parent=None, *, preselected=None):
         super().__init__(parent)
         self.setWindowTitle("Stack/Combine")
         self.setMinimumWidth(500)
-        self._inputs = expand_input_choices(list(results))
 
         # -- input order + selection ------------------------------------
-        self.inputList = QtWidgets.QListWidget()
-        self.inputList.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        for label, result, checked in self._inputs:
-            item = QtWidgets.QListWidgetItem(self._describe(label, result))
-            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked)
-            self.inputList.addItem(item)
-        self.upButton = QtWidgets.QPushButton("Up")
-        self.downButton = QtWidgets.QPushButton("Down")
-        self.upButton.clicked.connect(lambda: self._move_selected(-1))
-        self.downButton.clicked.connect(lambda: self._move_selected(+1))
-
-        orderButtons = QtWidgets.QVBoxLayout()
-        orderButtons.addWidget(self.upButton)
-        orderButtons.addWidget(self.downButton)
-        orderButtons.addStretch()
-
-        inputRow = QtWidgets.QHBoxLayout()
-        inputRow.addWidget(self.inputList)
-        inputRow.addLayout(orderButtons)
+        self.inputWidget = ResultInputListWidget(
+            list(results), self, preselected=preselected
+        )
 
         # -- mode + axis --------------------------------------------------
         self.modeCombo = QtWidgets.QComboBox()
@@ -130,7 +85,7 @@ class StackCombineDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(QtWidgets.QLabel("Inputs (checked, in output order):"))
-        layout.addLayout(inputRow)
+        layout.addWidget(self.inputWidget)
         layout.addLayout(form)
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.switchToConcatenateButton)
@@ -139,18 +94,14 @@ class StackCombineDialog(QtWidgets.QDialog):
         self.modeCombo.currentIndexChanged.connect(self._refresh)
         self.joinAxisCombo.currentIndexChanged.connect(self._refresh)
         self.axisLabelCombo.editTextChanged.connect(lambda _text: self._refresh())
-        self.inputList.itemChanged.connect(lambda _item: self._refresh())
+        self.inputWidget.sigInputsChanged.connect(self._refresh)
         self._refresh()
 
     # -- params -----------------------------------------------------------
 
     def checked_results(self) -> list:
         """Return the checked input results in list order."""
-        return [
-            self._inputs[row][1]
-            for row in range(self.inputList.count())
-            if self.inputList.item(row).checkState() == QtCore.Qt.Checked
-        ]
+        return self.inputWidget.checked_results()
 
     def selected_params(self) -> dict:
         mode = self.modeCombo.currentData()
@@ -168,22 +119,13 @@ class StackCombineDialog(QtWidgets.QDialog):
         return params
 
     @classmethod
-    def get_params(cls, results, parent=None) -> dict | None:
-        dialog = cls(results, parent=parent)
+    def get_params(cls, results, parent=None, preselected=None) -> dict | None:
+        dialog = cls(results, parent=parent, preselected=preselected)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.selected_params()
 
     # -- internals ----------------------------------------------------------
-
-    @staticmethod
-    def _describe(label, result) -> str:
-        try:
-            shape = tuple(shape_for_result(result))
-            labels = axis_labels_for_result(result)
-            return f"{label} — {shape} {''.join(labels)}"
-        except Exception:
-            return str(label)
 
     def _default_name(self) -> str:
         if self.modeCombo.currentData() == _MODE_CONCATENATE:
@@ -191,8 +133,8 @@ class StackCombineDialog(QtWidgets.QDialog):
         return "Stacked"
 
     def _default_axis_label(self) -> str:
-        checked = self.checked_results() if self.inputList.count() else []
-        first = checked[0] if checked else (self._inputs[0][1] if self._inputs else None)
+        checked = self.checked_results()
+        first = checked[0] if checked else None
         if first is None:
             return "Z"
         try:
@@ -215,20 +157,6 @@ class StackCombineDialog(QtWidgets.QDialog):
         if current is not None and 0 <= int(current) < len(labels):
             self.joinAxisCombo.setCurrentIndex(int(current))
         self.joinAxisCombo.blockSignals(False)
-
-    def _move_selected(self, delta: int) -> None:
-        row = self.inputList.currentRow()
-        target = row + delta
-        if row < 0 or not (0 <= target < len(self._inputs)):
-            return
-        self._inputs[row], self._inputs[target] = (
-            self._inputs[target],
-            self._inputs[row],
-        )
-        item = self.inputList.takeItem(row)
-        self.inputList.insertItem(target, item)
-        self.inputList.setCurrentRow(target)
-        self._refresh()
 
     def _refresh(self) -> None:
         mode = self.modeCombo.currentData()
@@ -304,4 +232,4 @@ class StackCombineDialog(QtWidgets.QDialog):
             self.joinAxisCombo.setCurrentIndex(join_index)
 
 
-__all__ = ["StackCombineDialog", "expand_input_choices"]
+__all__ = ["ResultInputListWidget", "StackCombineDialog", "expand_input_choices"]

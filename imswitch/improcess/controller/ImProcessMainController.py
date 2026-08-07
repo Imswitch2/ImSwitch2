@@ -515,13 +515,29 @@ class ImProcessMainController(MainController):
         self._seed_runtime_result_processor(widget)
 
     def _seed_runtime_result_processor(self, widget) -> None:
-        """Populate a newly opened processor dock with the current result.
+        """Populate a newly opened processor dock with the loaded results.
 
         Runtime result-processor widgets are often opened after a
         reconstruction has already been selected. Those widgets only receive
-        future sigCurrentResultChanged events, so seed them explicitly with the
-        active reconstruction result at wire time.
+        future sigCurrentResultChanged / sigResultsChanged events, so seed
+        them explicitly at wire time — a multi-input panel opened after the
+        reconstructions were loaded would otherwise show an empty picker.
         """
+        # Looked up on the class: a Qt widget that does not define the method
+        # answers a plain instance getattr by raising, not by returning None.
+        available = getattr(type(widget), "setAvailableResults", None)
+        if callable(available):
+            available = available.__get__(widget)
+            try:
+                available(
+                    self.__commChannel.getAllResults(),
+                    self.__commChannel.getSelectedResults(),
+                )
+            except Exception:
+                self.__logger.debug(
+                    "Could not seed runtime processor widget with the result set",
+                    exc_info=True,
+                )
         setter = getattr(widget, "setCurrentResult", None)
         if not callable(setter):
             return
