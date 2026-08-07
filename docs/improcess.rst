@@ -114,7 +114,12 @@ The *Image* toolbar and matching *Image* menu provide viewer-level operations:
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
   every result axis.
 * *Max projection* — create a max projection using the projection processor's
-  default stack-axis choice.
+  default stack-axis choice.  The **Projection** panel exposes the rest of
+  ImageJ's *Z Project*: the axis, the statistic (max / mean / sum / median /
+  standard deviation) and a *First slice* / *Last slice* range, 1-based and
+  inclusive, defaulting to the whole axis.  Projecting one axis of a
+  hyperstack keeps the others, so a ``TZYX`` stack projected on ``Z`` stays a
+  ``T`` series.
 * *Split stack* — split each selected stack into one result per plane along the
   selected stack axis.
 * *Split channels* — split a ``C``, ``Channel`` or ``Base`` axis into one
@@ -248,6 +253,18 @@ and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
 profile is pushed to the results table or saved as CSV.
+
+*Z profile* answers the other question a stack raises — how intensity varies
+*through* it rather than across the field, ImageJ's *Plot Z-axis Profile*.  It
+plots mean intensity over a drawn rectangle against the stack axis, or over
+the whole frame when no rectangle is drawn.  The axis is chosen from the
+result's own labels (``Z``, else ``T``, else the first non-spatial axis with
+more than one plane) and is plotted in that axis' physical units when it has a
+scale, falling back to slice number.  On a hyperstack the other axes stay
+where the viewer is, so profiling ``Z`` on a ``TZYX`` result profiles the
+timepoint on screen.  Fits, *Measure Δx*, *Push to table* and *Push to graph*
+all work on it exactly as they do on the in-plane profiles — an exponential
+fit over a ``T`` profile is a bleaching curve.
 
 *Push to graph* sends the profile and its fit to the Graph panel, opening it
 if needed.  Pushed plots are **pinned**: they stay when the selected result

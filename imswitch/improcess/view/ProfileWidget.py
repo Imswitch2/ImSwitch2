@@ -44,6 +44,12 @@ class ProfileWidget(QtWidgets.QWidget):
             )
         }
         self._last_kind = None
+        self._mode = "pan"
+        #: What the current plot is called and how its axes are
+        #: labelled, so a pushed payload describes the same thing the
+        #: panel is showing.
+        self._last_plot_title = "profile"
+        self._last_plot_labels = ("Distance", "Intensity")
         self._last_payload: list[tuple[str, np.ndarray, np.ndarray]] = []
         #: Fitted curves drawn over the profile, kept so a pushed plot
         #: carries the fit the user is actually looking at.
@@ -56,6 +62,11 @@ class ProfileWidget(QtWidgets.QWidget):
         self.panButton = self._makeModeButton("Pan", "pan", checked=True)
         self.lineButton = self._makeModeButton("Line", "line")
         self.rectangleButton = self._makeModeButton("Rectangle", "rectangle")
+        self.zProfileButton = self._makeModeButton("Z profile", "zprofile")
+        self.zProfileButton.setToolTip(
+            "Plot mean intensity through the stack axis over a rectangle "
+            "(the whole frame when none is drawn) — ImageJ's Plot Z-axis Profile"
+        )
         self.clearButton = QtWidgets.QPushButton("Clear")
         self.measureButton = QtWidgets.QPushButton("Measure Δx")
         self.measureButton.setCheckable(True)
@@ -98,6 +109,7 @@ class ProfileWidget(QtWidgets.QWidget):
         toolbar.addWidget(self.panButton)
         toolbar.addWidget(self.lineButton)
         toolbar.addWidget(self.rectangleButton)
+        toolbar.addWidget(self.zProfileButton)
         toolbar.addWidget(self.clearButton)
         toolbar.addWidget(self.measureButton)
         toolbar.addSpacing(8)
@@ -146,6 +158,14 @@ class ProfileWidget(QtWidgets.QWidget):
         """
         self._refresh()
 
+    def _setPlotLabels(self, title: str, x_label: str, y_label: str) -> None:
+        """Title and label the plot, remembering both for pushed payloads."""
+        self._last_plot_title = title
+        self._last_plot_labels = (x_label, y_label)
+        self.plot.setTitle(title[:1].upper() + title[1:])
+        self.plot.setLabel("bottom", x_label)
+        self.plot.setLabel("left", y_label)
+
     def _makeModeButton(self, text: str, mode: str, checked: bool = False):
         button = QtWidgets.QPushButton(text)
         button.setCheckable(True)
@@ -156,15 +176,27 @@ class ProfileWidget(QtWidgets.QWidget):
 
     def _modeChanged(self, button):
         mode = button.property("profileMode")
+        self._mode = mode
         self._toolManager.clear_shapes()
-        self._toolManager.set_mode(mode)
+        # A Z profile is measured over a rectangle, so it draws with the same
+        # tool; only what gets plotted differs.
+        self._toolManager.set_mode("rectangle" if mode == "zprofile" else mode)
         self._drawEmpty()
+        if mode == "zprofile":
+            # Unlike the in-plane profiles this one is meaningful with no ROI
+            # at all (the whole frame), as it is in ImageJ.
+            self._plotZProfile(None)
 
     def _clearShapes(self):
         self._toolManager.clear_shapes()
         self._drawEmpty()
+        if self._mode == "zprofile":
+            self._plotZProfile(None)
 
     def _shapesChanged(self):
+        if self._mode == "zprofile":
+            self._plotZProfile(self._findFirstShape("rectangle"))
+            return
         mode = self._toolManager.get_mode()
         if mode == "line":
             self._plotLineProfile(self._findFirstShape("line"))
@@ -185,6 +217,8 @@ class ProfileWidget(QtWidgets.QWidget):
             self._plotLineProfile(self._findFirstShape("line"))
         elif self._last_kind == "rectangle":
             self._plotRectangleProfiles(self._findFirstShape("rectangle"))
+        elif self._last_kind == "zprofile":
+            self._plotZProfile(self._findFirstShape("rectangle"))
 
     def _drawEmpty(self):
         self.measureButton.setChecked(False)
@@ -196,17 +230,19 @@ class ProfileWidget(QtWidgets.QWidget):
         self._current_record_inputs = []
         self.fitSummary.setText("")
         self.plot.clear()
-        self.plot.setTitle("Draw a line or rectangle on the reconstruction view")
-        self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
-        self.plot.setLabel("left", "Intensity")
+        self._setPlotLabels(
+            "Draw a line or rectangle on the reconstruction view",
+            f"Distance ({self._distanceUnit()})",
+            "Intensity",
+        )
 
     def _plotLineProfile(self, endpoints):
         self._last_kind = "line"
         self._removeMeasurementRegion(clear_values=False)
         self.plot.clear()
-        self.plot.setTitle("Line Profile")
-        self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
-        self.plot.setLabel("left", "Intensity")
+        self._setPlotLabels(
+            "line profile", f"Distance ({self._distanceUnit()})", "Intensity"
+        )
         self._last_payload = []
         self._last_fit_curves = []
         self._current_record_inputs = []
@@ -251,9 +287,9 @@ class ProfileWidget(QtWidgets.QWidget):
         self._last_kind = "rectangle"
         self._removeMeasurementRegion(clear_values=False)
         self.plot.clear()
-        self.plot.setTitle("Rectangle Projections")
-        self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
-        self.plot.setLabel("left", "Mean intensity")
+        self._setPlotLabels(
+            "rectangle profile", f"Distance ({self._distanceUnit()})", "Mean intensity"
+        )
         self._last_payload = []
         self._last_fit_curves = []
         self._current_record_inputs = []
@@ -304,6 +340,123 @@ class ProfileWidget(QtWidgets.QWidget):
         ]
         self._applyFits()
         self._setMeasurementAvailable(True)
+
+    def _plotZProfile(self, bounds):
+        """Mean intensity through the stack axis over a rectangle.
+
+        ImageJ's *Plot Z-axis Profile*: the in-plane profiles answer "how does
+        intensity vary across the field", this one answers "how does it vary
+        through the stack" — bleaching over time, an axial PSF, a z-extent.
+        With no rectangle drawn it measures the whole frame, as ImageJ does.
+        """
+        self._last_kind = "zprofile"
+        self._removeMeasurementRegion(clear_values=False)
+        self.plot.clear()
+        self._last_payload = []
+        self._last_fit_curves = []
+        self._current_record_inputs = []
+
+        layer = self._activeImageLayer()
+        data = np.asarray(getattr(layer, "data", None)) if layer is not None else None
+        if data is None or data.ndim < 3:
+            self._setMeasurementAvailable(False)
+            self.plot.setTitle("Z profile")
+            self.fitSummary.setText("Select a stack (3D or more) to profile.")
+            return
+
+        axis, axis_label = self._stackAxis(data, layer)
+        rows, cols = self._roiSliceForBounds(bounds, data.shape[-2:])
+        if rows is None:
+            self._setMeasurementAvailable(False)
+            self.fitSummary.setText("")
+            return
+
+        # Every other non-spatial axis stays at what the viewer is showing, so
+        # profiling Z on a TZYX stack profiles the timepoint on screen.
+        index = [slice(None)] * data.ndim
+        step = self._currentStep(data.ndim)
+        for other in range(data.ndim - 2):
+            if other != axis:
+                index[other] = min(max(step[other], 0), data.shape[other] - 1)
+        index[-2], index[-1] = rows, cols
+        volume = np.asarray(data[tuple(index)], dtype=float)
+        volume = volume.reshape(volume.shape[0], -1)
+
+        means = np.nanmean(volume, axis=1)
+        scale = self._axisScale(layer, axis)
+        z = np.arange(means.size, dtype=float) * scale
+        unit = self._distanceUnit() if scale != 1.0 else "slice"
+
+        self._setPlotLabels(
+            f"{axis_label} profile", f"{axis_label} ({unit})", "Mean intensity"
+        )
+        self.plot.plot(z, means, pen=pg.mkPen("#1f77b4", width=2), name="mean")
+        self._last_payload = [("mean", z, means)]
+        self._current_record_inputs = [
+            (
+                f"{axis_label.lower()}-profile",
+                z,
+                means,
+                float(means.size),
+                float(means.size * scale),
+                unit,
+            )
+        ]
+        self._applyFits()
+        self._setMeasurementAvailable(True)
+
+    def _stackAxis(self, data, layer) -> tuple[int, str]:
+        """Axis to profile along, and its label.
+
+        Prefers a real ``Z`` then ``T`` axis from the layer's labels so the
+        plot says which axis it walked; falls back to the first non-spatial
+        axis with more than one plane.
+        """
+        labels = []
+        try:
+            labels = [str(label) for label in (layer.metadata or {}).get("axis_labels", [])]
+        except Exception:
+            labels = []
+        if len(labels) != data.ndim:
+            labels = []
+        candidates = range(max(data.ndim - 2, 1))
+        for preferred in ("Z", "T"):
+            for axis in candidates:
+                if labels and labels[axis] == preferred and data.shape[axis] > 1:
+                    return axis, preferred
+        for axis in candidates:
+            if data.shape[axis] > 1:
+                return axis, labels[axis] if labels else "Z"
+        return 0, labels[0] if labels else "Z"
+
+    def _roiSliceForBounds(self, bounds, shape) -> tuple[slice | None, slice | None]:
+        """Row/column slices for a rectangle, or the whole frame when none."""
+        height, width = int(shape[0]), int(shape[1])
+        if bounds is None:
+            return slice(0, height), slice(0, width)
+        r0, c0, r1, c1 = bounds
+        row_scale, col_scale = self._visiblePixelScales()
+        rlo, rhi = sorted((int(round(r0 / row_scale)), int(round(r1 / row_scale))))
+        clo, chi = sorted((int(round(c0 / col_scale)), int(round(c1 / col_scale))))
+        rlo, rhi = max(0, rlo), min(height, rhi)
+        clo, chi = max(0, clo), min(width, chi)
+        if rlo >= rhi or clo >= chi:
+            return None, None
+        return slice(rlo, rhi), slice(clo, chi)
+
+    def _currentStep(self, ndim: int) -> tuple[int, ...]:
+        try:
+            return tuple(int(value) for value in self._viewer.dims.current_step)
+        except Exception:
+            return tuple(0 for _ in range(ndim))
+
+    @staticmethod
+    def _axisScale(layer, axis: int) -> float:
+        try:
+            scale = tuple(float(value) for value in layer.scale)
+        except Exception:
+            return 1.0
+        return scale[axis] if 0 <= axis < len(scale) else 1.0
 
     def _setMeasurementAvailable(self, available: bool) -> None:
         self.measureButton.setEnabled(bool(available))
@@ -511,11 +664,14 @@ class ProfileWidget(QtWidgets.QWidget):
         )
         layer = self._activeImageLayer()
         source = str(getattr(layer, "name", "") or "profile")
-        kind = "line profile" if self._last_kind == "line" else "rectangle profile"
+        # Taken from the plot rather than re-derived: a Z profile runs along
+        # the stack axis in its own units, and a payload that relabelled it
+        # "Distance" would be a wrong axis on a pushed curve.
+        x_label, y_label = self._last_plot_labels
         return PlotPayload(
-            title=f"{source} — {kind}",
-            x_label=f"Distance ({self._distanceUnit()})",
-            y_label="Intensity",
+            title=f"{source} — {self._last_plot_title}",
+            x_label=x_label,
+            y_label=y_label,
             series=series,
             metadata={"source_layer": source, "profile_kind": self._last_kind},
         )
