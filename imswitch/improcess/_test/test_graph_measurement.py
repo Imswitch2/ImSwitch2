@@ -71,15 +71,69 @@ def test_measurement_region_updates_readout_and_pushes_table_record():
     widget.pushMeasurementButton.click()
     assert len(pushed) == 1
     columns, records = pushed[0]
-    assert columns == ["kind", "plot", "x_axis", "x_1", "x_2", "delta_x"]
-    assert records == [{
+    # The plot's own curves are reported alongside the manual measurement:
+    # pushing used to send the Δx row and nothing else, so a plot carrying fit
+    # parameters put none of them in the table.
+    kinds = [record["kind"] for record in records]
+    assert kinds.count("graph-series") == len(_payload().series)
+    assert kinds[-1] == "graph-delta-x"
+    assert records[-1] == {
         "kind": "graph-delta-x",
         "plot": "Peaks",
         "x_axis": "Distance (µm)",
         "x_1": 12.5,
         "x_2": 37.5,
         "delta_x": 25.0,
-    }]
+    }
+    assert all(key in columns for key in records[-1])
+    assert all(key in columns for key in records[0])
+
+
+def test_push_reports_the_plot_without_any_measurement():
+    """The button used to require Δx markers and silently do nothing without
+    them — which is what made pressing it on a fit plot look broken."""
+    from imswitch.improcess.view.GraphWidget import GraphWidget
+
+    widget = GraphWidget()
+    pushed = []
+    widget.sigResultPushed.connect(
+        lambda columns, records: pushed.append((list(columns), list(records)))
+    )
+    widget.setPlotPayloads([_payload()])
+
+    assert widget.pushMeasurementButton.isEnabled()
+    widget.pushMeasurementButton.click()
+
+    assert len(pushed) == 1
+    _columns, records = pushed[0]
+    assert records and all(record["kind"] == "graph-series" for record in records)
+
+
+def test_push_carries_the_payload_parameters():
+    """A fit's coefficients ride in PlotPayload.metadata, which nothing else
+    renders; every pushed row has to carry them or they stay invisible."""
+    from imswitch.improcess.model.plotting import PlotPayload, PlotSeries
+    from imswitch.improcess.view.GraphWidget import GraphWidget
+
+    widget = GraphWidget()
+    pushed = []
+    widget.sigResultPushed.connect(
+        lambda columns, records: pushed.append((list(columns), list(records)))
+    )
+    widget.setPlotPayloads([
+        PlotPayload(
+            title="Off-switching kinetics",
+            x_label="time (ms)",
+            series=[PlotSeries(name="decay", y=np.array([1.0, 0.5, 0.25]))],
+            metadata={"t_half_ms": 12.5, "fit1_r2": 0.998},
+        )
+    ])
+
+    widget.pushMeasurementButton.click()
+
+    _columns, records = pushed[0]
+    assert records[0]["t_half_ms"] == 12.5
+    assert records[0]["fit1_r2"] == 0.998
 
 
 @pytest.mark.usefixtures("qapp")

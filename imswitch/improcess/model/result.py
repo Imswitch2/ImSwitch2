@@ -113,6 +113,16 @@ class ProcessingResult(ABC):
     #: ``data`` is not a calibrated intensity image MUST override this, or
     #: shape-only gates will offer image processors on non-image values.
     kind: str = "image"
+    #: Publish :meth:`table_records` to the shared Results dock on production,
+    #: for a result whose ``kind`` is not ``"table"``.
+    #:
+    #: An analysis that fits something yields two things — the curve and the
+    #: parameters of the fit — and the parameters are the answer. A curve
+    #: result that leaves this False renders a picture of numbers with no way
+    #: to read the numbers out. Set it True when the rows are a handful of
+    #: summary values; leave it False when they are bulk data (a localization
+    #: table can run to six figures of rows).
+    publishes_table_rows: bool = False
 
     def __init__(
         self,
@@ -237,7 +247,8 @@ class ProcessingResult(ABC):
         Results with ``kind == "table"`` are appended to the shared Results
         dock automatically when produced; other kinds (e.g. ``"localization"``,
         whose row count can reach six figures) expose records here for
-        explicit export or opt-in display, not for automatic rendering.
+        explicit export, and opt into automatic display by setting
+        :attr:`publishes_table_rows`.
         """
         return []
 

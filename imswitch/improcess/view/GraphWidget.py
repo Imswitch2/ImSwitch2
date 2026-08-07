@@ -5,7 +5,10 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.model import PlotPayload, PlotSeries
-from imswitch.improcess.model.plotting import build_graph_delta_x_record
+from imswitch.improcess.model.plotting import (
+    build_graph_delta_x_record,
+    payload_summary_records,
+)
 
 
 class GraphWidget(QtWidgets.QWidget):
@@ -49,7 +52,8 @@ class GraphWidget(QtWidgets.QWidget):
 
         self.pushMeasurementButton = QtWidgets.QPushButton("Push to table")
         self.pushMeasurementButton.setToolTip(
-            "Append the current Δx measurement to the Results table for CSV export"
+            "Append this plot's parameters and per-curve summary to the "
+            "Results table, plus the Δx measurement when markers are shown"
         )
         self.pushMeasurementButton.clicked.connect(self._pushMeasurement)
 
@@ -137,6 +141,9 @@ class GraphWidget(QtWidgets.QWidget):
         has_payloads = bool(payloads)
         self.plotSelector.setEnabled(has_payloads)
         self.measureButton.setEnabled(has_payloads)
+        # Pushing reports the plot itself, so it no longer waits for a manual
+        # Δx measurement to exist.
+        self.pushMeasurementButton.setEnabled(has_payloads)
         self.overlayButton.setEnabled(len(payloads) > 1)
         self.unpinButton.setEnabled(bool(self._pinnedPayloads))
 
@@ -262,7 +269,7 @@ class GraphWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self.measurementLabel.clear()
-        self.pushMeasurementButton.setEnabled(False)
+        self.pushMeasurementButton.setEnabled(self._currentPayload() is not None)
 
     def _measurementChanged(self) -> None:
         region = self._measurementRegion
@@ -276,12 +283,30 @@ class GraphWidget(QtWidgets.QWidget):
         self.pushMeasurementButton.setEnabled(self._currentPayload() is not None)
 
     def _pushMeasurement(self) -> None:
+        """Send what this plot says to the Results table.
+
+        Used to push the manual Δx marker record and nothing else, so pressing
+        it on a plot carrying fit parameters put nothing in the table — and,
+        with no markers on screen, put nothing in it at all. It now pushes the
+        payload's own parameters (a fit's coefficients arrive in
+        ``PlotPayload.metadata``, which nothing else renders) with one row per
+        curve, and still adds the Δx row when markers are shown.
+        """
         payload = self._currentPayload()
-        region = self._measurementRegion
-        if payload is None or region is None:
+        if payload is None:
             return
-        record = build_graph_delta_x_record(payload, *region.getRegion())
-        self.sigResultPushed.emit(list(record.keys()), [record])
+        records = payload_summary_records(payload)
+        region = self._measurementRegion
+        if region is not None:
+            records.append(build_graph_delta_x_record(payload, *region.getRegion()))
+        if not records:
+            return
+        columns: list[str] = []
+        for record in records:
+            for key in record:
+                if key not in columns:
+                    columns.append(key)
+        self.sigResultPushed.emit(columns, records)
 
     def _currentPayload(self) -> PlotPayload | None:
         payloads = self._allPayloads()

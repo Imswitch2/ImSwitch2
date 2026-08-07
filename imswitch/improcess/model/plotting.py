@@ -58,3 +58,48 @@ def build_graph_delta_x_record(
 ) -> dict[str, Any]:
     """Build a manual horizontal-distance record for a graph payload."""
     return build_delta_x_record(payload.title, payload.x_label, x_1, x_2)
+
+
+def payload_summary_records(payload: PlotPayload) -> list[dict[str, Any]]:
+    """Table rows describing a plot: its parameters, one row per curve.
+
+    An analysis that fits something reports the fit in
+    ``PlotPayload.metadata`` — resolution, time constants, R². Nothing renders
+    that dict, so those numbers are visible only as a drawn line unless they
+    can be read out here. Scalar metadata is merged into every row so a row
+    stands on its own in the shared table; image series are skipped, having no
+    meaningful one-line summary.
+    """
+    scalars = {
+        key: value
+        for key, value in (payload.metadata or {}).items()
+        if isinstance(value, (int, float, str, bool)) and not isinstance(value, bool)
+    }
+    records = []
+    for series in payload.series:
+        if series.kind == "image":
+            continue
+        y = np.asarray(series.y, dtype=float).ravel()
+        x = (
+            np.asarray(series.x, dtype=float).ravel()
+            if series.x is not None
+            else np.arange(y.size, dtype=float)
+        )
+        finite = np.isfinite(y)
+        record: dict[str, Any] = {
+            "kind": "graph-series",
+            "plot": str(payload.title),
+            "series": str(series.name),
+            "x_axis": str(payload.x_label or "x"),
+            "n_points": int(y.size),
+        }
+        if x.size:
+            record["x_min"] = float(np.nanmin(x))
+            record["x_max"] = float(np.nanmax(x))
+        if np.any(finite):
+            record["y_min"] = float(np.nanmin(y[finite]))
+            record["y_max"] = float(np.nanmax(y[finite]))
+            record["y_mean"] = float(np.nanmean(y[finite]))
+        record.update(scalars)
+        records.append(record)
+    return records

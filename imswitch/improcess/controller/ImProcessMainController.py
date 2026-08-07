@@ -588,20 +588,27 @@ class ImProcessMainController(MainController):
         self._bridgeResultToImcontrol(result, name)
 
     def _routeResultToAnalysisPanels(self, result) -> None:
-        """Show non-image results in the panel that can actually render them.
+        """Show non-image results in the panels that can actually render them.
 
         Table- and curve-kind results carry nothing the reconstruction viewer
         can draw, so producing one used to leave the user staring at a cleared
         canvas. Route their rows to the shared Results dock and reveal the
         Graph dock for curves, gated on ``kind`` so ordinary image results
         (many of which also expose plot payloads) never steal focus.
+
+        The two are not exclusive. An analysis that fits something produces
+        both a curve and the parameters of the fit; a result may therefore
+        render into the Graph *and* contribute rows, and one that says so via
+        ``publishes_table_rows`` gets both. Rows stay opt-in outside
+        ``kind == "table"`` because a localization result's ``table_records()``
+        can run to six figures.
         """
         from imswitch.improcess.model.result import result_kind
 
         kind = result_kind(result)
-        if kind == "table":
+        if kind == "table" or getattr(result, "publishes_table_rows", False):
             self._appendResultTableRecords(result)
-        elif kind == "curve" and self._resultHasPlotPayloads(result):
+        if kind == "curve" and self._resultHasPlotPayloads(result):
             try:
                 self.__mainView.raiseDockByTitle('Graph')
             except Exception:

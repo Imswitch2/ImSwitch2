@@ -97,7 +97,12 @@ def test_curve_result_plot_payload_and_save(plugin, tmp_path):
     assert len(payloads) == 1
     payload = payloads[0]
     assert payload.x_label == "# cycle"
-    assert len(payload.series) == 1
+    # The bleaching curve plus the exponential fits drawn over it.
+    assert [series.name for series in payload.series] == [
+        "Rel. fluorescence",
+        "1-exp fit",
+        "2-exp fit",
+    ]
     series = payload.series[0]
     assert series.kind == "line"
     assert series.x.shape == series.y.shape == (20,)
@@ -236,3 +241,38 @@ def test_end_to_end_store_install_discover_run(tmp_path, monkeypatch):
         {"mode": "fatigue", "tail": 3},
     )
     assert result.kind == "curve"
+
+
+def test_fatigue_reports_fit_parameters_as_table_rows(plugin):
+    """The bleaching time constant is what a fatigue measurement is for; it
+    used to exist only as a drawn line, if at all."""
+    stack = _decaying_stack()
+    result = types.SimpleNamespace(name="rec", data=stack, axis_labels=["T", "Y", "X"])
+
+    out = plugin.PhotophysicsProcessor().apply(result, {"mode": "fatigue", "tail": 3})
+
+    assert out.publishes_table_rows is True
+    rows = out.table_records()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["mode"] == "fatigue"
+    assert row["source"] == out.name
+    # Cycles, not milliseconds: the shared fitter names its constants _ms.
+    assert "fit1_tau_cycles" in row
+    assert "fit1_tau_ms" not in row
+    assert 0.0 <= row["fit1_r2"] <= 1.0
+    assert set(out.table_columns()) >= set(row)
+
+
+def test_fit_can_be_switched_off(plugin):
+    stack = _decaying_stack()
+    result = types.SimpleNamespace(name="rec", data=stack, axis_labels=["T", "Y", "X"])
+
+    out = plugin.PhotophysicsProcessor().apply(
+        result, {"mode": "fatigue", "tail": 3, "do_fit": False}
+    )
+
+    assert [series.name for series in out.plot_payloads()[0].series] == [
+        "Rel. fluorescence"
+    ]
+    assert not any(key.startswith("fit") for key in out.table_records()[0])

@@ -198,6 +198,47 @@ def test_curve_result_reveals_the_graph_dock():
     assert view.appended == []
 
 
+class _FittedCurveResult(_CurveResult):
+    """A curve that also reports the parameters of its fit."""
+
+    publishes_table_rows = True
+
+    def table_columns(self):
+        return ["source", "t_half_ms", "r2"]
+
+    def table_records(self):
+        return [{"source": self.name, "t_half_ms": 12.5, "r2": 0.99}]
+
+
+def test_fitted_curve_publishes_its_parameters_and_shows_the_curve():
+    """An analysis that fits something produces two things — the curve and
+    the parameters — and the parameters are the answer. Both channels fire."""
+    view = _FakeView()
+    controller = _controller_with_view(view)
+
+    controller._routeResultToAnalysisPanels(_FittedCurveResult("off-switch"))
+
+    assert view.raised == ["Graph"]
+    assert len(view.appended) == 1
+    columns, records = view.appended[0]
+    assert columns == ["source", "t_half_ms", "r2"]
+    assert records == [{"source": "off-switch", "t_half_ms": 12.5, "r2": 0.99}]
+
+
+def test_curve_rows_stay_opt_in():
+    """Bulk rows (a localization table runs to six figures) must not be
+    published just because the result can produce them."""
+    view = _FakeView()
+    controller = _controller_with_view(view)
+    result = _FittedCurveResult("quiet")
+    result.publishes_table_rows = False
+
+    controller._routeResultToAnalysisPanels(result)
+
+    assert view.appended == []
+    assert view.raised == ["Graph"]
+
+
 def test_curve_result_without_payloads_does_not_reveal_graph():
     view = _FakeView()
     controller = _controller_with_view(view)

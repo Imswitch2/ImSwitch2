@@ -483,11 +483,33 @@ exposed by the currently selected ``ProcessingResult``.
 
 Use *Measure Δx* to place a draggable horizontal interval between two graph
 features.  The live readout reports both marker positions and their distance.
-*Push to table* appends that measurement to the shared Results dock, where it
-can be accumulated with other measurements and saved through *Save CSV...*.
-The Profile panel offers the same *Measure Δx* interaction; its existing
-*Push to table* and *Save CSV...* actions include the manual distance together
-with the profile statistics and optional fit results.
+*Push to table* appends what the plot says to the shared Results dock: the
+payload's own parameters (a fit's coefficients travel in
+``PlotPayload.metadata``) with one row per curve, plus the Δx row when markers
+are shown.  It no longer requires a measurement to exist — pressing it on a
+plot of fitted data reports the fit.  The Profile panel offers the same
+*Measure Δx* interaction; its *Push to table* and *Save CSV...* actions include
+the manual distance together with the profile statistics and optional fit
+results.
+
+.. _improcess-result-parameters:
+
+Curves and their parameters
+---------------------------
+
+An analysis that fits something produces two outputs — the curve, and the
+parameters of the fit — and the parameters are usually the answer.  A
+``ProcessingResult`` can therefore render into more than one panel at once:
+``plot_payloads()`` draws the curve in this panel while
+``table_columns()``/``table_records()`` contribute rows to the Results dock.
+
+Rows are published automatically for ``kind == "table"`` results.  Any other
+kind opts in by setting ``publishes_table_rows = True``, which keeps bulk rows
+out of the dock by default — a ``localization`` result's ``table_records()``
+can run to six figures.  ``frc`` results publish their resolution and cutoff
+frequency this way, and the photophysics drop-in publishes its fitted
+amplitudes, time constants and R².  Without the opt-in the numbers exist only
+inside the result, drawn but unreadable.
 
 Built-in graph producers include ``drift-correct`` and ``widefield-starss``.
 Drift-corrected results expose Y and X drift traces over frame number.

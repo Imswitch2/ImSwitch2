@@ -105,20 +105,32 @@ def _normalize(values, mode):
 
 
 def analyze_fatigue(profile, *, background="tail_mean", bkg_value=0.0, tail=500,
-                    normalize="first"):
+                    normalize="first", do_fit=True):
     """Bleaching / fatigue curve (FATIGUE.m).
 
     Background-subtract, normalize, return fluorescence vs. cycle number.
+
+    ``do_fit`` additionally fits the decay with the same exponential model the
+    off-switching analysis uses, because the bleaching time constant is the
+    number a fatigue measurement is made to obtain — a curve alone leaves the
+    reader to eyeball it. ``fit1``/``fit2`` are ``None`` when the fit fails or
+    is switched off; the curve itself is unaffected either way.
     """
     profile_bkg, bkg = subtract_background(profile, background, bkg_value, tail)
     cycles = np.arange(1, profile_bkg.size + 1, dtype=float)
     normalized = _normalize(profile_bkg, normalize)
-    return {
+    out = {
         "cycles": cycles,
         "profile_bkg": profile_bkg,
         "normalized": normalized,
         "background": bkg,
+        "fit1": None,
+        "fit2": None,
     }
+    if do_fit and normalized.size >= 3:
+        out["fit1"] = _fit_exp(cycles, normalized, 1)
+        out["fit2"] = _fit_exp(cycles, normalized, 2)
+    return out
 
 
 def _r_squared(y, y_fit):
@@ -279,6 +291,11 @@ class PhotophysicsResult(ProcessingResult):
     """A photophysics analysis curve (``kind="curve"``), line-plotted + ascii-saved."""
 
     kind = "curve"
+    #: The fitted parameters (t½, rates, amplitudes, R²) are what the analysis
+    #: is run for; the curve shows how they were obtained. Publishing them
+    #: puts them in the Results table instead of leaving them locked in
+    #: metadata that nothing renders.
+    publishes_table_rows = True
 
     def __init__(self, name, *, mode, columns, table, title, x_label, y_label,
                  series, scalars=None):
@@ -303,6 +320,19 @@ class PhotophysicsResult(ProcessingResult):
         return [PlotPayload(title=self._title, x_label=self._x_label,
                             y_label=self._y_label, series=series,
                             metadata=dict(self.scalars))]
+
+    def table_columns(self):
+        return ["source", "kind", "mode", *sorted(self.scalars)]
+
+    def table_records(self):
+        """One row of fitted parameters — the analysis' actual answer."""
+        if not self.scalars:
+            return []
+        row = {"source": self.name, "kind": "photophysics", "mode": self.mode}
+        for key in sorted(self.scalars):
+            value = self.scalars[key]
+            row[key] = float(value) if isinstance(value, (int, float)) else value
+        return [row]
 
     def save(self, path, fmt="txt"):
         path = Path(path)
@@ -429,12 +459,28 @@ class PhotophysicsProcessor(Processor):
                 bkg_value=params.get("bkg_value", 0.0),
                 tail=params.get("tail", 500),
                 normalize=params.get("normalize", "first"),
+                do_fit=params.get("do_fit", True),
             )
             columns = ["cycle", "profile_bkg", "normalized"]
             table = np.column_stack(
                 [out["cycles"], out["profile_bkg"], out["normalized"]]
             )
             series = [("Rel. fluorescence", out["cycles"], out["normalized"], {})]
+            scalars = {"background": out["background"]}
+            for label, key in (("1-exp", "fit1"), ("2-exp", "fit2")):
+                fit = out.get(key)
+                if fit:
+                    series.append((f"{label} fit", out["cycles"], fit["curve"], {}))
+                    scalars.update(
+                        # A fatigue curve runs over cycles, not milliseconds:
+                        # the shared fitter names its time constants _ms, which
+                        # would be a wrong unit on this axis.
+                        {
+                            f"{key}_{k.replace('_ms', '_cycles')}": v
+                            for k, v in fit.items()
+                            if k != "curve"
+                        }
+                    )
             return PhotophysicsResult(
                 name=f"{result.name} (fatigue)",
                 mode="fatigue",
@@ -444,7 +490,7 @@ class PhotophysicsProcessor(Processor):
                 x_label="# cycle",
                 y_label="Rel. fluorescence",
                 series=series,
-                scalars={"background": out["background"]},
+                scalars=scalars,
             )
 
         if mode == "off":
