@@ -20,6 +20,7 @@ from imswitch.imcontrol.controller.controllers.EtSnoutyController import (
 from imswitch.imcontrol.controller.controllers.FocusLockController import (
     FocusCalibThread, FocusLockController, ProcessDataThread,
 )
+from imswitch.imcontrol.model.workflows.spiral import SPIRAL
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
@@ -927,7 +928,7 @@ def test_tiling_restores_origin_after_camera_failure(monkeypatch):
     )
 
     TilingController._runScan(
-        ctrl, tilingInfo, n_tiles=2, step_um=5.0,
+        ctrl, tilingInfo, n_tiles_x=2, n_tiles_y=1, pattern=SPIRAL, step_um=5.0,
         blend_overlaps=False, intensity_correction=False,
     )
 

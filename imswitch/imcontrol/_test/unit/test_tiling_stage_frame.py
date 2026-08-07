@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from imswitch.imcontrol.controller.controllers.FocusLockController import PI
+from imswitch.imcontrol.model.workflows.spiral import SPIRAL
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
@@ -74,7 +75,7 @@ class _OffsetFrameStage:
         self.hardware[axis] = value  # 'moa' is absolute in the hardware frame
 
 
-def _runScanWithStage(monkeypatch, positioner, detector, n_tiles=5):
+def _runScanWithStage(monkeypatch, positioner, detector, grid=(3, 2)):
     class _Detectors(_LeaseManager):
         def __getitem__(self, name):
             return detector
@@ -106,7 +107,9 @@ def _runScanWithStage(monkeypatch, positioner, detector, n_tiles=5):
     TilingController._runScan(
         ctrl,
         SimpleNamespace(xyPositioner='STAGE', camera='CAM'),
-        n_tiles=n_tiles,
+        n_tiles_x=grid[0],
+        n_tiles_y=grid[1],
+        pattern=SPIRAL,
         step_um=100.0,
         blend_overlaps=False,
         intensity_correction=False,
@@ -188,7 +191,7 @@ def test_tiling_unwinds_only_the_moves_it_made_when_stopped_early(monkeypatch):
     TilingController._runScan(
         ctrl,
         SimpleNamespace(xyPositioner='STAGE', camera='CAM'),
-        n_tiles=9, step_um=100.0,
+        n_tiles_x=3, n_tiles_y=3, pattern=SPIRAL, step_um=100.0,
         blend_overlaps=False, intensity_correction=False,
     )
 
@@ -314,7 +317,7 @@ def test_tiling_releases_its_chunk_consumer(monkeypatch):
     positioner = _OffsetFrameStage({'X': 0.0, 'Y': 0.0})
     detector = _ChunkDetector(framesPerRead=2)
 
-    _runScanWithStage(monkeypatch, positioner, detector, n_tiles=4)
+    _runScanWithStage(monkeypatch, positioner, detector, grid=(2, 2))
 
     assert detector.released == ['tiling']
 

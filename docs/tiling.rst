@@ -18,11 +18,10 @@ The widget
 Controls are grouped by the question they answer.
 
 Scan
-    ``N tiles`` is the exact number of positions, including the centre. The GUI
-    stops wherever that count lands in the square spiral; it does not add tiles
-    to finish the outer ring. The separate scripted
-    :class:`~imswitch.imcontrol.model.workflows.tiling.TilingWorkflow` rounds
-    its requested count up to a complete square instead.
+    ``Tiles X x Y`` is the grid, and the total is the product — the run visits
+    exactly that many positions. ``Square`` ties the two counts together;
+    unlock it for a rectangular area. Unlocking never changes the area, it only
+    stops the spinboxes following each other.
 
     ``Step (µm)`` is the stage travel between tile centres — it must be
     **smaller than the field of view**, or the tiles will not overlap and
@@ -31,6 +30,30 @@ Scan
     ``Settle (ms)`` is the wait after each stage move before the tile is
     acquired. This is the first knob to reach for when a mosaic does not line
     up: too short and tiles are captured while the stage is still ringing.
+
+    ``Pattern`` is the order tiles are visited in, and it decides where the
+    grid sits relative to the stage:
+
+    **Spiral** grows outward from the current position, so the mosaic is
+    *centred* on where you framed it and a run stopped part-way still leaves a
+    filled, centred area. Choose it when the extent is open-ended — keep going
+    until something interesting appears. A rectangular spiral is the same walk
+    with the positions outside the grid skipped; the stage does not stop on a
+    skipped position, it makes one longer move, so the number of settles and
+    focus reacquisitions is exactly the number of tiles either way. What the
+    skips cost is travel, and that grows with the aspect ratio.
+
+    **Serpentine** rasters from the current position in +X and +Y, so the stage
+    is at one *corner* of the area rather than its middle. No move in the run
+    is longer than a single tile step — rows reverse direction instead of
+    returning across — which means the settle you tuned for one step is the
+    right settle for every move. Choose it when you know the area and intend to
+    finish it, and frame the stage at the corner where it begins. The trade is
+    that a stopped run leaves a partial band rather than a centred area.
+
+    The scripted
+    :class:`~imswitch.imcontrol.model.workflows.tiling.TilingWorkflow` takes a
+    tile count and rounds it up to a complete square instead.
 
 Acquisition
     ``Mode`` chooses the *timing model*. **Free-running** plucks a frame from a

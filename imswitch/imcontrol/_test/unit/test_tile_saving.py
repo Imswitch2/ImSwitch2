@@ -11,6 +11,7 @@ from imswitch.imcommon.algorithms.tile_mosaic import (
     inspect_dataset,
     read_manifest_payload,
 )
+from imswitch.imcontrol.model.workflows.spiral import SPIRAL
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
@@ -410,7 +411,7 @@ class _Stage:
 
 
 def _runSavingScan(
-    tmp_path, monkeypatch, n_tiles=4, step_um=64.0, tile=None,
+    tmp_path, monkeypatch, grid=(2, 2), step_um=64.0, tile=None,
     save_format='TIFF',
 ):
     """Run a scan with saving on, against the real RecordingManager storer."""
@@ -481,7 +482,8 @@ def _runSavingScan(
         ctrl,
         SimpleNamespace(xyPositioner='STAGE', camera='CAM',
                         saveFormat=save_format, measurementsRoot=''),
-        n_tiles=n_tiles, step_um=step_um,
+        n_tiles_x=grid[0], n_tiles_y=grid[1], pattern=SPIRAL,
+        step_um=step_um,
         blend_overlaps=False, intensity_correction=False,
         settle_s=0.0, register_tiles=False,
         orientation=(False, False, False), save_tiles=True,
@@ -503,7 +505,7 @@ def test_saving_writes_tiles_mosaic_and_sidecars(tmp_path, monkeypatch):
 def test_saved_tiles_carry_their_stage_position(tmp_path, monkeypatch):
     """The whole point: each file knows where on the sample it came from."""
     tifffile = pytest.importorskip('tifffile')
-    _ctrl, folder = _runSavingScan(tmp_path, monkeypatch, n_tiles=4, step_um=64.0)
+    _ctrl, folder = _runSavingScan(tmp_path, monkeypatch, grid=(2, 2), step_um=64.0)
 
     positions = {}
     for path in sorted(folder.glob('tile_*')):
@@ -543,7 +545,7 @@ def test_real_stack_save_keeps_compatibility_and_2d_alignment_artifacts(
 ):
     stack = np.arange(3 * 32 * 32, dtype=np.uint16).reshape(3, 32, 32)
     _ctrl, folder = _runSavingScan(
-        tmp_path, monkeypatch, n_tiles=1, tile=stack
+        tmp_path, monkeypatch, grid=(1, 1), tile=stack
     )
     manifest = json.loads((folder / MANIFEST_NAME).read_text())
     entry = manifest['tiles'][0]
@@ -573,7 +575,7 @@ def test_structured_free_running_payload_names_its_detector_group(
     _ctrl, folder = _runSavingScan(
         tmp_path,
         monkeypatch,
-        n_tiles=1,
+        grid=(1, 1),
         tile=image,
         save_format=save_format,
     )
@@ -643,7 +645,7 @@ def test_nothing_is_written_when_saving_is_off(tmp_path, monkeypatch):
 
     TilingController._runScan(
         ctrl, SimpleNamespace(xyPositioner='STAGE', camera='CAM'),
-        n_tiles=4, step_um=8.0,
+        n_tiles_x=2, n_tiles_y=2, pattern=SPIRAL, step_um=8.0,
         blend_overlaps=False, intensity_correction=False,
         settle_s=0.0, register_tiles=False,
         orientation=(False, False, False), save_tiles=False,

@@ -645,6 +645,8 @@ Devices:
 Geometry:
 
 * ``defaultTileStepUm`` (float): Default stage step between tile centres in micrometres. Must be smaller than the field of view or the tiles cannot overlap.
+* ``defaultTilesX`` (int, default ``3``) and ``defaultTilesY`` (int, default ``3``): Opening grid size. Equal values start the widget with its ``Square`` lock engaged; unequal ones start it unlocked, so a rig that normally surveys a rectangle opens ready for one.
+* ``defaultPattern`` (str, default ``"spiral"``): ``"spiral"`` grows outward from the current position and can be stopped early with a filled, centred mosaic; ``"serpentine"`` rasters from the current position in +X and +Y with no move longer than one tile step. Anything else is refused rather than defaulted.
 * ``settleTimeMs`` (float, default ``150``): Wait after each stage move before the tile is acquired. The first thing to increase when a mosaic does not line up.
 * ``flipTileAxisX`` / ``flipTileAxisY`` (bool, default ``false``): Mirror the mosaic left/right or up/down.
 * ``swapTileAxes`` (bool, default ``false``): Exchange the mosaic axes, for a camera mounted at 90° to the stage. Applied **before** the flips. These three enumerate all eight ways a camera can sit relative to the stage.

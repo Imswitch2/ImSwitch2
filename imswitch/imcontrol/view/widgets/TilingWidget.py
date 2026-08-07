@@ -2,6 +2,8 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
+from imswitch.imcontrol.model.workflows.spiral import SERPENTINE, SPIRAL
+
 from imswitch.imcontrol.view import guitools
 from .basewidgets import Widget
 
@@ -51,7 +53,9 @@ class TilingWidget(Widget):
         self.stopButton.clicked.connect(self.sigStopTiling)
         self.tuneSegmentationButton.clicked.connect(self.sigTuneSegmentation)
         self.runCellTargetingButton.clicked.connect(self.sigRunCellTargeting)
-        self.nTilesSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.nTilesXSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.nTilesYSpinbox.valueChanged.connect(self.sigParamsChanged)
+        self.patternCombo.currentIndexChanged.connect(self.sigParamsChanged)
         self.tileStepSpinbox.valueChanged.connect(self.sigParamsChanged)
         self.blendOverlapsCheck.stateChanged.connect(self.sigParamsChanged)
         self.intensityCorrectionCheck.stateChanged.connect(self.sigParamsChanged)
@@ -83,12 +87,30 @@ class TilingWidget(Widget):
         """How much ground to cover, and how settled the stage must be."""
         grid = QtWidgets.QGridLayout()
 
-        grid.addWidget(QtWidgets.QLabel('N tiles:'), 0, 0)
-        self.nTilesSpinbox = QtWidgets.QSpinBox()
-        self.nTilesSpinbox.setMinimum(1)
-        self.nTilesSpinbox.setMaximum(10000)
-        self.nTilesSpinbox.setValue(9)
-        grid.addWidget(self.nTilesSpinbox, 0, 1)
+        grid.addWidget(QtWidgets.QLabel('Tiles X x Y:'), 0, 0)
+        tilesRow = QtWidgets.QHBoxLayout()
+        self.nTilesXSpinbox = QtWidgets.QSpinBox()
+        self.nTilesXSpinbox.setMinimum(1)
+        self.nTilesXSpinbox.setMaximum(1000)
+        self.nTilesXSpinbox.setValue(3)
+        tilesRow.addWidget(self.nTilesXSpinbox)
+        self.nTilesYSpinbox = QtWidgets.QSpinBox()
+        self.nTilesYSpinbox.setMinimum(1)
+        self.nTilesYSpinbox.setMaximum(1000)
+        self.nTilesYSpinbox.setValue(3)
+        tilesRow.addWidget(self.nTilesYSpinbox)
+        self.squareLockCheck = QtWidgets.QCheckBox('Square')
+        self.squareLockCheck.setChecked(True)
+        self.squareLockCheck.setToolTip(
+            'Keep the two counts equal. Unlock for a rectangular area.'
+        )
+        tilesRow.addWidget(self.squareLockCheck)
+        grid.addLayout(tilesRow, 0, 1)
+        # The lock ties the two spinboxes rather than hiding one, so the grid
+        # stays readable as N x N and unlocking never changes the area.
+        self.nTilesXSpinbox.valueChanged.connect(self._matchTileCounts)
+        self.nTilesYSpinbox.valueChanged.connect(self._matchTileCounts)
+        self.squareLockCheck.toggled.connect(self._onSquareLockToggled)
 
         grid.addWidget(QtWidgets.QLabel('Step (µm):'), 0, 2)
         self.tileStepSpinbox = QtWidgets.QDoubleSpinBox()
@@ -113,6 +135,22 @@ class TilingWidget(Widget):
             'Increase this first if tiles do not overlap cleanly.'
         )
         grid.addWidget(self.settleTimeSpinbox, 1, 1)
+
+        grid.addWidget(QtWidgets.QLabel('Pattern:'), 1, 2)
+        self.patternCombo = QtWidgets.QComboBox()
+        self.patternCombo.addItem('Spiral (centred)', SPIRAL)
+        self.patternCombo.addItem('Serpentine (from here)', SERPENTINE)
+        self.patternCombo.setToolTip(
+            'The order tiles are visited in, and where the grid sits.\n\n'
+            'Spiral grows outward from the current position, so the mosaic is\n'
+            'centred here and a run stopped early still leaves a filled,\n'
+            'centred area. Choose it when the extent is open-ended.\n\n'
+            'Serpentine rasters from the current position in +X and +Y, one\n'
+            'tile step at a time with no jumps, so every settle follows a\n'
+            'single step. Choose it when you know the area and will finish it:\n'
+            'frame the stage at one corner of what you want.'
+        )
+        grid.addWidget(self.patternCombo, 1, 3)
         grid.setColumnStretch(4, 1)
         return self._group('Scan', grid)
 
@@ -319,8 +357,43 @@ class TilingWidget(Widget):
         self.startButton.setEnabled(not running)
         self.stopButton.setEnabled(running)
 
+    def _matchTileCounts(self, value: int) -> None:
+        """Hold the counts equal while the lock is on, without recursing."""
+        if not self.squareLockCheck.isChecked():
+            return
+        for spinbox in (self.nTilesXSpinbox, self.nTilesYSpinbox):
+            if spinbox.value() == value:
+                continue
+            spinbox.blockSignals(True)
+            spinbox.setValue(value)
+            spinbox.blockSignals(False)
+
+    def _onSquareLockToggled(self, locked: bool) -> None:
+        if locked:
+            self._matchTileCounts(self.nTilesXSpinbox.value())
+
+    def getNTilesX(self) -> int:
+        return self.nTilesXSpinbox.value()
+
+    def getNTilesY(self) -> int:
+        return self.nTilesYSpinbox.value()
+
     def getNTiles(self) -> int:
-        return self.nTilesSpinbox.value()
+        """Total positions in the grid — what the progress bar counts."""
+        return self.nTilesXSpinbox.value() * self.nTilesYSpinbox.value()
+
+    def getPattern(self) -> str:
+        return self.patternCombo.currentData()
+
+    def setDefaultTileCounts(self, nx: int, ny: int) -> None:
+        self.squareLockCheck.setChecked(nx == ny)
+        self.nTilesXSpinbox.setValue(int(nx))
+        self.nTilesYSpinbox.setValue(int(ny))
+
+    def setDefaultPattern(self, pattern: str) -> None:
+        index = self.patternCombo.findData(pattern)
+        if index >= 0:
+            self.patternCombo.setCurrentIndex(index)
 
     def getTileStepUm(self) -> float:
         return self.tileStepSpinbox.value()

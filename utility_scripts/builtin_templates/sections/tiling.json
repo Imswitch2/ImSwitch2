@@ -10,6 +10,9 @@
     {"key": "zPositioner",      "label": "Z Positioner (opt.)","type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Z positioner used for per-tile autofocus. Leave empty to disable.", "opts": ["positioners"]},
     {"key": "camera",           "label": "Align on (opt.)",    "type": "ref",  "default": "",   "req": false, "grp": "Devices", "tip": "Detector used for tile alignment. Empty = first forAcquisition detector.", "opts": ["detectors"]},
     {"key": "detectorTransforms","label": "Detector transforms","type": "json", "default": "{}", "req": false, "grp": "Devices", "tip": "Optional. How each additionally saved detector's pixels relate to the aligned-on one, e.g. {\"APD1\": \"identity\"} after confirming pixel registration. Detectors left out are still saved, recorded as 'unknown'.", "opts": []},
-    {"key": "defaultTileStepUm","label": "Default tile step (µm)","type": "float","default": 100.0,"req": false,"grp": "Basic",  "tip": "Default stage step between tile centres, in micrometres.", "opts": []}
+    {"key": "defaultTileStepUm","label": "Default tile step (µm)","type": "float","default": 100.0,"req": false,"grp": "Basic",  "tip": "Default stage step between tile centres, in micrometres.", "opts": []},
+    {"key": "defaultTilesX",    "label": "Default tiles X",     "type": "int",  "default": 3,    "req": false, "grp": "Basic",  "tip": "Default grid width. Equal to Y opens the widget with its square lock on.", "opts": []},
+    {"key": "defaultTilesY",    "label": "Default tiles Y",     "type": "int",  "default": 3,    "req": false, "grp": "Basic",  "tip": "Default grid height.", "opts": []},
+    {"key": "defaultPattern",   "label": "Default pattern",     "type": "enum", "default": "spiral", "req": false, "grp": "Basic", "tip": "spiral = grows outward from the current position, stoppable early with a centred mosaic. serpentine = rasters from the current position in +X/+Y, no move longer than one tile step.", "opts": ["spiral", "serpentine"]}
   ]
 }

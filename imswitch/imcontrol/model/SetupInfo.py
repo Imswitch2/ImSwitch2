@@ -318,6 +318,16 @@ class TilingInfo:
     declares their relationship to this reference detector. """
 
     defaultTileStepUm: float = 100.0
+
+    #: Default grid size. Equal values start the widget with its square lock
+    #: engaged; unequal ones start it unlocked, so a rig that normally surveys
+    #: a rectangle opens ready for one.
+    defaultTilesX: int = 3
+    defaultTilesY: int = 3
+    #: ``"spiral"`` grows outward from the current position and can be stopped
+    #: early with a filled, centred mosaic; ``"serpentine"`` rasters from the
+    #: current position in +X and +Y with no move longer than one tile step.
+    defaultPattern: str = 'spiral'
     """ Default stage step between tile centres, in µm. """
 
     settleTimeMs: float = 150.0

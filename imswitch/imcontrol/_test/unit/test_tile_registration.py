@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from imswitch.imcontrol.model.workflows.spiral import SPIRAL
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
@@ -330,7 +331,7 @@ def test_registration_recovers_a_systematic_stage_undershoot(monkeypatch):
         ctrl,
         SimpleNamespace(xyPositioner='STAGE', camera='CAM',
                         registrationMaxShiftFraction=0.5),
-        n_tiles=4, step_um=step_um,
+        n_tiles_x=2, n_tiles_y=2, pattern=SPIRAL, step_um=step_um,
         blend_overlaps=False, intensity_correction=False,
         settle_s=0.0, register_tiles=True,
     )
@@ -405,7 +406,7 @@ def test_settle_time_is_honoured(monkeypatch):
 
     TilingController._runScan(
         ctrl, SimpleNamespace(xyPositioner='STAGE', camera='CAM'),
-        n_tiles=3, step_um=4.0,
+        n_tiles_x=3, n_tiles_y=1, pattern=SPIRAL, step_um=4.0,
         blend_overlaps=False, intensity_correction=False,
         settle_s=0.75, register_tiles=False,
     )

@@ -17,7 +17,7 @@ from imswitch.imcontrol.model.workflows.positioning_request import (
 from imswitch.imcontrol.model.managers import LeasePurpose
 from imswitch.imcontrol.model.managers.RecordingManager import FailureKind
 from imswitch.imcontrol.model.workflows import StitchedImage
-from imswitch.imcontrol.model.workflows.spiral import spiral_moves
+from imswitch.imcontrol.model.workflows.spiral import SPIRAL, tile_moves
 from imswitch.imcontrol.model.workflows.tile_dataset import (
     TileDataset,
     TileRecord,
@@ -478,6 +478,13 @@ class TilingController(ImConWidgetController):
             return
 
         self._widget.setDefaultStep(tilingInfo.defaultTileStepUm)
+        self._widget.setDefaultTileCounts(
+            getattr(tilingInfo, 'defaultTilesX', 3) or 3,
+            getattr(tilingInfo, 'defaultTilesY', 3) or 3,
+        )
+        self._widget.setDefaultPattern(
+            getattr(tilingInfo, 'defaultPattern', SPIRAL) or SPIRAL
+        )
         self._widget.setDefaultSettleTimeMs(
             getattr(tilingInfo, 'settleTimeMs', _SETTLE_S * 1000.0)
         )
@@ -535,7 +542,10 @@ class TilingController(ImConWidgetController):
                 )
             return
         try:
-            n_tiles = self._widget.getNTiles()
+            n_tiles_x = self._widget.getNTilesX()
+            n_tiles_y = self._widget.getNTilesY()
+            n_tiles = n_tiles_x * n_tiles_y
+            pattern = self._widget.getPattern()
             step_um = self._widget.getTileStepUm()
             blend_overlaps = self._widget.getBlendOverlaps()
             intensity_correction = self._widget.getIntensityCorrection()
@@ -566,7 +576,8 @@ class TilingController(ImConWidgetController):
             # in the middle would otherwise silently shift the rest along.
             self._scanThread = threading.Thread(
                 target=self._runScan,
-                args=(tilingInfo, n_tiles, step_um, blend_overlaps,
+                args=(tilingInfo, n_tiles_x, n_tiles_y, pattern,
+                      step_um, blend_overlaps,
                       intensity_correction),
                 kwargs=dict(
                     settle_s=settle_s,
@@ -675,7 +686,9 @@ class TilingController(ImConWidgetController):
     def _runScan(
         self,
         tilingInfo,
-        n_tiles: int,
+        n_tiles_x: int,
+        n_tiles_y: int,
+        pattern: str,
         step_um: float,
         blend_overlaps: bool,
         intensity_correction: bool,
@@ -687,6 +700,10 @@ class TilingController(ImConWidgetController):
         scan_source_key=None,
         detector_name=None,
     ) -> None:
+        # The grid's total, which is what progress, the payload session and the
+        # last-tile test all count. Derived rather than passed so it cannot
+        # disagree with the pattern actually being walked.
+        n_tiles = n_tiles_x * n_tiles_y
         acqHandle = None
         positioner = None
         detector = None
@@ -790,7 +807,9 @@ class TilingController(ImConWidgetController):
 
             gx, gy = 0, 0
             lastEmit = 0.0
-            for i, (dx, dy) in enumerate(spiral_moves(n_tiles)):
+            for i, (dx, dy) in enumerate(
+                tile_moves(n_tiles_x, n_tiles_y, pattern)
+            ):
                 if self._stopRequested:
                     break
 
