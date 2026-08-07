@@ -16,13 +16,19 @@ from imswitch.improcess.profile_helpers import (
     ExponentialFit,
     build_profile_record,
 )
-from imswitch.improcess.model.plotting import build_delta_x_record
+from imswitch.improcess.model.plotting import (
+    PlotPayload,
+    PlotSeries,
+    build_delta_x_record,
+)
 
 
 class ProfileWidget(QtWidgets.QWidget):
     """Draw line/rectangle ROIs on a napari viewer and plot their profiles."""
 
     sigResultPushed = QtCore.Signal(object, object)
+    sigPlotPushed = QtCore.Signal(object)
+    """One PlotPayload sent to the Graph panel, to sit alongside others."""
 
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -39,6 +45,9 @@ class ProfileWidget(QtWidgets.QWidget):
         }
         self._last_kind = None
         self._last_payload: list[tuple[str, np.ndarray, np.ndarray]] = []
+        #: Fitted curves drawn over the profile, kept so a pushed plot
+        #: carries the fit the user is actually looking at.
+        self._last_fit_curves: list[tuple[str, np.ndarray, np.ndarray]] = []
         self._current_record_inputs = []
         self._measurementRegion: pg.LinearRegionItem | None = None
         self._measurementValues: tuple[float, float] | None = None
@@ -65,6 +74,12 @@ class ProfileWidget(QtWidgets.QWidget):
             self.fitCombo.addItem(fit.label, fit.id)
 
         self.pushButton = QtWidgets.QPushButton("Push to table")
+        self.pushGraphButton = QtWidgets.QPushButton("Push to graph")
+        self.pushGraphButton.setToolTip(
+            "Send this profile (and its fit) to the Graph panel, where it "
+            "stays put — push a second one to compare two reconstructions"
+        )
+        self.pushGraphButton.setEnabled(False)
         self.saveButton = QtWidgets.QPushButton("Save CSV...")
 
         self.fitSummary = QtWidgets.QLabel("")
@@ -93,6 +108,7 @@ class ProfileWidget(QtWidgets.QWidget):
         toolbar.addWidget(self.fitCombo)
         toolbar.addSpacing(8)
         toolbar.addWidget(self.pushButton)
+        toolbar.addWidget(self.pushGraphButton)
         toolbar.addWidget(self.saveButton)
         toolbar.addStretch()
 
@@ -110,6 +126,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self.widthSpinBox.valueChanged.connect(self._refresh)
         self.fitCombo.currentIndexChanged.connect(self._refresh)
         self.pushButton.clicked.connect(self._onPushToTable)
+        self.pushGraphButton.clicked.connect(self._onPushToGraph)
         self.saveButton.clicked.connect(self._onSaveCSV)
         self._toolManager.sigShapesChanged.connect(self._shapesChanged)
         try:
@@ -118,6 +135,16 @@ class ProfileWidget(QtWidgets.QWidget):
             pass
 
         self._drawEmpty()
+
+    def setCurrentResult(self, result) -> None:
+        """Recompute the profile against the newly selected result.
+
+        The ROI is drawn in the viewer and the pixels are read from whatever
+        image layer is active, so switching reconstruction changes the answer
+        — but nothing here notices a result change on its own, and a profile
+        left over from the previous result looks exactly like a valid one.
+        """
+        self._refresh()
 
     def _makeModeButton(self, text: str, mode: str, checked: bool = False):
         button = QtWidgets.QPushButton(text)
@@ -165,6 +192,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self._removeMeasurementRegion(clear_values=True)
         self._last_kind = None
         self._last_payload = []
+        self._last_fit_curves = []
         self._current_record_inputs = []
         self.fitSummary.setText("")
         self.plot.clear()
@@ -180,6 +208,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
         self.plot.setLabel("left", "Intensity")
         self._last_payload = []
+        self._last_fit_curves = []
         self._current_record_inputs = []
 
         if endpoints is None:
@@ -226,6 +255,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
         self.plot.setLabel("left", "Mean intensity")
         self._last_payload = []
+        self._last_fit_curves = []
         self._current_record_inputs = []
 
         if bounds is None:
@@ -277,6 +307,7 @@ class ProfileWidget(QtWidgets.QWidget):
 
     def _setMeasurementAvailable(self, available: bool) -> None:
         self.measureButton.setEnabled(bool(available))
+        self.pushGraphButton.setEnabled(bool(available))
         if not available:
             self.measureButton.setChecked(False)
             self._removeMeasurementRegion(clear_values=True)
@@ -359,6 +390,10 @@ class ProfileWidget(QtWidgets.QWidget):
         return x_min, x_max
 
     def _applyFits(self):
+        # Recomputed from scratch on every refresh, like the curves they
+        # annotate — a fit left over from the previous result or fit type
+        # would otherwise ride along into a pushed plot.
+        self._last_fit_curves = []
         fit_id = self.fitCombo.currentData()
         fitter = self._fitters.get(fit_id)
         if fitter is None or fitter.id == "none":
@@ -388,7 +423,9 @@ class ProfileWidget(QtWidgets.QWidget):
                                              rec_input[3], rec_input[4], rec_input[5], None))
                 continue
             pen = pg.mkPen(pg.intColor(index + 3), width=2, style=QtCore.Qt.DashLine)
-            self.plot.plot(result.x, result.y, pen=pen, name=f"{name} {result.name}")
+            fit_label = f"{name} {result.name}"
+            self.plot.plot(result.x, result.y, pen=pen, name=fit_label)
+            self._last_fit_curves.append((fit_label, result.x, result.y))
             summaries.append(f"{name}: {result.summary}")
             if index < len(self._current_record_inputs):
                 rec_input = self._current_record_inputs[index]
@@ -443,6 +480,46 @@ class ProfileWidget(QtWidgets.QWidget):
             return "µm"
         return str(unit or "px")
 
+    def _onPushToGraph(self):
+        payload = self.buildPlotPayload()
+        if payload is None:
+            return
+        self.sigPlotPushed.emit(payload)
+
+    def buildPlotPayload(self):
+        """This profile and its fit as a PlotPayload the Graph can hold.
+
+        Titled after the source layer, which carries the result's name, so a
+        profile pushed from one reconstruction and one from the next are
+        distinguishable side by side — and pushing the same profile twice
+        replaces its earlier version instead of piling up.
+        """
+        if not self._last_payload:
+            return None
+        series = [
+            PlotSeries(name=str(name), x=np.asarray(x), y=np.asarray(y))
+            for name, x, y in self._last_payload
+        ]
+        series.extend(
+            PlotSeries(
+                name=str(name),
+                x=np.asarray(x),
+                y=np.asarray(y),
+                style={"dash": True},
+            )
+            for name, x, y in self._last_fit_curves
+        )
+        layer = self._activeImageLayer()
+        source = str(getattr(layer, "name", "") or "profile")
+        kind = "line profile" if self._last_kind == "line" else "rectangle profile"
+        return PlotPayload(
+            title=f"{source} — {kind}",
+            x_label=f"Distance ({self._distanceUnit()})",
+            y_label="Intensity",
+            series=series,
+            metadata={"source_layer": source, "profile_kind": self._last_kind},
+        )
+
     def _onPushToTable(self):
         if not self._current_record_inputs:
             return
@@ -480,8 +557,14 @@ class ProfileWidget(QtWidgets.QWidget):
         except Exception as e:
             self.fitSummary.setText(f"Error saving CSV: {e}")
 
+    def _sourceName(self) -> str:
+        """Name of the layer this profile was measured on."""
+        layer = self._activeImageLayer()
+        return str(getattr(layer, "name", "") or "image")
+
     def _buildOutputRecords(self) -> list[dict]:
         """Build profile/fit rows plus the optional manual Δx measurement."""
+        source = self._sourceName()
         records = []
         for rec_input in self._current_record_inputs:
             if len(rec_input) == 7:
@@ -498,7 +581,10 @@ class ProfileWidget(QtWidgets.QWidget):
                 unit=unit,
                 fit_metrics=fit_metrics,
             )
-            records.append(record)
+            # Which result the profile was measured on. The Results table
+            # accumulates, so rows pushed from two reconstructions are
+            # otherwise indistinguishable apart from the values themselves.
+            records.append({"source": source, **record})
 
         if self._measurementValues is not None and self.measureButton.isChecked():
             unit = (
@@ -509,12 +595,15 @@ class ProfileWidget(QtWidgets.QWidget):
                 "Line Profile" if self._last_kind == "line"
                 else "Rectangle Projections"
             )
-            records.append(build_delta_x_record(
-                title,
-                f"Distance ({unit})",
-                *self._measurementValues,
-                kind="profile-delta-x",
-            ))
+            records.append({
+                "source": source,
+                **build_delta_x_record(
+                    title,
+                    f"Distance ({unit})",
+                    *self._measurementValues,
+                    kind="profile-delta-x",
+                ),
+            })
         return records
 
     @staticmethod

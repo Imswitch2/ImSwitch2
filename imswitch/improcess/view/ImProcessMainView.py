@@ -1109,9 +1109,36 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if widget is None:
             return
         sig = getattr(widget, "sigResultPushed", None)
-        if sig is None:
+        if sig is not None:
+            sig.connect(self._onResultPushed)
+        plot_sig = getattr(widget, "sigPlotPushed", None)
+        if plot_sig is not None:
+            plot_sig.connect(self._onPlotPushed)
+
+    def _onPlotPushed(self, payload) -> None:
+        """Add a curve pushed by a panel to the Graph and bring it into view.
+
+        The Graph otherwise only ever shows the current result's own plots,
+        which is why two profiles could be measured but never compared: the
+        first was replaced the moment the second result was selected.
+        """
+        graph = getattr(self, 'graphWidget', None)
+        if graph is None:
+            # Panels are runtime-loaded; pushing to a panel that has never
+            # been opened should open it, not drop the measurement. The
+            # request goes through the loader so the Graph gets its
+            # controller, exactly as the toolbar button does.
+            self.sigLoadProcessorRequested.emit('graph')
+            graph = getattr(self, 'graphWidget', None)
+        if graph is None:
+            self._showStatusMessage("Could not open the Graph panel; see log.")
             return
-        sig.connect(self._onResultPushed)
+        try:
+            graph.addPlotPayload(payload)
+        except Exception:
+            self._logger.exception("Could not add a pushed plot to the Graph panel")
+            return
+        self.raiseDockByTitle("Graph")
 
     def _onResultPushed(self, columns, records):
         self.appendResultTableRecords(columns, records)

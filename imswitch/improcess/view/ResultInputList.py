@@ -83,6 +83,12 @@ class ResultInputListWidget(QtWidgets.QWidget):
     def __init__(self, results=None, parent=None, *, preselected=None, accepts=None):
         super().__init__(parent)
         self._inputs: list[tuple[str, object, bool]] = []
+        # Set once the user ticks something themselves. After that, an
+        # incoming preselection no longer overrides their picks: choosing
+        # inputs here and then clicking through the reconstruction list to
+        # look at one of them is normal, and it must not silently undo the
+        # choice.
+        self._userPicked = False
 
         self.inputList = QtWidgets.QListWidget()
         self.inputList.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -101,13 +107,19 @@ class ResultInputListWidget(QtWidgets.QWidget):
         layout.addWidget(self.inputList)
         layout.addLayout(orderButtons)
 
-        self.inputList.itemChanged.connect(lambda _item: self.sigInputsChanged.emit())
+        self.inputList.itemChanged.connect(self._itemChangedByUser)
         self.setResults(results or [], preselected=preselected, accepts=accepts)
+
+    def _itemChangedByUser(self, _item) -> None:
+        # Only user interaction reaches this: setResults blocks signals while
+        # it rebuilds and emits sigInputsChanged itself.
+        self._userPicked = True
+        self.sigInputsChanged.emit()
 
     def setResults(self, results, *, preselected=None, accepts=None) -> None:
         """Rebuild the list from ``results``, keeping prior checks where possible."""
         previously_checked = self.checked_results() if self._inputs else None
-        if preselected is None and previously_checked:
+        if previously_checked and (preselected is None or self._userPicked):
             preselected = previously_checked
         self._inputs = expand_input_choices(
             list(results or []), preselected=preselected, accepts=accepts

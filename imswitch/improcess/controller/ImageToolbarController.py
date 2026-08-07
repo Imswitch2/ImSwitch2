@@ -267,9 +267,7 @@ class ImageToolbarController:
         if len(loaded) < 2:
             return
         params = MergeChannelsDialog.get_params(
-            loaded,
-            parent=self._view,
-            preselected=self._selectedProcessingResults(),
+            loaded, parent=self._view, preselected=self._multiSelection()
         )
         if params is None:
             return
@@ -309,9 +307,7 @@ class ImageToolbarController:
         if len(loaded) < 2:
             return
         params = StackCombineDialog.get_params(
-            loaded,
-            parent=self._view,
-            preselected=self._selectedProcessingResults(),
+            loaded, parent=self._view, preselected=self._multiSelection()
         )
         if params is None:
             return
@@ -584,6 +580,17 @@ class ImageToolbarController:
                 return selected
         active = self._reconstructionController.getActiveResult()
         return [active] if self._resultHasImage(active) else []
+
+    def _multiSelection(self):
+        """A deliberate multi-selection, or ``None`` to pre-check everything.
+
+        The reconstruction list always has its current item selected, so
+        seeding a two-input picker from a one-item selection would open every
+        dialog with one input ticked and OK already disabled — an operation
+        that plainly should work on the two results in front of you.
+        """
+        selected = self._selectedProcessingResults()
+        return selected if len(selected) >= 2 else None
 
     def _loadedImageResults(self):
         """Every loaded image result — the pool the multi-input pickers offer."""

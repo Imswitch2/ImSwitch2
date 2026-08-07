@@ -56,6 +56,14 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self._mode_changed()
         self._set_message("No statistics computed.")
 
+    def setCurrentResult(self, result) -> None:
+        """Recompute against the newly selected result.
+
+        Same ROI, different pixels: statistics computed from the previous
+        reconstruction are indistinguishable from fresh ones on screen.
+        """
+        self.update_stats()
+
     def update_stats(self) -> None:
         image = self._current_image_2d()
         if image is None:
@@ -87,6 +95,10 @@ class ROIStatsWidget(QtWidgets.QWidget):
             return
         stats = self._current_stats
         record = {
+            # Which result these numbers came from. The Results table is an
+            # accumulating log, so rows pushed from two reconstructions are
+            # otherwise indistinguishable apart from the values themselves.
+            "source": self._source_name(),
             "kind": "roi-stats",
             "area_px": float(stats.area_pixels),
             "finite_px": float(stats.finite_pixels),
@@ -143,6 +155,11 @@ class ROIStatsWidget(QtWidgets.QWidget):
         if len(scale) < 2:
             return 1.0, 1.0
         return scale[-2], scale[-1]
+
+    def _source_name(self) -> str:
+        """Name of the layer the statistics were measured on."""
+        layer = self._active_image_layer()
+        return str(getattr(layer, "name", "") or "image")
 
     def _current_image_2d(self):
         layer = self._active_image_layer()

@@ -538,14 +538,32 @@ def test_merge_channels_is_enabled_from_loaded_results_not_the_selection():
     assert view.action_enabled["stack-combine"] is True
 
 
-def test_merge_channels_offers_all_results_and_prechecks_the_selection(monkeypatch):
+def test_merge_channels_offers_all_results_and_prechecks_everything_by_default(
+    monkeypatch,
+):
+    """The list always has its current item selected, so seeding the picker
+    from a one-item selection would open the dialog with OK already dead."""
     controller, _view, recon, second = _two_result_controller()
     calls = _capture_dialog(monkeypatch, MergeChannelsDialog, None)
 
     controller.mergeChannels()
 
     assert calls["results"] == [recon.result, second]
-    assert calls["preselected"] == [recon.result]
+    assert calls["preselected"] == []  # None -> the dialog checks them all
+
+
+def test_merge_channels_prechecks_a_deliberate_multi_selection(monkeypatch):
+    controller, _view, recon, second = _two_result_controller()
+    third = _Result(np.zeros((2, 2), dtype=np.float32))
+    third.name = "third"
+    recon.all_results = [recon.result, second, third]
+    recon.selected_results = [recon.result, third]
+    calls = _capture_dialog(monkeypatch, MergeChannelsDialog, None)
+
+    controller.mergeChannels()
+
+    assert calls["results"] == [recon.result, second, third]
+    assert calls["preselected"] == [recon.result, third]
 
 
 def test_merge_channels_publishes_the_stack_in_the_chosen_order(monkeypatch):
@@ -614,14 +632,19 @@ def test_merge_channels_reports_an_incompatible_pick(monkeypatch):
     assert view.messages and "does not match" in view.messages[0]
 
 
-def test_stack_combine_offers_all_results_and_prechecks_the_selection(monkeypatch):
+def test_stack_combine_offers_all_results_with_the_same_precheck_rule(monkeypatch):
     controller, _view, recon, second = _two_result_controller()
     calls = _capture_dialog(monkeypatch, StackCombineDialog, None)
 
     controller.stackCombine()
 
     assert calls["results"] == [recon.result, second]
-    assert calls["preselected"] == [recon.result]
+    assert calls["preselected"] == []
+
+    recon.selected_results = [recon.result, second]
+    controller.stackCombine()
+
+    assert calls["preselected"] == [recon.result, second]
 
 
 def test_max_projection_runs_over_every_selected_result():

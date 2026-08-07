@@ -46,6 +46,9 @@ def test_profile_delta_x_is_pushed_with_profile_record():
     assert len(records) == 2
     assert records[0]["kind"] == "line"
     assert records[1] == {
+        # Every pushed row names the result it was measured on: the table
+        # accumulates, so rows from two reconstructions must be tellable apart.
+        "source": "image",
         "kind": "profile-delta-x",
         "plot": "Line Profile",
         "x_axis": "Distance (µm)",
@@ -53,6 +56,7 @@ def test_profile_delta_x_is_pushed_with_profile_record():
         "x_2": 7.75,
         "delta_x": 5.5,
     }
+    assert records[0]["source"] == "image"
     assert all(key in columns for key in records[1])
     assert "Δx=5.5" in widget.measurementSummary.text()
 

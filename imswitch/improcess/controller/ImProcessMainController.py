@@ -67,6 +67,9 @@ class ImProcessMainController(MainController):
         # like Multicolor) expose sigResultProduced; we forward it to the comm
         # channel once. Tracks which panels have had that bridge connected.
         self._panelResultBridges = set()
+        # Measurement panels re-measuring on every result change; tracked by
+        # widget identity so reopening a dock cannot double-connect.
+        self._resultFollowers = set()
 
         # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
         # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
@@ -460,6 +463,26 @@ class ImProcessMainController(MainController):
         # reconstruction list and feed them the current result.
         if hasattr(widget, "sigResultProduced"):
             self._wire_producing_panel(widget)
+            return
+        # Measurement panels (Profile, ROI stats, ROI manager) neither run a
+        # processor nor publish results, so neither branch above reaches them
+        # — and they read their pixels from the viewer, which switching
+        # reconstruction silently changes underneath them.
+        self._wire_result_follower(widget)
+
+    def _wire_result_follower(self, widget) -> None:
+        """Have a panel recompute when the selected result changes.
+
+        A measurement panel that keeps showing numbers from the previous
+        reconstruction is worse than one showing none: nothing on screen says
+        which result the values belong to.
+        """
+        setter = getattr(type(widget), "setCurrentResult", None)
+        if not callable(setter) or id(widget) in self._resultFollowers:
+            return
+        self.__commChannel.sigCurrentResultChanged.connect(widget.setCurrentResult)
+        self._resultFollowers.add(id(widget))
+        self._seed_runtime_result_processor(widget)
 
     def _seed_graph_controller(self) -> None:
         """Render the active result's plot payloads into a freshly opened Graph."""

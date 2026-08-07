@@ -206,6 +206,15 @@ class ROIManagerWidget(QtWidgets.QWidget):
         with Path(path).open("w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
 
+    def setCurrentResult(self, result) -> None:
+        """Re-measure the managed ROIs against the newly selected result.
+
+        The ROI set is deliberately kept across results — measuring the same
+        regions on several reconstructions is the point — but the numbers
+        beside them have to follow the result they are measured on.
+        """
+        self.refresh_stats()
+
     def refresh_stats(self) -> None:
         image = self._current_image_2d()
         if image is None:

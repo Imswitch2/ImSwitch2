@@ -239,13 +239,24 @@ selection.
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
   shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
-  image source cannot drift between tools.
+  image source cannot drift between tools.  They also re-measure when the
+  selected result changes: the ROI stays where it is and the numbers follow
+  the result now under it, rather than lingering from the previous one.
 
 The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
 and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
 profile is pushed to the results table or saved as CSV.
+
+*Push to graph* sends the profile and its fit to the Graph panel, opening it
+if needed.  Pushed plots are **pinned**: they stay when the selected result
+changes, where the Graph's own content is replaced by each result's plots.
+That is what makes two profiles comparable — measure one reconstruction, push,
+select the next, measure, push — and the Graph's *Overlay* button then draws
+every plot it holds in one set of axes.  *Clear pushed* forgets them again.
+Rows pushed to the Results table carry a ``source`` column naming the result
+they were measured on, since that table accumulates across results.
 
 Ephemeral preview layers (the segmentation preview, multicolor's
 split-boundary and detected-bead overlays) are the exception: they are
