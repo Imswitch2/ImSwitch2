@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
-from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.analysis.roi_stats import ROIStats, compute_roi_stats
 from imswitch.improcess.layer_selection import active_image_layer
 from .ResultsTableWidget import ResultsTableWidget
@@ -16,10 +16,15 @@ class ROIStatsWidget(QtWidgets.QWidget):
 
     sigResultPushed = QtCore.Signal(object, object)
 
+    #: Stable owner key for the shared drawing tool. Not id(self), so a panel
+    #: that is closed and reopened reclaims its own shapes.
+    TOOL_OWNER = "improcess.roi-stats"
+
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
-        self._toolManager = ViewerToolManager(napariViewer)
+        self._toolService = ViewerToolService.for_viewer(napariViewer)
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         self._current_stats = None
 
         self.modeCombo = QtWidgets.QComboBox()
@@ -47,7 +52,9 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self.runButton.clicked.connect(self.update_stats)
         self.clearButton.clicked.connect(self._clear_roi)
         self.pushButton.clicked.connect(self._push_to_table)
-        self._toolManager.sigShapesChanged.connect(self.update_stats)
+        self._toolService.add_callback(
+            self._toolToken, self._toolService.sigShapesChanged, self.update_stats
+        )
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self.update_stats())
         except Exception:
@@ -80,15 +87,31 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self._show_stats(stats)
 
     def _mode_changed(self) -> None:
+        # Re-acquire: taking the drawing tool is what makes newly drawn shapes
+        # attributable to this panel rather than whoever held it last.
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         if self.modeCombo.currentText() == "Rectangle ROI":
-            self._toolManager.set_mode("rectangle")
+            self._toolService.set_mode(self._toolToken, "rectangle")
         else:
-            self._toolManager.set_mode("pan")
+            self._toolService.set_mode(self._toolToken, "pan")
         self.update_stats()
 
     def _clear_roi(self) -> None:
-        self._toolManager.clear_shapes()
+        # Clears only this panel's shapes; the Profile panel's line survives.
+        self._toolService.clear(self._toolToken)
         self.update_stats()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        """Give up the drawing tool and disconnect our viewer callbacks.
+
+        There is no dock-close signal to hang teardown on, so without this the
+        handlers this panel installed keep firing after it is gone.
+        """
+        try:
+            self._toolService.release(self._toolToken)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _push_to_table(self) -> None:
         if self._current_stats is None:
@@ -131,9 +154,11 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self.table.set_records(["Metric", "Value"], [{"Metric": "Status", "Value": message}])
 
     def _current_rectangle_roi(self) -> tuple[int, int, int, int] | None:
-        for index, shape_type in enumerate(self._toolManager.get_shape_types()):
+        # Only this panel's shapes: a rectangle drawn for the Profile panel is
+        # not ours to measure.
+        for index, shape_type, _vertices in self._toolService.shapes(self._toolToken):
             if shape_type == "rectangle":
-                r0, c0, r1, c1 = self._toolManager.get_rectangle_bounds(index)
+                r0, c0, r1, c1 = self._toolService.get_rectangle_bounds(index)
                 # Bounds come from the Shapes layer in world coordinates; convert
                 # to pixel indices via the image scale before cropping (no-op
                 # when scale == 1, but required for scaled reconstructions).

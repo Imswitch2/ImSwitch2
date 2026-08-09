@@ -7,7 +7,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 from scipy.ndimage import map_coordinates
 
-from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.profile_helpers import (
     ProfileFit,
@@ -30,10 +30,14 @@ class ProfileWidget(QtWidgets.QWidget):
     sigPlotPushed = QtCore.Signal(object)
     """One PlotPayload sent to the Graph panel, to sit alongside others."""
 
+    #: Stable owner key for the shared drawing tool (see ViewerToolService).
+    TOOL_OWNER = "improcess.profile"
+
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
-        self._toolManager = ViewerToolManager(napariViewer)
+        self._toolService = ViewerToolService.for_viewer(napariViewer)
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         self._fitters = {
             fit.id: fit
             for fit in (
@@ -140,7 +144,9 @@ class ProfileWidget(QtWidgets.QWidget):
         self.pushButton.clicked.connect(self._onPushToTable)
         self.pushGraphButton.clicked.connect(self._onPushToGraph)
         self.saveButton.clicked.connect(self._onSaveCSV)
-        self._toolManager.sigShapesChanged.connect(self._shapesChanged)
+        self._toolService.add_callback(
+            self._toolToken, self._toolService.sigShapesChanged, self._shapesChanged
+        )
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self._refresh())
         except Exception:
@@ -177,10 +183,16 @@ class ProfileWidget(QtWidgets.QWidget):
     def _modeChanged(self, button):
         mode = button.property("profileMode")
         self._mode = mode
-        self._toolManager.clear_shapes()
+        # Re-acquire so shapes drawn from here on are attributed to this panel,
+        # and clear only ours — this used to wipe the shared layer, taking the
+        # ROI statistics panel's rectangle with it.
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        self._toolService.clear(self._toolToken)
         # A Z profile is measured over a rectangle, so it draws with the same
         # tool; only what gets plotted differs.
-        self._toolManager.set_mode("rectangle" if mode == "zprofile" else mode)
+        self._toolService.set_mode(
+            self._toolToken, "rectangle" if mode == "zprofile" else mode
+        )
         self._drawEmpty()
         if mode == "zprofile":
             # Unlike the in-plane profiles this one is meaningful with no ROI
@@ -188,28 +200,36 @@ class ProfileWidget(QtWidgets.QWidget):
             self._plotZProfile(None)
 
     def _clearShapes(self):
-        self._toolManager.clear_shapes()
+        self._toolService.clear(self._toolToken)
         self._drawEmpty()
         if self._mode == "zprofile":
             self._plotZProfile(None)
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        """Release the drawing tool and our viewer callbacks on close."""
+        try:
+            self._toolService.release(self._toolToken)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _shapesChanged(self):
         if self._mode == "zprofile":
             self._plotZProfile(self._findFirstShape("rectangle"))
             return
-        mode = self._toolManager.get_mode()
+        mode = self._toolService.get_mode()
         if mode == "line":
             self._plotLineProfile(self._findFirstShape("line"))
         elif mode == "rectangle":
             self._plotRectangleProfiles(self._findFirstShape("rectangle"))
 
     def _findFirstShape(self, shape_type: str):
-        for index, stype in enumerate(self._toolManager.get_shape_types()):
+        for index, stype, _vertices in self._toolService.shapes(self._toolToken):
             if stype == shape_type:
                 if shape_type == "line":
-                    return self._toolManager.get_line_endpoints(index)
+                    return self._toolService.get_line_endpoints(index)
                 if shape_type == "rectangle":
-                    return self._toolManager.get_rectangle_bounds(index)
+                    return self._toolService.get_rectangle_bounds(index)
         return None
 
     def _refresh(self):

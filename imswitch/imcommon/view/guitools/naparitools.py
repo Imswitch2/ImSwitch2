@@ -1153,7 +1153,7 @@ class ViewerToolManager(QtCore.QObject):
 
     _PIXEL_WIDTH = 2  # desired line width in screen pixels
 
-    def __init__(self, napari_viewer):
+    def __init__(self, napari_viewer, enforce_single=True):
         """
         Initialize the ViewerToolManager.
 
@@ -1161,12 +1161,21 @@ class ViewerToolManager(QtCore.QObject):
         ----------
         napari_viewer : napari.Viewer
             The napari viewer instance to manage tools for.
+        enforce_single : bool
+            Keep at most one rectangle and one line in the layer, discarding
+            older ones as new shapes are drawn.  This is the historical
+            behaviour and stays the default for single-panel callers such as
+            imcontrol's ImageWidget.  ``ViewerToolService`` turns it off,
+            because on a layer shared between panels a global "last one wins"
+            rule makes one panel's drawing delete another's; the service
+            applies the same limit per owner instead.
         """
         super().__init__()
         self._viewer = napari_viewer
         self._shapes_layer = None
         self._current_mode = 'pan'
         self._processing_data_change = False
+        self._enforce_single = bool(enforce_single)
 
         # Recompute edge width whenever the camera zoom changes so user-drawn
         # shapes stay ~PIXEL_WIDTH screen pixels thick regardless of which
@@ -1206,19 +1215,43 @@ class ViewerToolManager(QtCore.QObject):
         except Exception:
             pass
 
+    LAYER_NAME = 'Viewer Tools'
+
     def _ensure_shapes_layer(self):
-        """Lazily create the Shapes layer if it doesn't exist."""
-        if self._shapes_layer is None:
+        """Lazily create the Shapes layer, adopting an existing one if present.
+
+        Several panels can manage tools on the same viewer.  Creating a layer
+        unconditionally gave each of them its own ('Viewer Tools',
+        'Viewer Tools [1]', ...), so a shape drawn for one panel was invisible
+        to the others and the layer list filled up with duplicates.  Adopting
+        the layer this viewer already has keeps them on one.
+        """
+        if self._shapes_layer is not None:
+            return
+
+        adopted = None
+        try:
+            for layer in self._viewer.layers:
+                if getattr(layer, 'name', None) == self.LAYER_NAME:
+                    adopted = layer
+                    break
+        except Exception:
+            adopted = None
+
+        if adopted is not None:
+            self._shapes_layer = adopted
+        else:
             self._shapes_layer = self._viewer.add_shapes(
-                name='Viewer Tools',
+                name=self.LAYER_NAME,
                 edge_color='yellow',
                 face_color=[0, 0, 0, 0],  # Transparent fill
                 edge_width=self._get_edge_width(),
                 ndim=2
             )
-            # Connect to data change events
-            self._shapes_layer.events.data.connect(self._on_shapes_data_changed)
-            self._shapes_layer.events.mode.connect(self._on_mode_changed)
+        # Connect to data change events (also for an adopted layer: each
+        # manager needs its own notifications).
+        self._shapes_layer.events.data.connect(self._on_shapes_data_changed)
+        self._shapes_layer.events.mode.connect(self._on_mode_changed)
     
     def _on_shapes_data_changed(self, event):
         """Handle shapes data change events and enforce single rectangle/line constraint."""
@@ -1226,10 +1259,10 @@ class ViewerToolManager(QtCore.QObject):
         if self._processing_data_change:
             return
         
-        if self._shapes_layer is None:
+        if self._shapes_layer is None or not self._enforce_single:
             self.sigShapesChanged.emit()
             return
-        
+
         try:
             self._processing_data_change = True
             

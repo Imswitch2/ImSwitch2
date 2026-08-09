@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,12 +16,56 @@ from imswitch.imcommon.algorithms.roi import ROIRecord
 from .roi_stats import ROIStats, compute_roi_stats
 
 
+def replaced(roi: ROIRecord, **changes) -> ROIRecord:
+    """Return ``roi`` with ``changes`` applied, preserving every other field.
+
+    This is the *only* sanctioned way to produce a modified record. Building a
+    fresh ``ROIRecord(...)`` field by field inside the model looks equivalent
+    but silently drops any field the call site forgot — which is harmless while
+    the record has six fields and lossy the moment it gains geometry, style or
+    provenance. ``dataclasses.replace`` copies what it is not asked to change,
+    so new fields are preserved for free.
+    """
+    return dataclasses.replace(roi, **changes)
+
+
+def _empty_stats(area_pixels: int = 0) -> ROIStats:
+    """Statistics for an ROI that could not be measured."""
+    nan = float("nan")
+    return ROIStats(
+        area_pixels=int(area_pixels),
+        finite_pixels=0,
+        mean=nan,
+        median=nan,
+        std=nan,
+        minimum=nan,
+        maximum=nan,
+        total=nan,
+    )
+
+
 @dataclass(frozen=True)
 class ROIStatsRecord:
-    """Statistics for one managed ROI."""
+    """Statistics for one managed ROI.
+
+    ``measured`` is False for ROIs that were deliberately skipped (hidden), and
+    ``error`` carries the reason an ROI could not be measured. Both exist so a
+    single unmeasurable ROI reports itself instead of aborting the whole batch.
+    """
 
     roi: ROIRecord
     stats: ROIStats
+    measured: bool = True
+    error: str | None = None
+
+    @property
+    def note(self) -> str:
+        """Short human-readable reason the statistics are missing, else ''."""
+        if self.error:
+            return self.error
+        if not self.measured:
+            return "hidden"
+        return ""
 
     def to_row(self) -> dict[str, object]:
         return {
@@ -29,6 +74,7 @@ class ROIStatsRecord:
             "source": self.roi.source,
             "bounds": self.roi.bounds,
             "visible": self.roi.visible,
+            "measured": self.measured,
             "area_pixels": self.stats.area_pixels,
             "finite_pixels": self.stats.finite_pixels,
             "mean": self.stats.mean,
@@ -37,6 +83,7 @@ class ROIStatsRecord:
             "min": self.stats.minimum,
             "max": self.stats.maximum,
             "sum": self.stats.total,
+            "note": self.note,
         }
 
 
@@ -44,7 +91,11 @@ class ROIManagerModel:
     """In-memory ImageJ-like ROI list model."""
 
     def __init__(self, rois: list[ROIRecord] | None = None):
-        self._rois = list(rois or [])
+        # Seeding goes through add() so the "names are unique" invariant holds
+        # however the model was built, not only when ROIs arrive one at a time.
+        self._rois: list[ROIRecord] = []
+        for roi in rois or []:
+            self.add(roi)
 
     @property
     def rois(self) -> list[ROIRecord]:
@@ -54,14 +105,7 @@ class ROIManagerModel:
         if replace:
             self.remove(roi.name)
         elif self.get(roi.name) is not None:
-            roi = ROIRecord(
-                name=self.unique_name(roi.name),
-                roi_type=roi.roi_type,
-                bounds=roi.bounds,
-                visible=roi.visible,
-                source=roi.source,
-                pixels=roi.pixels,
-            )
+            roi = replaced(roi, name=self.unique_name(roi.name))
         self._rois.append(roi)
         return roi
 
@@ -85,14 +129,7 @@ class ROIManagerModel:
             raise KeyError(old_name)
         if new_name != old_name and self.get(new_name) is not None:
             raise ValueError(f"ROI {new_name!r} already exists")
-        updated = ROIRecord(
-            name=new_name,
-            roi_type=roi.roi_type,
-            bounds=roi.bounds,
-            visible=roi.visible,
-            source=roi.source,
-            pixels=roi.pixels,
-        )
+        updated = replaced(roi, name=new_name)
         self._rois = [updated if item.name == old_name else item for item in self._rois]
         return updated
 
@@ -100,29 +137,13 @@ class ROIManagerModel:
         roi = self.get(name)
         if roi is None:
             raise KeyError(name)
-        return self.add(
-            ROIRecord(
-                name=self.unique_name(f"{roi.name}_copy"),
-                roi_type=roi.roi_type,
-                bounds=roi.bounds,
-                visible=roi.visible,
-                source=roi.source,
-                pixels=roi.pixels,
-            )
-        )
+        return self.add(replaced(roi, name=self.unique_name(f"{roi.name}_copy")))
 
     def set_visible(self, name: str, visible: bool) -> ROIRecord:
         roi = self.get(name)
         if roi is None:
             raise KeyError(name)
-        updated = ROIRecord(
-            name=roi.name,
-            roi_type=roi.roi_type,
-            bounds=roi.bounds,
-            visible=bool(visible),
-            source=roi.source,
-            pixels=roi.pixels,
-        )
+        updated = replaced(roi, visible=bool(visible))
         self._rois = [updated if item.name == name else item for item in self._rois]
         return updated
 
@@ -135,19 +156,61 @@ class ROIManagerModel:
             i += 1
         return f"{base}_{i}"
 
-    def compute_stats(self, image: np.ndarray, *, visible_only: bool = False) -> list[ROIStatsRecord]:
-        rois = [roi for roi in self._rois if roi.visible or not visible_only]
-        return [
-            ROIStatsRecord(roi=roi, stats=_compute_roi_record_stats(image, roi))
-            for roi in rois
-        ]
+    def compute_stats(
+        self,
+        image: np.ndarray,
+        *,
+        visible_only: bool = False,
+        measure_hidden: bool = False,
+    ) -> list[ROIStatsRecord]:
+        """Measure the managed ROIs against ``image``.
+
+        Never raises for a single bad ROI: one that is empty or falls outside
+        the image comes back with NaN statistics and an ``error``, so the other
+        ROIs still report their numbers.
+
+        ``visible_only`` drops hidden ROIs from the output entirely. Otherwise
+        they are still listed — the panel needs a row to hold the checkbox that
+        turns them back on — but are not measured unless ``measure_hidden``.
+        """
+        records: list[ROIStatsRecord] = []
+        for roi in self._rois:
+            if not roi.visible:
+                if visible_only:
+                    continue
+                if not measure_hidden:
+                    records.append(
+                        ROIStatsRecord(roi=roi, stats=_empty_stats(), measured=False)
+                    )
+                    continue
+            try:
+                stats = _compute_roi_record_stats(image, roi)
+            except Exception as exc:
+                records.append(
+                    ROIStatsRecord(
+                        roi=roi,
+                        stats=_empty_stats(),
+                        measured=False,
+                        error=str(exc) or exc.__class__.__name__,
+                    )
+                )
+                continue
+            records.append(ROIStatsRecord(roi=roi, stats=stats))
+        return records
 
     def to_dicts(self) -> list[dict[str, object]]:
         return [roi.to_dict() for roi in self._rois]
 
     @classmethod
     def from_dicts(cls, data: list[dict[str, object]]) -> "ROIManagerModel":
-        return cls([ROIRecord.from_dict(item) for item in data])
+        # Route every record through add() rather than seeding the list
+        # directly: names are the panel's row key, and a payload holding two
+        # "cell" entries would otherwise produce two rows that both resolve to
+        # the first one — and a delete that removes both.
+        model = cls()
+        for item in data:
+            model.add(ROIRecord.from_dict(item))
+        return model
 
 
 def rectangle_roi_from_vertices(
