@@ -157,6 +157,19 @@ def test_shared_latest_frame_fans_chunk_out_to_recording_consumer():
     np.testing.assert_array_equal(latest, recorded[-1])
 
 
+def test_chunk_consumer_drain_refreshes_shared_latest_frame():
+    """A fast BeadRec drain must not leave Live View on its old image."""
+    det = _FakeDetector()
+    assert det.readChunk('beadrec') == []
+    det.feed(3)
+
+    beadFrames = det.readChunk('beadrec')
+    latest = det.getLatestFrameShared()
+
+    assert len(beadFrames) == 3
+    np.testing.assert_array_equal(latest, beadFrames[-1])
+
+
 def test_idle_consumer_queue_is_capped():
     det = _FakeDetector()
     det.readChunk('idle')  # registers, then never polls again

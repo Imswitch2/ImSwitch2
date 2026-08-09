@@ -13,7 +13,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.reconstructors.snouty import SnoutyReconstructor
-from imswitch.improcess.reconstructors.snouty.metadata import snouty_params_from_attrs, DEFAULT_PARAMS
+from imswitch.improcess.reconstructors.snouty.metadata import (
+    DEFAULT_PARAMS,
+    snouty_param_overrides_from_attrs,
+    snouty_params_from_attrs,
+)
 from imswitch.improcess.reconstructors.snouty.restack import restack_interleaved
 
 
@@ -53,11 +57,13 @@ class TestSnoutyMetadata:
         assert params['cycles'] == 10
         assert params['planes_in_cycle'] == 5
     
-    def test_flip_data(self):
-        """Should extract flip_data from positive_direction."""
+    def test_scan_direction_does_not_control_flip_data(self):
+        """Stage direction and deskew plane-order flipping are independent."""
         attrs = {"ScanStage:positive_direction": True}
+        overrides = snouty_param_overrides_from_attrs(attrs)
         params = snouty_params_from_attrs(attrs)
-        assert params['flip_data'] is True
+        assert 'flip_data' not in overrides
+        assert params['flip_data'] is False
     
     def test_partial_attrs(self):
         """Partial attrs should override only specified values."""
@@ -239,7 +245,7 @@ class TestSnoutyReconstructor:
         """Test output shape matches geometry transformation."""
         # Manual computation of expected shape
         c_px = 100.0  # nm
-        alpha_deg = 35.0
+        alpha_deg = DEFAULT_PARAMS['alpha_deg']
         dy = 210.0  # nm
         vx = 200.0  # nm
         
@@ -371,6 +377,7 @@ class TestSnoutyParamsWidget:
         assert values['cycles'] == DEFAULT_PARAMS['cycles']
         assert values['planes_in_cycle'] == DEFAULT_PARAMS['planes_in_cycle']
         assert values['restack'] == DEFAULT_PARAMS['restack']
+        assert values['alpha_deg'] == 30.0
     
     def test_set_from_attrs(self):
         """set_from_attrs() should update widget from metadata."""
@@ -388,9 +395,42 @@ class TestSnoutyParamsWidget:
         
         assert values['c_px'] == 120.0
         assert values['cycles'] == 5
-        assert values['flip_data'] is True
+        assert values['flip_data'] is False
         # Other values should remain default
         assert values['alpha_deg'] == DEFAULT_PARAMS['alpha_deg']
+
+    def test_load_from_attrs_preserves_values_missing_from_metadata(self):
+        """Importing another dataset must not reset user-entered values."""
+        from imswitch.improcess.reconstructors.snouty.params_widget import SnoutyParamsWidget
+
+        widget = SnoutyParamsWidget()
+        geom = widget.p.param('Geometry')
+        acq = widget.p.param('Acquisition')
+        geom.param('Tilt angle').setValue(41.0)
+        geom.param('Scan step').setValue(345.0)
+        geom.param('Output voxel size').setValue(150.0)
+        acq.param('Camera offset').setValue(42.0)
+        acq.param('Flip data').setValue(True)
+        acq.param('Cycles').setValue(7)
+        acq.param('Planes per cycle').setValue(9)
+        acq.param('Restack').setValue(False)
+
+        widget.load_from_attrs({
+            "Detector:Cam:Camera pixel size": 0.12,
+            "MS-RESOLFT_Scan:cycleSteps": 5,
+            "ScanStage:positive_direction": False,
+        })
+        values = widget.get_values()
+
+        assert values['c_px'] == 120.0
+        assert values['cycles'] == 5
+        assert values['alpha_deg'] == 41.0
+        assert values['dy'] == 345.0
+        assert values['sample_vx_size'] == 150.0
+        assert values['camera_offset'] == 42.0
+        assert values['flip_data'] is True
+        assert values['planes_in_cycle'] == 9
+        assert values['restack'] is False
 
 
 class TestSnoutyGPU:
@@ -461,7 +501,7 @@ class TestSnoutyGPU:
             
             # Should match expected shape from geometry
             c_px = 100.0
-            alpha_deg = 35.0
+            alpha_deg = DEFAULT_PARAMS['alpha_deg']
             dy = 210.0
             vx = 200.0
             

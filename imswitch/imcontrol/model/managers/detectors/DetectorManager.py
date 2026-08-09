@@ -613,17 +613,9 @@ class DetectorManager(SignalInterface):
         """
         with self._chunkConsumersLock:
             if self._chunkConsumers:
-                payload = self.drainChunk()
-                self._distributeChunkLocked(payload)
-                # Cache each representation separately. Sharing one cache is
-                # how a recording used to receive a display plane: whoever
-                # drained last decided what everyone saw next.
-                display = payload.of(ChunkKind.DISPLAY)
-                if display is not None and len(display) > 0:
-                    self.__image = np.asarray(display[-1])
-                raw = payload.of(ChunkKind.RAW)
-                if raw is not None and len(raw) > 0:
-                    self._latestRawImage = np.asarray(raw[-1])
+                # _distributeChunkLocked latches both representations, so any
+                # drain refreshes them whichever participant performed it.
+                self._distributeChunkLocked(self.drainChunk())
                 # And honour the save hint, which this branch used to ignore
                 # entirely -- so merely having a recording open silently
                 # downgraded every other reader on the same detector.
@@ -671,6 +663,19 @@ class DetectorManager(SignalInterface):
         """
         if not isinstance(payload, ChunkPayload):
             payload = ChunkPayload(display=payload, raw=payload)
+
+        # Latch here rather than in the caller: any broker participant may be
+        # the one that drains the hardware queue, so a faster chunk consumer
+        # (BeadRec, say) must not leave the latest-frame readers on a stale
+        # image. Each representation gets its own cache -- sharing one is how a
+        # recording used to be handed a display plane, since whoever drained
+        # last decided what everyone saw next.
+        display = payload.of(ChunkKind.DISPLAY)
+        if display is not None and len(display) > 0:
+            self.__image = np.asarray(display[-1])
+        raw = payload.of(ChunkKind.RAW)
+        if raw is not None and len(raw) > 0:
+            self._latestRawImage = np.asarray(raw[-1])
 
         kinds = self._chunkKinds() or {}
         for key, consumerQueue in self._chunkConsumers.items():

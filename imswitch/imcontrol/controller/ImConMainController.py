@@ -7,7 +7,8 @@ import zarr
 
 from imswitch.imcommon.controller import MainController, PickDatasetsController
 from imswitch.imcommon.model import (
-    ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes
+    ostools, initLogger, generateAPI, generateShortcuts, SharedAttributes,
+    isCriticalRestoreWarning
 )
 from imswitch.imcommon.framework import Thread
 from .server.ImSwitchServer import ImSwitchServer
@@ -215,7 +216,14 @@ class ImConMainController(MainController):
 
         # Auto-restore widget states after all controllers are ready
         try:
-            getWidgetStatePersistence().loadAllWidgetStates('default')
+            restoreWarnings = []
+            getWidgetStatePersistence().loadAllWidgetStates(
+                'default', warnings_out=restoreWarnings
+            )
+            if restoreWarnings:
+                self._showWidgetStateRestoreWarnings(
+                    'Some settings could not be restored', restoreWarnings
+                )
         except Exception as e:
             self.__logger.warning(f'Failed to auto-restore widget states: {e}')
 
@@ -365,13 +373,18 @@ class ImConMainController(MainController):
         
         try:
             persistence = getWidgetStatePersistence()
-            persistence.load_from_file(filePath)
+            restoreWarnings = []
+            persistence.load_from_file(filePath, warnings_out=restoreWarnings)
             self.__logger.info(f'Widget states loaded from {filePath}')
-            QtWidgets.QMessageBox.information(
-                self.__mainView, 
-                'Load Successful', 
-                f'Widget states loaded successfully from:\n{filePath}'
+            reported = self._showWidgetStateRestoreWarnings(
+                'Settings loaded with warnings', restoreWarnings
             )
+            if not reported:
+                QtWidgets.QMessageBox.information(
+                    self.__mainView,
+                    'Load Successful',
+                    f'Widget states loaded successfully from:\n{filePath}'
+                )
         except Exception as e:
             self.__logger.error(f'Failed to load widget states: {e}')
             QtWidgets.QMessageBox.critical(
@@ -379,6 +392,41 @@ class ImConMainController(MainController):
                 'Load Failed', 
                 f'Failed to load widget states:\n{str(e)}'
             )
+
+    def _showWidgetStateRestoreWarnings(self, title, warnings):
+        """Make state-restore failures visible without crying wolf.
+
+        Only warnings that mean hardware did not take a setting get a dialog.
+        The routine ones -- a saved detector that this setup file doesn't have,
+        a parameter that no longer exists -- are logged instead: they fire on
+        every startup whenever a state file predates a setup change, and a
+        dialog the operator dismisses by reflex is worse than no dialog at all
+        when a trigger mode really has failed to apply.
+
+        Returns True when a dialog was shown.
+        """
+        critical = [warning for warning in warnings if isCriticalRestoreWarning(warning)]
+        informational = [warning for warning in warnings
+                         if not isCriticalRestoreWarning(warning)]
+
+        if informational:
+            self.__logger.info(
+                f'{title} -- saved settings that no longer apply: {informational}'
+            )
+
+        if not critical:
+            return False
+
+        self.__logger.warning(f'{title}: {critical}')
+        warningText = '\n'.join(f'• {warning}' for warning in critical)
+        QtWidgets.QMessageBox.warning(
+            self.__mainView,
+            title,
+            'Some saved settings were not applied to the hardware. '
+            'Check these details before acquiring data.\n\n'
+            f'{warningText}',
+        )
+        return True
 
     def openShortcutEditor(self):
         """Open the keyboard shortcut editor dialog."""

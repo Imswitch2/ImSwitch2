@@ -99,7 +99,15 @@ class FocusLockController(ImConWidgetController):
                           self._setupInfo.focusLock.frameCropy,
                           self._setupInfo.focusLock.frameCropw,
                           self._setupInfo.focusLock.frameCroph)
-        self._master.detectorsManager[self.camera].crop(*self.cropFrame)
+        try:
+            self._master.detectorsManager[self.camera].crop(*self.cropFrame)
+        except Exception as e:
+            # A camera that refuses the configured focus-lock ROI must not stop
+            # the controller from being built -- this runs during __init__, so
+            # letting it propagate would prevent ImSwitch from starting at all.
+            self._logger.error(
+                f'Focus lock could not crop {self.camera} to {self.cropFrame}: {e}'
+            )
         self._widget.setKp(self._setupInfo.focusLock.piKp)
         self._widget.setKi(self._setupInfo.focusLock.piKi)
 

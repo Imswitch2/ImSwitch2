@@ -66,8 +66,8 @@ space.
 | `planes_in_cycle`  | int  | planes acquired per cycle |
 | `restack`          | bool | de-interlace before deskew |
 
-Mini_Recon's defaults (used when metadata is missing): `c_px=100 nm`,
-`alpha_deg=35°`, `dy=210 nm`, `sample_vx_size=200 nm`,
+ImProcess defaults (originally based on Mini_Recon and used at widget
+initialization): `c_px=100 nm`, `alpha_deg=30°`, `dy=210 nm`, `sample_vx_size=200 nm`,
 `camera_offset=100 ADU`, `flip_data=False`, `cycles=1`,
 `planes_in_cycle=1`, `restack=True`.
 
@@ -79,10 +79,10 @@ Mini_Recon's defaults (used when metadata is missing): `c_px=100 nm`,
 | `MS-RESOLFT_Scan:cycleStepSizeUm` | `dy` | µm → nm (×1000) |
 | `MS-RESOLFT_Scan:cycleSteps` | `cycles` | int |
 | `MS-RESOLFT_Scan:roSteps` | `planes_in_cycle` | int |
-| `ScanStage:positive_direction` | `flip_data` | bool |
-
 ImSwitch2 emits these keys today, so auto-detection will work end-to-end.
-The widget still exposes them so the user can override.
+Only parameters actually present in the metadata are updated; other widget
+values are preserved. Stage scan direction is intentionally not mapped to
+the independent `flip_data` setting.
 
 ---
 

@@ -8,6 +8,12 @@ def askYesNoQuestion(widget, title, question):
     return result == QtWidgets.QMessageBox.Yes
 
 
+def showWarning(widget, title, message):
+    """ Tells the user about something that went wrong but was recovered from,
+    e.g. hardware refusing a setting the GUI had already accepted. """
+    QtWidgets.QMessageBox.warning(widget, title, message)
+
+
 def askForTextInput(widget, title, label, suggested=None):
     """ Asks the user to enter a text string. Returns the string if "yes" is
     clicked, None otherwise. """

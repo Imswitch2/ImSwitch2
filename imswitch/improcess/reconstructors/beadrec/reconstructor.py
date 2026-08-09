@@ -2,8 +2,8 @@
 
 Reconstructs a bead image from a recorded camera frame stream (one scan position
 per frame; each pixel = the mean intensity in a detection ROI of that frame),
-optionally fitting a 2D model (Gaussian / donut) for FWHM / resolution. Reuses
-the hardware-agnostic bead algorithms now in
+optionally fitting one of the shared Gaussian, donut, exponential, or periodic
+models. Reuses the hardware-agnostic bead algorithms now in
 :mod:`imswitch.imcommon.algorithms.bead_recognition` (moved out of imcontrol so
 ImProcess can use them without a cross-module import).
 """
@@ -124,7 +124,7 @@ class _BeadRecParamWidget(QtWidgets.QWidget):
 
 
 class BeadRecReconstructor(Reconstructor):
-    """Raster-reconstruct a recorded bead scan, with an optional 2D-model fit."""
+    """Raster-reconstruct a recorded bead scan, with an optional model fit."""
 
     name = "Bead reconstruction"
     id = "beadrec"

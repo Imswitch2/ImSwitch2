@@ -275,6 +275,31 @@ def test_apply_component_state_applies_trigger_mode(cameras):
     assert camera1.parameters['Trigger source'].value == 'External "frame-trigger"'
 
 
+def test_failed_trigger_restore_warns_and_widget_keeps_hardware_value(cameras):
+    """A refused trigger write must not leave the settings tree displaying the
+    saved value as though the camera accepted it."""
+    controller, camera1, _ = cameras
+    originalSetParameter = camera1.setParameter
+
+    def rejectingSetParameter(name, value):
+        if name == 'Trigger source':
+            camera1.calls.append(('setParameter', name, value))
+            raise RuntimeError('camera rejected trigger write')
+        return originalSetParameter(name, value)
+
+    camera1.setParameter = rejectingSetParameter
+
+    warnings = controller.applyComponentState(
+        savedState(), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    shown = controller._widget.trees['Camera1'].p.param(
+        'Acquisition mode').param('Trigger source').value()
+    assert any('Trigger source' in warning and 'camera rejected' in warning
+               for warning in warnings)
+    assert camera1.parameters['Trigger source'].value == 'Internal trigger'
+    assert shown == 'Internal trigger'
+
+
 def test_apply_component_state_skips_read_only_parameters(cameras):
     """Legacy files still carry camera readings; they must be ignored, and the
     hardware value refreshed rather than overwritten with a stale number."""
@@ -390,6 +415,64 @@ def test_apply_component_state_never_acquires(cameras):
 
     forbidden = {'startAcquisition', 'stopAcquisition', 'startLive', 'flushBuffers'}
     assert not any(call[0] in forbidden for call in camera1.calls)
+
+
+# --- a detector that refuses the ROI --------------------------------------
+
+def test_adjust_frame_reports_a_refused_roi_instead_of_raising(cameras):
+    """crop() raises when the camera rejects the ROI outright. adjustFrame runs
+    from __init__'s execOnAll, so letting that propagate would abort controller
+    construction and stop ImSwitch from starting."""
+    controller, camera1, _ = cameras
+
+    def refusingCrop(hpos, vpos, hsize, vsize):
+        raise RuntimeError('camera remained at full frame')
+    camera1.crop = refusingCrop
+
+    failures = controller.adjustFrame(detector=camera1)
+
+    assert [name for name, _ in failures] == ['Camera1']
+    assert 'full frame' in failures[0][1]
+
+
+def test_widget_shows_hardware_geometry_after_a_refused_roi(cameras):
+    """The frame fields must fall back to what the detector really has, not
+    keep displaying an ROI that was never applied."""
+    controller, camera1, _ = cameras
+    camera1.frameStart = (0, 0)
+    camera1.shape = (2048, 2048)
+
+    def refusingCrop(hpos, vpos, hsize, vsize):
+        raise RuntimeError('camera remained at full frame')
+    camera1.crop = refusingCrop
+
+    params = controller.allParams['Camera1']
+    params.x0.setValue(512)
+    params.width.setValue(400)
+    controller.adjustFrame(detector=camera1)
+
+    assert (params.x0.value(), params.width.value()) == (0, 2048)
+
+
+def test_restore_warnings_distinguish_skipped_from_hardware_failures(cameras):
+    """A saved detector this setup doesn't have is routine; a setting the
+    hardware refused is not. Only the latter should reach the operator."""
+    from imswitch.imcommon.model import isCriticalRestoreWarning
+    controller, camera1, _ = cameras
+
+    warnings = controller.applyComponentState(
+        savedState('NonExistentCam'), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert warnings and not any(isCriticalRestoreWarning(w) for w in warnings)
+
+    def refusingCrop(hpos, vpos, hsize, vsize):
+        raise RuntimeError('camera remained at full frame')
+    camera1.crop = refusingCrop
+
+    warnings = controller.applyComponentState(
+        savedState('Camera1'), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert any(isCriticalRestoreWarning(w) for w in warnings)
 
 
 # --- edge cases -----------------------------------------------------------

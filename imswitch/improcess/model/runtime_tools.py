@@ -73,6 +73,14 @@ _NON_PROCESSOR_TOOL_SPECS = {
         processor_id=None,
         category="ROI",
     ),
+    "metadata": RuntimeAnalysisToolSpec(
+        id="metadata",
+        title="Metadata",
+        attribute="metadataWidget",
+        widget_kind="metadata",
+        processor_id=None,
+        category="Exploration",
+    ),
 }
 
 _PANEL_SHORTCUTS = (
@@ -105,6 +113,11 @@ _PANEL_SHORTCUTS = (
         id="segmentation",
         title="Segmentation",
         tooltip="Open the segmentation panel",
+    ),
+    RuntimeAnalysisPanelShortcut(
+        id="metadata",
+        title="Metadata",
+        tooltip="Open the file metadata panel",
     ),
 )
 

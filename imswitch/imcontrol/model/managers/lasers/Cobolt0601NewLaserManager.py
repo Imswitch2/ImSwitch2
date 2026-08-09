@@ -27,6 +27,10 @@ Safety design (matches the WFS reference at
 - ``emissionControl="pause"`` is the exception for SCPI/OEM firmware that
   should not receive ``l0``. It keeps the controller in modulation-gated and
   paused state, then resumes only after the requested power has been written.
+- ``startupControl="software"`` explicitly starts controllers that require
+  ``@cob1`` once per session. It is deliberately separate from command-profile
+  discovery because starting a laser is a mutating operation and cannot be
+  probed safely.
 """
 
 from imswitch.imcommon.model import initLogger
@@ -80,6 +84,10 @@ class Cobolt0601NewLaserManager(LaserManager):
       ``"cobolt.scpi-compatible"``, or ``"auto"`` to discover it from
       read-only probes. Omitting it means ``auto``, which reproduces the
       manager's long-standing detection behavior for existing setup files.
+    - ``startupControl`` -- ``"external"`` (default) never sends the software
+      start command. ``"software"`` sends ``@cob1`` once during safe-state
+      initialization and requires ``emissionControl="pause"`` so later off
+      transitions do not undo the start with ``l0``.
     - ``scpiPowerUnit`` -- unit expected by SCPI power setpoint commands:
       ``"mW"`` (default, matches upstream ``pycobolt``) or ``"W"`` for
       firmware/configurations that expose SCPI setpoints in watts. Retained
@@ -122,6 +130,20 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._protocol_profile = str(self._protocol_profile).strip()
         self._profiles = {}
         self._profile = None
+
+        # Starting the laser/TEC sequence is an explicit, per-device policy.
+        # It must never be inferred from a failed read-only protocol probe:
+        # unlike dialect queries, the software-start operation changes device
+        # state and can have emission consequences.
+        self._startup_control = str(
+            laserInfo.managerProperties.get('startupControl', 'external')
+        ).strip().lower()
+        if self._startup_control not in ('external', 'software'):
+            self.__logger.warning(
+                f'Unknown Cobolt startupControl={self._startup_control!r}; '
+                f'defaulting to external (no software start).'
+            )
+            self._startup_control = 'external'
 
         self._scpi_power_unit = str(
             laserInfo.managerProperties.get('scpiPowerUnit', 'mW')
@@ -476,18 +498,31 @@ class Cobolt0601NewLaserManager(LaserManager):
         does not have. Catching it here reports a configuration error instead
         of surfacing later as a failed emission transition at the first enable.
         """
-        if not self._pause_mode:
-            return
         profile = self._profile
+        if self._startup_control == 'software' and not self._pause_mode:
+            raise DeviceInitializationError(
+                f'Cobolt {self._port}: startupControl="software" requires '
+                f'emissionControl="pause". Master-off l0 would undo the '
+                f'software start and require another controller start.'
+            )
+
+        required = []
+        if self._pause_mode:
+            required.extend(('pause', 'resume'))
+        if self._startup_control == 'software':
+            required.append('start_controller')
+
         unsupported = getattr(profile, 'unsupported_operations', frozenset())
-        missing = [op for op in ('pause', 'resume') if op in unsupported]
+        missing = [
+            op for op in required
+            if op in unsupported or not callable(getattr(profile, op, None))
+        ]
         if missing:
             raise DeviceInitializationError(
-                f'Cobolt {self._port}: emissionControl="pause" requires '
-                f'{" and ".join(missing)}, which profile '
-                f'{profile.profile_id} does not support. Use '
-                f'emissionControl="master", or configure a profile that '
-                f'supports pausing emission.'
+                f'Cobolt {self._port}: the configured emission/startup policy '
+                f'requires {" and ".join(missing)}, which profile '
+                f'{profile.profile_id} does not support. Choose compatible '
+                f'protocolProfile, emissionControl, and startupControl values.'
             )
 
     # --- Per-action helpers, delegating to the selected profile ---
@@ -519,28 +554,21 @@ class Cobolt0601NewLaserManager(LaserManager):
     def _init_safe_state(self) -> None:
         """Put the laser into the safe state at startup.
 
-        - autostart off (``@cobas 0``) — universal
-        - modulation mode armed at the configured idle power — firmware-branched
-        - master ``l0`` so even without TTL the beam is dark — universal
+        Master control disables autostart, arms modulation mode, and confirms
+        master ``l0``. Pause control arms the idle-low digital modulation gate,
+        optionally performs the explicitly configured software start, and then
+        confirms emission pause.
 
-        ``l0`` is the safety-critical command; if it fails initialization
-        raises, because a laser whose beam could not be confirmed dark must
-        not be handed to the GUI as a working device. The mode-entry is
-        best-effort because the master switch already guarantees the beam is
-        dark.
+        The final dark-state operation (``l0`` or pause) is safety-critical; if
+        it fails initialization raises because a laser whose beam could not be
+        confirmed dark must not be handed to the GUI as a working device.
         """
         if self._pause_mode:
-            # SAFETY: do NOT send '@cob1' here. On this OEM-locked firmware
-            # '@cob1' does not start the laser immediately (the controller is in
-            # standby until a physical interlock edge) — instead it PRIMES a
-            # pending turn-on that fires the moment the operator cycles the
-            # interlock at startup. The laser would then emit by itself even
-            # though it is "off" in the GUI. We therefore leave the laser in the
-            # modulation safe state only: PowerModulation + digital gate on, so
-            # with the scanner's TTL idle-low the beam is held dark, plus
-            # 'las:paus 1'. The once-per-start interlock cycle then only CLEARS
-            # the standby state; light is produced solely when the user turns the
-            # laser on in the GUI (setEnabled -> las:paus 0 + constant power).
+            # The modulation gate is established before any optional software
+            # start, so the scanner's idle-low TTL holds the beam dark. Existing
+            # OEM/interlock-locked units retain startupControl="external": on
+            # those controllers a software start can prime unexpected emission
+            # at the next physical interlock edge and must never be inferred.
             #
             # TODO(640 / OEM-locked Cobolt fw 1.2.1.0): the once-per-start
             # interlock cycle itself is still required because the controller
@@ -548,7 +576,26 @@ class Cobolt0601NewLaserManager(LaserManager):
             # edge clears, and '@cobas' (autostart config) is permission-denied
             # over serial. A real fix needs vendor reconfiguration of the
             # controller. Revisit if Cobolt/HUBNER provide an unlock/restart.
-            self._enter_modulation_mode(self._modulation_power_mw)
+            modulation_ready = self._enter_modulation_mode(
+                self._modulation_power_mw
+            )
+            if self._startup_control == 'software':
+                if not modulation_ready:
+                    raise DeviceInitializationError(
+                        f'Cobolt {self._port}: the modulation gate could not be '
+                        f'established, so the configured software start was '
+                        f'not attempted.'
+                    )
+                if not self._run('start_controller'):
+                    # The start outcome may be unknown. Pause is recovery, not
+                    # an alternative start command, and is safe to issue even
+                    # when the controller rejected the start.
+                    self._run('pause')
+                    raise DeviceInitializationError(
+                        f'Cobolt {self._port}: software controller start failed '
+                        f'during safe-state initialization. Emission pause was '
+                        f'requested as recovery; verify the shutter state.'
+                    )
             ok_pause = self._run('pause')
             if not ok_pause:
                 raise DeviceInitializationError(
@@ -560,8 +607,8 @@ class Cobolt0601NewLaserManager(LaserManager):
             self._enabled = False
             self.__logger.debug(
                 f'Cobolt {self._port} initialised in safe state '
-                f'(SCPI pause mode: modulation-gated + paused, autostart NOT '
-                f'armed — no emission until turned on in the GUI).'
+                f'(SCPI pause mode: modulation-gated + paused, startup='
+                f'{self._startup_control}).'
             )
         else:
             self._run('disable_autostart')
@@ -810,6 +857,7 @@ class Cobolt0601NewLaserManager(LaserManager):
             'requestedEmissionControl': self._emission_control,
             'resolvedEmissionControl': 'pause' if self._pause_mode else 'master',
             'emissionControl': 'pause' if self._pause_mode else 'master',
+            'startupControl': self._startup_control,
             'scpiPowerUnit': 'W' if self._scpi_power_unit == 'w' else 'mW',
         }
 

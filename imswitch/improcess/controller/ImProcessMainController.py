@@ -432,6 +432,18 @@ class ImProcessMainController(MainController):
             # seed it so the graph is populated the moment it appears.
             self._seed_graph_controller()
             return
+        if processor_id == "metadata":
+            if self.mainViewController.metadataController is None:
+                from .MetadataController import MetadataController
+
+                self.mainViewController.metadataController = (
+                    self.__factory.createController(MetadataController, widget)
+                )
+            # Like Graph, the panel is usually opened after a file is already
+            # loaded, and the controller only sees *future* data changes —
+            # seed it so the metadata is there the moment the dock appears.
+            self._seed_metadata_controller()
+            return
         # Single-processor panels (generic ResultProcessorWidget, and custom
         # panels like Segmentation that conform to the contract) run one
         # processor and publish through ResultProcessorController.
@@ -463,6 +475,22 @@ class ImProcessMainController(MainController):
         except Exception:
             self.__logger.debug(
                 "Could not seed the Graph panel with the current result",
+                exc_info=True,
+            )
+
+    def _seed_metadata_controller(self) -> None:
+        """Show the already-loaded file's metadata in a freshly opened panel."""
+        controller = self.mainViewController.metadataController
+        if controller is None:
+            return
+        data_obj = getattr(self.mainViewController, '_currentDataObj', None)
+        if data_obj is None:
+            return
+        try:
+            controller.currentDataChanged(data_obj)
+        except Exception:
+            self.__logger.debug(
+                "Could not seed the Metadata panel with the current data",
                 exc_info=True,
             )
 

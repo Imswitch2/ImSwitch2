@@ -119,6 +119,43 @@ class TestConfigEditorSchemaDefaults:
         props = result["managerProperties"]
         # Verify structure is correct
         assert isinstance(props, dict)
+
+    def test_cobolt_editor_exposes_protocol_emission_and_startup_controls(self):
+        """The Studio form must expose the complete Cobolt policy tuple."""
+        template_path = (
+            Path(__file__).parents[4]
+            / "utility_scripts"
+            / "builtin_templates"
+            / "lasers"
+            / "Cobolt0601NewLaserManager.json"
+        )
+        with open(template_path, encoding="utf-8") as handle:
+            template = json.load(handle)
+
+        fields = {
+            field.key: field
+            for field in normalized_fields(template=template, json_schema=None)
+        }
+
+        assert fields["protocolProfile"].options == (
+            "auto",
+            "cobolt.scpi-compatible",
+            "cobolt.legacy",
+        )
+        assert fields["emissionControl"].options == (
+            "master",
+            "pause",
+            "auto",
+        )
+        assert fields["startupControl"].options == ("external", "software")
+        assert fields["startupControl"].default == "external"
+
+        default_device = build_default_device(
+            "Cobolt0601NewLaserManager",
+            template=template,
+            json_schema=None,
+        )
+        assert default_device["managerProperties"]["startupControl"] == "external"
     
     def test_schema_only_defaults(self):
         """Test that schema-only properties appear with correct types/defaults."""

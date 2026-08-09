@@ -297,6 +297,25 @@ def test_load_all_widget_states(persistence_service):
     assert controller2.state['value'] == 2
 
 
+def test_load_all_widget_states_collects_component_warnings(persistence_service):
+    controller = MockController({'value': 1})
+    persistence_service.register('Settings', controller)
+    persistence_service.saveAllWidgetStates('snapshot')
+    controller.applyComponentState = lambda state, *, applyMode: [
+        'Could not restore ROI for Camera1: camera rejected requested ROI'
+    ]
+    warnings = []
+
+    count = persistence_service.loadAllWidgetStates(
+        'snapshot', warnings_out=warnings
+    )
+
+    assert count == 1
+    assert warnings == [
+        'Settings: Could not restore ROI for Camera1: camera rejected requested ROI'
+    ]
+
+
 def test_get_registered_controllers(persistence_service):
     """Test getting list of registered controllers"""
     controller1 = MockController()

@@ -5,28 +5,47 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.model import PlotPayload, PlotSeries
+from imswitch.improcess.model.plotting import build_graph_delta_x_record
 
 
 class GraphWidget(QtWidgets.QWidget):
     """Display plot payloads published by ImProcess results."""
 
-    sigExportClicked = QtCore.Signal()
+    sigResultPushed = QtCore.Signal(object, object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self._payloads: list[PlotPayload] = []
+        self._measurementRegion: pg.LinearRegionItem | None = None
 
         self.plotSelector = QtWidgets.QComboBox()
         self.plotSelector.currentIndexChanged.connect(self._plotSelected)
 
-        self.exportButton = QtWidgets.QPushButton("Export")
-        self.exportButton.clicked.connect(self.sigExportClicked)
+        self.measureButton = QtWidgets.QPushButton("Measure Δx")
+        self.measureButton.setCheckable(True)
+        self.measureButton.setToolTip(
+            "Show two draggable vertical markers and measure their horizontal distance"
+        )
+        self.measureButton.toggled.connect(self._measurementToggled)
+
+        self.pushMeasurementButton = QtWidgets.QPushButton("Push to table")
+        self.pushMeasurementButton.setToolTip(
+            "Append the current Δx measurement to the Results table for CSV export"
+        )
+        self.pushMeasurementButton.clicked.connect(self._pushMeasurement)
+
+        self.measurementLabel = QtWidgets.QLabel("")
+        self.measurementLabel.setToolTip(
+            "Marker positions and their horizontal peak-to-peak distance"
+        )
 
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.addWidget(self.plotSelector, 1)
-        toolbar.addWidget(self.exportButton, 0)
+        toolbar.addWidget(self.measureButton, 0)
+        toolbar.addWidget(self.pushMeasurementButton, 0)
+        toolbar.addWidget(self.measurementLabel, 0)
 
         self.plot = pg.PlotWidget()
         self.plot.showGrid(x=True, y=True, alpha=0.25)
@@ -59,12 +78,13 @@ class GraphWidget(QtWidgets.QWidget):
 
         has_payloads = len(payloads) > 0
         self.plotSelector.setEnabled(has_payloads)
-        self.exportButton.setEnabled(has_payloads)
+        self.measureButton.setEnabled(has_payloads)
 
         if has_payloads:
             self.plotSelector.setCurrentIndex(0)
             self._renderPayload(payloads[0])
         else:
+            self.measureButton.setChecked(False)
             self._showEmpty()
 
     def clear(self) -> None:
@@ -72,7 +92,8 @@ class GraphWidget(QtWidgets.QWidget):
         self._payloads = []
         self.plotSelector.clear()
         self.plotSelector.setEnabled(False)
-        self.exportButton.setEnabled(False)
+        self.measureButton.setChecked(False)
+        self.measureButton.setEnabled(False)
         self._showEmpty()
 
     def _plotSelected(self, index: int) -> None:
@@ -81,6 +102,9 @@ class GraphWidget(QtWidgets.QWidget):
 
     def _showEmpty(self) -> None:
         self.plot.clear()
+        self._measurementRegion = None
+        self.measurementLabel.clear()
+        self.pushMeasurementButton.setEnabled(False)
         self.stack.setCurrentWidget(self.emptyLabel)
 
     def _renderPayload(self, payload: PlotPayload) -> None:
@@ -92,7 +116,106 @@ class GraphWidget(QtWidgets.QWidget):
         for index, series in enumerate(payload.series):
             self._renderSeries(series, index)
 
+        self._measurementRegion = None
+        if self.measureButton.isChecked():
+            self._addMeasurementRegion(payload)
+
         self.stack.setCurrentWidget(self.plot)
+
+    def _measurementToggled(self, enabled: bool) -> None:
+        payload = self._currentPayload()
+        if enabled and payload is not None:
+            self._addMeasurementRegion(payload)
+            return
+        self._removeMeasurementRegion()
+
+    def _addMeasurementRegion(self, payload: PlotPayload) -> None:
+        self._removeMeasurementRegion()
+        x_min, x_max = self._payloadXRange(payload)
+        span = x_max - x_min
+        region = pg.LinearRegionItem(
+            values=(x_min + span / 3.0, x_min + 2.0 * span / 3.0),
+            orientation="vertical",
+            brush=pg.mkBrush(255, 215, 0, 45),
+            pen=pg.mkPen(255, 190, 0, width=2),
+            hoverBrush=pg.mkBrush(255, 215, 0, 75),
+            hoverPen=pg.mkPen(255, 225, 80, width=2),
+            swapMode="sort",
+        )
+        region.setZValue(20)
+        region.sigRegionChanged.connect(self._measurementChanged)
+        self.plot.addItem(region)
+        self._measurementRegion = region
+        self._measurementChanged()
+
+    def _removeMeasurementRegion(self) -> None:
+        region = self._measurementRegion
+        self._measurementRegion = None
+        if region is not None:
+            try:
+                self.plot.removeItem(region)
+            except Exception:
+                pass
+        self.measurementLabel.clear()
+        self.pushMeasurementButton.setEnabled(False)
+
+    def _measurementChanged(self) -> None:
+        region = self._measurementRegion
+        if region is None:
+            return
+        x_1, x_2 = sorted(float(value) for value in region.getRegion())
+        delta_x = x_2 - x_1
+        self.measurementLabel.setText(
+            f"x₁={x_1:.6g}  x₂={x_2:.6g}  Δx={delta_x:.6g}"
+        )
+        self.pushMeasurementButton.setEnabled(self._currentPayload() is not None)
+
+    def _pushMeasurement(self) -> None:
+        payload = self._currentPayload()
+        region = self._measurementRegion
+        if payload is None or region is None:
+            return
+        record = build_graph_delta_x_record(payload, *region.getRegion())
+        self.sigResultPushed.emit(list(record.keys()), [record])
+
+    def _currentPayload(self) -> PlotPayload | None:
+        index = self.plotSelector.currentIndex()
+        if 0 <= index < len(self._payloads):
+            return self._payloads[index]
+        return None
+
+    @staticmethod
+    def _payloadXRange(payload: PlotPayload) -> tuple[float, float]:
+        """Return a finite horizontal range for initial measurement markers."""
+        ranges = []
+        for series in payload.series:
+            if series.kind == "image":
+                edges = np.asarray(series.style.get("x_edges", []), dtype=float)
+                finite = edges[np.isfinite(edges)]
+            elif series.kind == "histogram":
+                values = np.asarray(series.y, dtype=float).ravel()
+                finite = values[np.isfinite(values)]
+            else:
+                y = np.asarray(series.y)
+                x = np.arange(y.size) if series.x is None else np.asarray(series.x)
+                try:
+                    x = np.asarray(x, dtype=float).ravel()
+                except (TypeError, ValueError):
+                    continue
+                finite = x[np.isfinite(x)]
+            if finite.size:
+                ranges.append((float(np.min(finite)), float(np.max(finite))))
+
+        if not ranges:
+            return 0.0, 1.0
+        x_min = min(start for start, _end in ranges)
+        x_max = max(end for _start, end in ranges)
+        if not np.isfinite(x_min) or not np.isfinite(x_max):
+            return 0.0, 1.0
+        if x_max <= x_min:
+            padding = max(abs(x_min) * 0.5, 0.5)
+            return x_min - padding, x_max + padding
+        return x_min, x_max
 
     def _renderSeries(self, series: PlotSeries, index: int) -> None:
         y = np.asarray(series.y)
