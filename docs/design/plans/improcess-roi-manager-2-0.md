@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **In implementation** on `feat/improcess-roi-manager-2-0`. Tracks A+B are the committed scope (Q-13a). **Track A complete: P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅.** Next: P-1. See §15 |
+| **Status** | **Track A stabilization** on `feat/improcess-roi-manager-2-0` (merged to `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ complete · P-T 🟡 · P-F 🟡 · P-G 🟡** — implemented but not stabilized; see §15 for the open items. **P-1 does not start until §15.1 is clear.** |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1809,6 +1809,47 @@ P-T.
 
 ## 15. Implementation progress
 
+### 15.1 Track A stabilization — status correction
+
+An earlier revision of this section claimed Track A was complete. That was
+wrong: the phases were *implemented*, not *stabilized*, and review found
+correctness gaps in three of the four. The honest position:
+
+| Phase | Status | Outstanding |
+| --- | --- | --- |
+| **P-0** defects | ✅ complete | — |
+| **P-T** tool broker | ✅ stabilized | `target_image_layer` still has no consumers — deferred to P-1, which introduces the overlay that makes it observable |
+| **P-F** provenance | ✅ stabilized | multi-input processors keep only their primary input's lineage (documented, not a defect) |
+| **P-G** geometry/model | ✅ stabilized | line *sampling* remains unimplemented — line ROIs refuse to be measured as areas rather than returning a wrong number (P-3.7) |
+
+Two of these were **P0**: unrelated same-shaped layers could share an inferred
+coordinate space (so they compared `pixel-compatible` when the whole point of
+the ladder was to reject them), and a line or unknown ROI type was silently
+measured as a filled rectangle — a plausible, wrong number, which is the exact
+failure mode D-11 existed to remove.
+
+#### Stabilization pass — what was fixed
+
+| # | Issue | Fix |
+| --- | --- | --- |
+| **P0-1** | Inferred coordinate space derived from layer name + shape, so two "Reconstruction" layers at 512×512 compared `pixel-compatible` | Unknown provenance now **mints** a per-layer identity, cached on the layer. Two unknown layers are `incompatible`; the same layer keeps its identity. The View-only content fingerprint (a sampled sum that also materialised lazy data) is replaced by a **source** identity — path + size + mtime — and pathless data gets minted ids rather than an invented equivalence |
+| **P0-2** | `roi_mask_local` filled the box for lines, polylines, paths, unknown types and rotated rectangles; clipped ellipses were rebuilt from clipped bounds | New `UnsupportedROIGeometry`, raised per ROI (so the batch survives and the row says why). Vertices now win over the type name, so a rotated rectangle measures rotated. Ellipses are built over their own bounds and then cropped |
+| **P1-3** | Affine hand-composed (missing rotate/shear); capture divided by `scale`, ignoring translate | Both sides go through napari's public `data_to_world` / `world_to_data`. `_visible_pixel_scales` is gone from both panels |
+| **P1-4** | Provenance covered 3 processors; display-layer components minted fresh ids | `Processor.preserves_grid` + central `attach_provenance` at the controller call sites, so a processor only declares intent; declared on 11 same-grid processors. `DisplayLayerProcessingResult.from_spec` inherits its parent (with a per-spec grid override). Projection's `Auto` on 2D no longer claims a shared grid |
+| **P1-5** | Widget bypassed `CommandLog`; rows keyed by name; `update()` could rewrite a uid or collide | Add / Rename / Delete / Duplicate run through the log; rows key on **uid**; `update()` refuses identity changes and name collisions; `get_by_uid` added |
+| **P1-6** | Ownership by mutable indices; `dims` callbacks unreleased; a preempted token could retake the tool | Ownership keyed by shape geometry (stable when the user deletes a shape in napari); `on_viewer_event` registers viewer callbacks for release; `set_mode` requires being the active owner |
+| **P2-7** | Per-ROI full-image `float64` conversion undid the local-mask design | Slice → mask → cast. Colocalization casts slices; PSF batch converts once outside the loop |
+| **P2-8** | `nbytes` ignored, negative runs accepted, no zlib EOF/trailing check, codec chosen by estimate | All validated and typed; codec chosen on **measured** serialised size |
+
+**Still open** (carried, not fixed): `target_image_layer` has no consumers — the
+panels still call `active_image_layer()`, so overlay selection can in principle
+change the measurement target. That wiring belongs with **P-1**, which
+introduces the overlay that makes it observable.
+
+Track B (**P-1 … P-4**) has not started. Neither has any roadmap phase
+(P-5, P-S, P-U, P-6, P-P, P-7, P-R, P-F2).
+
+
 ### P-0 — Defect fixes ✅ *(uncommitted)*
 
 | Task | Outcome |
@@ -1905,15 +1946,15 @@ dependency.
 
 ### Suite status
 
-`imswitch/improcess/_test` — **1216 passed** (`-p no:napari`,
+`imswitch/improcess/_test` — **1288 passed** (`-p no:napari`,
 `QT_QPA_PLATFORM=offscreen`, `test_snouty.py` ignored as CI does).
 `imswitch/imcontrol/_test/unit` + controller + no-hardware profile —
-**2186 passed, 4 skipped**. `test_layering_boundaries.py` (extended with the
+**2645 passed, 4 skipped** (re-validated after the `fb6efb91` merge). `test_layering_boundaries.py` (extended with the
 A-26 guard, now enumerated from the package) and
 `test_result_pipeline_generality.py` green; ruff clean.
 
-**Done: P-0, P-T, P-F, P-G. Next: P-1** (Show All / Labels overlay), then P-2,
-P-J, P-3, P-4 to complete the committed scope.
+**Track A stabilized. Next: P-1** (Show All / Labels overlay), then P-2, P-J,
+P-3, P-4 to complete the committed scope.
 
 ---
 

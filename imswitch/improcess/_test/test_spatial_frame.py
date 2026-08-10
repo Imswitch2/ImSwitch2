@@ -241,7 +241,16 @@ class _Layer:
         self.scale = scale or tuple(1.0 for _ in data.shape)
         self.translate = translate or tuple(0.0 for _ in data.shape)
         self.affine = None
+        self.ndim = data.ndim
         self.metadata = dict(metadata or {})
+
+    def data_to_world(self, point):
+        import numpy as np
+
+        point = np.asarray(point, dtype=float)
+        scale = np.asarray(self.scale, dtype=float)[-len(point):]
+        translate = np.asarray(self.translate, dtype=float)[-len(point):]
+        return point * scale + translate
 
 
 def test_frame_from_layer_reads_scale_and_unit_from_one_layer():
@@ -302,3 +311,77 @@ def test_plane_position_is_axis_labelled_and_skips_displayed_axes():
     position = plane_position(viewer, frame_from_layer(layer))
 
     assert position == (("T", 2), ("Z", 1))
+
+
+# --------------------------------------------------------------------------
+# unknown provenance must not manufacture equivalence (review round 6, P0)
+# --------------------------------------------------------------------------
+
+def test_two_unknown_layers_with_the_same_name_and_shape_are_incompatible():
+    """The common case: two results both called "Reconstruction" at 512x512.
+
+    Deriving identity from name and shape made these compare pixel-compatible,
+    so an ROI drawn on one measured the other. Unknown provenance must mean
+    unrelated, not identical.
+    """
+    import numpy as np
+
+    from imswitch.improcess.analysis.roi_frame_adapter import frame_from_layer
+
+    first = frame_from_layer(_Layer(np.zeros((512, 512))))
+    second = frame_from_layer(_Layer(np.zeros((512, 512))))
+
+    assert first.coordinate_space_uid != second.coordinate_space_uid
+    assert compatibility(first, second) == "incompatible"
+
+
+def test_the_same_unknown_layer_keeps_its_identity_across_calls():
+    """Measuring twice on one layer must still work."""
+    import numpy as np
+
+    from imswitch.improcess.analysis.roi_frame_adapter import frame_from_layer
+
+    layer = _Layer(np.zeros((64, 64)))
+
+    first = frame_from_layer(layer)
+    second = frame_from_layer(layer)
+
+    assert first.coordinate_space_uid == second.coordinate_space_uid
+    assert compatibility(first, second) == "pixel-compatible"  # derived caps it
+
+
+# --------------------------------------------------------------------------
+# the affine must come from napari's own mapping (review round 6, P1)
+# --------------------------------------------------------------------------
+
+def test_affine_includes_translation_not_just_scale():
+    import numpy as np
+
+    from imswitch.improcess.analysis.roi_frame_adapter import frame_from_layer
+
+    plain = frame_from_layer(_Layer(np.zeros((8, 8))))
+    shifted = _Layer(np.zeros((8, 8)))
+    shifted.scale = (1.0, 1.0)
+    shifted.translate = (10.0, 20.0)
+    shifted.data_to_world = lambda p: np.asarray(p, dtype=float) + np.array([10.0, 20.0])
+
+    moved = frame_from_layer(shifted)
+
+    assert moved.affine != plain.affine, "translation was dropped from the affine"
+    assert moved.affine[2] == 10.0 and moved.affine[5] == 20.0
+
+
+def test_affine_captures_rotation():
+    """Rebuilding from scale/translate by hand silently dropped rotation."""
+    import numpy as np
+
+    from imswitch.improcess.analysis.roi_frame_adapter import frame_from_layer
+
+    layer = _Layer(np.zeros((8, 8)))
+    # 90-degree rotation: a step along rows becomes a step along columns.
+    layer.data_to_world = lambda p: np.array([-float(p[1]), float(p[0])])
+
+    frame = frame_from_layer(layer)
+
+    assert abs(frame.affine[0]) < 1e-9, "rotation not represented in the affine"
+    assert abs(frame.affine[3] - 1.0) < 1e-9

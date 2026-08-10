@@ -24,6 +24,9 @@ class DenoiseProcessor(Processor):
     name = "Denoise"
     id = "denoise"
     category = "Restoration"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
 
     def __init__(self):
         self._logger = initLogger(self, tryInheritParent=False)

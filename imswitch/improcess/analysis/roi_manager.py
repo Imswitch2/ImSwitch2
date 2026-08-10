@@ -156,13 +156,39 @@ class ROIManagerModel:
         for roi in rois:
             self.add(roi)
 
-    def update(self, name: str, **changes) -> ROIRecord:
-        """Change fields of one ROI in place, preserving its identity."""
-        roi = self.get(name)
+    def get_by_uid(self, uid: str) -> ROIRecord | None:
+        """The ROI with this identity.
+
+        The lookup the panel uses: names are display text the user can edit
+        and can collide on import, so a row must resolve through something
+        that cannot change under it.
+        """
+        for roi in self._rois:
+            if roi.uid and roi.uid == uid:
+                return roi
+        return None
+
+    def update(self, target: str, **changes) -> ROIRecord:
+        """Change fields of one ROI in place, preserving its identity.
+
+        Identity is not an ordinary field: an update that could rewrite it, or
+        rename an ROI onto a name already in use, would break the two
+        invariants everything else relies on, so both are refused rather than
+        quietly applied.
+        """
+        roi = self.get(target)
         if roi is None:
-            raise KeyError(name)
+            raise KeyError(target)
+        if "uid" in changes and changes["uid"] != roi.uid:
+            raise ValueError(
+                "an ROI's identity cannot be changed by an update; "
+                "duplicate it if a new ROI is what you want"
+            )
+        new_name = changes.get("name", roi.name)
+        if new_name != roi.name and self.get(new_name) is not None:
+            raise ValueError(f"ROI {new_name!r} already exists")
         updated = replaced(roi, **changes)
-        self._rois = [updated if item.name == name else item for item in self._rois]
+        self._rois = [updated if item.name == target else item for item in self._rois]
         return updated
 
     def replace_record(self, roi: ROIRecord) -> ROIRecord:
@@ -277,13 +303,16 @@ def roi_values(image: np.ndarray, roi: ROIRecord) -> np.ndarray:
     mask cannot be measured as a polygon in one panel and as its bounding box
     in another.
     """
-    arr = np.asarray(image, dtype=np.float64)
+    arr = np.asarray(image)
     if arr.ndim != 2:
         raise ValueError(f"ROI statistics expect a 2D image, got shape {arr.shape}")
     local, slices = roi_mask_local(roi, arr.shape)
     if local.size == 0 or not local.any():
         raise ValueError(f"ROI {roi.name!r} is empty after clipping to the image")
-    return arr[slices][local]
+    # Slice, mask, *then* convert. Converting the whole image to float64 first
+    # costs a full image copy per ROI — which for a 200-ROI set on a 2048²
+    # image is exactly the work the local rasteriser exists to avoid.
+    return arr[slices][local].astype(np.float64, copy=False)
 
 
 def _compute_roi_record_stats(image: np.ndarray, roi: ROIRecord) -> ROIStats:

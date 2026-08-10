@@ -20,43 +20,90 @@ from imswitch.imcommon.algorithms.spatial_frame import (
     IDENTITY_AFFINE,
     AxisDescriptor,
     SpatialFrame,
-    content_digest_uid,
+    mint_uid,
 )
 
 
-def _affine_from_layer(layer, ndim: int) -> tuple[float, ...]:
-    """The layer's pixel→world transform for the displayed plane.
+def data_to_world(layer, point) -> np.ndarray:
+    """A (row, col) data coordinate mapped into world space.
 
-    Composed from napari's own transform rather than rebuilt from scale and
-    translate by hand, so a rotation or shear cannot be silently dropped.
+    Uses napari's own ``data_to_world``, which composes scale, translate,
+    rotate, shear and affine in the right order. Reconstructing that by hand
+    from ``scale`` and ``translate`` — as this module first did — silently
+    drops rotation and shear, and a rotated layer is exactly the case where an
+    ROI lands somewhere other than where it was drawn.
     """
-    scale = tuple(float(v) for v in getattr(layer, "scale", ()) or ())
-    translate = tuple(float(v) for v in getattr(layer, "translate", ()) or ())
-    row_scale = scale[-2] if len(scale) >= 2 else 1.0
-    col_scale = scale[-1] if len(scale) >= 1 else 1.0
-    row_shift = translate[-2] if len(translate) >= 2 else 0.0
-    col_shift = translate[-1] if len(translate) >= 1 else 0.0
+    point = np.asarray(point, dtype=float)
+    ndim = int(getattr(layer, "ndim", len(point)))
+    full = np.zeros(ndim, dtype=float)
+    full[-len(point):] = point
+    return np.asarray(layer.data_to_world(full), dtype=float)[-len(point):]
 
-    affine = getattr(layer, "affine", None)
-    matrix = None
-    for attr in ("affine_matrix", "matrix"):
-        candidate = getattr(affine, attr, None)
-        if candidate is not None:
-            matrix = np.asarray(candidate, dtype=float)
-            break
-    if matrix is not None and matrix.ndim == 2 and matrix.shape[0] >= 3:
-        # Take the 2x2 spatial block and its offset from the full transform.
-        spatial = matrix[-3:-1, -3:-1]
-        offset = matrix[-3:-1, -1]
-        return (
-            float(spatial[0, 0]) * row_scale, float(spatial[0, 1]), float(offset[0]) + row_shift,
-            float(spatial[1, 0]), float(spatial[1, 1]) * col_scale, float(offset[1]) + col_shift,
-            0.0, 0.0, 1.0,
-        )
 
-    if (row_scale, col_scale, row_shift, col_shift) == (1.0, 1.0, 0.0, 0.0):
+def world_to_data(layer, point) -> np.ndarray:
+    """The inverse of :func:`data_to_world`, for turning drawn shapes back
+    into pixel coordinates."""
+    point = np.asarray(point, dtype=float)
+    ndim = int(getattr(layer, "ndim", len(point)))
+    full = np.zeros(ndim, dtype=float)
+    full[-len(point):] = point
+    return np.asarray(layer.world_to_data(full), dtype=float)[-len(point):]
+
+
+def _affine_from_layer(layer, ndim: int) -> tuple[float, ...]:
+    """The layer's pixel→world transform for the displayed plane, as a 3x3.
+
+    Derived by probing napari's own mapping at three points rather than
+    reaching into transform internals: whatever napari composes — scale,
+    translate, rotate, shear, affine — the probe sees the result, so nothing
+    can be dropped by rebuilding the composition incorrectly.
+    """
+    try:
+        origin = data_to_world(layer, (0.0, 0.0))
+        along_row = data_to_world(layer, (1.0, 0.0)) - origin
+        along_col = data_to_world(layer, (0.0, 1.0)) - origin
+    except Exception:
         return IDENTITY_AFFINE
-    return (row_scale, 0.0, row_shift, 0.0, col_scale, col_shift, 0.0, 0.0, 1.0)
+
+    affine = (
+        float(along_row[0]), float(along_col[0]), float(origin[0]),
+        float(along_row[1]), float(along_col[1]), float(origin[1]),
+        0.0, 0.0, 1.0,
+    )
+    if np.allclose(affine, IDENTITY_AFFINE, atol=1e-12):
+        return IDENTITY_AFFINE
+    return affine
+
+
+#: Metadata key under which a layer's fallback identity is cached.
+_UNKNOWN_IDENTITY_KEY = "_roi_unknown_identity"
+
+
+def _unknown_identity(layer) -> tuple[str, str, str]:
+    """Identity for a layer that carries no recorded provenance.
+
+    Deliberately **minted per layer, not derived from what the layer looks
+    like**. Hashing the name and shape seemed reasonable and was actively
+    dangerous: two unrelated results both called "Reconstruction" at 512x512 —
+    the overwhelmingly common case — would hash alike and be declared
+    ``pixel-compatible``, so an ROI drawn on one would happily measure the
+    other. Rejecting that is the entire purpose of the compatibility ladder.
+
+    Minting instead means two unknown layers never match (they are
+    ``incompatible``, which is the honest answer), while the *same* layer keeps
+    its identity for as long as it exists, because the uid is cached on it. It
+    is still marked ``derived``, so it can never claim an exact match.
+    """
+    metadata = getattr(layer, "metadata", None)
+    if isinstance(metadata, dict):
+        cached = metadata.get(_UNKNOWN_IDENTITY_KEY)
+        if cached:
+            return tuple(cached)  # type: ignore[return-value]
+
+    identity = (mint_uid("space"), mint_uid("result"), mint_uid("data"))
+    if isinstance(metadata, dict):
+        metadata[_UNKNOWN_IDENTITY_KEY] = identity
+    return identity
 
 
 def frame_from_layer(layer, viewer=None) -> SpatialFrame | None:
@@ -117,12 +164,7 @@ def frame_from_layer(layer, viewer=None) -> SpatialFrame | None:
     space_uid = str(metadata.get("coordinate_space_uid", "") or "")
 
     if not space_uid:
-        # No recorded provenance: derive something stable from what the layer
-        # is, and mark it inferred so it can never claim certainty.
-        layer_name = str(getattr(layer, "name", "layer"))
-        space_uid = content_digest_uid("space", layer_name, shape[-2:])
-        result_uid = result_uid or content_digest_uid("result", layer_name, shape)
-        dataset_uid = dataset_uid or content_digest_uid("data", layer_name)
+        space_uid, result_uid, dataset_uid = _unknown_identity(layer)
         identity_kind = "derived"
 
     return SpatialFrame(

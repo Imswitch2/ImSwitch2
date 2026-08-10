@@ -77,7 +77,9 @@ def _run_multi(processor, inputs, params: dict, logger):
     """One run consuming every input; the arity contract puts them in params."""
     try:
         output = processor.apply(inputs[0], {**params, "results": inputs})
-        return list(normalize_processor_output(output)), []
+        # inputs[0] is the primary source for a multi-input run — it is what
+        # apply() is handed. Merges of several results keep only that lineage.
+        return list(normalize_processor_output(output, inputs[0], processor)), []
     except Exception as exc:
         logger.exception(
             "Failed to run processor %s on %d inputs",
@@ -95,7 +97,9 @@ def _run_batch(processor, inputs, params: dict, logger):
     for input_result in inputs:
         try:
             output = processor.apply(input_result, params)
-            results.extend(normalize_processor_output(output))
+            results.extend(
+                normalize_processor_output(output, input_result, processor)
+            )
         except Exception as exc:
             logger.exception(
                 "Failed to run processor %s on %s",

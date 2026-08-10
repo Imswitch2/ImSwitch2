@@ -27,9 +27,11 @@ imcontrol's ``ImageWidget`` keeps working exactly as before.
 
 from __future__ import annotations
 
+import hashlib
 import weakref
 from dataclasses import dataclass
 
+import numpy as np
 from qtpy import QtCore
 
 from .naparitools import ViewerToolManager
@@ -71,7 +73,8 @@ class ViewerToolService(QtCore.QObject):
         # shared layer it would let one panel's drawing delete another's.
         self._manager = ViewerToolManager(viewer, enforce_single=False)
         self._generations: dict[str, int] = {}
-        self._owner_shapes: dict[str, list[int]] = {}
+        # owner -> geometry keys of the shapes it drew (deletion-stable).
+        self._owner_shapes: dict[str, list[str]] = {}
         self._callbacks: dict[str, list[tuple[object, object]]] = {}
         self._shape_handlers: dict[str, list[object]] = {}
         self._active_owner: str | None = None
@@ -176,8 +179,18 @@ class ViewerToolService(QtCore.QObject):
     # -- drawing ------------------------------------------------------------
 
     def set_mode(self, token: ToolToken, mode: str) -> None:
+        """Change the drawing mode. Only the *active* owner may.
+
+        A token stays valid for managing its own shapes after another panel
+        takes the tool, but it must not be able to take the tool back without
+        acquiring it — otherwise a preempted panel silently redirects the next
+        shape the user draws to itself.
+        """
         self._check(token)
-        self._active_owner = token.owner_key
+        if not self.is_active(token.owner_key):
+            raise StaleToolToken(
+                f"{token.owner_key!r} does not hold the tool; acquire() first"
+            )
         self._manager.set_mode(mode)
 
     def get_mode(self) -> str:
@@ -214,12 +227,11 @@ class ViewerToolService(QtCore.QObject):
         self._claim(token.owner_key)
 
     def _claim(self, owner_key: str) -> None:
-        total = len(self._manager.get_shapes_data())
-        claimed = {i for indices in self._owner_shapes.values() for i in indices}
+        claimed = {key for keys in self._owner_shapes.values() for key in keys}
         mine = self._owner_shapes.setdefault(owner_key, [])
-        for index in range(total):
-            if index not in claimed:
-                mine.append(index)
+        for key in self._current_keys():
+            if key not in claimed:
+                mine.append(key)
 
     def on_shapes_changed(self, token: ToolToken, handler) -> None:
         """Be told when *this owner's* shapes change.
@@ -250,7 +262,11 @@ class ViewerToolService(QtCore.QObject):
         one panel cannot discard another panel's shape.
         """
         types = self._manager.get_shape_types()
-        owned = [i for i in self._owner_shapes.get(owner_key, []) if i < len(types)]
+        owned = [
+            index
+            for index in self._owned_indices(owner_key, len(types))
+            if index < len(types)
+        ]
         doomed: list[int] = []
         for shape_type in ("rectangle", "line"):
             of_type = [i for i in owned if types[i] == shape_type]
@@ -259,13 +275,24 @@ class ViewerToolService(QtCore.QObject):
             return
         self._enforcing = True
         try:
+            keys = self._current_keys()
             for index in sorted(doomed, reverse=True):
+                if index < len(keys):
+                    self._forget_key(keys[index])
                 self._manager.remove_shape(index)
-            self._reindex_after_removal(doomed, keep_owner=None)
         finally:
             self._enforcing = False
 
     # -- callbacks ----------------------------------------------------------
+
+    def on_viewer_event(self, token: ToolToken, signal, handler) -> None:
+        """Register a viewer callback (``dims.current_step``, say) for release.
+
+        Panels connected these directly, which left D-15 half-fixed: the broker
+        tore down the callbacks it knew about while the viewer kept calling the
+        ones it did not.
+        """
+        self.add_callback(token, signal, handler)
 
     def add_callback(self, token: ToolToken, signal, handler) -> None:
         """Connect ``handler`` to ``signal`` on this owner's behalf.
@@ -324,20 +351,46 @@ class ViewerToolService(QtCore.QObject):
 
     # -- internals ----------------------------------------------------------
 
+    @staticmethod
+    def _shape_key(vertices) -> str:
+        """A key identifying one shape by its geometry.
+
+        Ownership cannot be stored as a list index: deleting a shape in napari
+        renumbers everything above it, and the service is not told. The stale
+        indices then point at other owners' shapes, so clearing one panel's ROI
+        would take somebody else's with it. Geometry is stable under deletion
+        and is what the user actually drew.
+        """
+        arr = np.asarray(vertices, dtype=np.float64)
+        return hashlib.sha1(np.ascontiguousarray(arr).tobytes()).hexdigest()[:16]
+
+    def _current_keys(self) -> list[str]:
+        return [self._shape_key(shape) for shape in self._manager.get_shapes_data()]
+
     def _owned_indices(self, owner_key: str, total: int) -> list[int]:
-        """This owner's shape indices, defaulting to all unattributed ones.
+        """This owner's shape indices, resolved through geometry keys.
 
         Shapes drawn before anyone claimed them belong to the active owner;
         without that, the first draw after opening a panel would be invisible
         to it.
         """
-        recorded = [i for i in self._owner_shapes.get(owner_key, []) if i < total]
-        if recorded:
-            return recorded
+        keys = self._current_keys()
+        owned_keys = self._owner_shapes.get(owner_key, [])
+        indices = [index for index, key in enumerate(keys) if key in owned_keys]
+        if indices:
+            return indices
         if self._active_owner == owner_key:
-            claimed = {i for indices in self._owner_shapes.values() for i in indices}
-            return [i for i in range(total) if i not in claimed]
+            claimed = {
+                key for keys_ in self._owner_shapes.values() for key in keys_
+            }
+            return [
+                index for index, key in enumerate(keys) if key not in claimed
+            ]
         return []
+
+    def _forget_key(self, key: str) -> None:
+        for owner, keys in self._owner_shapes.items():
+            self._owner_shapes[owner] = [k for k in keys if k != key]
 
     def _remove_owner_shapes(self, owner_key: str) -> None:
         total = len(self._manager.get_shapes_data())
@@ -347,28 +400,14 @@ class ViewerToolService(QtCore.QObject):
             return
         self._enforcing = True
         try:
+            keys = self._current_keys()
             for index in doomed:
+                if index < len(keys):
+                    self._forget_key(keys[index])
                 self._manager.remove_shape(index)
         finally:
             self._enforcing = False
         self._owner_shapes[owner_key] = []
-        self._reindex_after_removal(doomed, keep_owner=owner_key)
-
-    def _reindex_after_removal(self, doomed, keep_owner: str | None) -> None:
-        """Shift recorded indices down past the shapes that were removed.
-
-        Removing a shape renumbers everything above it, so ownership has to be
-        rebased or it would start pointing at the wrong shapes.
-        """
-        doomed = set(doomed)
-        for key, indices in list(self._owner_shapes.items()):
-            if key == keep_owner:
-                continue
-            self._owner_shapes[key] = [
-                index - sum(1 for d in doomed if d < index)
-                for index in indices
-                if index not in doomed
-            ]
 
 
 __all__ = ["StaleToolToken", "ToolToken", "ViewerToolService"]

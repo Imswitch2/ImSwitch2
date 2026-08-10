@@ -11,6 +11,7 @@ lazy data handle wrapped as a ProcessingResult so the rest of ImProcess
 (ReconstructionView, WatcherFrame save, etc.) can handle it uniformly.
 """
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,26 +32,27 @@ if TYPE_CHECKING:
 _DEFAULT_AXIS_LABELS = ["T", "Z", "C", "Y", "X"]
 
 
-def _content_fingerprint(data) -> str:
-    """A cheap, stable fingerprint of an array's contents.
+def _source_identity(data_obj) -> str | None:
+    """A stable identity for the file this result was loaded from, if any.
 
-    Samples rather than hashing everything: this runs on load, and a full hash
-    of a multi-gigabyte stack would be paid for on every open. Corners plus a
-    strided sample is enough to tell two different datasets apart, and it is
-    deterministic, so the same file always yields the same id. It is never
-    used as proof two datasets are identical — a fingerprint match still only
-    produces a "derived" identity, which cannot claim an exact match.
+    Uses the *source*, never the pixels. Sampling content was both unsound and
+    expensive: a strided sum collides easily (two acquisitions of the same
+    static field, or any two all-zero arrays), and calling ``np.asarray`` on a
+    lazily-loaded stack materialises gigabytes purely to compute an id.
+
+    A file path plus its size and mtime identifies the data without reading
+    it. When there is no path — data handed over in memory — there is nothing
+    trustworthy to derive an identity from, and the caller mints a fresh one
+    instead of inventing an equivalence.
     """
+    path = getattr(data_obj, "dataPath", None)
+    if not path:
+        return None
     try:
-        flat = np.asarray(data).reshape(-1)
-        if flat.size == 0:
-            return "empty"
-        step = max(1, flat.size // 512)
-        sample = np.asarray(flat[::step][:512])
-        return f"{flat.size}:{float(np.nansum(sample.astype('float64'))):.8g}"
-    except Exception:
-        # A lazy/virtual handle that will not sample: fall back to shape only.
-        return "unsampled"
+        stat = os.stat(path)
+        return content_digest_uid("data", path, stat.st_size, int(stat.st_mtime))
+    except OSError:
+        return content_digest_uid("data", path)
 
 
 class ViewOnlyResult(ProcessingResult):
@@ -141,14 +143,23 @@ class ViewOnlyReconstructor(Reconstructor):
         )
         view_modes = [ViewMode("Standard", tuple(range(ndim)))]
 
-        # Data loaded from disk carries no recorded identity, so one is
-        # inferred from its content: the same file loaded twice gets the same
-        # ids (an ROI set saved against it still lines up), while
-        # identity_kind="derived" stops an inferred identity ever claiming an
-        # exact match — see imcommon.algorithms.spatial_frame.
-        dataset_uid = content_digest_uid(
-            "data", data.shape, str(data.dtype), _content_fingerprint(data)
-        )
+        # Loaded data carries no recorded identity. When it came from a file we
+        # can identify the *source*, so the same file reopened lines up with an
+        # ROI set saved against it. With no path there is nothing sound to
+        # derive from, so the ids are minted: two unidentifiable datasets must
+        # come out unrelated rather than accidentally equal.
+        dataset_uid = _source_identity(data_obj)
+        if dataset_uid is None:
+            return ViewOnlyResult(
+                name=data_obj.name,
+                data=data,
+                axis_labels=axis_labels,
+                view_modes=view_modes,
+                display_levels=None,
+                axis_scales=axis_scales,
+                scale_unit=source_scale_unit or "px",
+                identity_kind="derived",
+            )
         return ViewOnlyResult(
             name=data_obj.name,
             data=data,

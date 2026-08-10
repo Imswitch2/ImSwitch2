@@ -41,6 +41,16 @@ LINE_TYPES = frozenset({"line", "polyline", "path"})
 POINT_TYPES = frozenset({"point", "multipoint"})
 
 
+class UnsupportedROIGeometry(ValueError):
+    """This ROI's shape cannot be turned into an area of pixels.
+
+    Raised rather than approximated. A line has no interior, and an unknown
+    type has no defined one; answering with the bounding box would produce a
+    number that looks right and is not, which is precisely the failure this
+    module exists to remove.
+    """
+
+
 @dataclass(frozen=True)
 class ROICapabilities:
     """What a given ROI type supports.
@@ -168,15 +178,44 @@ def roi_mask_local(
             mask[rows[inside], cols[inside]] = True
         return mask, slices
 
-    if roi.vertices and kind in ("polygon", "freehand"):
+    caps = roi_capabilities(kind)
+    if not caps.is_area:
+        # Lines, points and unknown types have no interior to fill. Falling
+        # back to the bounding box would return a plausible number for a
+        # question that was never asked — measuring "the area of a line" as the
+        # rectangle it spans. Refuse instead; line sampling is its own feature.
+        raise UnsupportedROIGeometry(
+            f"ROI {roi.name!r} of type {roi.roi_type!r} has no measurable area"
+        )
+
+    if roi.vertices is not None:
+        # Any area ROI carrying explicit vertices is rasterised as the polygon
+        # they describe — which is also what makes a *rotated* rectangle
+        # measure as the rotated shape rather than its axis-aligned box.
         arr = np.asarray(roi.vertices, dtype=np.float64)
         return _polygon_mask(arr, local_shape, (r0, c0)), slices
 
     if kind in ("ellipse", "oval"):
-        return _ellipse_mask((r0, r1, c0, c1), local_shape), slices
+        # Built over the ROI's own bounds and then cropped to the visible part.
+        # Rebuilding it from the clipped bounds would re-centre and shrink the
+        # ellipse, so a partially off-screen ellipse would silently become a
+        # different, smaller one that happens to fit.
+        br0, br1, bc0, bc1 = roi_bounds(roi)
+        full = _ellipse_mask((br0, br1, bc0, bc1), (br1 - br0, bc1 - bc0))
+        top, left = r0 - br0, c0 - bc0
+        window = full[top:top + local_shape[0], left:left + local_shape[1]]
+        out = np.zeros(local_shape, dtype=bool)
+        out[:window.shape[0], :window.shape[1]] = window
+        return out, slices
 
-    # Rectangle, and anything without richer geometry: the whole box.
-    return np.ones(local_shape, dtype=bool), slices
+    if kind in ("rectangle", "composite", "mask"):
+        # An axis-aligned rectangle really is its whole box; composite/mask
+        # types without a payload have no pixels recorded at all.
+        return np.ones(local_shape, dtype=bool), slices
+
+    raise UnsupportedROIGeometry(
+        f"ROI {roi.name!r} of type {roi.roi_type!r} cannot be rasterised"
+    )
 
 
 def roi_mask(roi: ROIRecord, shape: tuple[int, int]) -> np.ndarray:
@@ -425,6 +464,7 @@ def with_geometry_from_mask(roi: ROIRecord, mask: np.ndarray, offset=(0, 0)) -> 
 
 __all__ = [
     "AREA_TYPES",
+    "UnsupportedROIGeometry",
     "LINE_TYPES",
     "POINT_TYPES",
     "ROICapabilities",

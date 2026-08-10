@@ -22,16 +22,39 @@ class ProcessorOutput:
         object.__setattr__(self, "results", normalized)
 
 
-def normalize_processor_output(output) -> tuple[ProcessingResult, ...]:
-    """Normalize a processor return value to a tuple of results."""
+def attach_provenance(results, source, processor) -> tuple[ProcessingResult, ...]:
+    """Record on each result what it was derived from.
+
+    Applied centrally rather than in every processor: there are twenty-odd of
+    them, and provenance that depends on each author remembering to add a line
+    is provenance that is mostly missing. A processor only has to declare
+    ``preserves_grid``; if it declares nothing, the output gets its own
+    coordinate space, which is the answer that cannot mislead.
+    """
+    if source is None:
+        return tuple(results)
+    same_grid = bool(getattr(processor, "preserves_grid", None))
+    for result in results:
+        adopt = getattr(result, "adopt_identity_from", None)
+        if callable(adopt):
+            adopt(source, same_grid=same_grid)
+    return tuple(results)
+
+
+def normalize_processor_output(output, source=None, processor=None) -> tuple[ProcessingResult, ...]:
+    """Normalize a processor return value to a tuple of results.
+
+    When ``source`` and ``processor`` are given, provenance is attached here so
+    every processor inherits it without having to opt in.
+    """
     if isinstance(output, ProcessorOutput):
-        return output.results
+        return attach_provenance(output.results, source, processor)
     if isinstance(output, ProcessingResult):
-        return (output,)
+        return attach_provenance((output,), source, processor)
     if isinstance(output, (list, tuple)):
         results = tuple(output)
         if all(isinstance(result, ProcessingResult) for result in results):
-            return results
+            return attach_provenance(results, source, processor)
     raise TypeError(
         "Processor output must be a ProcessingResult, ProcessorOutput, "
         "or a sequence of ProcessingResult objects"
@@ -74,6 +97,14 @@ class Processor(ABC):
     #: because ``apply`` is a pure function of one result.
     min_inputs: int = 1
     max_inputs: int | None = 1
+    #: Whether this processor's output sits on the *same pixel grid* as its
+    #: input, so an ROI drawn on one measures the same features on the other.
+    #: True for filters, thresholds, projections along a non-spatial axis;
+    #: False for anything that crops, resamples, rescales or reprojects.
+    #: ``None`` means "not declared", and the output then gets a fresh
+    #: coordinate space — the safe answer, because wrongly claiming a shared
+    #: grid makes ROIs measure the wrong pixels.
+    preserves_grid: bool | None = None
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.

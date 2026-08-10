@@ -32,6 +32,9 @@ class ChannelMergeProcessor(Processor):
     name = "Merge channels"
     id = "channel-merge"
     category = "Dimensions and channels"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
     min_inputs = 2
     max_inputs = None
 

@@ -75,11 +75,22 @@ def panel(qapp):
 
 
 def _row_named(widget, name):
+    """The row displaying ``name``.
+
+    Found via the Name column: rows are keyed by uid, precisely so a display
+    name is never what an action resolves through.
+    """
+    column = widget._COLUMNS.index("Name")
     for row in range(widget.table.rowCount()):
-        item = widget.table.item(row, 0)
-        if item is not None and item.data(ROI_KEY_ROLE) == name:
+        item = widget.table.item(row, column)
+        if item is not None and item.text() == name:
             return row
     return None
+
+
+def _row_uid(widget, row):
+    item = widget.table.item(row, 0)
+    return item.data(ROI_KEY_ROLE) if item is not None else None
 
 
 # --------------------------------------------------------------------------
@@ -202,3 +213,69 @@ def test_numeric_columns_sort_numerically(panel):
 
     assert panel.table.item(0, area_column).text() == "9"
     assert panel.table.item(1, area_column).text() == "100"
+
+
+# --------------------------------------------------------------------------
+# rows key on uid, and mutations go through the command log (round 6, P1)
+# --------------------------------------------------------------------------
+
+def test_rows_are_keyed_by_uid_not_name(panel):
+    panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+
+    row = _row_named(panel, "cell")
+    uid = _row_uid(panel, row)
+
+    assert uid and uid == panel.rois()[0].uid
+    assert uid != "cell"
+
+
+def test_renaming_keeps_the_row_identity(panel):
+    """The uid is what the row resolves through, so it survives a rename."""
+    panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+    before = _row_uid(panel, _row_named(panel, "cell"))
+
+    panel._model.rename("cell", "nucleus")
+    panel.refresh_stats()
+
+    assert _row_uid(panel, _row_named(panel, "nucleus")) == before
+
+
+def test_widget_mutations_are_recorded_as_undoable_commands(panel):
+    panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+    assert panel._commands.can_undo
+
+    panel._commands.undo()
+
+    assert panel.rois() == []
+
+
+def test_delete_through_the_widget_is_undoable(panel):
+    panel.add_rois(
+        [
+            ROIRecord("a", "rectangle", (0, 2, 0, 2)),
+            ROIRecord("b", "rectangle", (2, 6, 2, 6)),
+        ]
+    )
+    panel.table.setCurrentCell(_row_named(panel, "a"), 1)
+    panel.delete_selected()
+    assert [roi.name for roi in panel.rois()] == ["b"]
+
+    panel._commands.undo()
+
+    assert [roi.name for roi in panel.rois()] == ["a", "b"]
+
+
+def test_update_refuses_to_change_identity_or_collide_on_name():
+    from imswitch.improcess.analysis.roi_manager import ROIManagerModel
+
+    model = ROIManagerModel(
+        [
+            ROIRecord("a", "rectangle", (0, 2, 0, 2)),
+            ROIRecord("b", "rectangle", (2, 4, 2, 4)),
+        ]
+    )
+
+    with pytest.raises(ValueError):
+        model.update("a", uid="something-else")
+    with pytest.raises(ValueError):
+        model.update("a", name="b")

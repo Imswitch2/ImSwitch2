@@ -413,7 +413,7 @@ class DisplayLayerProcessingResult(ProcessingResult):
         layer: DisplayLayerSpec,
     ) -> "DisplayLayerProcessingResult":
         component = _display_layer_component_id(layer)
-        return cls(
+        wrapped = cls(
             name=f"{source_result.name}_{component}",
             data=layer.data,
             axis_labels=list(layer.axis_labels),
@@ -428,6 +428,15 @@ class DisplayLayerProcessingResult(ProcessingResult):
             # points/shapes pass through (matching no image processor).
             kind=layer.kind,
         )
+        # A component is a *view* of its parent, not new data: it must inherit
+        # the parent's identity, or an ROI drawn on the displayed result would
+        # be judged unrelated to the very component it was drawn over. The
+        # spec may override the coordinate space when a display layer sits on
+        # its own grid (a differently-sized overlay).
+        wrapped.adopt_identity_from(source_result, same_grid=True)
+        if getattr(layer, "coordinate_space_uid", None):
+            wrapped.coordinate_space_uid = layer.coordinate_space_uid
+        return wrapped
 
     def save(self, path: Path, fmt: str) -> None:
         raise ValueError(

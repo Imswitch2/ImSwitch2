@@ -24,9 +24,10 @@ def _result(name="src", shape=(4, 8, 8), labels=("Z", "Y", "X")):
 class _DataObj:
     """Minimal stand-in for the DataObj contract ViewOnlyReconstructor reads."""
 
-    def __init__(self, data, name="loaded"):
+    def __init__(self, data, name="loaded", path=None):
         self.name = name
         self.data = data
+        self.dataPath = path
         self.dataLoaded = True
         self.data_handle = None
         self.axis_labels = None
@@ -131,31 +132,141 @@ def test_cropping_in_xy_changes_the_grid():
 # P-F.6 — data loaded from disk gets an inferred, clearly-marked identity
 # --------------------------------------------------------------------------
 
-def test_loaded_data_gets_a_deterministic_derived_identity():
+def test_reopening_the_same_file_yields_the_same_identity(tmp_path):
+    """Identity comes from the source, so an ROI set saved against a file
+    still lines up when that file is reopened."""
     from imswitch.improcess.reconstructors.view_only.reconstructor import (
         ViewOnlyReconstructor,
     )
 
+    path = tmp_path / "stack.tif"
+    path.write_bytes(b"not really a tiff, but a stable source")
     data = np.arange(64, dtype=float).reshape(8, 8)
     reconstructor = ViewOnlyReconstructor()
 
-    first = reconstructor.process(_DataObj(data.copy()), {})
-    second = reconstructor.process(_DataObj(data.copy()), {})
+    first = reconstructor.process(_DataObj(data.copy(), path=str(path)), {})
+    second = reconstructor.process(_DataObj(data.copy(), path=str(path)), {})
 
     assert first.identity_kind == "derived"
-    # The same content must yield the same ids, so an ROI set saved against
-    # this file still matches it in a later session.
     assert first.dataset_uid == second.dataset_uid
     assert first.coordinate_space_uid == second.coordinate_space_uid
 
 
-def test_different_loaded_data_gets_different_identity():
+def test_data_from_different_files_never_shares_identity(tmp_path):
+    from imswitch.improcess.reconstructors.view_only.reconstructor import (
+        ViewOnlyReconstructor,
+    )
+
+    first_path = tmp_path / "a.tif"
+    second_path = tmp_path / "b.tif"
+    first_path.write_bytes(b"a")
+    second_path.write_bytes(b"bb")
+    reconstructor = ViewOnlyReconstructor()
+
+    first = reconstructor.process(_DataObj(np.zeros((8, 8)), path=str(first_path)), {})
+    second = reconstructor.process(_DataObj(np.zeros((8, 8)), path=str(second_path)), {})
+
+    assert first.dataset_uid != second.dataset_uid
+
+
+def test_pathless_data_gets_minted_not_inferred_identity():
+    """Identical pixels are not evidence of being the same dataset.
+
+    Two all-zero arrays would collide under any content fingerprint, so with
+    no source to identify, the ids are minted and the two come out unrelated.
+    """
     from imswitch.improcess.reconstructors.view_only.reconstructor import (
         ViewOnlyReconstructor,
     )
 
     reconstructor = ViewOnlyReconstructor()
     first = reconstructor.process(_DataObj(np.zeros((8, 8))), {})
-    second = reconstructor.process(_DataObj(np.ones((8, 8))), {})
+    second = reconstructor.process(_DataObj(np.zeros((8, 8))), {})
 
     assert first.dataset_uid != second.dataset_uid
+    assert first.coordinate_space_uid != second.coordinate_space_uid
+
+
+# --------------------------------------------------------------------------
+# provenance breadth (review round 6, P1)
+# --------------------------------------------------------------------------
+
+def test_processors_inherit_provenance_without_opting_in():
+    """Declaring preserves_grid is all a processor has to do."""
+    from imswitch.improcess.processors.base import attach_provenance
+
+    class _SameGrid:
+        preserves_grid = True
+
+    class _Undeclared:
+        pass
+
+    source = _result()
+    kept = attach_provenance([_result(name="a")], source, _SameGrid())[0]
+    fresh = attach_provenance([_result(name="b")], source, _Undeclared())[0]
+
+    assert kept.coordinate_space_uid == source.coordinate_space_uid
+    assert kept.lineage == (source.result_uid,)
+    # Undeclared must not claim a shared grid — the safe default.
+    assert fresh.coordinate_space_uid != source.coordinate_space_uid
+    assert fresh.lineage == (source.result_uid,)
+
+
+def test_a_display_layer_component_inherits_its_parents_identity():
+    """A component is a view of the parent, so an ROI drawn on the displayed
+    result must not be judged unrelated to the component under it."""
+    from imswitch.improcess.model.result import (
+        DisplayLayerProcessingResult,
+        DisplayLayerSpec,
+    )
+
+    source = _result(shape=(8, 8), labels=("Y", "X"))
+    spec = DisplayLayerSpec(
+        name="channel-0", data=np.ones((8, 8)), axis_labels=["Y", "X"]
+    )
+
+    component = DisplayLayerProcessingResult.from_spec(source, spec)
+
+    assert component.coordinate_space_uid == source.coordinate_space_uid
+    assert component.dataset_uid == source.dataset_uid
+    assert component.lineage == (source.result_uid,)
+
+
+def test_a_display_layer_can_declare_its_own_grid():
+    from imswitch.improcess.model.result import (
+        DisplayLayerProcessingResult,
+        DisplayLayerSpec,
+    )
+
+    source = _result(shape=(8, 8), labels=("Y", "X"))
+    spec = DisplayLayerSpec(
+        name="overlay",
+        data=np.ones((4, 4)),
+        axis_labels=["Y", "X"],
+        coordinate_space_uid="its-own-grid",
+    )
+
+    component = DisplayLayerProcessingResult.from_spec(source, spec)
+
+    assert component.coordinate_space_uid == "its-own-grid"
+
+
+def test_projecting_a_displayed_axis_does_not_claim_the_same_grid():
+    """"Auto" on 2D data collapses X, which is not a shared grid."""
+    from imswitch.improcess.processors.projection.processor import ProjectionProcessor
+
+    source = _result(shape=(8, 8), labels=("Y", "X"))
+
+    out = ProjectionProcessor().apply(source, {"axis": "Auto", "mode": "max"})
+
+    assert out.coordinate_space_uid != source.coordinate_space_uid
+
+
+def test_projecting_a_stack_axis_keeps_the_grid():
+    from imswitch.improcess.processors.projection.processor import ProjectionProcessor
+
+    source = _result(shape=(4, 8, 8), labels=("Z", "Y", "X"))
+
+    out = ProjectionProcessor().apply(source, {"axis": "Z", "mode": "max"})
+
+    assert out.coordinate_space_uid == source.coordinate_space_uid

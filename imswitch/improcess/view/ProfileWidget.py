@@ -147,7 +147,13 @@ class ProfileWidget(QtWidgets.QWidget):
         self.saveButton.clicked.connect(self._onSaveCSV)
         self._toolService.on_shapes_changed(self._toolToken, self._shapesChanged)
         try:
-            self._viewer.dims.events.current_step.connect(lambda _event: self._refresh())
+            # Through the broker so release() tears this down too; connecting
+            # straight to the viewer left the callback firing after close.
+            self._toolService.on_viewer_event(
+                self._toolToken,
+                self._viewer.dims.events.current_step,
+                lambda _event=None: self._refresh(),
+            )
         except Exception:
             pass
 

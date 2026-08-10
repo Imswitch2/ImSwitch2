@@ -10,7 +10,14 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
+from imswitch.improcess.analysis.roi_frame_adapter import world_to_data
 from imswitch.improcess.layer_selection import active_image_layer
+from imswitch.improcess.analysis.roi_commands import (
+    AddROI,
+    CommandLog,
+    DeleteROI,
+    RenameROI,
+)
 from imswitch.improcess.analysis.roi_manager import (
     ROIManagerModel,
     ROIRecord,
@@ -18,9 +25,10 @@ from imswitch.improcess.analysis.roi_manager import (
 )
 from .ResultsTableWidget import format_table_value
 
-#: Role holding the ROI's key on column 0 of every row. Rows are resolved
-#: through this, never through their index, so sorting and filtering cannot
-#: make an action target a different ROI than the one that was clicked.
+#: Role holding the ROI's **uid** on column 0 of every row. Rows resolve
+#: through this, never through their index or name: sorting reorders rows,
+#: and a name is display text the user can edit or import a duplicate of, so
+#: neither can be trusted to identify the ROI an action was aimed at.
 ROI_KEY_ROLE = QtCore.Qt.UserRole
 
 #: Role holding a value the table sorts on, so numeric columns sort
@@ -70,6 +78,9 @@ class ROIManagerWidget(QtWidgets.QWidget):
         # Register only; the tool is acquired when Draw Rectangle is used.
         self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._model = ROIManagerModel()
+        # Every model change goes through the log, so there is one audited
+        # path and undo (P-U) has a history to work from.
+        self._commands = CommandLog(self._model)
         self._stats_rows: list[dict[str, object]] = []
 
         self.addRectangleButton = QtWidgets.QPushButton("Draw Rectangle")
@@ -130,7 +141,13 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.exportJsonButton.clicked.connect(self.export_json)
         self.table.itemChanged.connect(self._item_changed)
         try:
-            self._viewer.dims.events.current_step.connect(lambda _event: self.refresh_stats())
+            # Through the broker so release() tears this down too; connecting
+            # straight to the viewer left the callback firing after close.
+            self._toolService.on_viewer_event(
+                self._toolToken,
+                self._viewer.dims.events.current_step,
+                lambda _event=None: self.refresh_stats(),
+            )
         except Exception:
             pass
 
@@ -145,7 +162,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         try:
             # add() uniquifies on collision, so naming here as well would only
             # be a second chance to get it wrong.
-            self._model.add(self._first_rectangle_roi())
+            self._commands.run(AddROI(self._first_rectangle_roi()))
             # Clears only this panel's scratch shape, leaving the Profile and
             # ROI statistics panels' shapes alone.
             self._toolService.clear(self._toolToken)
@@ -165,7 +182,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         """Add externally generated ROIs, preserving unique names."""
         count = 0
         for roi in rois:
-            self._model.add(roi)
+            self._commands.run(AddROI(roi))
             count += 1
         self.refresh_stats()
         return count
@@ -192,7 +209,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         )
         if ok and new_name.strip():
             try:
-                self._model.rename(roi.name, new_name.strip())
+                self._commands.run(RenameROI(roi.name, new_name.strip()))
                 self.refresh_stats()
             except Exception as exc:
                 self.summaryLabel.setText(str(exc))
@@ -201,14 +218,19 @@ class ROIManagerWidget(QtWidgets.QWidget):
         roi = self._selected_roi()
         if roi is None:
             return
-        self._model.duplicate(roi.name)
+        # Expressed as an Add of a copy so it is undoable like everything else.
+        from imswitch.imcommon.algorithms.roi import duplicated
+
+        self._commands.run(
+            AddROI(duplicated(roi, name=self._model.unique_name(f"{roi.name}_copy")))
+        )
         self.refresh_stats()
 
     def delete_selected(self) -> None:
         roi = self._selected_roi()
         if roi is None:
             return
-        self._model.remove(roi.name)
+        self._commands.run(DeleteROI(roi.name))
         self.refresh_stats()
 
     def clear_rois(self) -> None:
@@ -302,7 +324,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
                 visible_item = _TableItem("")
                 visible_item.setFlags(visible_item.flags() | QtCore.Qt.ItemIsUserCheckable)
                 visible_item.setCheckState(QtCore.Qt.Checked if roi.visible else QtCore.Qt.Unchecked)
-                visible_item.setData(ROI_KEY_ROLE, roi.name)
+                visible_item.setData(ROI_KEY_ROLE, roi.uid)
                 visible_item.setData(SORT_KEY_ROLE, bool(roi.visible))
                 self.table.setItem(row, 0, visible_item)
 
@@ -330,10 +352,11 @@ class ROIManagerWidget(QtWidgets.QWidget):
     def _item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         if item.column() != 0:
             return
-        name = item.data(ROI_KEY_ROLE)
-        if not name:
+        uid = item.data(ROI_KEY_ROLE)
+        roi = self._model.get_by_uid(str(uid)) if uid else None
+        if roi is None:
             return
-        self._model.set_visible(str(name), item.checkState() == QtCore.Qt.Checked)
+        self._model.set_visible(roi.name, item.checkState() == QtCore.Qt.Checked)
         self.refresh_stats()
 
     def _first_rectangle_roi(self) -> ROIRecord:
@@ -342,32 +365,36 @@ class ROIManagerWidget(QtWidgets.QWidget):
         for _index, shape_type, shape in self._toolService.shapes(self._toolToken):
             if shape_type != "rectangle":
                 continue
-            # Shape vertices come from the Shapes layer in world coordinates;
-            # divide by the image scale so the ROI bounds are stored in image
-            # row/col (pixel) coordinates, as ROIRecord expects. No-op at scale
-            # 1, but required for scaled reconstructions.
-            row_scale, col_scale = self._visible_pixel_scales()
-            vertices = np.asarray(shape, dtype=np.float64).copy()
-            vertices[:, 0] /= row_scale
-            vertices[:, 1] /= col_scale
+            vertices = self._world_to_pixels(np.asarray(shape, dtype=np.float64))
             return rectangle_roi_from_vertices(
                 vertices,
                 name=self._model.unique_name("ROI"),
             )
         raise ValueError("Draw a rectangle first.")
 
-    def _visible_pixel_scales(self) -> tuple[float, float]:
-        """Return the active image layer's (row, col) scale (1.0 fallback)."""
+    def _world_to_pixels(self, vertices: np.ndarray) -> np.ndarray:
+        """Drawn shape vertices (world) → image pixel coordinates.
+
+        Inverted through napari's own mapping. Dividing by ``layer.scale`` —
+        which is what this did — is only correct for a layer with no offset and
+        no rotation: it silently ignored ``translate``, so an ROI drawn on a
+        translated layer was recorded at the wrong pixels, and ignored rotation
+        entirely.
+        """
         layer = self._active_image_layer()
         if layer is None:
-            return 1.0, 1.0
+            return vertices
         try:
-            scale = tuple(float(v) for v in layer.scale)
+            return np.asarray(
+                [world_to_data(layer, vertex[:2]) for vertex in vertices],
+                dtype=np.float64,
+            )
         except Exception:
-            return 1.0, 1.0
-        if len(scale) < 2:
-            return 1.0, 1.0
-        return scale[-2], scale[-1]
+            self._logger_message("Could not map the drawn shape onto the image.")
+            return vertices
+
+    def _logger_message(self, message: str) -> None:
+        self.summaryLabel.setText(message)
 
     def _selected_roi(self) -> ROIRecord | None:
         """The ROI behind the selected row, resolved by key rather than index.
@@ -378,8 +405,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         """
         row = self.table.currentRow()
         item = self.table.item(row, 0) if row >= 0 else None
-        name = item.data(ROI_KEY_ROLE) if item is not None else None
-        roi = self._model.get(str(name)) if name else None
+        uid = item.data(ROI_KEY_ROLE) if item is not None else None
+        roi = self._model.get_by_uid(str(uid)) if uid else None
         if roi is None:
             self.summaryLabel.setText("Select an ROI first.")
             return None

@@ -127,7 +127,12 @@ def _encode_rle(mask: np.ndarray) -> tuple[int, ...]:
 
 def _decode_rle(runs, size: int) -> np.ndarray:
     flat = np.zeros(size, dtype=bool)
-    total = int(sum(int(v) for v in runs))
+    values = [int(v) for v in runs]
+    if any(value < 0 for value in values):
+        # A negative run would rewind the write position and corrupt the mask
+        # rather than fail, so it is rejected outright.
+        raise MaskPayloadError("run lengths must be non-negative")
+    total = int(sum(values))
     if total != size:
         raise MaskPayloadError(
             f"run lengths sum to {total}, expected {size}"
@@ -164,13 +169,24 @@ def encode_mask(mask: np.ndarray) -> MaskPayload:
     packed = np.packbits(arr.reshape(-1)).tobytes()
     compressed = zlib.compress(packed, 6)
 
-    # 8 bytes per int is a fair estimate of the serialised cost of a run.
-    candidates: list[tuple[int, MaskPayload]] = [
-        (len(runs) * 8, MaskPayload("rle", shape, runs, nbytes)),
-        (len(packed), MaskPayload("bits", shape, packed, nbytes)),
-        (len(compressed), MaskPayload("bits-zlib", shape, compressed, nbytes)),
+    candidates = [
+        MaskPayload("rle", shape, runs, nbytes),
+        MaskPayload("bits", shape, packed, nbytes),
+        MaskPayload("bits-zlib", shape, compressed, nbytes),
     ]
-    return min(candidates, key=lambda item: item[0])[1]
+    # Compared on what each actually serialises to rather than a per-run
+    # estimate: the estimate was the thing being guessed at, and the real size
+    # is cheap to measure.
+    return min(candidates, key=serialised_size)
+
+
+def serialised_size(payload: MaskPayload) -> int:
+    """Bytes ``payload`` occupies once written out (JSON form for RLE)."""
+    if payload.codec == "rle":
+        # Comma-separated decimal integers, which is what to_json produces.
+        return sum(len(str(int(run))) + 1 for run in payload.data)
+    # base64 inflates bytes by 4/3 at the JSON boundary.
+    return ((len(payload.data) + 2) // 3) * 4
 
 
 def decode_mask(payload: MaskPayload) -> np.ndarray:
@@ -182,6 +198,12 @@ def decode_mask(payload: MaskPayload) -> np.ndarray:
         raise MaskPayloadError(
             f"mask of {size} pixels exceeds the {MAX_MASK_PIXELS} limit"
         )
+    if payload.nbytes and int(payload.nbytes) != size:
+        # The declared size and the shape must agree, or one of them is lying
+        # about what this payload contains.
+        raise MaskPayloadError(
+            f"payload declares {payload.nbytes} pixels but its shape holds {size}"
+        )
     if size == 0:
         return np.zeros(payload.shape, dtype=bool)
 
@@ -191,13 +213,19 @@ def decode_mask(payload: MaskPayload) -> np.ndarray:
         raw = payload.data
         if not isinstance(raw, (bytes, bytearray)):
             raise MaskPayloadError("packed payloads must carry bytes")
-        if payload.codec == "bits-zlib":
-            # Bounded so a malformed payload cannot expand without limit.
-            limit = (size + 7) // 8
-            raw = zlib.decompressobj().decompress(bytes(raw), limit + 1)
-            if len(raw) > limit:
-                raise MaskPayloadError("compressed mask expands beyond its shape")
         expected = (size + 7) // 8
+        if payload.codec == "bits-zlib":
+            # Bounded so a malformed or hostile payload cannot expand without
+            # limit, and checked for a clean end so trailing junk is not
+            # quietly accepted.
+            decompressor = zlib.decompressobj()
+            raw = decompressor.decompress(bytes(raw), expected + 1)
+            if len(raw) > expected:
+                raise MaskPayloadError("compressed mask expands beyond its shape")
+            if not decompressor.eof:
+                raise MaskPayloadError("compressed mask is truncated")
+            if decompressor.unused_data:
+                raise MaskPayloadError("compressed mask has trailing data")
         if len(raw) != expected:
             raise MaskPayloadError(
                 f"packed mask has {len(raw)} bytes, expected {expected}"

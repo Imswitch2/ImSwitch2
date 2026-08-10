@@ -302,3 +302,109 @@ def test_legacy_pixel_records_still_measure_identically():
     values = roi_values(image, roi)
 
     assert sorted(values.tolist()) == [0.0, 1.0, 3.0]
+
+
+# --------------------------------------------------------------------------
+# unsupported geometry must refuse, not approximate (review round 6, P0)
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("roi_type", ["line", "polyline", "path", "point", "banana"])
+def test_non_area_and_unknown_types_refuse_to_be_rasterised(roi_type):
+    """A line has no interior; answering with its bounding box is a
+    plausible, wrong number."""
+    from imswitch.imcommon.algorithms.roi_geometry import UnsupportedROIGeometry
+
+    roi = ROIRecord("r", roi_type, (0, 10, 0, 10))
+
+    with pytest.raises(UnsupportedROIGeometry):
+        roi_mask_local(roi, (32, 32))
+
+
+def test_the_manager_reports_unsupported_geometry_per_roi():
+    """One unmeasurable ROI must not abort the batch, but must not be
+    silently measured either."""
+    from imswitch.improcess.analysis.roi_manager import ROIManagerModel
+
+    model = ROIManagerModel(
+        [
+            ROIRecord("good", "rectangle", (0, 4, 0, 4)),
+            ROIRecord("a-line", "line", (0, 8, 0, 8)),
+        ]
+    )
+
+    records = model.compute_stats(np.ones((16, 16)))
+
+    assert records[0].stats.area_pixels == 16
+    assert records[1].error and not records[1].measured
+    assert np.isnan(records[1].stats.mean)
+
+
+def test_rotated_rectangle_measures_the_rotated_shape():
+    """Vertices win over the type name, so a rotated box is not its
+    axis-aligned bounding box."""
+    rotated = roi_from_vertices(
+        [[0, 5], [5, 10], [10, 5], [5, 0]], roi_type="rectangle", name="diamond"
+    )
+
+    local, _ = roi_mask_local(rotated, (16, 16))
+
+    assert 0 < int(local.sum()) < local.size, "the rotated box was filled whole"
+
+
+def test_partially_clipped_ellipse_keeps_its_original_geometry():
+    """Clipping must crop the ellipse, not rebuild a smaller one that fits."""
+    inside = ROIRecord("e", "ellipse", (0, 20, 0, 20))
+    hanging_off = ROIRecord("e", "ellipse", (-10, 10, 0, 20))
+
+    full, _ = roi_mask_local(inside, (32, 32))
+    clipped, _ = roi_mask_local(hanging_off, (32, 32))
+
+    # The visible half of an ellipse hanging off the top edge must match the
+    # bottom half of the same ellipse drawn fully inside.
+    assert clipped.shape == (10, 20)
+    assert np.array_equal(clipped, full[10:, :])
+
+
+# --------------------------------------------------------------------------
+# payload validation hardening (review round 6, P2)
+# --------------------------------------------------------------------------
+
+def test_negative_run_lengths_are_rejected():
+    """A negative run would rewind the write position and corrupt the mask."""
+    with pytest.raises(MaskPayloadError):
+        decode_mask(MaskPayload("rle", (2, 2), (6, -2)))
+
+
+def test_declared_size_must_match_the_shape():
+    with pytest.raises(MaskPayloadError):
+        decode_mask(MaskPayload("rle", (2, 2), (0, 4), nbytes=99))
+
+
+def test_truncated_and_trailing_compressed_data_are_rejected():
+    import zlib
+
+    mask = np.ones((8, 8), dtype=bool)
+    good = encode_mask(mask)
+    packed = np.packbits(mask.reshape(-1)).tobytes()
+    compressed = zlib.compress(packed, 6)
+
+    with pytest.raises(MaskPayloadError):
+        decode_mask(MaskPayload("bits-zlib", (8, 8), compressed[:-2]))
+    with pytest.raises(MaskPayloadError):
+        decode_mask(MaskPayload("bits-zlib", (8, 8), compressed + b"junk"))
+    assert decode_mask(good).shape == (8, 8)  # the honest one still decodes
+
+
+def test_codec_is_chosen_on_real_serialised_size():
+    from imswitch.imcommon.algorithms.roi_payload import serialised_size
+
+    mask = np.indices((48, 48)).sum(axis=0) % 3 == 0
+    chosen = encode_mask(mask)
+
+    alternatives = [
+        MaskPayload("rle", chosen.shape, chosen.data, chosen.nbytes)
+        if chosen.codec != "rle" else chosen
+    ]
+    assert serialised_size(chosen) <= min(
+        serialised_size(alt) for alt in alternatives
+    )

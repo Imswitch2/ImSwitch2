@@ -34,6 +34,10 @@ class _Event:
         for fn in list(self._handlers):
             fn(*args)
 
+    def disconnect(self, fn):
+        if fn in self._handlers:
+            self._handlers.remove(fn)
+
 
 class _Shapes:
     def __init__(self, **kwargs):
@@ -386,3 +390,71 @@ def test_registry_does_not_retain_the_viewer(qapp):
     gc.collect()
 
     assert probe() is None, "the tool registry kept the viewer alive"
+
+
+# --------------------------------------------------------------------------
+# ownership must survive a shape being deleted in napari (review round 6)
+# --------------------------------------------------------------------------
+
+def test_deleting_a_shape_in_napari_does_not_reassign_ownership(qapp):
+    """Indices shift when the user deletes a shape directly in the viewer.
+
+    Ownership held as indices then pointed at other owners' shapes, so
+    clearing one panel took another panel's ROI with it.
+    """
+    viewer = _Viewer()
+    service = ViewerToolService(viewer)
+    layer = service.manager.get_layer()
+
+    stats = service.acquire("roi-stats", "rectangle")
+    layer.add_shape(_rect(0, 0, 4, 4), "rectangle")
+    service.claim_new_shapes(stats)
+
+    profile = service.acquire("profile", "line")
+    layer.add_shape([[0, 0], [5, 5]], "line")
+    service.claim_new_shapes(profile)
+
+    # The user deletes the ROI-stats rectangle (index 0) directly in napari;
+    # the line shifts down to index 0 without the service being told.
+    layer._data.pop(0)
+    layer.shape_type.pop(0)
+
+    service.clear(stats)
+
+    assert service.manager.get_shape_types() == ["line"], (
+        "clearing one owner removed another owner's shape"
+    )
+    assert len(service.shapes(profile)) == 1
+
+
+def test_preempted_token_cannot_retake_the_tool_without_acquiring(qapp):
+    viewer = _Viewer()
+    service = ViewerToolService(viewer)
+
+    stats = service.acquire("roi-stats", "rectangle")
+    service.acquire("profile", "line")
+
+    with pytest.raises(StaleToolToken):
+        service.set_mode(stats, "rectangle")
+
+    # ...but it may still manage its own shapes.
+    service.clear(stats)
+
+
+def test_viewer_callbacks_are_released_with_the_owner(qapp):
+    viewer = _Viewer()
+    service = ViewerToolService(viewer)
+    token = service.acquire("roi-stats", "rectangle")
+    calls = []
+
+    service.on_viewer_event(
+        token, viewer.dims.events.current_step, lambda _e=None: calls.append(1)
+    )
+    viewer.dims.events.current_step.emit(None)
+    assert calls, "the callback should fire while the panel is alive"
+
+    service.release(token)
+    calls.clear()
+    viewer.dims.events.current_step.emit(None)
+
+    assert calls == [], "viewer callback outlived the panel"

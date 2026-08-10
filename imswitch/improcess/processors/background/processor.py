@@ -29,6 +29,9 @@ class SubtractBackgroundProcessor(Processor):
     name = "Subtract background"
     id = "subtract-background"
     category = "Restoration"
+    # Output is pixel-for-pixel aligned with the input, so an ROI drawn
+    # on one measures the same features on the other.
+    preserves_grid = True
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:
