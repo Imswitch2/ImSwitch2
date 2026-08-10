@@ -1035,6 +1035,10 @@ def test_point_scan_reset_failure_still_publishes_terminal():
         raise RuntimeError('stage reset failed')
 
     ctrl._resetReturnToCenterPositionersAfterScan = failReset
+    # The real wrapper, so the swallow-and-warn under test is the shipped one.
+    ctrl._restoreScanPositioners = (
+        lambda: SuperScanController._restoreScanPositioners(ctrl)
+    )
     ctrl._publishScanDone = (
         lambda *, isFinalPart: published.append(isFinalPart)
     )
@@ -1068,6 +1072,7 @@ def test_scan_done_widget_failure_still_publishes_terminal(scanDone):
         ),
         _logger=_Logger(),
         _resetReturnToCenterPositionersAfterScan=lambda: None,
+        _restoreScanPositioners=lambda: None,
         _publishScanDone=lambda *, isFinalPart: published.append(
             isFinalPart
         ),

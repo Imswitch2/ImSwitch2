@@ -7,7 +7,8 @@ import threading
 import queue
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Type, Union
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import h5py
 import sip
@@ -24,6 +25,9 @@ import logging
 import imswitch
 from imswitch.imcontrol.model.managers.DetectorsManager import DetectorsManager
 from imswitch.imcontrol.model.managers._acquisition_leases import LeasePurpose
+from imswitch.imcontrol.model.managers.detectors.DetectorManager import (
+    ChunkKind, RawFrameUnavailableError,
+)
 from imswitch.imcontrol.model.managers import recording_metadata as _ome
 from imswitch.imcommon.model.zarr_compat import (
     install_zarr_create_array_compat,
@@ -49,6 +53,24 @@ WRITER_OPEN_TIMEOUT_S = 30.0
 # format so Fiji/HDFView builds that do not understand HDF5 2.0 can still open
 # completed recordings.
 HDF5_STREAM_LIBVER = ('v110', 'v110')
+
+
+@dataclass(frozen=True)
+class StreamPayloadInfo:
+    """Exact container location and shape of one finalising stream.
+
+    This is deliberately reported while the backend is still open.  HDF5 and
+    Zarr handles no longer expose their datasets after finalisation, while a
+    manifest needs the exact detector group and the shape actually committed
+    to disk rather than a prediction made from the acquisition settings.
+    """
+
+    group: Optional[str]
+    stored_shape: Tuple[int, ...]
+    #: Whether the container stores the writer's outer frame dimension.  A
+    #: singleton outer dimension is storage detail and is removed from the
+    #: logical payload descriptor; a multi-frame dimension remains logical.
+    frame_axis_stored: bool
 
 
 class AsTemporaryFile(object):
@@ -93,6 +115,13 @@ class Storer(abc.ABC):
         Args:
             images: Dict mapping detector name to image array (T, Y, X) or (Y, X)
             attrs: Dict mapping detector name to flat metadata dict with ':'-separated keys
+
+        Returns:
+            ``{detector: stored_shape}`` for what was actually written, or None
+            from a storer that does not report it. A container may add axes of
+            its own -- HDF5 gives every 2-D snapshot a leading frame axis -- so
+            the stored shape is the writer's to state and no one else's to
+            guess.
         """
         raise NotImplementedError
 
@@ -141,6 +170,16 @@ class Storer(abc.ABC):
             saveMode: SaveMode enum value
         """
         raise NotImplementedError
+
+    def streamPayloadInfo(
+        self, detectorName: str, currentFrames: Dict[str, int]
+    ) -> Optional[StreamPayloadInfo]:
+        """Describe a stream immediately before finalisation.
+
+        Third-party storers predating payload manifests may return ``None``;
+        the built-in storers override this with an exact locator.
+        """
+        return None
 
     def abortStream(self, filePaths: Dict[str, str],
                     fileDests: Dict[str, Union[str, 'BytesIO']], saveMode) -> None:
@@ -444,8 +483,9 @@ class ZarrStorer(Storer):
         return recording_attrs, other_attrs
 
     def snap(self, images: Dict[str, np.ndarray],
-             attrs: Dict[str, Dict[str, Any]] = None) -> None:
+             attrs: Dict[str, Dict[str, Any]] = None):
         attrs = attrs or {}
+        storedShapes = {}
         with AsTemporaryFile(f'{self.filepath}.zarr') as path:
             store = self._make_store(path)
             root = zarr.group(store=store, overwrite=True)
@@ -461,8 +501,13 @@ class ZarrStorer(Storer):
                     channel_attrs,
                     data=image,
                 )
+                array = np.asarray(image)
+                storedShapes[channel] = (
+                    (1,) + array.shape if array.ndim == 2 else array.shape
+                )
             self._close_store(store)
             logger.info(f"Saved image to zarr store {path} with structured layout")
+        return storedShapes
     
     def openStream(self, fileDests: Dict[str, Union[str, BytesIO]],
                    detectorNames: List[str], shapes: Dict[str, tuple],
@@ -584,6 +629,18 @@ class ZarrStorer(Storer):
         for store in self._stores.values():
             self._close_store(store)
 
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        dataset = getattr(self, '_datasets', {}).get(detectorName)
+        if dataset is None:
+            return None
+        parent = getattr(self, '_groupPaths', {}).get(detectorName)
+        group = f'{parent}/{detectorName}' if parent else detectorName
+        return StreamPayloadInfo(
+            group=group,
+            stored_shape=tuple(int(size) for size in dataset.shape),
+            frame_axis_stored=True,
+        )
+
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close Zarr stores and remove the partial .zarr directories."""
         for store in getattr(self, '_stores', {}).values():
@@ -702,7 +759,9 @@ class HDF5Storer(Storer):
             # Fixed dataset from data (snapshot)
             if data is None:
                 raise ValueError("Must provide either maxshape or data")
-            # Ensure a leading logical-frame axis.
+            # Ensure a leading logical-frame axis. This is exactly the kind of
+            # change a reader cannot predict from the array it was handed, so
+            # snap() reports the resulting shape back to the caller.
             if data.ndim == 2:
                 data = data[np.newaxis, ...]
             chunks = (1, *data.shape[1:]) if data.ndim >= 3 else True
@@ -821,6 +880,7 @@ class HDF5Storer(Storer):
         """
         attrs = attrs or {}
 
+        storedShapes = {}
         for channel, image in images.items():
             with AsTemporaryFile(f'{self.filepath}_{channel}.h5') as path:
                 with h5py.File(path, 'w') as file:
@@ -834,9 +894,18 @@ class HDF5Storer(Storer):
                         file, channel, image.dtype, channel_attrs,
                         data=image
                     )
+                    # The same leading frame axis _createDetectorGroup adds to
+                    # a 2-D image. Reported, not left for a reader to deduce.
+                    stored = np.asarray(image)
+                    storedShapes[channel] = (
+                        (1,) + stored.shape if stored.ndim == 2
+                        else stored.shape
+                    )
 
                 logger.info(f"Saved snapshot to {path} with structured HDF5 layout")
     
+        return storedShapes
+
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
                    singleMultiDetectorFile, singleLapseFile, saveMode):
         """Initialize HDF5 streaming session."""
@@ -1119,6 +1188,18 @@ class HDF5Storer(Storer):
                 except Exception as e:
                     logger.warning(f'HDF5 abort: failed to remove {path}: {e}')
 
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        dataset = getattr(self, '_datasets', {}).get(detectorName)
+        if dataset is None:
+            return None
+        parent = getattr(self, '_groupPaths', {}).get(detectorName)
+        group = f'{parent}/{detectorName}' if parent else detectorName
+        return StreamPayloadInfo(
+            group=group,
+            stored_shape=tuple(int(size) for size in dataset.shape),
+            frame_axis_stored=True,
+        )
+
 
 class TiffStorer(Storer):
     """Storer for OME-TIFF.
@@ -1148,14 +1229,19 @@ class TiffStorer(Storer):
 
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot as a native OME-TIFF (one shot, shape known)."""
+        storedShapes = {}
         for channel, image in images.items():
             image = np.asarray(image)
+            # OME-TIFF stores the array as handed over.
+            storedShapes[channel] = image.shape
             with AsTemporaryFile(f'{self.filepath}_{channel}.ome.tiff') as path:
                 meta = self._meta_for(channel, image=image)
                 tiff.imwrite(path, image, ome=True, bigtiff=True,
-                             metadata=meta.tiff_metadata())
+                             metadata=meta.tiff_metadata(image.shape))
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
     
+        return storedShapes
+
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
                    singleMultiDetectorFile, singleLapseFile, saveMode):
         """Open one plain BigTIFF per detector; OME-XML is embedded at finalize."""
@@ -1247,6 +1333,21 @@ class TiffStorer(Storer):
                 f'{summary}'
             ) from errors[0][1]
 
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        frame_shape = getattr(self, '_spatial', {}).get(detectorName)
+        n_frames = int(currentFrames.get(detectorName, 0))
+        if frame_shape is None or n_frames < 1:
+            return None
+        stored_shape = (
+            tuple(frame_shape) if n_frames == 1
+            else (n_frames, *tuple(frame_shape))
+        )
+        return StreamPayloadInfo(
+            group=None,
+            stored_shape=stored_shape,
+            frame_axis_stored=n_frames > 1,
+        )
+
     def abortStream(self, filePaths, fileDests, saveMode):
         """Close any open writers and delete the partial file(s)."""
         for tw in getattr(self, '_writers', {}).values():
@@ -1262,6 +1363,73 @@ class TiffStorer(Storer):
                     os.remove(path)
             except Exception as e:
                 logger.warning(f'TIFF abort: failed to remove {path}: {e}')
+
+
+class FailureKind(enum.Enum):
+    """What kind of thing went wrong, so a caller can decide whether to go on.
+
+    A caller that survives some failures and not others cannot work this out
+    from a message string. Matching on text would be worse than not
+    classifying at all: it would look like a policy while silently
+    misclassifying anything reworded.
+
+    Only ``WRITER`` is recoverable in the sense that the run producing the
+    recording may sensibly continue without it — the measurement happened, the
+    file did not. Everything else means the data itself is suspect.
+    """
+
+    #: Serialising or writing failed. Nothing is wrong with the acquisition.
+    WRITER = 'writer'
+    #: Frames were lost, late, or never arrived.
+    ACQUISITION = 'acquisition'
+    #: The scan producing the data failed, was refused, or timed out.
+    SCAN = 'scan'
+    #: A device faulted or was lost.
+    HARDWARE = 'hardware'
+    #: Not classified at the point it was raised. Treated as unrecoverable —
+    #: the safe reading, since the alternative is continuing past something
+    #: nobody understood.
+    UNKNOWN = 'unknown'
+
+    @property
+    def recoverable(self) -> bool:
+        """Whether a multi-point run may reasonably continue past this."""
+        return self is FailureKind.WRITER
+
+
+@dataclass(frozen=True)
+class PayloadLocator:
+    """Where one detector's recorded data actually ended up.
+
+    A filename is not enough to find it again: grouped HDF5/Zarr needs the
+    group, and separate files may have been de-duplicated against existing
+    ones. This is filled in from what the writer reports **after
+    finalisation**, never guessed at dispatch — ``snapImagePrev`` already had
+    to learn that lesson, and returns its written paths for the same reason.
+    """
+
+    path: str
+    detector: str
+    group: Optional[str] = None
+    axes: str = ''
+    stored_axes: str = ''
+    shape: Tuple[int, ...] = ()
+    stored_shape: Tuple[int, ...] = ()
+    generation: Optional[int] = None
+    complete: bool = False
+
+    def asdict(self) -> Dict:
+        return {
+            'path': self.path,
+            'detector': self.detector,
+            'group': self.group,
+            'axes': self.axes,
+            'stored_axes': self.stored_axes,
+            'shape': list(self.shape),
+            'stored_shape': list(self.stored_shape),
+            'generation': self.generation,
+            'complete': self.complete,
+        }
 
 
 class SaveMode(enum.Enum):
@@ -1297,6 +1465,9 @@ class RecordingManager(SignalInterface):
     sigRecordingStartedDetailed = Signal(int)
     sigRecordingEndedDetailed = Signal(int)
     sigRecordingFailedDetailed = Signal(str, int)
+    #: message, generation, FailureKind value. The typed form; the two
+    #: above stay for callers that only want to know that it failed.
+    sigRecordingFailedTyped = Signal(str, int, str)
     sigRecordingStalled = Signal(str)  # (detectorName) - emitted when watchdog detects zero-progress stall
     sigRecordingFrameNumUpdated = Signal(int)  # (frameNumber)
     sigRecordingTimeUpdated = Signal(int)  # (recTime)
@@ -1320,6 +1491,11 @@ class RecordingManager(SignalInterface):
         self.__acqStartFailed = False
         self.__recordingSignalLock = threading.Lock()
         self.__recordingGeneration = 0
+        # Where each session's data actually landed, keyed by generation.
+        # Filled by the worker once paths are resolved (they are de-duplicated
+        # against existing files, so they cannot be predicted), and marked
+        # complete only at writer finalisation.
+        self.__payloadLocators = {}
         self.__endSignalEmitted = False
         self.__failureSignalEmitted = False
         self.__lastRecordingError = None
@@ -1540,7 +1716,10 @@ class RecordingManager(SignalInterface):
         except Exception as error:
             self.__record = False
             self.__activeDetectorNames = ()
-            self._signalRecordingFailed(error, recordingGeneration)
+            # The worker thread never started: nothing was acquired and
+            # nothing was written, so this is not a writer problem.
+            self._signalRecordingFailed(error, recordingGeneration,
+                                        FailureKind.HARDWARE)
             raise
         return recordingGeneration
 
@@ -1640,9 +1819,48 @@ class RecordingManager(SignalInterface):
             self.sigRecordingEnded.emit()
         return True
 
-    def reportRecordingFailure(self, error, generation=None):
+    def registerPayloadLocators(self, generation, locators) -> None:
+        """Record where a session's files were actually written.
+
+        Called by the worker once ``getSaveFilePath`` has resolved them.
+        Nothing is complete at this point — the paths exist, the data is not
+        yet finalised — which is why :meth:`payloadLocators` reports
+        ``complete`` separately.
+        """
+        if generation is None:
+            return
+        with self.__recordingSignalLock:
+            self.__payloadLocators[int(generation)] = dict(locators)
+
+    def payloadLocators(self, generation) -> Dict[str, 'PayloadLocator']:
+        """Where a session's data ended up, per detector.
+
+        Authoritative only after the session has finalised: before that the
+        entries exist but report ``complete=False``. A caller writing these
+        into a manifest must wait for the terminal, not the dispatch — pointing
+        a manifest at a file whose writer never drained is the same mistake as
+        guessing its name.
+        """
+        with self.__recordingSignalLock:
+            found = self.__payloadLocators.get(int(generation), {})
+            complete = (int(generation) != self.__recordingGeneration
+                        or self.__endSignalEmitted)
+            failed = self.__failureSignalEmitted
+        complete = bool(complete and not failed)
+        return {
+            name: PayloadLocator(
+                path=locator.path, detector=locator.detector,
+                group=locator.group, axes=locator.axes,
+                stored_axes=locator.stored_axes, shape=locator.shape,
+                stored_shape=locator.stored_shape,
+                generation=int(generation), complete=complete,
+            )
+            for name, locator in found.items()
+        }
+
+    def reportRecordingFailure(self, error, generation=None, kind=None):
         """Publish an externally detected failure for the active session."""
-        return self._signalRecordingFailed(error, generation)
+        return self._signalRecordingFailed(error, generation, kind)
 
     def _signalRecordingStarted(self, generation=None):
         """Publish start with identity while preserving the legacy signal."""
@@ -1661,9 +1879,16 @@ class RecordingManager(SignalInterface):
         self.__acqStartFailed = True
         self.__acqStartedEvent.set()
 
-    def _signalRecordingFailed(self, error, generation=None):
-        """Publish one terminal failure without masquerading as completion."""
+    def _signalRecordingFailed(self, error, generation=None,
+                               kind=None):
+        """Publish one terminal failure without masquerading as completion.
+
+        ``kind`` is a :class:`FailureKind`; omitting it means UNKNOWN, which
+        is deliberately *not* recoverable. A caller that continues past
+        failures must be told what it is continuing past.
+        """
         message = str(error) or type(error).__name__
+        kind = kind or getattr(error, 'failureKind', None) or FailureKind.UNKNOWN
         with self.__recordingSignalLock:
             if generation is None:
                 generation = self.__recordingGeneration
@@ -1678,6 +1903,7 @@ class RecordingManager(SignalInterface):
             self.__endSignalEmitted = True
         self._signalAcquisitionFailed()
         self.sigRecordingFailedDetailed.emit(message, int(generation))
+        self.sigRecordingFailedTyped.emit(message, int(generation), kind.value)
         self.sigRecordingFailed.emit(message)
         return True
 
@@ -1789,10 +2015,18 @@ class RecordingManager(SignalInterface):
         try:
             # Acquire data
             for detectorName in detectorNames:
-                images[detectorName] = (
-                    self.__detectorsManager[detectorName]
-                    .getLatestFrameShared(is_save=True)
-                )
+                try:
+                    images[detectorName] = (
+                        self.__detectorsManager[detectorName]
+                        .getLatestFrameShared(is_save=True)
+                    )
+                except RawFrameUnavailableError as error:
+                    # A scan-driven detector mid-scan has nothing complete to
+                    # offer. Saving the buffer it is still filling would look
+                    # like data, so this detector is left out of the snapshot
+                    # and said so, rather than the whole snap failing.
+                    self.__logger.warning('%s', error)
+                    continue
                 image = images[detectorName]
 
             if saveFormat:
@@ -1820,7 +2054,8 @@ class RecordingManager(SignalInterface):
         if saveMode == SaveMode.Numpy:
             return images
 
-    def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs):
+    def snapImagePrev(self, detectorName, savename, saveFormat, image, attrs,
+                      stagePositionUm=None, zStepUm=None):
         """Save a previously captured image using the appropriate Storer.
         
         Routes through Storer.snap() for unified snapshot saving logic.
@@ -1833,16 +2068,90 @@ class RecordingManager(SignalInterface):
             saveFormat: SaveFormat enum value
             image: Image array to save (T, Y, X) or (Y, X)
             attrs: Dict mapping detector name to flat metadata dict
+            stagePositionUm: Optional ``(x, y, z)`` stage position in µm,
+                written as OME ``Plane/@PositionX|Y|Z``. This is what lets a
+                set of separately saved images (tiling, for one) be
+                reassembled into a mosaic by any OME-aware reader.
+
+        Returns:
+            The list of paths actually written. Callers that index the saved
+            files (a tiling manifest, say) must use these rather than guess:
+            the storer appends the detector name and its own extension, and
+            de-duplicates the basename against existing files.
         """
+        return self.snapImagesPrev({detectorName: image}, savename, saveFormat,
+                                   attrs, stagePositionUm=stagePositionUm,
+                                   zStepUm=zStepUm)
+
+    def snapImagesPrev(self, images, savename, saveFormat, attrs,
+                       stagePositionUm=None, zStepUm=None):
+        """Save several already-captured images that share one stage position.
+
+        The multi-detector form of :meth:`snapImagePrev`. Every image was
+        captured at the same place at the same time — a tiling run's tile,
+        across whichever detectors the operator selected — so they share the
+        stage position written into their OME metadata, which is what lets them
+        be reassembled into one mosaic per detector afterwards.
+
+        The images are passed in rather than re-read: the caller had to capture
+        them under its own timing constraints (a stage that must not move, a
+        scan that must have finished), and re-reading here would hand back
+        whatever arrived since.
+
+        Args:
+            images: ``{detectorName: array}``, each ``(Y, X)`` or ``(..., Y, X)``.
+            zStepUm: Optional Z spacing, applied to every image. A caller with
+                differing spacings per detector must call once per detector.
+
+        Returns:
+            The paths actually written, in the order the detectors were given.
+        """
+        if not images:
+            return []
+
+        detectorNames = list(images)
         storer = self.__storerMap[saveFormat]
-        savename = self.getSaveSnapName(savename, saveFormat, [detectorName])
+        savename = self.getSaveSnapName(savename, saveFormat, detectorNames)
+        savePaths = self._snapSavePaths(savename, saveFormat, detectorNames)
         store = storer(savename, self.__detectorsManager)
 
-        # Wrap single detector in dict for storer interface
-        images = {detectorName: image}
-        nf = 1 if np.asarray(image).ndim == 2 else int(np.asarray(image).shape[0])
-        store.omeMeta = {detectorName: self.buildOmeMeta(detectorName, _ome.MODE_SNAP, nf)}
-        store.snap(images, attrs)
+        omeMeta = {}
+        for detectorName, image in images.items():
+            array = np.asarray(image)
+            nf = 1 if array.ndim == 2 else int(array.shape[0])
+            # A caller that knows its planes are a Z stack says so with
+            # zStepUm. Without it the leading axis is labelled T, which would
+            # mislabel every plane of a 3D tile and silently corrupt its
+            # calibration.
+            if zStepUm:
+                omeMeta[detectorName] = self.buildOmeMeta(
+                    detectorName, _ome.MODE_SCAN, nf, scanDims=(1, 1, nf),
+                    scanStepSizes=(0, 0, zStepUm),
+                    stagePositionUm=stagePositionUm)
+            else:
+                omeMeta[detectorName] = self.buildOmeMeta(
+                    detectorName, _ome.MODE_SNAP, nf,
+                    stagePositionUm=stagePositionUm)
+
+        store.omeMeta = omeMeta
+        storedShapes = store.snap(dict(images), attrs)
+
+        # What the container actually wrote, which the caller cannot infer: an
+        # HDF5 snapshot of a 2-D image gains a leading frame axis, a TIFF does
+        # not. Reported per detector so a manifest can describe the file rather
+        # than the array that went in.
+        self.__lastSnapStoredShapes = {
+            name: tuple(shape) for name, shape in (storedShapes or {}).items()
+        }
+        return savePaths
+
+    def lastSnapStoredShapes(self) -> Dict[str, Tuple[int, ...]]:
+        """Stored shapes from the most recent :meth:`snapImagesPrev`.
+
+        Empty when the storer did not report them, in which case a reader must
+        reconcile against the file itself rather than trust a guess.
+        """
+        return dict(getattr(self, '_RecordingManager__lastSnapStoredShapes', {}))
 
     @staticmethod
     def _parameter_seconds(param) -> Optional[float]:
@@ -1887,7 +2196,8 @@ class RecordingManager(SignalInterface):
             return 0.0
 
     def buildOmeMeta(self, detectorName, mode, nFrames, scanDims=None,
-                     scanStepSizes=None, frameIntervalS=None, annotations=None):
+                     scanStepSizes=None, frameIntervalS=None, annotations=None,
+                     stagePositionUm=None):
         """Build the shared :class:`OmeImageMeta` for a detector from recording
         context. ``mode`` is a normalized recording mode (see recording_metadata),
         ``scanDims`` is ``(Nx, Ny, Nz)`` from the scan controller (for z-stack
@@ -1919,7 +2229,8 @@ class RecordingManager(SignalInterface):
             detectorName, mode, nFrames,
             pixel_size_yx_um=(py, px), scan_dims=scanDims,
             z_step_um=z_step, t_interval_s=t_interval,
-            dtype=det.dtype, annotations=annotations or {})
+            dtype=det.dtype, annotations=annotations or {},
+            stage_position_um=stagePositionUm)
 
     def getSaveFilePath(self, path, allowOverwriteDisk=False, allowOverwriteMem=False):
         newPath = path
@@ -1973,7 +2284,10 @@ class WriterThread(threading.Thread):
     queue from the acquisition loop. Batches frames per detector for efficiency.
     """
     def __init__(self, storer, fileDests, detectorNames, shapes, attrs,
-                 singleMultiDetectorFile, singleLapseFile, saveMode, filePaths, recordingManager):
+                 singleMultiDetectorFile, singleLapseFile, saveMode, filePaths,
+                 recordingManager, *, recordingGeneration=None,
+                 recordingMode=_ome.MODE_TIMELAPSE, scanDims=None,
+                 scanDrivenDetectors=None):
         # Normal shutdown still joins with a deadline and reports a failure.
         # The daemon fail-safe prevents an uninterruptible storage-backend call
         # from keeping the whole application process alive forever.
@@ -1988,6 +2302,10 @@ class WriterThread(threading.Thread):
         self._saveMode = saveMode
         self._filePaths = filePaths
         self._recordingManager = recordingManager
+        self._recordingGeneration = recordingGeneration
+        self._recordingMode = recordingMode
+        self._scanDims = scanDims
+        self._scanDrivenDetectors = dict(scanDrivenDetectors or {})
         
         # Bounded queue for backpressure (put() blocks when full)
         self._queue = queue.Queue(maxsize=WRITER_QUEUE_MAXSIZE)
@@ -2035,6 +2353,85 @@ class WriterThread(threading.Thread):
         if self._write_exception is not None:
             raise self._write_exception
 
+    @staticmethod
+    def _logical_axes(mode, n_frames, scan_dims, logical_rank, scan_driven):
+        """Name the dimensions the acquisition produced, not writer wrappers."""
+        if logical_rank < 2:
+            raise ValueError(
+                f'A recorded image needs at least Y/X, got rank {logical_rank}'
+            )
+        base = ''.join(
+            axis.upper()
+            for axis in _ome.axes_for_recording(mode, n_frames, scan_dims)
+        )
+        target_leading = logical_rank - 2
+        leading = list(base[:-2])
+        # A scan-driven detector returns one assembled raw frame. Extra axes in
+        # that frame are channels first, then Z. For an actual sequence of
+        # assembled frames, the writer's outer dimension is logical time.
+        candidates = (
+            (('T', 'C', 'Z') if scan_driven else ('T', 'Z', 'C'))
+            if n_frames > 1
+            else (('C', 'Z') if scan_driven else ('Z', 'C'))
+        )
+        for axis in candidates:
+            if len(leading) >= target_leading:
+                break
+            if axis not in leading:
+                leading.append(axis)
+        if len(leading) != target_leading:
+            raise ValueError(
+                f'Cannot describe rank-{logical_rank} recording payload with '
+                'the supported T/C/Z/Y/X axis model'
+            )
+        order = {'T': 0, 'C': 1, 'Z': 2}
+        leading.sort(key=order.__getitem__)
+        return ''.join(leading) + 'YX'
+
+    def _final_payload_locators(self, payload_info):
+        locators = {}
+        for detectorName, info in payload_info.items():
+            if info is None:
+                # Preserve the resolved path for compatibility. There is no
+                # exact group/shape to publish when a detector wrote no array.
+                locators[detectorName] = PayloadLocator(
+                    path=str(self._filePaths[detectorName]),
+                    detector=detectorName,
+                )
+                continue
+            n_frames = int(self._currentFrames.get(detectorName, 0))
+            stored_shape = tuple(int(size) for size in info.stored_shape)
+            remove_frame_wrapper = bool(
+                info.frame_axis_stored and n_frames == 1
+            )
+            logical_shape = (
+                stored_shape[1:] if remove_frame_wrapper else stored_shape
+            )
+            axes = self._logical_axes(
+                self._recordingMode,
+                n_frames,
+                self._scanDims,
+                len(logical_shape),
+                self._scanDrivenDetectors.get(detectorName, False),
+            )
+            stored_axes = f'T{axes}' if remove_frame_wrapper else axes
+            if len(set(stored_axes)) != len(stored_axes):
+                raise ValueError(
+                    f'Payload for {detectorName!r} needs a logical T axis '
+                    'inside a singleton writer frame; the recording model '
+                    'cannot name both dimensions without ambiguity'
+                )
+            locators[detectorName] = PayloadLocator(
+                path=str(self._filePaths[detectorName]),
+                detector=detectorName,
+                group=info.group,
+                axes=axes,
+                stored_axes=stored_axes,
+                shape=logical_shape,
+                stored_shape=stored_shape,
+            )
+        return locators
+
     def run(self):
         """Writer thread main loop."""
         try:
@@ -2076,6 +2473,15 @@ class WriterThread(threading.Thread):
                         self._stream_cleanup_done.set()
                     else:
                         self._flush_all_batches()
+                        payloadInfo = {
+                            detectorName: self._storer.streamPayloadInfo(
+                                detectorName, self._currentFrames
+                            )
+                            if hasattr(self._storer, 'streamPayloadInfo')
+                            else None
+                            for detectorName in self._detectorNames
+                        }
+                        finalLocators = self._final_payload_locators(payloadInfo)
                         # finish() can time out while a slow backend is
                         # flushing, after which the owner escalates to
                         # abort(). Re-check at both blocking boundaries so a
@@ -2099,6 +2505,11 @@ class WriterThread(threading.Thread):
                                     self._filePaths,
                                     self._fileDests,
                                     self._saveMode,
+                                )
+                            elif self._recordingManager is not None:
+                                self._recordingManager.registerPayloadLocators(
+                                    self._recordingGeneration,
+                                    finalLocators,
                                 )
                         self._stream_cleanup_done.set()
                     break
@@ -2416,6 +2827,23 @@ class RecordingWorker(Worker):
             else:
                 fileDests[detectorName] = filePaths[detectorName]
         
+        # Publish where this session's data is going. The paths are resolved
+        # here and nowhere else -- getSaveFilePath de-duplicates against what
+        # already exists, so a caller that guessed would name a file that is
+        # not the one being written.
+        try:
+            self.__recordingManager.registerPayloadLocators(
+                getattr(self, 'recordingGeneration', None),
+                {
+                    name: PayloadLocator(path=str(path), detector=name)
+                    for name, path in filePaths.items()
+                },
+            )
+        except Exception:
+            # Locators are a convenience for callers that index the output;
+            # failing to publish them must not fail the recording itself.
+            pass
+
         return fileDests, filePaths
     
     def _augment_attrs_with_recording_metadata(
@@ -2641,7 +3069,14 @@ class RecordingWorker(Worker):
             ),
             saveMode=self.saveMode,
             filePaths=filePaths,
-            recordingManager=self.__recordingManager
+            recordingManager=self.__recordingManager,
+            recordingGeneration=getattr(self, 'recordingGeneration', None),
+            recordingMode=mode,
+            scanDims=scanDims,
+            scanDrivenDetectors={
+                detectorName: self._isScanDrivenDetector(detectorName)
+                for detectorName in self.detectorNames
+            },
         )
         self._writerThread = writerThread
         writerThread.start()
@@ -2695,7 +3130,18 @@ class RecordingWorker(Worker):
                     detector, 'startChunkConsumer', None
                 )
                 if callable(startConsumer):
-                    startConsumer(_RECORDING_CHUNK_CONSUMER)
+                    # A recording wants the measurement, not the picture of
+                    # it. For a point detector these differ: what reaches the
+                    # screen is whatever its line-step view mode reduced the
+                    # scan to, which is a display preference and was never
+                    # meant to decide what got saved.
+                    try:
+                        startConsumer(_RECORDING_CHUNK_CONSUMER,
+                                      kind=ChunkKind.RAW)
+                    except TypeError:
+                        # An out-of-tree detector predating the kind argument
+                        # serves one representation; take it rather than fail.
+                        startConsumer(_RECORDING_CHUNK_CONSUMER)
                 else:
                     # Compatibility for out-of-tree detector implementations
                     # that have not yet adopted the atomic boundary API.

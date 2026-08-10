@@ -267,6 +267,31 @@ def test_set_laser_value_nonzero_does_not_force_laser_off():
     widget.setLaserActive.assert_not_called()
 
 
+def test_toggle_laser_keeps_ui_off_when_manager_rejects_enable():
+    laser = Mock()
+    laser.setEnabled = Mock(return_value=False)
+
+    widget = Mock()
+    widget.setLaserActive = Mock()
+
+    controller = LaserController.__new__(LaserController)
+    controller._master = Mock(lasersManager=_SingleLaserManager(laser))
+    controller._widget = widget
+    controller._commChannel = SimpleNamespace(sharedAttrs={})
+    controller.settingAttr = False
+
+    LaserController.toggleLaser(controller, '488nm', True)
+
+    laser.setEnabled.assert_called_once_with(True)
+    widget.setLaserActive.assert_called_once_with(
+        '488nm', False, emitSignal=False
+    )
+    assert (
+        controller._commChannel.sharedAttrs[('Laser', '488nm', 'Enabled')]
+        is False
+    )
+
+
 def test_apply_component_state_startup_restore_no_enable(laser_controller, mock_widget):
     """Test STARTUP_RESTORE mode does NOT enable lasers."""
     state = {

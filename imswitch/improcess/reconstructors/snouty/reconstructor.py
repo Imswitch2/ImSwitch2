@@ -50,7 +50,9 @@ class SnoutyReconstructor(Reconstructor):
         """
         return None
     
-    def process(self, data_obj: 'DataObj', params: dict) -> SnoutyResult:
+    def process(
+        self, data_obj: 'DataObj', params: dict, context=None
+    ) -> SnoutyResult:
         """
         Run SNOUTY deskew reconstruction.
         

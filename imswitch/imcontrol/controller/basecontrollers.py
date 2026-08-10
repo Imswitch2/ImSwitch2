@@ -274,6 +274,69 @@ class ScanLifecycleMixin:
             self._commChannel.clearActiveScanSource(self)
 
 
+    def _resolveScanActuators(self):
+        """Positioners this run will drive, or None when that is not knowable.
+
+        Both sets count. ``_positionersScan`` are the axes the waveform sweeps;
+        ``target_device`` additionally covers scanners that are merely parked
+        at their centre position before arming, which is still a hardware move
+        on that actuator.
+
+        Returning None rather than an empty list matters: a consumer yielding
+        hardware to the scan must read that as "unknown" and stay yielded,
+        never as "the scan drives nothing".
+
+        KNOWN LIMITATION. Only controllers that populate
+        ``_analogParameterDict['target_device']`` are understood, which among
+        the TriggerScope family is the raster controller alone; the pLS-RESOLFT,
+        LSXYR, galvo-detection and multicolor controllers keep their geometry
+        elsewhere and so resolve to None. Those scans are therefore treated as
+        conflicting and the focus lock suspends and reacquires around every one
+        of them -- safe, but pessimistic. Override this in a controller that
+        knows its own positioners to get the precise answer; deliberately not
+        guessed at here, since reporting "no conflict" wrongly is the one
+        failure this whole mechanism exists to prevent.
+        """
+        analogParameterDict = getattr(self, '_analogParameterDict', None) or {}
+        scannedPositioners = getattr(self, '_positionersScan', None) or []
+        targetDevices = analogParameterDict.get('target_device') or []
+        if not targetDevices and not scannedPositioners:
+            return None
+
+        actuators = set()
+        for name in list(scannedPositioners) + list(targetDevices):
+            if name and str(name) != 'None':
+                actuators.add(str(name))
+        return sorted(actuators)
+
+    def _publishScanActuators(self):
+        """Announce the positioners this run owns, before it writes to them.
+
+        A failure to resolve must not block the scan: the scan does not depend
+        on this publication, only its consumers do. Staying silent leaves them
+        on their safe default.
+        """
+        try:
+            actuators = self._resolveScanActuators()
+        except Exception:
+            self._logger.error(
+                'Could not resolve the scan actuator list; consumers that '
+                f'yield hardware to the scan are not being notified:\n'
+                f'{traceback.format_exc()}'
+            )
+            return
+        if actuators is None:
+            return
+        try:
+            self.emitScanSignal(
+                self._commChannel.sigScanActuatorsResolved, actuators
+            )
+        except Exception:
+            self._logger.error(
+                'A scan-actuator listener failed', exc_info=True
+            )
+
+
 class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidgetController):
     componentName = 'Scan'
     supportsExactScanRequestCompletion = True
@@ -326,6 +389,11 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # cleared. Close, failure and completion paths can otherwise race,
         # capture the same token, and publish the same run-level end twice.
         self._scanRunTerminalLock = threading.RLock()
+        # True means "nothing to park". Only _armScanIteration clears it, so a
+        # run that fails in getParameters or signal construction -- and never
+        # drove a waveform -- does not have its terminal issue a hardware move,
+        # possibly from a half-rebuilt parameter dict.
+        self._scanPositionersRestored = True
 
         self.positioners = {
             pName: pManager for pName, pManager in self._setupInfo.positioners.items()
@@ -1065,6 +1133,15 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
                 if callbackDelivered:
                     return
                 callbackDelivered = True
+            # Park before the terminal, not after: sigScanEnded is what hands
+            # the focus axis back to the focus lock, which must not start
+            # correcting against an actuator the scan left mid-waveform. A
+            # no-op when the success path already did it for this run.
+            restorePositioners = getattr(
+                self, '_restoreScanPositionersIfPending', None
+            )
+            if callable(restorePositioners):
+                restorePositioners()
             endError = None
             try:
                 if startingPublished:
@@ -1265,6 +1342,12 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
     def _armScanIteration(self, signalDict, scanInfoDict):
         """Publish the participating device list, then arm the iteration.
 
+        Arming an iteration means this one has not parked its positioners yet.
+        Clearing the flag here (rather than per run) keeps multi-part and
+        repeat sequences parking per part exactly as they always have, while
+        still letting the run terminal park a run that never reached its
+        completion path at all.
+
         The publication has to happen HERE, before ``arm``. ``runScan`` marks
         the NI-DAQ manager busy and only then emits ``sigScanBuilt``, so any
         consumer that must issue a one-shot DAQ write in response to scan
@@ -1275,6 +1358,14 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         A failure to resolve the device list must not block the scan: the scan
         itself does not depend on this, only the consumers do.
         """
+        self._scanPositionersRestored = False
+        # Published here rather than alongside sigScanStarting, which fires
+        # from _beginScanRun *before* getParameters has run: the parameter
+        # dicts still describe the previous scan at that point, so a run that
+        # newly added a Z axis could have been announced as not touching it.
+        # Consumers have already yielded on sigScanStarting and this only ever
+        # releases them, so arriving later is safe -- arriving wrong is not.
+        self._publishScanActuators()
         try:
             devices = self._master.nidaqManager.resolveScanTTLDevices(signalDict)
         except Exception:
@@ -1559,8 +1650,24 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         return getattr(positionerInfo, 'managerProperties', {}) or {}
 
     def _getReturnToCenterAxis(self, positionerName):
+        """Axis to park on, defaulting to the positioner's own first axis.
+
+        The default used to be the integer ``0``. Managers key their tracked
+        position by axis *name* -- ``NidaqPositionerManager`` builds
+        ``{axis: 0 for axis in axes}`` -- so parking an unconfigured positioner
+        still wrote the voltage but recorded it under a brand-new ``0`` key,
+        leaving ``position["Z"]`` stale and any later relative move computed
+        from the wrong origin. ``example_sted.json`` sets
+        ``returnToCenterAfterScan`` without an axis, so this was the shipped
+        path.
+        """
         properties = self._getPositionerManagerProperties(positionerName)
-        return properties.get('returnToCenterAfterScanAxis', 0)
+        axis = properties.get('returnToCenterAfterScanAxis')
+        if axis is not None:
+            return axis
+        positionerInfo = self._setupInfo.positioners.get(positionerName)
+        axes = list(getattr(positionerInfo, 'axes', None) or [])
+        return axes[0] if axes else 0
 
     def _positionerReturnsToCenterAfterScan(self, positionerName):
         properties = self._getPositionerManagerProperties(positionerName)
@@ -1585,6 +1692,42 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
             position = centerPositions[index]
             axis = self._getReturnToCenterAxis(positionerName)
             self._master.positionersManager[positionerName].setPosition(position, axis)
+
+    def _restoreScanPositioners(self):
+        """Park marked positioners at their centre after an iteration.
+
+        Two orderings have to hold at once. The parked stage must be real
+        before ``sigScanDone``, which per-iteration consumers and the UI react
+        to; and before ``sigScanEnded``, which is what hands the focus axis
+        back to the focus lock -- resuming a lock against an actuator still
+        sitting wherever the waveform ended is the whole problem this exists
+        to avoid.
+
+        A stage that refuses to park is a warning, never a reason to strand
+        the run without a terminal.
+        """
+        self._scanPositionersRestored = True
+        try:
+            self._resetReturnToCenterPositionersAfterScan()
+        except Exception:
+            self._logger.warning(
+                "Failed to reset positioners after scan:\n%s",
+                traceback.format_exc(),
+            )
+
+    def _restoreScanPositionersIfPending(self):
+        """Park at the run terminal, unless the finished iteration already did.
+
+        Only the completion path used to park, and only in two of the scan
+        controllers, so a failed or aborted run released the actuator wherever
+        the waveform left it -- and then released the focus lock onto it. The
+        flag is cleared as each iteration arms, so a normal multi-part or
+        repeat sequence still parks per part exactly as before and this adds
+        no second hardware write.
+        """
+        if self.__dict__.get('_scanPositionersRestored', True):
+            return
+        self._restoreScanPositioners()
 
     def getComponentState(self) -> dict:
         """Snapshot the current scan parameter dictionaries for component state persistence."""

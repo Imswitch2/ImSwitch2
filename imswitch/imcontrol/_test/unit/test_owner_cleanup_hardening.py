@@ -18,8 +18,9 @@ from imswitch.imcontrol.controller.controllers.EtSnoutyController import (
     EtSnoutyController,
 )
 from imswitch.imcontrol.controller.controllers.FocusLockController import (
-    FocusCalibThread, FocusLockController,
+    FocusCalibThread, FocusLockController, ProcessDataThread,
 )
+from imswitch.imcontrol.model.workflows.spiral import SPIRAL
 from imswitch.imcontrol.controller.controllers.TilingController import (
     TilingController,
 )
@@ -532,6 +533,7 @@ def _recording_shell(detectors, events):
     manager._RecordingManager__endSignalEmitted = False
     manager._RecordingManager__failureSignalEmitted = False
     manager._RecordingManager__lastRecordingError = None
+    manager._RecordingManager__payloadLocators = {}
     manager._RecordingManager__recordingWorker = None
     manager._RecordingManager__thread = None
 
@@ -654,6 +656,7 @@ def test_recording_failure_is_distinct_and_terminal_exactly_once():
     manager = _recording_shell({}, [])
     manager.sigRecordingFailed = _CaptureSignal()
     manager.sigRecordingFailedDetailed = _CaptureSignal()
+    manager.sigRecordingFailedTyped = _CaptureSignal()
     manager.sigRecordingEnded = _CaptureSignal()
 
     assert manager._signalRecordingFailed(RuntimeError('disk full')) is True
@@ -877,7 +880,10 @@ def test_tiling_restores_origin_after_camera_failure(monkeypatch):
         def __init__(self, **kwargs):
             pass
 
-        def add_tile(self, frame, gx, gy):
+        step_x_px = 1
+        step_y_px = 1
+
+        def add_tile(self, frame, gx, gy, offset_px=(0.0, 0.0)):
             pass
 
         def get_overview(self):
@@ -922,16 +928,18 @@ def test_tiling_restores_origin_after_camera_failure(monkeypatch):
     )
 
     TilingController._runScan(
-        ctrl, tilingInfo, n_tiles=2, step_um=5.0,
+        ctrl, tilingInfo, n_tiles_x=2, n_tiles_y=1, pattern=SPIRAL, step_um=5.0,
         blend_overlaps=False, intensity_correction=False,
     )
 
     assert positioner.position == {'X': 10.0, 'Y': 20.0}
     assert ('move', 5.0, 'X') in positioner.moves
-    assert positioner.moves[-2:] == [
-        ('set', 10.0, 'X'),
-        ('set', 20.0, 'Y'),
-    ]
+    # The origin is restored by unwinding the commanded displacement, never by
+    # an absolute move to the tracked coordinate: the tracked frame and the
+    # controller's absolute frame need not share an origin, and assuming they
+    # did sent the stage flying across its travel range at the end of a run.
+    assert positioner.moves[-1] == ('move', -5.0, 'X')
+    assert not any(entry[0] == 'set' for entry in positioner.moves)
     assert detectors.released == ['lease-1']
 
 
@@ -1336,11 +1344,8 @@ def test_focus_calibration_completes_without_reading_widget_from_worker():
 
 def test_focus_lock_pauses_pi_motion_while_calibrating():
     class _Process:
-        def grabCameraFrame(self):
-            return np.ones((2, 2))
-
-        def update(self, _twoFoci):
-            return 1.0
+        def takeResult(self):
+            return (np.ones((2, 2)), 1.0, 0.0)
 
     class _Value:
         def setValue(self, _value):
@@ -1361,7 +1366,6 @@ def test_focus_lock_pauses_pi_motion_while_calibrating():
     ctrl.twoFociVar = False
     ctrl.locked = True
     ctrl.aboutToLock = False
-    ctrl.noStepVar = True
     ctrl.currPoint = 0
     ctrl.buffer = 2
     ctrl.setPointData = np.zeros(2)
@@ -1372,8 +1376,106 @@ def test_focus_lock_pauses_pi_motion_while_calibrating():
         camImg=_Image(),
         focusPlotCurve=_Curve(),
     )
-    ctrl.updatePI = lambda: (_ for _ in ()).throw(
+    ctrl.updatePI = lambda *_args: (_ for _ in ()).throw(
         AssertionError('PI must be paused during calibration')
     )
 
     FocusLockController.update(ctrl)
+
+
+def test_focus_process_thread_snapshots_shared_camera_frame():
+    sharedFrame = np.arange(16, dtype=np.uint16).reshape(4, 4)
+
+    class _Detector:
+        def getLatestFrameShared(self):
+            return sharedFrame
+
+    controller = SimpleNamespace(
+        camera='FocusCam',
+        _master=SimpleNamespace(
+            detectorsManager={'FocusCam': _Detector()},
+        ),
+        _setupInfo=SimpleNamespace(
+            focusLock=SimpleNamespace(swapImageAxes=False),
+        ),
+    )
+    thread = ProcessDataThread(controller)
+
+    capturedFrame = thread.grabCameraFrame()
+    sharedFrame[:] = 0
+
+    np.testing.assert_array_equal(
+        capturedFrame,
+        np.arange(16, dtype=np.uint16).reshape(4, 4),
+    )
+
+
+def test_focus_scan_pause_does_not_integrate_the_paused_interval():
+    """The PI must never see the scan's duration as one integration step.
+
+    The resume side of this moved: ``scanLockFocus`` no longer flips ``locked``
+    straight back on, because doing so also retained the pre-scan integrator.
+    It now starts a reacquisition barrier, and the eventual re-engagement
+    builds a fresh controller -- which clears the stale timestamp as a
+    by-product rather than as a special case. See
+    test_focus_lock_scan_interlock.py for the barrier itself.
+    """
+    import threading
+
+    class _Checked:
+        def __init__(self, checked):
+            self._checked = checked
+
+        def isChecked(self):
+            return self._checked
+
+        def setChecked(self, value):
+            self._checked = value
+
+        def setText(self, value):
+            pass
+
+    ctrl = FocusLockController.__new__(FocusLockController)
+    ctrl._shutdownComplete = False
+    ctrl._lastPIUpdate = 123.0
+    ctrl.locked = True
+    ctrl.aboutToLock = False
+    ctrl.pi = None
+    ctrl.setPointSignal = 7.0
+    ctrl._widget = SimpleNamespace(
+        ScanBlock=_Checked(True),
+        lockButton=_Checked(True),
+        kpEdit=SimpleNamespace(text=lambda: '1'),
+        kiEdit=SimpleNamespace(text=lambda: '0'),
+    )
+    ctrl.focusTime = 100.0
+    ctrl.aboutToLockDiffMax = 0.4
+    ctrl.reacquireTimeoutS = 1.0
+    ctrl.reacquireTolerancePx = 0.5
+    ctrl.reacquireSampleCount = 2
+    ctrl.getPositionerAbs = lambda: 0.0
+    ctrl._logger = SimpleNamespace(
+        warning=lambda *a, **k: None, error=lambda *a, **k: None
+    )
+    ctrl._scanSuspendDepth = 0
+    ctrl._scanOwnsFocusActuator = True
+    ctrl._suspendedLock = False
+    ctrl._preScanSetPoint = None
+    ctrl._reacquireDeadline = None
+    ctrl._reacquireSamples = None
+    ctrl._reacquireFailed = False
+    ctrl._reacquireDone = threading.Event()
+    ctrl._reacquireDone.set()
+
+    ctrl.scanUnlockFocus()
+    assert ctrl.locked is False
+    assert ctrl._lastPIUpdate is None
+
+    ctrl._lastPIUpdate = 456.0
+    ctrl.scanLockFocus()
+    assert ctrl.locked is False, 'resume must go through the reacquisition barrier'
+
+    for _ in range(ctrl.reacquireSampleCount):
+        ctrl.aboutToLockUpdate()
+    assert ctrl.locked is True
+    assert ctrl._lastPIUpdate is None

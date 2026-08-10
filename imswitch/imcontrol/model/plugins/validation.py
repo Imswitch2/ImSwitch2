@@ -466,7 +466,38 @@ def _validate_cross_references(data: dict, context: ValidationContext | None) ->
                 message=f"focusLock.positioner='{pos}' is not a defined positioner.",
                 path=("focusLock", "positioner"),
             ))
-    
+        elif pos:
+            # A scanned positioner carrying the focus axis is assumed to be the
+            # same physical actuator, because it usually is -- one piezo
+            # addressed as an analog scanner and as a serial positioner. The
+            # focus lock then yields for those scans. Say so explicitly with
+            # physicalActuator: matching ids confirm it, differing ids declare
+            # two genuinely separate stages and keep the lock running.
+            focusInfo = positioners.get(pos) or {}
+            focusAxes = set(focusInfo.get("axes") or [])
+            focusActuator = focusInfo.get("physicalActuator")
+            ambiguous = sorted(
+                name for name, info in positioners.items()
+                if name != pos
+                and (info or {}).get("forScanning")
+                and focusAxes & set((info or {}).get("axes") or [])
+                and not (focusActuator and (info or {}).get("physicalActuator"))
+            )
+            if ambiguous:
+                diagnostics.append(SetupDiagnostic(
+                    severity="warning",
+                    code="xref.focuslock.shared-actuator",
+                    message=(
+                        f"focusLock.positioner='{pos}' shares an axis with "
+                        f"scanned positioner(s) {ambiguous}. The focus lock "
+                        f"will assume they drive the same actuator and pause "
+                        f"during those scans. Set 'physicalActuator' on both "
+                        f"to state this explicitly -- equal ids to confirm, "
+                        f"different ids if they are independent stages."
+                    ),
+                    path=("focusLock", "positioner"),
+                ))
+
     # autofocus ⇄ devices
     af = data.get("autofocus")
     if af:

@@ -6,6 +6,14 @@ class MHXYStageManager(PositionerManager):
     """ PositionerManager for control of a Marzhauser XY-stage through RS232
     communication.
 
+    The manager's tracked position is kept in the *controller's* absolute
+    coordinate frame, seeded from the hardware at startup via ``?pos``. This
+    matters because ``move()`` issues a relative ``mor`` while
+    ``setPosition()`` issues an absolute ``moa``: if the tracked frame were
+    seeded at zero (as it used to be) those two would disagree by however far
+    the stage happened to be from hardware zero when ImSwitch started, and any
+    absolute move would fly off to the wrong part of the travel range.
+
     Manager properties:
 
     - ``rs232device`` -- name of the defined rs232 communication channel
@@ -20,10 +28,7 @@ class MHXYStageManager(PositionerManager):
             raise RuntimeError(f'{self.__class__.__name__} requires two axes named X and Y'
                                f' respectively, {positionerInfo.axes} provided.')
 
-        super().__init__(positionerInfo, name, initialPosition={
-            axis: 0 for axis in positionerInfo.axes
-        })
-        
+        # The RS232 channel must exist before the initial position query below.
         try:
             self._rs232Manager = lowLevelManagers['rs232sManager'][
                 positionerInfo.managerProperties['rs232device']
@@ -34,11 +39,91 @@ class MHXYStageManager(PositionerManager):
             )
             from imswitch.imcontrol.model.interfaces.RS232Driver_mock import MockRS232Driver
             self._rs232Manager = MockRS232Driver(name='mock', settings={'port': 'Mock'})
-        
+
+        super().__init__(positionerInfo, name, initialPosition=self._readHardwarePosition(
+            list(positionerInfo.axes)
+        ))
+
         try:
             self.__logger.info(f"MHXYStage serial no: {self._rs232Manager.query('?readsn')}")
         except Exception as e:
             self.__logger.warning(f"Failed to read stage serial number: {e}")
+
+    def _readHardwarePosition(self, axes):
+        """ Return ``{axis: position}`` read from the controller via ``?pos``.
+
+        Falls back to zeros for any axis that cannot be read, so a mock port or
+        an unresponsive controller degrades to the previous behaviour instead
+        of preventing startup. Callers that rely on absolute moves should check
+        :attr:`positionSynced` to know whether the frame is trustworthy.
+        """
+        fallback = {axis: 0.0 for axis in axes}
+        try:
+            reply = self._rs232Manager.query('?pos')
+        except Exception as e:
+            self.__logger.warning(
+                f'Could not read stage position (?pos): {e}. Tracked position '
+                f'starts at zero, so absolute moves will be offset from the '
+                f'controller frame until a successful sync.'
+            )
+            self.positionSynced = False
+            return fallback
+
+        parsed = self._parsePositionReply(reply, axes)
+        if parsed is None:
+            self.__logger.warning(
+                f'Could not parse stage position reply {reply!r}. Tracked '
+                f'position starts at zero, so absolute moves will be offset '
+                f'from the controller frame until a successful sync.'
+            )
+            self.positionSynced = False
+            return fallback
+
+        self.positionSynced = True
+        self.__logger.info(
+            f'MHXYStage position synced from hardware: '
+            f'{ {axis: round(value, 3) for axis, value in parsed.items()} }'
+        )
+        return parsed
+
+    @staticmethod
+    def _parsePositionReply(reply, axes):
+        """ Parse a Tango ``?pos`` reply into ``{axis: float}``, or None.
+
+        The controller answers with one whitespace- (or comma-) separated value
+        per configured axis, in axis order. Replies with fewer values than we
+        have axes are rejected rather than partially applied.
+        """
+        if reply is None:
+            return None
+
+        tokens = str(reply).replace(',', ' ').split()
+        values = []
+        for token in tokens:
+            try:
+                values.append(float(token))
+            except ValueError:
+                continue
+
+        if len(values) < len(axes):
+            return None
+
+        return {axis: values[index] for index, axis in enumerate(axes)}
+
+    def syncPositionFromHardware(self):
+        """ Re-read the controller position into the tracked position.
+
+        Use before any absolute move that must land accurately after the stage
+        may have been moved outside ImSwitch — most notably by the joystick,
+        which the manager cannot observe.
+
+        Returns True when the tracked position now reflects hardware.
+        """
+        positions = self._readHardwarePosition(list(self.axes))
+        if not self.positionSynced:
+            return False
+        self.updateTrackedPosition(positions)
+        return True
 
     def move(self, value, axis):
         if axis == 'X':

@@ -1,3 +1,4 @@
+import enum
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -73,6 +74,54 @@ CAMERA_PIXEL_SIZE_KEY = 'cameraPixelSizeUm'
 #: draining; bounds the memory leak in that case.
 MAX_QUEUED_CONSUMER_FRAMES = 1000
 
+#: The same cap for a RAW consumer. A raw frame from a line-step 3-D scan is
+#: ``S x Nz`` planes where a display frame is one, so an identical frame count
+#: would mean a wildly different number of bytes. Kept small deliberately: a
+#: raw consumer receives one frame per completed scan, not one per boundary,
+#: so falling a thousand behind is not a backlog, it is a leak.
+MAX_QUEUED_RAW_FRAMES = 16
+
+
+class ChunkKind(enum.Enum):
+    """Which representation of a chunk a consumer wants.
+
+    ``DISPLAY`` is whatever the detector shows: for a point detector that is
+    the reduced view its ``_linestep_view_mode`` asks for, which is a display
+    preference and nothing more. ``RAW`` is the measurement — every axis, no
+    reduction — which is what a recording must have and what it silently did
+    not get before this existed.
+    """
+
+    DISPLAY = 'display'
+    RAW = 'raw'
+
+
+@dataclass
+class ChunkPayload:
+    """One destructive drain's worth of frames, in every form wanted.
+
+    Both fields are frame-stacked ``(numFrames, ...)``. For a camera they are
+    the same object, because a camera's chunk *is* the frames; only detectors
+    that reduce something for display need them to differ.
+
+    ``raw`` may be empty while ``display`` is not. A scan-driven detector
+    publishes a display frame at every boundary — once per Z plane — but its
+    raw volume is only whole when the scan ends, and handing out a
+    half-written one is worse than handing out nothing.
+    """
+
+    display: Any
+    raw: Any = None
+
+    def of(self, kind: 'ChunkKind'):
+        if kind is ChunkKind.RAW:
+            return self.raw if self.raw is not None else _EMPTY_CHUNK
+        return self.display
+
+
+#: Stand-in for "this drain produced nothing of that kind".
+_EMPTY_CHUNK = np.empty((0, 0, 0))
+
 
 def scanPixelSizesToZYX(pixel_sizes: List[float]) -> List[float]:
     """ Convert a scan's per-axis step sizes into ``DetectorManager.pixelSizeUm``.
@@ -116,6 +165,15 @@ def configuredCameraPixelSize(managerProperties) -> Optional[float]:
 
 class ChunkConsumerOverflowError(RuntimeError):
     """A consumer fell behind and lost frames from its broker queue."""
+
+
+class RawFrameUnavailableError(RuntimeError):
+    """The measurement is not whole yet, so there is nothing honest to return.
+
+    Raised rather than substituting a display frame or the accumulation buffer
+    mid-fill: both look like data and neither is the measurement. A caller that
+    wants whatever is on screen should ask for it, by not passing ``is_save``.
+    """
 
 
 class DetectorManager(SignalInterface):
@@ -225,9 +283,14 @@ class DetectorManager(SignalInterface):
 
         # Multi-consumer chunk distribution state (see readChunk)
         self._chunkConsumers = {}
+        self._chunkConsumerKinds = {}
         self._chunkConsumersWarned = set()
         self._chunkConsumersOverflowed = set()
         self._chunkConsumersLock = Lock()
+        # One cache per representation. Sharing one would let a display
+        # consumer's frame answer a getLatestFrameShared(is_save=True), which
+        # is the bug this whole contract exists to remove.
+        self._latestRawImage = None
 
         self.__forAcquisition = detectorInfo.forAcquisition
         self.__forFocusLock = detectorInfo.forFocusLock
@@ -458,6 +521,47 @@ class DetectorManager(SignalInterface):
         frame captured at the time that this function was called. """
         pass
 
+    @property
+    def rawFrameIsDeferred(self) -> bool:
+        """Whether this detector's raw frame only exists once a scan ends.
+
+        False for a camera, whose every frame is complete on arrival. True for
+        a scan-driven detector, which fills one buffer progressively and can
+        only offer it whole afterwards -- so "not cached" means "not ready",
+        not "go and fetch it".
+        """
+        return False
+
+    def _chunkKinds(self):
+        """Per-consumer kinds, or None on a manager that has no such state.
+
+        Read straight from the instance dict rather than with ``getattr``: a
+        manager may mirror the broker's state without running this class's
+        ``__init__`` -- the in-tree test doubles do, and out-of-tree managers
+        may too -- and ``SignalInterface`` answers a missing attribute with a
+        ``RuntimeError``, which a ``getattr`` default does not catch. Such a
+        manager gets DISPLAY for every consumer, exactly as it did before
+        kinds existed.
+        """
+        return self.__dict__.get('_chunkConsumerKinds')
+
+    def drainChunk(self) -> ChunkPayload:
+        """One destructive drain, in every representation a consumer wants.
+
+        ``getChunk()`` is destructive — draining it twice returns nothing the
+        second time, which is the whole reason ``readChunk`` exists — so a
+        detector that can offer more than one form of its data must produce
+        them together, here.
+
+        The default is correct for every camera without an override: a camera's
+        chunk *is* its frames, so display and raw are the same object rather
+        than a copy of one. Only a detector that reduces something on its way to
+        the screen — a point detector collapsing line steps — has any reason to
+        override this, and then only to say what it reduced away.
+        """
+        frames = self.getChunk()
+        return ChunkPayload(display=frames, raw=frames)
+
     def readChunk(self, consumerKey: str) -> List[np.ndarray]:
         """ Multi-consumer variant of getChunk().
 
@@ -483,7 +587,10 @@ class DetectorManager(SignalInterface):
         """
         with self._chunkConsumersLock:
             queue = self._chunkConsumers.setdefault(consumerKey, [])
-            self._distributeChunkLocked(self.getChunk())
+            kinds = self._chunkKinds()
+            if kinds is not None:
+                kinds.setdefault(consumerKey, ChunkKind.DISPLAY)
+            self._distributeChunkLocked(self.drainChunk())
             if consumerKey in self._chunkConsumersOverflowed:
                 raise ChunkConsumerOverflowError(
                     f'readChunk consumer "{consumerKey}" fell behind by more '
@@ -506,8 +613,33 @@ class DetectorManager(SignalInterface):
         """
         with self._chunkConsumersLock:
             if self._chunkConsumers:
-                newFrames = self.getChunk()
-                self._distributeChunkLocked(newFrames)
+                # _distributeChunkLocked latches both representations, so any
+                # drain refreshes them whichever participant performed it.
+                self._distributeChunkLocked(self.drainChunk())
+                # And honour the save hint, which this branch used to ignore
+                # entirely -- so merely having a recording open silently
+                # downgraded every other reader on the same detector.
+                if is_save:
+                    cachedRaw = self.__dict__.get('_latestRawImage')
+                    if cachedRaw is not None:
+                        return cachedRaw
+                    if self.rawFrameIsDeferred:
+                        # The detector publishes its measurement only when its
+                        # scan completes, and that has not happened yet.
+                        # Reaching past the latch to the accumulation buffer
+                        # would hand back a half-filled volume -- the exact
+                        # thing the latch exists to prevent -- and the display
+                        # cache would be the ambiguity it exists to remove.
+                        raise RawFrameUnavailableError(
+                            f'{self.name}: no completed frame is available to '
+                            'save yet; its scan has not finished'
+                        )
+                    # Nothing deferred: for a camera the raw frame *is* the
+                    # displayed one, so asking the detector is exact.
+                    try:
+                        return self.getLatestFrame(is_save=True)
+                    except TypeError:
+                        return self.getLatestFrame()
                 return self.__image
 
             try:
@@ -516,23 +648,49 @@ class DetectorManager(SignalInterface):
                 # Most legacy managers expose getLatestFrame() without the
                 # optional save hint.
                 frame = self.getLatestFrame()
-            self.__image = frame
+            if is_save:
+                self._latestRawImage = frame
+            else:
+                self.__image = frame
             return frame
 
-    def _distributeChunkLocked(self, newFrames) -> None:
-        """Latch and fan out a hardware chunk; caller holds the broker lock.
+    def _distributeChunkLocked(self, payload) -> None:
+        """Fan one drain out, per consumer's kind; caller holds the lock.
 
-        Any broker participant may be the one that drains the hardware queue.
-        Keep the display/focus ``latest frame`` view in sync with that drain so
-        a faster chunk consumer (for example BeadRec) cannot leave latest-frame
-        readers returning a stale image indefinitely.
+        Accepts a :class:`ChunkPayload`, or a bare frame array for callers
+        predating the split — those are display frames, which is what every
+        such caller meant.
         """
-        if newFrames is None or len(newFrames) == 0:
-            return
-        self.__image = np.asarray(newFrames[-1])
+        if not isinstance(payload, ChunkPayload):
+            payload = ChunkPayload(display=payload, raw=payload)
+
+        # Latch here rather than in the caller: any broker participant may be
+        # the one that drains the hardware queue, so a faster chunk consumer
+        # (BeadRec, say) must not leave the latest-frame readers on a stale
+        # image. Each representation gets its own cache -- sharing one is how a
+        # recording used to be handed a display plane, since whoever drained
+        # last decided what everyone saw next.
+        display = payload.of(ChunkKind.DISPLAY)
+        if display is not None and len(display) > 0:
+            self.__image = np.asarray(display[-1])
+        raw = payload.of(ChunkKind.RAW)
+        if raw is not None and len(raw) > 0:
+            self._latestRawImage = np.asarray(raw[-1])
+
+        kinds = self._chunkKinds() or {}
         for key, consumerQueue in self._chunkConsumers.items():
+            kind = kinds.get(key, ChunkKind.DISPLAY)
+            newFrames = payload.of(kind)
+            # A raw drain is routinely empty while a display one is not: the
+            # volume is not whole until the scan ends. That is the contract,
+            # not a fault.
+            if newFrames is None or len(newFrames) == 0:
+                continue
+
             consumerQueue.extend(newFrames)
-            excess = len(consumerQueue) - MAX_QUEUED_CONSUMER_FRAMES
+            cap = (MAX_QUEUED_RAW_FRAMES if kind is ChunkKind.RAW
+                   else MAX_QUEUED_CONSUMER_FRAMES)
+            excess = len(consumerQueue) - cap
             if excess <= 0:
                 continue
             del consumerQueue[:excess]
@@ -542,9 +700,8 @@ class DetectorManager(SignalInterface):
             self._chunkConsumersWarned.add(key)
             self.__logger.warning(
                 f'readChunk consumer "{key}" is registered but not polling; '
-                f'dropping its oldest frames (cap '
-                f'{MAX_QUEUED_CONSUMER_FRAMES}). The consumer will fail '
-                f'rather than accept an incomplete stream; call '
+                f'dropping its oldest frames (cap {cap}). The consumer will '
+                f'fail rather than accept an incomplete stream; call '
                 f'releaseChunkConsumer when done.'
             )
 
@@ -554,25 +711,41 @@ class DetectorManager(SignalInterface):
         registered. """
         with self._chunkConsumersLock:
             self._chunkConsumers.pop(consumerKey, None)
+            kinds = self._chunkKinds()
+            if kinds is not None:
+                kinds.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
             self._chunkConsumersOverflowed.discard(consumerKey)
 
-    def startChunkConsumer(self, consumerKey: str) -> None:
+    def startChunkConsumer(self, consumerKey: str,
+                           kind: ChunkKind = ChunkKind.DISPLAY) -> None:
         """Start one consumer at an atomic "frames after now" boundary.
 
         Pre-boundary hardware frames are drained exactly once and delivered to
         consumers that were already registered. They are excluded only from
         the new consumer, unlike a global ``flushBuffers()`` which can discard
         another owner's pending data.
+
+        ``kind`` says which representation this consumer is asking for.
+        Defaulting to ``DISPLAY`` keeps every existing caller — the viewer, the
+        focus lock, tiling's fresh-frame handshake — exactly as it was; a
+        recording asks for ``RAW`` because it wants the measurement rather than
+        the picture of it.
         """
         with self._chunkConsumersLock:
             self._chunkConsumers.pop(consumerKey, None)
+            kinds = self._chunkKinds()
+            if kinds is not None:
+                kinds.pop(consumerKey, None)
             self._chunkConsumersWarned.discard(consumerKey)
             self._chunkConsumersOverflowed.discard(consumerKey)
 
-            self._distributeChunkLocked(self.getChunk())
+            self._distributeChunkLocked(self.drainChunk())
 
             self._chunkConsumers[consumerKey] = []
+            kinds = self._chunkKinds()
+            if kinds is not None:
+                kinds[consumerKey] = kind
 
     @abstractmethod
     def startAcquisition(self) -> None:

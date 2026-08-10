@@ -408,10 +408,28 @@ class ScanWorkflowFacade:
                         )
                     )
                 else:
-                    request_result = self._scan_workflow.run_scan(
-                        bool(recalculate_signals),
-                        bool(is_non_final_part_of_sequence),
-                    )
+                    # This branch already published the start above, and
+                    # tracks it in ``starting_notified`` so the failure paths
+                    # below can pair it. Letting the dispatcher publish a
+                    # second one would leave every consumer that yields
+                    # hardware to a scan suspended a level deeper than the one
+                    # end can unwind -- the focus lock would never come back.
+                    # A dispatcher predating the argument never published one
+                    # either, so the positional fallback is the same request,
+                    # not a weaker version of it.
+                    try:
+                        request_result = self._scan_workflow.run_scan(
+                            bool(recalculate_signals),
+                            bool(is_non_final_part_of_sequence),
+                            notify_starting=False,
+                        )
+                    except TypeError as signature_error:
+                        if 'notify_starting' not in str(signature_error):
+                            raise
+                        request_result = self._scan_workflow.run_scan(
+                            bool(recalculate_signals),
+                            bool(is_non_final_part_of_sequence),
+                        )
             except Exception as error:
                 failed_request = getattr(
                     error, 'scanRequestResult', None

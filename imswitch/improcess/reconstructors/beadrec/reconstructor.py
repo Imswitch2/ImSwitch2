@@ -138,7 +138,9 @@ class BeadRecReconstructor(Reconstructor):
     def make_metadata_dialog(self, parent):
         return None
 
-    def process(self, data_obj: "DataObj", params: dict) -> ArrayProcessingResult:
+    def process(
+        self, data_obj: "DataObj", params: dict, context=None
+    ) -> ArrayProcessingResult:
         frames = _as_frame_stack(data_obj.data)
         scan_dims = infer_scan_dims(frames.shape[0],
                                     params.get("scan_x", 0), params.get("scan_y", 0))

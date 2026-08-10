@@ -14,9 +14,52 @@ from ..basecontrollers import ImConWidgetController
 
 _CLOSE_WAIT_TIMEOUT_MS = 2000
 
+#: Most maxima the two-foci search will consider. It only ever picks between
+#: the two brightest, and an unbounded search is what let a plateaued frame
+#: stall the estimator worker.
+_MAX_FOCI_CANDIDATES = 8
+
+#: Fraction of the background-subtracted peak below which pixels are dropped
+#: before the centroid, so the window's outskirts contribute noise but no signal.
+_SPOT_THRESHOLD_FRACTION = 0.10
+
+#: Smallest correction worth a hardware command, in micrometres. Sub-threshold
+#: corrections are carried forward rather than discarded -- see _applyCorrection.
+_MIN_MOVE_UM = 0.002
+
+# Focus-lock lifecycle states, as reported by ``focusLockState()``.
+STATE_UNLOCKED = 'unlocked'
+STATE_LOCKED = 'locked'
+STATE_SUSPENDED = 'suspended'        # a scan owns the actuator
+STATE_REACQUIRING = 'reacquiring'    # scan over, waiting for the signal back
+STATE_REACQUIRE_FAILED = 'reacquire-failed'
+
 
 class FocusLockController(ImConWidgetController):
-    """Linked to FocusLockWidget."""
+    """Linked to FocusLockWidget.
+
+    Scan arbitration
+    ----------------
+    The focus lock and a hardware Z scan can drive the same physical actuator
+    -- the STED setup reaches one piezo through an analog scanner *and* a
+    serial positioner -- in which case an actively correcting lock fights the
+    intentional Z waveform.
+
+    Actuation is therefore suspended for the duration of any scan that can
+    reach the lock's axis, on this boundary:
+
+    ``sigScanStarting``  -> suspend, before the scan writes to any hardware
+    ``sigScanActuatorsResolved`` -> resume early iff the scan provably cannot
+                                    reach our axis
+    ``sigScanEnded``     -> the scan is over on *every* terminal path
+                            (completion, failure, abort), so start reacquiring
+
+    ``sigScanStarted``/``sigScanDone`` are deliberately not used. The first
+    arrives after the NI-DAQ tasks are already running, and the second is never
+    published at all when a scan fails or is aborted -- which used to leave the
+    lock silently suspended for the rest of the session while the button still
+    read "Unlock".
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -29,6 +72,21 @@ class FocusLockController(ImConWidgetController):
         self._shutdownComplete = False
         self._focusLeaseLock = threading.Lock()
         self._focusCalibrationActive = False
+
+        # Scan arbitration. Depth-counted rather than a boolean: workflows may
+        # publish sigScanStarting/sigScanEnded themselves, so a duplicate start
+        # must not be undone by a single end, and a stray end must not resume
+        # actuation while a scan is still running.
+        self._scanSuspendDepth = 0
+        self._scanOwnsFocusActuator = True
+        self._suspendedLock = False
+        self._preScanSetPoint = None
+        self._reacquireDeadline = None
+        self._reacquireSamples = None
+        self._reacquireFailed = False
+        self._reacquireDone = threading.Event()
+        self._reacquireDone.set()
+        self._pendingMove = 0.0
 
         if self._setupInfo.focusLock is None:
             return
@@ -54,32 +112,42 @@ class FocusLockController(ImConWidgetController):
         self._widget.setKi(self._setupInfo.focusLock.piKi)
 
         # Connect FocusLockWidget buttons
-        self._widget.kpEdit.textChanged.connect(self.unlockFocus)
-        self._widget.kiEdit.textChanged.connect(self.unlockFocus)
+        self._widget.kpEdit.textChanged.connect(self.gainsChanged)
+        self._widget.kiEdit.textChanged.connect(self.gainsChanged)
 
         self._widget.lockButton.clicked.connect(self.toggleFocus)
         self._widget.camDialogButton.clicked.connect(self.cameraDialog)
         self._widget.focusCalibButton.clicked.connect(self.focusCalibrationStart)
         self._widget.calibCurveButton.clicked.connect(self.showCalibrationCurve)
 
-        self._widget.zStackBox.stateChanged.connect(self.zStackVarChange)
         self._widget.twoFociBox.stateChanged.connect(self.twoFociVarChange)
 
-        self._commChannel.sigScanStarted.connect(self.scanUnlockFocus)
-        self._commChannel.sigScanDone.connect(self.scanLockFocus)
+        self._commChannel.sigScanStarting.connect(self.scanUnlockFocus)
+        self._commChannel.sigScanActuatorsResolved.connect(
+            self.scanActuatorsResolved
+        )
+        self._commChannel.sigScanEnded.connect(self.scanLockFocus)
+        # Announce ourselves so acquisition orchestrators (tiling above all)
+        # can gate the next tile on the lock actually holding again.
+        self._commChannel.registerFocusLock(self)
 
         self.setPointSignal = 0
+        self._lastPIUpdate = None
         self.locked = False
         self.aboutToLock = False
-        self.zStackVar = False
         self.twoFociVar = False
-        self.noStepVar = True
         self.focusTime = 1000 / self.updateFreq  # focus signal update interval (ms)
-        self.zStepLimLo = 0
         self.aboutToLockDiffMax = 0.4
+        self.reacquireTimeoutS = float(
+            self._setupInfo.focusLock.reacquireTimeoutS
+        )
+        self.reacquireTolerancePx = float(
+            self._setupInfo.focusLock.reacquireTolerancePx
+        )
+        self.reacquireSampleCount = max(
+            2, int(self._setupInfo.focusLock.reacquireSamples)
+        )
         self.lockPosition = 0
-        self.currentPosition = 0
-        self.lastPosition = 0
         self.buffer = 40
         self.currPoint = 0
         self.setPointData = np.zeros(self.buffer)
@@ -101,6 +169,9 @@ class FocusLockController(ImConWidgetController):
         self._focusAcqHandle = self._master.detectorsManager.acquire(
             [self.camera], LeasePurpose.FOCUS
         )
+
+        # Start the frame/estimate worker before the timer that consumes it.
+        self.__processDataThread.start()
 
         self.timer = Timer()
         self.timer.timeout.connect(self.update)
@@ -132,9 +203,14 @@ class FocusLockController(ImConWidgetController):
 
         comm = self.__dict__.get('_commChannel')
         if comm is not None:
+            try:
+                comm.unregisterFocusLock(self)
+            except Exception:
+                pass
             for signalName, slot in (
-                ('sigScanStarted', self.scanUnlockFocus),
-                ('sigScanDone', self.scanLockFocus),
+                ('sigScanStarting', self.scanUnlockFocus),
+                ('sigScanActuatorsResolved', self.scanActuatorsResolved),
+                ('sigScanEnded', self.scanLockFocus),
             ):
                 signal = getattr(comm, signalName, None)
                 if signal is not None:
@@ -269,41 +345,400 @@ class FocusLockController(ImConWidgetController):
             finally:
                 self._focusAcqHandle = None
 
+    # ------------------------------------------------------------------
+    # Scan arbitration
+    # ------------------------------------------------------------------
+
     def scanUnlockFocus(self):
-        # print('unlock')
+        """``sigScanStarting``: yield the actuator before the scan takes it.
+
+        Suspension is unconditional here because participation is not knowable
+        yet -- ``sigScanStarting`` is published from ``_beginScanRun``, before
+        the scan controller has even read its parameters. Yielding costs
+        microseconds when the scan turns out to be harmless
+        (``scanActuatorsResolved`` hands it straight back), and is the only
+        safe order when it is not.
+        """
         if self.__dict__.get('_shutdownComplete', False):
             return
-        if self._widget.ScanBlock.isChecked():
-            self.locked = False
+        if not self.scanBlockEnabled():
+            return
+
+        self._scanSuspendDepth += 1
+        # Deliberately no early-out on a nested start. An earlier concurrent
+        # scan may have proved itself harmless and handed the lock back; this
+        # new one is unknown until its own actuator list arrives, so it has to
+        # yield again. Re-capturing the setpoint is safe: either the lock is
+        # already suspended (nothing to capture) or it was re-engaged on the
+        # same setpoint we stored.
+        self._scanOwnsFocusActuator = True
+        self._reacquireFailed = False
+        # Sticky: once a lock has been yielded it stays wanted until the run
+        # terminal or an explicit unlock. A nested start sees `locked` already
+        # False and must not read that as "there was nothing to give up".
+        self._suspendedLock = (
+            self._suspendedLock or bool(self.locked) or bool(self.aboutToLock)
+        )
+        if self.locked and getattr(self, 'pi', None) is not None:
+            self._preScanSetPoint = self.pi.setPoint
+        elif self._preScanSetPoint is None:
+            self._preScanSetPoint = self.setPointSignal
+
+        self.locked = False
+        self._clearPendingCorrection()
+        # Finding 5: without this, a pending "about to lock" kept running
+        # through the scan and could re-engage mid-waveform, capturing its
+        # setpoint from a scan-displaced position.
+        self.aboutToLock = False
+        self._lastPIUpdate = None
+        self._endReacquire(notify=False)
+        self._cancelCalibrationForScan()
+        self._publishFocusLockState()
+
+    def _cancelCalibrationForScan(self):
+        """Abandon a calibration sweep that a scan is about to interrupt.
+
+        Calibration drives the focus axis with absolute moves from a worker
+        thread and had no scan interlock at all, so it would keep stepping
+        straight through the waveform.
+        """
+        calibThread = self.__dict__.get(
+            '_FocusLockController__focusCalibThread'
+        )
+        if calibThread is None:
+            return
+        try:
+            if not calibThread.isRunning():
+                return
+            calibThread.stopAndYieldActuator()
+            # Wait for it to actually leave the axis. Setting the flag and
+            # returning would let the scan start while a setAbsolutePosition
+            # was still in flight, so the two would drive the piezo together.
+            # Bounded: blocking a scan indefinitely on a wedged serial call is
+            # worse than the overlap it prevents.
+            if not self._waitForThread(calibThread):
+                self._logger.error(
+                    'Focus calibration did not release the axis before the '
+                    'scan started; the two may briefly drive it together.'
+                )
+        except Exception:
+            self._logger.error(
+                'Failed to cancel focus calibration for an imminent scan',
+                exc_info=True,
+            )
+
+    def scanActuatorsResolved(self, actuators):
+        """``sigScanActuatorsResolved``: hand the actuator back if it is safe.
+
+        Only ever *releases* a suspension. A scan that cannot reach our axis
+        never needed one, and this normally lands in the same synchronous call
+        stack as the suspend, so the lock is not meaningfully interrupted.
+        """
+        if self.__dict__.get('_shutdownComplete', False):
+            return
+        if self._scanSuspendDepth != 1 or not self._scanOwnsFocusActuator:
+            # Exactly one scan active, or we cannot reason about it. A single
+            # flag cannot say "every concurrent scan is harmless", and getting
+            # that wrong means correcting into a live waveform -- so with more
+            # than one in flight the lock simply stays yielded.
+            return
+        if self.scanTouchesFocusActuator(actuators):
+            return
+
+        self._scanOwnsFocusActuator = False
+        if self._suspendedLock:
+            # Nothing moved our axis, so there is nothing to reacquire.
+            self._reengageLock(setPoint=self._preScanSetPoint)
+        self._publishFocusLockState()
 
     def scanLockFocus(self):
-        # print('lock')
+        """``sigScanEnded``: the scan is over on every terminal path."""
         if self.__dict__.get('_shutdownComplete', False):
             return
-        if self._widget.ScanBlock.isChecked() and self._widget.lockButton.isChecked():
-            self.locked = True
+        if self._scanSuspendDepth <= 0:
+            # A run we never yielded to (suspension disabled, or an unpaired
+            # end from an external workflow). Resuming here would re-engage the
+            # loop while some other scan is still driving the actuator.
+            return
+
+        self._scanSuspendDepth -= 1
+        if self._scanSuspendDepth > 0:
+            return
+
+        suspendedLock = self._suspendedLock
+        conflicted = self._scanOwnsFocusActuator
+        self._suspendedLock = False
+        self._scanOwnsFocusActuator = True
+
+        if not suspendedLock:
+            self._preScanSetPoint = None
+            self._publishFocusLockState()
+            return
+        if not conflicted:
+            # Released early by scanActuatorsResolved; already re-engaged.
+            self._preScanSetPoint = None
+            self._publishFocusLockState()
+            return
+        self._beginReacquire()
+
+    def scanBlockEnabled(self) -> bool:
+        """Whether scans may suspend the lock.
+
+        Defaults to enabled. The widget's checkbox is now an opt-*out*: it used
+        to be an unchecked, unpersisted opt-in, so a fresh session silently
+        allowed an active lock to fight a Z scan.
+        """
+        widget = self.__dict__.get('_widget')
+        scanBlock = getattr(widget, 'ScanBlock', None)
+        if scanBlock is None:
+            return True
+        try:
+            return bool(scanBlock.isChecked())
+        except Exception:
+            return True
+
+    def scanTouchesFocusActuator(self, actuators) -> bool:
+        """Whether ``actuators`` can reach the actuator the lock drives.
+
+        Conservative by construction: anything unknown counts as a conflict.
+
+        1. The lock's own positioner is in the list.
+        2. Both sides declare ``physicalActuator`` and the ids match. Declaring
+           *different* ids is the explicit way to say two Z positioners really
+           are separate devices, and skips rule 3 for that positioner.
+        3. Otherwise, a scanned positioner carries the lock's axis. This is
+           what catches the case the whole mechanism exists for -- an analog
+           scanner and a serial positioner addressing one physical piezo under
+           two names -- with no configuration at all.
+        """
+        names = [str(name) for name in (actuators or [])
+                 if name and str(name) != 'None']
+        if not names:
+            return True
+        if self.positioner in names:
+            return True
+
+        focusActuator = self._physicalActuatorOf(self.positioner)
+        for name in names:
+            otherActuator = self._physicalActuatorOf(name)
+            if focusActuator is not None and otherActuator is not None:
+                if focusActuator == otherActuator:
+                    return True
+                continue
+            if self._carriesFocusAxis(name):
+                return True
+        return False
+
+    def _physicalActuatorOf(self, positionerName):
+        info = self._setupInfo.positioners.get(positionerName)
+        actuator = getattr(info, 'physicalActuator', None) if info else None
+        return str(actuator) if actuator else None
+
+    def _focusAxisName(self):
+        """The lock's axis as a name, resolving an index against its own axes."""
+        axis = self.positionerAxis
+        if not isinstance(axis, int):
+            return str(axis) if axis is not None else None
+        ownInfo = self._setupInfo.positioners.get(self.positioner)
+        ownAxes = list(getattr(ownInfo, 'axes', None) or [])
+        return str(ownAxes[axis]) if 0 <= axis < len(ownAxes) else None
+
+    def _carriesFocusAxis(self, positionerName) -> bool:
+        info = self._setupInfo.positioners.get(positionerName)
+        if info is None:
+            return True
+        axisName = self._focusAxisName()
+        if axisName is None:
+            return True
+        return axisName in [str(a) for a in (getattr(info, 'axes', None) or [])]
+
+    # ------------------------------------------------------------------
+    # Reacquisition barrier
+    # ------------------------------------------------------------------
+
+    def _beginReacquire(self):
+        """Wait for the signal to come back before correcting against it."""
+        self._reacquireSamples = np.full(self.reacquireSampleCount, np.nan)
+        self._reacquireDeadline = perf_counter() + self.reacquireTimeoutS
+        self._reacquireFailed = False
+        self._reacquireDone.clear()
+        self.aboutToLock = True
+        self._publishFocusLockState()
+
+    def _endReacquire(self, *, notify=True):
+        """Leave the reacquiring state, however it ended.
+
+        Deliberately does not touch ``_preScanSetPoint``: callers own that,
+        and one of them (``scanUnlockFocus``) captures it immediately before
+        calling here.
+        """
+        self.aboutToLock = False
+        self._reacquireDeadline = None
+        self._reacquireSamples = None
+        self._reacquireDone.set()
+        if notify:
+            self._publishFocusLockState()
+
+    def _reengageLock(self, setPoint=None):
+        """Re-arm with a *fresh* controller, never a retained one.
+
+        Flipping ``locked`` back on kept the pre-scan integrator: its retained
+        output was applied again as a relative move, and its stale
+        ``lastError`` turned the entire scan-induced excursion into one
+        derivative kick on the first tick -- reliably large enough to trip the
+        safety threshold, and before Phase 1 to be issued as a real move.
+        """
+        target = self.setPointSignal if setPoint is None else setPoint
+        try:
+            kp = float(self._widget.kpEdit.text())
+            ki = float(self._widget.kiEdit.text())
+        except (ValueError, AttributeError):
+            self._logger.warning(
+                'Focus lock could not read its PI gains while re-engaging; '
+                'leaving the lock off.'
+            )
+            self._preScanSetPoint = None
+            self._endReacquire(notify=False)
+            self._reacquireFailed = True
+            self._setLockButton(checked=False)
+            self._publishFocusLockState()
+            return
+
+        # Deliberately no positioner read here. ``lockPosition`` is write-only
+        # state -- its only reader was the distance calculation that was
+        # commented out along with the position polling -- so querying it would
+        # cost an RS232 round trip on the GUI thread for every tile in a run,
+        # to store a number nothing consults.
+        self.pi = PI(target, 0.001, kp, ki, nominalDt=self.focusTime / 1000.0)
+        self._lastPIUpdate = None
+        self._clearPendingCorrection()
+        self.locked = True
+        self._reacquireFailed = False
+        self._endReacquire(notify=False)
+        self._setLockButton(checked=True)
+        self._publishFocusLockState()
+
+    def focusLockState(self) -> str:
+        """Current lifecycle state -- see the ``STATE_*`` constants."""
+        if self.locked:
+            return STATE_LOCKED
+        if self.aboutToLock:
+            return STATE_REACQUIRING
+        if (
+            self.__dict__.get('_scanSuspendDepth', 0) > 0
+            and self.__dict__.get('_suspendedLock', False)
+        ):
+            # Only when a lock is actually being held for us. A scan running
+            # while the user never asked for a lock is not "suspended".
+            return STATE_SUSPENDED
+        if self.__dict__.get('_reacquireFailed', False):
+            # Distinct from UNLOCKED on purpose: the operator asked for a lock
+            # and does not have one, which is not the same as never asking.
+            return STATE_REACQUIRE_FAILED
+        return STATE_UNLOCKED
+
+    def waitForFocusReacquired(self, timeoutS: float = 10.0) -> bool:
+        """Block until the lock is re-engaged, or reacquisition gives up.
+
+        For orchestrators -- a tiling run that must not start the next tile
+        against an unfocused sample. Returns whether the lock is actually
+        holding. Never call this from the GUI thread: the barrier is advanced
+        by ``update``, which runs there.
+        """
+        done = self.__dict__.get('_reacquireDone')
+        if done is not None:
+            done.wait(timeoutS)
+        return bool(self.locked)
+
+    def _publishFocusLockState(self):
+        state = self.focusLockState()
+        if self.__dict__.get('_lastPublishedState') == state:
+            return
+        self._lastPublishedState = state
+        try:
+            self._widget.setLockState(state)
+        except AttributeError:
+            pass
+        except Exception:
+            self._logger.error(
+                'Failed to display the focus-lock state', exc_info=True
+            )
+
+    def gainsChanged(self):
+        """Editing kp/ki drops an *active* lock so the new gains take effect.
+
+        It must not also cancel a suspension: the gains are re-read from the
+        widget every time the loop is re-armed, so a lock a scan is holding
+        for us picks them up by itself. Routing this straight to
+        ``unlockFocus`` meant typing in the kp box mid-scan silently abandoned
+        the pending restore -- the lock never came back, and the button went
+        on claiming it was engaged.
+        """
+        if self.locked:
+            self.unlockFocus()
 
     def unlockFocus(self):
         if self.locked:
             self.locked = False
-            self._widget.lockButton.setChecked(False)
-            self._widget.focusPlot.removeItem(self._widget.focusLockGraph.lineLock)
+            self._lastPIUpdate = None
+            self._clearPendingCorrection()
+            self._setLockButton(checked=False)
+            lineLock = getattr(
+                self._widget.focusLockGraph, 'lineLock', None
+            )
+            if lineLock is not None:
+                # Only ever added by lockFocus; a lock re-engaged after a scan
+                # reuses the existing line rather than adding a second one.
+                self._widget.focusPlot.removeItem(lineLock)
+        # An explicit unlock also abandons a reacquisition in flight, and stops
+        # the scan handler from re-engaging a lock the user has since dropped.
+        self._suspendedLock = False
+        self._preScanSetPoint = None
+        self._reacquireFailed = False
+        self._endReacquire()
 
     def toggleFocus(self):
-        self.aboutToLock = False
+        # Abandon any barrier in flight, and release anything waiting on it,
+        # before acting on the new intent.
+        self._endReacquire(notify=False)
         if self._widget.lockButton.isChecked():
+            if (
+                self.__dict__.get('_scanSuspendDepth', 0) > 0
+                and self._scanOwnsFocusActuator
+            ):
+                # A scan owns the axis. Record that a lock is wanted and
+                # engage once it is released, rather than locking against the
+                # running waveform -- which is the very thing the suspension
+                # exists to prevent, arrived at through the button instead.
+                # No pre-scan setpoint: there was no lock to return to, so
+                # reacquisition waits for the signal to settle and locks there.
+                self._suspendedLock = True
+                self._preScanSetPoint = None
+                self._widget.lockButton.setText('Unlock')
+                self._publishFocusLockState()
+                return
             zpos = self.getPositionerAbs()
             self.lockFocus(zpos)
             self._widget.lockButton.setText('Unlock')
         else:
             self.unlockFocus()
             self._widget.lockButton.setText('Lock')
+        self._publishFocusLockState()
 
     def cameraDialog(self):
         self._master.detectorsManager[self.camera].openPropertiesDialog()
 
     def focusCalibrationStart(self):
         if self.__dict__.get('_shutdownComplete', False):
+            return
+        if self.__dict__.get('_scanSuspendDepth', 0) > 0:
+            # Calibration sweeps the focus axis with ~20 absolute moves. Doing
+            # that while a scan owns the actuator is the same conflict the
+            # lock itself yields for, minus the yielding.
+            self._logger.warning(
+                'Focus calibration cannot start while a scan owns the focus '
+                'axis. Wait for the scan to finish.'
+            )
             return
         try:
             fromVal = float(self._widget.calibFromEdit.text())
@@ -362,12 +797,6 @@ class FocusLockController(ImConWidgetController):
     def showCalibrationCurve(self):
         self._widget.showCalibrationCurve(self.__focusCalibThread.getData())
 
-    def zStackVarChange(self):
-        if self.zStackVar:
-            self.zStackVar = False
-        else:
-            self.zStackVar = True
-
     def twoFociVarChange(self):
         if self.twoFociVar:
             self.twoFociVar = False
@@ -375,24 +804,43 @@ class FocusLockController(ImConWidgetController):
             self.twoFociVar = True
 
     def update(self):
+        """Timer tick: grab, estimate, and correct focus.
+
+        Frame acquisition and the focus estimate run on a worker thread, so a
+        busy GUI thread (a tiling scan repainting its mosaic, say) can no
+        longer stall the lock. This method only consumes the newest completed
+        estimate and touches the widgets.
+        """
         if self.__dict__.get('_shutdownComplete', False):
             return
-        # get data
-        img = self.__processDataThread.grabCameraFrame()
-        if img is None:
-            # The camera has not produced its first frame yet. Skip this tick
-            # rather than run the focus estimate on nothing; the timer will
-            # come back.
+
+        result = self.__processDataThread.takeResult()
+        if result is None:
+            # No estimate has completed since the last tick — either the camera
+            # has not produced a frame yet, or the worker is still busy. Skip
+            # rather than block the GUI thread waiting for it.
+            #
+            # The barrier's deadline still has to advance. A stalled or faulted
+            # focus camera produces no estimates at all, which is precisely
+            # when reacquisition can never succeed -- and would otherwise sit
+            # in "Reacquiring" for ever with anything waiting on it blocked.
+            if self.aboutToLock:
+                self._failReacquireIfOverdue()
             return
-        self.setPointSignal = self.__processDataThread.update(self.twoFociVar)
+
+        img, setPointSignal, timestamp = result
+        self.setPointSignal = setPointSignal
         self._widget.center.setValue(self.setPointSignal)
         # move
         if self._focusCalibrationActive:
             pass
         elif self.locked:
-            value_move = self.updatePI()
-            if self.noStepVar and abs(value_move) > 0.002:
-                self.movePositioner(value_move)
+            value_move = self.updatePI(timestamp)
+            # updatePI drops the lock mid-tick on a safety trip. Re-read the
+            # flag rather than trusting the branch this tick was entered on,
+            # so a correction is never applied to a lock that no longer exists.
+            if self.locked:
+                self._applyCorrection(value_move)
         elif self.aboutToLock:
            self.aboutToLockUpdate()
         # udpate graphics
@@ -403,15 +851,89 @@ class FocusLockController(ImConWidgetController):
                                                 self.setPointData[1:self.currPoint])
         else:
             self._widget.focusPlotCurve.setData(self.timeData, self.setPointData)
-    
+
+    def _applyCorrection(self, step):
+        """Issue a correction once it is worth a hardware command.
+
+        What the loop produces each tick is now the PI *increment*, and the
+        integral contribution alone is routinely smaller than the smallest move
+        worth sending down a serial link. Dropping those, as the bare threshold
+        did, would discard the integral action entirely and leave a standing
+        error the loop could never work off. Sub-threshold corrections are
+        therefore carried forward and issued once they add up.
+        """
+        self._pendingMove += step
+        if abs(self._pendingMove) <= _MIN_MOVE_UM:
+            return
+        move = self._pendingMove
+        self._pendingMove = 0.0
+        self.movePositioner(move)
+
+    def _clearPendingCorrection(self):
+        """Drop any carried-forward correction.
+
+        Called wherever the loop restarts or hands over the axis: a fragment of
+        correction computed against an old setpoint, or before a scan moved the
+        sample, must not be applied afterwards.
+        """
+        self._pendingMove = 0.0
+
     def aboutToLockUpdate(self):
-        self.aboutToLockDataPoints = np.roll(self.aboutToLockDataPoints,1)
-        self.aboutToLockDataPoints[0] = self.setPointSignal
-        averageDiff = np.std(self.aboutToLockDataPoints)
-        if averageDiff < self.aboutToLockDiffMax:
-            zpos = self.getPositionerAbs()
-            self.lockFocus(zpos)
-            self.aboutToLock = False
+        """Advance the reacquisition barrier by one focus estimate.
+
+        The old test was variance-only, so it re-engaged as soon as the signal
+        stopped *moving* -- including when it had settled at whatever position
+        the scan left it in. It now also requires the signal to be back within
+        tolerance of the setpoint the lock was holding before it yielded, and
+        gives up after a bounded wait instead of waiting forever.
+
+        Giving up leaves the lock off. Re-engaging against a signal that never
+        came back is how a whole tiling run gets acquired out of focus.
+        """
+        if self._reacquireSamples is None:
+            self._reacquireSamples = np.full(
+                self.reacquireSampleCount, np.nan
+            )
+        self._reacquireSamples = np.roll(self._reacquireSamples, 1)
+        self._reacquireSamples[0] = self.setPointSignal
+
+        # Deadline first. Accepting a window that only completed after the
+        # timeout had already passed would make the timeout advisory, and would
+        # re-engage on evidence the operator was told had been rejected.
+        if self._failReacquireIfOverdue():
+            return
+
+        if not np.isnan(self._reacquireSamples).any():
+            settled = np.std(self._reacquireSamples) < self.aboutToLockDiffMax
+            target = self._preScanSetPoint
+            offset = (
+                0.0 if target is None
+                else abs(float(np.mean(self._reacquireSamples)) - target)
+            )
+            if settled and offset <= self.reacquireTolerancePx:
+                self._reengageLock(setPoint=target)
+
+    def _failReacquireIfOverdue(self) -> bool:
+        """Give up on reacquisition once its deadline has passed.
+
+        Returns whether it gave up, so callers can stop advancing the barrier.
+        """
+        deadline = self._reacquireDeadline
+        if deadline is None or perf_counter() <= deadline:
+            return False
+        self._logger.warning(
+            f'Focus lock did not reacquire within '
+            f'{self.reacquireTimeoutS:.2f} s of the scan ending; leaving '
+            f'the lock off. Raise reacquireTimeoutS if the piezo needs '
+            f'longer to settle, or reacquireTolerancePx if it settles '
+            f'off-setpoint by design.'
+        )
+        self._preScanSetPoint = None
+        self._endReacquire(notify=False)
+        self._reacquireFailed = True
+        self._setLockButton(checked=False)
+        self._publishFocusLockState()
+        return True
 
     def updateSetPointData(self):
         if self.currPoint < self.buffer:
@@ -424,41 +946,57 @@ class FocusLockController(ImConWidgetController):
             self.timeData[-1] = perf_counter() - self.startTime
         self.currPoint += 1
 
-    def updatePI(self):
-        if not self.noStepVar:
-            self.noStepVar = True
-        #self.currentPosition = self._master.positionersManager[self.positioner].get_abs()
-        #self.stepDistance = np.abs(self.currentPosition - self.lastPosition)
-        #distance = self.currentPosition - self.lockPosition
-        move = self.pi.update(self.setPointSignal)
-        self.lastPosition = self.currentPosition
+    def updatePI(self, timestamp=None):
+        # Feed the true interval since the last correction. The integral term
+        # is a rate, so with a fixed implicit dt the loop silently detuned
+        # whenever ticks were delayed or dropped — exactly when the GUI thread
+        # was busy and the lock most needed to keep up.
+        dt = None
+        if timestamp is not None:
+            if self._lastPIUpdate is not None:
+                dt = timestamp - self._lastPIUpdate
+            self._lastPIUpdate = timestamp
+
+        move = self.pi.update(self.setPointSignal, dt)
 
         if abs(move) > 3:
             self._logger.warning(f'Safety unlocking! Current move step: {move:.3f}.')
             self.unlockFocus()
-        elif self.zStackVar:
-            if self.stepDistance > self.zStepLimLo:
-                self.unlockFocus()
-                self.aboutToLockDataPoints = np.zeros(5)
-                self.aboutToLock = True
-                self.noStepVar = False
+            # Report no motion, not the step that tripped the guard. The caller
+            # applies whatever this returns, so returning `move` here made the
+            # safety unlock self-defeating: it dropped the lock and then issued
+            # the very oversized move it exists to prevent, on the way out.
+            return 0.0
         return move
 
     def lockFocus(self, zpos):
         if not self.locked:
             kp = float(self._widget.kpEdit.text())
             ki = float(self._widget.kiEdit.text())
-            self.pi = PI(self.setPointSignal, 0.001, kp, ki)
+            self.pi = PI(self.setPointSignal, 0.001, kp, ki,
+                         nominalDt=self.focusTime / 1000.0)
+            self._lastPIUpdate = None
+            self._clearPendingCorrection()
             self.lockPosition = zpos
             self.locked = True
             self._widget.focusLockGraph.lineLock = self._widget.focusPlot.addLine(
                 y=self.setPointSignal, pen='r'
             )
-            self._widget.lockButton.setChecked(True)
-            self.updateZStepLimits()
+            self._setLockButton(checked=True)
 
-    def updateZStepLimits(self):
-        self.zStepLimLo = 0.001 * float(self._widget.zStepFromEdit.text())
+    def _setLockButton(self, *, checked):
+        """Keep the button's checked state and its caption in step.
+
+        They were set from different places, so a safety unlock or a
+        gain-change unlock left a button that was unchecked but still read
+        "Unlock" -- the one control an operator glances at, disagreeing with
+        itself.
+        """
+        try:
+            self._widget.lockButton.setChecked(checked)
+            self._widget.lockButton.setText('Unlock' if checked else 'Lock')
+        except Exception:
+            pass
 
     def _resolvePositionerAxis(self):
         """Resolve which axis to use for focus-lock movements."""
@@ -488,63 +1026,188 @@ class FocusLockController(ImConWidgetController):
 
 
 class ProcessDataThread(Thread):
+    """Grabs focus-camera frames and computes the focus signal off the GUI thread.
+
+    This class used to be constructed but never started, so its gaussian
+    filter, peak search and centre-of-mass all executed inside the Qt event
+    loop via the controller's timer. Any other GUI-thread work — a tiling scan
+    repainting its mosaic being the worst offender — directly delayed the
+    focus correction. It now runs as a real worker: it publishes the newest
+    completed estimate, and the controller's timer consumes whatever is ready.
+    """
+
     def __init__(self, controller, *args, **kwargs):
         self._controller = controller
+        self._stopRequested = threading.Event()
+        self._resultLock = threading.Lock()
+        self._result = None
+        self.latestimg = None
         super().__init__(*args, **kwargs)
+
+    def stop(self):
+        self._stopRequested.set()
+
+    def takeResult(self):
+        """Pop the newest ``(image, setPointSignal, timestamp)``, or None."""
+        with self._resultLock:
+            result = self._result
+            self._result = None
+            return result
+
+    def run(self):
+        while not self._stopRequested.is_set():
+            iterationStart = perf_counter()
+            try:
+                img = self.grabCameraFrame()
+                if img is None:
+                    if self._stopRequested.wait(0.01):
+                        break
+                    continue
+                setPointSignal = self.update(self._controller.twoFociVar)
+            except Exception as e:
+                self._controller._logger.error(
+                    f'Focus signal update failed: {e}', exc_info=True
+                )
+                if self._stopRequested.wait(0.1):
+                    break
+                continue
+
+            with self._resultLock:
+                self._result = (img, setPointSignal, perf_counter())
+
+            # Pace the worker to the configured update rate instead of
+            # spinning: the camera cannot deliver useful new information
+            # faster than it delivers frames.
+            processingTime = perf_counter() - iterationStart
+            waitTime = max(
+                0.001,
+                self._controller.focusTime / 1000.0 - processingTime,
+            )
+            if self._stopRequested.wait(waitTime):
+                break
+
+    @staticmethod
+    def _spotCentre(window, frame):
+        """Row centroid of the spot in ``window``, in window coordinates.
+
+        A plain centre of mass is taken over the raw intensities, so the
+        background pedestal contributes to every pixel and drags the result
+        toward the window's geometric centre. That pull scales with how bright
+        the spot is *relative* to the background, so any fluctuation in spot
+        intensity moves the reported position even with a perfectly still
+        sample -- an optical-power wobble read as defocus.
+
+        Subtracting an estimated background and discarding what remains below
+        a fraction of the peak makes the estimate almost independent of spot
+        brightness. Simulated against a 400x400 frame, RMS error stays ~9 nm
+        from 0% to 50% frame-to-frame intensity jitter, where the unsubtracted
+        centroid degrades from 4 nm to 32 nm. It gives up a little in the
+        perfectly stable case and buys immunity in the realistic one.
+
+        The background is the frame median: the spot occupies a small part of
+        the frame, so the median sits in the background whatever the spot does.
+        """
+        weights = np.asarray(window, dtype=np.float32) - float(np.median(frame))
+        peak = float(weights.max()) if weights.size else 0.0
+        if peak > 0.0:
+            weights = weights - _SPOT_THRESHOLD_FRACTION * peak
+            np.clip(weights, 0.0, None, out=weights)
+            profile = weights.sum(axis=1)
+            total = float(profile.sum())
+            if total > 0.0:
+                rows = np.arange(profile.size, dtype=np.float32)
+                return float((profile * rows).sum() / total)
+        # Nothing rises above the background: fall back rather than divide by
+        # zero, so a blocked or unlit camera degrades instead of raising.
+        return float(ndi.center_of_mass(window)[0])
 
     def grabCameraFrame(self):
         detectorManager = self._controller._master.detectorsManager[self._controller.camera]
-        self.latestimg = detectorManager.getLatestFrameShared()
+        sharedImage = detectorManager.getLatestFrameShared()
+        if sharedImage is None:
+            return None
+        # The detector may recycle its shared buffer while this worker applies
+        # filters. Work on an owned snapshot so one estimate never combines
+        # pixels from two camera frames.
+        self.latestimg = np.array(sharedImage, copy=True)
         # 1.5 swap axes of frame (depending on setup, make this a variable in the json)
         if self._controller._setupInfo.focusLock.swapImageAxes:
             self.latestimg = np.swapaxes(self.latestimg,0,1)
         return self.latestimg
 
     def update(self, twoFociVar):
-        # Gaussian filter the image, to remove noise and so on, to get a better center estimate
-        imagearraygf = ndi.filters.gaussian_filter(self.latestimg, 7)
+        # Filter in floating point. gaussian_filter preserves its input dtype,
+        # so a uint16 camera frame stayed uint16 and integer truncation
+        # collapsed it into broad flat plateaus -- on a representative 400x400
+        # two-spot frame, 117k distinct values down to 683.
+        #
+        # That was ruinous for the two-foci peak search: plateaus produce many
+        # near-coincident candidates, and enforcing the minimum spacing between
+        # them cost 574 ms per frame against 2.4 ms for the same scene in
+        # float32. scipy.ndimage holds the GIL, and the worker is asked for a
+        # new estimate every focusTime (100 ms by default), so the GUI was
+        # starved for as long as the option stayed ticked.
+        #
+        # It also quantized the centre of mass that *both* paths depend on.
+        imagearraygf = ndi.gaussian_filter(
+            np.asarray(self.latestimg, dtype=np.float32), 7
+        )
 
         # Update the focus signal
         if twoFociVar:
-            allmaxcoords = peak_local_max(imagearraygf, min_distance=60)
-            size = allmaxcoords.shape
-            maxvals = np.zeros(size[0])
-            maxvalpos = np.zeros(2)
-            for n in range(0, size[0]):
-                if imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]] > maxvals[0]:
-                    if imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]] > maxvals[1]:
-                        tempval = maxvals[1]
-                        maxvals[0] = tempval
-                        maxvals[1] = imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]]
-                        tempval = maxvalpos[1]
-                        maxvalpos[0] = tempval
-                        maxvalpos[1] = n
-                    else:
-                        maxvals[0] = imagearraygf[allmaxcoords[n][0], allmaxcoords[n][1]]
-                        maxvalpos[0] = n
-            xcenter = allmaxcoords[int(maxvalpos[0])][0]
-            ycenter = allmaxcoords[int(maxvalpos[0])][1]
-            if allmaxcoords[int(maxvalpos[1])][0] < xcenter:
-                xcenter = allmaxcoords[int(maxvalpos[1])][0]
-                ycenter = allmaxcoords[int(maxvalpos[1])][1]
-            centercoords2 = np.array([xcenter, ycenter])
+            # num_peaks bounds the spacing work whatever the frame looks like,
+            # so a saturated or low-contrast image can no longer stall the
+            # worker. Two foci need only a handful of candidates to choose
+            # between.
+            allmaxcoords = peak_local_max(
+                imagearraygf, min_distance=60, num_peaks=_MAX_FOCI_CANDIDATES
+            )
+            if len(allmaxcoords) == 0:
+                # No distinct maximum: fall back to the plain global peak
+                # rather than raising every frame.
+                centercoords = np.where(imagearraygf == imagearraygf.max())
+                centercoords2 = np.array(
+                    [centercoords[0][0], centercoords[1][0]]
+                )
+            else:
+                # Of the two brightest maxima, take the upper one. The previous
+                # hand-rolled selection raised IndexError whenever fewer than
+                # two peaks were found, which the worker then logged with a
+                # full traceback on every tick.
+                intensities = imagearraygf[
+                    allmaxcoords[:, 0], allmaxcoords[:, 1]
+                ]
+                brightest = allmaxcoords[np.argsort(intensities)[-2:]]
+                centercoords2 = brightest[np.argmin(brightest[:, 0])]
         else:
             centercoords = np.where(imagearraygf == np.array(imagearraygf.max()))
             centercoords2 = np.array([centercoords[0][0], centercoords[1][0]])
 
         subsizey = 50
         subsizex = 50
+        # Clamp to the frame's real shape. These bounds were hardcoded to
+        # 1024/1280, which silently truncated the sub-window (or missed part of
+        # it) on any focus camera or crop that is not exactly that size.
+        frame_h, frame_w = imagearraygf.shape[:2]
         xlow = max(0, (centercoords2[0] - subsizex))
-        xhigh = min(1024, (centercoords2[0] + subsizex))
+        xhigh = min(frame_h, (centercoords2[0] + subsizex))
         ylow = max(0, (centercoords2[1] - subsizey))
-        yhigh = min(1280, (centercoords2[1] + subsizey))
+        yhigh = min(frame_w, (centercoords2[1] + subsizey))
 
         imagearraygfsub = imagearraygf[xlow:xhigh, ylow:yhigh]
-        massCenter = np.array(ndi.measurements.center_of_mass(imagearraygfsub))
-        # add the information about where the center of the subarray is
-        massCenterGlobal = massCenter[0] + centercoords2[0]  # - subsizey - self.sensorSize[1] / 2
-        #self._controller._widget.center.setValue(massCenterGlobal)
-        #print(massCenterGlobal)
+        massCenter = (self._spotCentre(imagearraygfsub, imagearraygf),)
+        # Re-reference the window-local centroid to the frame by adding where
+        # the window actually starts. This added the *peak* coordinate instead,
+        # which is 'subsizex' further along, so the reported position sat a
+        # constant 50 px from the spot -- visible as the marker line never
+        # lining up with the maximum.
+        #
+        # Worse than cosmetic within 'subsizex' of the low edge, where the
+        # window is clipped and the peak coordinate stops tracking the window
+        # start: there the error became signal-dependent and the loop gain
+        # nearly doubled, so the lock was non-linear exactly where the spot
+        # ran close to the edge of the crop.
+        massCenterGlobal = massCenter[0] + xlow
         return massCenterGlobal
 
 
@@ -556,6 +1219,7 @@ class FocusCalibThread(Thread):
 
         self._controller = controller
         self._stopRequested = threading.Event()
+        self._yieldActuator = threading.Event()
         self._dataLock = threading.Lock()
         self.fromVal = None
         self.toVal = None
@@ -569,8 +1233,22 @@ class FocusCalibThread(Thread):
         self.fromVal = float(fromVal)
         self.toVal = float(toVal)
         self._stopRequested.clear()
+        self._yieldActuator.clear()
 
     def stop(self):
+        self._stopRequested.set()
+
+    def stopAndYieldActuator(self):
+        """Cancel without the usual restore-to-start move.
+
+        Normal cancellation ends by driving the axis back to where calibration
+        found it. That is exactly wrong when the reason for cancelling is that
+        a scan has taken the actuator: the restore would be one more command
+        fighting the scan waveform, issued from a worker thread. The scan owns
+        the axis from here, so this abandons the sweep where it stands and
+        lets the scan's own return-to-center define the final position.
+        """
+        self._yieldActuator.set()
         self._stopRequested.set()
 
     def run(self):
@@ -626,7 +1304,15 @@ class FocusCalibThread(Thread):
                 f'Focus calibration failed: {e}', exc_info=True
             )
         finally:
-            if startPosition is not None:
+            if self._yieldActuator.is_set():
+                # A scan took the axis. Restoring our own start position here
+                # would be one more command fighting the scan waveform.
+                self._controller._logger.warning(
+                    'Focus calibration was cancelled because a scan took the '
+                    'focus axis; its results are discarded and the axis is '
+                    'left to the scan.'
+                )
+            elif startPosition is not None:
                 try:
                     setAbsolutePosition(startPosition)
                 except Exception as e:
@@ -664,27 +1350,53 @@ class PI:
     """Simple implementation of a discrete PI controller.
     Taken from http://code.activestate.com/recipes/577231-discrete-pid-controller/
     Author: Federico Barabas"""
-    def __init__(self, setPoint, multiplier=1, kp=0, ki=0):
+    def __init__(self, setPoint, multiplier=1, kp=0, ki=0, nominalDt=0.0,
+                 maxIntegralScale=5.0):
         self._kp = multiplier * kp
         self._ki = multiplier * ki
         self._setPoint = setPoint
         self.multiplier = multiplier
         self.error = 0.0
+        self.out = 0.0
         self._started = False
+        # Interval the gains were tuned at. dt-scaling is relative to this, so
+        # existing kp/ki values keep their meaning when the loop runs on time.
+        self.nominalDt = nominalDt
+        self.maxIntegralScale = maxIntegralScale
 
-    def update(self, currentValue):
-        """ Calculate PI output value for given reference input and feedback.
-        Using the iterative formula to avoid integrative part building. """
+    def update(self, currentValue, dt=None):
+        """ Advance the loop and return the *increment* to apply.
+
+        The positioner integrates relative moves, so what it needs each tick is
+        the change in the controller's command, not the command itself.
+
+        ``dt`` is the interval in seconds since the previous update. The
+        integral term is scaled by it so the loop behaves the same whether it
+        is running at its nominal rate or has been delayed; pass None to keep
+        the historical fixed-interval behaviour. """
         self.error = self.setPoint - currentValue
+        # Guard against a stalled or non-monotonic clock producing a huge or
+        # negative integral kick after a delay.
+        scale = 1.0
+        if dt is not None and self.nominalDt > 0:
+            scale = min(max(dt, 0.0) / self.nominalDt, self.maxIntegralScale)
         if self.started:
             self.dError = self.error - self.lastError
-            self.out = self.out + self.kp * self.dError + self.ki * self.error
+            step = self.kp * self.dError + self.ki * self.error * scale
         else:
             # This only runs in the first step
-            self.out = self.kp * self.error
+            step = self.kp * self.error
             self.started = True
+        # ``out`` is the running command the loop is asking the actuator to
+        # hold. It is kept for diagnostics only: what the caller applies is the
+        # *increment*, because the positioner integrates relative moves. This
+        # method used to return ``out`` itself, which the caller then applied
+        # relatively -- so the actuator integrated an already-integrated
+        # command and the loop became a double integrator, marginally stable
+        # and prone to wandering on noise.
+        self.out = self.out + step
         self.lastError = self.error
-        return self.out
+        return step
 
     def restart(self):
         self.started = False

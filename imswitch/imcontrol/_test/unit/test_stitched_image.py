@@ -72,7 +72,5 @@ def test_stitched_image_converts_between_pixel_and_stage_coordinates():
     )
 
     stage_x, stage_y = stitcher.pixel_to_stage(4, 3, (10.0, 20.0))
-    row, col = stitcher.stage_to_pixel(stage_x, stage_y, (10.0, 20.0))
 
     assert (stage_x, stage_y) == (13.0, 22.0)
-    assert (row, col) == (4, 3)

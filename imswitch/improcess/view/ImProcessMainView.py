@@ -45,6 +45,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
     sigSetSaveFolder = QtCore.Signal()
 
     sigReconstuctCurrent = QtCore.Signal()
+    sigCancelReconstruction = QtCore.Signal()
     sigReconstructMultiConsolidated = QtCore.Signal()
     sigReconstructMultiIndividual = QtCore.Signal()
     sigQuickLoadData = QtCore.Signal()
@@ -270,6 +271,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame = BtnFrame()
         self._btnFrame = btnFrame
         btnFrame.sigReconstuctCurrent.connect(self.sigReconstuctCurrent)
+        btnFrame.sigCancelReconstruction.connect(self.sigCancelReconstruction)
         btnFrame.sigReconstructMultiConsolidated.connect(self.sigReconstructMultiConsolidated)
         btnFrame.sigReconstructMultiIndividual.connect(self.sigReconstructMultiIndividual)
         btnFrame.sigQuickLoadData.connect(self.sigQuickLoadData)
@@ -1348,6 +1350,46 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                 consolidated.setToolTip(tooltip)
                 consolidated.setStatusTip(tooltip)
 
+    def setReconstructionJobState(
+        self, running: bool, *, progress=None, status: str = ""
+    ) -> None:
+        btnFrame = getattr(self, '_btnFrame', None)
+        if btnFrame is not None:
+            btnFrame.setReconstructionJobState(
+                running, progress=progress, status=status
+            )
+
+    def confirmReconstructionMemory(self, estimate, budget: int) -> bool:
+        def human_bytes(value):
+            value = float(value)
+            for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+                if value < 1024 or unit == "TiB":
+                    return f"{value:.1f} {unit}"
+                value /= 1024
+
+        shape = " × ".join(str(size) for size in estimate.output_shape)
+        suggestions = ""
+        if estimate.suggestions:
+            suggestions = "\n\nTo reduce memory: " + "; ".join(
+                estimate.suggestions
+            ) + "."
+        message = (
+            f"The {estimate.description} is estimated to produce {shape} and "
+            f"allocate {human_bytes(estimate.canvas_bytes)} for the canvas plus "
+            f"{human_bytes(estimate.weight_bytes)} for weights "
+            f"({human_bytes(estimate.required_bytes)} total).\n\n"
+            f"The current safety budget is {human_bytes(budget)}. Continue "
+            f"anyway?{suggestions}"
+        )
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Large reconstruction",
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+
     def setReconstructorChoices(
         self,
         choices: list[tuple[str, str]],
@@ -1819,6 +1861,7 @@ class ReconParTree(ParameterTree):
 
 class BtnFrame(QtWidgets.QFrame):
     sigReconstuctCurrent = QtCore.Signal()
+    sigCancelReconstruction = QtCore.Signal()
     sigReconstructMultiConsolidated = QtCore.Signal()
     sigReconstructMultiIndividual = QtCore.Signal()
     sigQuickLoadData = QtCore.Signal()
@@ -1833,6 +1876,18 @@ class BtnFrame(QtWidgets.QFrame):
         self.quickLoadDataBtn.clicked.connect(self.sigQuickLoadData)
         self.updateBtn = BetterPushButton('Update reconstruction')
         self.updateBtn.clicked.connect(self.sigUpdate)
+
+        self.cancelReconstructionBtn = BetterPushButton('Cancel reconstruction')
+        self.cancelReconstructionBtn.clicked.connect(
+            self.sigCancelReconstruction
+        )
+        self.cancelReconstructionBtn.setVisible(False)
+        self.reconstructionProgress = QtWidgets.QProgressBar()
+        self.reconstructionProgress.setRange(0, 1000)
+        self.reconstructionProgress.setVisible(False)
+        self.reconstructionStatus = QtWidgets.QLabel()
+        self.reconstructionStatus.setWordWrap(True)
+        self.reconstructionStatus.setVisible(False)
 
         self.reconMultiBtn = QtWidgets.QToolButton()
         self.reconMultiBtn.setSizePolicy(
@@ -1861,6 +1916,23 @@ class BtnFrame(QtWidgets.QFrame):
         layout.addWidget(self.reconCurrBtn, 1, 0)
         layout.addWidget(self.reconMultiBtn, 1, 1)
         layout.addWidget(self.updateBtn, 2, 0, 1, 2)
+        layout.addWidget(self.reconstructionProgress, 3, 0, 1, 2)
+        layout.addWidget(self.reconstructionStatus, 4, 0, 1, 2)
+        layout.addWidget(self.cancelReconstructionBtn, 5, 0, 1, 2)
+
+    def setReconstructionJobState(
+        self, running: bool, *, progress=None, status: str = ""
+    ) -> None:
+        running = bool(running)
+        self.reconCurrBtn.setEnabled(not running)
+        self.reconMultiBtn.setEnabled(not running)
+        self.cancelReconstructionBtn.setVisible(running)
+        if progress is not None:
+            value = max(0.0, min(1.0, float(progress)))
+            self.reconstructionProgress.setValue(int(round(value * 1000)))
+        self.reconstructionProgress.setVisible(running or progress is not None)
+        self.reconstructionStatus.setText(str(status or ""))
+        self.reconstructionStatus.setVisible(bool(status))
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

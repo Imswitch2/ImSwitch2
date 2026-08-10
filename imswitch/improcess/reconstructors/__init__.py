@@ -19,6 +19,7 @@ from .snouty_projections import SnoutyProjectionsReconstructor
 from .widefield_starss import WidefieldStarssReconstructor
 from .smlm import SmlmLocalizer
 from .beadrec import BeadRecReconstructor
+from .tiling import TilingReconstructor
 
 
 _AVAILABLE_RECONSTRUCTOR_CLASSES = {
@@ -29,6 +30,7 @@ _AVAILABLE_RECONSTRUCTOR_CLASSES = {
     'widefield-starss': WidefieldStarssReconstructor,
     'smlm-localizer': SmlmLocalizer,
     'beadrec': BeadRecReconstructor,
+    'tiling-mosaic': TilingReconstructor,
 }
 
 

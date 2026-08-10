@@ -75,7 +75,13 @@ def test_scan_workflow_service_wraps_legacy_scan_signals():
     assert comm_channel.sigRequestScanFreq.emitted == [()]
     assert comm_channel.sigSetAxisCenters.emitted == [(['X', 'Y'], [1.0, 2.0])]
     assert comm_channel.sigStartRecordingExternal.emitted == [()]
-    assert comm_channel.sigScanStarting.emitted == [()]
+    # Two starts: dispatching a scan publishes its own, because the receiving
+    # controller arms on the assertion that one is already on the channel.
+    # notify_scan_starting() above contributes the second.
+    assert comm_channel.sigScanStarting.emitted == [(), ()]
+    # Still one end. This broadcast had no receiver reporting on it, and an
+    # unreported request belongs to a legacy receiver that may have started
+    # and will publish its own terminal -- so the dispatch does not pair it.
     assert comm_channel.sigScanEnded.emitted == [()]
     assert comm_channel.sigAbortScan.emitted == [()]
 
