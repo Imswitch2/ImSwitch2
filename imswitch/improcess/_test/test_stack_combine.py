@@ -252,8 +252,8 @@ def test_dialog_reorders_inputs(qapp):
     b = _image((8, 10), ["Y", "X"], "b")
     dialog = StackCombineDialog([a, b])
 
-    dialog.inputList.setCurrentRow(1)
-    dialog._move_selected(-1)
+    dialog.inputWidget.inputList.setCurrentRow(1)
+    dialog.inputWidget._move_selected(-1)
 
     assert dialog.selected_params()["results"] == [b, a]
 
@@ -371,8 +371,8 @@ def test_dialog_combines_checked_component_with_plain_result(qapp):
 
     # Uncheck the (C, Y, X) whole result, check its (Y, X) mean component.
     from qtpy import QtCore
-    dialog.inputList.item(0).setCheckState(QtCore.Qt.Unchecked)
-    dialog.inputList.item(1).setCheckState(QtCore.Qt.Checked)
+    dialog.inputWidget.inputList.item(0).setCheckState(QtCore.Qt.Unchecked)
+    dialog.inputWidget.inputList.item(1).setCheckState(QtCore.Qt.Checked)
 
     params = dialog.selected_params()
     assert [getattr(r, "name", "") for r in params["results"]] == [

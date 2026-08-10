@@ -5,7 +5,10 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 
 from imswitch.improcess.model import PlotPayload, PlotSeries
-from imswitch.improcess.model.plotting import build_graph_delta_x_record
+from imswitch.improcess.model.plotting import (
+    build_graph_delta_x_record,
+    payload_summary_records,
+)
 
 
 class GraphWidget(QtWidgets.QWidget):
@@ -17,10 +20,28 @@ class GraphWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
 
         self._payloads: list[PlotPayload] = []
+        # Payloads sent here deliberately (a pushed line profile, a table
+        # plot) outlive the result they came from: the panel otherwise
+        # re-renders from the current result on every switch, which is exactly
+        # what makes comparing a curve from result A with one from result B
+        # impossible.
+        self._pinnedPayloads: list[PlotPayload] = []
         self._measurementRegion: pg.LinearRegionItem | None = None
 
         self.plotSelector = QtWidgets.QComboBox()
         self.plotSelector.currentIndexChanged.connect(self._plotSelected)
+
+        self.overlayButton = QtWidgets.QPushButton("Overlay")
+        self.overlayButton.setCheckable(True)
+        self.overlayButton.setToolTip(
+            "Draw every pushed curve in one plot instead of showing them one "
+            "at a time — this is how two profiles get compared"
+        )
+        self.overlayButton.toggled.connect(lambda _checked: self._renderCurrent())
+
+        self.unpinButton = QtWidgets.QPushButton("Clear pushed")
+        self.unpinButton.setToolTip("Forget the curves pushed into this panel")
+        self.unpinButton.clicked.connect(self.clearPinnedPayloads)
 
         self.measureButton = QtWidgets.QPushButton("Measure Δx")
         self.measureButton.setCheckable(True)
@@ -31,7 +52,8 @@ class GraphWidget(QtWidgets.QWidget):
 
         self.pushMeasurementButton = QtWidgets.QPushButton("Push to table")
         self.pushMeasurementButton.setToolTip(
-            "Append the current Δx measurement to the Results table for CSV export"
+            "Append this plot's parameters and per-curve summary to the "
+            "Results table, plus the Δx measurement when markers are shown"
         )
         self.pushMeasurementButton.clicked.connect(self._pushMeasurement)
 
@@ -43,6 +65,8 @@ class GraphWidget(QtWidgets.QWidget):
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.addWidget(self.plotSelector, 1)
+        toolbar.addWidget(self.overlayButton, 0)
+        toolbar.addWidget(self.unpinButton, 0)
         toolbar.addWidget(self.measureButton, 0)
         toolbar.addWidget(self.pushMeasurementButton, 0)
         toolbar.addWidget(self.measurementLabel, 0)
@@ -67,38 +91,87 @@ class GraphWidget(QtWidgets.QWidget):
         self.clear()
 
     def setPlotPayloads(self, payloads: list[PlotPayload]) -> None:
-        """Replace available plots and render the first one."""
-        self._payloads = payloads
+        """Replace the current result's plots, keeping the pushed ones."""
+        self._payloads = list(payloads)
+        self._rebuild(select=0 if payloads else None)
 
-        self.plotSelector.blockSignals(True)
-        self.plotSelector.clear()
-        for payload in payloads:
-            self.plotSelector.addItem(payload.title)
-        self.plotSelector.blockSignals(False)
+    def addPlotPayload(self, payload: PlotPayload) -> None:
+        """Add a payload pushed here by another panel, and show it.
 
-        has_payloads = len(payloads) > 0
-        self.plotSelector.setEnabled(has_payloads)
-        self.measureButton.setEnabled(has_payloads)
+        Pushed payloads accumulate: pushing a line profile from one
+        reconstruction and another from the next is how two curves get
+        compared, so a later result switch must not throw the first away.
+        A repeated title replaces its earlier version rather than growing the
+        list with duplicates.
+        """
+        self._pinnedPayloads = [
+            pinned for pinned in self._pinnedPayloads if pinned.title != payload.title
+        ]
+        self._pinnedPayloads.append(payload)
+        self._rebuild(select=len(self._payloads) + len(self._pinnedPayloads) - 1)
 
-        if has_payloads:
-            self.plotSelector.setCurrentIndex(0)
-            self._renderPayload(payloads[0])
-        else:
-            self.measureButton.setChecked(False)
-            self._showEmpty()
+    def clearPinnedPayloads(self) -> None:
+        """Forget the pushed payloads, keeping the current result's own."""
+        self._pinnedPayloads = []
+        self._rebuild(select=0 if self._payloads else None)
+
+    def pinnedPayloads(self) -> list[PlotPayload]:
+        return list(self._pinnedPayloads)
 
     def clear(self) -> None:
-        """Clear all graph data."""
+        """Clear all graph data, pushed curves included."""
         self._payloads = []
+        self._pinnedPayloads = []
+        self._rebuild(select=None)
+
+    def _allPayloads(self) -> list[PlotPayload]:
+        return [*self._payloads, *self._pinnedPayloads]
+
+    def _rebuild(self, *, select: int | None) -> None:
+        payloads = self._allPayloads()
+        self.plotSelector.blockSignals(True)
         self.plotSelector.clear()
-        self.plotSelector.setEnabled(False)
-        self.measureButton.setChecked(False)
-        self.measureButton.setEnabled(False)
-        self._showEmpty()
+        for index, payload in enumerate(payloads):
+            pushed = index >= len(self._payloads)
+            self.plotSelector.addItem(
+                f"{payload.title} (pushed)" if pushed else payload.title
+            )
+        self.plotSelector.blockSignals(False)
+
+        has_payloads = bool(payloads)
+        self.plotSelector.setEnabled(has_payloads)
+        self.measureButton.setEnabled(has_payloads)
+        # Pushing reports the plot itself, so it no longer waits for a manual
+        # Δx measurement to exist.
+        self.pushMeasurementButton.setEnabled(has_payloads)
+        self.overlayButton.setEnabled(len(payloads) > 1)
+        self.unpinButton.setEnabled(bool(self._pinnedPayloads))
+
+        if not has_payloads:
+            self.measureButton.setChecked(False)
+            self.overlayButton.setChecked(False)
+            self._showEmpty()
+            return
+
+        index = 0 if select is None else max(0, min(int(select), len(payloads) - 1))
+        self.plotSelector.blockSignals(True)
+        self.plotSelector.setCurrentIndex(index)
+        self.plotSelector.blockSignals(False)
+        self._renderCurrent()
+
+    def _renderCurrent(self) -> None:
+        payloads = self._allPayloads()
+        if not payloads:
+            self._showEmpty()
+            return
+        if self.overlayButton.isChecked() and len(payloads) > 1:
+            self._renderOverlay(payloads)
+            return
+        index = max(0, min(self.plotSelector.currentIndex(), len(payloads) - 1))
+        self._renderPayload(payloads[index])
 
     def _plotSelected(self, index: int) -> None:
-        if 0 <= index < len(self._payloads):
-            self._renderPayload(self._payloads[index])
+        self._renderCurrent()
 
     def _showEmpty(self) -> None:
         self.plot.clear()
@@ -120,6 +193,45 @@ class GraphWidget(QtWidgets.QWidget):
         if self.measureButton.isChecked():
             self._addMeasurementRegion(payload)
 
+        self.stack.setCurrentWidget(self.plot)
+
+    def _renderOverlay(self, payloads: list[PlotPayload]) -> None:
+        """Draw every payload in one plot, series names prefixed by payload.
+
+        The axes come from the first payload; curves measured in different
+        units can still be overlaid, which is the user's call to make, so
+        this warns in the title rather than refusing.
+        """
+        self.plot.clear()
+        first = payloads[0]
+        units = {payload.x_label for payload in payloads}
+        title = f"Overlay of {len(payloads)} plots"
+        if len(units) > 1:
+            title += " (mixed x units)"
+        self.plot.setTitle(title)
+        self.plot.setLabel("bottom", first.x_label)
+        self.plot.setLabel("left", first.y_label)
+
+        index = 0
+        for payload in payloads:
+            for series in payload.series:
+                if series.kind == "image":
+                    continue  # an image has no meaning in an overlay of curves
+                self._renderSeries(
+                    PlotSeries(
+                        name=f"{payload.title}: {series.name}",
+                        y=series.y,
+                        x=series.x,
+                        kind=series.kind,
+                        style=series.style,
+                    ),
+                    index,
+                )
+                index += 1
+
+        self._measurementRegion = None
+        if self.measureButton.isChecked():
+            self._addMeasurementRegion(first)
         self.stack.setCurrentWidget(self.plot)
 
     def _measurementToggled(self, enabled: bool) -> None:
@@ -157,7 +269,7 @@ class GraphWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self.measurementLabel.clear()
-        self.pushMeasurementButton.setEnabled(False)
+        self.pushMeasurementButton.setEnabled(self._currentPayload() is not None)
 
     def _measurementChanged(self) -> None:
         region = self._measurementRegion
@@ -171,17 +283,36 @@ class GraphWidget(QtWidgets.QWidget):
         self.pushMeasurementButton.setEnabled(self._currentPayload() is not None)
 
     def _pushMeasurement(self) -> None:
+        """Send what this plot says to the Results table.
+
+        Used to push the manual Δx marker record and nothing else, so pressing
+        it on a plot carrying fit parameters put nothing in the table — and,
+        with no markers on screen, put nothing in it at all. It now pushes the
+        payload's own parameters (a fit's coefficients arrive in
+        ``PlotPayload.metadata``, which nothing else renders) with one row per
+        curve, and still adds the Δx row when markers are shown.
+        """
         payload = self._currentPayload()
-        region = self._measurementRegion
-        if payload is None or region is None:
+        if payload is None:
             return
-        record = build_graph_delta_x_record(payload, *region.getRegion())
-        self.sigResultPushed.emit(list(record.keys()), [record])
+        records = payload_summary_records(payload)
+        region = self._measurementRegion
+        if region is not None:
+            records.append(build_graph_delta_x_record(payload, *region.getRegion()))
+        if not records:
+            return
+        columns: list[str] = []
+        for record in records:
+            for key in record:
+                if key not in columns:
+                    columns.append(key)
+        self.sigResultPushed.emit(columns, records)
 
     def _currentPayload(self) -> PlotPayload | None:
+        payloads = self._allPayloads()
         index = self.plotSelector.currentIndex()
-        if 0 <= index < len(self._payloads):
-            return self._payloads[index]
+        if 0 <= index < len(payloads):
+            return payloads[index]
         return None
 
     @staticmethod

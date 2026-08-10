@@ -33,6 +33,7 @@ class ReconstructionView(QtWidgets.QFrame):
     # Signals
     sigItemSelected = QtCore.Signal()
     sigSelectionChanged = QtCore.Signal()
+    sigResultsRemoved = QtCore.Signal()
     sigAxisStepChanged = QtCore.Signal(tuple)
     sigViewChanged = QtCore.Signal()
 
@@ -616,9 +617,13 @@ class ReconstructionView(QtWidgets.QFrame):
             rows = [self.reconList.currentRow()]
         for row in rows:
             self.reconList.takeItem(row)
+        # Explicit rather than relying on the selection signal: consumers
+        # listing the loaded results must never keep offering a removed one.
+        self.sigResultsRemoved.emit()
 
     def removeAllRecon(self):
         self.reconList.clear()
+        self.sigResultsRemoved.emit()
 
     def resetView(self):
         self.napariViewer.reset_view()

@@ -8,6 +8,7 @@ from imswitch.improcess.processors import available_processor_ids
 from imswitch.improcess.processors.channel_merge import (
     ChannelMergeProcessor,
     can_merge_results,
+    merge_compatibility,
 )
 from imswitch.improcess.processors.channel_split import ChannelSplitProcessor
 from imswitch.improcess.processors.make_composite import (
@@ -186,3 +187,31 @@ def test_channel_merge_compatibility_tolerates_float_noise_in_scales():
     assert can_merge_results([first, noisy])
     merged = ChannelMergeProcessor().apply(first, {"results": [first, noisy]})
     assert merged.data.shape == (2, 2, 3)
+
+
+def test_channel_merge_rejects_a_scale_unit_mismatch():
+    """Merge shares Stack/Combine's metadata rules; it used to ignore the
+    unit and silently give the output the first input's."""
+    micrometres = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
+    micrometres.scale_unit = "um"
+    nanometres = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
+    nanometres.scale_unit = "nm"
+
+    assert not can_merge_results([micrometres, nanometres])
+    with pytest.raises(ValueError, match="unit"):
+        ChannelMergeProcessor().apply(
+            micrometres, {"results": [micrometres, nanometres]}
+        )
+
+
+def test_channel_merge_raises_the_same_reason_the_ui_shows():
+    first = _result(np.zeros((2, 3), dtype=np.float32), ["Y", "X"])
+    taller = _result(np.zeros((4, 3), dtype=np.float32), ["Y", "X"])
+    taller.name = "taller"
+
+    ok, reason = merge_compatibility([first, taller])
+    assert ok is False
+
+    with pytest.raises(ValueError) as excinfo:
+        ChannelMergeProcessor().apply(first, {"results": [first, taller]})
+    assert str(excinfo.value) == reason

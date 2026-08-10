@@ -84,6 +84,79 @@ def test_frc_processor_registered_and_generates_graph_payload():
     assert [series.name for series in payloads[0].series[:2]] == ["FRC", "1/7 threshold"]
 
 
+def test_two_image_frc_compares_two_separate_reconstructions():
+    """The common case: two reconstructions of the same field, each a result
+    of its own. Before the input-arity work this could only be expressed as
+    two planes of one stack, so it could not be done at all."""
+    first = MinimalResult(
+        name="recA", data=_spot_image().astype(np.float32), axis_labels=["Y", "X"]
+    )
+    second = MinimalResult(
+        name="recB",
+        data=(_spot_image() + 0.01).astype(np.float32),
+        axis_labels=["Y", "X"],
+    )
+
+    frc_result = FRCProcessor().apply(
+        first,
+        {
+            "mode": "two-image",
+            "results": [first, second],
+            "window": "hann",
+            "pixel_size": 50.0,
+            "resolution_unit": "nm",
+        },
+    )
+
+    assert isinstance(frc_result, FRCResult)
+    assert frc_result.name == "recA (FRC vs recB)"
+    assert frc_result.analysis.resolution_unit == "nm"
+
+
+def test_two_image_frc_across_results_indexes_a_stacked_input():
+    """A stack paired with a plain image: the stack is indexed along its
+    compare axis, the single plane is taken as it is."""
+    stack = MinimalResult(
+        name="stack",
+        data=np.stack([_spot_image(), np.zeros((64, 64))]).astype(np.float32),
+        axis_labels=["T", "Y", "X"],
+    )
+    plain = MinimalResult(
+        name="plain", data=_spot_image().astype(np.float32), axis_labels=["Y", "X"]
+    )
+
+    frc_result = FRCProcessor().apply(
+        stack,
+        {
+            "mode": "two-image",
+            "results": [stack, plain],
+            "compare_axis": "T",
+            "index_a": 0,
+            "window": "hann",
+        },
+    )
+
+    # Plane 0 of the stack against the identical plain image: perfectly
+    # correlated, so the curve never falls through the threshold.
+    assert np.isnan(frc_result.analysis.resolution)
+
+
+def test_two_image_frc_across_results_rejects_mismatched_sizes():
+    first = MinimalResult(
+        name="recA", data=_spot_image().astype(np.float32), axis_labels=["Y", "X"]
+    )
+    small = MinimalResult(
+        name="small",
+        data=_spot_image((32, 32)).astype(np.float32),
+        axis_labels=["Y", "X"],
+    )
+
+    ok, reason = FRCProcessor().check_inputs([first, small])
+
+    assert ok is False
+    assert "64x64" in reason and "32x32" in reason
+
+
 def test_frc_result_saves_hdf5(tmp_path):
     analysis = frc_two_image(_spot_image(), _spot_image(), window="hann")
     result = FRCResult("frc", analysis, params={"mode": "test"})

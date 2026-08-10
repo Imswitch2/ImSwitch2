@@ -7,7 +7,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
 from scipy.ndimage import map_coordinates
 
-from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.layer_selection import active_image_layer
 from imswitch.improcess.profile_helpers import (
     ProfileFit,
@@ -16,18 +16,28 @@ from imswitch.improcess.profile_helpers import (
     ExponentialFit,
     build_profile_record,
 )
-from imswitch.improcess.model.plotting import build_delta_x_record
+from imswitch.improcess.model.plotting import (
+    PlotPayload,
+    PlotSeries,
+    build_delta_x_record,
+)
 
 
 class ProfileWidget(QtWidgets.QWidget):
     """Draw line/rectangle ROIs on a napari viewer and plot their profiles."""
 
     sigResultPushed = QtCore.Signal(object, object)
+    sigPlotPushed = QtCore.Signal(object)
+    """One PlotPayload sent to the Graph panel, to sit alongside others."""
+
+    #: Stable owner key for the shared drawing tool (see ViewerToolService).
+    TOOL_OWNER = "improcess.profile"
 
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
-        self._toolManager = ViewerToolManager(napariViewer)
+        self._toolService = ViewerToolService.for_viewer(napariViewer)
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         self._fitters = {
             fit.id: fit
             for fit in (
@@ -38,7 +48,16 @@ class ProfileWidget(QtWidgets.QWidget):
             )
         }
         self._last_kind = None
+        self._mode = "pan"
+        #: What the current plot is called and how its axes are
+        #: labelled, so a pushed payload describes the same thing the
+        #: panel is showing.
+        self._last_plot_title = "profile"
+        self._last_plot_labels = ("Distance", "Intensity")
         self._last_payload: list[tuple[str, np.ndarray, np.ndarray]] = []
+        #: Fitted curves drawn over the profile, kept so a pushed plot
+        #: carries the fit the user is actually looking at.
+        self._last_fit_curves: list[tuple[str, np.ndarray, np.ndarray]] = []
         self._current_record_inputs = []
         self._measurementRegion: pg.LinearRegionItem | None = None
         self._measurementValues: tuple[float, float] | None = None
@@ -47,6 +66,11 @@ class ProfileWidget(QtWidgets.QWidget):
         self.panButton = self._makeModeButton("Pan", "pan", checked=True)
         self.lineButton = self._makeModeButton("Line", "line")
         self.rectangleButton = self._makeModeButton("Rectangle", "rectangle")
+        self.zProfileButton = self._makeModeButton("Z profile", "zprofile")
+        self.zProfileButton.setToolTip(
+            "Plot mean intensity through the stack axis over a rectangle "
+            "(the whole frame when none is drawn) — ImageJ's Plot Z-axis Profile"
+        )
         self.clearButton = QtWidgets.QPushButton("Clear")
         self.measureButton = QtWidgets.QPushButton("Measure Δx")
         self.measureButton.setCheckable(True)
@@ -65,6 +89,12 @@ class ProfileWidget(QtWidgets.QWidget):
             self.fitCombo.addItem(fit.label, fit.id)
 
         self.pushButton = QtWidgets.QPushButton("Push to table")
+        self.pushGraphButton = QtWidgets.QPushButton("Push to graph")
+        self.pushGraphButton.setToolTip(
+            "Send this profile (and its fit) to the Graph panel, where it "
+            "stays put — push a second one to compare two reconstructions"
+        )
+        self.pushGraphButton.setEnabled(False)
         self.saveButton = QtWidgets.QPushButton("Save CSV...")
 
         self.fitSummary = QtWidgets.QLabel("")
@@ -83,6 +113,7 @@ class ProfileWidget(QtWidgets.QWidget):
         toolbar.addWidget(self.panButton)
         toolbar.addWidget(self.lineButton)
         toolbar.addWidget(self.rectangleButton)
+        toolbar.addWidget(self.zProfileButton)
         toolbar.addWidget(self.clearButton)
         toolbar.addWidget(self.measureButton)
         toolbar.addSpacing(8)
@@ -93,6 +124,7 @@ class ProfileWidget(QtWidgets.QWidget):
         toolbar.addWidget(self.fitCombo)
         toolbar.addSpacing(8)
         toolbar.addWidget(self.pushButton)
+        toolbar.addWidget(self.pushGraphButton)
         toolbar.addWidget(self.saveButton)
         toolbar.addStretch()
 
@@ -110,14 +142,35 @@ class ProfileWidget(QtWidgets.QWidget):
         self.widthSpinBox.valueChanged.connect(self._refresh)
         self.fitCombo.currentIndexChanged.connect(self._refresh)
         self.pushButton.clicked.connect(self._onPushToTable)
+        self.pushGraphButton.clicked.connect(self._onPushToGraph)
         self.saveButton.clicked.connect(self._onSaveCSV)
-        self._toolManager.sigShapesChanged.connect(self._shapesChanged)
+        self._toolService.add_callback(
+            self._toolToken, self._toolService.sigShapesChanged, self._shapesChanged
+        )
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self._refresh())
         except Exception:
             pass
 
         self._drawEmpty()
+
+    def setCurrentResult(self, result) -> None:
+        """Recompute the profile against the newly selected result.
+
+        The ROI is drawn in the viewer and the pixels are read from whatever
+        image layer is active, so switching reconstruction changes the answer
+        — but nothing here notices a result change on its own, and a profile
+        left over from the previous result looks exactly like a valid one.
+        """
+        self._refresh()
+
+    def _setPlotLabels(self, title: str, x_label: str, y_label: str) -> None:
+        """Title and label the plot, remembering both for pushed payloads."""
+        self._last_plot_title = title
+        self._last_plot_labels = (x_label, y_label)
+        self.plot.setTitle(title[:1].upper() + title[1:])
+        self.plot.setLabel("bottom", x_label)
+        self.plot.setLabel("left", y_label)
 
     def _makeModeButton(self, text: str, mode: str, checked: bool = False):
         button = QtWidgets.QPushButton(text)
@@ -129,28 +182,54 @@ class ProfileWidget(QtWidgets.QWidget):
 
     def _modeChanged(self, button):
         mode = button.property("profileMode")
-        self._toolManager.clear_shapes()
-        self._toolManager.set_mode(mode)
+        self._mode = mode
+        # Re-acquire so shapes drawn from here on are attributed to this panel,
+        # and clear only ours — this used to wipe the shared layer, taking the
+        # ROI statistics panel's rectangle with it.
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        self._toolService.clear(self._toolToken)
+        # A Z profile is measured over a rectangle, so it draws with the same
+        # tool; only what gets plotted differs.
+        self._toolService.set_mode(
+            self._toolToken, "rectangle" if mode == "zprofile" else mode
+        )
         self._drawEmpty()
+        if mode == "zprofile":
+            # Unlike the in-plane profiles this one is meaningful with no ROI
+            # at all (the whole frame), as it is in ImageJ.
+            self._plotZProfile(None)
 
     def _clearShapes(self):
-        self._toolManager.clear_shapes()
+        self._toolService.clear(self._toolToken)
         self._drawEmpty()
+        if self._mode == "zprofile":
+            self._plotZProfile(None)
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        """Release the drawing tool and our viewer callbacks on close."""
+        try:
+            self._toolService.release(self._toolToken)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _shapesChanged(self):
-        mode = self._toolManager.get_mode()
+        if self._mode == "zprofile":
+            self._plotZProfile(self._findFirstShape("rectangle"))
+            return
+        mode = self._toolService.get_mode()
         if mode == "line":
             self._plotLineProfile(self._findFirstShape("line"))
         elif mode == "rectangle":
             self._plotRectangleProfiles(self._findFirstShape("rectangle"))
 
     def _findFirstShape(self, shape_type: str):
-        for index, stype in enumerate(self._toolManager.get_shape_types()):
+        for index, stype, _vertices in self._toolService.shapes(self._toolToken):
             if stype == shape_type:
                 if shape_type == "line":
-                    return self._toolManager.get_line_endpoints(index)
+                    return self._toolService.get_line_endpoints(index)
                 if shape_type == "rectangle":
-                    return self._toolManager.get_rectangle_bounds(index)
+                    return self._toolService.get_rectangle_bounds(index)
         return None
 
     def _refresh(self):
@@ -158,6 +237,8 @@ class ProfileWidget(QtWidgets.QWidget):
             self._plotLineProfile(self._findFirstShape("line"))
         elif self._last_kind == "rectangle":
             self._plotRectangleProfiles(self._findFirstShape("rectangle"))
+        elif self._last_kind == "zprofile":
+            self._plotZProfile(self._findFirstShape("rectangle"))
 
     def _drawEmpty(self):
         self.measureButton.setChecked(False)
@@ -165,21 +246,25 @@ class ProfileWidget(QtWidgets.QWidget):
         self._removeMeasurementRegion(clear_values=True)
         self._last_kind = None
         self._last_payload = []
+        self._last_fit_curves = []
         self._current_record_inputs = []
         self.fitSummary.setText("")
         self.plot.clear()
-        self.plot.setTitle("Draw a line or rectangle on the reconstruction view")
-        self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
-        self.plot.setLabel("left", "Intensity")
+        self._setPlotLabels(
+            "Draw a line or rectangle on the reconstruction view",
+            f"Distance ({self._distanceUnit()})",
+            "Intensity",
+        )
 
     def _plotLineProfile(self, endpoints):
         self._last_kind = "line"
         self._removeMeasurementRegion(clear_values=False)
         self.plot.clear()
-        self.plot.setTitle("Line Profile")
-        self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
-        self.plot.setLabel("left", "Intensity")
+        self._setPlotLabels(
+            "line profile", f"Distance ({self._distanceUnit()})", "Intensity"
+        )
         self._last_payload = []
+        self._last_fit_curves = []
         self._current_record_inputs = []
 
         if endpoints is None:
@@ -222,10 +307,11 @@ class ProfileWidget(QtWidgets.QWidget):
         self._last_kind = "rectangle"
         self._removeMeasurementRegion(clear_values=False)
         self.plot.clear()
-        self.plot.setTitle("Rectangle Projections")
-        self.plot.setLabel("bottom", f"Distance ({self._distanceUnit()})")
-        self.plot.setLabel("left", "Mean intensity")
+        self._setPlotLabels(
+            "rectangle profile", f"Distance ({self._distanceUnit()})", "Mean intensity"
+        )
         self._last_payload = []
+        self._last_fit_curves = []
         self._current_record_inputs = []
 
         if bounds is None:
@@ -275,8 +361,126 @@ class ProfileWidget(QtWidgets.QWidget):
         self._applyFits()
         self._setMeasurementAvailable(True)
 
+    def _plotZProfile(self, bounds):
+        """Mean intensity through the stack axis over a rectangle.
+
+        ImageJ's *Plot Z-axis Profile*: the in-plane profiles answer "how does
+        intensity vary across the field", this one answers "how does it vary
+        through the stack" — bleaching over time, an axial PSF, a z-extent.
+        With no rectangle drawn it measures the whole frame, as ImageJ does.
+        """
+        self._last_kind = "zprofile"
+        self._removeMeasurementRegion(clear_values=False)
+        self.plot.clear()
+        self._last_payload = []
+        self._last_fit_curves = []
+        self._current_record_inputs = []
+
+        layer = self._activeImageLayer()
+        data = np.asarray(getattr(layer, "data", None)) if layer is not None else None
+        if data is None or data.ndim < 3:
+            self._setMeasurementAvailable(False)
+            self.plot.setTitle("Z profile")
+            self.fitSummary.setText("Select a stack (3D or more) to profile.")
+            return
+
+        axis, axis_label = self._stackAxis(data, layer)
+        rows, cols = self._roiSliceForBounds(bounds, data.shape[-2:])
+        if rows is None:
+            self._setMeasurementAvailable(False)
+            self.fitSummary.setText("")
+            return
+
+        # Every other non-spatial axis stays at what the viewer is showing, so
+        # profiling Z on a TZYX stack profiles the timepoint on screen.
+        index = [slice(None)] * data.ndim
+        step = self._currentStep(data.ndim)
+        for other in range(data.ndim - 2):
+            if other != axis:
+                index[other] = min(max(step[other], 0), data.shape[other] - 1)
+        index[-2], index[-1] = rows, cols
+        volume = np.asarray(data[tuple(index)], dtype=float)
+        volume = volume.reshape(volume.shape[0], -1)
+
+        means = np.nanmean(volume, axis=1)
+        scale = self._axisScale(layer, axis)
+        z = np.arange(means.size, dtype=float) * scale
+        unit = self._distanceUnit() if scale != 1.0 else "slice"
+
+        self._setPlotLabels(
+            f"{axis_label} profile", f"{axis_label} ({unit})", "Mean intensity"
+        )
+        self.plot.plot(z, means, pen=pg.mkPen("#1f77b4", width=2), name="mean")
+        self._last_payload = [("mean", z, means)]
+        self._current_record_inputs = [
+            (
+                f"{axis_label.lower()}-profile",
+                z,
+                means,
+                float(means.size),
+                float(means.size * scale),
+                unit,
+            )
+        ]
+        self._applyFits()
+        self._setMeasurementAvailable(True)
+
+    def _stackAxis(self, data, layer) -> tuple[int, str]:
+        """Axis to profile along, and its label.
+
+        Prefers a real ``Z`` then ``T`` axis from the layer's labels so the
+        plot says which axis it walked; falls back to the first non-spatial
+        axis with more than one plane.
+        """
+        labels = []
+        try:
+            labels = [str(label) for label in (layer.metadata or {}).get("axis_labels", [])]
+        except Exception:
+            labels = []
+        if len(labels) != data.ndim:
+            labels = []
+        candidates = range(max(data.ndim - 2, 1))
+        for preferred in ("Z", "T"):
+            for axis in candidates:
+                if labels and labels[axis] == preferred and data.shape[axis] > 1:
+                    return axis, preferred
+        for axis in candidates:
+            if data.shape[axis] > 1:
+                return axis, labels[axis] if labels else "Z"
+        return 0, labels[0] if labels else "Z"
+
+    def _roiSliceForBounds(self, bounds, shape) -> tuple[slice | None, slice | None]:
+        """Row/column slices for a rectangle, or the whole frame when none."""
+        height, width = int(shape[0]), int(shape[1])
+        if bounds is None:
+            return slice(0, height), slice(0, width)
+        r0, c0, r1, c1 = bounds
+        row_scale, col_scale = self._visiblePixelScales()
+        rlo, rhi = sorted((int(round(r0 / row_scale)), int(round(r1 / row_scale))))
+        clo, chi = sorted((int(round(c0 / col_scale)), int(round(c1 / col_scale))))
+        rlo, rhi = max(0, rlo), min(height, rhi)
+        clo, chi = max(0, clo), min(width, chi)
+        if rlo >= rhi or clo >= chi:
+            return None, None
+        return slice(rlo, rhi), slice(clo, chi)
+
+    def _currentStep(self, ndim: int) -> tuple[int, ...]:
+        try:
+            return tuple(int(value) for value in self._viewer.dims.current_step)
+        except Exception:
+            return tuple(0 for _ in range(ndim))
+
+    @staticmethod
+    def _axisScale(layer, axis: int) -> float:
+        try:
+            scale = tuple(float(value) for value in layer.scale)
+        except Exception:
+            return 1.0
+        return scale[axis] if 0 <= axis < len(scale) else 1.0
+
     def _setMeasurementAvailable(self, available: bool) -> None:
         self.measureButton.setEnabled(bool(available))
+        self.pushGraphButton.setEnabled(bool(available))
         if not available:
             self.measureButton.setChecked(False)
             self._removeMeasurementRegion(clear_values=True)
@@ -359,6 +563,10 @@ class ProfileWidget(QtWidgets.QWidget):
         return x_min, x_max
 
     def _applyFits(self):
+        # Recomputed from scratch on every refresh, like the curves they
+        # annotate — a fit left over from the previous result or fit type
+        # would otherwise ride along into a pushed plot.
+        self._last_fit_curves = []
         fit_id = self.fitCombo.currentData()
         fitter = self._fitters.get(fit_id)
         if fitter is None or fitter.id == "none":
@@ -388,7 +596,9 @@ class ProfileWidget(QtWidgets.QWidget):
                                              rec_input[3], rec_input[4], rec_input[5], None))
                 continue
             pen = pg.mkPen(pg.intColor(index + 3), width=2, style=QtCore.Qt.DashLine)
-            self.plot.plot(result.x, result.y, pen=pen, name=f"{name} {result.name}")
+            fit_label = f"{name} {result.name}"
+            self.plot.plot(result.x, result.y, pen=pen, name=fit_label)
+            self._last_fit_curves.append((fit_label, result.x, result.y))
             summaries.append(f"{name}: {result.summary}")
             if index < len(self._current_record_inputs):
                 rec_input = self._current_record_inputs[index]
@@ -443,6 +653,49 @@ class ProfileWidget(QtWidgets.QWidget):
             return "µm"
         return str(unit or "px")
 
+    def _onPushToGraph(self):
+        payload = self.buildPlotPayload()
+        if payload is None:
+            return
+        self.sigPlotPushed.emit(payload)
+
+    def buildPlotPayload(self):
+        """This profile and its fit as a PlotPayload the Graph can hold.
+
+        Titled after the source layer, which carries the result's name, so a
+        profile pushed from one reconstruction and one from the next are
+        distinguishable side by side — and pushing the same profile twice
+        replaces its earlier version instead of piling up.
+        """
+        if not self._last_payload:
+            return None
+        series = [
+            PlotSeries(name=str(name), x=np.asarray(x), y=np.asarray(y))
+            for name, x, y in self._last_payload
+        ]
+        series.extend(
+            PlotSeries(
+                name=str(name),
+                x=np.asarray(x),
+                y=np.asarray(y),
+                style={"dash": True},
+            )
+            for name, x, y in self._last_fit_curves
+        )
+        layer = self._activeImageLayer()
+        source = str(getattr(layer, "name", "") or "profile")
+        # Taken from the plot rather than re-derived: a Z profile runs along
+        # the stack axis in its own units, and a payload that relabelled it
+        # "Distance" would be a wrong axis on a pushed curve.
+        x_label, y_label = self._last_plot_labels
+        return PlotPayload(
+            title=f"{source} — {self._last_plot_title}",
+            x_label=x_label,
+            y_label=y_label,
+            series=series,
+            metadata={"source_layer": source, "profile_kind": self._last_kind},
+        )
+
     def _onPushToTable(self):
         if not self._current_record_inputs:
             return
@@ -480,8 +733,14 @@ class ProfileWidget(QtWidgets.QWidget):
         except Exception as e:
             self.fitSummary.setText(f"Error saving CSV: {e}")
 
+    def _sourceName(self) -> str:
+        """Name of the layer this profile was measured on."""
+        layer = self._activeImageLayer()
+        return str(getattr(layer, "name", "") or "image")
+
     def _buildOutputRecords(self) -> list[dict]:
         """Build profile/fit rows plus the optional manual Δx measurement."""
+        source = self._sourceName()
         records = []
         for rec_input in self._current_record_inputs:
             if len(rec_input) == 7:
@@ -498,7 +757,10 @@ class ProfileWidget(QtWidgets.QWidget):
                 unit=unit,
                 fit_metrics=fit_metrics,
             )
-            records.append(record)
+            # Which result the profile was measured on. The Results table
+            # accumulates, so rows pushed from two reconstructions are
+            # otherwise indistinguishable apart from the values themselves.
+            records.append({"source": source, **record})
 
         if self._measurementValues is not None and self.measureButton.isChecked():
             unit = (
@@ -509,12 +771,15 @@ class ProfileWidget(QtWidgets.QWidget):
                 "Line Profile" if self._last_kind == "line"
                 else "Rectangle Projections"
             )
-            records.append(build_delta_x_record(
-                title,
-                f"Distance ({unit})",
-                *self._measurementValues,
-                kind="profile-delta-x",
-            ))
+            records.append({
+                "source": source,
+                **build_delta_x_record(
+                    title,
+                    f"Distance ({unit})",
+                    *self._measurementValues,
+                    kind="profile-delta-x",
+                ),
+            })
         return records
 
     @staticmethod

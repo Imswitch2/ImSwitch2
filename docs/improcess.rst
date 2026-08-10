@@ -110,17 +110,29 @@ The *Image* toolbar and matching *Image* menu provide viewer-level operations:
   persist it on the active result or display-layer component.
 * *Channels...* — show display-layer channel controls with per-layer
   visibility and LUT settings.
-* *Duplicate* — create a new array-backed result from the active result.
+* *Duplicate* — create a new array-backed result from each selected result.
 * *Crop/Substack...* — create a ranged subset with first/last/step controls for
   every result axis.
 * *Max projection* — create a max projection using the projection processor's
-  default stack-axis choice.
-* *Split stack* — split the active stack into one result per plane along the
+  default stack-axis choice.  The **Projection** panel exposes the rest of
+  ImageJ's *Z Project*: the axis, the statistic (max / mean / sum / median /
+  standard deviation) and a *First slice* / *Last slice* range, 1-based and
+  inclusive, defaulting to the whole axis.  Projecting one axis of a
+  hyperstack keeps the others, so a ``TZYX`` stack projected on ``Z`` stays a
+  ``T`` series.
+* *Split stack* — split each selected stack into one result per plane along the
   selected stack axis.
 * *Split channels* — split a ``C``, ``Channel`` or ``Base`` axis into one
   result per channel.
-* *Merge channels* — merge selected compatible grayscale results into a new
-  ``C``-axis channel stack.
+* *Merge channels...* — merge loaded results into a new ``C``-axis channel
+  stack. The dialog lists every loaded result (and the components of
+  multi-layer results), pre-checks the reconstruction-list selection, and
+  merges in the listed order, which is the channel order. *Create composite*
+  publishes the merge as coloured display layers instead of a greyscale stack
+  with a channel slider. Inputs are whole results or named components, so the
+  channels of one multi-layer result can be merged among themselves; the
+  planes of a plain stack are not listed individually — split it first with
+  *Split stack*, which the dialog says when a single stack is checked.
 * *Stack/Combine…* — stack same-shaped selected results along a new axis, or
   concatenate compatible results along an existing axis. Axis labels, pixel
   scales and scale units must agree.
@@ -142,6 +154,36 @@ stack/combine, image calculator, make composite and make RGB publish new
 ``ProcessingResult`` objects into the reconstruction list. Split stack and
 split channels publish multiple ``ProcessingResult`` objects and make the final
 split result current.
+
+.. _improcess-multi-result-operations:
+
+Operating on several reconstructions
+------------------------------------
+
+Two different things are meant by "several results", and ImProcess offers
+both:
+
+* **One operation consuming several results.** Merge channels, Stack/Combine
+  and the Image calculator take two or more results and produce one output.
+  They are enabled whenever at least two results are loaded — not only when a
+  compatible multi-selection exists — and open a picker over everything
+  loaded, with the reconstruction-list selection pre-checked. Inputs that
+  cannot be combined disable OK and name the reason (differing shape, axis
+  labels, pixel scales or scale unit) instead of leaving a silently dead
+  button. Two-image FRC works the same way and can compare two separate
+  reconstructions.
+* **One operation applied to each of several results.** Duplicate, max
+  projection, split stack, split channels and make composite run over every
+  selected result, skipping the ones the operation does not apply to.
+  Processor panels offer the same thing through their *Apply to* selector
+  (*Current result* / *Selected results* / *All results*), so a denoise or a
+  drift correction can sweep a whole session's reconstructions in one run.
+  One input failing does not discard the outputs of the others; the panel
+  reports how many failed and why. Crop/Substack and Make RGB stay
+  single-result, because their dialogs are parameterised by one result's axes.
+
+Both paths publish through the usual result pipeline, so the bulk-publish
+confirmation still guards against flooding napari with layers.
 
 The *Analysis tools* toolbar keeps Fiji-like panel shortcuts visible for Graph,
 Profile, ROI manager, ROI statistics, Projection, Segmentation, Metadata and
@@ -215,13 +257,36 @@ selection.
   the *active napari layer* and display their measurements in place; they do
   not create results.  All of them resolve their source layer through the
   shared ``imswitch.improcess.layer_selection`` helper, so what counts as an
-  image source cannot drift between tools.
+  image source cannot drift between tools.  They also re-measure when the
+  selected result changes: the ROI stays where it is and the numbers follow
+  the result now under it, rather than lingering from the previous one.
 
 The Profile tool can draw line and rectangle ROIs, plot the sampled profile,
 and optionally overlay fitted curves.  Available profile fits are no fit,
 single Gaussian, two independent Gaussians with center-distance reporting,
 and a single exponential decay/rise model.  Fit metrics are included when the
 profile is pushed to the results table or saved as CSV.
+
+*Z profile* answers the other question a stack raises — how intensity varies
+*through* it rather than across the field, ImageJ's *Plot Z-axis Profile*.  It
+plots mean intensity over a drawn rectangle against the stack axis, or over
+the whole frame when no rectangle is drawn.  The axis is chosen from the
+result's own labels (``Z``, else ``T``, else the first non-spatial axis with
+more than one plane) and is plotted in that axis' physical units when it has a
+scale, falling back to slice number.  On a hyperstack the other axes stay
+where the viewer is, so profiling ``Z`` on a ``TZYX`` result profiles the
+timepoint on screen.  Fits, *Measure Δx*, *Push to table* and *Push to graph*
+all work on it exactly as they do on the in-plane profiles — an exponential
+fit over a ``T`` profile is a bleaching curve.
+
+*Push to graph* sends the profile and its fit to the Graph panel, opening it
+if needed.  Pushed plots are **pinned**: they stay when the selected result
+changes, where the Graph's own content is replaced by each result's plots.
+That is what makes two profiles comparable — measure one reconstruction, push,
+select the next, measure, push — and the Graph's *Overlay* button then draws
+every plot it holds in one set of axes.  *Clear pushed* forgets them again.
+Rows pushed to the Results table carry a ``source`` column naming the result
+they were measured on, since that table accumulates across results.
 
 Ephemeral preview layers (the segmentation preview, multicolor's
 split-boundary and detected-bead overlays) are the exception: they are
@@ -509,11 +574,33 @@ exposed by the currently selected ``ProcessingResult``.
 
 Use *Measure Δx* to place a draggable horizontal interval between two graph
 features.  The live readout reports both marker positions and their distance.
-*Push to table* appends that measurement to the shared Results dock, where it
-can be accumulated with other measurements and saved through *Save CSV...*.
-The Profile panel offers the same *Measure Δx* interaction; its existing
-*Push to table* and *Save CSV...* actions include the manual distance together
-with the profile statistics and optional fit results.
+*Push to table* appends what the plot says to the shared Results dock: the
+payload's own parameters (a fit's coefficients travel in
+``PlotPayload.metadata``) with one row per curve, plus the Δx row when markers
+are shown.  It no longer requires a measurement to exist — pressing it on a
+plot of fitted data reports the fit.  The Profile panel offers the same
+*Measure Δx* interaction; its *Push to table* and *Save CSV...* actions include
+the manual distance together with the profile statistics and optional fit
+results.
+
+.. _improcess-result-parameters:
+
+Curves and their parameters
+---------------------------
+
+An analysis that fits something produces two outputs — the curve, and the
+parameters of the fit — and the parameters are usually the answer.  A
+``ProcessingResult`` can therefore render into more than one panel at once:
+``plot_payloads()`` draws the curve in this panel while
+``table_columns()``/``table_records()`` contribute rows to the Results dock.
+
+Rows are published automatically for ``kind == "table"`` results.  Any other
+kind opts in by setting ``publishes_table_rows = True``, which keeps bulk rows
+out of the dock by default — a ``localization`` result's ``table_records()``
+can run to six figures.  ``frc`` results publish their resolution and cutoff
+frequency this way, and the photophysics drop-in publishes its fitted
+amplitudes, time constants and R².  Without the opt-in the numbers exist only
+inside the result, drawn but unreadable.
 
 Built-in graph producers include ``drift-correct`` and ``widefield-starss``.
 Drift-corrected results expose Y and X drift traces over frame number.
@@ -1319,6 +1406,41 @@ The contract is the same as a built-in processor: a unique dotted ``id``,
 ``make_param_widget`` returning a widget with ``get_values() -> dict``, and a
 pure ``apply(result, params)`` returning a new ``ProcessingResult``.  Built-in
 ids always win a collision, so a stray file cannot shadow a core processor.
+
+Processors that consume several results
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Processor`` declares how many results one run consumes:
+
+.. code-block:: python
+
+    class BlendProcessor(Processor):
+        min_inputs = 2
+        max_inputs = None            # None = unbounded; the default is 1..1
+
+        def check_inputs(self, results):
+            """(ok, reason) — the reason is shown to the user."""
+            ok, reason = super().check_inputs(results)   # count + accepts()
+            if not ok:
+                return ok, reason
+            return combine_compatibility(results, mode="stack")
+
+        def apply(self, result, params):
+            inputs = params["results"]   # ordered, as picked in the UI
+            ...
+
+When ``max_inputs != 1`` the UI hands the ordered inputs to ``apply`` as
+``params["results"]`` (with ``result`` being ``results[0]``), and the generic
+processor panel shows the multi-result picker instead of a single input combo.
+``check_inputs`` is what the picker calls to decide whether *Run* is enabled;
+returning a reason is how the panel explains a refusal, so return one instead
+of a bare ``False``.  Keep the check metadata-only — it runs on every
+selection change, and materializing a lazily-backed result would read it from
+disk.
+
+Single-input processors need no opt-in to run over several reconstructions:
+because ``apply`` is a pure function of one result, the panel's *Apply to*
+scope simply calls it once per result.
 
 .. warning::
 

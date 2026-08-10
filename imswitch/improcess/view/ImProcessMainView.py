@@ -909,7 +909,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'duplicate',
             'Duplicate',
-            'Duplicate the active result',
+            'Duplicate the selected results',
             improcessIcon('duplicate', self),
             self.sigImageDuplicateRequested,
             toolbar=self._imageOpsToolbar,
@@ -927,7 +927,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'max-projection',
             'Max projection',
-            'Create a max projection of the active result along the default stack axis',
+            'Create a max projection of each selected result along the default stack axis',
             improcessIcon('max-projection', self),
             self.sigImageMaxProjectionRequested,
             toolbar=self._imageOpsToolbar,
@@ -936,7 +936,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'split-stack',
             'Split stack',
-            'Split the active stack into one result per plane',
+            'Split each selected stack into one result per plane',
             improcessIcon('split-stack', self),
             self.sigImageSplitStackRequested,
             toolbar=self._imageOpsToolbar,
@@ -945,7 +945,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'split-channels',
             'Split channels',
-            'Split a C, Channel or Base axis into one result per channel',
+            'Split a C, Channel or Base axis of each selected result into one result per channel',
             improcessIcon('split-channels', self),
             self.sigImageSplitChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -953,9 +953,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         )
         self._addImageAction(
             'merge-channels',
-            'Merge channels',
-            'Merge compatible results into a C-axis channel stack '
-            '(select two or more in the reconstructions list)',
+            'Merge channels...',
+            'Merge loaded results into a C-axis channel stack '
+            '(the reconstructions-list selection is pre-checked)',
             improcessIcon('merge-channels', self),
             self.sigImageMergeChannelsRequested,
             toolbar=self._imageOpsToolbar,
@@ -964,8 +964,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'stack-combine',
             'Stack/Combine...',
-            'Stack or concatenate results into one output '
-            '(select two or more in the reconstructions list)',
+            'Stack or concatenate loaded results into one output '
+            '(the reconstructions-list selection is pre-checked)',
             improcessIcon('stack-combine', self),
             self.sigImageStackCombineRequested,
             toolbar=self._imageOpsToolbar,
@@ -983,7 +983,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self._addImageAction(
             'make-composite',
             'Make composite',
-            'Render a C, Channel or Base axis as colored display layers',
+            'Render a C, Channel or Base axis of each selected result as colored display layers',
             improcessIcon('make-composite', self),
             self.sigImageMakeCompositeRequested,
             toolbar=self._imageOpsToolbar,
@@ -1055,6 +1055,15 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self.setImageLutValue(lut_id)
         self.sigImageLutChanged.emit(str(lut_id))
 
+    def showStatusMessage(self, message: str, timeout_ms: int = 6000) -> None:
+        """Show a transient message in the status bar.
+
+        Public counterpart of ``_showStatusMessage`` for controllers: an
+        operation that fails because of what the user picked has to say so
+        somewhere, and a log line is not somewhere.
+        """
+        self._showStatusMessage(message, timeout_ms)
+
     def setImageActionsEnabled(self, enabled: bool) -> None:
         for action in self._imageActions.values():
             action.setEnabled(bool(enabled))
@@ -1102,9 +1111,36 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if widget is None:
             return
         sig = getattr(widget, "sigResultPushed", None)
-        if sig is None:
+        if sig is not None:
+            sig.connect(self._onResultPushed)
+        plot_sig = getattr(widget, "sigPlotPushed", None)
+        if plot_sig is not None:
+            plot_sig.connect(self._onPlotPushed)
+
+    def _onPlotPushed(self, payload) -> None:
+        """Add a curve pushed by a panel to the Graph and bring it into view.
+
+        The Graph otherwise only ever shows the current result's own plots,
+        which is why two profiles could be measured but never compared: the
+        first was replaced the moment the second result was selected.
+        """
+        graph = getattr(self, 'graphWidget', None)
+        if graph is None:
+            # Panels are runtime-loaded; pushing to a panel that has never
+            # been opened should open it, not drop the measurement. The
+            # request goes through the loader so the Graph gets its
+            # controller, exactly as the toolbar button does.
+            self.sigLoadProcessorRequested.emit('graph')
+            graph = getattr(self, 'graphWidget', None)
+        if graph is None:
+            self._showStatusMessage("Could not open the Graph panel; see log.")
             return
-        sig.connect(self._onResultPushed)
+        try:
+            graph.addPlotPayload(payload)
+        except Exception:
+            self._logger.exception("Could not add a pushed plot to the Graph panel")
+            return
+        self.raiseDockByTitle("Graph")
 
     def _onResultPushed(self, columns, records):
         self.appendResultTableRecords(columns, records)

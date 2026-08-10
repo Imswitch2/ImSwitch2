@@ -67,6 +67,9 @@ class ImProcessMainController(MainController):
         # like Multicolor) expose sigResultProduced; we forward it to the comm
         # channel once. Tracks which panels have had that bridge connected.
         self._panelResultBridges = set()
+        # Measurement panels re-measuring on every result change; tracked by
+        # widget identity so reopening a dock cannot double-connect.
+        self._resultFollowers = set()
 
         # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
         # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
@@ -460,6 +463,26 @@ class ImProcessMainController(MainController):
         # reconstruction list and feed them the current result.
         if hasattr(widget, "sigResultProduced"):
             self._wire_producing_panel(widget)
+            return
+        # Measurement panels (Profile, ROI stats, ROI manager) neither run a
+        # processor nor publish results, so neither branch above reaches them
+        # — and they read their pixels from the viewer, which switching
+        # reconstruction silently changes underneath them.
+        self._wire_result_follower(widget)
+
+    def _wire_result_follower(self, widget) -> None:
+        """Have a panel recompute when the selected result changes.
+
+        A measurement panel that keeps showing numbers from the previous
+        reconstruction is worse than one showing none: nothing on screen says
+        which result the values belong to.
+        """
+        setter = getattr(type(widget), "setCurrentResult", None)
+        if not callable(setter) or id(widget) in self._resultFollowers:
+            return
+        self.__commChannel.sigCurrentResultChanged.connect(widget.setCurrentResult)
+        self._resultFollowers.add(id(widget))
+        self._seed_runtime_result_processor(widget)
 
     def _seed_graph_controller(self) -> None:
         """Render the active result's plot payloads into a freshly opened Graph."""
@@ -515,13 +538,29 @@ class ImProcessMainController(MainController):
         self._seed_runtime_result_processor(widget)
 
     def _seed_runtime_result_processor(self, widget) -> None:
-        """Populate a newly opened processor dock with the current result.
+        """Populate a newly opened processor dock with the loaded results.
 
         Runtime result-processor widgets are often opened after a
         reconstruction has already been selected. Those widgets only receive
-        future sigCurrentResultChanged events, so seed them explicitly with the
-        active reconstruction result at wire time.
+        future sigCurrentResultChanged / sigResultsChanged events, so seed
+        them explicitly at wire time — a multi-input panel opened after the
+        reconstructions were loaded would otherwise show an empty picker.
         """
+        # Looked up on the class: a Qt widget that does not define the method
+        # answers a plain instance getattr by raising, not by returning None.
+        available = getattr(type(widget), "setAvailableResults", None)
+        if callable(available):
+            available = available.__get__(widget)
+            try:
+                available(
+                    self.__commChannel.getAllResults(),
+                    self.__commChannel.getSelectedResults(),
+                )
+            except Exception:
+                self.__logger.debug(
+                    "Could not seed runtime processor widget with the result set",
+                    exc_info=True,
+                )
         setter = getattr(widget, "setCurrentResult", None)
         if not callable(setter):
             return
@@ -549,20 +588,27 @@ class ImProcessMainController(MainController):
         self._bridgeResultToImcontrol(result, name)
 
     def _routeResultToAnalysisPanels(self, result) -> None:
-        """Show non-image results in the panel that can actually render them.
+        """Show non-image results in the panels that can actually render them.
 
         Table- and curve-kind results carry nothing the reconstruction viewer
         can draw, so producing one used to leave the user staring at a cleared
         canvas. Route their rows to the shared Results dock and reveal the
         Graph dock for curves, gated on ``kind`` so ordinary image results
         (many of which also expose plot payloads) never steal focus.
+
+        The two are not exclusive. An analysis that fits something produces
+        both a curve and the parameters of the fit; a result may therefore
+        render into the Graph *and* contribute rows, and one that says so via
+        ``publishes_table_rows`` gets both. Rows stay opt-in outside
+        ``kind == "table"`` because a localization result's ``table_records()``
+        can run to six figures.
         """
         from imswitch.improcess.model.result import result_kind
 
         kind = result_kind(result)
-        if kind == "table":
+        if kind == "table" or getattr(result, "publishes_table_rows", False):
             self._appendResultTableRecords(result)
-        elif kind == "curve" and self._resultHasPlotPayloads(result):
+        if kind == "curve" and self._resultHasPlotPayloads(result):
             try:
                 self.__mainView.raiseDockByTitle('Graph')
             except Exception:

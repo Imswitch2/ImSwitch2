@@ -23,10 +23,18 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
         self._commChannel.sigResultProduced.connect(self.resultProduced)
         self._commChannel.sigLiveResultUpdated.connect(self.liveResultUpdated)
+        # The list widget owns the loaded results; registering here is what
+        # lets any panel enumerate them through the channel instead of
+        # reaching for this controller.
+        self._commChannel.setResultProvider(self)
 
         self._widget.sigItemSelected.connect(self.listItemChanged)
         self._widget.sigAxisStepChanged.connect(self.axisStepChanged)
         self._widget.sigViewChanged.connect(lambda: self.fullUpdate(levels=None))
+        if hasattr(self._widget, "sigSelectionChanged"):
+            self._widget.sigSelectionChanged.connect(self._resultsChanged)
+        if hasattr(self._widget, "sigResultsRemoved"):
+            self._widget.sigResultsRemoved.connect(self._resultsChanged)
 
     def getActiveResult(self):
         return self._widget.getCurrentItemData()
@@ -41,6 +49,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         if current is None:
             return []
         return [(getattr(current, "name", "result"), current)]
+
+    def _resultsChanged(self) -> None:
+        """Announce that the loaded set or the selection moved."""
+        self._commChannel.sigResultsChanged.emit()
 
     def listItemChanged(self):
         currItem = self._widget.getCurrentItemData()
@@ -371,6 +383,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             return
         name = displayName or getattr(result, 'name', '') or 'result'
         self._widget.addNewData(result, name)
+        self._resultsChanged()
 
     def liveResultUpdated(self, result):
         """Update the view with a live reconstruction result.
