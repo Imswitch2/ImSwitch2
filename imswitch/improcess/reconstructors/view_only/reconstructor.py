@@ -99,7 +99,9 @@ class ViewOnlyReconstructor(Reconstructor):
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         return None
 
-    def process(self, data_obj: "DataObj", params: dict) -> ViewOnlyResult:
+    def process(
+        self, data_obj: "DataObj", params: dict, context=None
+    ) -> ViewOnlyResult:
         virtual = (
             getattr(data_obj, "sourceLoaded", False)
             and not getattr(data_obj, "dataLoaded", False)

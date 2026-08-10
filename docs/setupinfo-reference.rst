@@ -201,6 +201,14 @@ Each positioner requires:
   on a first-come basis per axis. This only sets the *defaults*; individual jog
   actions (``positioner.<name>.<axis>.plus`` / ``.minus``) can be rebound to any
   key via the ``shortcuts`` section below.
+* ``physicalActuator`` (optional str): identity of the physical device this
+  positioner drives. Two positioners with the same non-null value are declared
+  to be *one piece of hardware reached two ways* — the STED example addresses a
+  single piezo as the analog ``ND-PiezoZ`` and as the serial ``PiezoZ``. The
+  focus lock uses this to decide whether a scan conflicts with it; see
+  :ref:`focuslock-scan-arbitration`. The identifier is arbitrary, only equality
+  between positioners matters, and giving two same-axis positioners *different*
+  ids is how you declare that they really are independent stages.
 
 **Example** (mock XY stage):
 
@@ -298,6 +306,7 @@ Key fields:
 * ``TTLCycleDesigner``: TTL signal generator class (e.g., ``"PointScanTTLCycleDesigner"``, ``"AdvancedScanTTLCycleDesigner"``)
 * ``TTLCycleDesignerParams``: Parameters for TTL cycle (e.g., ``{"ttlDeviceList": ["Laser405"]}``}
 * ``sampleRate``: DAQ sample rate in Hz
+* ``maxScanTimeMin``: Optional scan-duration guard in minutes; ``null`` or omission disables this time guard. Signal generation also refuses scans above 10 million spatial positions.
 * ``lineClockLine``: NI-DAQ port line for line clock output (integer or ``"Dev1/port0/line{N}"`` string; ``null`` if not used)
 * ``frameStartClockLine`` / ``frameEndClockLine``: Frame clock outputs (same format as ``lineClockLine``)
 
@@ -338,11 +347,16 @@ Key fields:
 
 **Required devices**: At least one positioner with ``forScanning: true``.  For
 galvo-based scans, the positioners' ``analogChannel`` fields must reference
-valid NI-DAQ analog output channels.  Lasers referenced in
+valid NI-DAQ analog output channels. Real (non-mock) positioners used with
+``GalvoScanDesigner`` must also define realistic ``vel_max`` (µm/µs) and
+``acc_max`` (µm/µs²) values in ``managerProperties``; optional
+``jerk_max`` is expressed in µm/µs³. Missing velocity or acceleration
+limits stop signal generation with a configuration error rather than producing
+an unsafe or degenerate trajectory. Lasers referenced in
 ``TTLCycleDesignerParams.ttlDeviceList`` must have ``digitalLine`` set.
 
 **See also**: :class:`~imswitch.imcontrol.model.SetupInfo.ScanInfo`,
-:ref:`Signal designers <Signal designers>`
+:ref:`Signal designers <Signal designers>`, :doc:`advanced-scanning`
 
 
 nidaq
@@ -462,7 +476,7 @@ documented below with full field lists and examples:
 
 * `focusLock`_
 * `autofocus`_
-* `tiling`_
+* `tiling configuration`_
 * `etSTED`_
 * `microscopeStand`_
 * `slms`_ (modern multi-SLM support)
@@ -493,6 +507,60 @@ Key fields:
 * ``swapImageAxes`` (bool): Swap camera image axes when grabbing frame
 * ``piKp`` (float): Default kp (proportional gain) of feedback loop
 * ``piKi`` (float): Default ki (integral gain) of feedback loop
+* ``reacquireTimeoutS`` (float, default ``1.0``): How long to wait for the focus
+  signal to come back after a scan released the actuator, before giving up
+* ``reacquireTolerancePx`` (float, default ``0.5``): How close the signal must
+  return to its pre-scan setpoint before the lock re-engages, in camera pixels
+* ``reacquireSamples`` (int, default ``5``): Consecutive estimates averaged
+  before deciding the signal has settled
+
+.. _focuslock-scan-arbitration:
+
+Scan arbitration
+^^^^^^^^^^^^^^^^
+
+The focus lock and a hardware Z scan can drive the *same physical actuator*.
+The STED example reaches one piezo twice: as the analog scanner ``ND-PiezoZ``
+and as the serial positioner ``PiezoZ``. An actively correcting lock will
+oppose the intentional Z waveform.
+
+ImSwitch therefore suspends focus actuation for the duration of any scan that
+can reach the lock's axis, and does not resume the instant the scan ends: it
+first waits for the signal to settle *and* to return within
+``reacquireTolerancePx`` of the setpoint it was holding. On timeout the lock is
+left off and a warning is logged, rather than correcting against a signal that
+never came back. The **Pause during scans** checkbox opts out of this.
+
+Whether a scan conflicts is decided automatically:
+
+#. the lock's own positioner is among the scan's positioners, or
+#. both positioners declare the same ``physicalActuator``, or
+#. a scanned positioner carries the lock's axis.
+
+Rule 3 covers the STED case with no configuration at all. Where two Z
+positioners really are separate devices, give them **different**
+``physicalActuator`` ids to say so — that suppresses rule 3 and keeps the lock
+running through those scans.
+
+Triggered tiling holds each tile until the lock is holding again before firing
+the next scan. Without that gate the loop would cancel its own reacquisition:
+at ``updateFreq: 10`` a five-sample window needs ~0.5 s, against a default
+0.15 s tile settle.
+
+.. note::
+
+   Scan controllers that do not populate ``target_device`` publish no actuator
+   list, so the lock treats their scans as conflicting and suspends around each
+   one. Among the TriggerScope family only the raster controller publishes;
+   pLS-RESOLFT, LSXYR, galvo-detection and multicolor scans therefore always
+   suspend the lock. This is safe but pessimistic.
+
+.. warning::
+
+   ``reacquireTolerancePx`` ships with a placeholder default that has not been
+   measured on hardware. Its meaningful value depends on your rig's pixel-to-µm
+   calibration: too loose re-engages against a defocused sample, too tight
+   times out on every tile. Calibrate it before relying on 3D tiling.
 
 **Example**:
 
@@ -550,18 +618,60 @@ Key fields:
 **See also**: :class:`~imswitch.imcontrol.model.SetupInfo.AutofocusInfo`
 
 
-tiling
-------
+tiling configuration
+--------------------
 
 Optional :class:`~imswitch.imcontrol.model.SetupInfo.TilingInfo` object.
 **Required if you use the Tiling widget** for spiral tiling scans.
 
-Key fields:
+See :doc:`tiling` for what these do in practice.
+
+Devices:
 
 * ``xyPositioner`` (str): Name of the XY positioner (must match a positioner in the setup)
-* ``zPositioner`` (str, optional): Name of the Z positioner for per-tile autofocus (empty string = disabled)
-* ``camera`` (str, optional): Detector to use for tile acquisition (empty string = first ``forAcquisition`` detector)
-* ``defaultTileStepUm`` (float): Default stage step between tile centres in micrometers
+* ``zPositioner`` (str, optional): Reserved compatibility field. The built-in
+  Tiling controller and ``TilingWorkflow`` do **not** perform per-tile
+  autofocus from this value. Leave it empty unless a site-specific extension
+  consumes it; use the scripted Z-stack/multi-well workflows when autofocus is
+  required between positions.
+* ``camera`` (str, optional): Detector used to build and align the mosaic (empty
+  string = first ``forAcquisition`` detector). This is the default, not a fixed
+  choice: on a rig with more than one acquisition detector the widget shows an
+  **Align on** combo that overrides it for the session. The override is not
+  persisted, so this field stays the value every session starts from. Switching
+  it discards the current overview because the mosaic geometry comes from that
+  detector's pixel size.
+
+Geometry:
+
+* ``defaultTileStepUm`` (float): Default stage step between tile centres in micrometres. Must be smaller than the field of view or the tiles cannot overlap.
+* ``defaultTilesX`` (int, default ``3``) and ``defaultTilesY`` (int, default ``3``): Opening grid size. Equal values start the widget with its ``Square`` lock engaged; unequal ones start it unlocked, so a rig that normally surveys a rectangle opens ready for one.
+* ``defaultPattern`` (str, default ``"spiral"``): ``"spiral"`` grows outward from the current position and can be stopped early with a filled, centred mosaic; ``"serpentine"`` rasters from the current position in +X and +Y with no move longer than one tile step. Anything else is refused rather than defaulted.
+* ``settleTimeMs`` (float, default ``150``): Wait after each stage move before the tile is acquired. The first thing to increase when a mosaic does not line up.
+* ``flipTileAxisX`` / ``flipTileAxisY`` (bool, default ``false``): Mirror the mosaic left/right or up/down.
+* ``swapTileAxes`` (bool, default ``false``): Exchange the mosaic axes, for a camera mounted at 90° to the stage. Applied **before** the flips. These three enumerate all eight ways a camera can sit relative to the stage.
+
+Acquisition:
+
+* ``mode`` (str, default ``"free-running"``): ``"free-running"`` grabs frames from a continuously running camera; ``"triggered"`` runs one scan per tile, which is required for scan-driven detectors (APD/PMT) and used for cameras clocked by the scan trigger.
+* ``scanSource`` (str, optional): Which scan controller triggered mode drives. Only meaningful on rigs with more than one.
+* ``scanTimeoutS`` (float, default ``300``): How long to wait for one tile's scan before giving up.
+
+Triggered mode refuses a scan source that drives the same XY positioner used
+by tiling. Use a galvo/beam scan for each tile or a different positioner for the
+between-tile motion.
+
+Alignment:
+
+* ``registerTiles`` (bool, default ``false``): Measure where each tile really belongs instead of trusting the commanded stage position. Each tile is correlated against every already-placed neighbour it overlaps, and the whole layout is solved again once the run ends.
+* ``registrationMaxShiftFraction`` (float, default ``0.5``): Reject corrections larger than this fraction of the tile step, guarding against false matches on repeating structure.
+* ``detectorTransforms`` (object, default ``{}``): How each additionally-saved detector's pixels relate to the one tiling aligns on, as ``{"Camera": "identity"}``. A tiling run saves whatever the Recording widget is set to capture, at every tile position — but sharing a stage position establishes only the *tile grid*, not pixel-level agreement between detectors: sensor origin, ROI, orientation, rotation and optical-path offsets all differ independently, so this is declared rather than inferred, and ``"identity"`` is a statement about the rig that whoever writes it owns. Only ``"identity"`` is accepted so far. This is optional: a detector with no entry is still saved, with its transform recorded as ``unknown`` so a reader knows nobody stated one, rather than being dropped — the relationship can be established offline, but a tile never acquired cannot. The detector tiling aligns on needs no entry — it is the reference.
+
+Saving:
+
+* ``saveTiles`` (bool, default ``false``): Write each tile as it is acquired, plus the mosaic and the sidecar files.
+* ``saveFormat`` (str, default ``"TIFF"``): Container for the saved tiles.
+* ``measurementsRoot`` (str, optional): Where run folders are written. Empty takes the Recording widget's output folder, which is normally what you want.
 
 **Example**:
 
@@ -571,12 +681,18 @@ Key fields:
        "xyPositioner": "StageXY",
        "zPositioner": "",
        "camera": "Camera",
-       "defaultTileStepUm": 100.0
+       "defaultTileStepUm": 100.0,
+       "settleTimeMs": 150.0,
+       "registerTiles": true,
+       "saveTiles": true,
+       "swapTileAxes": false
    }
 
-**Required devices**: One XY positioner.  Optional Z positioner and camera.
+**Required devices**: One XY positioner. A camera is optional only when another
+acquisition detector can supply the tiles. ``zPositioner`` is not used by the
+built-in tiling workflow.
 
-**See also**: :class:`~imswitch.imcontrol.model.SetupInfo.TilingInfo`
+**See also**: :doc:`tiling`, :class:`~imswitch.imcontrol.model.SetupInfo.TilingInfo`
 
 
 etSTED
@@ -884,8 +1000,10 @@ references, and what fails silently if references are missing or incorrect.
      - Widget fails to initialize
    * - ``tiling``
      - One XY positioner
-     - ``xyPositioner``, optional ``zPositioner``, ``camera``
-     - Widget fails if XY positioner missing; silently skips optional fields
+     - ``xyPositioner``, optional ``zPositioner``, ``camera`` and
+       ``detectorTransforms`` entries
+     - Widget fails if XY positioner is missing; ``zPositioner`` is validated
+       when supplied but is not consumed by built-in tiling
    * - ``scan``
      - Positioners with ``forScanning: true``; lasers with ``digitalLine`` set (for TTL targets)
      - Lasers in ``TTLCycleDesignerParams.ttlDeviceList``; ``lineClockLine`` references NI-DAQ port

@@ -237,37 +237,85 @@ def _load_section_schemas() -> dict:
     return sections
 
 
+#: Plugin lists used when ImProcess cannot be imported — the Config Studio is
+#: a standalone PyQt5 script and may run without the rest of ImSwitch
+#: installed. These MUST mirror the real registries; a stale entry here shows
+#: the operator a plugin list that silently omits whatever was added since.
+#: ``test_config_editor_plugin_fallback.py`` fails when they drift apart.
+IMPROCESS_RECONSTRUCTOR_FALLBACK = [
+    "beadrec",
+    "monalisa",
+    "smlm-localizer",
+    "snouty",
+    "snouty-projections",
+    "tiling-mosaic",
+    "view-only",
+    "widefield-starss",
+]
+
+IMPROCESS_PROCESSOR_FALLBACK = [
+    "channel-merge",
+    "channel-split",
+    "colocalization",
+    "convert-type",
+    "denoise",
+    "drift-correct",
+    "filter",
+    "frc",
+    "image-calculator",
+    "label-morphology",
+    "make-composite",
+    "make-rgb",
+    "math",
+    "multicolor-apply",
+    "multicolor-registration",
+    "projection",
+    "psf-resolution",
+    "resize",
+    "segmentation",
+    "smlm-drift",
+    "smlm-filter",
+    "smlm-group",
+    "smlm-render",
+    "stack-combine",
+    "stack-split",
+    "stack-subset",
+    "subtract-background",
+    "transform",
+]
+
+#: Why the live registries could not be read, or None when they were.
+PLUGIN_DISCOVERY_ERROR = None
+
+
 def _resolve_section_dynamic_options(schema: dict) -> None:
     """Replace supported option placeholders with runtime-discovered values."""
-    fallback = {
-        "__improcess_reconstructors__": [
-            "monalisa",
-            "snouty",
-            "snouty-projections",
-            "view-only",
-            "widefield-starss",
-        ],
-        "__improcess_processors__": [
-            "denoise",
-            "colocalization",
-            "drift-correct",
-            "frc",
-            "multicolor-apply",
-            "multicolor-registration",
-            "projection",
-            "psf-resolution",
-            "segmentation",
-        ],
+    global PLUGIN_DISCOVERY_ERROR
+
+    resolved = {
+        "__improcess_reconstructors__": list(IMPROCESS_RECONSTRUCTOR_FALLBACK),
+        "__improcess_processors__": list(IMPROCESS_PROCESSOR_FALLBACK),
     }
-    resolved = dict(fallback)
     try:
         from imswitch.improcess.reconstructors import available_reconstructor_ids
         from imswitch.improcess.processors import available_processor_ids
 
         resolved["__improcess_reconstructors__"] = available_reconstructor_ids()
         resolved["__improcess_processors__"] = available_processor_ids()
-    except Exception:
-        pass
+        PLUGIN_DISCOVERY_ERROR = None
+    except Exception as exc:
+        # Say so rather than swallowing it: the built-in lists are a snapshot,
+        # and a user who cannot find a plugin they know exists deserves to
+        # know they are looking at the offline copy. One import failure in any
+        # plugin hides every plugin, so this is worth reporting.
+        if PLUGIN_DISCOVERY_ERROR is None:
+            print(
+                f'Config Studio: could not read the ImProcess plugin '
+                f'registries ({exc}); showing the built-in list, which may be '
+                f'missing recently added plugins.',
+                file=sys.stderr,
+            )
+        PLUGIN_DISCOVERY_ERROR = str(exc)
 
     for field in schema.get("fields", []):
         opts = field.get("opts") or []

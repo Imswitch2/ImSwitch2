@@ -6,6 +6,10 @@ from .DataEditController import DataEditController
 from .basecontrollers import ImProcessWidgetController
 
 
+def _is_image_source(data_obj):
+    return getattr(data_obj, 'sourceKind', 'image') == 'image'
+
+
 class DataFrameController(ImProcessWidgetController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -54,6 +58,8 @@ class DataFrameController(ImProcessWidgetController):
 
     def setImgSlice(self, frame):
         data = self._currentDataArray()
+        if data is None:
+            return
         img = extract_plane(data, frame, self._currentAxisLabels())
         self._displayedImage = img
         self._widget.setImage(img, autoLevels=False)
@@ -66,17 +72,24 @@ class DataFrameController(ImProcessWidgetController):
         self._widget.setNumFrames(0)
         self._widget.setDataName('')
         self._widget.setDatasetName('')
+        setter = getattr(self._widget, 'setImageControlsEnabled', None)
+        if callable(setter):
+            setter(False)
 
     def adjustData(self):
         self._logger.debug('In adjust data')
-        if self._dataObj is not None:
+        if self._dataObj is not None and _is_image_source(self._dataObj):
             self.editWindowController.setData(self._dataObj)
             self._widget.showEditWindow()
         else:
             self._logger.error('No data to edit')
 
     def showMean(self):
-        img = self._dataObj.getMeanData() if self._dataObj is not None else np.zeros((1, 1))
+        img = (
+            self._dataObj.getMeanData()
+            if self._dataObj is not None and _is_image_source(self._dataObj)
+            else np.zeros((1, 1))
+        )
         self._displayedImage = img
         self._widget.setImage(img, autoLevels=True)
         self._commChannel.sigDisplayedFrameChanged.emit()
@@ -87,6 +100,27 @@ class DataFrameController(ImProcessWidgetController):
 
     def currentDataChanged(self, inDataObj):
         self._dataObj = inDataObj
+        is_image = _is_image_source(self._dataObj)
+        setter = getattr(self._widget, 'setImageControlsEnabled', None)
+        if callable(setter):
+            setter(is_image)
+        if not is_image:
+            self._displayedImage = None
+            self._patternGridMade = False
+            self._widget.setImage(np.zeros((1, 1)), autoLevels=True)
+            pattern_setter = getattr(self._widget, 'setPatternGridData', None)
+            if callable(pattern_setter):
+                pattern_setter([], [])
+            detection_setter = getattr(
+                self._widget, 'setDetectionPreviewData', None
+            )
+            if callable(detection_setter):
+                detection_setter([], [])
+            self._widget.setNumFrames(0)
+            self._widget.setDataName(self._dataObj.name)
+            self._widget.setDatasetName(self._dataObj.datasetName)
+            self._commChannel.sigDisplayedFrameChanged.emit()
+            return
         data = self._currentDataArray()
         self._logger.debug(f'Data shape: {data.shape}')
         self.showMean()
@@ -99,7 +133,10 @@ class DataFrameController(ImProcessWidgetController):
         offset is calculated from the upper left corner (0, 0), while the
         scatter plot plots from lower left corner, so a flip has to be made
         in rows."""
-        shape = self._currentDataArray().shape
+        data = self._currentDataArray()
+        if data is None:
+            return
+        shape = data.shape
         # The grid lives on the displayed plane, which is not axes 1/2 once the
         # dataset carries more than one navigation axis.
         plane = plane_axes(shape, self._currentAxisLabels())
@@ -126,6 +163,8 @@ class DataFrameController(ImProcessWidgetController):
         self._logger.debug('Made new pattern grid')
 
     def _currentDataArray(self):
+        if self._dataObj is None or not _is_image_source(self._dataObj):
+            return None
         handle = getattr(self._dataObj, "data_handle", None)
         if handle is not None and not getattr(self._dataObj, "dataMaterialized", False):
             return handle

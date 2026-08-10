@@ -261,3 +261,84 @@ def test_microscopestand_rs232_undefined():
     assert "UndefinedRS232" in errors[0].message
     assert errors[0].path == ("microscopeStand", "rs232device")
     assert errors[0].severity == "error"
+
+
+def _shared_actuator_setup(focusActuator=None, scanActuator=None):
+    """The example_sted.json shape: one piezo reachable under two names."""
+    scanZ = {
+        "managerName": "NidaqPositionerManager",
+        "axes": ["Z"],
+        "forScanning": True,
+        "managerProperties": {},
+    }
+    focusZ = {
+        "managerName": "PiezoconceptZManager",
+        "axes": ["Z"],
+        "forPositioning": True,
+        "managerProperties": {},
+    }
+    if scanActuator is not None:
+        scanZ["physicalActuator"] = scanActuator
+    if focusActuator is not None:
+        focusZ["physicalActuator"] = focusActuator
+
+    return {
+        "detectors": {
+            "FocusCam": {
+                "managerName": "AVManager",
+                "forFocusLock": True,
+                "managerProperties": {},
+            },
+        },
+        "positioners": {"ND-PiezoZ": scanZ, "PiezoZ": focusZ},
+        "focusLock": {"camera": "FocusCam", "positioner": "PiezoZ"},
+    }
+
+
+def _shared_actuator_warnings(data):
+    registry = build_default_registry(discover=False)
+    report = validate_setup_data(data, registry)
+    return [
+        d for d in report.diagnostics
+        if d.code == "xref.focuslock.shared-actuator"
+    ]
+
+
+def test_focuslock_shares_axis_with_a_scanned_positioner():
+    """Undeclared: the focus lock will pause for those scans, so say so."""
+    warnings = _shared_actuator_warnings(_shared_actuator_setup())
+
+    assert len(warnings) == 1
+    assert "ND-PiezoZ" in warnings[0].message
+    assert warnings[0].severity == "warning"
+    assert warnings[0].path == ("focusLock", "positioner")
+
+
+def test_declaring_physical_actuators_settles_the_question():
+    """Either answer is explicit, so neither needs the warning."""
+    assert _shared_actuator_warnings(
+        _shared_actuator_setup(focusActuator="sample", scanActuator="sample")
+    ) == []
+    assert _shared_actuator_warnings(
+        _shared_actuator_setup(focusActuator="sample", scanActuator="objective")
+    ) == []
+
+
+def test_declaring_only_one_side_is_still_ambiguous():
+    assert len(_shared_actuator_warnings(
+        _shared_actuator_setup(focusActuator="sample")
+    )) == 1
+
+
+def test_a_scan_that_cannot_reach_the_focus_axis_is_not_flagged():
+    data = _shared_actuator_setup()
+    data["positioners"]["ND-PiezoZ"]["axes"] = ["X"]
+
+    assert _shared_actuator_warnings(data) == []
+
+
+def test_a_non_scanning_positioner_sharing_the_axis_is_not_flagged():
+    data = _shared_actuator_setup()
+    data["positioners"]["ND-PiezoZ"]["forScanning"] = False
+
+    assert _shared_actuator_warnings(data) == []

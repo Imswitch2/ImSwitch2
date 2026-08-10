@@ -37,7 +37,9 @@ class WidefieldStarssReconstructor(Reconstructor):
     def make_metadata_dialog(self, parent: QtWidgets.QWidget) -> QtWidgets.QDialog | None:
         return None
 
-    def process(self, data_obj: "DataObj", params: dict) -> WidefieldStarssResult:
+    def process(
+        self, data_obj: "DataObj", params: dict, context=None
+    ) -> WidefieldStarssResult:
         current_path = Path(data_obj.dataPath) if data_obj.dataPath else None
         current_role, counterpart_path = self._resolve_pair_paths(current_path, params)
 

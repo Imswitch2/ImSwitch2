@@ -9,7 +9,9 @@ from qtpy import QtCore
 from imswitch.imcommon.framework import Signal, Timer
 from imswitch.imcommon.model import ostools, APIExport
 from imswitch.imcontrol.model import RecMode, SaveMode, SaveFormat, getWidgetStatePersistence
-from imswitch.imcontrol.model.managers.RecordingManager import RECORDING_ARM_TIMEOUT
+from imswitch.imcontrol.model.managers.RecordingManager import (
+    RECORDING_ARM_TIMEOUT, FailureKind,
+)
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
 
@@ -21,6 +23,25 @@ _LAPSE_RECORDING_DRAIN_RETRY_MS = 25
 # Long camera lapses are scheduled in bounded chunks so intervals longer than
 # roughly 24 days cannot wrap into an immediate timer.
 _MAX_LAPSE_TIMER_MS = 2_147_000_000
+
+
+def _dispatchWithoutLifecycle(dispatch, *args):
+    """Dispatch a scan without letting the dispatcher publish its start.
+
+    A dispatcher predating ``notify_starting`` never published one, which
+    is exactly what is being asked for -- so falling back to the positional
+    call is the requested behaviour, not a degraded approximation of it.
+    The fallback is narrowed to this call's own signature mismatch: an
+    adapter that accepts the keyword and then raises ``TypeError`` from
+    inside must not be silently re-dispatched, which would start the scan
+    twice.
+    """
+    try:
+        return dispatch(*args, notify_starting=False)
+    except TypeError as error:
+        if 'notify_starting' not in str(error):
+            raise
+    return dispatch(*args)
 
 
 class RecordingController(ImConWidgetController, StatefulComponentMixin):
@@ -421,7 +442,20 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                     if not self._requestScanStart(True, False):
                         return
             elif self.recMode == RecMode.ScanLapse:
-                self.recordingArgs['singleLapseFile'] = self._widget.getTimelapseSingleFile()
+                singleFile = self._widget.getTimelapseSingleFile()
+                if singleFile and SaveFormat(
+                    self._widget.getSaveFormat()
+                ) == SaveFormat.TIFF:
+                    # The same rule the camera timelapse already enforces: a
+                    # grouped lapse file has to be reopened per timepoint, and
+                    # TIFF cannot be reopened safely.
+                    self._handleRecordingFailure(
+                        'Single-file scan timelapse supports HDF5 and ZARR; '
+                        'select separate files for TIFF.',
+                        abortManager=False, kind=FailureKind.WRITER,
+                    )
+                    return
+                self.recordingArgs['singleLapseFile'] = singleFile
                 self.lapseTotal = self._widget.getTimelapseTime()
                 self.lapseCurrent = 0
                 if not self.nextLapse():
@@ -586,7 +620,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             )
         if singleLapseFile and saveFormat == SaveFormat.TIFF:
             raise ValueError(
-                'Single-file camera timelapse supports HDF5 and ZARR; '
+                'Single-file timelapse supports HDF5 and ZARR; '
                 'select separate files for TIFF.'
             )
 
@@ -899,13 +933,15 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         'starting a timelapse scan: this setup has more than '
                         'one scan widget that could be driven.',
                         abortManager=False,
+                        kind=FailureKind.SCAN,
                     )
                     return False
                 try:
                     self._recordingScanSource = resolveSource(selectedKey)
                 except Exception as error:
                     self._handleRecordingFailure(
-                        str(error), abortManager=False
+                        str(error), abortManager=False,
+                        kind=FailureKind.SCAN,
                     )
                     return False
 
@@ -915,7 +951,6 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
 
         try:
             if isFirstLapse:
-                self._notifyScanStarting()
                 self.recordingArgs['attrs'] = {  # Update
                     detectorName:
                         self._commChannel.sharedAttrs.getHDF5Attributes()
@@ -943,6 +978,34 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             )
             return False
 
+        # Whoever owns the stage gets to put it where this point belongs
+        # before anything is armed. Asked for, not called: the answer arrives
+        # on that owner's own thread, and blocking this one would stop the
+        # event loop these timepoints are advanced by -- starving, among other
+        # things, the focus lock.
+        # Looked up rather than called directly: nextLapse is also exercised
+        # against lightweight doubles that mirror only the surface they need,
+        # and a lapse with no provider is the ordinary timed one.
+        await_positioning = getattr(self, '_awaitPositioning', None)
+        if callable(await_positioning):
+            positioning = await_positioning()
+            if positioning is not True:
+                return positioning
+
+        # Every timepoint, not just the first. Each one runs its own scan and
+        # publishes its own ``sigScanEnded``, so a start published once for the
+        # whole lapse leaves every later point ending a scan that never began:
+        # the focus lock yields for timepoint one, resumes at its end, and then
+        # drives the focus axis straight through timepoint two's waveform. The
+        # published flag is cleared as each end arrives, so this stays one
+        # start per point rather than one per re-entry of this method.
+        #
+        # After the positioning gate, deliberately. Placing the sample is not
+        # part of the scan, and consumers that hold an axis for us should keep
+        # holding it while the stage travels -- yielding early would spend the
+        # move unlocked for no benefit.
+        self._notifyScanStarting()
+
         if not self._startManagerRecording():
             return False
         if not self._waitForManagerArm():
@@ -957,6 +1020,87 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         ):
             return False
         return True
+
+    def setPositioningProvider(self, provider) -> None:
+        """Let a workflow place the sample before each timepoint.
+
+        ``provider(index)`` returns a :class:`PositioningRequest` that it
+        resolves from its own thread once the stage is there and settled. A
+        lapse with a provider arms only on ``RESOLVED``; the other three
+        terminals end the session with the reason they carry.
+
+        This is what makes a tiling run a lapse: the points differ by where
+        the stage is rather than by when the timer fires, and nothing else
+        about the session changes.
+        """
+        self._positioningProvider = provider
+        self._pendingPositioning = None
+
+    def clearPositioningProvider(self) -> None:
+        self._positioningProvider = None
+        self._pendingPositioning = None
+        self._cycleTerminalCallback = None
+
+    def setCycleTerminalCallback(self, callback) -> None:
+        """Called when a point is wholly finished -- writer *and* scan.
+
+        The manager's writer terminal fires earlier, while scan lifecycle
+        cleanup is still running, so a caller that may move hardware must wait
+        for this one instead.
+        """
+        self._cycleTerminalCallback = callback
+
+    def _awaitPositioning(self):
+        """True to proceed, False to stop; re-arms the timer while pending."""
+        provider = self.__dict__.get('_positioningProvider')
+        if provider is None:
+            return True
+
+        request = self.__dict__.get('_pendingPositioning')
+        if request is None:
+            try:
+                request = provider(self.lapseCurrent)
+            except Exception as error:
+                self._handleRecordingFailure(
+                    f'Could not request positioning for point '
+                    f'{self.lapseCurrent}: {error}',
+                    abortManager=False, kind=FailureKind.HARDWARE,
+                )
+                return False
+            if request is None:
+                # No positioning wanted for this point.
+                return True
+            self._pendingPositioning = request
+
+        outcome = request.outcome
+        if not outcome.settled:
+            # Still moving. Come back to it without holding the event loop,
+            # exactly as the drain retry below does.
+            try:
+                timer = Timer(singleShot=True)
+                self.timer = timer
+                timer.timeout.connect(self.nextLapse)
+                timer.start(_LAPSE_RECORDING_DRAIN_RETRY_MS)
+            except Exception as error:
+                self._handleRecordingFailure(
+                    f'Could not schedule the positioning retry: {error}',
+                    abortManager=False, kind=FailureKind.HARDWARE,
+                )
+                return False
+            return False
+
+        self._pendingPositioning = None
+        if outcome.mayProceed:
+            return True
+
+        # Cancelled, failed or timed out: all three mean this point cannot be
+        # acquired where it was meant to be, so none of them may arm.
+        self._handleRecordingFailure(
+            f'Positioning for point {request.index} '
+            f'{outcome.value}: {request.message or "no reason given"}',
+            abortManager=False, kind=FailureKind.HARDWARE,
+        )
+        return False
 
     def _startManagerRecording(self) -> bool:
         managerGeneration = getattr(
@@ -1020,7 +1164,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                 RECORDING_ARM_TIMEOUT
             )
         except Exception as error:
-            self._handleRecordingFailure(str(error), abortManager=True)
+            self._handleRecordingFailure(str(error), abortManager=True,
+                                         kind=FailureKind.HARDWARE)
             return False
         if armed:
             return True
@@ -1455,14 +1600,21 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         'Targeted scan dispatch is unavailable for the '
                         'selected recording source.'
                     )
-                result = runFrom(
+                # This controller published the start itself, one per
+                # timepoint, and its own bookkeeping pairs it. Letting the
+                # dispatcher publish a second one would leave every consumer
+                # yielded a level deeper than the single end can unwind.
+                result = _dispatchWithoutLifecycle(
+                    runFrom,
                     source,
                     recalculateSignals,
                     isNonFinalPartOfSequence,
                 )
             else:
-                result = self._commChannel.scanWorkflow.run_scan(
-                    recalculateSignals, isNonFinalPartOfSequence
+                result = _dispatchWithoutLifecycle(
+                    self._commChannel.scanWorkflow.run_scan,
+                    recalculateSignals,
+                    isNonFinalPartOfSequence,
                 )
         except Exception as error:
             # The exact targeted source may have partially started before
@@ -1879,7 +2031,17 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         else:
             self._commChannel.sigAbortScan.emit()
 
-    def _handleRecordingFailure(self, message, *, abortManager) -> None:
+    def _handleRecordingFailure(self, message, *, abortManager,
+                                kind=None) -> None:
+        """Terminalise this recording session.
+
+        ``kind`` is a :class:`FailureKind` describing what went wrong, for
+        callers that survive some failures and not others. Omitting it means
+        UNKNOWN, which is deliberately not recoverable: a caller deciding
+        whether to continue must be told what it would be continuing past,
+        and inferring that from the message text would be worse than not
+        classifying at all.
+        """
         if self._recordingFailureHandled:
             return
         self._recordingFailureHandled = True
@@ -1899,7 +2061,8 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             and callable(reportFailure)
         ):
             try:
-                reportFailure(message, generation)
+                reportFailure(message, generation,
+                              kind or FailureKind.UNKNOWN)
             except Exception:
                 self.__logger.error(
                     'Failed to publish recording-session failure',
@@ -2063,6 +2226,19 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         ):
             return
         self._recordingCycleTerminalHandled = True
+
+        # The point is finished here and not before: this terminal is reached
+        # only once the writer has drained *and* the scan has completed. A
+        # workflow that moves the stage on the writer terminal alone would move
+        # it while scan lifecycle cleanup was still running.
+        onCycleTerminal = self.__dict__.get('_cycleTerminalCallback')
+        if callable(onCycleTerminal):
+            try:
+                onCycleTerminal()
+            except Exception:
+                self.__logger.error(
+                    'Recording cycle-terminal callback failed', exc_info=True
+                )
 
         scheduleNext = False
         nextDelayMs = 0
