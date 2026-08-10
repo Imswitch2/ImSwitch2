@@ -270,6 +270,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
             sizePar.setDecimals(2)
             sizePar.setSingleStep(1)
             sizePar.setMinimum(0)
+            sizePar.setMaximum(10_000)
             self.scanPar["size" + positionerName] = sizePar
 
             stepSizePar = QtWidgets.QDoubleSpinBox()
