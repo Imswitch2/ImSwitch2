@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
@@ -11,22 +10,15 @@ import numpy as np
 # improcess can both use it without either importing the other. Re-exported
 # here for backward compatibility with existing ``from ...roi_manager import
 # ROIRecord`` call sites.
-from imswitch.imcommon.algorithms.roi import ROIRecord
+from imswitch.imcommon.algorithms.roi_geometry import roi_mask_local
+from imswitch.imcommon.algorithms.roi import (
+    ROIRecord,
+    duplicated,
+    new_uid,
+    replaced,
+)
 
 from .roi_stats import ROIStats, compute_roi_stats
-
-
-def replaced(roi: ROIRecord, **changes) -> ROIRecord:
-    """Return ``roi`` with ``changes`` applied, preserving every other field.
-
-    This is the *only* sanctioned way to produce a modified record. Building a
-    fresh ``ROIRecord(...)`` field by field inside the model looks equivalent
-    but silently drops any field the call site forgot — which is harmless while
-    the record has six fields and lossy the moment it gains geometry, style or
-    provenance. ``dataclasses.replace`` copies what it is not asked to change,
-    so new fields are preserved for free.
-    """
-    return dataclasses.replace(roi, **changes)
 
 
 def _empty_stats(area_pixels: int = 0) -> ROIStats:
@@ -106,6 +98,10 @@ class ROIManagerModel:
             self.remove(roi.name)
         elif self.get(roi.name) is not None:
             roi = replaced(roi, name=self.unique_name(roi.name))
+        # Identity is assigned on the way in, on every path, so nothing
+        # downstream ever has to cope with an ROI that has no uid.
+        if not roi.uid:
+            roi = replaced(roi, uid=new_uid())
         self._rois.append(roi)
         return roi
 
@@ -137,7 +133,9 @@ class ROIManagerModel:
         roi = self.get(name)
         if roi is None:
             raise KeyError(name)
-        return self.add(replaced(roi, name=self.unique_name(f"{roi.name}_copy")))
+        # duplicated() is the one operation that mints a new identity: a copy
+        # is a different ROI, however identical its geometry.
+        return self.add(duplicated(roi, name=self.unique_name(f"{roi.name}_copy")))
 
     def set_visible(self, name: str, visible: bool) -> ROIRecord:
         roi = self.get(name)
@@ -146,6 +144,38 @@ class ROIManagerModel:
         updated = replaced(roi, visible=bool(visible))
         self._rois = [updated if item.name == name else item for item in self._rois]
         return updated
+
+    def set_rois(self, rois) -> None:
+        """Replace the whole list, keeping the model's invariants.
+
+        Used by undo to restore an ROI at the position it was removed from;
+        order is user-visible, so appending it to the end would be a change of
+        its own.
+        """
+        self._rois = []
+        for roi in rois:
+            self.add(roi)
+
+    def update(self, name: str, **changes) -> ROIRecord:
+        """Change fields of one ROI in place, preserving its identity."""
+        roi = self.get(name)
+        if roi is None:
+            raise KeyError(name)
+        updated = replaced(roi, **changes)
+        self._rois = [updated if item.name == name else item for item in self._rois]
+        return updated
+
+    def replace_record(self, roi: ROIRecord) -> ROIRecord:
+        """Put ``roi`` back, matched on identity rather than name.
+
+        Undoing a rename has to find the record whose name has already
+        changed, so the uid is the only reliable handle.
+        """
+        for index, item in enumerate(self._rois):
+            if (item.uid and item.uid == roi.uid) or item.name == roi.name:
+                self._rois[index] = roi
+                return roi
+        return self.add(roi)
 
     def unique_name(self, base: str = "ROI") -> str:
         names = {roi.name for roi in self._rois}
@@ -239,39 +269,34 @@ def rectangle_roi_from_vertices(
     )
 
 
-def _compute_roi_record_stats(image: np.ndarray, roi: ROIRecord) -> ROIStats:
-    if roi.pixels is None:
-        return compute_roi_stats(image, roi.bounds)
+def roi_values(image: np.ndarray, roi: ROIRecord) -> np.ndarray:
+    """The image values inside ``roi``.
 
+    The single extraction path: the ROI manager, PSF resolution and
+    colocalization all read pixels through this, so a polygon or a segmentation
+    mask cannot be measured as a polygon in one panel and as its bounding box
+    in another.
+    """
     arr = np.asarray(image, dtype=np.float64)
     if arr.ndim != 2:
         raise ValueError(f"ROI statistics expect a 2D image, got shape {arr.shape}")
-    coords = np.asarray(roi.pixels, dtype=np.int64)
-    if coords.size == 0:
-        raise ValueError("Mask ROI has no pixels")
-    coords = coords.reshape((-1, 2))
-    inside = (
-        (coords[:, 0] >= 0)
-        & (coords[:, 0] < arr.shape[0])
-        & (coords[:, 1] >= 0)
-        & (coords[:, 1] < arr.shape[1])
-    )
-    coords = coords[inside]
-    if coords.size == 0:
-        raise ValueError("Mask ROI is empty after clipping to image bounds")
-    values = arr[coords[:, 0], coords[:, 1]]
+    local, slices = roi_mask_local(roi, arr.shape)
+    if local.size == 0 or not local.any():
+        raise ValueError(f"ROI {roi.name!r} is empty after clipping to the image")
+    return arr[slices][local]
+
+
+def _compute_roi_record_stats(image: np.ndarray, roi: ROIRecord) -> ROIStats:
+    """Statistics over an ROI, whatever its shape.
+
+    Everything goes through the shared rasteriser now, so a polygon measures
+    as a polygon and a composite as its exact pixels — rather than a rectangle
+    ROI taking one code path and everything else quietly taking another.
+    """
+    values = roi_values(image, roi)
     finite = values[np.isfinite(values)]
     if finite.size == 0:
-        return ROIStats(
-            area_pixels=int(values.size),
-            finite_pixels=0,
-            mean=float("nan"),
-            median=float("nan"),
-            std=float("nan"),
-            minimum=float("nan"),
-            maximum=float("nan"),
-            total=float("nan"),
-        )
+        return _empty_stats(area_pixels=int(values.size))
     return ROIStats(
         area_pixels=int(values.size),
         finite_pixels=int(finite.size),

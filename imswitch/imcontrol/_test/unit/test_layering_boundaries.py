@@ -61,14 +61,43 @@ def _imports_of(source: str, *, prefix: str, top_level_only: bool):
 
 
 def test_imcommon_algorithms_have_no_app_module_imports():
-    """imcommon is the shared core; it must never import the app modules."""
-    for module in (
-        "imswitch.imcommon.algorithms.roi",
-        "imswitch.imcommon.algorithms.segmentation",
-    ):
+    """imcommon is the shared core; it must never import the app modules.
+
+    Enumerated from the package rather than a hand-kept list, so a module
+    added to imcommon.algorithms is covered without anyone remembering to
+    extend this test.
+    """
+    import pkgutil
+
+    from imswitch.imcommon import algorithms
+
+    modules = [
+        f"imswitch.imcommon.algorithms.{info.name}"
+        for info in pkgutil.iter_modules(algorithms.__path__)
+    ]
+    assert modules, "expected to discover imcommon.algorithms modules"
+
+    for module in modules:
         for imported in _top_level_imports(module):
             assert not imported.startswith("imswitch.imcontrol"), (module, imported)
             assert not imported.startswith("imswitch.improcess"), (module, imported)
+
+
+def test_imcommon_algorithms_do_not_import_the_viewer_stack():
+    """The shared kernels stay pure: no napari, no Qt.
+
+    They are imported by headless code paths and by both apps, so a viewer
+    import here would drag a GUI dependency into places that have none.
+    """
+    import pkgutil
+
+    from imswitch.imcommon import algorithms
+
+    for info in pkgutil.iter_modules(algorithms.__path__):
+        module = f"imswitch.imcommon.algorithms.{info.name}"
+        for imported in _top_level_imports(module):
+            assert not imported.startswith("napari"), (module, imported)
+            assert not imported.startswith("qtpy"), (module, imported)
 
 
 def test_imcontrol_segmentation_workflow_uses_shared_kernel_not_improcess():

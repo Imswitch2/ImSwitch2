@@ -67,7 +67,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolService = ViewerToolService.for_viewer(napariViewer)
-        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        # Register only; the tool is acquired when Draw Rectangle is used.
+        self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._model = ROIManagerModel()
         self._stats_rows: list[dict[str, object]] = []
 

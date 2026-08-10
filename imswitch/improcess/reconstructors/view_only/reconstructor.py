@@ -18,6 +18,8 @@ import numpy as np
 import tifffile as tiff
 from qtpy import QtWidgets
 
+from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
+
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.reconstructors.base import Reconstructor
 
@@ -27,6 +29,28 @@ if TYPE_CHECKING:
 
 # Default axis labels for trailing dims. Truncated to data.ndim.
 _DEFAULT_AXIS_LABELS = ["T", "Z", "C", "Y", "X"]
+
+
+def _content_fingerprint(data) -> str:
+    """A cheap, stable fingerprint of an array's contents.
+
+    Samples rather than hashing everything: this runs on load, and a full hash
+    of a multi-gigabyte stack would be paid for on every open. Corners plus a
+    strided sample is enough to tell two different datasets apart, and it is
+    deterministic, so the same file always yields the same id. It is never
+    used as proof two datasets are identical — a fingerprint match still only
+    produces a "derived" identity, which cannot claim an exact match.
+    """
+    try:
+        flat = np.asarray(data).reshape(-1)
+        if flat.size == 0:
+            return "empty"
+        step = max(1, flat.size // 512)
+        sample = np.asarray(flat[::step][:512])
+        return f"{flat.size}:{float(np.nansum(sample.astype('float64'))):.8g}"
+    except Exception:
+        # A lazy/virtual handle that will not sample: fall back to shape only.
+        return "unsampled"
 
 
 class ViewOnlyResult(ProcessingResult):
@@ -115,6 +139,14 @@ class ViewOnlyReconstructor(Reconstructor):
         )
         view_modes = [ViewMode("Standard", tuple(range(ndim)))]
 
+        # Data loaded from disk carries no recorded identity, so one is
+        # inferred from its content: the same file loaded twice gets the same
+        # ids (an ROI set saved against it still lines up), while
+        # identity_kind="derived" stops an inferred identity ever claiming an
+        # exact match — see imcommon.algorithms.spatial_frame.
+        dataset_uid = content_digest_uid(
+            "data", data.shape, str(data.dtype), _content_fingerprint(data)
+        )
         return ViewOnlyResult(
             name=data_obj.name,
             data=data,
@@ -123,4 +155,8 @@ class ViewOnlyReconstructor(Reconstructor):
             display_levels=None,
             axis_scales=axis_scales,
             scale_unit=source_scale_unit or "px",
+            dataset_uid=dataset_uid,
+            result_uid=content_digest_uid("result", dataset_uid, tuple(axis_labels)),
+            coordinate_space_uid=content_digest_uid("space", dataset_uid, data.shape[-2:]),
+            identity_kind="derived",
         )

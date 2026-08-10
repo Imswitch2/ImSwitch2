@@ -56,10 +56,13 @@ def _collide(model):
 @pytest.mark.parametrize(
     "mutate, changed",
     [
-        (lambda m: (m.rename("cell", "nucleus"), _fully_populated_roi()), {"name"}),
-        (lambda m: (m.set_visible("cell", False), _fully_populated_roi()), {"visible"}),
-        (lambda m: (m.duplicate("cell"), _fully_populated_roi()), {"name"}),
-        (_collide, {"name"}),
+        # Renaming touches nothing that affects measurement, so revision holds.
+        (lambda m: (m.rename("cell", "nucleus"), m.get("nucleus")), {"name"}),
+        # Visibility does affect what is measured, so revision advances.
+        (lambda m: (m.set_visible("cell", False), None), {"visible", "revision"}),
+        # A copy is a different ROI, however identical its geometry.
+        (lambda m: (m.duplicate("cell"), None), {"name", "uid"}),
+        (_collide, {"name", "uid"}),
     ],
     ids=["rename", "set_visible", "duplicate", "add-collision"],
 )
@@ -71,8 +74,10 @@ def test_every_mutation_preserves_all_record_fields(mutate, changed):
     drop it on rename/duplicate/visibility/collision paths.
     """
     model = ROIManagerModel([_fully_populated_roi()])
+    stored = model.get("cell")
 
     result, expected = mutate(model)
+    expected = expected if expected is not None else stored
 
     for field in dataclasses.fields(ROIRecord):
         if field.name in changed:
@@ -80,6 +85,30 @@ def test_every_mutation_preserves_all_record_fields(mutate, changed):
         assert getattr(result, field.name) == getattr(expected, field.name), (
             f"{field.name} was not preserved across the mutation"
         )
+
+
+def test_identity_survives_a_rename_and_a_copy_gets_its_own():
+    model = ROIManagerModel([_fully_populated_roi()])
+    original_uid = model.get("cell").uid
+
+    renamed = model.rename("cell", "nucleus")
+    copy = model.duplicate("nucleus")
+
+    assert original_uid, "the model must assign an identity on ingest"
+    assert renamed.uid == original_uid, "renaming must not change identity"
+    assert copy.uid != original_uid, "a duplicate is a different ROI"
+
+
+def test_revision_advances_only_for_measurement_affecting_changes():
+    """Renaming 200 ROIs must not invalidate 200 cached measurements."""
+    model = ROIManagerModel([_fully_populated_roi()])
+    start = model.get("cell").revision
+
+    renamed = model.rename("cell", "nucleus")
+    assert renamed.revision == start
+
+    hidden = model.set_visible("nucleus", False)
+    assert hidden.revision == start + 1
 
 
 def test_replaced_is_the_single_mutation_helper():

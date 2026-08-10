@@ -82,7 +82,8 @@ class _FakeReconstructionView:
         self.set_image_calls = 0
         self.clear_image_calls = 0
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip",
+                 name=None, identity=None):
         # Simplified version of the actual setImage logic
         self.set_image_calls += 1
         if name is not None:
@@ -96,6 +97,8 @@ class _FakeReconstructionView:
         self.imgLayer.colormap = colormap
         self.imgLayer.metadata["axis_labels"] = list(axisLabels)
         self.imgLayer.metadata["scale_unit"] = scaleUnit
+        for key, value in (identity or {}).items():
+            self.imgLayer.metadata[key] = value
         self.napariViewer.dims.axis_labels = tuple(axisLabels)
 
     def clearImage(self):

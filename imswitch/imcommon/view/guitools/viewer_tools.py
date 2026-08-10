@@ -73,6 +73,7 @@ class ViewerToolService(QtCore.QObject):
         self._generations: dict[str, int] = {}
         self._owner_shapes: dict[str, list[int]] = {}
         self._callbacks: dict[str, list[tuple[object, object]]] = {}
+        self._shape_handlers: dict[str, list[object]] = {}
         self._active_owner: str | None = None
         self._target_layer = None
         self._enforcing = False
@@ -84,34 +85,51 @@ class ViewerToolService(QtCore.QObject):
     def for_viewer(cls, viewer) -> "ViewerToolService":
         """The service for ``viewer``, creating it on first use.
 
-        Keyed weakly on the viewer so the service dies with it.  Viewers that
-        cannot be weak-referenced (test doubles, mostly) get a fresh service,
-        which is harmless because nothing else shares them.
+        The registry stores a *weak reference to the service*, not the service
+        itself: the service owns a ``ViewerToolManager`` which owns the viewer,
+        so a strong value would keep the viewer alive through its own weak key
+        and leak every viewer ever opened.  Panels hold the service for as long
+        as they need it; once the last one goes, so does this.
+
+        Viewers that cannot be weak-referenced (test doubles, mostly) get a
+        fresh service, which is harmless because nothing else shares them.
         """
         try:
-            existing = cls._instances.get(viewer)
+            ref = cls._instances.get(viewer)
         except TypeError:
             return cls(viewer)
+        existing = ref() if ref is not None else None
         if existing is None:
             existing = cls(viewer)
             try:
-                cls._instances[viewer] = existing
+                cls._instances[viewer] = weakref.ref(existing)
             except TypeError:
                 pass
         return existing
 
     # -- token lifecycle ----------------------------------------------------
 
+    def register(self, owner_key: str) -> ToolToken:
+        """Claim an identity without taking the drawing tool.
+
+        Panels register when they are built and acquire only when the user
+        actually reaches for a tool.  Acquiring at construction time meant
+        three panels opening at startup preempted one another before anyone had
+        clicked anything, and whichever happened to be built last silently
+        owned the tool.
+        """
+        generation = self._generations.get(owner_key, 0) + 1
+        self._generations[owner_key] = generation
+        return ToolToken(owner_key=owner_key, generation=generation)
+
     def acquire(self, owner_key: str, mode: str | None = None) -> ToolToken:
         """Take the drawing tool for ``owner_key`` and return a fresh token."""
         previous = self._active_owner
-        generation = self._generations.get(owner_key, 0) + 1
-        self._generations[owner_key] = generation
+        token = self.register(owner_key)
         self._active_owner = owner_key
-        token = ToolToken(owner_key=owner_key, generation=generation)
         if previous is not None and previous != owner_key:
             # Preemption never deletes the previous owner's shapes; it only
-            # tells them to stop expecting further drawing events.
+            # stops them being notified about drawing that is no longer theirs.
             self.sigToolPreempted.emit(previous)
         if mode is not None:
             self.set_mode(token, mode)
@@ -120,6 +138,10 @@ class ViewerToolService(QtCore.QObject):
     def is_current(self, token: ToolToken) -> bool:
         return self._generations.get(token.owner_key) == token.generation
 
+    def is_active(self, owner_key: str) -> bool:
+        """True when ``owner_key`` currently holds the drawing tool."""
+        return self._active_owner == owner_key
+
     def _check(self, token: ToolToken) -> None:
         if not self.is_current(token):
             raise StaleToolToken(
@@ -127,8 +149,15 @@ class ViewerToolService(QtCore.QObject):
                 f"{token.generation}) has been superseded"
             )
 
-    def release(self, token: ToolToken) -> None:
-        """Give up the tool, drop this owner's shapes and its callbacks.
+    def release(self, token: ToolToken, *, discard_shapes: bool = False) -> None:
+        """Give up the tool and this owner's callbacks.
+
+        **Shapes are kept by default.**  The owner key is stable per panel
+        precisely so a panel that is closed and reopened finds its own
+        rectangle still there; deleting on release would make that impossible
+        and would throw away the region the user was measuring.  Pass
+        ``discard_shapes=True`` for a panel that genuinely wants to clean up
+        after itself.
 
         Idempotent, and releasing a superseded token is a no-op rather than an
         error: a panel closing after being preempted would otherwise raise on
@@ -136,8 +165,10 @@ class ViewerToolService(QtCore.QObject):
         """
         if not self.is_current(token):
             return
-        self._remove_owner_shapes(token.owner_key)
+        if discard_shapes:
+            self._remove_owner_shapes(token.owner_key)
         self._disconnect_callbacks(token.owner_key)
+        self._shape_handlers.pop(token.owner_key, None)
         self._generations[token.owner_key] = token.generation + 1
         if self._active_owner == token.owner_key:
             self._active_owner = None
@@ -190,12 +221,27 @@ class ViewerToolService(QtCore.QObject):
             if index not in claimed:
                 mine.append(index)
 
+    def on_shapes_changed(self, token: ToolToken, handler) -> None:
+        """Be told when *this owner's* shapes change.
+
+        Deliberately not a plain connection to the layer's global signal: with
+        one shared layer that would have every panel recomputing whenever any
+        other panel drew, and a panel that had been preempted would carry on
+        reacting to drawing that no longer belongs to it.
+        """
+        self._check(token)
+        self._shape_handlers.setdefault(token.owner_key, []).append(handler)
+
     def _on_shapes_changed(self) -> None:
         """Attribute newly drawn shapes and apply the per-owner shape limit."""
         if self._enforcing or self._active_owner is None:
             return
-        self._claim(self._active_owner)
-        self._enforce_single_per_owner(self._active_owner)
+        owner = self._active_owner
+        self._claim(owner)
+        self._enforce_single_per_owner(owner)
+        # Only the owner that holds the tool hears about it.
+        for handler in list(self._shape_handlers.get(owner, [])):
+            handler()
 
     def _enforce_single_per_owner(self, owner_key: str) -> None:
         """Keep only the newest rectangle and line *this owner* drew.

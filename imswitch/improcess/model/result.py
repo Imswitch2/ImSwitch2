@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+from imswitch.imcommon.algorithms.spatial_frame import mint_uid
+
 from .plotting import PlotPayload
 
 #: Semantic result kinds. ``data`` alone cannot distinguish a microscope
@@ -89,6 +91,11 @@ class DisplayLayerSpec:
     role: str = "primary"
     component: str | None = None
     layer_kwargs: dict[str, Any] | None = None
+    #: Identity of the pixel grid this layer is on. Display layers of one
+    #: result can sit on *different* grids (a mask and a differently-sized
+    #: overlay), so this is per-layer rather than inherited wholesale from the
+    #: parent result. ``None`` means "the parent result's grid".
+    coordinate_space_uid: str | None = None
 
 
 @dataclass
@@ -133,6 +140,12 @@ class ProcessingResult(ABC):
         display_levels: tuple[float, float] | None = None,
         axis_scales: list[float] | None = None,
         scale_unit: str = "px",
+        *,
+        result_uid: str | None = None,
+        dataset_uid: str | None = None,
+        coordinate_space_uid: str | None = None,
+        lineage: tuple[str, ...] = (),
+        identity_kind: str = "minted",
     ):
         """
         Args:
@@ -150,6 +163,17 @@ class ProcessingResult(ABC):
         self.axis_labels = axis_labels
         self.display_levels = display_levels
         self.display_colormap = "grayclip"
+        # Four identities, kept apart on purpose (see
+        # imcommon.algorithms.spatial_frame): the dataset a result came from,
+        # the result itself, the pixel grid it lives on, and what it derives
+        # from. `name` is a mutable display label and cannot serve as any of
+        # them — two unrelated results can share a name, and renaming one must
+        # not make it a different result.
+        self.result_uid = result_uid or mint_uid("result")
+        self.dataset_uid = dataset_uid or mint_uid("data")
+        self.coordinate_space_uid = coordinate_space_uid or mint_uid("space")
+        self.lineage = tuple(lineage)
+        self.identity_kind = identity_kind
         self._display_layer_settings: dict[str, dict[str, Any]] = {}
         self.axis_scales = (
             axis_scales
@@ -163,6 +187,53 @@ class ProcessingResult(ABC):
             self.view_modes = [ViewMode("Standard", tuple(range(data.ndim)))]
         else:
             self.view_modes = view_modes
+
+    def adopt_identity_from(self, source: "ProcessingResult", *, same_grid: bool):
+        """Record that this result was derived from ``source``; returns self.
+
+        Applied after construction rather than threaded through every
+        subclass's ``__init__``: there are twenty-odd result types, and adding
+        five keyword arguments to each of them would be a large change that
+        every future result type would have to remember to repeat.
+
+        See :meth:`derived_identity` for what ``same_grid`` means — it is the
+        one judgement the caller has to make, and it is not cosmetic.
+
+        A source that cannot describe its identity (a plugin result that does
+        not derive from this class, say) leaves this result with the fresh
+        identity it was born with. Losing provenance is a real cost, but it is
+        a smaller one than a processor refusing to run.
+        """
+        describe = getattr(source, "derived_identity", None)
+        if not callable(describe):
+            return self
+        identity = describe(same_grid=same_grid)
+        self.dataset_uid = identity["dataset_uid"]
+        self.lineage = identity["lineage"]
+        self.identity_kind = identity["identity_kind"]
+        if identity["coordinate_space_uid"] is not None:
+            self.coordinate_space_uid = identity["coordinate_space_uid"]
+        return self
+
+    def derived_identity(self, *, same_grid: bool) -> dict[str, Any]:
+        """Identity kwargs for a result derived from this one.
+
+        Pass ``same_grid=True`` when the output is pixel-aligned with this
+        result by construction — a projection, a filter, a threshold — so ROIs
+        drawn on one measure correctly on the other.  Pass ``False`` when the
+        pixel grid changes: a crop with an offset, a resample, a rescale.
+        Getting this wrong is not cosmetic; ``coordinate_space_uid`` is what
+        decides whether two results are considered the same grid at all.
+
+        ``dataset_uid`` is always inherited (the data still came from the same
+        acquisition) and ``lineage`` records which result this came from.
+        """
+        return {
+            "dataset_uid": self.dataset_uid,
+            "coordinate_space_uid": self.coordinate_space_uid if same_grid else None,
+            "lineage": (*self.lineage, self.result_uid),
+            "identity_kind": self.identity_kind,
+        }
 
     def setDispLevels(self, levels) -> None:
         """Compatibility hook for the legacy ReconstructionViewController."""

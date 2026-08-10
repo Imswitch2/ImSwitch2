@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **In implementation.** Plan settled at round 5; tracks A+B are the committed scope (Q-13a). **P-0 ✅ done · P-T ✅ done** (uncommitted). Next: P-F. See §15 for progress |
+| **Status** | **In implementation** on `feat/improcess-roi-manager-2-0`. Tracks A+B are the committed scope (Q-13a). **Track A complete: P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅.** Next: P-1. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1850,12 +1850,70 @@ would have made D-14 worse rather than better.
 (`test_clearing_one_owner_keeps_another_owners_shapes`), per-owner limits, stale
 tokens, preemption and callback teardown.
 
+### P-T follow-up fixes ✅ *(review round 5)*
+
+Four issues found on review of the first P-T cut, all fixed:
+
+| Issue | Fix |
+| --- | --- |
+| `release()` deleted an owner's shapes, contradicting "a reopened panel reclaims its shapes" — and the test never did a real close/reopen | `release(token, *, discard_shapes=False)` keeps shapes by default; `test_closed_and_reopened_panel_reclaims_its_shapes` now releases and re-registers |
+| Nothing consumed `sigToolPreempted`, so preempted panels kept reacting to other panels' drawing | Owner-scoped `on_shapes_changed(token, handler)`; only the owner holding the tool is called |
+| The weak registry could not release a viewer — its value strongly owned the service, which owns the manager, which owns the viewer | The registry stores a **weakref to the service**; `test_registry_does_not_retain_the_viewer` asserts collection |
+| All three panels acquired during construction, so startup panels preempted each other before any user action | `register()` (identity only) at construction; `acquire()` on user intent. The shapes layer is no longer created at startup either |
+
+### P-F — Spatial provenance ✅ *(uncommitted)*
+
+`imcommon/algorithms/spatial_frame.py`: `AxisDescriptor`, `SpatialFrame`,
+`TransformEdge`/`TransformRegistry`, and `compatibility()` **as the decision
+tree** — coordinate space checked before any shape comparison, so unrelated
+same-shaped data is rejected (F-29). `identity_kind` caps inferred identities at
+`pixel-compatible`. `ProcessingResult` gained `result_uid` / `dataset_uid` /
+`coordinate_space_uid` / `lineage`, propagated onto layer metadata by the render
+path, with `adopt_identity_from(source, same_grid=)` wired into projection,
+segmentation and stack-subset. Loaded data gets deterministic content-digest ids
+marked `derived` — **no result-container writes** (Q-14b honoured; P-F2 remains
+roadmap).
+
+One deviation worth flagging: `compatibility()` takes `positions=` rather than
+an `ROIRecord`, so `spatial_frame` stays independent of the ROI type. It is
+strictly better layering than the plan's signature and avoids a P-F→record
+dependency.
+
+*Tests:* `test_spatial_frame.py` (28), `test_result_identity.py` (10).
+
+### P-G — Record contract, geometry, identity, set, commands ✅ *(uncommitted)*
+
+* **P-G.0** — the whole 2.0 contract in one step: `roi_payload.py` (adaptive
+  `MaskPayload`: `rle` / `bits` / `bits-zlib`, chosen by measured size, with
+  validation and a bounded decompress), `roi_style.py`, the full `ROIRecord`
+  field set, `roi_set.py` (`ROISet` + `MeasurementConfig`).
+* **P-G.1** — `roi_geometry.py`: `roi_mask_local` (bounding-box sized),
+  `roi_mask` (explicit full-frame), multipart `roi_outline`, pure
+  `roi_hit_test` (holes fall through), `roi_capabilities`.
+* **P-G.2/.4** — the ROI manager, **PSF resolution and colocalization** all
+  read pixels through `roi_values`/`roi_mask_local`; both bespoke
+  `pixels`-or-`bounds` readers deleted. D-11 closed.
+* **P-G.3** — uuid4 identity assigned on every ingestion path; `revision`
+  advances only for measurement-affecting changes.
+* **P-G.5** — `roi_frame_adapter.frame_from_layer()`, the one napari-aware
+  side, reading everything from a single layer.
+* **P-G.6** — `roi_commands.py`: Add / Delete / Rename / Update with `undo()`
+  and a bounded `CommandLog`. No UI yet (that is P-U), but every mutation has
+  gone through one audited path from the start.
+
+*Tests:* `test_roi_geometry.py` (28), `test_roi_commands.py` (11).
+
 ### Suite status
 
-`imswitch/improcess/_test` — **1132 passed** (`-p no:napari`,
+`imswitch/improcess/_test` — **1216 passed** (`-p no:napari`,
 `QT_QPA_PLATFORM=offscreen`, `test_snouty.py` ignored as CI does).
-`test_layering_boundaries.py` and `test_result_pipeline_generality.py` green;
-ruff clean.
+`imswitch/imcontrol/_test/unit` + controller + no-hardware profile —
+**2186 passed, 4 skipped**. `test_layering_boundaries.py` (extended with the
+A-26 guard, now enumerated from the package) and
+`test_result_pipeline_generality.py` green; ruff clean.
+
+**Done: P-0, P-T, P-F, P-G. Next: P-1** (Show All / Labels overlay), then P-2,
+P-J, P-3, P-4 to complete the committed scope.
 
 ---
 

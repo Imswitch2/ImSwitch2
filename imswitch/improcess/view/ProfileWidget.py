@@ -37,7 +37,8 @@ class ProfileWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolService = ViewerToolService.for_viewer(napariViewer)
-        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        # Register only; the tool is acquired when the user picks a mode.
+        self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._fitters = {
             fit.id: fit
             for fit in (
@@ -144,9 +145,7 @@ class ProfileWidget(QtWidgets.QWidget):
         self.pushButton.clicked.connect(self._onPushToTable)
         self.pushGraphButton.clicked.connect(self._onPushToGraph)
         self.saveButton.clicked.connect(self._onSaveCSV)
-        self._toolService.add_callback(
-            self._toolToken, self._toolService.sigShapesChanged, self._shapesChanged
-        )
+        self._toolService.on_shapes_changed(self._toolToken, self._shapesChanged)
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self._refresh())
         except Exception:

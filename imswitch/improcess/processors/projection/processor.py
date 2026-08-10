@@ -86,12 +86,15 @@ class ProjectionProcessor(Processor):
             # ranges are otherwise named identically.
             name += f" {start + 1}-{stop}"
         name += ")"
+        # A projection collapses a non-spatial axis, so the output sits on
+        # the same pixel grid as the input: an ROI drawn on one measures the
+        # same pixels on the other.
         return ProjectionResult(
             name=name,
             analysis=analysis,
             scale_unit=result.scale_unit,
             params={**params, "start": start, "stop": stop},
-        )
+        ).adopt_identity_from(result, same_grid=True)
 
     @staticmethod
     def _slice_range(data, axis: int, params: dict):

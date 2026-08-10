@@ -27,6 +27,40 @@ def _spec_component(spec) -> str:
     return str(getattr(spec, "name", "layer"))
 
 
+#: Keys carrying spatial provenance, written onto every rendered layer.
+IDENTITY_KEYS = (
+    "result_uid",
+    "dataset_uid",
+    "coordinate_space_uid",
+    "identity_kind",
+    "lineage",
+    "plane_axes",
+    "view_mode",
+    "axes",
+)
+
+
+def _applyIdentityMetadata(layer, identity, *, overrides=None) -> None:
+    """Write spatial provenance onto a layer, or clear it when unknown.
+
+    Cleared rather than left stale when ``identity`` is None: metadata from a
+    previously displayed result would otherwise claim this image is something
+    it is not, which is worse than having no provenance at all.
+    """
+    if layer is None:
+        return
+    if not identity:
+        for key in IDENTITY_KEYS:
+            layer.metadata.pop(key, None)
+        return
+    for key in IDENTITY_KEYS:
+        if key in identity:
+            layer.metadata[key] = identity[key]
+    for key, value in (overrides or {}).items():
+        if value is not None:
+            layer.metadata[key] = value
+
+
 class ReconstructionView(QtWidgets.QFrame):
     """ Frame for showing the reconstructed image"""
 
@@ -253,7 +287,8 @@ class ReconstructionView(QtWidgets.QFrame):
     def getImage(self):
         return self.imgLayer.data
 
-    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip", name=None):
+    def setImage(self, im, axisLabels, axisScales=None, scaleUnit="px", colormap="grayclip",
+                 name=None, identity=None):
         self._clearDisplayLayers()
         # A prior labels/points-primary result may have hidden imgLayer; a plain
         # image result restores it as the (visible) primary again.
@@ -305,11 +340,15 @@ class ReconstructionView(QtWidgets.QFrame):
                 self.imgLayer.metadata["source_result"] = str(name)
             else:
                 self.imgLayer.metadata.pop("source_result", None)
+            # Spatial provenance travels with the layer, beside the scale and
+            # unit that were already written here, so anything measuring this
+            # image can read what it is measuring from one object.
+            _applyIdentityMetadata(self.imgLayer, identity)
             self.napariViewer.scale_bar.unit = "µm" if scaleUnit == "um" else scaleUnit
         except Exception as exc:
             self._logger.debug("setImage: could not set scale_bar unit: %s", exc)
 
-    def setDisplayLayers(self, layerSpecs):
+    def setDisplayLayers(self, layerSpecs, identity=None):
         self._clearDisplayLayers()
         specs = list(layerSpecs or [])
         if not specs:
@@ -335,6 +374,16 @@ class ReconstructionView(QtWidgets.QFrame):
                 layer = self._applyImageSpecToImgLayer(spec)
             else:
                 layer = self._addManagedLayer(spec)
+            # A display layer can sit on its own pixel grid, so its own
+            # coordinate space wins over the parent result's.
+            _applyIdentityMetadata(
+                layer,
+                identity,
+                overrides={
+                    'coordinate_space_uid': getattr(spec, 'coordinate_space_uid', None),
+                    'component': _spec_component(spec),
+                },
+            )
             if layer is None:
                 continue
             if _spec_role(spec) == "primary":

@@ -150,6 +150,7 @@ class SegmentationProcessor(Processor):
             watershed_min_distance=int(params.get("watershed_min_distance", 5)),
         )
         analysis.metadata["source_plane_indices"] = dict(plane_indices)
+        # The mask is pixel-for-pixel aligned with the image it segmented.
         return SegmentationResult(
             name=f"{result.name} (segmentation)",
             analysis=analysis,
@@ -157,7 +158,7 @@ class SegmentationProcessor(Processor):
             axis_scales=axis_scales,
             scale_unit=result.scale_unit,
             source_image=np.asarray(image),
-        )
+        ).adopt_identity_from(result, same_grid=True)
 
     @staticmethod
     def _extract_2d(result: ProcessingResult, params: dict | None = None) -> tuple[np.ndarray, dict]:

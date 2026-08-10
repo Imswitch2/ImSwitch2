@@ -24,7 +24,10 @@ class ROIStatsWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolService = ViewerToolService.for_viewer(napariViewer)
-        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        # Register, do not acquire: taking the tool at construction time
+        # means startup panels preempt each other before the user has
+        # reached for anything.
+        self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._current_stats = None
 
         self.modeCombo = QtWidgets.QComboBox()
@@ -52,9 +55,7 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self.runButton.clicked.connect(self.update_stats)
         self.clearButton.clicked.connect(self._clear_roi)
         self.pushButton.clicked.connect(self._push_to_table)
-        self._toolService.add_callback(
-            self._toolToken, self._toolService.sigShapesChanged, self.update_stats
-        )
+        self._toolService.on_shapes_changed(self._toolToken, self.update_stats)
         try:
             self._viewer.dims.events.current_step.connect(lambda _event: self.update_stats())
         except Exception:
@@ -87,12 +88,11 @@ class ROIStatsWidget(QtWidgets.QWidget):
         self._show_stats(stats)
 
     def _mode_changed(self) -> None:
-        # Re-acquire: taking the drawing tool is what makes newly drawn shapes
-        # attributable to this panel rather than whoever held it last.
-        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         if self.modeCombo.currentText() == "Rectangle ROI":
-            self._toolService.set_mode(self._toolToken, "rectangle")
-        else:
+            # Acquiring is what makes the next shape drawn ours.
+            self._toolToken = self._toolService.acquire(self.TOOL_OWNER, "rectangle")
+        elif self._toolService.is_active(self.TOOL_OWNER):
+            # Only stand the tool down if it is still ours to stand down.
             self._toolService.set_mode(self._toolToken, "pan")
         self.update_stats()
 

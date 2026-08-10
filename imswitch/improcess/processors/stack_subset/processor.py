@@ -104,7 +104,20 @@ def subset_result(
     else:
         subset = np.asarray(data)[tuple(slices)]
 
-    return ArrayProcessingResult(
+    # A subset stays on the same pixel grid only while the *spatial* axes are
+    # untouched: trimming Z or T keeps every pixel where it was, but cropping
+    # in Y/X moves the origin, so coordinates from the source no longer point
+    # at the same features.
+    spatial_axes = range(max(0, len(shape) - 2), len(shape))
+    same_grid = all(
+        (slices[axis].start or 0) == 0
+        and (slices[axis].stop is None or slices[axis].stop == shape[axis])
+        and (slices[axis].step in (None, 1))
+        for axis in spatial_axes
+        if axis < len(slices) and isinstance(slices[axis], slice)
+    )
+
+    subset_result = ArrayProcessingResult(
         name=f"{result.name} (subset)",
         data=subset,
         axis_labels=labels,
@@ -119,6 +132,7 @@ def subset_result(
             "copied": bool(copy),
         },
     )
+    return subset_result.adopt_identity_from(result, same_grid=same_grid)
 
 
 def normalize_subset_ranges(
