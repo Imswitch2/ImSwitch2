@@ -44,7 +44,9 @@ config files).
     :caption: Usage
 
     gui
+    advanced-scanning
     improcess
+    tiling
     use-cases
     scripting
     scripting-wfs-workflows

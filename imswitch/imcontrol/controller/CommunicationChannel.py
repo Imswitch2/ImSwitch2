@@ -20,16 +20,31 @@ RECORDING_SCAN_SOURCE_METHODS = (
 )
 
 
-def _recordingScanSourceMatches(controllers):
-    """``[(key, controller)]`` for every controller a recording could drive."""
+#: Methods a controller must expose merely to be *run* once by a workflow.
+#: Strictly weaker than RECORDING_SCAN_SOURCE_METHODS, which additionally
+#: demands the scan geometry a recording must be armed with. A consumer that
+#: only needs "run one scan, then stop" — tiling, for one — would wrongly
+#: exclude a capable controller by testing the recording set.
+SCAN_SOURCE_METHODS = (
+    'runScanExternal',
+    'abortScan',
+)
+
+
+def _scanSourceMatches(controllers, methods):
     return [
         (key, controller)
         for key, controller in controllers.items()
         if controller is not None and all(
             callable(getattr(controller, methodName, None))
-            for methodName in RECORDING_SCAN_SOURCE_METHODS
+            for methodName in methods
         )
     ]
+
+
+def _recordingScanSourceMatches(controllers):
+    """``[(key, controller)]`` for every controller a recording could drive."""
+    return _scanSourceMatches(controllers, RECORDING_SCAN_SOURCE_METHODS)
 
 
 class CommunicationChannel(SignalInterface):
@@ -106,6 +121,15 @@ class CommunicationChannel(SignalInterface):
     # sigScanBuilt: NI-DAQ publishes that after claiming the manager, while
     # autonomous firmware backends use it only as a compatibility boundary.
     sigScanDevicesResolved = Signal(object)
+    # (positionerNameList) — the positioners the imminent run will drive,
+    # published right after the run reservation and therefore before the scan
+    # writes to any of them. sigScanDevicesResolved cannot serve this purpose:
+    # it carries TTL-programmed device names only, so no positioner ever
+    # appears in it. Consumers that must yield an actuator to the scan (the
+    # focus lock, above all) suspend on sigScanStarting and use this to decide
+    # whether the suspension was actually necessary. Absence means "unknown",
+    # never "nothing" — a consumer that never receives it must stay suspended.
+    sigScanActuatorsResolved = Signal(object)
     sigScanBuilt = Signal(object)  # (deviceList)
     sigScanStarted = Signal()
     sigScanDone = Signal()
@@ -168,6 +192,7 @@ class CommunicationChannel(SignalInterface):
         self.__logger = initLogger(self)
         self._scriptExecution = False
         self._activeScanSource = None
+        self._focusLock = None
         self._create_event_groups()
         self.scanWorkflow = ScanWorkflowService(self)
         self.beadRecWorkflow = BeadRecWorkflowService(self)
@@ -202,6 +227,7 @@ class CommunicationChannel(SignalInterface):
             'abortScan': self.sigAbortScan,
             'scanStarting': self.sigScanStarting,
             'scanDevicesResolved': self.sigScanDevicesResolved,
+            'scanActuatorsResolved': self.sigScanActuatorsResolved,
             'scanBuilt': self.sigScanBuilt,
             'scanStarted': self.sigScanStarted,
             'scanDone': self.sigScanDone,
@@ -282,6 +308,35 @@ class CommunicationChannel(SignalInterface):
         """ Return the controller currently running a scan, or None. """
         return self._activeScanSource
 
+    def registerFocusLock(self, controller) -> None:
+        """ Announce the focus-lock controller, so acquisition orchestrators
+        can wait for it to reacquire after a scan released its axis. """
+        self._focusLock = controller
+
+    def unregisterFocusLock(self, controller) -> None:
+        """ Withdraw the focus-lock controller. Identity-guarded. """
+        if getattr(self, '_focusLock', None) is controller:
+            self._focusLock = None
+
+    def waitForFocusReacquired(self, timeoutS: float = 10.0) -> bool:
+        """ Block until the focus lock is holding again, or gives up.
+
+        Returns True when there is nothing to wait for -- no focus lock
+        configured, or one that was not engaged -- so callers can gate on this
+        unconditionally. Never call it from the GUI thread: the reacquisition
+        barrier is advanced by the focus lock's timer, which runs there.
+        """
+        controller = getattr(self, '_focusLock', None)
+        if controller is None:
+            return True
+        try:
+            return bool(controller.waitForFocusReacquired(timeoutS))
+        except Exception:
+            self.__logger.error(
+                'Failed to wait for focus-lock reacquisition', exc_info=True
+            )
+            return True
+
     def isScanRunning(self) -> bool:
         """
         Returns whether a scan is ongoing or not, based on the active scan
@@ -310,6 +365,102 @@ class CommunicationChannel(SignalInterface):
             key
             for key, _controller in _recordingScanSourceMatches(controllers)
         ]
+
+    def getRecordingFolder(self):
+        """The output folder the Recording widget is currently pointed at.
+
+        The single place the operator sets "where my data goes", so anything
+        else that writes files should start from here rather than invent its
+        own root. Returns None when there is no Recording widget, leaving the
+        caller to fall back.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        controller = controllers.get('Recording')
+        getter = getattr(controller, 'getRecFolder', None)
+        if not callable(getter):
+            return None
+        try:
+            folder = getter()
+        except Exception:
+            return None
+        return str(folder) if folder else None
+
+    def getRecordingDetectors(self):
+        """The detectors the Recording widget is currently set to capture.
+
+        The counterpart to :meth:`getRecordingFolder`: that answers "where my
+        data goes", this answers "what gets saved". Anything else that writes
+        the operator's data should take both from here rather than keep a
+        private idea of either. Returns None when there is no Recording widget
+        or it cannot answer, leaving the caller to fall back on its own
+        detector.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        controller = controllers.get('Recording')
+        getter = getattr(controller, 'getDetectorNamesToCapture', None)
+        if not callable(getter):
+            return None
+        try:
+            names = getter()
+        except Exception:
+            return None
+        if not names:
+            return None
+        return [str(name) for name in names]
+
+    def getScanSourceNames(self):
+        """Widget keys of every controller a workflow could run one scan on.
+
+        Wider than :meth:`getRecordingScanSourceNames` — it does not require
+        the scan-geometry accessors a recording needs.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        return [
+            key
+            for key, _controller in _scanSourceMatches(
+                controllers, SCAN_SOURCE_METHODS
+            )
+        ]
+
+    def getScanSource(self, preferredKey=None):
+        """Resolve one controller to run a single scan on.
+
+        Same safety rule as :meth:`getRecordingScanSource`: an explicit choice
+        wins, then the canonical ``Scan`` controller, then a lone capable
+        controller. Several capable controllers with no choice made raises,
+        because broadcasting to all of them would command hardware on
+        scanners the operator did not select.
+        """
+        controllers = getattr(self.__main, 'controllers', None) or {}
+        matches = _scanSourceMatches(controllers, SCAN_SOURCE_METHODS)
+
+        if preferredKey:
+            for key, controller in matches:
+                if key == preferredKey:
+                    return controller
+            raise RuntimeError(
+                f'The selected scan source "{preferredKey}" is not available '
+                'or no longer exposes runScanExternal. Pick another scan '
+                'source.'
+            )
+
+        for key, controller in matches:
+            if key == 'Scan':
+                return controller
+
+        if len(matches) == 1:
+            return matches[0][1]
+
+        candidates = [key for key, _controller in matches]
+        if candidates:
+            raise RuntimeError(
+                'Several scan controllers are registered '
+                f'({candidates}); select which one to trigger.'
+            )
+        raise RuntimeError(
+            'No controller exposes runScanExternal, so no scan can be '
+            'triggered on this setup.'
+        )
 
     def getRecordingScanSource(self, preferredKey=None):
         """Resolve one controller that can safely drive scan recording.

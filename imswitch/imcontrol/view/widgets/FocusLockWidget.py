@@ -22,12 +22,25 @@ class FocusLockWidget(Widget):
         self.lockButton.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
                                       QtWidgets.QSizePolicy.Expanding)
 
-        self.ScanBlock = QtWidgets.QCheckBox('Scan Block')
-        self.zStackBox = QtWidgets.QCheckBox('Z-stack')
+        # Checked by default: this is an opt-*out*. It used to be an unchecked,
+        # unpersisted opt-in, so every fresh session silently allowed an active
+        # focus lock to fight a hardware Z scan on the same piezo.
+        self.ScanBlock = QtWidgets.QCheckBox('Pause during scans')
+        self.ScanBlock.setChecked(True)
+        self.ScanBlock.setToolTip(
+            'Suspend focus correction while a scan drives the focus axis, and '
+            'wait for the signal to come back before resuming.\n'
+            'Unchecking this lets the lock oppose the scan waveform when both '
+            'reach the same actuator.'
+        )
         self.twoFociBox = QtWidgets.QCheckBox('Two foci')
 
-        self.zStepFromEdit = QtWidgets.QLineEdit('40')
-        self.zStepFromLabel = QtWidgets.QLabel('Min z-stack step (nm)')
+        self.lockStateLabel = QtWidgets.QLabel('')
+        self.lockStateLabel.setToolTip(
+            'Focus-lock state. "Suspended" means a scan currently owns the '
+            'focus axis; "Reacquiring" means it is waiting for the focus '
+            'signal to return before correcting again.'
+        )
 
         self.camDialogButton = guitools.BetterPushButton('Camera Dialog')
 
@@ -75,23 +88,41 @@ class FocusLockWidget(Widget):
         grid.addWidget(self.kiLabel, 2, 3)
         grid.addWidget(self.kiEdit, 2, 4)
         grid.addWidget(self.lockButton, 1, 5, 2, 1)
-        # grid.addWidget(self.zStackBox, 3, 6)
         grid.addWidget(self.ScanBlock, 3, 6)
         grid.addWidget(self.twoFociBox, 2, 6)
-        grid.addWidget(self.zStepFromLabel, 3, 4)
-        grid.addWidget(self.zStepFromEdit, 3, 5)
         grid.addWidget(self.calibFromLabel, 1, 0)
         grid.addWidget(self.calibFromEdit, 1, 1)
         grid.addWidget(self.calibToLabel, 2, 0)
         grid.addWidget(self.calibToEdit, 2, 1)
         grid.addWidget(self.calibCurveButton, 3, 2)
         grid.addWidget(self.camDialogButton, 1, 6, 1, 2)
+        grid.addWidget(self.lockStateLabel, 2, 7)
 
     def setKp(self, kp):
         self.kpEdit.setText(str(kp))
 
     def setKi(self, ki):
         self.kiEdit.setText(str(ki))
+
+    def setLockState(self, state):
+        """Show the lifecycle state, so the button never stands alone.
+
+        The lock button says "Unlock" whenever a lock is *wanted*, which is not
+        the same as one being active: a scan can have suspended it, or
+        reacquisition can have failed. Without this the operator has no way to
+        tell those apart from the button.
+        """
+        text, colour = self._LOCK_STATE_DISPLAY.get(state, (state, 'gray'))
+        self.lockStateLabel.setText(text)
+        self.lockStateLabel.setStyleSheet(f'color: {colour};')
+
+    _LOCK_STATE_DISPLAY = {
+        'unlocked': ('Unlocked', 'gray'),
+        'locked': ('Locked', 'limegreen'),
+        'suspended': ('Suspended (scan)', 'orange'),
+        'reacquiring': ('Reacquiring…', 'orange'),
+        'reacquire-failed': ('Lock lost after scan', 'red'),
+    }
 
     def showCalibrationCurve(self, data):
         self.focusCalibrationWindow.run(data)

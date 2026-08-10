@@ -22,6 +22,10 @@ from imswitch.imcontrol.model.managers.lasers.aa_aotf_protocols import (
     validate_amplitude,
     validate_channel,
 )
+from imswitch.imcontrol.model.managers.lasers.aa_aotf_protocols.frequency_startup import (
+    format_frequency_mhz,
+    validate_frequency_mhz,
+)
 from imswitch.imcontrol.model.managers.lasers._protocol import (
     CommandTimeout,
     DeviceInitializationError,
@@ -47,6 +51,11 @@ class FakeRS232:
         if command in self.raise_cmds:
             raise self.raise_cmds[command]
         return self.reply
+
+    def write(self, command: str):
+        self.cmds.append(command)
+        if command in self.raise_cmds:
+            raise self.raise_cmds[command]
 
 
 class FakeLaserInfo:
@@ -86,6 +95,11 @@ def test_explicit_profile_can_be_requested():
     assert m._profile.profile_id == 'aa.compatibility'
 
 
+def test_frequency_startup_profile_can_be_requested():
+    m, _ = _build(protocolProfile='aa.frequency-startup')
+    assert m._profile.profile_id == 'aa.frequency-startup'
+
+
 def test_unknown_profile_is_rejected():
     with pytest.raises(DeviceInitializationError) as excinfo:
         _build(protocolProfile='aa.nonexistent')
@@ -120,6 +134,33 @@ def test_init_with_ttl_toggling_selects_external():
 
 def test_init_with_both_flags_selects_internal():
     _, rs232 = _build(toggleTrueExternal=True, ttlToggling=True)
+    assert rs232.cmds == ['L1I1O0']
+
+
+def test_frequency_startup_is_opt_in_and_restores_frequency_before_control_mode():
+    m, rs232 = _build(
+        protocolProfile='aa.frequency-startup', frequencyMHz=143.0
+    )
+    assert m._frequency_mhz == 143.0
+    assert rs232.cmds == ['I0', 'L1F143.0', 'L1I1O0']
+
+
+def test_frequency_startup_uses_configured_channel_and_fractional_frequency():
+    _, rs232 = _build(
+        channel=3,
+        protocolProfile='aa.frequency-startup',
+        frequencyMHz='143.25',
+    )
+    assert rs232.cmds == ['I0', 'L3F143.25', 'L3I1O0']
+
+
+def test_frequency_profile_without_frequency_preserves_legacy_trace():
+    _, rs232 = _build(protocolProfile='aa.frequency-startup')
+    assert rs232.cmds == ['L1I1O0']
+
+
+def test_zero_frequency_editor_default_preserves_legacy_trace():
+    _, rs232 = _build(frequencyMHz=0.0)
     assert rs232.cmds == ['L1I1O0']
 
 
@@ -292,6 +333,21 @@ def test_non_numeric_channel_is_rejected_at_construction():
         _build(channel='left')
 
 
+def test_frequency_requires_frequency_startup_profile():
+    with pytest.raises(DeviceInitializationError) as excinfo:
+        _build(frequencyMHz=143.0)
+    assert 'aa.frequency-startup' in str(excinfo.value)
+
+
+@pytest.mark.parametrize('frequency', [-1, 'not-a-number', float('nan')])
+def test_invalid_startup_frequency_is_rejected(frequency):
+    with pytest.raises(DeviceInitializationError):
+        _build(
+            protocolProfile='aa.frequency-startup',
+            frequencyMHz=frequency,
+        )
+
+
 def test_validate_channel_and_amplitude_helpers():
     assert validate_channel('2') == 2
     assert validate_amplitude('512') == 512
@@ -299,6 +355,14 @@ def test_validate_channel_and_amplitude_helpers():
         validate_channel(0)
     with pytest.raises(ValueError):
         validate_amplitude(-1)
+
+
+def test_frequency_validation_and_wire_format():
+    assert validate_frequency_mhz('143.25') == 143.25
+    assert format_frequency_mhz(143) == '143.0'
+    assert format_frequency_mhz(143.25) == '143.25'
+    with pytest.raises(ValueError):
+        validate_frequency_mhz(float('inf'))
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +406,17 @@ def test_transport_exceptions_map_to_the_shared_taxonomy():
     with pytest.raises(TransportFailure):
         send_query(FakeRS232(raise_cmds={'L1O1': OSError('port gone')}),
                    'L1O1')
+
+
+def test_frequency_startup_write_failure_propagates():
+    rs232 = FakeRS232(raise_cmds={'I0': OSError('port gone')})
+    with pytest.raises(TransportFailure):
+        _build(
+            rs232=rs232,
+            protocolProfile='aa.frequency-startup',
+            frequencyMHz=143.0,
+        )
+    assert rs232.cmds == ['I0']
 
 
 # ---------------------------------------------------------------------------

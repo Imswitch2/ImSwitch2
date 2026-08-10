@@ -52,7 +52,9 @@ class SnoutyProjectionsReconstructor(Reconstructor):
         """
         return None
     
-    def process(self, data_obj: 'DataObj', params: dict) -> SnoutyProjectionsResult:
+    def process(
+        self, data_obj: 'DataObj', params: dict, context=None
+    ) -> SnoutyProjectionsResult:
         """
         Run SNOUTY projections reconstruction.
         

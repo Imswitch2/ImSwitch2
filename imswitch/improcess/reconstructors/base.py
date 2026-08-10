@@ -2,7 +2,8 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+import threading
+from typing import Any, Callable
 
 import numpy as np
 from qtpy import QtWidgets
@@ -26,6 +27,8 @@ class Reconstructor(ABC):
     name: str = "Unnamed Reconstructor"  # Human-readable, shown in plugin picker
     id: str = "unnamed"  # Stable identifier for config + registry lookups
     file_extensions: list[str] = ["hdf5", "tiff", "zarr"]  # Watcher dispatch + filtering
+    accepted_source_kinds: tuple[str, ...] = ("image",)
+    execution_policy: str = "inline"
     is_pass_through: bool = False
     """Set ``True`` for reconstructors whose ``process()`` is a no-op wrap.
 
@@ -84,7 +87,12 @@ class Reconstructor(ABC):
         ...
     
     @abstractmethod
-    def process(self, data_obj: DataObj, params: dict) -> ProcessingResult:
+    def process(
+        self,
+        data_obj: DataObj,
+        params: dict,
+        context: "ReconstructionContext | None" = None,
+    ) -> ProcessingResult:
         """
         Run the reconstruction pipeline.
         
@@ -100,6 +108,12 @@ class Reconstructor(ABC):
             ProcessingResult with data + axis_labels + view_modes
         """
         ...
+
+    def estimate_resources(
+        self, data_obj: DataObj, params: dict
+    ) -> "ResourceEstimate | None":
+        """Return a cheap preflight estimate for GUI-thread confirmation."""
+        return None
     
     def consolidate(self, results: list[ProcessingResult]) -> ProcessingResult:
         """Merge the per-item results of one multidata run into a single result.
@@ -128,6 +142,133 @@ class Reconstructor(ABC):
             DataFrame.imageItem.getViewBox(), or None for no overlay.
         """
         return None
+
+    def inspect_source(self, data_obj: DataObj) -> "SourceInspection | None":
+        """Describe source-dependent choices without materializing pixels."""
+        return None
+
+
+@dataclass(frozen=True)
+class SourceChoice:
+    """One dynamic value exposed by a source inspection."""
+
+    value: Any
+    label: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SourceInspection:
+    """Generic metadata-only description consumed by parameter widgets."""
+
+    source_kind: str
+    choices: dict[str, tuple[SourceChoice, ...]] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    warning: str | None = None
+
+
+RECONSTRUCTION_PHASES = (
+    "inspect",
+    "align",
+    "allocate",
+    "assemble",
+    "finalize",
+)
+
+
+class ReconstructionCancelled(RuntimeError):
+    """Cooperative terminal used to discard a partial reconstruction."""
+
+
+class CancellationToken:
+    """Thread-safe cancellation flag shared by controller and worker."""
+
+    def __init__(self):
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def check(self) -> None:
+        if self.cancelled:
+            raise ReconstructionCancelled("Reconstruction cancelled")
+
+
+@dataclass(frozen=True)
+class ReconstructionProgress:
+    """One monotonic worker progress update."""
+
+    phase: str
+    completed: int
+    total: int
+    message: str
+    fraction: float
+
+
+@dataclass(frozen=True)
+class ResourceEstimate:
+    """Preflight output allocation estimate returned without loading pixels."""
+
+    output_shape: tuple[int, ...]
+    canvas_bytes: int
+    weight_bytes: int
+    description: str = "reconstruction"
+    suggestions: tuple[str, ...] = ()
+
+    @property
+    def required_bytes(self) -> int:
+        return int(self.canvas_bytes) + int(self.weight_bytes)
+
+
+@dataclass
+class ReconstructionContext:
+    """Worker-owned progress, cancellation and resource contract."""
+
+    progress_callback: Callable[[ReconstructionProgress], None] | None = None
+    cancellation_token: CancellationToken = field(default_factory=CancellationToken)
+    memory_budget_bytes: int | None = None
+    confirmed_over_budget: bool = False
+    _last_fraction: float = field(default=0.0, init=False, repr=False)
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancellation_token.cancelled
+
+    def check_cancelled(self) -> None:
+        self.cancellation_token.check()
+
+    def report(
+        self,
+        phase: str,
+        completed: int,
+        total: int,
+        message: str = "",
+    ) -> ReconstructionProgress:
+        if phase not in RECONSTRUCTION_PHASES:
+            raise ValueError(f"Unknown reconstruction phase {phase!r}")
+        completed = max(0, int(completed))
+        total = max(1, int(total))
+        local = min(1.0, completed / total)
+        phase_index = RECONSTRUCTION_PHASES.index(phase)
+        fraction = (phase_index + local) / len(RECONSTRUCTION_PHASES)
+        # A phase may discover a more accurate total after it starts. Never let
+        # that refinement make the visible job move backwards.
+        fraction = max(self._last_fraction, min(1.0, fraction))
+        self._last_fraction = fraction
+        update = ReconstructionProgress(
+            phase=phase,
+            completed=completed,
+            total=total,
+            message=str(message or ""),
+            fraction=fraction,
+        )
+        if self.progress_callback is not None:
+            self.progress_callback(update)
+        return update
 
 
 @dataclass(frozen=True)

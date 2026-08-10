@@ -116,7 +116,9 @@ class SmlmLocalizer(StreamingReconstructor):
         from .live_session import SmlmLiveSession
         return SmlmLiveSession()
 
-    def process(self, data_obj: "DataObj", params: dict) -> LocalizationResult:
+    def process(
+        self, data_obj: "DataObj", params: dict, context=None
+    ) -> LocalizationResult:
         data, source_shape = self._load_frames(data_obj)
         pixel_size_nm = float(params.get("pixel_size_nm", 1.0) or 1.0)
         locs = localize_stack(

@@ -721,7 +721,7 @@ class ImProcessMainController(MainController):
                 self.__logger.warning(
                     f'Failed to save ImProcess dock layout: {e}'
                 )
-        self.__factory.closeAllCreatedControllers()
+        self.__factory.closeAllCreatedControllers(waitTimeoutS=5)
 
 
 def _runtime_tool_display_title(spec) -> str:

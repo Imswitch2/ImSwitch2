@@ -64,6 +64,35 @@ def send_query(connection, command: str) -> str:
         ) from exc
 
 
+def send_write(connection, command: str):
+    """Send a command that is not expected to produce a reply.
+
+    Some AA controllers require a controller-global ``I0`` preamble before
+    their per-channel RF frequency can be restored after power-up.  That
+    preamble is write-only on the controller for which the frequency-startup
+    profile exists, so waiting for a reply would turn a successful command
+    into a timeout.
+
+    Transport failures use the same shared taxonomy as :func:`send_query`.
+    """
+    try:
+        return connection.write(command)
+    except Exception as exc:
+        detail = str(exc)
+        if isinstance(exc, TimeoutError) or any(
+            marker in detail.lower() for marker in TIMEOUT_MARKERS
+        ):
+            raise CommandTimeout(
+                f'AA controller write timed out for {command!r}: {detail}',
+                command=command,
+            ) from exc
+        raise TransportFailure(
+            f'Transport failure writing {command!r} to AA controller: '
+            f'{detail}',
+            command=command,
+        ) from exc
+
+
 def validate_channel(channel) -> int:
     """Return ``channel`` as a valid 1-based AA channel index.
 
@@ -114,8 +143,9 @@ DEFAULT_PROFILE_ID = 'aa.compatibility'
 def build_profiles() -> dict:
     """Return one fresh instance of every known AA profile, by id."""
     from .compatibility import AACompatibilityProfile
+    from .frequency_startup import AAFrequencyStartupProfile
 
-    profiles = [AACompatibilityProfile()]
+    profiles = [AACompatibilityProfile(), AAFrequencyStartupProfile()]
     return {profile.profile_id: profile for profile in profiles}
 
 

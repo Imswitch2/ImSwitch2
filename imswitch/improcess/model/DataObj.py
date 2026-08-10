@@ -52,10 +52,45 @@ class DataObj:
         self._axis_scales = None
         self._scale_unit = None
         self._source_info = None
+        self.sourceKind = "image"
+        self.sourceMetadata = None
+        self.sourceSummary = None
+        self.sourceFingerprint = None
+        self._metadataSourceReady = False
         self.__logger = initLogger(self, tryInheritParent=False)
+
+    @classmethod
+    def fromMetadataSource(
+        cls, name, path, sourceKind, sourceMetadata, originalPath=None
+    ):
+        """Create a routing-ready source without opening an image container.
+
+        ``originalPath`` is what the user actually selected, which is not
+        always ``path``: opening any file inside a tiling run resolves to that
+        run's manifest. Keeping it means a later choice of a reconstructor that
+        wants the file itself can still be honoured, instead of the inferred
+        source kind becoming permanent.
+        """
+        obj = cls(name, sourceKind)
+        obj.dataPath = str(path)
+        obj.sourceOriginalPath = str(
+            path if originalPath is None else originalPath
+        )
+        obj.sourceKind = str(sourceKind)
+        obj.sourceMetadata = sourceMetadata
+        obj._attrs = {}
+        obj._source_info = {
+            "dataset_name": None,
+            "dataset_path": str(path),
+            "source_format": str(sourceKind),
+        }
+        obj._metadataSourceReady = True
+        return obj
 
     @property
     def data(self):
+        if self.sourceKind != "image":
+            return None
         if self._data is not None:
             return self._data
 
@@ -67,6 +102,8 @@ class DataObj:
 
     @property
     def data_source(self):
+        if self.sourceKind != "image":
+            return None
         if self._dataSource is None:
             self.checkAndOpenData()
         return self._dataSource
@@ -78,6 +115,8 @@ class DataObj:
 
     @property
     def attrs(self):
+        if self.sourceKind != "image":
+            return self._attrs or {}
         if self._attrs is not None:
             return self._attrs
 
@@ -132,6 +171,13 @@ class DataObj:
         return self._dataSource is not None
 
     @property
+    def sourceReady(self):
+        """Whether this object is ready to be routed to source consumers."""
+        if self.sourceKind != "image":
+            return self._metadataSourceReady
+        return self.dataLoaded or self.sourceLoaded
+
+    @property
     def datasetName(self):
         return self._datasetName
 
@@ -144,6 +190,8 @@ class DataObj:
         to expose all of its planes on the one frame slider, and a plain 2D
         image has exactly one plane rather than one "frame" per pixel row.
         """
+        if self.sourceKind != "image":
+            return None
         if self._data is not None:
             shape = np.shape(self._data)
         else:
@@ -154,6 +202,8 @@ class DataObj:
         return plane_count(shape, self.axis_labels)
 
     def checkAndLoadData(self):
+        if self.sourceKind != "image":
+            return
         if not self.dataLoaded:
             try:
                 self.checkAndOpenData()
@@ -163,6 +213,8 @@ class DataObj:
                 pass
 
     def checkAndOpenData(self):
+        if self.sourceKind != "image":
+            return
         if self._dataSource is not None:
             return
         if self._file is None:
@@ -193,6 +245,8 @@ class DataObj:
         self._attrs = None
         self._resolvedImage = None
         self._meanData = None
+        if self.sourceKind != "image":
+            self._metadataSourceReady = False
 
     def getMeanData(self):
         """Mean 2D plane, averaged over every navigation axis.
@@ -200,6 +254,8 @@ class DataObj:
         A lazy handle is accumulated one plane at a time so a dataset larger
         than memory can still be summarised.
         """
+        if self.sourceKind != "image":
+            return None
         if self._meanData is None:
             labels = self.axis_labels
             handle = self.data_handle
@@ -243,6 +299,8 @@ class DataObj:
         }
 
     def _ensureMetadata(self):
+        if self.sourceKind != "image":
+            return
         if self._axis_labels is not None:
             return
 

@@ -142,6 +142,11 @@ class TriggerScopeScanLifecycleMixin(ScanLifecycleMixin):
             self._triggerScopeStartingPublished = True
             self.emitScanSignal(self._commChannel.sigScanStarting)
 
+        if isNewRun:
+            publishActuators = getattr(self, '_publishScanActuators', None)
+            if callable(publishActuators):
+                publishActuators()
+
         if (
             isNewRun
             and not sigScanStartingEmitted

@@ -8,7 +8,7 @@ import zarr
 
 from imswitch.imcontrol.model import DetectorsManager, RecordingManager, RecMode, SaveMode, SaveFormat, DetectorInfo
 from imswitch.imcontrol.model.managers.RecordingManager import (
-    HDF5Storer, HDF5_STREAM_LIBVER, ZarrStorer,
+    FailureKind, HDF5Storer, HDF5_STREAM_LIBVER, ZarrStorer,
 )
 from imswitch.imcontrol.model.managers.recording_metadata import MODE_SCAN, MODE_TIMELAPSE
 from . import detectorInfosBasic, detectorInfosMulti, detectorInfosNonSquare
@@ -2924,7 +2924,9 @@ def test_scanlapse_source_resolution_fails_before_recording_is_armed():
     assert events == [
         (
             'ambiguous scan source',
-            {'abortManager': False},
+            # Classified: a caller that survives some failures must be told
+            # this one was the scan, not the writer, so it cannot continue.
+            {'abortManager': False, 'kind': FailureKind.SCAN},
         )
     ]
 
@@ -4296,7 +4298,8 @@ def test_detector_bitDepth_property():
 # ---------------------------------------------------------------------------
 
 from imswitch.imcontrol.model.managers.RecordingManager import (
-    HDF5Storer, TiffStorer, WriterThread, WRITER_QUEUE_MAXSIZE,
+    HDF5Storer, StreamPayloadInfo, TiffStorer, WriterThread,
+    WRITER_QUEUE_MAXSIZE,
     WRITE_BATCH_FRAMES,
 )
 
@@ -4333,13 +4336,14 @@ class _FakeStorer:
     assert FIFO ordering and that no frame is dropped. Optionally raises on
     openStream (failure-propagation test) or sleeps per write (backpressure).
     """
-    def __init__(self, openStreamError=None, writeDelay=0.0):
+    def __init__(self, openStreamError=None, writeDelay=0.0, payloadInfo=None):
         self._openStreamError = openStreamError
         self._writeDelay = writeDelay
         self.opened = False
         self.finalized = False
         self.aborted = False
         self.writes = {}  # detectorName -> list of received batch arrays
+        self.payloadInfo = payloadInfo
 
     def openStream(self, **kwargs):
         if self._openStreamError is not None:
@@ -4353,6 +4357,9 @@ class _FakeStorer:
 
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         self.finalized = True
+
+    def streamPayloadInfo(self, detectorName, currentFrames):
+        return self.payloadInfo
 
     def abortStream(self, filePaths, fileDests, saveMode):
         self.aborted = True
@@ -4404,6 +4411,94 @@ def test_writerthread_preserves_order_and_count():
     assert len(received) == n, f"Expected {n} frames, got {len(received)} (drops/dupes)"
     for i in range(n):
         assert (received[i] == i).all(), f"Frame {i} out of order"
+
+
+def test_writerthread_publishes_exact_locator_after_finalization():
+    """The terminal locator describes the saved raw scan, not its preview."""
+    storer = _FakeStorer(payloadInfo=StreamPayloadInfo(
+        group='scan0/APDred',
+        stored_shape=(1, 2, 5, 7, 11),
+        frame_axis_stored=True,
+    ))
+
+    class _Manager:
+        def __init__(self):
+            self.published = None
+
+        def registerPayloadLocators(self, generation, locators):
+            assert storer.finalized
+            self.published = (generation, locators)
+
+    manager = _Manager()
+    writer = WriterThread(
+        storer=storer,
+        fileDests={'APDred': 'tile.h5'},
+        detectorNames=['APDred'],
+        shapes={'APDred': (7, 11)},
+        attrs={'APDred': {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=True,
+        saveMode=SaveMode.Disk,
+        filePaths={'APDred': 'tile.h5'},
+        recordingManager=manager,
+        recordingGeneration=23,
+        recordingMode=MODE_SCAN,
+        scanDims=(11, 7, 5),
+        scanDrivenDetectors={'APDred': True},
+    )
+    writer.start()
+    writer.wait_for_open()
+    writer.enqueue_frames(
+        'APDred', np.zeros((1, 2, 5, 7, 11), dtype=np.uint16)
+    )
+    writer.finish()
+
+    generation, locators = manager.published
+    locator = locators['APDred']
+    assert generation == 23
+    assert locator.group == 'scan0/APDred'
+    assert locator.axes == 'CZYX'
+    assert locator.stored_axes == 'TCZYX'
+    assert locator.shape == (2, 5, 7, 11)
+    assert locator.stored_shape == (1, 2, 5, 7, 11)
+
+
+def test_writerthread_keeps_normal_single_camera_recording_logically_yx():
+    """A container's singleton frame wrapper must not become captured time."""
+    storer = _FakeStorer(payloadInfo=StreamPayloadInfo(
+        group='Camera', stored_shape=(1, 7, 11), frame_axis_stored=True,
+    ))
+
+    class _Manager:
+        def registerPayloadLocators(self, generation, locators):
+            self.locator = locators['Camera']
+
+    manager = _Manager()
+    writer = WriterThread(
+        storer=storer,
+        fileDests={'Camera': 'camera.h5'},
+        detectorNames=['Camera'],
+        shapes={'Camera': (7, 11)},
+        attrs={'Camera': {}},
+        singleMultiDetectorFile=False,
+        singleLapseFile=False,
+        saveMode=SaveMode.Disk,
+        filePaths={'Camera': 'camera.h5'},
+        recordingManager=manager,
+        recordingGeneration=24,
+        recordingMode=MODE_TIMELAPSE,
+    )
+    writer.start()
+    writer.wait_for_open()
+    writer.enqueue_frames(
+        'Camera', np.zeros((1, 7, 11), dtype=np.uint16)
+    )
+    writer.finish()
+
+    assert manager.locator.axes == 'YX'
+    assert manager.locator.stored_axes == 'TYX'
+    assert manager.locator.shape == (7, 11)
+    assert manager.locator.stored_shape == (1, 7, 11)
 
 
 def test_writerthread_backpressure_no_drop():

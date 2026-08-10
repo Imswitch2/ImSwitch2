@@ -116,6 +116,21 @@ class PositionerInfo(DeviceInfo):
     Ctrl+Shift+Arrow set; ``null`` (default) keeps the legacy behaviour where the
     first positioner declaring a given axis claims the Ctrl+Arrow set. """
 
+    physicalActuator: Optional[str] = None
+    """ Identity of the physical device this positioner drives.
+
+    Two positioners sharing the same non-null value are declared to be *one
+    piece of hardware reached two ways* -- the STED setup does exactly this,
+    addressing one piezo as the analog scanner ``ND-PiezoZ`` and as the serial
+    ``PiezoZ``. Consumers that must not drive an actuator concurrently with a
+    scan (the focus lock) use this to decide whether they conflict.
+
+    The identifier is arbitrary; only equality between positioners matters.
+    Leaving it unset falls back to comparing axis names, which is conservative
+    -- two positioners carrying the same axis are assumed to be the same
+    device. Giving two same-axis positioners **different** ids is therefore
+    the way to declare that they really are independent stages. """
+
 
 
 
@@ -233,6 +248,33 @@ class FocusLockInfo:
     """ Positioner axis used for focus-lock movements. Defaults to ``"Z"`` if
     available on the configured positioner, otherwise ``0``. """
 
+    reacquireTimeoutS: float = 1.0
+    """ How long to wait for the focus signal to come back after a scan
+    released the actuator, before giving up, in seconds.
+
+    The lock is suspended for the duration of any scan that can reach its axis
+    and does not resume the instant the scan ends -- it first waits for the
+    signal to settle *and* to return near the setpoint it was holding. On
+    timeout the lock is left off and a warning is logged, rather than
+    re-engaging against a signal that never came back.
+
+    At the default ``updateFreq`` this is only a handful of estimates, so raise
+    it on rigs whose piezo takes longer to settle than the camera takes to
+    deliver ``reacquireSamples`` frames. """
+
+    reacquireTolerancePx: float = 0.5
+    """ How close the focus signal must return to its pre-scan setpoint before
+    the lock re-engages, in camera pixels.
+
+    PLACEHOLDER DEFAULT -- chosen to match ``aboutToLockDiffMax`` and not
+    measured on hardware. The meaningful value depends on the rig's px-to-µm
+    calibration; too loose re-engages against a defocused sample, too tight
+    times out on every tile. Calibrate this before relying on 3D tiling. """
+
+    reacquireSamples: int = 5
+    """ Number of consecutive focus estimates the reacquisition barrier
+    averages before deciding the signal has settled. """
+
 @dataclass(frozen=True)
 class AutofocusInfo:
     camera: str
@@ -263,13 +305,122 @@ class TilingInfo:
     """ Name of the XY positioner (must match a positioner in the setup). """
 
     zPositioner: str = ""
-    """ Name of the Z positioner used for per-tile autofocus. Empty = disabled. """
+    """ Reserved Z-positioner reference for compatibility/site extensions.
+
+    The built-in Tiling controller and TilingWorkflow do not consume this field
+    and therefore do not perform per-tile autofocus from it. """
 
     camera: str = ""
-    """ Detector to use for tile acquisition. Empty = first forAcquisition detector. """
+    """ Detector used to build and align the mosaic.
+
+    Empty selects the first forAcquisition detector. Other detectors selected
+    in the Recording widget may also be saved when ``detectorTransforms``
+    declares their relationship to this reference detector. """
 
     defaultTileStepUm: float = 100.0
+
+    #: Default grid size. Equal values start the widget with its square lock
+    #: engaged; unequal ones start it unlocked, so a rig that normally surveys
+    #: a rectangle opens ready for one.
+    defaultTilesX: int = 3
+    defaultTilesY: int = 3
+    #: ``"spiral"`` grows outward from the current position and can be stopped
+    #: early with a filled, centred mosaic; ``"serpentine"`` rasters from the
+    #: current position in +X and +Y with no move longer than one tile step.
+    defaultPattern: str = 'spiral'
     """ Default stage step between tile centres, in µm. """
+
+    settleTimeMs: float = 150.0
+    """ Time to wait after each stage move before acquiring a tile, in ms.
+
+    Covers mechanical settling of the stage. Too short and tiles are captured
+    while the stage is still ringing, which shows up as a mosaic that will not
+    overlap cleanly. The widget can override this per run. """
+
+    mode: str = "free-running"
+    """ Default acquisition timing model: ``free-running`` (grab a frame from a
+    continuously running camera) or ``triggered`` (run one scan per tile).
+
+    Triggered mode covers both scanned detectors, which build their image as
+    the scan runs, and a camera wired to the scan's trigger output. """
+
+    scanSource: str = ""
+    """ Widget key of the scan controller to trigger in ``triggered`` mode.
+    Empty resolves automatically, which is unambiguous unless the setup has
+    several scan controllers. """
+
+    scanTimeoutS: float = 300.0
+    """ How long to wait for one tile's scan to finish before giving up. """
+
+    saveTiles: bool = False
+    """ Save every tile, plus the stitched mosaic and stitching sidecars, as
+    each run proceeds.
+
+    Tiles are written through the ordinary recording/storer layer in
+    ``saveFormat``. OME-TIFF carries its stage position in
+    ``Plane/@PositionX|Y``. A ``TileConfiguration.txt`` (Fiji Grid/Collection
+    Stitching, BigStitcher) and a ``tiles.json`` manifest are written alongside
+    the tile files. """
+
+    saveFormat: str = "TIFF"
+    """ Format for saved tiles: ``TIFF`` (OME-TIFF), ``HDF5`` or ``ZARR``
+    (OME-NGFF). OME-TIFF is the default because it is what stitching tools read
+    natively. """
+
+    measurementsRoot: str = ""
+    """ Base folder for saved tiling datasets. Empty uses the ImSwitch default
+    measurements root. Each run gets its own ``<date>/tiling_<time>`` folder. """
+
+    flipTileAxisX: bool = False
+    """ Mirror the mosaic along X when assembling it.
+
+    The stitcher assumes a positive stage X move places the next tile further
+    right in the overview. Whether that holds depends on how the camera is
+    mounted and on the stage's sign convention, so set this when the mosaic
+    builds left/right opposite to the physical movement. Affects only how tiles
+    are assembled and how a click maps back to a stage position — the stage
+    itself traces the same physical spiral either way. """
+
+    flipTileAxisY: bool = False
+    """ Mirror the mosaic along Y when assembling it. See ``flipTileAxisX``. """
+
+    swapTileAxes: bool = False
+    """ Exchange the mosaic's X and Y axes, for a camera mounted at 90 degrees
+    to the stage axes. Applied before ``flipTileAxisX``/``flipTileAxisY``. """
+
+    registerTiles: bool = False
+    """ Refine each tile's placement by phase correlation against its already-
+    placed neighbours, instead of trusting the commanded stage position alone.
+
+    Useful when the stage is not repeatable enough for seamless stitching. The
+    measured corrections are also reported after each run, which distinguishes
+    stage error from a wrong sample-plane pixel size. """
+
+    registrationMaxShiftFraction: float = 0.5
+    """ Reject registration corrections larger than this fraction of the tile
+    step. Guards against false matches on periodic sample structure. """
+
+    detectorTransforms: Dict[str, object] = field(default_factory=dict)
+    """ How each additionally-saved detector's pixels relate to the one tiling
+    aligns on, either as ``{"DetectorName": "identity"}`` shorthand or a
+    transform schema containing ``kind``, ``matrix`` and calibration provenance.
+
+    A tiling run can save several detectors at each position, but sharing a
+    stage position establishes only the *tile grid* -- not pixel-level
+    agreement between detectors. Sensor origin, ROI, orientation, rotation and
+    optical-path offsets all differ independently, so equal pixel sizes prove
+    nothing on their own.
+
+    The relationship therefore has to be *declared* rather than inferred, and
+    declaring ``identity`` is a statement about the rig that the person who
+    wrote it owns. A detector in the save set with no entry here is **refused**
+    rather than assumed aligned: silently producing a mosaic that is offset
+    between channels is worse than not producing one.
+
+    Only transforms that resolve to identity are accepted for acquisition for
+    now; affine records can already be parsed and preserved for future readers,
+    but tiling refuses to acquire them until calibrated placement is available.
+    The detector tiling aligns on needs no entry -- it is the reference. """
 
 
 @dataclass(frozen=True)
