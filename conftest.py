@@ -4,9 +4,21 @@ collected and run without a full ImSwitch installation.
 
 napari and vispy are only needed for the live-view widgets; the storers,
 signal designers, and other unit-tested components do not use them at runtime.
+
+It also puts the repository root on ``sys.path`` so tests can import top-level
+modules that ship in the repo but are not part of the installed distribution --
+``utility_scripts`` above all. ``python -m pytest`` adds the working directory
+implicitly, which is why this is invisible locally, but the ``pytest`` console
+script used in CI does not. Without it, a test importing one of those modules
+fails to collect at all, taking its whole lane down with it.
 """
+import os
 import sys
 from unittest.mock import MagicMock
+
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 
 def _stub_if_missing(pkg_root, submodules=()):
