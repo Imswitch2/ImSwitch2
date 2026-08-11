@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import json
+import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +48,12 @@ from imswitch.imcommon.algorithms.spatial_frame import (
     compatibility,
     is_auto_measurable,
 )
-from imswitch.imcommon.algorithms.roi_set import MeasurementConfig, ROISet
+from imswitch.imcommon.algorithms.roi_set import (
+    MeasurementConfig,
+    ROISet,
+    compare_sets,
+    merge_sets,
+)
 from imswitch.improcess.analysis.roi_manager import (
     ROIManagerModel,
     ROIRecord,
@@ -146,6 +153,15 @@ class ROIManagerWidget(QtWidgets.QWidget):
     _FIXED_LEADING = ["Visible", "Name", "Type"]
     _FIXED_TRAILING = ["Note"]
 
+    @property
+    def _set(self) -> ROISet:
+        """The active set. Assigning to it writes back into the collection."""
+        return self._sets[self._activeIndex]
+
+    @_set.setter
+    def _set(self, value: ROISet) -> None:
+        self._sets[self._activeIndex] = value
+
     def __init__(self, napariViewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
@@ -157,10 +173,11 @@ class ROIManagerWidget(QtWidgets.QWidget):
         # path and undo (P-U) has a history to work from.
         self._commands = CommandLog(self._model)
         self._stats_rows: list[dict[str, object]] = []
-        # The active set: it holds the frames the ROIs were captured on and
-        # the measurement configuration, so a set is self-describing rather
-        # than a bare list with the context kept somewhere else.
-        self._set = ROISet(name="ROIs")
+        # The sets. One is active; `self._set` is a property onto it, so
+        # every existing `self._set = ...` writes back into the collection and
+        # there is no second copy to keep in step.
+        self._sets: list[ROISet] = [ROISet(name="ROIs")]
+        self._activeIndex = 0
         # Rows already measured, keyed on everything that can change an answer
         # (roi_jobs.cache_key). Scrolling a stack and coming back is then free,
         # and an image with no trustworthy mutation token is never cached.
@@ -240,6 +257,19 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.progressBar = QtWidgets.QProgressBar()
         self.progressBar.setVisible(False)
         self.progressBar.setTextVisible(True)
+        self.setCombo = QtWidgets.QComboBox()
+        self.setCombo.setToolTip(
+            "The active ROI set. Sets keep their own frames and measurement "
+            "configuration, so regions drawn on two results do not mix."
+        )
+        self.setCombo.setMinimumWidth(120)
+        self.setsButton = QtWidgets.QToolButton()
+        self.setsButton.setText("Sets")
+        self.setsButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.setsMenu = QtWidgets.QMenu(self.setsButton)
+        self._buildSetsMenu()
+        self.setsButton.setMenu(self.setsMenu)
+
         self.moreButton = QtWidgets.QToolButton()
         self.moreButton.setText("More")
         self.moreButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
@@ -271,6 +301,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         ):
             controls.addWidget(btn)
         controls.addWidget(self.removeSliceInfoButton)
+        controls.addWidget(self.setCombo)
+        controls.addWidget(self.setsButton)
         controls.addWidget(self.showAllCheck)
         controls.addWidget(self.labelsCheck)
         controls.addWidget(self.associateSlicesCheck)
@@ -321,6 +353,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.sigJobDiscarded.connect(self._onJobDiscarded)
         self.exportCsvButton.clicked.connect(self.export_csv)
         self.exportJsonButton.clicked.connect(self.export_json)
+        self.setCombo.currentIndexChanged.connect(self._setSelected)
+        self._refreshSetCombo()
         self.table.itemChanged.connect(self._item_changed)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.showAllCheck.toggled.connect(self._overlay.set_visible)
@@ -1304,6 +1338,211 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.summaryLabel.setText(f"Measurement failed: {reason}")
         elif result.cancelled:
             self.summaryLabel.setText("Measurement cancelled.")
+
+    # ----------------------------------------------------------------------
+    # P-S — more than one named set
+    # ----------------------------------------------------------------------
+
+    def _buildSetsMenu(self) -> None:
+        for text, handler in (
+            ("New set…", self.new_set),
+            ("Duplicate set", self.duplicate_set),
+            ("Rename set…", self.rename_set),
+            ("Delete set", self.delete_set),
+            (None, None),
+            ("Merge from…", self.merge_set),
+            ("Compare with…", self.compare_set),
+        ):
+            if text is None:
+                self.setsMenu.addSeparator()
+                continue
+            self.setsMenu.addAction(text, handler)
+
+    def _refreshSetCombo(self) -> None:
+        self.setCombo.blockSignals(True)
+        try:
+            self.setCombo.clear()
+            for roi_set in self._sets:
+                self.setCombo.addItem(f"{roi_set.name} ({len(roi_set.rois)})")
+            self.setCombo.setCurrentIndex(self._activeIndex)
+        finally:
+            self.setCombo.blockSignals(False)
+
+    def _commitActiveSet(self) -> None:
+        """Write the model's ROIs into the active set before leaving it."""
+        self._syncSet()
+
+    def _loadActiveSet(self) -> None:
+        """Make the model show the active set, and forget the other set's history.
+
+        The undo log is cleared on a switch rather than carried across.  Its
+        commands hold ROI *names*, which mean different things in different
+        sets, so an undo after a switch would either fail or — worse — succeed
+        against the wrong ROI. A cross-set history is P-U's problem, and
+        pretending to have one here would be the expensive kind of wrong.
+        """
+        self._model.set_rois(list(self._set.rois))
+        self._commands = CommandLog(self._model)
+        self._cache.clear()
+        self._multiRows, self._multiAxisLabel = [], ""
+        self.multiPlotButton.setEnabled(False)
+        self._refreshSetCombo()
+        self.refresh_stats()
+
+    def _setSelected(self, index: int) -> None:
+        if not 0 <= index < len(self._sets) or index == self._activeIndex:
+            return
+        self._commitActiveSet()
+        self._activeIndex = index
+        self._loadActiveSet()
+
+    def _uniqueSetName(self, base: str, *, ignore: int | None = None) -> str:
+        """A set name not already in use.
+
+        ``ignore`` excludes one set from the check, so renaming a set to the
+        name it already has is a no-op rather than a rename to "A_1".
+        """
+        names = {
+            roi_set.name
+            for index, roi_set in enumerate(self._sets)
+            if index != ignore
+        }
+        if base not in names:
+            return base
+        index = 1
+        while f"{base}_{index}" in names:
+            index += 1
+        return f"{base}_{index}"
+
+    def new_set(self, name: str = "") -> None:
+        """Start an empty set and switch to it."""
+        if not name:
+            name, ok = QtWidgets.QInputDialog.getText(
+                self, "New ROI set", "Name:", text=self._uniqueSetName("ROIs")
+            )
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+        self._commitActiveSet()
+        self._sets.append(ROISet(name=self._uniqueSetName(name)))
+        self._activeIndex = len(self._sets) - 1
+        self._loadActiveSet()
+
+    def duplicate_set(self) -> None:
+        """Copy the active set, keeping every ROI's identity.
+
+        Deliberately *not* new uids: the point of duplicating a set is to try a
+        variant of it, and comparing the two afterwards only says anything if
+        the ROIs on both sides are recognisably the same ones.
+        """
+        self._commitActiveSet()
+        source = self._set
+        copy = replace(
+            source,
+            uid=str(uuid.uuid4()),
+            name=self._uniqueSetName(f"{source.name}_copy"),
+        )
+        self._sets.append(copy)
+        self._activeIndex = len(self._sets) - 1
+        self._loadActiveSet()
+
+    def rename_set(self) -> None:
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Rename ROI set", "Name:", text=self._set.name
+        )
+        if not ok or not name.strip():
+            return
+        self._set = self._set.with_changes(
+            name=self._uniqueSetName(name.strip(), ignore=self._activeIndex)
+        )
+        self._refreshSetCombo()
+
+    def delete_set(self) -> None:
+        if len(self._sets) == 1:
+            self.summaryLabel.setText(
+                "This is the only set; clear its ROIs instead of deleting it."
+            )
+            return
+        self._sets.pop(self._activeIndex)
+        self._activeIndex = min(self._activeIndex, len(self._sets) - 1)
+        self._loadActiveSet()
+
+    def _chooseOtherSet(self, title: str) -> int:
+        others = [
+            (index, roi_set)
+            for index, roi_set in enumerate(self._sets)
+            if index != self._activeIndex
+        ]
+        if not others:
+            self.summaryLabel.setText("There is only one set.")
+            return -1
+        names = [roi_set.name for _index, roi_set in others]
+        name, ok = QtWidgets.QInputDialog.getItem(self, title, "Set:", names, 0, False)
+        if not ok:
+            return -1
+        return others[names.index(name)][0]
+
+    def merge_set(self, index: int | None = None, on_conflict: str = "") -> None:
+        """Fold another set into this one, reporting what happened.
+
+        The policy is asked for only when there is a real conflict — the same
+        ROI edited two ways — because that is the only case where the answer
+        can lose work.
+        """
+        self._commitActiveSet()
+        if index is None:
+            index = self._chooseOtherSet("Merge from")
+        if index is None or index < 0:
+            return
+
+        source = self._sets[index]
+        _preview, report = merge_sets(self._set, source, on_conflict="skip")
+        if report.conflicts and not on_conflict:
+            choice, ok = QtWidgets.QInputDialog.getItem(
+                self,
+                "Merge conflicts",
+                f"{len(report.conflicts)} ROI(s) exist in both sets with "
+                "different geometry. Keep:",
+                ["this set's version", "the other set's version", "both"],
+                0,
+                False,
+            )
+            if not ok:
+                return
+            on_conflict = {
+                "this set's version": "skip",
+                "the other set's version": "replace",
+                "both": "keep-both",
+            }[choice]
+
+        merged, report = merge_sets(
+            self._set, source, on_conflict=on_conflict or "skip"
+        )
+        self._set = merged
+        self._model.set_rois(list(merged.rois))
+        self._commands = CommandLog(self._model)
+        self._refreshSetCombo()
+        self.refresh_stats()
+        message = f"Merged {source.name!r}: {report.summary}."
+        if report.renamed:
+            old, new = report.renamed[0]
+            message += f" Renamed {old!r} to {new!r}"
+            if len(report.renamed) > 1:
+                message += f" and {len(report.renamed) - 1} more"
+            message += "."
+        self.summaryLabel.setText(message)
+
+    def compare_set(self, index: int | None = None) -> None:
+        self._commitActiveSet()
+        if index is None:
+            index = self._chooseOtherSet("Compare with")
+        if index is None or index < 0:
+            return
+        other = self._sets[index]
+        report = compare_sets(self._set, other)
+        self.summaryLabel.setText(
+            f"{self._set.name!r} vs {other.name!r}: {report.summary}."
+        )
 
     # ----------------------------------------------------------------------
     # P-5 — set and shape operations

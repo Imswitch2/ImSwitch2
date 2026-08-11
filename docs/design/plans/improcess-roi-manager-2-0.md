@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9); P-S, P-U, P-6, P-P, P-7, P-R, P-F2 not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10); P-U, P-6, P-P, P-7, P-R, P-F2 not started. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1802,7 +1802,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-1** | ✅ **Implemented** — see §15.2 |
 | **P-2, P-J, P-3, P-4** | ✅ **Implemented** — see §15.3, §15.4, §15.6, §15.7 |
 | **P-5** | ✅ **Implemented** — see §15.9 (first roadmap phase delivered) |
-| **P-S, P-U, P-6, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-S** | ✅ **Implemented** — see §15.10 |
+| **P-U, P-6, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1952,8 +1953,8 @@ complete, and all of it is now fixed.
 | **Visibility, Clear and Remove Slice Info bypassed the command log** | `SetVisible`, `ClearROIs`, `RemoveSliceInfo` commands, all undoable |
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
-Of the roadmap, **P-5** is now done too (§15.9); P-S, P-U, P-6, P-P, P-7, P-R
-and P-F2 have not started.
+Of the roadmap, **P-5** (§15.9) and **P-S** (§15.10) are done too; P-U, P-6,
+P-P, P-7, P-R and P-F2 have not started.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2116,6 +2117,47 @@ equalling the original, the A-17 guard refusing with a size in MiB, and the
 rescaling cases including a registered edge and a refused cross-plane mapping.
 `test_roi_panel_measure.py` gained 9 for the menu, the command log and the
 refusal messages.
+
+### 15.10 P-S — Multiple named ROI sets ✅
+
+The set selector, New / Duplicate / Rename / Delete, **Merge from…** and
+**Compare with…**. `merge_sets()` and `compare_sets()` are pure functions on
+`ROISet`; the panel holds a list of sets and `_set` is a property onto the
+active one, so every existing `self._set = …` writes back into the collection
+and there is no second copy to keep in step.
+
+**Identity does the merging.** An ROI present in both sets under the same uid
+*is* the same ROI: identical when its geometry matches, a conflict when it does
+not — the same region edited two different ways. A different uid that happens
+to share a name is only a name collision, resolved by renaming, because a name
+is display text and was never the identity. Comparing by name would report a
+rename as two unrelated ROIs, which is the opposite of what a comparison is
+for.
+
+**A conflict is the only case that can lose work**, so it is the only one that
+asks. `skip` (the default) keeps this set's version, `replace` takes the
+other's, `keep-both` admits the incoming one **under a fresh uid** — two
+different regions cannot share a uid without one of them becoming unreachable.
+The dialog appears only when there is a real conflict; a merge that finds none
+just reports what it did. And a display-only difference — a changed colour — is
+not a conflict: the comparison is over the measurement-affecting fields, so a
+decision is never put in front of the user for nothing.
+
+**Frames travel with the ROIs that point at them**, still stored once per set.
+An incoming `frame_uid` that resolved to nothing would read as "no provenance"
+rather than as the missing-data bug it is.
+
+**Switching sets clears the undo log.** Commands hold ROI *names*, which mean
+different things in different sets, so an undo after a switch would either fail
+or — worse — succeed against the wrong ROI. A cross-set history is P-U's
+problem, and pretending to have one here would be the expensive kind of wrong.
+
+*Tests:* `test_roi_sets.py` (27) — the three conflict policies, name-vs-uid
+collisions, the frame-carrying and frame-deduplication criteria, and the panel
+side: two sets keeping their own frames and their own measurement
+configuration, duplicate preserving ROI identity (without which comparing the
+copy says nothing), and the undo log not reaching across a switch.
+
 
 
 
