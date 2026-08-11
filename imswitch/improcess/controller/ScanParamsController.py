@@ -13,6 +13,7 @@ class ScanParamsController(ImProcessWidgetController):
             'directions': [self._widget.p_text, self._widget.n_text],
             'steps': ['35', '35', '1', '1'],
             'step_sizes': ['35', '35', '35', '1'],
+            'n_linesteps': 1,
             'unidirectional': True
         }
 
