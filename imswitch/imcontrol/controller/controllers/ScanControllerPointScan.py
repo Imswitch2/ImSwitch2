@@ -9,6 +9,7 @@ from ..basecontrollers import SuperScanController, ComponentStateApplyMode
 from imswitch.imcommon.model import APIExport
 from imswitch.imcontrol.model import getWidgetStatePersistence
 from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
+from ._acquisition_layout_source import build_controller_point_scan_layouts
 
 class ScanControllerPointScan(SuperScanController):
     def __init__(self, *args, **kwargs):
@@ -136,6 +137,10 @@ class ScanControllerPointScan(SuperScanController):
         while len(result) < 3:
             result.append(0.0)
         return result
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return the detector-local event layout authored by this scan."""
+        return build_controller_point_scan_layouts(self, detectorNames)
 
     def getParameters(self):
         if self.settingParameters:

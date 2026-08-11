@@ -38,6 +38,8 @@ REGISTERED_LOOP_KINDS = frozenset(
         "scan_z",
         "condition",
         "time",
+        "cycle",
+        "plane",
         "repeat",
         "tile",
         "position",

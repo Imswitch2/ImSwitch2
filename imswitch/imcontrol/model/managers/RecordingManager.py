@@ -1,5 +1,6 @@
 import enum
 import json
+import math
 import os
 import shutil
 import time
@@ -21,10 +22,17 @@ from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Worker
 from imswitch.imcommon.model import (
     ACQUISITION_LAYOUT_SCHEMA,
     AcquisitionLayout,
+    AcquisitionLayoutError,
     JSON_ATTR_PREFIX,
+    LayoutIssue,
     decode_acquisition_layout,
     encode_acquisition_layout,
     initLogger,
+    validate_acquisition_layout,
+)
+from imswitch.imcommon.model.acquisition_layout import (
+    PAYLOAD_ASSEMBLED_IMAGE,
+    PAYLOAD_DETECTOR_FRAME_STREAM,
 )
 import abc
 import logging
@@ -1787,6 +1795,145 @@ class RecordingManager(SignalInterface):
             self.__detectorsManager[detectorName]
         return normalized
 
+    @staticmethod
+    def __layoutFrameCount(layout):
+        if layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+            return None
+        if layout.recorded_event_spans is not None:
+            return sum(
+                span.count * span.repeats
+                for span in layout.recorded_event_spans
+            )
+        return math.prod(loop.count for loop in layout.event_loops)
+
+    def __normalizeAcquisitionLayouts(
+        self,
+        acquisitionLayouts,
+        detectorNames,
+        recMode,
+        recFrames,
+        numCamTTL,
+    ):
+        """Canonicalize and cross-check layouts before opening any writer."""
+        if acquisitionLayouts is None:
+            return {}
+        try:
+            supplied = dict(acquisitionLayouts)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                'acquisitionLayouts must be a detector-to-layout mapping'
+            ) from error
+
+        unknown = set(supplied) - set(detectorNames)
+        if unknown:
+            raise ValueError(
+                'Acquisition layouts were supplied for unselected detectors: '
+                f'{sorted(unknown)}'
+            )
+
+        normalized = {}
+        for detectorName, rawLayout in supplied.items():
+            if isinstance(rawLayout, AcquisitionLayout):
+                layout = rawLayout
+            elif isinstance(rawLayout, (str, bytes, bytearray)):
+                layout = decode_acquisition_layout(rawLayout)
+            else:
+                raise TypeError(
+                    f'Acquisition layout for {detectorName!r} must be an '
+                    'AcquisitionLayout or encoded JSON'
+                )
+
+            issues = list(validate_acquisition_layout(layout))
+            if layout.detector != detectorName:
+                issues.append(
+                    LayoutIssue(
+                        'error',
+                        'DETECTOR_MISMATCH',
+                        f'Layout detector {layout.detector!r} does not match '
+                        f'mapping key {detectorName!r}',
+                        'detector',
+                    )
+                )
+
+            if recMode in (RecMode.ScanOnce, RecMode.ScanLapse):
+                detector = self.__detectorsManager[detectorName]
+                scanDriven = bool(getattr(detector, 'isScanDriven', False))
+                expectedKind = (
+                    PAYLOAD_ASSEMBLED_IMAGE
+                    if scanDriven else PAYLOAD_DETECTOR_FRAME_STREAM
+                )
+                if layout.payload_kind != expectedKind:
+                    issues.append(
+                        LayoutIssue(
+                            'error',
+                            'DETECTOR_PAYLOAD_MISMATCH',
+                            f'Detector {detectorName!r} requires '
+                            f'{expectedKind!r}, got {layout.payload_kind!r}',
+                            'payload_kind',
+                        )
+                    )
+
+                producerPositions = math.prod(
+                    loop.count
+                    for loop in layout.event_loops
+                    if loop.kind not in {'condition', 'repeat'}
+                )
+                if recFrames is not None and producerPositions != int(recFrames):
+                    issues.append(
+                        LayoutIssue(
+                            'error',
+                            'SCAN_POSITION_COUNT_MISMATCH',
+                            f'Layout describes {producerPositions} scan '
+                            f'positions but recFrames is {recFrames}',
+                            'event_loops',
+                        )
+                    )
+
+                plannedFrames = self.__layoutFrameCount(layout)
+                if plannedFrames is not None:
+                    if plannedFrames <= 0:
+                        issues.append(
+                            LayoutIssue(
+                                'error',
+                                'EMPTY_FRAME_SELECTION',
+                                'A selected detector must record at least one frame',
+                                'recorded_event_spans',
+                            )
+                        )
+                    elif (
+                        producerPositions > 0
+                        and plannedFrames % producerPositions == 0
+                    ):
+                        layoutPulses = plannedFrames // producerPositions
+                        configuredPulses = int(
+                            (numCamTTL or {}).get(detectorName, 1)
+                        )
+                        if layoutPulses != configuredPulses:
+                            issues.append(
+                                LayoutIssue(
+                                    'error',
+                                    'DETECTOR_PULSE_COUNT_MISMATCH',
+                                    f'Layout selects {layoutPulses} detector '
+                                    f'frame(s) per scan position but numCamTTL '
+                                    f'is {configuredPulses}',
+                                    'recorded_event_spans',
+                                )
+                            )
+
+            errors = tuple(
+                issue for issue in issues if issue.severity == 'error'
+            )
+            if errors:
+                raise AcquisitionLayoutError(
+                    f'Invalid acquisition layout for {detectorName!r}',
+                    errors,
+                )
+            # Encoding here enforces the common inline-size budget before
+            # __prepareRecordingThread can create a writer or destination.
+            encode_acquisition_layout(layout)
+            normalized[detectorName] = layout
+        return normalized
+
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
                        recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
@@ -1808,9 +1955,8 @@ class RecordingManager(SignalInterface):
             recLapseIntervalS: Requested camera-lapse interval in seconds.
             recLapseScheduledTime: ISO-8601 planned start for this timepoint.
             acquisitionLayouts: Optional synthetic or producer-authored
-                ``{detector: AcquisitionLayout}`` mapping. PR 2 transports this
-                mapping but deliberately does not cross-check it against scan
-                controller frame counts yet.
+                ``{detector: AcquisitionLayout}`` mapping. Layouts are
+                canonicalized and cross-checked before a writer is opened.
         """
 
         self.__logger.info('Starting recording')
@@ -1823,6 +1969,13 @@ class RecordingManager(SignalInterface):
             )
 
         detectorNames = self.__normalizeDetectorNames(detectorNames)
+        acquisitionLayouts = self.__normalizeAcquisitionLayouts(
+            acquisitionLayouts,
+            detectorNames,
+            recMode,
+            recFrames,
+            numCamTTL,
+        )
         self.__prepareRecordingThread()
         self.__recordingWorker.detectorNames = detectorNames
         self.__recordingWorker.recMode = recMode
@@ -1841,7 +1994,7 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.scanStepSizes = scanStepSizes
         self.__recordingWorker.recLapseIntervalS = recLapseIntervalS
         self.__recordingWorker.recLapseScheduledTime = recLapseScheduledTime
-        self.__recordingWorker.acquisitionLayouts = dict(acquisitionLayouts or {})
+        self.__recordingWorker.acquisitionLayouts = acquisitionLayouts
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
 
         self.__activeDetectorNames = detectorNames
@@ -3113,6 +3266,19 @@ class RecordingWorker(Worker):
         answer stays 1 there too; the per-timepoint loop supplies the
         repetition.
         """
+        layout = (self.__dict__.get('acquisitionLayouts') or {}).get(
+            detectorName
+        )
+        if layout is not None:
+            if layout.payload_kind == PAYLOAD_ASSEMBLED_IMAGE:
+                return 1
+            if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
+                if layout.recorded_event_spans is not None:
+                    return sum(
+                        span.count * span.repeats
+                        for span in layout.recorded_event_spans
+                    )
+                return math.prod(loop.count for loop in layout.event_loops)
         if self.recMode in (RecMode.ScanOnce, RecMode.ScanLapse) and \
                 self._isScanDrivenDetector(detectorName):
             return 1

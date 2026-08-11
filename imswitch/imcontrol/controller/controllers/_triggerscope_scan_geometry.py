@@ -12,6 +12,11 @@ keeps its own implementation: its frame count comes from the raster pixel grid,
 not from these counters.
 """
 
+from ._acquisition_layout_source import (
+    build_triggerscope_resolft_layouts,
+    scan_driven_detector_names,
+)
+
 
 #: Firmware counters whose product is the number of camera frames in one run.
 _FRAME_COUNT_KEYS = ('roSteps', 'cycleSteps', 'timeLapsePoints')
@@ -71,6 +76,18 @@ class TriggerScopeScanGeometryMixin:
         if not device or device not in self._setupInfo.detectors:
             return {}
         return {device: 1}
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return the firmware's time/cycle/plane event order."""
+        scanParameters, _ = self._triggerScopeGeometryParameters()
+        return build_triggerscope_resolft_layouts(
+            detectorNames,
+            scan_parameters=scanParameters,
+            scan_source=type(self).__name__,
+            scan_driven_detectors=scan_driven_detector_names(
+                self, detectorNames
+            ),
+        )
 
 
 # Copyright (C) 2020-2021 ImSwitch developers

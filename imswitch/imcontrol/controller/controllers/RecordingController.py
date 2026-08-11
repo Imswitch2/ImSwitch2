@@ -14,6 +14,7 @@ from imswitch.imcontrol.model.managers.RecordingManager import (
 )
 from ..basecontrollers import ImConWidgetController, StatefulComponentMixin, ComponentStateApplyMode
 from imswitch.imcommon.model import initLogger
+from ._acquisition_layout_source import with_time_partition
 
 # Poll interval used to wait out a still-finalizing recording before starting
 # the next timelapse timepoint (see nextLapse). Small so a Freq=0 lapse advances
@@ -108,6 +109,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         # terminal checks need this to tell "no scan was ever expected" from
         # "a scan was expected and somebody else published its start".
         self._scanStartOwnedByScanSource = False
+        self._producerAcquisitionLayouts = None
 
         self._widget.setsaveFormat(SaveFormat.HDF5.value)
         self._widget.setSnapSaveMode(SaveMode.Disk.value)
@@ -293,6 +295,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self._exactScanCompletionHandled = False
             self._scanLifecycleEndedObserved = False
             self._recordingScanSource = None
+            self._producerAcquisitionLayouts = None
             self._awaitingScanSourceArm = False
             self._scanStartOwnedByScanSource = False
             self._recordingOperationActive = True
@@ -357,6 +360,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
                         and self._widget.getMultiDetectorSingleFile()
                     ),
                 }
+                self._producerAcquisitionLayouts = None
             except Exception as error:
                 self._handleRecordingFailure(
                     str(error),
@@ -965,6 +969,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             # Set lapse metadata for this timepoint
             self.recordingArgs['recLapseTotal'] = self.lapseTotal
             self.recordingArgs['recLapseIndex'] = self.lapseCurrent
+            RecordingController._applyAcquisitionLayoutPartitions(self)
         except Exception as error:
             self._handleRecordingFailure(
                 str(error),
@@ -1203,10 +1208,55 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
             self.recordingArgs['scanStepSizes'] = (
                 self._scanStepSizesForRecording()
             )
+            RecordingController._applyProducerAcquisitionLayouts(self)
         except Exception as error:
             self._handleRecordingFailure(str(error), abortManager=False)
             return False
         return True
+
+    def _applyProducerAcquisitionLayouts(self) -> None:
+        """Read layouts from the pinned producer, when it declares support."""
+        accessor = self._scanAccessor('getAcquisitionLayouts')
+        if accessor is None:
+            self._producerAcquisitionLayouts = None
+            self.recordingArgs.pop('acquisitionLayouts', None)
+            return
+
+        detectorNames = tuple(self.recordingArgs['detectorNames'])
+        layouts = dict(accessor(detectorNames))
+        requested = set(detectorNames)
+        supplied = set(layouts)
+        if supplied != requested:
+            missing = sorted(requested - supplied)
+            extra = sorted(supplied - requested)
+            raise ValueError(
+                'Scan source returned an incomplete acquisition-layout mapping; '
+                f'missing={missing}, extra={extra}'
+            )
+        self._producerAcquisitionLayouts = layouts
+        RecordingController._applyAcquisitionLayoutPartitions(self)
+
+    def _applyAcquisitionLayoutPartitions(self) -> None:
+        """Apply the current partition-local lapse identity to cached layouts."""
+        layouts = self.__dict__.get('_producerAcquisitionLayouts')
+        if layouts is None:
+            return
+        if self.recMode != RecMode.ScanLapse:
+            self.recordingArgs['acquisitionLayouts'] = dict(layouts)
+            return
+        self.recordingArgs['acquisitionLayouts'] = {
+            detectorName: with_time_partition(
+                layout,
+                index=max(0, int(self.lapseCurrent)),
+                planned_count=(
+                    int(self.lapseTotal) if self.lapseTotal else None
+                ),
+                single_file=bool(
+                    self.recordingArgs.get('singleLapseFile', False)
+                ),
+            )
+            for detectorName, layout in layouts.items()
+        }
 
     def _scanRunTokenFor(self, source):
         """The coordinator's run reservation held by ``source``, or None."""
@@ -2402,6 +2452,7 @@ class RecordingController(ImConWidgetController, StatefulComponentMixin):
         self._exactScanCompletionHandled = False
         self._scanLifecycleEndedObserved = False
         self._recordingScanSource = None
+        self._producerAcquisitionLayouts = None
         self._awaitingScanSourceArm = False
         self._scanStartOwnedByScanSource = False
         self._recordingOperationActive = False

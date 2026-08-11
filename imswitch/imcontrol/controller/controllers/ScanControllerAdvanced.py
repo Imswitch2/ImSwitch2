@@ -16,6 +16,12 @@ from ..basecontrollers import SuperScanController
 # Optional: only if you want wavelength-based colors like MoNaLISA
 from imswitch.imcommon.view.guitools import colorutils
 from ...model import SignalDesignerFactory
+from ._acquisition_layout_source import (
+    build_advanced_scan_layouts,
+    scan_directions,
+    scan_driven_detector_names,
+    validate_detector_edge_counts,
+)
 
 
 class ScanControllerAdvanced(SuperScanController):
@@ -502,6 +508,111 @@ class ScanControllerAdvanced(SuperScanController):
         while len(result) < 3:
             result.append(0.0)
         return result
+
+    def _layoutPulseCounts(self, detectorNames, conditionCount):
+        """Count actual per-condition detector edges for one generated pixel."""
+        parameters = self._ttl_parameters_without_positioners(
+            self._digitalParameterDict
+        )
+        targets = set(parameters.get("target_device", ()))
+        requested = targets.intersection(str(name) for name in detectorNames)
+        if not requested:
+            return {}
+
+        forced = copy.deepcopy(parameters)
+        masks = forced.setdefault("linestep_enable", {})
+        for detector in requested:
+            masks[detector] = [True] * conditionCount
+        signals = self._get_ttl_designer().make_single_pixel_signal(
+            forced, self._setupInfo
+        )
+        samplesPerPixel = max(
+            1,
+            int(
+                round(
+                    float(parameters["sequence_time"])
+                    * float(self._setupInfo.scan.sampleRate)
+                )
+            ),
+        )
+        counts = {}
+        for detector in requested:
+            signal = signals.get(detector)
+            if signal is None:
+                continue
+            counts[detector] = tuple(
+                self._countRisingEdges(
+                    signal[
+                        condition * samplesPerPixel:
+                        (condition + 1) * samplesPerPixel
+                    ]
+                )
+                for condition in range(conditionCount)
+            )
+        return counts
+
+    def getNumCamTTL(self):
+        """Return the exact uniform detector-frame multiplier when expressible."""
+        self.getParameters()
+        conditionCount = max(
+            1, int(self._digitalParameterDict.get("n_linesteps", 1))
+        )
+        detectorNames = tuple(self._setupInfo.detectors)
+        pulseCounts = self._layoutPulseCounts(
+            detectorNames, conditionCount
+        )
+        masks = self._digitalParameterDict.get("linestep_enable", {})
+        yCount = max(1, int(self.getDimsScan()[1]))
+        result = {}
+        for detector, counts in pulseCounts.items():
+            mask = tuple(bool(value) for value in masks.get(detector, ()))
+            if len(mask) == conditionCount:
+                result[detector] = sum(
+                    count for count, enabled in zip(counts, mask) if enabled
+                )
+                continue
+            if len(mask) == conditionCount * yCount:
+                total = sum(
+                    counts[index % conditionCount]
+                    for index, enabled in enumerate(mask)
+                    if enabled
+                )
+                if total % yCount == 0:
+                    result[detector] = total // yCount
+        return result
+
+    def getAcquisitionLayouts(self, detectorNames):
+        """Return line-step-aware layouts from the generated scan signals."""
+        self.getParameters()
+        signalDict, scanInfo = self._make_full_scan(
+            self._analogParameterDict,
+            self._digitalParameterDict,
+        )
+        if signalDict is None or scanInfo is None:
+            raise RuntimeError(
+                "Advanced scan signal generation did not produce layout metadata"
+            )
+        conditionCount = max(1, int(scanInfo.get("n_linesteps", 1)))
+        layouts = build_advanced_scan_layouts(
+            scanInfo,
+            detectorNames,
+            scan_source=type(self).__name__,
+            detector_masks=self._digitalParameterDict.get(
+                "linestep_enable", {}
+            ),
+            pulse_counts_by_condition=self._layoutPulseCounts(
+                detectorNames, conditionCount
+            ),
+            scan_driven_detectors=scan_driven_detector_names(
+                self, detectorNames
+            ),
+            directions=scan_directions(self, scanInfo),
+        )
+        validate_detector_edge_counts(
+            layouts,
+            signalDict.get("TTLCycleSignalsDict", {}),
+        )
+        return layouts
 
     # ---------------------------------------------------------------------
     # Parameters: UI -> dicts
