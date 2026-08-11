@@ -7,6 +7,7 @@ half-loaded.
 """
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -279,3 +280,59 @@ def test_an_unreadable_restore_is_reported_not_raised(panel):
     )
     adapter.setWidgetState({SPILLED_KEY: True, "names": ["cells"], "checksum": "x"})
     assert logged and "cells" in logged[0]
+
+
+# --------------------------------------------------------------------------
+# P-U — crash-recovery autosave
+# --------------------------------------------------------------------------
+
+def test_autosave_writes_through_the_same_adapter_shutdown_uses(panel, monkeypatch):
+    """One payload, one place: a recovery file of its own would raise the
+    question of which of the two is newer."""
+    from imswitch.improcess.controller import ImProcessMainController as module
+
+    saved = []
+
+    class _Persistence:
+        def saveWidgetState(self, key, name="default"):
+            saved.append((key, name))
+            return True
+
+    monkeypatch.setattr(
+        module, "_ROI_MANAGER_STATE_KEY", "ImProcessROIManager", raising=False
+    )
+    monkeypatch.setattr(
+        "imswitch.imcommon.model.getWidgetStatePersistence",
+        lambda: _Persistence(),
+    )
+
+    controller = module.ImProcessMainController.__new__(
+        module.ImProcessMainController
+    )
+    controller._ImProcessMainController__logger = SimpleNamespace(
+        debug=lambda *a, **k: None
+    )
+    controller._autosaveROIState()
+
+    assert saved == [("ImProcessROIManager", "default")]
+
+
+def test_an_autosave_failure_never_reaches_the_user(panel, monkeypatch):
+    """Losing an autosave is a shame; a dialog mid-edit is worse."""
+    from imswitch.improcess.controller import ImProcessMainController as module
+
+    def explode():
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(
+        "imswitch.imcommon.model.getWidgetStatePersistence", explode
+    )
+    logged = []
+    controller = module.ImProcessMainController.__new__(
+        module.ImProcessMainController
+    )
+    controller._ImProcessMainController__logger = SimpleNamespace(
+        debug=lambda *a, **k: logged.append(a)
+    )
+    controller._autosaveROIState()      # must not raise
+    assert logged

@@ -11,7 +11,7 @@ Commands hold records, never pixels: an undo history must not pin image data.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from imswitch.imcommon.algorithms.roi import ROIRecord
@@ -212,6 +212,108 @@ class ReplaceROIs:
         self._before = ()
 
 
+@dataclass
+class SetProperties:
+    """Change display-only fields on many ROIs at once.
+
+    One command rather than one per ROI, so restyling a fifty-ROI set is one
+    step of undo rather than fifty. Deliberately limited to fields that do not
+    affect a measurement — style, group, properties, visibility — because a
+    batch that could move geometry is a batch that can silently ruin a set.
+    """
+
+    names: tuple = ()
+    changes: dict = field(default_factory=dict)
+    label: str = "Set properties"
+    _before: tuple = ()
+
+    #: The only fields this command may touch.
+    ALLOWED = frozenset({"style", "group", "properties", "visible"})
+
+    def __post_init__(self):
+        unknown = set(self.changes) - self.ALLOWED
+        if unknown:
+            raise ValueError(
+                f"{sorted(unknown)} cannot be set in a batch; a batch change "
+                "must not be able to move geometry"
+            )
+
+    def do(self, model):
+        before = []
+        for name in self.names:
+            roi = model.get(name)
+            if roi is None:
+                continue
+            before.append(
+                (name, {key: getattr(roi, key) for key in self.changes})
+            )
+            model.update(name, **self.changes)
+        self._before = tuple(before)
+        return None
+
+    def undo(self, model) -> None:
+        for name, previous in self._before:
+            try:
+                model.update(name, **previous)
+            except KeyError:
+                continue
+        self._before = ()
+
+
+@dataclass
+class ImportROIs:
+    """Add a batch of ROIs, all of them or none.
+
+    A half-applied import is the worst outcome: the user cannot tell which of
+    the two hundred arrived, and undoing means finding them by hand. So the
+    model is restored wholesale if any record is rejected, and the conflict
+    policy is decided **before** anything is touched.
+
+    ``on_conflict`` — ``"rename"`` (the default; the model uniquifies), ``"skip"``
+    (keep what is already there) or ``"replace"`` (the incoming record wins).
+    """
+
+    rois: tuple = ()
+    on_conflict: str = "rename"
+    label: str = "Import ROIs"
+    _before: tuple = ()
+    #: Filled in by do(): what actually happened, for the panel to report.
+    added: int = 0
+    skipped: int = 0
+    replaced: int = 0
+
+    def do(self, model):
+        if self.on_conflict not in ("rename", "skip", "replace"):
+            raise ValueError(f"unknown conflict policy {self.on_conflict!r}")
+        self._before = tuple(model.rois)
+        self.added = self.skipped = self.replaced = 0
+        try:
+            for roi in self.rois:
+                existing = model.get(roi.name)
+                if existing is not None:
+                    if self.on_conflict == "skip":
+                        self.skipped += 1
+                        continue
+                    if self.on_conflict == "replace":
+                        model.add(roi, replace=True)
+                        self.replaced += 1
+                        continue
+                model.add(roi)
+                self.added += 1
+        except Exception:
+            # All or nothing: put the set back exactly as it was, then let the
+            # caller report the failure.
+            model.set_rois(list(self._before))
+            self._before = ()
+            raise
+        return None
+
+    def undo(self, model) -> None:
+        if self._before or self.added or self.replaced:
+            model.set_rois(list(self._before))
+            self._before = ()
+
+
 class CommandLog:
     """Runs commands and keeps what is needed to undo them.
 
@@ -260,6 +362,20 @@ class CommandLog:
     def labels(self) -> list[str]:
         return [command.label for command in self._done]
 
+    @property
+    def undo_label(self) -> str:
+        """What undoing would undo, for the button that does it."""
+        return self._done[-1].label if self._done else ""
+
+    @property
+    def redo_label(self) -> str:
+        return self._undone[-1].label if self._undone else ""
+
+    def clear(self) -> None:
+        """Forget the history without touching the model."""
+        self._done.clear()
+        self._undone.clear()
+
 
 __all__ = [
     "AddROI",
@@ -269,7 +385,9 @@ __all__ = [
     "Command",
     "CommandLog",
     "DeleteROI",
+    "ImportROIs",
     "RenameROI",
     "ReplaceROIs",
+    "SetProperties",
     "UpdateROI",
 ]

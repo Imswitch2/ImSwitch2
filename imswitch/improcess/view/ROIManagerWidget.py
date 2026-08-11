@@ -20,6 +20,7 @@ from imswitch.improcess.analysis.roi_commands import (
     ClearROIs,
     CommandLog,
     DeleteROI,
+    ImportROIs,
     RemoveSliceInfo,
     RenameROI,
     ReplaceROIs,
@@ -144,6 +145,9 @@ class ROIManagerWidget(QtWidgets.QWidget):
     sigPlotPushed = QtCore.Signal(object)
     #: A label image built from the ROI set, for the reconstruction list.
     sigResultProduced = QtCore.Signal(object, str)
+    #: The sets changed and are worth saving. The controller owns *where* they
+    #: go; the panel only says that they moved.
+    sigStateChanged = QtCore.Signal()
     #: Internal: a finished measurement job, carried from the worker thread to
     #: the GUI thread. A queued signal is the marshalling `MeasurementRunner`
     #: requires — its callbacks run on the worker, and touching a widget from
@@ -160,6 +164,11 @@ class ROIManagerWidget(QtWidgets.QWidget):
     #: snapshot larger than this is more likely to take the session down than
     #: to finish, and refusing says so rather than trying.
     MAX_SNAPSHOT_BYTES = 2 * 1024**3
+
+    #: How long after the last edit an autosave fires. Long enough that
+    #: drawing ten ROIs in a row costs one save, short enough that a crash
+    #: loses seconds of work rather than a session's.
+    AUTOSAVE_DEBOUNCE_MS = 5000
 
     #: How long a burst of viewer events is allowed to coalesce before the
     #: table is re-measured. Long enough that dragging a slider costs one
@@ -220,6 +229,10 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self._refreshTimer.setSingleShot(True)
         self._refreshTimer.setInterval(self.REFRESH_DEBOUNCE_MS)
         self._refreshTimer.timeout.connect(self.refresh_stats)
+        self._autosaveTimer = QtCore.QTimer(self)
+        self._autosaveTimer.setSingleShot(True)
+        self._autosaveTimer.setInterval(self.AUTOSAVE_DEBOUNCE_MS)
+        self._autosaveTimer.timeout.connect(self._autosave)
         # The committed ROI set, drawn read-only in the viewer (P-1).
         self._overlay = NapariROISetOverlay(napariViewer)
 
@@ -246,6 +259,10 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.removeSliceInfoButton.setToolTip(
             "Detach every ROI from the slice it was drawn on"
         )
+        self.undoButton = QtWidgets.QPushButton("Undo")
+        self.redoButton = QtWidgets.QPushButton("Redo")
+        for button in (self.undoButton, self.redoButton):
+            button.setEnabled(False)
         self.measurementsButton = QtWidgets.QPushButton("Measurements…")
         self.measurementsButton.setToolTip(
             "Choose which measurements are taken (ImageJ's Set Measurements)"
@@ -313,6 +330,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.duplicateButton,
             self.deleteButton,
             self.clearButton,
+            self.undoButton,
+            self.redoButton,
             self.refreshButton,
             self.measurementsButton,
             self.measureButton,
@@ -365,6 +384,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.duplicateButton.clicked.connect(self.duplicate_selected)
         self.deleteButton.clicked.connect(self.delete_selected)
         self.clearButton.clicked.connect(self.clear_rois)
+        self.undoButton.clicked.connect(self.undo)
+        self.redoButton.clicked.connect(self.redo)
         self.refreshButton.clicked.connect(self.refresh_stats)
         self.measurementsButton.clicked.connect(self.edit_measurements)
         self.measureButton.clicked.connect(self.measure)
@@ -449,14 +470,28 @@ class ROIManagerWidget(QtWidgets.QWidget):
             pass
         super().closeEvent(event)
 
-    def add_rois(self, rois: list[ROIRecord]) -> int:
-        """Add externally generated ROIs, preserving unique names."""
-        count = 0
-        for roi in rois:
-            self._commands.run(AddROI(roi))
-            count += 1
+    def add_rois(self, rois: list[ROIRecord], *, on_conflict: str = "rename") -> int:
+        """Add externally generated ROIs, all of them or none.
+
+        One command rather than one per ROI: a two-hundred-ROI import that
+        failed half way used to leave the user unable to tell which had
+        arrived, and undoing it meant two hundred presses.
+        """
+        rois = list(rois)
+        if not rois:
+            return 0
+        command = ImportROIs(rois=tuple(rois), on_conflict=on_conflict)
+        try:
+            self._commands.run(command)
+        except Exception as exc:
+            # Refresh first, then report: refresh_stats writes the summary
+            # label itself, so saying it the other way round means the user
+            # never sees why nothing arrived.
+            self.refresh_stats()
+            self.summaryLabel.setText(f"Import failed, nothing was added: {exc}")
+            return 0
         self.refresh_stats()
-        return count
+        return command.added + command.replaced
 
     def rois(self, *, visible_only: bool = False) -> list[ROIRecord]:
         """Return a copy of currently managed ROIs for analysis widgets.
@@ -486,23 +521,41 @@ class ROIManagerWidget(QtWidgets.QWidget):
                 self.summaryLabel.setText(str(exc))
 
     def duplicate_selected(self) -> None:
-        roi = self._selected_roi()
-        if roi is None:
-            return
-        # Expressed as an Add of a copy so it is undoable like everything else.
+        """Copy every selected ROI, each with an identity of its own."""
         from imswitch.imcommon.algorithms.roi import duplicated
 
-        self._commands.run(
-            AddROI(duplicated(roi, name=self._model.unique_name(f"{roi.name}_copy")))
+        rois = self._selected_rois()
+        if not rois:
+            roi = self._selected_roi()
+            if roi is None:
+                return
+            rois = [roi]
+        # Expressed as Adds of copies so it is undoable like everything else.
+        self._runOperation(
+            "Duplicate",
+            [
+                duplicated(roi, name=self._model.unique_name(f"{roi.name}_copy"))
+                for roi in rois
+            ],
         )
-        self.refresh_stats()
 
     def delete_selected(self) -> None:
-        roi = self._selected_roi()
-        if roi is None:
-            return
-        self._commands.run(DeleteROI(roi.name))
-        self.refresh_stats()
+        """Delete every selected ROI.
+
+        The whole selection, not the current row: the table became
+        extended-selection for the set operations, and a Delete that then
+        removed only one of five highlighted rows would be the surprising
+        reading of "delete the selected ROIs".
+        """
+        rois = self._selected_rois()
+        if not rois:
+            roi = self._selected_roi()
+            if roi is None:
+                return
+            rois = [roi]
+        self._runOperation(
+            "Delete", (), consumed=[roi.name for roi in rois]
+        )
 
     def clear_rois(self) -> None:
         self._commands.run(ClearROIs())
@@ -663,6 +716,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self._applyColumns("px")
             self._populate_table(None)
             self._refresh_overlay()
+            self._refreshUndoButtons()
             self.summaryLabel.setText("No image layer selected.")
             return
 
@@ -699,9 +753,11 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self._stats_rows = [
             {**record.to_row(), **record.values} for record in records
         ]
-        self._syncSet()
+        if self._syncSet():
+            self._markDirty()
         self._populate_table(records)
         self._refresh_overlay()
+        self._refreshUndoButtons()
         measured = sum(1 for record in records if record.measured)
         failed = sum(1 for record in records if record.error)
         summary = f"{len(records)} ROI(s), {measured} measured, image shape {image.shape}."
@@ -768,16 +824,19 @@ class ROIManagerWidget(QtWidgets.QWidget):
         except Exception:
             return ()
 
-    def _syncSet(self) -> None:
+    def _syncSet(self) -> bool:
         """Keep the active ROISet holding the ROIs it is a set of.
 
         The set carried frames and the measurement configuration but never the
         records, so anything reading `_set.rois` — export, the state store,
-        anything downstream — saw an empty set beside a full table.
+        anything downstream — saw an empty set beside a full table. Returns
+        whether anything moved, which is what decides an autosave.
         """
         rois = tuple(self._model.rois)
-        if rois != self._set.rois:
-            self._set = self._set.with_rois(rois)
+        if rois == self._set.rois:
+            return False
+        self._set = self._set.with_rois(rois)
+        return True
 
     def _applyColumns(self, unit: str) -> None:
         """Set the table's columns from the current measurement selection.
@@ -1364,6 +1423,59 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.summaryLabel.setText(f"Measurement failed: {reason}")
         elif result.cancelled:
             self.summaryLabel.setText("Measurement cancelled.")
+
+    # ----------------------------------------------------------------------
+    # P-U — undo, redo and autosave
+    # ----------------------------------------------------------------------
+
+    def undo(self) -> None:
+        if not self._commands.can_undo:
+            return
+        label = self._commands.undo_label
+        self._commands.undo()
+        self.refresh_stats()
+        self.summaryLabel.setText(f"Undone: {label}.")
+
+    def redo(self) -> None:
+        if not self._commands.can_redo:
+            return
+        label = self._commands.redo_label
+        self._commands.redo()
+        self.refresh_stats()
+        self.summaryLabel.setText(f"Redone: {label}.")
+
+    def _refreshUndoButtons(self) -> None:
+        """Say what would be undone, not just that something would be.
+
+        "Undo" alone makes the user try it to find out; "Undo Delete ROI" lets
+        them decide first.
+        """
+        self.undoButton.setEnabled(self._commands.can_undo)
+        self.redoButton.setEnabled(self._commands.can_redo)
+        self.undoButton.setToolTip(
+            f"Undo {self._commands.undo_label}" if self._commands.can_undo
+            else "Nothing to undo"
+        )
+        self.redoButton.setToolTip(
+            f"Redo {self._commands.redo_label}" if self._commands.can_redo
+            else "Nothing to redo"
+        )
+
+    def _markDirty(self) -> None:
+        """Ask for an autosave soon (crash recovery, C-13/A-25).
+
+        Debounced, and into the **existing state store** rather than a new
+        file: an autosave that wrote on every keystroke would serialise the
+        whole set each time, which is the cost the storage policy exists to
+        avoid in the first place.
+        """
+        self._autosaveTimer.start()
+
+    def _autosave(self) -> None:
+        try:
+            self.sigStateChanged.emit()
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------------
     # P-6 — saving, loading and ImageJ interop

@@ -82,7 +82,11 @@ def test_catalog_registers_every_action_and_fires_signals(qapp):
     register_improcess_shortcuts(manager, view)
 
     actions = manager.getAllActions()
-    assert set(actions) == set(improcess_shortcut_defaults())
+    # The ROI manager's own actions are catalogued (so the editor can rebind
+    # them and an override persists) but bound when the panel is built, since
+    # it is runtime-loaded and usually absent at startup.
+    panel_scoped = {"roi.undo", "roi.redo"}
+    assert set(actions) == set(improcess_shortcut_defaults()) - panel_scoped
 
     # Signal-backed action fires its view signal.
     actions["image.duplicate"].callback()

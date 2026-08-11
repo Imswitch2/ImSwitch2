@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus); P-U, P-P, P-7, P-R, P-F2 not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12); P-P, P-7, P-R, P-F2 not started. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1804,7 +1804,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-5** | ✅ **Implemented** — see §15.9 (first roadmap phase delivered) |
 | **P-S** | ✅ **Implemented** — see §15.10 |
 | **P-6** | ✅ **Implemented** — see §15.11 (the Fiji fixture corpus needs a Fiji run) |
-| **P-U, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-U** | ✅ **Implemented** — see §15.12 |
+| **P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1954,8 +1955,8 @@ complete, and all of it is now fixed.
 | **Visibility, Clear and Remove Slice Info bypassed the command log** | `SetVisible`, `ClearROIs`, `RemoveSliceInfo` commands, all undoable |
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
-Of the roadmap, **P-5** (§15.9), **P-S** (§15.10) and **P-6** (§15.11) are
-done too; P-U, P-P, P-7, P-R and P-F2 have not started.
+Of the roadmap, **P-5** (§15.9), **P-S** (§15.10), **P-6** (§15.11) and
+**P-U** (§15.12) are done too; P-P, P-7, P-R and P-F2 have not started.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2222,6 +2223,54 @@ the one thing a corpus exists to avoid. It needs a Fiji run.
 *Tests:* `test_roi_set_io.py` (17), `test_roi_imagej.py` (19 + 1 skipped
 without `roifile`), `test_roi_persistence.py` (17), plus P-6.4 coverage in
 `test_roi_ops.py` and `test_roi_panel_measure.py`.
+
+### 15.12 P-U — Undo stack, recovery, advanced commands ✅
+
+The command framework landed in P-G.6 and every mutation has gone through it
+since; this phase adds the parts that make it visible and safe.
+
+| Piece | Outcome |
+| --- | --- |
+| Undo/Redo UI | Buttons that **say what they would undo** — "Undo Delete", not "Undo", so the user can decide rather than try it to find out |
+| Shortcuts | `roi.undo` / `roi.redo` in the config-driven catalog, bound to the panel when it is built rather than at startup, since it is runtime-loaded |
+| `ImportROIs` | Transactional, with skip / rename / replace conflict resolution |
+| `SetProperties` | Batch display-only edits, one step of undo for a fifty-ROI restyle |
+| Autosave | Debounced, into the **existing state store** (C-13/A-25) |
+
+**`Ctrl+Shift+Z` was already taken.** The catalog's own collision test caught
+it: `image.channels` holds the usual redo binding, and taking it would have
+made one of the two silently unreachable. Redo is `Ctrl+Y`, the other
+conventional one, which was free.
+
+**A batch change may not touch geometry.** `SetProperties` refuses anything
+outside style / group / properties / visibility, because a batch that can move
+geometry is a batch that can silently ruin a set — and because none of the
+permitted fields bumps a measurement revision, so restyling fifty ROIs does not
+invalidate fifty cached measurements.
+
+**Half an import is the worst outcome**: the user cannot tell which of two
+hundred arrived, and undoing means finding them by hand. `ImportROIs` decides
+the conflict policy before touching anything and restores the set wholesale if
+any record is rejected. `add_rois` now goes through it, so every import path —
+ImageJ, JSON, segmentation — is one step of undo rather than N.
+
+**Autosave writes where shutdown writes.** A recovery file of its own would
+raise the question of which of the two is newer; there is one payload, and it
+already has a storage policy. It is debounced by five seconds, so drawing ten
+ROIs costs one save, and a failure is logged rather than shown — losing an
+autosave is a shame, a dialog mid-edit is worse.
+
+**Delete and Duplicate now act on the whole selection.** They took the current
+row, which was right when the table was single-selection; P-5 made it
+extended, and a Delete that removed one of five highlighted rows is the
+surprising reading of "delete the selected ROIs".
+
+*Tests:* `test_roi_undo.py` (21) — including the acceptance criteria: undo
+restoring geometry, style and position field for field; a failed import leaving
+the set untouched; the stack bounded; and an assertion, over the live command
+objects, that **no command holds a numpy array**. `test_roi_persistence.py`
+gained two for the autosave path.
+
 
 
 

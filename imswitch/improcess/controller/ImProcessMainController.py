@@ -71,6 +71,8 @@ class ImProcessMainController(MainController):
         # Measurement panels re-measuring on every result change; tracked by
         # widget identity so reopening a dock cannot double-connect.
         self._resultFollowers = set()
+        # ROI manager panels already given their shortcuts and autosave hook.
+        self._roiManagerPanels = set()
 
         # Configurable keyboard shortcuts (shared imcommon ShortcutManager,
         # Fiji-parity defaults, per-user JSON overrides). Never let shortcut
@@ -448,6 +450,7 @@ class ImProcessMainController(MainController):
             adapter = getattr(self, '_ImProcessMainController__roiManagerStateAdapter', None)
             if adapter is not None:
                 adapter.applyStashTo(widget)
+            self._wire_roi_manager_panel(widget)
         if processor_id == "graph":
             if self.mainViewController.graphController is None:
                 self.mainViewController.graphController = self.__factory.createController(
@@ -493,6 +496,48 @@ class ImProcessMainController(MainController):
         # — and they read their pixels from the viewer, which switching
         # reconstruction silently changes underneath them.
         self._wire_result_follower(widget)
+
+    def _wire_roi_manager_panel(self, widget) -> None:
+        """Undo/redo shortcuts and crash-recovery autosave for the ROI panel.
+
+        Both are wired when the panel is built, not at startup: it is
+        runtime-loaded, so binding earlier would bind to nothing.
+        """
+        if id(widget) in self._roiManagerPanels:
+            return
+        self._roiManagerPanels.add(id(widget))
+
+        if self._shortcutManager is not None:
+            try:
+                from .shortcuts import register_roi_manager_shortcuts
+
+                register_roi_manager_shortcuts(
+                    self._shortcutManager, widget, owner=self.__mainView
+                )
+            except Exception:
+                self.__logger.debug(
+                    "Could not register ROI manager shortcuts", exc_info=True
+                )
+
+        signal = getattr(widget, "sigStateChanged", None)
+        if signal is not None:
+            signal.connect(self._autosaveROIState)
+
+    def _autosaveROIState(self) -> None:
+        """Persist the ROI sets between shutdowns, so a crash costs seconds.
+
+        Straight into the existing state store — the same place shutdown
+        writes — rather than a recovery file of its own, so there is one
+        payload and no question of which is newer (C-13/A-25).
+        """
+        try:
+            from imswitch.imcommon.model import getWidgetStatePersistence
+
+            getWidgetStatePersistence().saveWidgetState(
+                _ROI_MANAGER_STATE_KEY, 'default'
+            )
+        except Exception:
+            self.__logger.debug('Could not autosave ROI sets', exc_info=True)
 
     def _wire_result_follower(self, widget) -> None:
         """Have a panel recompute when the selected result changes.
