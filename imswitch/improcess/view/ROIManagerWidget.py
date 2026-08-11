@@ -551,6 +551,16 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.refresh_stats()
         return command.added + command.replaced
 
+    def active_set(self) -> ROISet:
+        """The set the panel is showing, with its ROIs in it.
+
+        Public because a processor restricted to a region has to record *which
+        set at which revision* produced it, and reading the panel's private
+        state to find out would make that provenance a coincidence.
+        """
+        self._syncSet()
+        return self._set
+
     def rois(self, *, visible_only: bool = False) -> list[ROIRecord]:
         """Return a copy of currently managed ROIs for analysis widgets.
 

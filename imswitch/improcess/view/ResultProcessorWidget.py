@@ -82,6 +82,37 @@ class ResultProcessorWidget(QtWidgets.QWidget):
             layout.addLayout(form)
 
         layout.addWidget(self.paramWidget)
+
+        # ROI restriction (P-R). Offered only to processors that declared they
+        # accept one, so a processor that ignores ROIs can never be handed a
+        # cropped input by a UI that guessed.
+        self.roiCombo = None
+        self.roiModeCombo = None
+        if getattr(processor, "accepts_roi", False):
+            self.roiCombo = QtWidgets.QComboBox()
+            self.roiCombo.setToolTip(
+                "Run over a region instead of the whole image. The ROIs come "
+                "from the ROI manager's active set."
+            )
+            self.roiModeCombo = QtWidgets.QComboBox()
+            for mode in getattr(processor, "roi_modes", ("crop", "mask")):
+                self.roiModeCombo.addItem(
+                    {
+                        "crop": "Crop to the region",
+                        "mask": "Mask outside the region",
+                    }.get(mode, mode),
+                    mode,
+                )
+            self.roiModeCombo.setToolTip(
+                "Crop puts the region on its own smaller grid; Mask keeps the "
+                "whole frame so the output stays pixel-aligned with the input."
+            )
+            roiForm = QtWidgets.QFormLayout()
+            roiForm.addRow("Region", self.roiCombo)
+            roiForm.addRow("", self.roiModeCombo)
+            layout.addLayout(roiForm)
+            self._refreshROIChoices()
+
         layout.addWidget(self.statusLabel)
         layout.addWidget(self.runButton)
         layout.addStretch()
@@ -188,7 +219,83 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def parameterValues(self) -> dict:
         getter = getattr(self.paramWidget, "get_values", None)
-        return dict(getter() if callable(getter) else {})
+        values = dict(getter() if callable(getter) else {})
+        restriction = self.roiRestriction()
+        if restriction is not None:
+            from imswitch.improcess.analysis.roi_restriction import ROI_PARAM
+
+            values[ROI_PARAM] = restriction
+        return values
+
+    # -- ROI restriction (P-R) --------------------------------------------
+
+    def setROIManagerWidget(self, panel) -> None:
+        """The ROI manager whose active set this panel may restrict to.
+
+        Late-bound and optional: both panels are runtime-loaded, in either
+        order, and a processor must still run without one.
+        """
+        self._roiManagerWidget = panel
+        self._refreshROIChoices()
+
+    def _refreshROIChoices(self) -> None:
+        if self.roiCombo is None:
+            return
+        panel = getattr(self, "_roiManagerWidget", None)
+        rois = []
+        if panel is not None:
+            try:
+                rois = [roi for roi in panel.rois() if roi.visible]
+            except Exception:
+                rois = []
+
+        current = self.roiCombo.currentData()
+        self.roiCombo.blockSignals(True)
+        self.roiCombo.clear()
+        self.roiCombo.addItem("Whole image", None)
+        if rois:
+            self.roiCombo.addItem(f"All {len(rois)} ROIs", "*")
+        for roi in rois:
+            self.roiCombo.addItem(roi.name, roi.uid)
+        index = self.roiCombo.findData(current)
+        self.roiCombo.setCurrentIndex(max(0, index))
+        self.roiCombo.blockSignals(False)
+        self.roiCombo.setEnabled(bool(rois))
+        if not rois:
+            self.roiCombo.setToolTip(
+                "No ROIs available. Draw some in the ROI manager, or leave "
+                "this as Whole image."
+            )
+
+    def roiRestriction(self):
+        """The restriction this panel is configured for, or None."""
+        if self.roiCombo is None:
+            return None
+        choice = self.roiCombo.currentData()
+        if choice is None:
+            return None
+        panel = getattr(self, "_roiManagerWidget", None)
+        if panel is None:
+            return None
+        try:
+            rois = [roi for roi in panel.rois() if roi.visible]
+            roi_set = panel.active_set()
+        except Exception:
+            return None
+        if choice != "*":
+            rois = [roi for roi in rois if roi.uid == choice]
+        if not rois:
+            return None
+
+        from imswitch.improcess.analysis.roi_restriction import ROIRestriction
+
+        return ROIRestriction(
+            rois=tuple(rois),
+            mode=str(self.roiModeCombo.currentData() or "crop"),
+            set_uid=getattr(roi_set, "uid", ""),
+            set_name=getattr(roi_set, "name", ""),
+            set_revision=int(getattr(roi_set, "revision", 0) or 0),
+        )
 
     def setStatusText(self, text: str) -> None:
         self.statusLabel.setText(text)

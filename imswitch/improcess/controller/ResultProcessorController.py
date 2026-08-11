@@ -89,13 +89,61 @@ def _run_multi(processor, inputs, params: dict, logger):
         return [], [(inputs[0], str(exc))]
 
 
+def _restriction_for(processor, params: dict):
+    """The ROI restriction this run was asked for, or None (P-R).
+
+    Read from one well-known parameter key and honoured only by processors
+    that declared they accept one, so a processor that ignores ROIs cannot be
+    handed a cropped input by a UI that guessed.
+    """
+    from imswitch.improcess.analysis.roi_restriction import (
+        ROI_PARAM,
+        ROIRestriction,
+    )
+
+    restriction = params.get(ROI_PARAM)
+    if not isinstance(restriction, ROIRestriction) or not restriction.active:
+        return None
+    if not getattr(processor, "accepts_roi", False):
+        return None
+    return restriction
+
+
+def _run_restricted(processor, input_result, params: dict, restriction):
+    """Narrow the input, run, then tell the outputs what they were narrowed to.
+
+    Around the processor rather than inside it: `apply` receives an ordinary
+    result and needs to know nothing about ROIs, which is what lets every
+    existing processor become ROI-aware by declaring one attribute.
+    """
+    from imswitch.improcess.analysis.roi_restriction import (
+        apply_provenance,
+        restrict_result,
+    )
+
+    narrowed, applied = restrict_result(input_result, restriction)
+    output = processor.apply(narrowed, params)
+    # Provenance is attached against the *original* input, not the narrowed
+    # copy: the narrowed one is an implementation detail that never existed
+    # outside this call, and lineage pointing at it would dangle.
+    results = list(normalize_processor_output(output, input_result, processor))
+    apply_provenance(results, applied)
+    return results
+
+
 def _run_batch(processor, inputs, params: dict, logger):
     """One run per input. A failure is reported, not fatal: one bad result
     part-way through a sweep must not throw away the ones that worked."""
     results = []
     failures = []
+    restriction = _restriction_for(processor, params)
     for input_result in inputs:
         try:
+            if restriction is not None:
+                results.extend(
+                    _run_restricted(processor, input_result, params, restriction)
+                )
+                continue
             output = processor.apply(input_result, params)
             results.extend(
                 normalize_processor_output(output, input_result, processor)

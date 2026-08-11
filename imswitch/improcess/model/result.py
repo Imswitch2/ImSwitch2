@@ -172,6 +172,10 @@ class ProcessingResult(ABC):
         self.result_uid = result_uid or mint_uid("result")
         self.dataset_uid = dataset_uid or mint_uid("data")
         self.coordinate_space_uid = coordinate_space_uid or mint_uid("space")
+        #: What ROI restricted this result, when one did (P-R). Empty for a
+        #: whole-frame run, so its absence means "the whole image" rather than
+        #: "unknown".
+        self.roi_provenance: dict[str, Any] = {}
         self.lineage = tuple(lineage)
         self.identity_kind = identity_kind
         self._display_layer_settings: dict[str, dict[str, Any]] = {}
@@ -214,6 +218,17 @@ class ProcessingResult(ABC):
         if identity["coordinate_space_uid"] is not None:
             self.coordinate_space_uid = identity["coordinate_space_uid"]
         return self
+
+    def mint_coordinate_space(self) -> None:
+        """Give this result a pixel grid of its own (P-R).
+
+        Called when an output cannot be on its source's grid however the
+        processor is declared — a crop, most obviously, which moves every pixel
+        index. Claiming a shared grid there makes every ROI measured on the
+        output read the wrong pixels, which is exactly what the identity is
+        for.
+        """
+        self.coordinate_space_uid = mint_uid("space")
 
     def derived_identity(self, *, same_grid: bool) -> dict[str, Any]:
         """Identity kwargs for a result derived from this one.

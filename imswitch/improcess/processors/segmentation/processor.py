@@ -22,6 +22,11 @@ class SegmentationProcessor(Processor):
     # Output is pixel-for-pixel aligned with the input, so an ROI drawn
     # on one measures the same features on the other.
     preserves_grid = True
+    # Restricting to a region is meaningful here (P-R), and cropping is
+    # offered first: segmenting one region is usually the point, and the
+    # smaller grid is what the caller wants to look at.
+    accepts_roi = True
+    roi_modes = ('crop', 'mask')
 
     @property
     def applies_to(self) -> Callable[[ProcessingResult], bool]:

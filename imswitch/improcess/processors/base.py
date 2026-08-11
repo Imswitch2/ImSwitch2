@@ -105,6 +105,19 @@ class Processor(ABC):
     #: coordinate space — the safe answer, because wrongly claiming a shared
     #: grid makes ROIs measure the wrong pixels.
     preserves_grid: bool | None = None
+    #: Whether this processor can be run over an ROI rather than a whole frame
+    #: (P-R). Opt-in, because the answer is not universal: a drift correction
+    #: over a cropped region is a different measurement, not a cheaper one, and
+    #: offering it would invite a result nobody can interpret.
+    #:
+    #: The restriction is applied **around** the processor by the run path —
+    #: `apply` still receives an ordinary result — so declaring this is the
+    #: whole of what a processor has to do.
+    accepts_roi: bool = False
+    #: Which restriction modes make sense here, in the order offered. A filter
+    #: usually wants `mask` first (its output stays pixel-aligned); anything
+    #: whose cost scales with the frame usually wants `crop`.
+    roi_modes: tuple[str, ...] = ("crop", "mask")
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.

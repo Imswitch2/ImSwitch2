@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14); P-R and P-F2 not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14) · **P-R ✅** (§15.15); only P-F2 remains. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1807,7 +1807,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-U** | ✅ **Implemented** — see §15.12 |
 | **P-P** | ✅ **Implemented** — see §15.13 |
 | **P-7** | ✅ **Implemented** — see §15.14 |
-| **P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-R** | ✅ **Implemented** — see §15.15 |
+| **P-F2** | Roadmap (Q-13a) — blocked on a central save path (21 independent `save()` implementations) |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1958,8 +1959,9 @@ complete, and all of it is now fixed.
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
 Of the roadmap, **P-5** (§15.9), **P-S** (§15.10), **P-6** (§15.11),
-**P-U** (§15.12), **P-P** (§15.13) and **P-7** (§15.14) are done too; P-R and
-P-F2 have not started.
+**P-U** (§15.12), **P-P** (§15.13), **P-7** (§15.14) and **P-R** (§15.15) are
+done too. **Only P-F2 has not started** — it waits on a central save path,
+which Q-14b put out of scope.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2358,6 +2360,47 @@ objects each time.
 *Tests:* `test_roi_panel_ux.py` (23), including the two that pin the design
 rather than the code: an untouched batch dialog changing nothing, and a batch
 style change leaving two different stroke colours different.
+
+### 15.15 P-R — ROI-aware processor protocol ✅
+
+A processor written against "an image" should not have to learn about ROIs to
+be usable on one, so the restriction is applied **around** it: the input is
+narrowed, the processor runs on an ordinary result, and the outputs are told
+what they were narrowed to. Declaring `accepts_roi = True` is the whole of what
+a processor has to do.
+
+| Piece | Outcome |
+| --- | --- |
+| The parameter | One well-known key (`roi_restriction`), read by the run path, honoured **only** for processors that declared they accept one — so a UI cannot make an ROI-unaware processor ROI-aware by guessing |
+| Two modes | **crop** (the region on its own smaller grid) and **mask** (the whole frame, everything else set aside). Neither is a superset of the other |
+| Frame propagation | A cropped output gets a **fresh coordinate space**, whatever the processor declares about preserving the grid |
+| Provenance | The output records the set uid, name and **revision**, the mode, the ROI names and uids, and the crop offset |
+| Integration | `filter`, `denoise`, `subtract-background`, `math` and `segmentation` |
+
+**Crop is not a cheaper mask.** A crop moves every pixel index, so an ROI drawn
+on the input measures different pixels on the output; that is why a cropped
+result is never allowed to claim its source's grid. Masking moves nothing, so
+it keeps the grid it was given, and the two are offered in a different order
+per processor: a filter wants `mask` first (its output stays aligned),
+segmentation wants `crop` (the smaller grid is the point).
+
+**The fill is NaN, not zero.** Zero says "measured, and dark", which is a
+different and usually false claim. A masked integer image therefore comes back
+as floats — silently casting NaN to 0 would be exactly the claim the fill
+exists to avoid.
+
+**PSF resolution and colocalization are deliberately not integrated.** They are
+already ROI-native in a different sense: they measure *per ROI*, producing one
+row each, rather than restricting one input. Adding the restriction would give
+them two ways in, and two ways in is one thing that later disagrees with the
+other. Drift correction is left out for a different reason — over a crop it is
+a *different measurement*, not a cheaper one, and offering it would invite a
+result nobody can interpret. Both exclusions have tests, so they are decisions
+rather than omissions.
+
+*Tests:* `test_roi_restriction.py` (24), covering both modes, the clipping and
+refusal rules, the untouched source, the grid reset, and the two exclusions.
+
 
 
 

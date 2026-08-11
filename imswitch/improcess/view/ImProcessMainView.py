@@ -819,9 +819,9 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if runtime_loaded:
                 self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
-            if spec.widget_kind in ('roi-manager', 'segmentation'):
-                # Either panel may be opened first, and the wiring runs in
-                # both directions, so it is redone whenever either arrives.
+            if spec.widget_kind in ('roi-manager', 'segmentation', 'result-processor'):
+                # Any of these may be opened first, and the wiring runs in
+                # both directions, so it is redone whenever one arrives.
                 self._wireROIManagerToDependentWidgets()
             if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
                 self._connectResultPusher(widget)
@@ -1295,6 +1295,18 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     )
             elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
+        # Processor panels that accept an ROI restriction (P-R) need the same
+        # late binding, and there can be many of them open at once.
+        for widget in list(self.docks and self.__dict__.values() or []):
+            setter = getattr(type(widget), 'setROIManagerWidget', None)
+            if callable(setter):
+                try:
+                    setter(widget, roi_manager)
+                except Exception:
+                    self._logger.exception(
+                        'Could not wire the ROI Manager into a processor panel'
+                    )
+
         # The reverse direction: the ROI manager seeds *Limit to threshold*
         # from the Segmentation panel, and either panel may be opened first.
         segmentation = getattr(self, 'segmentationWidget', None)
