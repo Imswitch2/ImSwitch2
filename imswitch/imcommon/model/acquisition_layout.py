@@ -1,0 +1,1245 @@
+"""Versioned acquisition-layout metadata shared by acquisition and processing.
+
+The layout describes the chronological producer event lattice independently of
+the array axes used by HDF5, Zarr, TIFF, or an in-memory source.  This module is
+deliberately format-neutral so producers, readers, and reconstructors all use
+the same serialization, validation, and coordinate arithmetic.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections import deque
+from dataclasses import asdict, dataclass, field, replace
+from functools import reduce
+from operator import mul
+from typing import Any, Iterable, Iterator, Mapping, Sequence
+
+
+ACQUISITION_LAYOUT_SCHEMA = "imswitch.acquisition-layout/1"
+MAX_INLINE_LAYOUT_BYTES = 1_048_576
+
+PAYLOAD_DETECTOR_FRAME_STREAM = "detector-frame-stream"
+PAYLOAD_ASSEMBLED_IMAGE = "assembled-image"
+PAYLOAD_RECONSTRUCTED_IMAGE = "reconstructed-image"
+REGISTERED_PAYLOAD_KINDS = frozenset(
+    {
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        PAYLOAD_ASSEMBLED_IMAGE,
+        PAYLOAD_RECONSTRUCTED_IMAGE,
+    }
+)
+
+REGISTERED_LOOP_KINDS = frozenset(
+    {
+        "scan_x",
+        "scan_y",
+        "scan_z",
+        "condition",
+        "time",
+        "repeat",
+        "tile",
+        "position",
+        "tcspc_bin",
+    }
+)
+
+VALID_PROVENANCE = frozenset(
+    {
+        "recorded",
+        "user-override",
+        "legacy-adapter",
+        "ome-ngff",
+        "shape-inference",
+        "generic-fallback",
+    }
+)
+VALID_TRAVERSAL_ORDERS = frozenset({"forward", "reverse", "serpentine"})
+VALID_COPY_POLICIES = frozenset({"forbid", "allow"})
+
+
+@dataclass(frozen=True)
+class LayoutIssue:
+    """One stable, structured validation or interpretation diagnostic."""
+
+    severity: str
+    code: str
+    message: str
+    field: str | None = None
+    loop_id: str | None = None
+
+
+class AcquisitionLayoutError(ValueError):
+    """An operation could not safely proceed with an acquisition layout."""
+
+    def __init__(self, message: str, issues: Iterable[LayoutIssue] = ()) -> None:
+        super().__init__(message)
+        self.issues = tuple(issues)
+
+
+@dataclass(frozen=True)
+class AcquisitionLoop:
+    """One producer loop, ordered outermost to innermost in its layout."""
+
+    id: str
+    kind: str
+    count: int
+    step: float | None = None
+    unit: str | None = None
+    direction: int | None = None
+    labels: tuple[str, ...] = ()
+    storage_axis: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "labels", tuple(self.labels))
+
+
+@dataclass(frozen=True)
+class TraversalRule:
+    """Map chronological counters for one loop to logical coordinates."""
+
+    loop_id: str
+    order: str
+    parity_loops: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parity_loops", tuple(self.parity_loops))
+
+
+@dataclass(frozen=True)
+class RecordedEventSpan:
+    """Compact stored-frame selection from the producer event lattice."""
+
+    start: int
+    count: int
+    stride: int = 1
+    period: int | None = None
+    repeats: int = 1
+
+
+@dataclass(frozen=True)
+class AcquisitionPartition:
+    """A split across files, groups, arrays, positions, tiles, or timepoints."""
+
+    kind: str
+    index: int | None = None
+    planned_count: int | None = None
+    storage: str | None = None
+
+
+@dataclass(frozen=True)
+class AcquisitionLayout:
+    """Canonical acquisition semantics for one detector and one partition."""
+
+    schema: str
+    payload_kind: str
+    detector: str
+    storage_axes: tuple[str, ...]
+    event_loops: tuple[AcquisitionLoop, ...]
+    traversal: tuple[TraversalRule, ...] = ()
+    recorded_event_spans: tuple[RecordedEventSpan, ...] | None = None
+    partitions: tuple[AcquisitionPartition, ...] = ()
+    modality: str | None = None
+    scan_source: str | None = None
+    provenance: str = "recorded"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "storage_axes", tuple(self.storage_axes))
+        object.__setattr__(self, "event_loops", tuple(self.event_loops))
+        object.__setattr__(self, "traversal", tuple(self.traversal))
+        object.__setattr__(self, "partitions", tuple(self.partitions))
+        if self.recorded_event_spans is None:
+            return
+        spans = tuple(self.recorded_event_spans)
+        object.__setattr__(self, "recorded_event_spans", spans)
+        try:
+            canonical = canonicalize_recorded_event_spans(
+                spans, producer_event_count=_producer_event_count(self)
+            )
+        except (TypeError, ValueError):
+            # Invalid objects remain constructible so callers can obtain the
+            # complete structured issue list from validate_acquisition_layout.
+            return
+        object.__setattr__(self, "recorded_event_spans", canonical)
+
+
+@dataclass(frozen=True)
+class UnfoldedArray:
+    """An array whose frame axis was replaced by semantic event-loop axes."""
+
+    data: Any
+    storage_axes: tuple[str, ...]
+    loop_coordinates: Mapping[str, tuple[int, ...]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+
+
+@dataclass(frozen=True)
+class _RunGroup:
+    """Internal compressed sequence of equal arithmetic runs."""
+
+    start: int
+    count: int
+    stride: int
+    period: int | None = None
+    repeats: int = 1
+
+    @property
+    def last_start(self) -> int:
+        if self.repeats == 1:
+            return self.start
+        assert self.period is not None
+        return self.start + (self.repeats - 1) * self.period
+
+
+def _is_int(value: Any) -> bool:
+    return type(value) is int
+
+
+def _producer_event_count(layout: AcquisitionLayout) -> int:
+    counts = [loop.count for loop in layout.event_loops]
+    if not all(_is_int(count) and count > 0 for count in counts):
+        raise ValueError("producer event count requires positive integer loop counts")
+    return reduce(mul, counts, 1)
+
+
+def _validate_span_for_expansion(span: RecordedEventSpan) -> None:
+    for name in ("start", "count", "stride", "repeats"):
+        if not _is_int(getattr(span, name)):
+            raise TypeError(f"span {name} must be an integer")
+    if span.count <= 0 or span.stride <= 0 or span.repeats <= 0:
+        raise ValueError("span count, stride, and repeats must be positive")
+    if span.repeats > 1:
+        if not _is_int(span.period) or span.period <= 0:
+            raise ValueError("span period must be positive when repeats is greater than one")
+    elif span.period is not None:
+        raise ValueError("span period must be omitted when repeats is one")
+
+
+def _span_to_run_group(span: RecordedEventSpan) -> _RunGroup:
+    """Apply maximal arithmetic-run splitting without expanding run items."""
+    _validate_span_for_expansion(span)
+    if span.repeats == 1:
+        return _RunGroup(
+            span.start,
+            span.count,
+            1 if span.count == 1 else span.stride,
+        )
+
+    assert span.period is not None
+    if span.count == 1:
+        return _RunGroup(span.start, span.repeats, span.period)
+    if span.period == span.count * span.stride:
+        return _RunGroup(span.start, span.count * span.repeats, span.stride)
+    return _RunGroup(
+        span.start,
+        span.count,
+        span.stride,
+        period=span.period,
+        repeats=span.repeats,
+    )
+
+
+def _pop_last_run(groups: list[_RunGroup]) -> _RunGroup:
+    group = groups.pop()
+    if group.repeats == 1:
+        return group
+    assert group.period is not None
+    groups.append(replace(group, repeats=group.repeats - 1))
+    return _RunGroup(
+        group.last_start,
+        group.count,
+        1 if group.count == 1 else group.stride,
+    )
+
+
+def _pop_first_run(group: _RunGroup) -> tuple[_RunGroup, _RunGroup | None]:
+    first = _RunGroup(
+        group.start,
+        group.count,
+        1 if group.count == 1 else group.stride,
+    )
+    if group.repeats == 1:
+        return first, None
+    assert group.period is not None
+    remainder = replace(
+        group,
+        start=group.start + group.period,
+        repeats=group.repeats - 1,
+        period=group.period if group.repeats - 1 > 1 else None,
+    )
+    return first, remainder
+
+
+def _append_maximal_run_group(groups: list[_RunGroup], group: _RunGroup) -> tuple[_RunGroup, ...]:
+    """Merge an arithmetic continuation at the boundary of two run groups."""
+    if not groups:
+        groups.append(group)
+        return ()
+
+    previous = groups[-1]
+    previous_last_start = previous.last_start
+    previous_last = previous_last_start + (previous.count - 1) * previous.stride
+    boundary_stride = group.start - previous_last
+    if boundary_stride <= 0:
+        groups.append(group)
+        return ()
+    if previous.count > 1 and boundary_stride != previous.stride:
+        groups.append(group)
+        return ()
+
+    previous_run = _pop_last_run(groups)
+    first_run, remainder = _pop_first_run(group)
+    if first_run.count == 1 or first_run.stride == boundary_stride:
+        absorbed_count = first_run.count
+        first_remainder = None
+    else:
+        # The boundary establishes a different stride. The first event joins
+        # the preceding run; the rest starts a new arithmetic run.
+        absorbed_count = 1
+        first_remainder = _RunGroup(
+            first_run.start + first_run.stride,
+            first_run.count - 1,
+            1 if first_run.count - 1 == 1 else first_run.stride,
+        )
+    groups.append(
+        _RunGroup(
+            previous_run.start,
+            previous_run.count + absorbed_count,
+            boundary_stride if previous_run.count == 1 else previous_run.stride,
+        )
+    )
+    return tuple(value for value in (first_remainder, remainder) if value is not None)
+
+
+def _factor_run_groups(groups: Sequence[_RunGroup]) -> list[_RunGroup]:
+    """Factor consecutive equal runs using the first positive start period."""
+    pending = deque(groups)
+    factored: list[_RunGroup] = []
+    while pending:
+        group = pending.popleft()
+        if not factored:
+            factored.append(group)
+            continue
+
+        previous = factored[-1]
+        if previous.count != group.count or previous.stride != group.stride:
+            factored.append(group)
+            continue
+
+        expected_period = previous.period
+        if expected_period is None:
+            expected_period = group.start - previous.last_start
+            if expected_period <= 0:
+                factored.append(group)
+                continue
+        expected_start = previous.last_start + expected_period
+        if group.start != expected_start:
+            factored.append(group)
+            continue
+
+        absorb = group.repeats if group.repeats == 1 or group.period == expected_period else 1
+        factored[-1] = _RunGroup(
+            previous.start,
+            previous.count,
+            previous.stride,
+            period=expected_period,
+            repeats=previous.repeats + absorb,
+        )
+        if absorb < group.repeats:
+            assert group.period is not None
+            remainder_repeats = group.repeats - absorb
+            pending.appendleft(
+                replace(
+                    group,
+                    start=group.start + absorb * group.period,
+                    repeats=remainder_repeats,
+                    period=group.period if remainder_repeats > 1 else None,
+                )
+            )
+    return factored
+
+
+def canonicalize_recorded_event_spans(
+    spans: Iterable[RecordedEventSpan] | None,
+    *,
+    producer_event_count: int,
+) -> tuple[RecordedEventSpan, ...] | None:
+    """Return the unique compact span representation in stored-frame order.
+
+    The canonicalizer works on compressed arithmetic runs, so a periodic span
+    with a very large ``count`` or ``repeats`` does not need to be expanded.
+    """
+    if not _is_int(producer_event_count) or producer_event_count <= 0:
+        raise ValueError("producer_event_count must be a positive integer")
+    if spans is None:
+        return None
+
+    pending: deque[_RunGroup] = deque()
+    for span in spans:
+        if not isinstance(span, RecordedEventSpan):
+            raise TypeError("spans must contain RecordedEventSpan values")
+        pending.append(_span_to_run_group(span))
+
+    maximal_groups: list[_RunGroup] = []
+    while pending:
+        remainder = _append_maximal_run_group(maximal_groups, pending.popleft())
+        pending.extendleft(reversed(remainder))
+
+    if not maximal_groups:
+        return tuple()
+
+    factored = _factor_run_groups(maximal_groups)
+    canonical = tuple(
+        RecordedEventSpan(
+            start=group.start,
+            count=group.count,
+            stride=group.stride,
+            period=group.period if group.repeats > 1 else None,
+            repeats=group.repeats,
+        )
+        for group in factored
+    )
+    if canonical == (RecordedEventSpan(start=0, count=producer_event_count, stride=1),):
+        return None
+    return canonical
+
+
+def _layout_to_dict(layout: AcquisitionLayout) -> dict[str, Any]:
+    result = asdict(layout)
+    # asdict retains tuples, which json supports, but normalizing them to lists
+    # makes the public representation explicit and stable for other languages.
+    result["storage_axes"] = list(layout.storage_axes)
+    result["event_loops"] = [asdict(loop) for loop in layout.event_loops]
+    result["traversal"] = [asdict(rule) for rule in layout.traversal]
+    result["partitions"] = [asdict(partition) for partition in layout.partitions]
+    if layout.recorded_event_spans is None:
+        result["recorded_event_spans"] = None
+    else:
+        result["recorded_event_spans"] = [asdict(span) for span in layout.recorded_event_spans]
+    for loop in result["event_loops"]:
+        loop["labels"] = list(loop["labels"])
+    for rule in result["traversal"]:
+        rule["parity_loops"] = list(rule["parity_loops"])
+    return result
+
+
+def _json_text(layout: AcquisitionLayout) -> str:
+    return json.dumps(
+        _layout_to_dict(layout),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+
+
+def encode_acquisition_layout(layout: AcquisitionLayout) -> str:
+    """Serialize a validated layout as deterministic canonical JSON."""
+    if not isinstance(layout, AcquisitionLayout):
+        raise TypeError("layout must be an AcquisitionLayout")
+    issues = validate_acquisition_layout(layout)
+    errors = tuple(issue for issue in issues if issue.severity == "error")
+    if errors:
+        raise AcquisitionLayoutError("cannot encode an invalid acquisition layout", errors)
+    value = _json_text(layout)
+    if len(value.encode("utf-8")) > MAX_INLINE_LAYOUT_BYTES:
+        issue = LayoutIssue(
+            "error",
+            "LAYOUT_METADATA_TOO_LARGE",
+            f"Canonical acquisition layout exceeds {MAX_INLINE_LAYOUT_BYTES} UTF-8 bytes",
+            "AcquisitionLayout:json",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,))
+    return value
+
+
+def _expect_mapping(value: Any, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _only_fields(value: Mapping[str, Any], fields: set[str], label: str) -> None:
+    extra = sorted(set(value) - fields)
+    if extra:
+        raise ValueError(f"{label} contains unknown fields: {', '.join(extra)}")
+
+
+def _decode_loop(value: Any) -> AcquisitionLoop:
+    item = _expect_mapping(value, "event loop")
+    fields = {"id", "kind", "count", "step", "unit", "direction", "labels", "storage_axis"}
+    _only_fields(item, fields, "event loop")
+    return AcquisitionLoop(
+        id=item.get("id"),
+        kind=item.get("kind"),
+        count=item.get("count"),
+        step=item.get("step"),
+        unit=item.get("unit"),
+        direction=item.get("direction"),
+        labels=tuple(item.get("labels", ())),
+        storage_axis=item.get("storage_axis"),
+    )
+
+
+def _decode_traversal(value: Any) -> TraversalRule:
+    item = _expect_mapping(value, "traversal rule")
+    fields = {"loop_id", "order", "parity_loops"}
+    _only_fields(item, fields, "traversal rule")
+    return TraversalRule(
+        loop_id=item.get("loop_id"),
+        order=item.get("order"),
+        parity_loops=tuple(item.get("parity_loops", ())),
+    )
+
+
+def _decode_span(value: Any) -> RecordedEventSpan:
+    item = _expect_mapping(value, "recorded event span")
+    fields = {"start", "count", "stride", "period", "repeats"}
+    _only_fields(item, fields, "recorded event span")
+    return RecordedEventSpan(
+        start=item.get("start"),
+        count=item.get("count"),
+        stride=item.get("stride", 1),
+        period=item.get("period"),
+        repeats=item.get("repeats", 1),
+    )
+
+
+def _decode_partition(value: Any) -> AcquisitionPartition:
+    item = _expect_mapping(value, "partition")
+    fields = {"kind", "index", "planned_count", "storage"}
+    _only_fields(item, fields, "partition")
+    return AcquisitionPartition(
+        kind=item.get("kind"),
+        index=item.get("index"),
+        planned_count=item.get("planned_count"),
+        storage=item.get("storage"),
+    )
+
+
+def decode_acquisition_layout(value: str | bytes | bytearray) -> AcquisitionLayout:
+    """Decode, structurally validate, and immediately canonicalize a layout."""
+    if isinstance(value, str):
+        raw = value.encode("utf-8")
+    elif isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+    else:
+        raise TypeError("encoded acquisition layout must be str or bytes")
+    if len(raw) > MAX_INLINE_LAYOUT_BYTES:
+        issue = LayoutIssue(
+            "error",
+            "LAYOUT_METADATA_TOO_LARGE",
+            f"Encoded acquisition layout exceeds {MAX_INLINE_LAYOUT_BYTES} UTF-8 bytes",
+            "AcquisitionLayout:json",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,))
+
+    try:
+        decoded = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("AcquisitionLayout:json is not valid UTF-8 JSON") from exc
+    item = _expect_mapping(decoded, "acquisition layout")
+    fields = {
+        "schema",
+        "payload_kind",
+        "detector",
+        "storage_axes",
+        "event_loops",
+        "traversal",
+        "recorded_event_spans",
+        "partitions",
+        "modality",
+        "scan_source",
+        "provenance",
+    }
+    _only_fields(item, fields, "acquisition layout")
+    spans_value = item.get("recorded_event_spans")
+    spans = None if spans_value is None else tuple(_decode_span(entry) for entry in spans_value)
+    layout = AcquisitionLayout(
+        schema=item.get("schema"),
+        payload_kind=item.get("payload_kind"),
+        detector=item.get("detector"),
+        storage_axes=tuple(item.get("storage_axes", ())),
+        event_loops=tuple(_decode_loop(entry) for entry in item.get("event_loops", ())),
+        traversal=tuple(_decode_traversal(entry) for entry in item.get("traversal", ())),
+        recorded_event_spans=spans,
+        partitions=tuple(_decode_partition(entry) for entry in item.get("partitions", ())),
+        modality=item.get("modality"),
+        scan_source=item.get("scan_source"),
+        provenance=item.get("provenance", "recorded"),
+    )
+    canonical_raw = _json_text(layout).encode("utf-8")
+    if len(canonical_raw) > MAX_INLINE_LAYOUT_BYTES:
+        issue = LayoutIssue(
+            "error",
+            "LAYOUT_METADATA_TOO_LARGE",
+            f"Canonical acquisition layout exceeds {MAX_INLINE_LAYOUT_BYTES} UTF-8 bytes",
+            "AcquisitionLayout:json",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,))
+    return layout
+
+
+def _issue(
+    issues: list[LayoutIssue],
+    code: str,
+    message: str,
+    field_name: str | None = None,
+    loop_id: str | None = None,
+    severity: str = "error",
+) -> None:
+    issues.append(LayoutIssue(severity, code, message, field_name, loop_id))
+
+
+def _expanded_span_ordinals(spans: Sequence[RecordedEventSpan]) -> Iterator[int]:
+    for span in spans:
+        _validate_span_for_expansion(span)
+        period = span.period or 0
+        for repetition in range(span.repeats):
+            repetition_start = span.start + repetition * period
+            for item in range(span.count):
+                yield repetition_start + item * span.stride
+
+
+def _validate_spans(
+    layout: AcquisitionLayout,
+    producer_event_count: int | None,
+    issues: list[LayoutIssue],
+) -> int | None:
+    spans = layout.recorded_event_spans
+    if spans is None:
+        return producer_event_count
+
+    structurally_valid = True
+    for index, span in enumerate(spans):
+        if not isinstance(span, RecordedEventSpan):
+            _issue(
+                issues, "INVALID_SPAN", f"Span {index} has an invalid type", "recorded_event_spans"
+            )
+            structurally_valid = False
+            continue
+        for name in ("start", "count", "stride", "repeats"):
+            number = getattr(span, name)
+            minimum = 0 if name == "start" else 1
+            if not _is_int(number) or number < minimum:
+                _issue(
+                    issues,
+                    "INVALID_SPAN_VALUE",
+                    f"Span {index} {name} must be an integer >= {minimum}",
+                    f"recorded_event_spans[{index}].{name}",
+                )
+                structurally_valid = False
+        if _is_int(span.repeats) and span.repeats > 1:
+            if not _is_int(span.period) or span.period <= 0:
+                _issue(
+                    issues,
+                    "INVALID_SPAN_PERIOD",
+                    f"Span {index} period must be positive when repeats is greater than one",
+                    f"recorded_event_spans[{index}].period",
+                )
+                structurally_valid = False
+        elif span.period is not None:
+            _issue(
+                issues,
+                "UNNEEDED_SPAN_PERIOD",
+                f"Span {index} period must be omitted when repeats is one",
+                f"recorded_event_spans[{index}].period",
+            )
+            structurally_valid = False
+
+    if not structurally_valid or producer_event_count is None:
+        return None
+
+    selected_count = sum(span.count * span.repeats for span in spans)
+    # Most real layouts are a single compact mask. Avoid allocating a set when
+    # simple bounds and the within-span Diophantine overlap test are sufficient.
+    needs_cross_span_check = len(spans) > 1
+    seen: set[int] = set()
+    for span_index, span in enumerate(spans):
+        last = span.start + (span.repeats - 1) * (span.period or 0) + (span.count - 1) * span.stride
+        if span.start < 0 or last >= producer_event_count:
+            _issue(
+                issues,
+                "SPAN_OUT_OF_RANGE",
+                f"Span {span_index} addresses events outside 0..{producer_event_count - 1}",
+                f"recorded_event_spans[{span_index}]",
+            )
+        if span.repeats > 1:
+            assert span.period is not None
+            divisor = math.gcd(span.period, span.stride)
+            if span.repeats > span.stride // divisor and span.count > span.period // divisor:
+                _issue(
+                    issues,
+                    "DUPLICATE_PRODUCER_EVENT",
+                    f"Span {span_index} selects a producer event more than once",
+                    f"recorded_event_spans[{span_index}]",
+                )
+                needs_cross_span_check = False
+        if len(spans) == 1:
+            continue
+
+    if needs_cross_span_check:
+        for ordinal in _expanded_span_ordinals(spans):
+            if ordinal in seen:
+                _issue(
+                    issues,
+                    "DUPLICATE_PRODUCER_EVENT",
+                    f"Producer event {ordinal} is selected more than once",
+                    "recorded_event_spans",
+                )
+                break
+            seen.add(ordinal)
+    return selected_count
+
+
+def validate_acquisition_layout(
+    layout: AcquisitionLayout,
+    *,
+    shape: Sequence[int] | None = None,
+) -> tuple[LayoutIssue, ...]:
+    """Return all structural and payload-specific issues for a layout."""
+    issues: list[LayoutIssue] = []
+    if not isinstance(layout, AcquisitionLayout):
+        return (LayoutIssue("error", "INVALID_LAYOUT", "Value is not an AcquisitionLayout"),)
+
+    if layout.schema != ACQUISITION_LAYOUT_SCHEMA:
+        _issue(
+            issues, "UNSUPPORTED_SCHEMA", f"Expected schema {ACQUISITION_LAYOUT_SCHEMA!r}", "schema"
+        )
+    for field_name in ("payload_kind", "detector"):
+        value = getattr(layout, field_name)
+        if not isinstance(value, str) or not value.strip():
+            _issue(issues, "INVALID_TEXT", f"{field_name} must be a non-empty string", field_name)
+    if layout.provenance not in VALID_PROVENANCE:
+        _issue(
+            issues,
+            "INVALID_PROVENANCE",
+            f"Unknown layout provenance {layout.provenance!r}",
+            "provenance",
+        )
+
+    axes = layout.storage_axes
+    if any(not isinstance(axis, str) or not axis.strip() for axis in axes):
+        _issue(
+            issues, "INVALID_STORAGE_AXIS", "Storage axes must be non-empty strings", "storage_axes"
+        )
+    if len(set(axes)) != len(axes):
+        _issue(
+            issues, "DUPLICATE_STORAGE_AXIS", "Storage axis names must be unique", "storage_axes"
+        )
+    if shape is not None:
+        try:
+            source_shape = tuple(shape)
+        except TypeError:
+            source_shape = ()
+            _issue(issues, "INVALID_SHAPE", "Source shape must be a sequence", "shape")
+        if len(source_shape) != len(axes):
+            _issue(
+                issues,
+                "STORAGE_RANK_MISMATCH",
+                f"Layout declares {len(axes)} axes but source rank is {len(source_shape)}",
+                "storage_axes",
+            )
+    else:
+        source_shape = None
+
+    loop_ids: list[str] = []
+    loop_by_id: dict[str, AcquisitionLoop] = {}
+    valid_loop_counts = True
+    for index, loop in enumerate(layout.event_loops):
+        if not isinstance(loop, AcquisitionLoop):
+            _issue(issues, "INVALID_LOOP", f"Loop {index} has an invalid type", "event_loops")
+            valid_loop_counts = False
+            continue
+        if not isinstance(loop.id, str) or not loop.id.strip():
+            _issue(
+                issues,
+                "INVALID_LOOP_ID",
+                f"Loop {index} id must be a non-empty string",
+                f"event_loops[{index}].id",
+            )
+        else:
+            loop_ids.append(loop.id)
+            loop_by_id[loop.id] = loop
+        if not isinstance(loop.kind, str) or not loop.kind.strip():
+            _issue(
+                issues,
+                "INVALID_LOOP_KIND",
+                f"Loop {loop.id!r} kind must be a non-empty string",
+                f"event_loops[{index}].kind",
+                loop.id,
+            )
+        if not _is_int(loop.count) or loop.count <= 0:
+            _issue(
+                issues,
+                "INVALID_LOOP_COUNT",
+                f"Loop {loop.id!r} count must be a positive integer",
+                f"event_loops[{index}].count",
+                loop.id,
+            )
+            valid_loop_counts = False
+        if loop.step is not None and (
+            not isinstance(loop.step, (int, float))
+            or isinstance(loop.step, bool)
+            or not math.isfinite(float(loop.step))
+        ):
+            _issue(
+                issues,
+                "INVALID_LOOP_STEP",
+                f"Loop {loop.id!r} step must be finite",
+                f"event_loops[{index}].step",
+                loop.id,
+            )
+        if loop.unit is not None and (not isinstance(loop.unit, str) or not loop.unit.strip()):
+            _issue(
+                issues,
+                "INVALID_LOOP_UNIT",
+                f"Loop {loop.id!r} unit must be a non-empty string",
+                f"event_loops[{index}].unit",
+                loop.id,
+            )
+        if loop.direction not in (None, -1, 1):
+            _issue(
+                issues,
+                "INVALID_LOOP_DIRECTION",
+                f"Loop {loop.id!r} direction must be +1 or -1",
+                f"event_loops[{index}].direction",
+                loop.id,
+            )
+        if not isinstance(loop.labels, tuple) or any(
+            not isinstance(label, str) for label in loop.labels
+        ):
+            _issue(
+                issues,
+                "INVALID_LOOP_LABELS",
+                f"Loop {loop.id!r} labels must be strings",
+                f"event_loops[{index}].labels",
+                loop.id,
+            )
+        elif loop.labels and _is_int(loop.count) and len(loop.labels) != loop.count:
+            _issue(
+                issues,
+                "LOOP_LABEL_COUNT_MISMATCH",
+                f"Loop {loop.id!r} has {len(loop.labels)} labels for count {loop.count}",
+                f"event_loops[{index}].labels",
+                loop.id,
+            )
+    if len(set(loop_ids)) != len(loop_ids):
+        _issue(issues, "DUPLICATE_LOOP_ID", "Event loop IDs must be unique", "event_loops")
+
+    traversal_targets: list[str] = []
+    loop_positions = {loop_id: index for index, loop_id in enumerate(loop_ids)}
+    for index, rule in enumerate(layout.traversal):
+        if not isinstance(rule, TraversalRule):
+            _issue(
+                issues,
+                "INVALID_TRAVERSAL",
+                f"Traversal rule {index} has an invalid type",
+                "traversal",
+            )
+            continue
+        traversal_targets.append(rule.loop_id)
+        if rule.loop_id not in loop_by_id:
+            _issue(
+                issues,
+                "UNKNOWN_TRAVERSAL_LOOP",
+                f"Traversal references absent loop {rule.loop_id!r}",
+                f"traversal[{index}].loop_id",
+                rule.loop_id,
+            )
+        if rule.order not in VALID_TRAVERSAL_ORDERS:
+            _issue(
+                issues,
+                "INVALID_TRAVERSAL_ORDER",
+                f"Unknown traversal order {rule.order!r}",
+                f"traversal[{index}].order",
+                rule.loop_id,
+            )
+            continue
+        if rule.order != "serpentine" and rule.parity_loops:
+            _issue(
+                issues,
+                "UNEXPECTED_PARITY_LOOPS",
+                f"{rule.order!r} traversal cannot declare parity loops",
+                f"traversal[{index}].parity_loops",
+                rule.loop_id,
+            )
+        if rule.order == "serpentine":
+            if not rule.parity_loops:
+                _issue(
+                    issues,
+                    "MISSING_PARITY_LOOPS",
+                    "Serpentine traversal requires parity loops",
+                    f"traversal[{index}].parity_loops",
+                    rule.loop_id,
+                )
+            elif rule.loop_id in loop_positions:
+                target_position = loop_positions[rule.loop_id]
+                parity_length = len(rule.parity_loops)
+                expected = (
+                    tuple(loop_ids[target_position - parity_length : target_position])
+                    if parity_length <= target_position
+                    else ()
+                )
+                if tuple(rule.parity_loops) != expected:
+                    _issue(
+                        issues,
+                        "INVALID_PARITY_LOOPS",
+                        f"Serpentine parity loops must be the ordered contiguous suffix immediately outside {rule.loop_id!r}",
+                        f"traversal[{index}].parity_loops",
+                        rule.loop_id,
+                    )
+    if len(set(traversal_targets)) != len(traversal_targets):
+        _issue(
+            issues,
+            "DUPLICATE_TRAVERSAL_TARGET",
+            "Only one traversal rule may target each loop",
+            "traversal",
+        )
+
+    for index, partition in enumerate(layout.partitions):
+        if not isinstance(partition, AcquisitionPartition):
+            _issue(
+                issues, "INVALID_PARTITION", f"Partition {index} has an invalid type", "partitions"
+            )
+            continue
+        if not isinstance(partition.kind, str) or not partition.kind.strip():
+            _issue(
+                issues,
+                "INVALID_PARTITION_KIND",
+                f"Partition {index} kind must be a non-empty string",
+                f"partitions[{index}].kind",
+            )
+        if partition.index is not None and (not _is_int(partition.index) or partition.index < 0):
+            _issue(
+                issues,
+                "INVALID_PARTITION_INDEX",
+                f"Partition {index} index must be a non-negative integer",
+                f"partitions[{index}].index",
+            )
+        if partition.planned_count is not None and (
+            not _is_int(partition.planned_count) or partition.planned_count <= 0
+        ):
+            _issue(
+                issues,
+                "INVALID_PARTITION_COUNT",
+                f"Partition {index} planned_count must be positive when present",
+                f"partitions[{index}].planned_count",
+            )
+
+    producer_count = None
+    if valid_loop_counts:
+        producer_count = reduce(mul, (loop.count for loop in layout.event_loops), 1)
+    selected_count = _validate_spans(layout, producer_count, issues)
+
+    if layout.payload_kind == PAYLOAD_DETECTOR_FRAME_STREAM:
+        if axes.count("frame") != 1:
+            _issue(
+                issues,
+                "FRAME_AXIS_REQUIRED",
+                "Detector frame streams require exactly one canonical 'frame' storage axis",
+                "storage_axes",
+            )
+        for loop in layout.event_loops:
+            if isinstance(loop, AcquisitionLoop) and loop.storage_axis is not None:
+                _issue(
+                    issues,
+                    "FRAME_LOOP_STORAGE_AXIS",
+                    f"Frame-stream loop {loop.id!r} must not map directly to a storage axis",
+                    "event_loops",
+                    loop.id,
+                )
+        if (
+            source_shape is not None
+            and len(source_shape) == len(axes)
+            and axes.count("frame") == 1
+            and selected_count is not None
+        ):
+            observed = source_shape[axes.index("frame")]
+            if observed != selected_count:
+                _issue(
+                    issues,
+                    "FRAME_COUNT_MISMATCH",
+                    f"Layout selects {selected_count} frames but source contains {observed}",
+                    "shape",
+                )
+    elif layout.payload_kind in (PAYLOAD_ASSEMBLED_IMAGE, PAYLOAD_RECONSTRUCTED_IMAGE):
+        if layout.recorded_event_spans is not None:
+            _issue(
+                issues,
+                "SPANS_FORBIDDEN",
+                f"{layout.payload_kind} payloads cannot declare recorded event spans",
+                "recorded_event_spans",
+            )
+        mapped_axes: list[str] = []
+        for loop in layout.event_loops:
+            if not isinstance(loop, AcquisitionLoop):
+                continue
+            if loop.storage_axis is None:
+                _issue(
+                    issues,
+                    "LOOP_STORAGE_AXIS_REQUIRED",
+                    f"Loop {loop.id!r} must map to a storage axis",
+                    "event_loops",
+                    loop.id,
+                )
+                continue
+            mapped_axes.append(loop.storage_axis)
+            if loop.storage_axis not in axes:
+                _issue(
+                    issues,
+                    "UNKNOWN_LOOP_STORAGE_AXIS",
+                    f"Loop {loop.id!r} maps to absent axis {loop.storage_axis!r}",
+                    "event_loops",
+                    loop.id,
+                )
+            elif (
+                source_shape is not None and len(source_shape) == len(axes) and _is_int(loop.count)
+            ):
+                observed = source_shape[axes.index(loop.storage_axis)]
+                if observed != loop.count:
+                    _issue(
+                        issues,
+                        "LOOP_AXIS_COUNT_MISMATCH",
+                        f"Loop {loop.id!r} count {loop.count} does not match axis {loop.storage_axis!r} length {observed}",
+                        "shape",
+                        loop.id,
+                    )
+        if len(set(mapped_axes)) != len(mapped_axes):
+            _issue(
+                issues,
+                "DUPLICATE_LOOP_STORAGE_AXIS",
+                "Acquisition loops must map to distinct storage axes",
+                "event_loops",
+            )
+    elif isinstance(layout.payload_kind, str) and layout.payload_kind.strip():
+        _issue(
+            issues,
+            "UNKNOWN_PAYLOAD_KIND",
+            f"Payload kind {layout.payload_kind!r} has no registered strict validator",
+            "payload_kind",
+            severity="warning",
+        )
+
+    try:
+        encoded_size = len(_json_text(layout).encode("utf-8"))
+    except (TypeError, ValueError):
+        encoded_size = 0
+    if encoded_size > MAX_INLINE_LAYOUT_BYTES:
+        _issue(
+            issues,
+            "LAYOUT_METADATA_TOO_LARGE",
+            f"Canonical acquisition layout exceeds {MAX_INLINE_LAYOUT_BYTES} UTF-8 bytes",
+            "AcquisitionLayout:json",
+        )
+    return tuple(issues)
+
+
+def _producer_counters(layout: AcquisitionLayout, event_index: int) -> dict[str, int]:
+    event_count = _producer_event_count(layout)
+    if not _is_int(event_index) or not 0 <= event_index < event_count:
+        raise IndexError(f"producer event index {event_index!r} is outside 0..{event_count - 1}")
+    remaining = event_index
+    counters: dict[str, int] = {}
+    for loop in reversed(layout.event_loops):
+        remaining, coordinate = divmod(remaining, loop.count)
+        counters[loop.id] = coordinate
+    return {loop.id: counters[loop.id] for loop in layout.event_loops}
+
+
+def _producer_event_coordinates_unchecked(
+    layout: AcquisitionLayout, event_index: int
+) -> Mapping[str, int]:
+    counters = _producer_counters(layout, event_index)
+    coordinates = dict(counters)
+    loop_by_id = {loop.id: loop for loop in layout.event_loops}
+    for rule in layout.traversal:
+        if rule.order == "forward":
+            continue
+        reverse = rule.order == "reverse"
+        if rule.order == "serpentine":
+            flat = 0
+            for parity_loop_id in rule.parity_loops:
+                flat = flat * loop_by_id[parity_loop_id].count + counters[parity_loop_id]
+            reverse = flat % 2 == 1
+        if reverse:
+            target = loop_by_id[rule.loop_id]
+            coordinates[rule.loop_id] = target.count - 1 - counters[rule.loop_id]
+    return {loop.id: coordinates[loop.id] for loop in layout.event_loops}
+
+
+def _raise_for_invalid_coordinates(layout: AcquisitionLayout) -> None:
+    errors = tuple(
+        issue for issue in validate_acquisition_layout(layout) if issue.severity == "error"
+    )
+    if errors:
+        raise AcquisitionLayoutError("cannot resolve coordinates for an invalid layout", errors)
+
+
+def producer_event_coordinates(layout: AcquisitionLayout, event_index: int) -> Mapping[str, int]:
+    """Map one partition-local producer ordinal to logical loop coordinates."""
+    _raise_for_invalid_coordinates(layout)
+    return _producer_event_coordinates_unchecked(layout, event_index)
+
+
+def _recorded_event_ordinal(layout: AcquisitionLayout, frame_index: int) -> int:
+    if not _is_int(frame_index) or frame_index < 0:
+        raise IndexError("recorded frame index must be a non-negative integer")
+    if layout.recorded_event_spans is None:
+        event_count = _producer_event_count(layout)
+        if frame_index >= event_count:
+            raise IndexError(f"recorded frame index {frame_index} is outside 0..{event_count - 1}")
+        return frame_index
+    remaining = frame_index
+    for span in layout.recorded_event_spans:
+        span_size = span.count * span.repeats
+        if remaining >= span_size:
+            remaining -= span_size
+            continue
+        repetition, item = divmod(remaining, span.count)
+        return span.start + repetition * (span.period or 0) + item * span.stride
+    total = sum(span.count * span.repeats for span in layout.recorded_event_spans)
+    raise IndexError(f"recorded frame index {frame_index} is outside 0..{total - 1}")
+
+
+def recorded_frame_coordinates(layout: AcquisitionLayout, frame_index: int) -> Mapping[str, int]:
+    """Map a stored detector frame to logical coordinates without reading pixels."""
+    _raise_for_invalid_coordinates(layout)
+    return _producer_event_coordinates_unchecked(
+        layout, _recorded_event_ordinal(layout, frame_index)
+    )
+
+
+def iter_recorded_coordinates(layout: AcquisitionLayout) -> Iterator[Mapping[str, int]]:
+    """Yield logical coordinates for every stored frame in storage order."""
+    _raise_for_invalid_coordinates(layout)
+    if layout.recorded_event_spans is None:
+        ordinals: Iterable[int] = range(_producer_event_count(layout))
+    else:
+        ordinals = _expanded_span_ordinals(layout.recorded_event_spans)
+    for ordinal in ordinals:
+        yield _producer_event_coordinates_unchecked(layout, ordinal)
+
+
+def unfold_frame_axis(
+    array: Any,
+    layout: AcquisitionLayout,
+    *,
+    copy_policy: str = "forbid",
+) -> UnfoldedArray:
+    """Replace a frame axis with event-loop axes, gathering only when allowed.
+
+    A sparse selection can be unfolded when its recorded coordinates form a
+    Cartesian subset of the producer lattice. Irregular masks remain usable
+    through :func:`iter_recorded_coordinates`, but cannot be represented by a
+    regular ndarray without inventing a missing-value policy.
+    """
+    if copy_policy not in VALID_COPY_POLICIES:
+        raise ValueError(f"copy_policy must be one of {sorted(VALID_COPY_POLICIES)}")
+    shape = tuple(getattr(array, "shape", ()))
+    errors = tuple(
+        issue
+        for issue in validate_acquisition_layout(layout, shape=shape)
+        if issue.severity == "error"
+    )
+    if errors:
+        raise AcquisitionLayoutError("cannot unfold an invalid acquisition layout", errors)
+    if layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+        issue = LayoutIssue(
+            "error",
+            "UNFOLD_REQUIRES_FRAME_STREAM",
+            "Only detector-frame-stream payloads have a frame axis to unfold",
+            "payload_kind",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,))
+
+    coordinates = list(iter_recorded_coordinates(layout))
+    loop_coordinates = {
+        loop.id: tuple(sorted({coordinate[loop.id] for coordinate in coordinates}))
+        for loop in layout.event_loops
+    }
+    expected_count = reduce(mul, (len(values) for values in loop_coordinates.values()), 1)
+    coordinate_tuples = [
+        tuple(coordinate[loop.id] for loop in layout.event_loops) for coordinate in coordinates
+    ]
+    if expected_count != len(coordinate_tuples) or len(set(coordinate_tuples)) != len(
+        coordinate_tuples
+    ):
+        issue = LayoutIssue(
+            "error",
+            "IRREGULAR_EVENT_SELECTION",
+            "Recorded events do not form a rectangular subset; use the coordinate iterator or a chunked gather",
+            "recorded_event_spans",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,))
+
+    logical_order = [
+        tuple(values[index] for values, index in zip(loop_coordinates.values(), indices))
+        for indices in _cartesian_indices(
+            tuple(len(values) for values in loop_coordinates.values())
+        )
+    ]
+    position_by_coordinate = {
+        coordinate: index for index, coordinate in enumerate(coordinate_tuples)
+    }
+    try:
+        permutation = [position_by_coordinate[coordinate] for coordinate in logical_order]
+    except KeyError as exc:
+        issue = LayoutIssue(
+            "error",
+            "IRREGULAR_EVENT_SELECTION",
+            "Recorded events do not contain every coordinate in their rectangular subset",
+            "recorded_event_spans",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,)) from exc
+
+    identity = permutation == list(range(len(permutation)))
+    reordered = array
+    if not identity:
+        if copy_policy == "forbid":
+            issue = LayoutIssue(
+                "error",
+                "UNFOLD_REQUIRES_COPY",
+                "Traversal or event selection requires a gather; pass copy_policy='allow' or use coordinates",
+                "traversal",
+            )
+            raise AcquisitionLayoutError(issue.message, (issue,))
+        frame_axis = layout.storage_axes.index("frame")
+        indexer: list[Any] = [slice(None)] * len(shape)
+        indexer[frame_axis] = permutation
+        reordered = array[tuple(indexer)]
+
+    frame_axis = layout.storage_axes.index("frame")
+    loop_shape = tuple(len(loop_coordinates[loop.id]) for loop in layout.event_loops)
+    unfolded_shape = shape[:frame_axis] + loop_shape + shape[frame_axis + 1 :]
+    try:
+        unfolded = reordered.reshape(unfolded_shape)
+    except (AttributeError, TypeError, ValueError) as exc:
+        issue = LayoutIssue(
+            "error",
+            "UNFOLD_RESHAPE_FAILED",
+            "The source backend could not reshape the frame axis without materialization",
+            "storage_axes",
+        )
+        raise AcquisitionLayoutError(issue.message, (issue,)) from exc
+    unfolded_axes = (
+        layout.storage_axes[:frame_axis]
+        + tuple(loop.id for loop in layout.event_loops)
+        + layout.storage_axes[frame_axis + 1 :]
+    )
+    return UnfoldedArray(unfolded, unfolded_axes, loop_coordinates)
+
+
+def _cartesian_indices(shape: tuple[int, ...]) -> Iterator[tuple[int, ...]]:
+    if not shape:
+        yield ()
+        return
+    total = reduce(mul, shape, 1)
+    for flat_index in range(total):
+        remaining = flat_index
+        coordinates = [0] * len(shape)
+        for axis in range(len(shape) - 1, -1, -1):
+            remaining, coordinates[axis] = divmod(remaining, shape[axis])
+        yield tuple(coordinates)
