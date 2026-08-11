@@ -14,6 +14,10 @@ from imswitch.imcommon.model.acquisition_metadata import (
     RecordingLifecycleMarkers,
     normalize_recording_lifecycle,
 )
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    ResolvedAcquisitionLayout,
+    resolve_acquisition_layout,
+)
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     dataset_names,
@@ -25,6 +29,54 @@ from imswitch.improcess.model.image_sources import (
     resolve_image,
 )
 from imswitch.improcess.reconstructors.base import Chunk, StackInfo
+
+
+def _axis_labels_from_attrs(attrs: dict[str, Any], ndim: int) -> tuple[str, ...] | None:
+    value = attrs.get(
+        "ngff:axes",
+        attrs.get("axes", attrs.get("_ARRAY_DIMENSIONS", attrs.get("tiff:axes"))),
+    )
+    if isinstance(value, str):
+        value = tuple(value) if len(value) == ndim else None
+    if not isinstance(value, (list, tuple)) or len(value) != ndim:
+        return None
+    labels = []
+    for item in value:
+        if isinstance(item, dict):
+            item = item.get("name")
+        if item is None:
+            return None
+        labels.append(str(item))
+    return tuple(labels)
+
+
+def _resolve_stack_layout(
+    attrs: dict[str, Any],
+    *,
+    shape: tuple[int, ...],
+    detector: str | None,
+    source_path: str | None,
+    dataset_path: str | None,
+    axis_labels: tuple[str, ...] | None = None,
+) -> ResolvedAcquisitionLayout:
+    labels = axis_labels or _axis_labels_from_attrs(attrs, len(shape))
+    resolution_shape = shape
+    if shape and _optional_bool(attrs.get("writing")) is True:
+        planned = (
+            _optional_int(attrs.get("recording:planned_frames"))
+            or _optional_int(attrs.get("recording:expected_frames"))
+            or _optional_int(attrs.get("recording:frames_per_stack"))
+        )
+        resolution_shape = (max(1, int(planned or shape[0] or 1)), *shape[1:])
+    return resolve_acquisition_layout(
+        attrs,
+        shape=resolution_shape,
+        detector=str(detector or attrs.get("detector_name") or "unknown"),
+        axis_labels=labels,
+        axis_metadata_explicit=labels is not None,
+        source_path=source_path,
+        dataset_path=dataset_path,
+    )
 
 
 def _coerce_positive_int(value: Any) -> int | None:
@@ -364,7 +416,6 @@ class ZarrLiveSource(LiveSource):
 
         frame_shape = self._array.shape[-2:]
         self._refresh_state_from_attrs(attrs)
-        decode_layout_attrs(attrs)
 
         # Legacy / metadata-less stores carry no recording:expected_frames. A
         # completed store (not writing) is one whole stack, so its length is the
@@ -386,6 +437,7 @@ class ZarrLiveSource(LiveSource):
         else:
             frames_per_stack = _derive_scan_frames_per_stack(attrs)
 
+        dataset_path = attrs.get('recording:dataset_path') or self._default_dataset_path()
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._array.dtype,
@@ -393,8 +445,15 @@ class ZarrLiveSource(LiveSource):
             expected_frames=self._expected_frames,
             frames_per_stack=frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
-            dataset_path=attrs.get('recording:dataset_path') or self._default_dataset_path(),
+            dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
+            acquisition_layout=_resolve_stack_layout(
+                attrs,
+                shape=tuple(self._array.shape),
+                detector=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
+                source_path=self._path,
+                dataset_path=dataset_path,
+            ),
         )
 
     def poll(self) -> list[Chunk]:
@@ -467,7 +526,11 @@ class ZarrLiveSource(LiveSource):
                 raise ValueError(f"Detector group '{detector_name}' has no 'data' array")
             raise ValueError(f"Detector '{detector_name}' not found in Zarr store")
 
-        image = resolve_image(self._root, detector_name)
+        image = resolve_image(
+            self._root,
+            detector_name,
+            validate_layout_metadata=False,
+        )
         self._array = image.array
         self._array_path = tuple(image.array_path.split('/')) if image.array_path else ()
         attrs = self._read_attrs()
@@ -646,6 +709,7 @@ class ZarrMultiFileLapseSource(LiveSource):
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "ZARR",
+            acquisition_layout=info.acquisition_layout,
         )
 
     def poll(self) -> list[Chunk]:
@@ -789,6 +853,7 @@ class ZarrLapseSource(LiveSource):
         
         frame_shape = self._current_array.shape[-2:]
         
+        dataset_path = attrs.get('recording:dataset_path')
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._current_array.dtype,
@@ -796,8 +861,19 @@ class ZarrLapseSource(LiveSource):
             expected_frames=expected_frames,
             frames_per_stack=self._frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
-            dataset_path=attrs.get('recording:dataset_path'),
+            dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
+            acquisition_layout=_resolve_stack_layout(
+                attrs,
+                shape=tuple(self._current_array.shape),
+                detector=(
+                    attrs.get('recording:detector_name')
+                    or attrs.get('detector_name')
+                    or self._resolved_detector_name
+                ),
+                source_path=self._path,
+                dataset_path=dataset_path,
+            ),
         )
 
     def poll(self) -> list[Chunk]:
@@ -1072,9 +1148,9 @@ class Hdf5LiveSource(LiveSource):
         all_attrs = {**attrs, **dataset_attrs}
         self._refresh_barrier_state()
         self._refresh_state_from_attrs(all_attrs)
-        decode_layout_attrs(all_attrs)
         frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
 
+        dataset_path = all_attrs.get('recording:dataset_path') or self._dataset_path
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._dataset.dtype,
@@ -1082,8 +1158,15 @@ class Hdf5LiveSource(LiveSource):
             expected_frames=self._expected_frames,
             frames_per_stack=frames_per_stack,
             detector_name=all_attrs.get('recording:detector_name') or detector_name,
-            dataset_path=all_attrs.get('recording:dataset_path') or self._dataset_path,
+            dataset_path=dataset_path,
             source_format=all_attrs.get('recording:source_format') or 'HDF5',
+            acquisition_layout=_resolve_stack_layout(
+                all_attrs,
+                shape=tuple(self._dataset.shape),
+                detector=all_attrs.get('recording:detector_name') or detector_name,
+                source_path=self._path,
+                dataset_path=dataset_path,
+            ),
         )
 
     def poll(self) -> list[Chunk]:
@@ -1365,6 +1448,7 @@ class Hdf5MultiFileLapseSource(LiveSource):
             detector_name=info.detector_name,
             dataset_path=info.dataset_path,
             source_format=info.source_format or "HDF5",
+            acquisition_layout=info.acquisition_layout,
         )
 
     def poll(self) -> list[Chunk]:
@@ -1505,6 +1589,7 @@ class Hdf5LapseSource(LiveSource):
         
         frame_shape = self._current_dataset.shape[-2:]
         
+        dataset_path = attrs.get('recording:dataset_path') or self._current_dataset_path
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._current_dataset.dtype,
@@ -1512,8 +1597,19 @@ class Hdf5LapseSource(LiveSource):
             expected_frames=expected_frames,
             frames_per_stack=self._frames_per_stack,
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or self._resolved_detector_name,
-            dataset_path=attrs.get('recording:dataset_path'),
+            dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'HDF5',
+            acquisition_layout=_resolve_stack_layout(
+                attrs,
+                shape=tuple(self._current_dataset.shape),
+                detector=(
+                    attrs.get('recording:detector_name')
+                    or attrs.get('detector_name')
+                    or self._resolved_detector_name
+                ),
+                source_path=self._path,
+                dataset_path=dataset_path,
+            ),
         )
 
     def poll(self) -> list[Chunk]:

@@ -398,6 +398,13 @@ class ReconstructorManagerController(ImProcessWidgetController):
         collected = []
         for dataObj in dataObjs:
             params = self._params_for_data_obj(reconstructor)
+            validator = getattr(reconstructor, "validate_source", None)
+            if callable(validator):
+                try:
+                    validator(dataObj)
+                except Exception as exc:
+                    self._logger.error(f"Reconstruction preflight failed: {exc}")
+                    return
             self._logger.info(
                 f"Running {reconstructor.id} reconstruction for {dataObj.name}"
             )
@@ -457,6 +464,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
         for data_obj in data_objs:
             params = self._params_for_data_obj(reconstructor)
             try:
+                validator = getattr(reconstructor, "validate_source", None)
+                if callable(validator):
+                    validator(data_obj)
                 estimate = reconstructor.estimate_resources(data_obj, params)
             except Exception as exc:
                 self._logger.error(f"Reconstruction preflight failed: {exc}")

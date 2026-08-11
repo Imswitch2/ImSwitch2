@@ -8,6 +8,12 @@ import time
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.model.dataset_sources import resolve_dataset_source
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    ResolvedAcquisitionLayout,
+    adapt_tiling_manifest,
+    persist_layout_override,
+    resolve_acquisition_layout,
+)
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     default_axis_labels,
@@ -52,6 +58,8 @@ class DataObj:
         self._axis_scales = None
         self._scale_unit = None
         self._source_info = None
+        self._acquisitionLayoutResolution = None
+        self._acquisitionLayoutOverride = None
         self.sourceKind = "image"
         self.sourceMetadata = None
         self.sourceSummary = None
@@ -159,6 +167,81 @@ class DataObj:
         return self._source_info
 
     @property
+    def acquisition_layout(self) -> ResolvedAcquisitionLayout:
+        """Resolve acquisition semantics without materializing image pixels."""
+        if self._acquisitionLayoutResolution is not None:
+            return self._acquisitionLayoutResolution
+        if self.sourceKind != "image":
+            self._acquisitionLayoutResolution = adapt_tiling_manifest(
+                self.sourceMetadata,
+            )
+            return self._acquisitionLayoutResolution
+
+        if self._file is None and self.dataPath is not None:
+            self.checkAndOpenData()
+        image = self._resolveImage() if self._file is not None else None
+        if image is not None:
+            attrs = image.attrs
+            shape = image.array.shape
+            detector = (
+                attrs.get("recording:detector_name")
+                or attrs.get("detector_name")
+                or self._datasetName
+                or "unknown"
+            )
+            axis_labels = image.axis_labels
+            dataset_path = image.array_path
+            explicit_axes = any(
+                key in attrs
+                for key in ("ngff:axes", "tiff:axes", "axes", "_ARRAY_DIMENSIONS")
+            )
+        else:
+            attrs = self._attrs or {}
+            shape = np.shape(self._data)
+            detector = self._datasetName or "unknown"
+            axis_labels = self._axis_labels
+            dataset_path = None
+            explicit_axes = False
+
+        self._acquisitionLayoutResolution = resolve_acquisition_layout(
+            attrs,
+            shape=shape,
+            detector=str(detector),
+            axis_labels=axis_labels,
+            axis_metadata_explicit=explicit_axes,
+            user_override=self._acquisitionLayoutOverride,
+            source_path=self.dataPath,
+            dataset_path=dataset_path,
+            fingerprint=self.sourceFingerprint,
+        )
+        return self._acquisitionLayoutResolution
+
+    @property
+    def recording_lifecycle(self):
+        if self.sourceKind != "image":
+            return None
+        if self._file is None and self.dataPath is not None:
+            self.checkAndOpenData()
+        return self._resolveImage().recording_lifecycle
+
+    def setAcquisitionLayoutOverride(self, layout, *, persist: bool = False) -> None:
+        """Apply a validated user choice, optionally in a fingerprinted sidecar."""
+        self._acquisitionLayoutOverride = layout
+        self._acquisitionLayoutResolution = None
+        resolved = self.acquisition_layout
+        if not persist:
+            return
+        if self.dataPath is None:
+            raise ValueError("Cannot persist a layout override without a source path")
+        persist_layout_override(
+            self.dataPath,
+            resolved.layout,
+            detector=resolved.layout.detector,
+            dataset_path=(self._source_info or {}).get("dataset_path"),
+            fingerprint=self.sourceFingerprint,
+        )
+
+    @property
     def dataLoaded(self):
         return self._data is not None
 
@@ -244,6 +327,7 @@ class DataObj:
         self._dataSource = None
         self._attrs = None
         self._resolvedImage = None
+        self._acquisitionLayoutResolution = None
         self._meanData = None
         if self.sourceKind != "image":
             self._metadataSourceReady = False
@@ -280,7 +364,11 @@ class DataObj:
 
     def _resolveImage(self):
         if self._resolvedImage is None:
-            self._resolvedImage = resolve_image(self._file, self._datasetName)
+            self._resolvedImage = resolve_image(
+                self._file,
+                self._datasetName,
+                validate_layout_metadata=False,
+            )
             self._dataSource = virtual_source_from_resolved_image(self._resolvedImage)
             self._applyResolvedImageMetadata(self._resolvedImage)
         return self._resolvedImage

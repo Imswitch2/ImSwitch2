@@ -194,13 +194,30 @@ def dataset_names(container: Any) -> list[str]:
     raise ValueError(f'Unsupported image container "{type(container).__name__}"')
 
 
-def resolve_image(container: Any, dataset_name: str | None) -> ResolvedImage:
+def resolve_image(
+    container: Any,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool = True,
+) -> ResolvedImage:
     if is_zarr_group(container):
-        return _resolve_zarr_image(container, dataset_name)
+        return _resolve_zarr_image(
+            container,
+            dataset_name,
+            validate_layout_metadata=validate_layout_metadata,
+        )
     if isinstance(container, h5py.Group):
-        return _resolve_hdf5_image(container, dataset_name)
+        return _resolve_hdf5_image(
+            container,
+            dataset_name,
+            validate_layout_metadata=validate_layout_metadata,
+        )
     if isinstance(container, tiff.TiffFile):
-        return _resolve_tiff_image(container, dataset_name)
+        return _resolve_tiff_image(
+            container,
+            dataset_name,
+            validate_layout_metadata=validate_layout_metadata,
+        )
     raise ValueError(f'Unsupported image container "{type(container).__name__}"')
 
 
@@ -222,7 +239,12 @@ def _hdf5_dataset_names(group: h5py.Group) -> list[str]:
     return names
 
 
-def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> ResolvedImage:
+def _resolve_hdf5_image(
+    group: h5py.Group,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool,
+) -> ResolvedImage:
     if dataset_name is None:
         raise ValueError("datasetName is required")
 
@@ -242,7 +264,9 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             axis_scales=None,
             scale_unit=None,
             source_format="hdf5",
-            acquisition_layout=decode_layout_attrs(attrs),
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
             recording_lifecycle=_hdf5_lifecycle(array, attrs),
         )
 
@@ -255,14 +279,21 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             array_path=dataset_name,
             axis_labels=_axis_labels_from_hdf5_attrs(attrs, node.ndim),
             source_format="hdf5",
-            acquisition_layout=decode_layout_attrs(attrs),
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
             recording_lifecycle=_hdf5_lifecycle(node, attrs),
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
 
 
-def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> ResolvedImage:
+def _resolve_tiff_image(
+    file: tiff.TiffFile,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool,
+) -> ResolvedImage:
     series_names = tiff_dataset_names(file)
     if dataset_name is None:
         if len(series_names) != 1:
@@ -296,7 +327,9 @@ def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> Resolv
             axis_labels=axis_labels,
             axis_scales=axis_scales,
             scale_unit=scale_unit,
-            acquisition_layout=decode_layout_attrs(attrs),
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
             recording_lifecycle=lifecycle,
         )
 
@@ -406,28 +439,44 @@ def _ome_map_annotation_attrs(file: tiff.TiffFile, image_index: int) -> dict[str
 
 
 def _zarr_dataset_names(group: Any) -> list[str]:
-    root_image = _ngff_image(group)
+    root_image = _ngff_image(group, validate_layout_metadata=False)
     if root_image is not None:
         return [root_image.name]
 
     names = []
     for name in sorted(group.keys()):
         node = group[name]
-        if is_array_node(node) or is_structured_detector_group(node) or _ngff_image(node, name) is not None:
+        if (
+            is_array_node(node)
+            or is_structured_detector_group(node)
+            or _ngff_image(node, name, validate_layout_metadata=False) is not None
+        ):
             names.append(name)
     return names
 
 
-def _resolve_zarr_image(group: Any, dataset_name: str | None) -> ResolvedImage:
+def _resolve_zarr_image(
+    group: Any,
+    dataset_name: str | None,
+    *,
+    validate_layout_metadata: bool,
+) -> ResolvedImage:
     if dataset_name is None:
         raise ValueError("datasetName is required")
 
-    root_image = _ngff_image(group)
+    root_image = _ngff_image(
+        group,
+        validate_layout_metadata=validate_layout_metadata,
+    )
     if root_image is not None and dataset_name == root_image.name:
         return root_image
 
     node = group[dataset_name]
-    ngff_image = _ngff_image(node, dataset_name)
+    ngff_image = _ngff_image(
+        node,
+        dataset_name,
+        validate_layout_metadata=validate_layout_metadata,
+    )
     if ngff_image is not None:
         # _ngff_image resolves array_path relative to ``node``; rebase it onto
         # ``group`` (the store root) so callers that re-traverse from the root —
@@ -450,7 +499,9 @@ def _resolve_zarr_image(group: Any, dataset_name: str | None) -> ResolvedImage:
             attrs=attrs,
             array_path=f"{dataset_name}/data",
             source_format="zarr",
-            acquisition_layout=decode_layout_attrs(attrs),
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
             recording_lifecycle=_zarr_lifecycle(attrs),
         )
 
@@ -462,14 +513,21 @@ def _resolve_zarr_image(group: Any, dataset_name: str | None) -> ResolvedImage:
             attrs=attrs,
             array_path=dataset_name,
             source_format="zarr",
-            acquisition_layout=decode_layout_attrs(attrs),
+            acquisition_layout=(
+                decode_layout_attrs(attrs) if validate_layout_metadata else None
+            ),
             recording_lifecycle=_zarr_lifecycle(attrs),
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
 
 
-def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage | None:
+def _ngff_image(
+    group: Any,
+    fallback_name: str | None = None,
+    *,
+    validate_layout_metadata: bool = True,
+) -> ResolvedImage | None:
     multiscale = _ngff_multiscale(group)
     dataset = _ngff_dataset_entry(multiscale)
     if multiscale is None or dataset is None:
@@ -508,7 +566,9 @@ def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage |
         axis_labels=axis_labels,
         axis_scales=axis_scales,
         scale_unit=scale_unit,
-        acquisition_layout=decode_layout_attrs(attrs),
+        acquisition_layout=(
+            decode_layout_attrs(attrs) if validate_layout_metadata else None
+        ),
         recording_lifecycle=_zarr_lifecycle(attrs),
     )
 

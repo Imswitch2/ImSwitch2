@@ -8,8 +8,144 @@ from typing import Any, Callable
 import numpy as np
 from qtpy import QtWidgets
 
+from imswitch.imcommon.model.acquisition_layout import (
+    REGISTERED_PAYLOAD_KINDS,
+    LayoutIssue,
+)
 from imswitch.improcess.model import DataObj
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    AcquisitionLayoutResolutionError,
+    ResolvedAcquisitionLayout,
+)
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+
+
+@dataclass(frozen=True)
+class AcquisitionRequirements:
+    """Declarative acquisition semantics required by one reconstructor."""
+
+    payload_kinds: frozenset[str]
+    required_loop_kinds: frozenset[str] = frozenset()
+    allowed_extra_loops: str = "reject"
+    requires_calibrated_loops: frozenset[str] = frozenset()
+    allow_ambiguous: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload_kinds", frozenset(self.payload_kinds))
+        object.__setattr__(self, "required_loop_kinds", frozenset(self.required_loop_kinds))
+        object.__setattr__(
+            self,
+            "requires_calibrated_loops",
+            frozenset(self.requires_calibrated_loops),
+        )
+        if not self.payload_kinds:
+            raise ValueError("AcquisitionRequirements.payload_kinds cannot be empty")
+        if self.allowed_extra_loops not in {"reject", "select", "split", "reduce"}:
+            raise ValueError(
+                "allowed_extra_loops must be reject, select, split, or reduce"
+            )
+
+
+class AcquisitionPreflightError(ValueError):
+    """A strict reconstructor cannot safely consume the resolved acquisition."""
+
+    def __init__(self, message: str, issues: tuple[LayoutIssue, ...]) -> None:
+        super().__init__(message)
+        self.issues = issues
+
+
+def preflight_acquisition_layout(
+    resolved: ResolvedAcquisitionLayout,
+    requirements: AcquisitionRequirements,
+) -> tuple[LayoutIssue, ...]:
+    """Compare one resolved layout with plugin-declared requirements."""
+    issues = list(resolved.issues)
+    layout = resolved.layout
+    if layout.payload_kind not in requirements.payload_kinds:
+        issues.append(
+            LayoutIssue(
+                "error",
+                "UNSUPPORTED_ACQUISITION_PAYLOAD",
+                f"This reconstructor accepts {sorted(requirements.payload_kinds)}, "
+                f"not {layout.payload_kind!r}",
+                "payload_kind",
+            )
+        )
+
+    if layout.payload_kind not in REGISTERED_PAYLOAD_KINDS:
+        issues.append(
+            LayoutIssue(
+                "error",
+                "UNVALIDATED_ACQUISITION_PAYLOAD",
+                f"Payload kind {layout.payload_kind!r} has no registered strict validator",
+                "payload_kind",
+            )
+        )
+
+    incomplete_codes = {"FRAME_COUNT_MISMATCH", "LOOP_AXIS_COUNT_MISMATCH"}
+    if any(issue.code in incomplete_codes for issue in resolved.issues):
+        issues.append(
+            LayoutIssue(
+                "error",
+                "INCOMPLETE_ACQUISITION_LAYOUT",
+                "The stored data does not contain the complete declared acquisition layout",
+                "shape",
+            )
+        )
+
+    loop_kinds = {loop.kind for loop in layout.event_loops}
+    missing = requirements.required_loop_kinds - loop_kinds
+    for kind in sorted(missing):
+        issues.append(
+            LayoutIssue(
+                "error",
+                "MISSING_REQUIRED_ACQUISITION_LOOP",
+                f"Required acquisition loop {kind!r} is missing",
+                "event_loops",
+                kind,
+            )
+        )
+
+    if requirements.allowed_extra_loops == "reject":
+        for kind in sorted(loop_kinds - requirements.required_loop_kinds):
+            issues.append(
+                LayoutIssue(
+                    "error",
+                    "UNSUPPORTED_EXTRA_ACQUISITION_LOOP",
+                    f"Acquisition loop {kind!r} requires a selection or a compatible reconstructor",
+                    "event_loops",
+                    kind,
+                )
+            )
+
+    for kind in sorted(requirements.requires_calibrated_loops):
+        matching = [loop for loop in layout.event_loops if loop.kind == kind]
+        if not matching:
+            continue
+        if any(loop.step is None or loop.unit is None for loop in matching):
+            issues.append(
+                LayoutIssue(
+                    "error",
+                    "UNCALIBRATED_ACQUISITION_LOOP",
+                    f"Acquisition loop {kind!r} requires a physical step and unit",
+                    "event_loops",
+                    kind,
+                )
+            )
+
+    if not requirements.allow_ambiguous and (
+        resolved.confidence == "low"
+        or resolved.layout.provenance == "generic-fallback"
+    ):
+        issues.append(
+            LayoutIssue(
+                "error",
+                "AMBIGUOUS_ACQUISITION_LAYOUT",
+                "Acquisition semantics are low-confidence; choose or persist a layout override",
+                "AcquisitionLayout",
+            )
+        )
+    return tuple(issues)
 
 
 class Reconstructor(ABC):
@@ -59,6 +195,9 @@ class Reconstructor(ABC):
     but disabled, so a multidata run never silently degrades to individual
     processing.
     """
+
+    acquisition_requirements: AcquisitionRequirements | None = None
+    """Opt-in strict acquisition gate; ``None`` preserves legacy behaviour."""
 
 
     @abstractmethod
@@ -145,7 +284,39 @@ class Reconstructor(ABC):
 
     def inspect_source(self, data_obj: DataObj) -> "SourceInspection | None":
         """Describe source-dependent choices without materializing pixels."""
-        return None
+        return self.inspect_acquisition(data_obj)
+
+    def inspect_acquisition(self, data_obj: DataObj) -> "SourceInspection | None":
+        """Return the generic semantic preflight for an opted-in plugin."""
+        requirements = self.acquisition_requirements
+        if requirements is None:
+            return None
+        try:
+            resolved = data_obj.acquisition_layout
+            issues = preflight_acquisition_layout(resolved, requirements)
+            metadata = {
+                "acquisition_layout_source": resolved.source,
+                "acquisition_layout_confidence": resolved.confidence,
+                "acquisition_payload_kind": resolved.layout.payload_kind,
+            }
+        except AcquisitionLayoutResolutionError as exc:
+            issues = tuple(exc.issues)
+            metadata = {}
+        return SourceInspection(
+            source_kind=getattr(data_obj, "sourceKind", "image"),
+            metadata=metadata,
+            issues=issues,
+        )
+
+    def validate_source(self, data_obj: DataObj) -> "SourceInspection | None":
+        """Raise before pixel processing when opted-in preflight has errors."""
+        inspection = self.inspect_acquisition(data_obj)
+        if inspection is None:
+            return None
+        errors = tuple(issue for issue in inspection.issues if issue.severity == "error")
+        if errors:
+            raise AcquisitionPreflightError(errors[0].message, errors)
+        return inspection
 
 
 @dataclass(frozen=True)
@@ -165,6 +336,17 @@ class SourceInspection:
     choices: dict[str, tuple[SourceChoice, ...]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     warning: str | None = None
+    issues: tuple[LayoutIssue, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "issues", tuple(self.issues))
+        if not self.issues:
+            return
+        highest = next(
+            (issue for issue in self.issues if issue.severity == "error"),
+            self.issues[0],
+        )
+        object.__setattr__(self, "warning", highest.message)
 
 
 RECONSTRUCTION_PHASES = (
@@ -283,6 +465,7 @@ class StackInfo:
     detector_name: str | None = None
     dataset_path: str | None = None
     source_format: str | None = None
+    acquisition_layout: ResolvedAcquisitionLayout | None = None
 
 
 @dataclass(frozen=True)

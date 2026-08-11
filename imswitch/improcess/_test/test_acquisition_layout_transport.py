@@ -230,6 +230,8 @@ def test_offline_and_live_zarr_read_the_same_detector_metadata(detman, layout, t
                 else:
                     assert live.attrs[key] == offline.attrs[key]
             assert decode_acquisition_layout(live.attrs["AcquisitionLayout:json"]) == layout
+            assert live.acquisition_layout is not None
+            assert live.acquisition_layout.layout == layout
         finally:
             source.close()
 
@@ -272,6 +274,8 @@ def test_live_hdf5_uses_side_datasets_for_finalization(detman, layout, tmp_path)
     info = source.open(path)
     try:
         assert decode_acquisition_layout(info.attrs["AcquisitionLayout:json"]) == layout
+        assert info.acquisition_layout is not None
+        assert info.acquisition_layout.layout == layout
         source.poll()
         assert source.is_complete()
     finally:
