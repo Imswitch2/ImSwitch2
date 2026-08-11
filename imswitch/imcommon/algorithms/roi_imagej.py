@@ -140,6 +140,19 @@ def roi_from_imagej(imagej_roi, report: InteropReport) -> ROIRecord:
         points = np.asarray(coordinates, dtype=float)
         vertices = tuple((float(y), float(x)) for x, y in points)
 
+    if roi_type == "point" and vertices is not None:
+        # ImageJ's POINT holds one or many; ours distinguishes them by name,
+        # so the count decides which record type this becomes.
+        from .roi_geometry import roi_from_points
+
+        return roi_from_points(
+            [(r, c) for r, c in vertices],
+            name=name,
+            source="imagej",
+            position=_position_from(imagej_roi),
+            group=int(getattr(imagej_roi, "group", 0) or 0),
+        )
+
     if roi_type == "rectangle" and vertices is not None:
         rows = [v[0] for v in vertices]
         cols = [v[1] for v in vertices]
@@ -231,7 +244,19 @@ def roi_to_imagej(roi: ROIRecord, report: InteropReport):
     roifile = _require_roifile()
 
     kind = str(roi.roi_type or "").lower()
-    if kind == "rectangle" and roi.vertices is None:
+    if kind in ("point", "multipoint"):
+        from .roi_geometry import roi_points
+
+        points = roi_points(roi)
+        if not len(points):
+            raise ImageJInteropError(f"{roi.name!r} has no points to write")
+        # (row, col) -> (x, y). ImageJ has one POINT type for both single and
+        # multi points; the count is what tells them apart.
+        imagej = roifile.ImagejRoi.frompoints(
+            [[float(c), float(r)] for r, c in points]
+        )
+        imagej.roitype = roifile.ROI_TYPE.POINT
+    elif kind == "rectangle" and roi.vertices is None:
         r0, r1, c0, c1 = roi_bounds(roi)
         imagej = roifile.ImagejRoi.frompoints(
             [[c0, r0], [c1, r0], [c1, r1], [c0, r1]]

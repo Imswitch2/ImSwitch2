@@ -57,12 +57,22 @@ class MeasurementContext:
     #: beside one: a line has no interior, so there is nothing for the area
     #: rasteriser to produce and the intensity statistics read from here.
     samples: np.ndarray | None = None
+    #: Point coordinates for a point/multipoint ROI, in image pixels. Like
+    #: `samples`, present *instead* of a mask.
+    points: np.ndarray | None = None
     #: Perpendicular samples averaged for a line, ImageJ's line width.
     line_width: int = 1
 
     @property
     def is_line(self) -> bool:
-        return self.samples is not None
+        # `samples` alone is not enough: a point ROI carries samples too — the
+        # intensities *at* its points — so a line is a context with samples
+        # and no points.
+        return self.samples is not None and self.points is None
+
+    @property
+    def is_point(self) -> bool:
+        return self.points is not None
 
     @property
     def values(self) -> np.ndarray:
@@ -73,11 +83,12 @@ class MeasurementContext:
         them, from the sampled profile rather than from an interior it has not
         got.
         """
-        inside = (
-            np.asarray(self.samples, dtype=np.float64)
-            if self.is_line
-            else self.local_image[self.local_mask]
-        )
+        if self.is_line or self.is_point:
+            # A line's profile, or the intensities *at* the points: in both
+            # cases the ROI has no interior and these are its values.
+            inside = np.asarray(self.samples, dtype=np.float64)
+        else:
+            inside = self.local_image[self.local_mask]
         finite = inside[np.isfinite(inside)]
         if self.threshold is None:
             return finite
@@ -120,6 +131,10 @@ class Measurement:
     #: descriptor computed from its (empty) mask returns a number that looks
     #: measured and is not — circularity 0.0 for a straight line, say.
     line_safe: bool = False
+    #: Whether this measurement means anything for a point ROI. As with
+    #: `line_safe`, False by default: a point has no area, no perimeter and no
+    #: fitted ellipse, and reporting 0 for any of them reads as measured.
+    point_safe: bool = False
     #: Short note shown in the dialog, for anything with a definition worth
     #: stating (perimeter, the standard-deviation convention, and so on).
     note: str = ""
@@ -345,21 +360,21 @@ def _area_cal(context):
     return context.area_pixels * context.pixel_area
 
 
-@measurement(id="finite_px", line_safe=True, label="Finite px", group="Basic", default_on=True,
+@measurement(id="finite_px", line_safe=True, point_safe=True, label="Finite px", group="Basic", default_on=True,
              note="Pixels with a finite value; the rest are excluded from "
                   "intensity statistics but still counted in Area.")
 def _finite_px(context):
     return int(context.values.size)
 
 
-@measurement(id="mean", line_safe=True, label="Mean", group="Basic", unit_kind="intensity",
+@measurement(id="mean", line_safe=True, point_safe=True, label="Mean", group="Basic", unit_kind="intensity",
              default_on=True)
 def _mean(context):
     values = context.values
     return float(values.mean()) if values.size else _nan()
 
 
-@measurement(id="std", line_safe=True, label="StdDev", group="Basic", unit_kind="intensity",
+@measurement(id="std", line_safe=True, point_safe=True, label="StdDev", group="Basic", unit_kind="intensity",
              default_on=True,
              note="Sample standard deviation (n-1), matching ImageJ. NaN for "
                   "fewer than two pixels, where it is undefined rather than 0.")
@@ -372,35 +387,35 @@ def _std(context):
     return float(values.std(ddof=1))
 
 
-@measurement(id="median", line_safe=True, label="Median", group="Basic", unit_kind="intensity",
+@measurement(id="median", line_safe=True, point_safe=True, label="Median", group="Basic", unit_kind="intensity",
              default_on=True)
 def _median(context):
     values = context.values
     return float(np.median(values)) if values.size else _nan()
 
 
-@measurement(id="min", line_safe=True, label="Min", group="Basic", unit_kind="intensity",
+@measurement(id="min", line_safe=True, point_safe=True, label="Min", group="Basic", unit_kind="intensity",
              default_on=True)
 def _min(context):
     values = context.values
     return float(values.min()) if values.size else _nan()
 
 
-@measurement(id="max", line_safe=True, label="Max", group="Basic", unit_kind="intensity",
+@measurement(id="max", line_safe=True, point_safe=True, label="Max", group="Basic", unit_kind="intensity",
              default_on=True)
 def _max(context):
     values = context.values
     return float(values.max()) if values.size else _nan()
 
 
-@measurement(id="sum", line_safe=True, label="Sum", group="Basic", unit_kind="intensity",
+@measurement(id="sum", line_safe=True, point_safe=True, label="Sum", group="Basic", unit_kind="intensity",
              default_on=True, note="Equals RawIntDen.")
 def _sum(context):
     values = context.values
     return float(values.sum()) if values.size else _nan()
 
 
-@measurement(id="mode", line_safe=True, label="Mode", group="Basic", unit_kind="intensity",
+@measurement(id="mode", line_safe=True, point_safe=True, label="Mode", group="Basic", unit_kind="intensity",
              note="Most frequent value; float data is binned into 256 bins.")
 def _mode(context):
     values = context.values
@@ -705,7 +720,7 @@ def _feret_x_cal(context):
     return (_feret(context)["x"] + _offset(context)[1]) * context.col_scale
 
 
-@measurement(id="pixel_aspect", line_safe=True, label="PixelAR", group="Shape", default_on=True,
+@measurement(id="pixel_aspect", line_safe=True, point_safe=True, label="PixelAR", group="Shape", default_on=True,
              note="row_scale / col_scale. Away from 1, the shape descriptors "
                   "above are pixel-grid values and not directly comparable "
                   "with ImageJ's.")
@@ -791,6 +806,121 @@ def _register_line_statistics() -> None:
 _register_line_statistics()
 
 
+# --------------------------------------------------------------------------
+# point ROIs (P-P)
+# --------------------------------------------------------------------------
+
+def _points_of(context) -> np.ndarray:
+    if not context.is_point:
+        return np.zeros((0, 2), dtype=float)
+    return np.asarray(context.points, dtype=float).reshape((-1, 2))
+
+
+def _scaled_points(context) -> np.ndarray:
+    return _points_of(context) * np.array([context.row_scale, context.col_scale])
+
+
+def _neighbour_distances(points: np.ndarray) -> np.ndarray:
+    """Distance from each point to its nearest *other* point.
+
+    O(n^2) by construction, which is the right trade at the scale a hand-placed
+    or fiducial point set reaches; a KD-tree would be faster and would add a
+    dependency edge for a set of forty points.
+    """
+    if len(points) < 2:
+        return np.zeros((0,), dtype=float)
+    deltas = points[:, None, :] - points[None, :, :]
+    distances = np.linalg.norm(deltas, axis=2)
+    np.fill_diagonal(distances, np.inf)
+    return distances.min(axis=1)
+
+
+@measurement(id="point_count", label="Points", group="Point", point_safe=True,
+             note="How many points this ROI holds; 1 for a single point.")
+def _point_count(context):
+    return int(len(_points_of(context))) if context.is_point else _nan()
+
+
+@measurement(id="point_r_px", label="Point Y (px)", group="Point",
+             domain="pixel", point_safe=True,
+             note="The point's row, or the mean row of a multipoint.")
+def _point_r_px(context):
+    points = _points_of(context)
+    return float(points[:, 0].mean()) if len(points) else _nan()
+
+
+@measurement(id="point_c_px", label="Point X (px)", group="Point",
+             domain="pixel", point_safe=True)
+def _point_c_px(context):
+    points = _points_of(context)
+    return float(points[:, 1].mean()) if len(points) else _nan()
+
+
+@measurement(id="point_r_cal", label="Point Y", group="Point",
+             domain="calibrated", unit_kind="length", point_safe=True)
+def _point_r_cal(context):
+    points = _scaled_points(context)
+    return float(points[:, 0].mean()) if len(points) else _nan()
+
+
+@measurement(id="point_c_cal", label="Point X", group="Point",
+             domain="calibrated", unit_kind="length", point_safe=True)
+def _point_c_cal(context):
+    points = _scaled_points(context)
+    return float(points[:, 1].mean()) if len(points) else _nan()
+
+
+@measurement(id="nn_mean_px", label="NN mean (px)", group="Point",
+             domain="pixel", point_safe=True,
+             note="Mean distance from each point to its nearest neighbour "
+                  "within this ROI. NaN for a single point, which has none.")
+def _nn_mean_px(context):
+    distances = _neighbour_distances(_points_of(context))
+    return float(distances.mean()) if distances.size else _nan()
+
+
+@measurement(id="nn_mean_cal", label="NN mean", group="Point",
+             domain="calibrated", unit_kind="length", point_safe=True)
+def _nn_mean_cal(context):
+    distances = _neighbour_distances(_scaled_points(context))
+    return float(distances.mean()) if distances.size else _nan()
+
+
+@measurement(id="nn_min_px", label="NN min (px)", group="Point",
+             domain="pixel", point_safe=True)
+def _nn_min_px(context):
+    distances = _neighbour_distances(_points_of(context))
+    return float(distances.min()) if distances.size else _nan()
+
+
+@measurement(id="nn_min_cal", label="NN min", group="Point",
+             domain="calibrated", unit_kind="length", point_safe=True)
+def _nn_min_cal(context):
+    distances = _neighbour_distances(_scaled_points(context))
+    return float(distances.min()) if distances.size else _nan()
+
+
+@measurement(id="nn_max_px", label="NN max (px)", group="Point",
+             domain="pixel", point_safe=True)
+def _nn_max_px(context):
+    distances = _neighbour_distances(_points_of(context))
+    return float(distances.max()) if distances.size else _nan()
+
+
+@measurement(id="nn_max_cal", label="NN max", group="Point",
+             domain="calibrated", unit_kind="length", point_safe=True)
+def _nn_max_cal(context):
+    distances = _neighbour_distances(_scaled_points(context))
+    return float(distances.max()) if distances.size else _nan()
+
+
+@measurement(id="point_group", label="Group", group="Point", point_safe=True,
+             line_safe=True,
+             note="ImageJ's ROI group — what fiducial sets are marked with.")
+def _point_group(context):
+    return int(getattr(context.roi, "group", 0) or 0)
+
+
 @measurement(id="line_width", line_safe=True, label="LineWidth", group="Line",
              note="Perpendicular samples averaged, as in ImageJ. 1 samples "
                   "the line itself.")
@@ -868,6 +998,9 @@ def measure(context: MeasurementContext, selection=None) -> dict[str, Any]:
     """
     row: dict[str, Any] = {}
     for entry in selected_measurements(selection):
+        if context.is_point and not entry.point_safe:
+            row[entry.id] = float("nan")
+            continue
         if context.is_line and not entry.line_safe:
             # An area or shape descriptor of a line is not a small number, it
             # is no number: computing one from the empty mask reported a

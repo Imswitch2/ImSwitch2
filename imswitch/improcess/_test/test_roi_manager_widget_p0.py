@@ -72,6 +72,28 @@ class _Shapes:
         return np.asarray(point, dtype=float)
 
 
+class _Points:
+    """The parts of a napari Points layer the tool manager touches."""
+
+    def __init__(self, **kwargs):
+        self._data = []
+        self.name = kwargs.get("name", "Viewer Tool Points")
+        self.mode = "pan_zoom"
+        self.visible, self.ndim = True, 2
+        self.size = kwargs.get("size", 8)
+        self.scale, self.translate = (1.0, 1.0), (0.0, 0.0)
+        self.events = SimpleNamespace(data=_Event())
+
+    @property
+    def data(self):
+        return list(self._data)
+
+    @data.setter
+    def data(self, value):
+        self._data = [np.asarray(point, dtype=float) for point in value]
+        self.events.data.emit(SimpleNamespace(value=self._data))
+
+
 class _Layer:
     def __init__(self, name, data):
         self.name, self.data = name, data
@@ -102,6 +124,11 @@ class _Viewer:
 
     def add_shapes(self, **kwargs):
         layer = _Shapes(**kwargs)
+        self.layers.append(layer)
+        return layer
+
+    def add_points(self, **kwargs):
+        layer = _Points(**kwargs)
         self.layers.append(layer)
         return layer
 

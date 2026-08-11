@@ -233,9 +233,28 @@ class ViewerToolService(QtCore.QObject):
         return [(i, types[i], data[i]) for i in owned if i < len(types)]
 
     def clear(self, token: ToolToken) -> None:
-        """Remove only this owner's shapes."""
+        """Remove only this owner's shapes, and any points it drew."""
         self._check(token)
         self._remove_owner_shapes(token.owner_key)
+        if self.is_active(token.owner_key):
+            # Points are not per-owner the way shapes are: only the active
+            # owner can be drawing them, so only the active owner clears them.
+            try:
+                self._manager.clear_points()
+            except Exception:
+                pass
+
+    def points(self, token: ToolToken) -> list:
+        """``(row, col)`` for every point currently drawn (P-P).
+
+        Not owner-partitioned, unlike shapes: a point has no identity until it
+        is captured, and only the owner holding the tool can be adding them.
+        """
+        self._check(token)
+        try:
+            return self._manager.get_points_data()
+        except Exception:
+            return []
 
     def share(self, token: ToolToken, dst_owner_key: str) -> None:
         """Hand this owner's shapes to another owner, explicitly."""

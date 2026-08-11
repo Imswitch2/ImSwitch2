@@ -1174,6 +1174,8 @@ class ViewerToolManager(QtCore.QObject):
         super().__init__()
         self._viewer = napari_viewer
         self._shapes_layer = None
+        # Points need a layer of their own; created on first use (C-08).
+        self._points_layer = None
         self._current_mode = 'pan'
         self._processing_data_change = False
         self._enforce_single = bool(enforce_single)
@@ -1314,6 +1316,86 @@ class ViewerToolManager(QtCore.QObject):
             self._current_mode = 'pan'
         self.sigModeChanged.emit(self._current_mode)
     
+    #: Points live on a layer of their own — napari's Shapes layer has no
+    #: point type — so the tool has two layers and a mode decides which one is
+    #: being drawn on (C-08).
+    POINTS_LAYER_NAME = 'Viewer Tool Points'
+
+    def _ensure_points_layer(self):
+        """Lazily create the Points layer, adopting an existing one.
+
+        The same discipline as the Shapes layer, for the same reason: several
+        panels manage tools on one viewer, and creating unconditionally gave
+        each of them its own duplicate.
+        """
+        if getattr(self, '_points_layer', None) is not None:
+            return
+
+        adopted = None
+        try:
+            for layer in self._viewer.layers:
+                if getattr(layer, 'name', None) == self.POINTS_LAYER_NAME:
+                    adopted = layer
+                    break
+        except Exception:
+            adopted = None
+
+        if adopted is not None:
+            self._points_layer = adopted
+        else:
+            # napari renamed Points' `edge_color` to `border_color` in 0.5;
+            # the kwarg is built rather than passed as None, because passing
+            # an unknown keyword is a TypeError whatever its value.
+            options = {
+                'name': self.POINTS_LAYER_NAME,
+                'face_color': 'yellow',
+                'size': 8,
+                'ndim': 2,
+            }
+            options[
+                'border_color' if self._supports_border_color() else 'edge_color'
+            ] = 'black'
+            self._points_layer = self._viewer.add_points(**options)
+        try:
+            self._points_layer.events.data.connect(
+                lambda _event=None: self.sigShapesChanged.emit()
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _supports_border_color() -> bool:
+        """napari renamed `edge_color` to `border_color` for Points in 0.5."""
+        try:
+            import inspect
+
+            import napari
+
+            return 'border_color' in inspect.signature(
+                napari.layers.Points.__init__
+            ).parameters
+        except Exception:
+            return False
+
+    def get_points_data(self):
+        """Every point currently on the tool's Points layer, as (row, col)."""
+        layer = getattr(self, '_points_layer', None)
+        if layer is None:
+            return []
+        try:
+            return [tuple(float(v) for v in point[-2:]) for point in layer.data]
+        except Exception:
+            return []
+
+    def clear_points(self):
+        layer = getattr(self, '_points_layer', None)
+        if layer is None:
+            return
+        try:
+            layer.data = []
+        except Exception:
+            pass
+
     def set_mode(self, mode):
         """
         Set the interaction mode.
@@ -1321,10 +1403,31 @@ class ViewerToolManager(QtCore.QObject):
         Parameters
         ----------
         mode : str
-            One of: 'pan', 'select', 'rectangle', 'line', 'ellipse', 'polygon', 'path'
+            One of: 'pan', 'select', 'rectangle', 'line', 'ellipse', 'polygon',
+            'path', 'point'
         """
+        if mode == 'point':
+            # Drawing points means the Points layer is the one taking clicks,
+            # and the Shapes layer must stop taking them — two layers both in
+            # an add mode is how a click lands on whichever napari happens to
+            # consider active.
+            self._ensure_points_layer()
+            if self._shapes_layer is not None:
+                self._shapes_layer.mode = 'pan_zoom'
+            self._points_layer.mode = 'add'
+            try:
+                self._viewer.layers.selection.active = self._points_layer
+            except Exception:
+                pass
+            self._current_mode = mode
+            self.sigModeChanged.emit(mode)
+            return
+
         self._ensure_shapes_layer()
-        
+        points_layer = getattr(self, '_points_layer', None)
+        if points_layer is not None:
+            points_layer.mode = 'pan_zoom'
+
         # Map simplified mode names to napari Shape layer modes
         mode_map = {
             'pan': 'pan_zoom',

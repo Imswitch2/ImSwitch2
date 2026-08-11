@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12); P-P, P-7, P-R, P-F2 not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13); P-7, P-R, P-F2 not started. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1805,7 +1805,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-S** | ✅ **Implemented** — see §15.10 |
 | **P-6** | ✅ **Implemented** — see §15.11 (the Fiji fixture corpus needs a Fiji run) |
 | **P-U** | ✅ **Implemented** — see §15.12 |
-| **P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-P** | ✅ **Implemented** — see §15.13 |
+| **P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1955,8 +1956,9 @@ complete, and all of it is now fixed.
 | **Visibility, Clear and Remove Slice Info bypassed the command log** | `SetVisible`, `ClearROIs`, `RemoveSliceInfo` commands, all undoable |
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
-Of the roadmap, **P-5** (§15.9), **P-S** (§15.10), **P-6** (§15.11) and
-**P-U** (§15.12) are done too; P-P, P-7, P-R and P-F2 have not started.
+Of the roadmap, **P-5** (§15.9), **P-S** (§15.10), **P-6** (§15.11),
+**P-U** (§15.12) and **P-P** (§15.13) are done too; P-7, P-R and P-F2 have not
+started.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2270,6 +2272,53 @@ restoring geometry, style and position field for field; a failed import leaving
 the set untouched; the stack bounded; and an assertion, over the live command
 objects, that **no command holds a numpy array**. `test_roi_persistence.py`
 gained two for the autosave path.
+
+### 15.13 P-P — Points and multipoint ✅
+
+`point` and `multipoint` records, a Points drawing mode on the broker (C-08),
+twelve point measurements, and ImageJ point interop.
+
+**Points are stored in `vertices`, like every other vector geometry.** A
+multipoint is simply an ROI with several of them, so coordinates live in one
+place rather than in a parallel field every consumer would have to know about.
+`roi_points()` returns them, and returns *empty* for a non-point ROI, so a
+caller can ask without branching on the type first.
+
+**Two bugs the tests found, both from treating a point as ordinary geometry:**
+
+* `roi_bounds()` derived a point's box as `floor(min)..ceil(max)`, which for a
+  single point is **empty** — and an empty box turns every bounds check, clip
+  and hit test into "outside". Points get a half-open box around themselves.
+* `roi_hit_test()`'s bounding-box early-out rejected every click that was not
+  exactly on the pixel, because a point's clickable marker extends well beyond
+  its one-pixel box. The point branch now runs first. `POINT_GRAB_RADIUS` is
+  one constant for both the marker and the grab distance, so what is drawn is
+  what can be hit.
+
+**A point ROI carries `samples` too** — the intensities *at* its points — so
+`is_line` could no longer mean "has samples". A line is a context with samples
+and no points; getting that wrong made every point measurement return NaN while
+the intensity statistics quietly worked.
+
+**Intensity at a point is read by nearest neighbour, not interpolated.**
+Interpolating invents a number that is in no pixel of the image, which is not
+what "the intensity at this point" means. (The line sampler interpolates,
+correctly — a profile runs *between* pixels.)
+
+**Captured as one multipoint, not one ROI per point.** A fiducial set is a
+thing: splitting it would make counting the points, measuring their spacing, or
+naming the set as a whole impossible. Split it afterwards if the individual
+points are wanted.
+
+The Points layer is adopted rather than created blindly, like the Shapes layer
+and for the same reason. Switching to point mode stands the Shapes layer down —
+two layers both in an add mode is how a click lands on whichever napari happens
+to consider active.
+
+*Tests:* `test_roi_points.py` (25), and a **real-napari Points contract** in a
+subprocess beside the Shapes one, which pins the `edge_color` → `border_color`
+rename the tool inspects for.
+
 
 
 

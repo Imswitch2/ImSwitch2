@@ -26,6 +26,7 @@ from imswitch.improcess.analysis.roi_commands import (
     ReplaceROIs,
     SetVisible,
 )
+from imswitch.imcommon.algorithms.roi_geometry import roi_from_points
 from imswitch.imcommon.algorithms.roi_ops import (
     ROIOperationError,
     combine,
@@ -238,6 +239,11 @@ class ROIManagerWidget(QtWidgets.QWidget):
 
         self.addRectangleButton = QtWidgets.QPushButton("Draw Rectangle")
         self.addRectangleButton.setToolTip("Switch the viewer tool to rectangle drawing")
+        self.addPointsButton = QtWidgets.QPushButton("Draw Points")
+        self.addPointsButton.setToolTip(
+            "Switch the viewer tool to placing points; Add Shape then captures "
+            "them as one multipoint ROI"
+        )
         self.captureButton = QtWidgets.QPushButton("Add Shape")
         self.captureButton.setToolTip("Add the first rectangle from the current shapes layer")
         self.renameButton = QtWidgets.QPushButton("Rename")
@@ -325,6 +331,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         controls = QtWidgets.QHBoxLayout()
         for btn in (
             self.addRectangleButton,
+            self.addPointsButton,
             self.captureButton,
             self.renameButton,
             self.duplicateButton,
@@ -379,6 +386,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.setLayout(layout)
 
         self.addRectangleButton.clicked.connect(self._startRectangleDrawing)
+        self.addPointsButton.clicked.connect(self._startPointDrawing)
         self.captureButton.clicked.connect(self.add_current_rectangle)
         self.renameButton.clicked.connect(self.rename_selected)
         self.duplicateButton.clicked.connect(self.duplicate_selected)
@@ -437,6 +445,12 @@ class ROIManagerWidget(QtWidgets.QWidget):
         # only the newest and capture one of three.
         self._toolService.set_multi_shape(self._toolToken, True)
         self._toolService.set_mode(self._toolToken, "rectangle")
+
+    def _startPointDrawing(self) -> None:
+        """Place points instead of drawing shapes (P-P, C-08)."""
+        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        self._toolService.set_multi_shape(self._toolToken, True)
+        self._toolService.set_mode(self._toolToken, "point")
 
     def add_current_rectangle(self) -> None:
         try:
@@ -2154,6 +2168,33 @@ class ROIManagerWidget(QtWidgets.QWidget):
         )
         self.refresh_stats()
 
+    def _drawn_points(self) -> list[ROIRecord]:
+        """Every point currently placed, as **one** multipoint ROI.
+
+        One record rather than one per point: a fiducial set is a thing, and
+        splitting it into forty ROIs would make counting them, measuring their
+        spacing, or naming the set as a whole impossible. Split it afterwards
+        if the individual points are what is wanted.
+        """
+        try:
+            points = self._toolService.points(self._toolToken)
+        except Exception:
+            return []
+        if not points:
+            return []
+        pixels = self._world_to_pixels(np.asarray(points, dtype=float))
+        frame = self._current_frame()
+        if frame is not None:
+            self._set = self._set.with_frame(frame)
+        return [
+            roi_from_points(
+                pixels,
+                name=self._model.unique_name("Points"),
+                position=self._current_position(frame),
+                frame_uid=frame.frame_uid if frame is not None else "",
+            )
+        ]
+
     def _drawn_rois(self) -> list[ROIRecord]:
         """Every shape this panel owns, as ROI records.
 
@@ -2186,8 +2227,9 @@ class ROIManagerWidget(QtWidgets.QWidget):
                 # A degenerate or unsupported shape is skipped; the others in
                 # the same capture still make it in.
                 continue
+        rois.extend(self._drawn_points())
         if not rois:
-            raise ValueError("Draw a shape first.")
+            raise ValueError("Draw a shape or place a point first.")
         return rois
 
     def _current_frame(self):

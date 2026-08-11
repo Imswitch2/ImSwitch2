@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .roi import ROIRecord, replaced
+from .roi import ROIRecord, new_uid, replaced
 from .roi_payload import MaskPayload, decode_mask, encode_mask
 
 #: ROI types whose geometry is a closed area that can be filled and measured.
@@ -39,6 +39,10 @@ AREA_TYPES = frozenset(
 LINE_TYPES = frozenset({"line", "polyline", "path"})
 #: ROI types that are a set of positions.
 POINT_TYPES = frozenset({"point", "multipoint"})
+
+#: How far from a point a click still counts as on it, and the radius of the
+#: marker it is drawn as. One constant, so what is drawn is what can be hit.
+POINT_GRAB_RADIUS = 4.0
 
 
 class UnsupportedROIGeometry(ValueError):
@@ -92,6 +96,18 @@ def _clip_bounds(bounds, shape) -> tuple[int, int, int, int]:
 
 def roi_bounds(roi: ROIRecord) -> tuple[int, int, int, int]:
     """The ROI's tight, half-open bounding box, derived from its geometry."""
+    if roi_capabilities(roi.roi_type).is_point and roi.vertices:
+        # Half-open *around* the points. Deriving it like any other vertex
+        # geometry gives floor(min)..ceil(max), which for a single point is an
+        # empty box — and an empty box silently turns every bounds check, clip
+        # and hit test into "outside".
+        arr = np.asarray(roi.vertices, dtype=np.float64).reshape((-1, 2))
+        return (
+            int(np.floor(arr[:, 0].min())),
+            int(np.floor(arr[:, 0].max())) + 1,
+            int(np.floor(arr[:, 1].min())),
+            int(np.floor(arr[:, 1].max())) + 1,
+        )
     if roi.vertices:
         arr = np.asarray(roi.vertices, dtype=np.float64)
         rows, cols = arr[:, 0], arr[:, 1]
@@ -232,6 +248,60 @@ def roi_mask(roi: ROIRecord, shape: tuple[int, int]) -> np.ndarray:
     return full
 
 
+def roi_points(roi: ROIRecord) -> np.ndarray:
+    """The point coordinates of a point or multipoint ROI, as ``(n, 2)``.
+
+    Points are stored in ``vertices`` like any other vector geometry — a
+    multipoint is simply an ROI with several of them — so there is one place
+    coordinates live rather than a parallel field that every consumer would
+    have to know about.
+
+    Empty for anything that is not a point ROI, so a caller can ask without
+    branching on the type first.
+    """
+    if not roi_capabilities(roi.roi_type).is_point:
+        return np.zeros((0, 2), dtype=np.float64)
+    if roi.vertices:
+        return np.asarray(roi.vertices, dtype=np.float64).reshape((-1, 2))
+    # A legacy point carrying only bounds: its centre is the point.
+    r0, r1, c0, c1 = roi_bounds(roi)
+    return np.asarray([[(r0 + r1) / 2.0, (c0 + c1) / 2.0]], dtype=np.float64)
+
+
+def roi_from_points(
+    points,
+    *,
+    name: str,
+    source: str = "manual",
+    position: tuple[tuple[str, int], ...] = (),
+    frame_uid: str = "",
+    group: int = 0,
+) -> ROIRecord:
+    """A point or multipoint record from ``(n, 2)`` row/column coordinates."""
+    array = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    if array.size == 0:
+        raise ValueError("a point ROI needs at least one point")
+    rows, cols = array[:, 0], array[:, 1]
+    return ROIRecord(
+        name=name,
+        roi_type="point" if len(array) == 1 else "multipoint",
+        # Half-open around the points, so a single point still has a box of
+        # one pixel rather than a degenerate empty one.
+        bounds=(
+            int(np.floor(rows.min())),
+            int(np.floor(rows.max())) + 1,
+            int(np.floor(cols.min())),
+            int(np.floor(cols.max())) + 1,
+        ),
+        source=source,
+        vertices=tuple((float(r), float(c)) for r, c in array),
+        position=position,
+        frame_uid=frame_uid,
+        group=group,
+        uid=new_uid(),
+    )
+
+
 def roi_outline(roi: ROIRecord, *, max_vertices: int = 256) -> list[np.ndarray]:
     """Closed polygon(s) tracing the ROI, in image pixel coordinates.
 
@@ -241,6 +311,22 @@ def roi_outline(roi: ROIRecord, *, max_vertices: int = 256) -> list[np.ndarray]:
     """
     kind = str(roi.roi_type or "").lower()
     r0, r1, c0, c1 = roi_bounds(roi)
+
+    if roi_capabilities(kind).is_point:
+        # A small diamond per point. Its 1-pixel bounding box would be
+        # invisible at any realistic zoom, and a marker is what a point *is*
+        # on screen — the outline is for drawing, not for measuring.
+        radius = POINT_GRAB_RADIUS
+        return [
+            np.asarray(
+                [
+                    (r - radius, c), (r, c + radius),
+                    (r + radius, c), (r, c - radius),
+                ],
+                dtype=np.float64,
+            )
+            for r, c in roi_points(roi)
+        ]
 
     if roi.vertices and kind in ("polygon", "freehand", "line", "polyline", "path"):
         return [np.asarray(roi.vertices, dtype=np.float64)]
@@ -330,14 +416,26 @@ def roi_hit_test(roi: ROIRecord, position, *, tolerance: float = 0.0) -> bool:
     the topmost shape and cannot express it.
     """
     row, col = float(position[0]), float(position[1])
+    caps = roi_capabilities(roi.roi_type)
+
+    if caps.is_point:
+        # Before the bounding-box early-out: a point's clickable marker
+        # extends well beyond its one-pixel box, so the box would reject
+        # every click that was not exactly on it.
+        points = roi_points(roi)
+        if not len(points):
+            return False
+        distances = np.linalg.norm(
+            points - np.asarray([row, col], dtype=float), axis=1
+        )
+        return bool(distances.min() <= max(tolerance, POINT_GRAB_RADIUS))
+
     r0, r1, c0, c1 = roi_bounds(roi)
     if not (
         r0 - tolerance <= row <= r1 + tolerance
         and c0 - tolerance <= col <= c1 + tolerance
     ):
         return False
-
-    caps = roi_capabilities(roi.roi_type)
 
     if roi.mask is not None or roi.pixels is not None:
         # Ask the mask itself, so holes and disconnected parts are exact.
@@ -486,6 +584,8 @@ __all__ = [
     "UnsupportedROIGeometry",
     "LINE_TYPES",
     "POINT_TYPES",
+    "roi_from_points",
+    "roi_points",
     "ROICapabilities",
     "roi_bounds",
     "roi_capabilities",

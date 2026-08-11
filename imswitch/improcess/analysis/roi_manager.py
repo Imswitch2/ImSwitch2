@@ -15,6 +15,7 @@ from imswitch.imcommon.algorithms.roi_geometry import (
     roi_capabilities,
     roi_from_vertices,
     roi_mask_local,
+    roi_points,
 )
 from imswitch.imcommon.algorithms.roi import (
     ROIRecord,
@@ -484,6 +485,36 @@ def measure_roi(
     arr = np.asarray(image)
     if arr.ndim != 2:
         raise ValueError(f"ROI measurement expects a 2D image, got shape {arr.shape}")
+
+    if roi_capabilities(roi.roi_type).is_point:
+        # A point has no interior either. Its "values" are the intensities at
+        # the points themselves, read by nearest neighbour: interpolating
+        # between pixels would invent a number that is in no pixel of the
+        # image, which is not what "the intensity at this point" means.
+        points = roi_points(roi)
+        rows = np.clip(np.rint(points[:, 0]).astype(int), 0, arr.shape[0] - 1)
+        cols = np.clip(np.rint(points[:, 1]).astype(int), 0, arr.shape[1] - 1)
+        inside = (
+            (points[:, 0] >= -0.5) & (points[:, 0] <= arr.shape[0] - 0.5)
+            & (points[:, 1] >= -0.5) & (points[:, 1] <= arr.shape[1] - 0.5)
+        )
+        if not inside.any():
+            raise ValueError(f"ROI {roi.name!r} has no point inside the image")
+        empty = np.zeros((0, 0), dtype=bool)
+        context = MeasurementContext(
+            local_mask=empty,
+            local_image=empty.astype(np.float64),
+            roi=roi,
+            points=points[inside],
+            samples=arr[rows[inside], cols[inside]].astype(np.float64),
+            row_scale=float(row_scale),
+            col_scale=float(col_scale),
+            unit=unit,
+            plane=tuple(plane),
+            threshold=threshold,
+            geometry_match=geometry_match,
+        )
+        return measure(context, selection)
 
     if roi_capabilities(roi.roi_type).is_line:
         # A line has no interior, so there is nothing for the area rasteriser
