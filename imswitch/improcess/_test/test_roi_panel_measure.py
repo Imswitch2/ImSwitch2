@@ -862,3 +862,74 @@ def test_the_table_allows_selecting_more_than_one_roi(qapp):
         assert len(panel._selected_rois()) == 2
     finally:
         panel.deleteLater()
+
+
+# --------------------------------------------------------------------------
+# P-6.4 through the panel
+# --------------------------------------------------------------------------
+
+def test_create_selection_reads_the_labels_on_screen(qapp):
+    labels = np.zeros((16, 16), dtype=np.int32)
+    labels[2:6, 2:6] = 1
+    labels[10:14, 10:14] = 2
+    panel = _panel(qapp, labels.astype(float))
+    try:
+        panel.create_selection()
+        assert len(panel._model.rois) == 2
+        assert "Created 2 ROI(s)" in panel.summaryLabel.text()
+    finally:
+        panel.deleteLater()
+
+
+def test_create_selection_declines_an_intensity_image(qapp):
+    """Every pixel would be its own label, which is not what was asked for."""
+    panel = _panel(qapp, np.random.default_rng(0).random((16, 16)))
+    try:
+        panel.create_selection()
+        assert panel._model.rois == []
+        assert "intensity image" in panel.summaryLabel.text()
+    finally:
+        panel.deleteLater()
+
+
+def test_create_mask_publishes_a_result_not_a_layer(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([
+            ROIRecord("a", "rectangle", (0, 4, 0, 4)),
+            ROIRecord("b", "rectangle", (8, 12, 8, 12)),
+        ])
+        produced = []
+        panel.sigResultProduced.connect(lambda result, name: produced.append(result))
+        panel.create_mask()
+
+        assert len(produced) == 1
+        result = produced[0]
+        assert result.kind == "labels"
+        assert result.data.shape == (16, 16)
+        assert result.data.max() == 2
+        assert result.table_records() == [
+            {"label": 1, "roi": "a"}, {"label": 2, "roi": "b"}
+        ]
+    finally:
+        panel.deleteLater()
+
+
+def test_create_mask_is_calibrated_like_the_image_it_came_from(qapp):
+    panel = _panel(qapp)
+    try:
+        layer = panel._viewer.layers[0]
+        layer.metadata["scale_unit"] = "um"
+        layer.metadata["axes"] = [
+            {"label": "Y", "size": 16, "scale": 0.25, "unit": "um"},
+            {"label": "X", "size": 16, "scale": 0.25, "unit": "um"},
+        ]
+        panel.add_rois([ROIRecord("a", "rectangle", (0, 4, 0, 4))])
+        produced = []
+        panel.sigResultProduced.connect(lambda result, name: produced.append(result))
+        panel.create_mask()
+
+        assert produced[0].scale_unit == "um"
+        assert produced[0].axis_scales == [0.25, 0.25]
+    finally:
+        panel.deleteLater()

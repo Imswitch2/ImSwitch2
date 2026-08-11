@@ -130,3 +130,26 @@ def test_loading_a_result_reaches_an_already_open_follower_panel():
     channel.sigResultsChanged.emit()
 
     assert [name for name, _r in panel.available] == ["a", "b"]
+
+
+def test_a_panel_that_both_publishes_and_follows_gets_both_wirings():
+    """The ROI manager does both; routing it as a producer used to cost it the
+    follower wiring, so its across-results list went stale."""
+    channel = CommunicationChannel()
+    results = [("a", SimpleNamespace(name="a"))]
+    channel.setResultProvider(_Provider(results, []))
+
+    class _Producer(_FollowerPanel):
+        def __init__(self):
+            super().__init__()
+            self.sigResultProduced = SimpleNamespace(connect=lambda _fn: None)
+
+    panel = _Producer()
+    controller = _controllerStub(channel)
+    controller._panelResultBridges = set()
+    controller._wire_producing_panel(panel)
+
+    assert [name for name, _r in panel.available] == ["a"]
+    results.append(("b", SimpleNamespace(name="b")))
+    channel.sigResultsChanged.emit()
+    assert [name for name, _r in panel.available] == ["a", "b"]

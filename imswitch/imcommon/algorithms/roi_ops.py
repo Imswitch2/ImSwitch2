@@ -487,10 +487,88 @@ def rescale_to_frame(
     )
 
 
+# --------------------------------------------------------------------------
+# P-6.4 — between an ROI set and an image
+# --------------------------------------------------------------------------
+
+def rois_from_labels(
+    labels,
+    *,
+    name_prefix: str = "ROI",
+    source: str = "labels",
+    position=(),
+    frame_uid: str = "",
+    background: int = 0,
+) -> list[ROIRecord]:
+    """One ROI per label value — ImageJ's *Create Selection* over a label image.
+
+    Each ROI is built from its own bounding box, so a five-hundred-label
+    segmentation costs the sum of the objects rather than five hundred
+    image-sized masks.
+    """
+    from scipy.ndimage import find_objects
+
+    array = np.asarray(labels)
+    if array.ndim != 2:
+        raise ROIOperationError(f"expected a 2D label image, got shape {array.shape}")
+    if array.dtype == bool:
+        # A plain mask is a one-label image; treating it as one keeps a single
+        # code path rather than a near-copy for the boolean case.
+        array = array.astype(np.int32)
+
+    rois = []
+    for index, window in enumerate(find_objects(array), start=1):
+        if window is None or index == background:
+            continue
+        rows, cols = window
+        local = array[rows, cols] == index
+        if not local.any():
+            continue
+        rois.append(
+            roi_from_mask(
+                local,
+                name=f"{name_prefix}_{index}",
+                source=source,
+                offset=(int(rows.start), int(cols.start)),
+                position=tuple(position),
+                frame_uid=str(frame_uid or ""),
+            )
+        )
+    return rois
+
+
+def labels_from_rois(rois, shape) -> np.ndarray:
+    """An ROI set as a label image — the inverse of *Create Selection* (A-17).
+
+    Image-sized by definition, so it carries the same guard as
+    :func:`make_inverse` and refuses with a size rather than dying in the
+    allocator. Later ROIs overwrite earlier ones where they overlap, and the
+    labels follow the order given, so ``labels == 3`` is the third ROI.
+    """
+    height, width = int(shape[0]), int(shape[1])
+    if height <= 0 or width <= 0:
+        raise ROIOperationError("the image has no extent")
+    if height * width > MAX_FULL_FRAME_PIXELS:
+        raise ROIOperationError(
+            f"a {height}x{width} label image needs "
+            f"{height * width * 4 / 2**20:.0f} MiB; that is above the limit "
+            "for whole-frame operations"
+        )
+    out = np.zeros((height, width), dtype=np.int32)
+    for index, roi in enumerate(rois, start=1):
+        local, (rowslice, colslice) = roi_mask_local(roi, (height, width))
+        if local.size:
+            window = out[rowslice, colslice]
+            window[local] = index
+    return out
+
+
 __all__ = [
     "COMBINE_OPS",
     "MAX_FULL_FRAME_PIXELS",
     "ROIOperationError",
+    "labels_from_rois",
+    "rois_from_labels",
     "combine",
     "convex_hull",
     "enlarge",

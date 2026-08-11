@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10); P-U, P-6, P-P, P-7, P-R, P-F2 not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus); P-U, P-P, P-7, P-R, P-F2 not started. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1803,7 +1803,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-2, P-J, P-3, P-4** | ✅ **Implemented** — see §15.3, §15.4, §15.6, §15.7 |
 | **P-5** | ✅ **Implemented** — see §15.9 (first roadmap phase delivered) |
 | **P-S** | ✅ **Implemented** — see §15.10 |
-| **P-U, P-6, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-6** | ✅ **Implemented** — see §15.11 (the Fiji fixture corpus needs a Fiji run) |
+| **P-U, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1953,8 +1954,8 @@ complete, and all of it is now fixed.
 | **Visibility, Clear and Remove Slice Info bypassed the command log** | `SetVisible`, `ClearROIs`, `RemoveSliceInfo` commands, all undoable |
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
-Of the roadmap, **P-5** (§15.9) and **P-S** (§15.10) are done too; P-U, P-6,
-P-P, P-7, P-R and P-F2 have not started.
+Of the roadmap, **P-5** (§15.9), **P-S** (§15.10) and **P-6** (§15.11) are
+done too; P-U, P-P, P-7, P-R and P-F2 have not started.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2157,6 +2158,71 @@ collisions, the frame-carrying and frame-deduplication criteria, and the panel
 side: two sets keeping their own frames and their own measurement
 configuration, duplicate preserving ROI identity (without which comparing the
 copy says nothing), and the undo log not reaching across a switch.
+
+### 15.11 P-6 — Interop and persistence ✅
+
+| Task | Outcome |
+| --- | --- |
+| P-6.1 | ImageJ `.roi` / `RoiSet.zip` through `roifile`, imported lazily. Declared as the `imagej` extra; without it the menu entries are **disabled with the reason on them** rather than absent, because a missing entry looks like the feature does not exist |
+| P-6.2 | `imcommon/algorithms/roi_set_io.py`: the envelope, migrations hook, unknown-version refusal, semantic validation, atomic write |
+| P-6.3 | `improcess/model/roi_persistence.py` + a controller-owned `_ROIManagerStateAdapter` (A-09), under A-25's storage order |
+| P-6.4 | *Create Selection* (labels → ROIs) and *Create Mask* (ROIs → a `ProcessingResult`, the A-17 exception) |
+| P-6.6 | A structured `InteropReport` on every conversion — see below |
+
+**The version is refused, never guessed.** A file from a future schema is not
+"mostly readable": loading it half-correctly puts ROIs at plausible-looking
+wrong coordinates, which is worse than an error. The envelope also records the
+*coordinate convention*, because pixel indices alone do not say whether `(0,0)`
+is a corner or a centre — two programs disagreeing about that produce a
+half-pixel offset nothing in the data reveals.
+
+**The frame uid is recomputed on load, not read.** A stored uid that disagreed
+with its own content would be the more trustworthy-looking of the two answers
+and the wrong one (A-27).
+
+**Interop reports what it could not carry.** Styles, arbitrary ROI properties,
+non-C/Z/T position axes, and the parts of a disconnected composite beyond the
+largest all come back as named losses rather than silence — a silent lossy
+export is how someone discovers six months later that their groups never made
+it. A loss is recorded once, not once per ROI.
+
+**Two real bugs the round-trip tests caught**, both invisible without the
+library present: `roiwrite` decides between a `.roi` and a zip by what it is
+*given*, so passing a one-element list wrote a zip called `.roi` that Fiji then
+refused; and ImageJ's type enum says `RECT`, so a map keyed on `"rectangle"`
+silently fell through to the polygon default for every rectangle ever exported.
+
+**Persistence has a cap, and the spill is one file.** Saving state serialises
+the payload twice — once to check it is serialisable, then again to write it —
+so a five-thousand-ROI set would make closing ImProcess visibly slow. Under the
+cap everything stays in the state store; over it the sets spill to
+`improcess_roi_sets.json` and the store keeps **only a marker and a checksum**.
+Two copies in two places is how they come to disagree; an edited spill file is
+refused rather than half-loaded, and a missing one names the sets it lost.
+
+**Restoring is deliberately more forgiving than opening a file.** A *file* with
+a dangling frame reference is malformed and refused whole; a *saved session*
+that lost one frame must not cost the user the other ROIs at startup, so the
+restore path drops the orphans and says how many. Writing the strict check
+first made the tolerant path unreachable — the tests found it — and the
+tolerance now lives in exactly one place.
+
+**A panel can publish and follow at once.** Giving the ROI manager a
+`sigResultProduced` for *Create Mask* rerouted it to the producing-panel branch
+of the controller and silently cost it the follower wiring, so its
+across-results list would have gone stale the moment it gained a publish path.
+Producing and following are not alternatives.
+
+**What is not here:** the P-6.6 corpus of *Fiji-produced* fixtures. Files
+written by this code and read back prove the conversion is self-consistent,
+which is not the same as proving it matches what Fiji writes. Generating
+fixtures by hand would encode my own reading of the format as the reference —
+the one thing a corpus exists to avoid. It needs a Fiji run.
+
+*Tests:* `test_roi_set_io.py` (17), `test_roi_imagej.py` (19 + 1 skipped
+without `roifile`), `test_roi_persistence.py` (17), plus P-6.4 coverage in
+`test_roi_ops.py` and `test_roi_panel_measure.py`.
+
 
 
 

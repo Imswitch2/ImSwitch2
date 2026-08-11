@@ -356,3 +356,68 @@ def test_a_different_plane_has_no_mapping_at_all():
     roi = ROIRecord("r", "rectangle", (10, 20, 10, 20))
     with pytest.raises(ROIOperationError, match="different planes"):
         ops.rescale_to_frame(roi, source, sideways)
+
+
+# --------------------------------------------------------------------------
+# P-6.4 — between an ROI set and an image
+# --------------------------------------------------------------------------
+
+def test_create_selection_makes_one_roi_per_label():
+    labels = np.zeros((20, 20), dtype=np.int32)
+    labels[2:6, 2:6] = 1
+    labels[10:16, 10:16] = 2
+
+    rois = ops.rois_from_labels(labels)
+    assert [roi.name for roi in rois] == ["ROI_1", "ROI_2"]
+    assert [roi.bounds for roi in rois] == [(2, 6, 2, 6), (10, 16, 10, 16)]
+
+
+def test_create_selection_and_create_mask_are_inverses():
+    labels = np.zeros((20, 20), dtype=np.int32)
+    labels[2:6, 2:6] = 1
+    labels[10:16, 10:16] = 2
+
+    rois = ops.rois_from_labels(labels)
+    assert np.array_equal(ops.labels_from_rois(rois, (20, 20)), labels)
+
+
+def test_a_boolean_mask_is_a_one_label_image():
+    mask = np.zeros((10, 10), dtype=bool)
+    mask[2:5, 2:5] = True
+    (roi,) = ops.rois_from_labels(mask)
+    assert roi.bounds == (2, 5, 2, 5)
+
+
+def test_labels_are_read_from_their_own_boxes_not_the_whole_image():
+    """500 labels must not cost 500 image-sized masks."""
+    labels = np.zeros((512, 512), dtype=np.int32)
+    for index in range(1, 51):
+        row = (index % 10) * 50
+        col = (index // 10) * 50
+        labels[row:row + 4, col:col + 4] = index
+
+    rois = ops.rois_from_labels(labels)
+    assert len(rois) == 50
+    # Each ROI's payload covers its own 4x4 box, not the frame.
+    assert all(
+        (roi.bounds[1] - roi.bounds[0]) * (roi.bounds[3] - roi.bounds[2]) == 16
+        for roi in rois
+    )
+
+
+def test_create_mask_refuses_an_image_too_large_to_allocate():
+    with pytest.raises(ROIOperationError, match="MiB"):
+        ops.labels_from_rois(
+            [ROIRecord("a", "rectangle", (0, 4, 0, 4))], (100_000, 100_000)
+        )
+
+
+def test_later_rois_win_where_they_overlap():
+    """Stated rather than incidental: `labels == n` is the nth ROI."""
+    rois = [
+        ROIRecord("a", "rectangle", (0, 10, 0, 10)),
+        ROIRecord("b", "rectangle", (5, 15, 5, 15)),
+    ]
+    labels = ops.labels_from_rois(rois, (20, 20))
+    assert labels[7, 7] == 2
+    assert labels[1, 1] == 1

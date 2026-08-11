@@ -30,13 +30,16 @@ from imswitch.imcommon.algorithms.roi_ops import (
     combine,
     convex_hull,
     enlarge,
+    labels_from_rois,
     make_band,
     make_inverse,
     rescale_to_frame,
+    rois_from_labels,
     split,
     to_bounding_box,
     translate,
 )
+from imswitch.improcess.model.roi_mask_result import ROIMaskResult
 from imswitch.improcess.analysis.roi_frame_adapter import (
     frame_from_layer,
     frame_from_result,
@@ -53,6 +56,20 @@ from imswitch.imcommon.algorithms.roi_set import (
     ROISet,
     compare_sets,
     merge_sets,
+)
+from imswitch.imcommon.algorithms.roi_set_io import (
+    ROISetFormatError,
+    read_set,
+    write_set,
+)
+from imswitch.improcess.model.roi_persistence import (
+    sets_from_payload,
+    sets_payload,
+)
+from imswitch.imcommon.algorithms.roi_imagej import (
+    available as imagej_available,
+    read_imagej,
+    write_imagej,
 )
 from imswitch.improcess.analysis.roi_manager import (
     ROIManagerModel,
@@ -125,6 +142,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
     sigResultPushed = QtCore.Signal(object, object)
     #: A curve for the shared Graph panel.
     sigPlotPushed = QtCore.Signal(object)
+    #: A label image built from the ROI set, for the reconstruction list.
+    sigResultProduced = QtCore.Signal(object, str)
     #: Internal: a finished measurement job, carried from the worker thread to
     #: the GUI thread. A queued signal is the marshalling `MeasurementRunner`
     #: requires — its callbacks run on the worker, and touching a widget from
@@ -279,6 +298,12 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.moreButton.setMenu(self.moreMenu)
         self.exportCsvButton = QtWidgets.QPushButton("Export CSV")
         self.exportJsonButton = QtWidgets.QPushButton("Export JSON")
+        self.fileButton = QtWidgets.QToolButton()
+        self.fileButton.setText("File")
+        self.fileButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.fileMenu = QtWidgets.QMenu(self.fileButton)
+        self._buildFileMenu()
+        self.fileButton.setMenu(self.fileMenu)
 
         controls = QtWidgets.QHBoxLayout()
         for btn in (
@@ -298,6 +323,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.cancelButton,
             self.exportCsvButton,
             self.exportJsonButton,
+            self.fileButton,
         ):
             controls.addWidget(btn)
         controls.addWidget(self.removeSliceInfoButton)
@@ -1340,6 +1366,166 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.summaryLabel.setText("Measurement cancelled.")
 
     # ----------------------------------------------------------------------
+    # P-6 — saving, loading and ImageJ interop
+    # ----------------------------------------------------------------------
+
+    def roiState(self) -> dict:
+        """Every set, plus the panel options, ready for persistence.
+
+        The sets are the state; the checkboxes ride along because they change
+        what a capture records and would otherwise reset every session.
+        """
+        self._commitActiveSet()
+        return sets_payload(
+            self._sets,
+            self._activeIndex,
+            {
+                "show_all": self.showAllCheck.isChecked(),
+                "labels": self.labelsCheck.isChecked(),
+                "associate_slices": self.associateSlicesCheck.isChecked(),
+            },
+        )
+
+    def setRoiState(self, payload: dict) -> None:
+        """Restore sets and options saved by :meth:`roiState`.
+
+        An ROI whose frame is not in the payload is dropped rather than
+        restored: it would be a region with no plane to belong to, and
+        measuring it would report numbers against an image nothing connects it
+        to. The dropping happens in `sets_from_payload`, which is the one
+        restore path.
+        """
+        sets, active, options, dropped = sets_from_payload(payload)
+        self._sets = list(sets) or [ROISet(name="ROIs")]
+        self._activeIndex = max(0, min(active, len(self._sets) - 1))
+        self.showAllCheck.setChecked(bool(options.get("show_all", True)))
+        self.labelsCheck.setChecked(bool(options.get("labels", False)))
+        self.associateSlicesCheck.setChecked(
+            bool(options.get("associate_slices", False))
+        )
+        self._loadActiveSet()
+        if dropped:
+            self.summaryLabel.setText(
+                f"{dropped} restored ROI(s) had no stored frame and were "
+                "left out."
+            )
+
+    def _buildFileMenu(self) -> None:
+        self.fileMenu.addAction("Save ROI set…", self.save_set)
+        self.fileMenu.addAction("Open ROI set…", self.open_set)
+        self.fileMenu.addSeparator()
+        self.imagejImportAction = self.fileMenu.addAction(
+            "Import ImageJ ROIs…", self.import_imagej
+        )
+        self.imagejExportAction = self.fileMenu.addAction(
+            "Export ImageJ ROIs…", self.export_imagej
+        )
+        if not imagej_available():
+            # Disabled with the reason on it, rather than absent: a missing
+            # menu entry looks like the feature does not exist.
+            for action in (self.imagejImportAction, self.imagejExportAction):
+                action.setEnabled(False)
+                action.setToolTip(
+                    "Needs the optional 'roifile' package "
+                    "(pip install roifile)"
+                )
+            self.fileMenu.setToolTipsVisible(True)
+
+    def save_set(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save ROI set", f"{self._set.name}.json", "ROI sets (*.json)"
+        )
+        if not path:
+            return
+        self._commitActiveSet()
+        try:
+            write_set(Path(path), self._set)
+        except Exception as exc:
+            self.summaryLabel.setText(f"Could not save: {exc}")
+            return
+        self.summaryLabel.setText(
+            f"Saved {len(self._set.rois)} ROI(s) to {Path(path).name}."
+        )
+
+    def open_set(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open ROI set", "", "ROI sets (*.json)"
+        )
+        if not path:
+            return
+        try:
+            loaded = read_set(Path(path))
+        except ROISetFormatError as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+        except Exception as exc:
+            self.summaryLabel.setText(f"Could not open: {exc}")
+            return
+        # Into a set of its own, never over the active one: opening a file is
+        # not a reason to discard what is on screen.
+        self._commitActiveSet()
+        self._sets.append(
+            replace(loaded, name=self._uniqueSetName(loaded.name))
+        )
+        self._activeIndex = len(self._sets) - 1
+        self._loadActiveSet()
+        self.summaryLabel.setText(
+            f"Opened {len(loaded.rois)} ROI(s) from {Path(path).name}."
+        )
+
+    def import_imagej(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import ImageJ ROIs", "", "ImageJ ROIs (*.roi *.zip)"
+        )
+        if not path:
+            return
+        try:
+            rois, report = read_imagej(Path(path))
+        except Exception as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+        if not rois:
+            self.summaryLabel.setText("That file contained no ROIs.")
+            return
+        self.add_rois(rois)
+        self.summaryLabel.setText(f"Imported {report.summary}. {self._reportText(report)}")
+
+    def export_imagej(self) -> None:
+        rois = self._selected_rois() or self._model.rois
+        if not rois:
+            self.summaryLabel.setText("No ROIs to export.")
+            return
+        suffix = ".roi" if len(rois) == 1 else ".zip"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export ImageJ ROIs",
+            f"RoiSet{suffix}",
+            "ImageJ ROIs (*.roi *.zip)",
+        )
+        if not path:
+            return
+        try:
+            report = write_imagej(Path(path), rois)
+        except Exception as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+        self.summaryLabel.setText(f"Exported {report.summary}. {self._reportText(report)}")
+
+    @staticmethod
+    def _reportText(report) -> str:
+        """The first loss, spelled out.
+
+        Interop is lossy in ways that are invisible in the result — a group
+        that did not survive, a hole that was traced away — so at least one is
+        said out loud rather than left in a report nobody opens.
+        """
+        if report.losses:
+            return report.losses[0]
+        if report.warnings:
+            return report.warnings[0]
+        return ""
+
+    # ----------------------------------------------------------------------
     # P-S — more than one named set
     # ----------------------------------------------------------------------
 
@@ -1565,6 +1751,9 @@ class ROIManagerWidget(QtWidgets.QWidget):
             ("Translate…", self.translate_selected),
             None,
             ("Rescale to this result…", self.rescale_selected_to_current_frame),
+            None,
+            ("Create Selection from labels", self.create_selection),
+            ("Create Mask", self.create_mask),
         ]
         for entry in entries:
             if entry is None:
@@ -1709,6 +1898,85 @@ class ROIManagerWidget(QtWidgets.QWidget):
 
         self._operation("Rescale", rescale, consume=True)
         self._set = self._set.with_frame(target)
+
+    # ----------------------------------------------------------------------
+    # P-6.4 — between an ROI set and an image
+    # ----------------------------------------------------------------------
+
+    def create_selection(self) -> None:
+        """ImageJ's *Create Selection*: the label image on screen becomes ROIs.
+
+        Reads the plane currently displayed, so a labels result and a plain
+        mask both work, and a stack yields the slice being looked at.
+        """
+        image = self._current_image_2d()
+        if image is None:
+            self.summaryLabel.setText("No image layer selected.")
+            return
+        array = np.asarray(image)
+        if array.dtype.kind == "f" and not np.array_equal(array, array.astype(int)):
+            self.summaryLabel.setText(
+                "This looks like an intensity image, not labels. Segment it "
+                "first, or threshold it to a mask."
+            )
+            return
+
+        frame = self._current_frame()
+        try:
+            rois = rois_from_labels(
+                array.astype(np.int32),
+                name_prefix=self._set.name,
+                position=self._plane_key(frame),
+                frame_uid=frame.frame_uid if frame is not None else "",
+            )
+        except ROIOperationError as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+        if not rois:
+            self.summaryLabel.setText("That image has no labelled regions.")
+            return
+        if frame is not None:
+            self._set = self._set.with_frame(frame)
+        self.add_rois(rois)
+        self.summaryLabel.setText(f"Created {len(rois)} ROI(s) from labels.")
+
+    def create_mask(self) -> None:
+        """Publish the ROI set as a label image (A-17 full-frame exception).
+
+        A `ProcessingResult`, not a viewer layer: it goes into the
+        reconstruction list like every other result, so it can be saved,
+        processed and measured by the same machinery as anything else (C-01).
+        """
+        image = self._current_image_2d()
+        if image is None:
+            self.summaryLabel.setText("No image layer selected.")
+            return
+        rois = self._selected_rois() or [
+            roi for roi in self._model.rois if roi.visible
+        ]
+        if not rois:
+            self.summaryLabel.setText("No visible ROI to draw.")
+            return
+        try:
+            labels = labels_from_rois(rois, np.asarray(image).shape)
+        except ROIOperationError as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+
+        frame = self._current_frame()
+        row_scale, col_scale, unit = plane_scales(frame)
+        result = ROIMaskResult(
+            name=f"{self._set.name} mask",
+            data=labels,
+            axis_labels=["Y", "X"],
+            axis_scales=[row_scale, col_scale],
+            scale_unit=unit,
+            roi_names=[roi.name for roi in rois],
+        )
+        self.sigResultProduced.emit(result, result.name)
+        self.summaryLabel.setText(
+            f"Published a label image of {len(rois)} ROI(s)."
+        )
 
     def remove_slice_info(self) -> None:
         """Detach every ROI from the slice it was captured on (ImageJ parity)."""
