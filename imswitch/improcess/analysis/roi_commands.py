@@ -118,6 +118,69 @@ class UpdateROI:
         self._before = None
 
 
+@dataclass
+class SetVisible:
+    """Show or hide one ROI."""
+
+    name: str
+    visible: bool
+    label: str = "Set visibility"
+    _before: bool | None = None
+
+    def do(self, model):
+        roi = model.get(self.name)
+        self._before = None if roi is None else roi.visible
+        return model.set_visible(self.name, self.visible)
+
+    def undo(self, model) -> None:
+        if self._before is not None:
+            model.set_visible(self.name, self._before)
+            self._before = None
+
+
+@dataclass
+class ClearROIs:
+    """Remove every ROI, keeping them all for undo.
+
+    Clearing a set of hand-drawn regions is the most expensive thing to redo by
+    hand, so it is the operation that most needs to be undoable.
+    """
+
+    label: str = "Clear ROIs"
+    _removed: tuple = ()
+
+    def do(self, model):
+        self._removed = tuple(model.rois)
+        model.clear()
+        return None
+
+    def undo(self, model) -> None:
+        if self._removed:
+            model.set_rois(list(self._removed))
+            self._removed = ()
+
+
+@dataclass
+class RemoveSliceInfo:
+    """Detach every ROI from the slice it was captured on (ImageJ parity)."""
+
+    label: str = "Remove slice info"
+    _before: tuple = ()
+
+    def do(self, model):
+        self._before = tuple(
+            (roi.name, roi.position) for roi in model.rois if roi.position
+        )
+        for name, _position in self._before:
+            model.update(name, position=())
+        return None
+
+    def undo(self, model) -> None:
+        for name, position in self._before:
+            model.update(name, position=position)
+        self._before = ()
+
+
 class CommandLog:
     """Runs commands and keeps what is needed to undo them.
 
@@ -169,6 +232,9 @@ class CommandLog:
 
 __all__ = [
     "AddROI",
+    "ClearROIs",
+    "RemoveSliceInfo",
+    "SetVisible",
     "Command",
     "CommandLog",
     "DeleteROI",

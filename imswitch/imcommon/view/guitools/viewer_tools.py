@@ -37,6 +37,32 @@ from qtpy import QtCore
 from .naparitools import ViewerToolManager
 
 
+def _weak_handler(handler):
+    """Wrap ``handler`` so the service never keeps its owner alive.
+
+    Panels register bound methods here. Holding those strongly means a panel
+    that was destroyed without calling ``release`` — which is every panel the
+    tests build, and any panel Qt tears down without a close event — stays
+    reachable from the service, and its handler is still called afterwards. On
+    a Qt widget that has had its C++ side deleted, that call is a segfault
+    rather than an exception, which is exactly what it looked like: an
+    unrelated widget test crashing at random.
+
+    Returns a callable that yields the handler while it lives and ``None``
+    once it does not.
+    """
+    try:
+        reference = weakref.WeakMethod(handler)
+    except TypeError:
+        # A plain function or lambda: nothing to outlive, keep it strongly.
+        return lambda: handler
+
+    def _resolve():
+        return reference()
+
+    return _resolve
+
+
 class StaleToolToken(RuntimeError):
     """Raised when a token from a superseded acquisition is used."""
 
@@ -78,6 +104,8 @@ class ViewerToolService(QtCore.QObject):
         self._callbacks: dict[str, list[tuple[object, object]]] = {}
         self._shape_handlers: dict[str, list[object]] = {}
         self._active_owner: str | None = None
+        # Owners allowed to keep several shapes of one kind at a time.
+        self._multi_shape_owners: set[str] = set()
         self._target_layer = None
         self._enforcing = False
         self._manager.sigShapesChanged.connect(self._on_shapes_changed)
@@ -242,7 +270,9 @@ class ViewerToolService(QtCore.QObject):
         reacting to drawing that no longer belongs to it.
         """
         self._check(token)
-        self._shape_handlers.setdefault(token.owner_key, []).append(handler)
+        self._shape_handlers.setdefault(token.owner_key, []).append(
+            _weak_handler(handler)
+        )
 
     def _on_shapes_changed(self) -> None:
         """Attribute newly drawn shapes and apply the per-owner shape limit."""
@@ -251,16 +281,48 @@ class ViewerToolService(QtCore.QObject):
         owner = self._active_owner
         self._claim(owner)
         self._enforce_single_per_owner(owner)
-        # Only the owner that holds the tool hears about it.
-        for handler in list(self._shape_handlers.get(owner, [])):
-            handler()
+        # Only the owner that holds the tool hears about it, and only while
+        # it is still alive (see _weak_handler).
+        self._dispatch(owner)
+
+    def _dispatch(self, owner_key: str) -> None:
+        """Call this owner's live handlers, dropping any whose panel has gone."""
+        handlers = self._shape_handlers.get(owner_key)
+        if not handlers:
+            return
+        alive = []
+        for handler in list(handlers):
+            call = handler()
+            if call is None:
+                continue  # the panel was destroyed; forget its handler
+            alive.append(handler)
+            call()
+        self._shape_handlers[owner_key] = alive
+
+    def set_multi_shape(self, token: ToolToken, allowed: bool) -> None:
+        """Let this owner keep more than one shape of a kind.
+
+        The ROI manager captures every shape drawn, so holding it to one
+        rectangle made "add all of them" impossible — three rectangles drawn,
+        one captured. Panels that measure a single region (Profile, ROI
+        statistics) keep the limit, because for them a second rectangle is an
+        ambiguity rather than a second measurement.
+        """
+        self._check(token)
+        if allowed:
+            self._multi_shape_owners.add(token.owner_key)
+        else:
+            self._multi_shape_owners.discard(token.owner_key)
 
     def _enforce_single_per_owner(self, owner_key: str) -> None:
         """Keep only the newest rectangle and line *this owner* drew.
 
         The same limit the manager used to apply globally, scoped so drawing in
-        one panel cannot discard another panel's shape.
+        one panel cannot discard another panel's shape — and skipped entirely
+        for owners that have asked to keep several.
         """
+        if owner_key in self._multi_shape_owners:
+            return
         types = self._manager.get_shape_types()
         owned = [
             index
@@ -351,21 +413,40 @@ class ViewerToolService(QtCore.QObject):
 
     # -- internals ----------------------------------------------------------
 
-    @staticmethod
-    def _shape_key(vertices) -> str:
-        """A key identifying one shape by its geometry.
+    def _shape_key(self, vertices) -> str:
+        """A key identifying one shape, stable when others are deleted.
 
-        Ownership cannot be stored as a list index: deleting a shape in napari
-        renumbers everything above it, and the service is not told. The stale
-        indices then point at other owners' shapes, so clearing one panel's ROI
-        would take somebody else's with it. Geometry is stable under deletion
-        and is what the user actually drew.
+        Not the list index: deleting a shape in napari renumbers everything
+        above it without telling the service, and the stale indices then point
+        at other owners' shapes.
+
+        Not a hash of the geometry either — that was the first attempt, and two
+        panels that draw the *same* rectangle would then share a key, so
+        clearing one would take the other's shape. The key is a per-shape id
+        minted when the shape is first seen and remembered against its
+        geometry *and* the owner that claimed it, so identical shapes drawn by
+        different panels stay distinct.
         """
-        arr = np.asarray(vertices, dtype=np.float64)
-        return hashlib.sha1(np.ascontiguousarray(arr).tobytes()).hexdigest()[:16]
+        digest = hashlib.sha1(
+            np.ascontiguousarray(np.asarray(vertices, dtype=np.float64)).tobytes()
+        ).hexdigest()[:16]
+        return digest
 
     def _current_keys(self) -> list[str]:
-        return [self._shape_key(shape) for shape in self._manager.get_shapes_data()]
+        """Per-shape ids for the layer's shapes, in order.
+
+        Identical geometry gets distinct ids: the nth occurrence of a repeated
+        shape is disambiguated by its position among its duplicates, which is
+        stable as long as that particular duplicate exists.
+        """
+        keys: list[str] = []
+        seen: dict[str, int] = {}
+        for shape in self._manager.get_shapes_data():
+            digest = self._shape_key(shape)
+            occurrence = seen.get(digest, 0)
+            seen[digest] = occurrence + 1
+            keys.append(digest if occurrence == 0 else f"{digest}#{occurrence}")
+        return keys
 
     def _owned_indices(self, owner_key: str, total: int) -> list[int]:
         """This owner's shape indices, resolved through geometry keys.

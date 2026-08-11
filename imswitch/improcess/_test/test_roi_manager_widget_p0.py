@@ -23,13 +23,53 @@ from imswitch.improcess.view.ROIManagerWidget import (  # noqa: E402
 # fakes
 # --------------------------------------------------------------------------
 
+class _Event:
+    def __init__(self):
+        self._handlers = []
+
+    def connect(self, fn):
+        self._handlers.append(fn)
+
+    def disconnect(self, fn):
+        if fn in self._handlers:
+            self._handlers.remove(fn)
+
+    def emit(self, *args):
+        for fn in list(self._handlers):
+            fn(*args)
+
+
 class _Shapes:
     def __init__(self, **kwargs):
-        self.data, self.shape_type, self.mode = [], [], "pan_zoom"
+        self._data, self.shape_type, self.mode = [], [], "pan_zoom"
         self.name = kwargs.get("name", "Viewer Tools")
         self.visible, self.edge_width = True, 1.0
-        event = lambda: SimpleNamespace(connect=lambda _fn: None)  # noqa: E731
-        self.events = SimpleNamespace(data=event(), mode=event())
+        self.current_edge_width = 1.0
+        self.editable = True
+        self.edge_color, self.face_color = [], []
+        self.features, self.text = {}, None
+        self.scale, self.translate = (1.0, 1.0), (0.0, 0.0)
+        self.mouse_drag_callbacks = []
+        self.events = SimpleNamespace(data=_Event(), mode=_Event())
+
+    @property
+    def data(self):
+        return list(self._data)
+
+    @data.setter
+    def data(self, value):
+        value = list(value)
+        self.shape_type = self.shape_type[: len(value)]
+        self._data = value
+        self.events.data.emit(SimpleNamespace(value=value))
+
+    def add_shape(self, vertices, shape_type):
+        self._data.append(np.asarray(vertices, dtype=float))
+        self.shape_type.append(shape_type)
+        self.events.data.emit(SimpleNamespace(value=self._data))
+
+    def world_to_data(self, point):
+        return np.asarray(point, dtype=float)
 
 
 class _Layer:
@@ -52,13 +92,18 @@ class _Viewer:
         layer = _Layer("Reconstruction", image)
         self.layers.append(layer)
         self.layers.selection.active = layer
-        self.camera = SimpleNamespace(zoom=1.0)
-        self.add_shapes = lambda **kwargs: _Shapes(**kwargs)
+        self.camera = SimpleNamespace(zoom=1.0, events=SimpleNamespace(zoom=_Event()))
         self.dims = SimpleNamespace(
-            events=SimpleNamespace(current_step=SimpleNamespace(connect=lambda _fn: None)),
+            events=SimpleNamespace(current_step=_Event()),
             ndisplay=2,
             current_step=(0, 0),
+            axis_labels=("Y", "X"),
         )
+
+    def add_shapes(self, **kwargs):
+        layer = _Shapes(**kwargs)
+        self.layers.append(layer)
+        return layer
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +125,7 @@ def _row_named(widget, name):
     Found via the Name column: rows are keyed by uid, precisely so a display
     name is never what an action resolves through.
     """
-    column = widget._COLUMNS.index("Name")
+    column = widget.column_index("Name")
     for row in range(widget.table.rowCount()):
         item = widget.table.item(row, column)
         if item is not None and item.text() == name:
@@ -118,7 +163,7 @@ def test_hidden_roi_keeps_its_row_and_checkbox(panel):
 
 def test_hidden_roi_statistics_are_blank(panel):
     panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
-    area_column = panel._COLUMNS.index("Area")
+    area_column = panel.column_index("Area")
     row = _row_named(panel, "cell")
     assert panel.table.item(row, area_column).text() == "16"
 
@@ -126,7 +171,7 @@ def test_hidden_roi_statistics_are_blank(panel):
 
     row = _row_named(panel, "cell")
     assert panel.table.item(row, area_column).text() == ""
-    assert panel.table.item(row, panel._COLUMNS.index("Note")).text() == "hidden"
+    assert panel.table.item(row, panel.column_index("Note")).text() == "hidden"
 
 
 def test_rois_visible_only_keyword_is_opt_in(panel):
@@ -154,9 +199,9 @@ def test_out_of_bounds_roi_does_not_blank_the_table(panel):
     )
 
     assert panel.table.rowCount() == 2
-    area_column = panel._COLUMNS.index("Area")
+    area_column = panel.column_index("Area")
     assert panel.table.item(_row_named(panel, "good"), area_column).text() == "16"
-    assert panel.table.item(_row_named(panel, "outside"), panel._COLUMNS.index("Note")).text()
+    assert panel.table.item(_row_named(panel, "outside"), panel.column_index("Note")).text()
 
 
 # --------------------------------------------------------------------------
@@ -172,7 +217,7 @@ def test_selection_after_sorting_targets_the_clicked_roi(panel):
     )
 
     # Sort descending by name so display order is the reverse of model order.
-    name_column = panel._COLUMNS.index("Name")
+    name_column = panel.column_index("Name")
     panel.table.sortItems(name_column, QtCore.Qt.DescendingOrder)
     assert panel.table.item(0, name_column).text() == "beta"
 
@@ -190,7 +235,7 @@ def test_delete_after_sorting_removes_the_clicked_roi(panel):
             ROIRecord("beta", "rectangle", (0, 8, 0, 8)),
         ]
     )
-    name_column = panel._COLUMNS.index("Name")
+    name_column = panel.column_index("Name")
     panel.table.sortItems(name_column, QtCore.Qt.DescendingOrder)
     panel.table.setCurrentCell(0, name_column)
 
@@ -208,7 +253,7 @@ def test_numeric_columns_sort_numerically(panel):
         ]
     )
 
-    area_column = panel._COLUMNS.index("Area")
+    area_column = panel.column_index("Area")
     panel.table.sortItems(area_column, QtCore.Qt.AscendingOrder)
 
     assert panel.table.item(0, area_column).text() == "9"
@@ -279,3 +324,54 @@ def test_update_refuses_to_change_identity_or_collide_on_name():
         model.update("a", uid="something-else")
     with pytest.raises(ValueError):
         model.update("a", name="b")
+
+
+# --------------------------------------------------------------------------
+# P-2.4 at the widget level: every drawn shape is captured (D-08)
+# --------------------------------------------------------------------------
+
+def _draw(panel, *rects):
+    """Draw rectangles into the panel's scratch layer, as the user would."""
+    panel._startRectangleDrawing()
+    layer = panel._toolService.manager.get_layer()
+    for r0, c0, r1, c1 in rects:
+        layer.add_shape([[r0, c0], [r0, c1], [r1, c1], [r1, c0]], "rectangle")
+
+
+def test_all_drawn_shapes_are_added(panel):
+    """Three rectangles drawn, three ROIs added.
+
+    The broker's one-shape-per-owner rule made this impossible until the ROI
+    manager opted out of it: the panel captured one of three and said nothing
+    about the other two.
+    """
+    _draw(panel, (0, 0, 4, 4), (5, 5, 9, 9), (10, 10, 14, 14))
+
+    panel.add_current_rectangle()
+
+    assert len(panel.rois()) == 3, [roi.name for roi in panel.rois()]
+
+
+def test_capturing_clears_only_this_panels_scratch_shapes(panel):
+    _draw(panel, (0, 0, 4, 4), (5, 5, 9, 9))
+
+    panel.add_current_rectangle()
+
+    assert panel._toolService.shapes(panel._toolToken) == []
+
+
+def test_the_frame_is_registered_on_the_set_once(panel):
+    """P-2.7: the set keeps the frame, so it is self-describing."""
+    _draw(panel, (0, 0, 4, 4))
+    panel.add_current_rectangle()
+    _draw(panel, (5, 5, 9, 9))
+    panel.add_current_rectangle()
+
+    assert len(panel._set.frames) == 1, "the frame should be stored once per set"
+    assert panel.rois()[0].frame_uid == panel._set.frames[0].frame_uid
+
+
+def test_the_panel_measures_the_brokers_target_layer(panel):
+    """Not whatever active_image_layer() happens to return after a click."""
+    assert panel._toolService.target_image_layer is not None
+    assert panel._active_image_layer() is panel._toolService.target_image_layer

@@ -481,6 +481,15 @@ class ImProcessMainController(MainController):
         if not callable(setter) or id(widget) in self._resultFollowers:
             return
         self.__commChannel.sigCurrentResultChanged.connect(widget.setCurrentResult)
+        # A follower that can list results must also hear about the *set*
+        # changing, not only the selection (C-11): loading a reconstruction
+        # while the panel is open would otherwise leave its picker showing the
+        # results that existed when it was opened.
+        available = getattr(type(widget), "setAvailableResults", None)
+        if callable(available):
+            self.__commChannel.sigResultsChanged.connect(
+                lambda w=widget: self._seed_runtime_result_processor(w)
+            )
         self._resultFollowers.add(id(widget))
         self._seed_runtime_result_processor(widget)
 

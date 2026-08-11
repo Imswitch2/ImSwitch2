@@ -14,13 +14,20 @@ from __future__ import annotations
 import numpy as np
 
 VIEWER_TOOLS_LAYER_NAME = "Viewer Tools"
+ROI_OVERLAY_LAYER_NAME = "ROI Manager"
+
+#: Layers that annotate the image rather than being one. Excluded by name as
+#: well as by type: a Shapes layer is already rejected by the ndarray check
+#: below, but naming them here keeps the intent explicit and survives a layer
+#: kind changing.
+ANNOTATION_LAYER_NAMES = (VIEWER_TOOLS_LAYER_NAME, ROI_OVERLAY_LAYER_NAME)
 
 
 def is_image_layer(layer, *, min_ndim: int = 2, exclude_names=()) -> bool:
     """True for a visible, ndarray-backed napari layer usable as an image source.
 
-    Hidden layers, underscore-prefixed helper layers and the shared
-    "Viewer Tools" annotation layer are never image sources.
+    Hidden layers, underscore-prefixed helper layers and the shared annotation
+    layers ("Viewer Tools", "ROI Manager") are never image sources.
     """
     if layer is None or not hasattr(layer, "data"):
         return False
@@ -30,7 +37,7 @@ def is_image_layer(layer, *, min_ndim: int = 2, exclude_names=()) -> bool:
         and layer.data.ndim >= min_ndim
         and getattr(layer, "visible", True)
         and not name.startswith("_")
-        and name != VIEWER_TOOLS_LAYER_NAME
+        and name not in ANNOTATION_LAYER_NAMES
         and name not in tuple(exclude_names)
     )
 

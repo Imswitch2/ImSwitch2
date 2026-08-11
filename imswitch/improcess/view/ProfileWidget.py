@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+
+from imswitch.imcommon.algorithms.line_sampling import line_samples
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
-from scipy.ndimage import map_coordinates
 
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.layer_selection import active_image_layer
@@ -789,40 +790,16 @@ class ProfileWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _computeLineProfile(image, r0, c0, r1, c1, width=1):
+        """This panel's profile, through the shared sampler.
+
+        ``gaussian`` keeps this panel's long-standing across-width weighting;
+        the ROI manager's line measurements use the uniform mean, which is what
+        ImageJ's line width does. One sampler either way, so a plotted profile
+        and a measured line mean cannot disagree about what the line covers.
+        """
         try:
-            num_points = max(int(np.ceil(np.hypot(r1 - r0, c1 - c0))) + 1, 2)
-            r_samples = np.linspace(r0, r1, num_points)
-            c_samples = np.linspace(c0, c1, num_points)
-            if width <= 1:
-                return map_coordinates(
-                    image,
-                    [r_samples, c_samples],
-                    order=1,
-                    mode="constant",
-                    cval=0,
-                )
-
-            drow = r1 - r0
-            dcol = c1 - c0
-            length = np.hypot(drow, dcol)
-            if length <= 0:
-                return None
-            perp_r = -dcol / length
-            perp_c = drow / length
-            offsets = np.linspace(-(width - 1) / 2, (width - 1) / 2, width)
-            sigma = max(width / 4.0, 1e-6)
-            weights = np.exp(-(offsets ** 2) / (2 * sigma ** 2))
-            weights /= weights.sum()
-
-            profile = np.zeros(num_points, dtype=float)
-            for weight, offset in zip(weights, offsets):
-                profile += weight * map_coordinates(
-                    image,
-                    [r_samples + offset * perp_r, c_samples + offset * perp_c],
-                    order=1,
-                    mode="constant",
-                    cval=0,
-                )
-            return profile
+            return line_samples(
+                image, r0, c0, r1, c1, width=width, weighting="gaussian"
+            )
         except Exception:
             return None

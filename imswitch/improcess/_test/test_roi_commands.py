@@ -162,3 +162,55 @@ def test_measurement_config_round_trips():
 
     assert restored.selected == config.selected
     assert restored.threshold == pytest.approx(config.threshold)
+
+
+# --------------------------------------------------------------------------
+# every model change is undoable (round-7: three bypassed the log)
+# --------------------------------------------------------------------------
+
+def test_visibility_is_undoable():
+    from imswitch.improcess.analysis.roi_commands import SetVisible
+
+    model = _model("a")
+    log = CommandLog(model)
+
+    log.run(SetVisible("a", False))
+    assert model.get("a").visible is False
+
+    log.undo()
+    assert model.get("a").visible is True
+
+
+def test_clear_is_undoable_and_restores_order_and_identity():
+    """The most expensive thing to redo by hand, so the most important to undo."""
+    from imswitch.improcess.analysis.roi_commands import ClearROIs
+
+    model = _model("a", "b", "c")
+    log = CommandLog(model)
+    uids = [roi.uid for roi in model.rois]
+
+    log.run(ClearROIs())
+    assert model.rois == []
+
+    log.undo()
+    assert [roi.name for roi in model.rois] == ["a", "b", "c"]
+    assert [roi.uid for roi in model.rois] == uids
+
+
+def test_remove_slice_info_is_undoable():
+    from imswitch.improcess.analysis.roi_commands import RemoveSliceInfo
+
+    model = ROIManagerModel(
+        [
+            ROIRecord("a", "rectangle", (0, 4, 0, 4), position=(("Z", 3),)),
+            ROIRecord("b", "rectangle", (4, 8, 4, 8), position=(("Z", 7),)),
+        ]
+    )
+    log = CommandLog(model)
+
+    log.run(RemoveSliceInfo())
+    assert all(roi.position == () for roi in model.rois)
+
+    log.undo()
+    assert model.get("a").position == (("Z", 3),)
+    assert model.get("b").position == (("Z", 7),)

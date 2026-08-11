@@ -516,6 +516,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
 
         self._connectResultPusher(self.profileWidget)
         self._connectResultPusher(self.roiStatsWidget)
+        self._connectResultPusher(self.roiManagerWidget)
         self._connectResultPusher(self.graphWidget)
         self._connectResultPusher(self.metadataWidget)
 
@@ -785,7 +786,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         if dock is not None:
             dock.show()
             self._safeRaiseDock(dock)
-            if spec.widget_kind == 'roi-manager':
+            if spec.widget_kind in ('roi-manager', 'segmentation'):
                 self._wireROIManagerToDependentWidgets()
             self._syncDockVisibilityActions()
             return title
@@ -818,9 +819,11 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             if runtime_loaded:
                 self._runtimeAnalysisToolIds.add(processor_id)
             setattr(self, spec.attribute, widget)
-            if spec.widget_kind == 'roi-manager':
+            if spec.widget_kind in ('roi-manager', 'segmentation'):
+                # Either panel may be opened first, and the wiring runs in
+                # both directions, so it is redone whenever either arrives.
                 self._wireROIManagerToDependentWidgets()
-            if spec.widget_kind in ('profile', 'roi-stats', 'metadata'):
+            if spec.widget_kind in ('profile', 'roi-stats', 'metadata', 'roi-manager'):
                 self._connectResultPusher(widget)
             if spec.widget_kind == 'graph':
                 self._wireGraphToDependentWidgets()
@@ -1292,6 +1295,17 @@ class ImProcessMainView(QtWidgets.QMainWindow):
                     )
             elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
+        # The reverse direction: the ROI manager seeds *Limit to threshold*
+        # from the Segmentation panel, and either panel may be opened first.
+        segmentation = getattr(self, 'segmentationWidget', None)
+        setter = getattr(type(roi_manager), 'setSegmentationWidget', None)
+        if segmentation is not None and callable(setter):
+            try:
+                setter(roi_manager, segmentation)
+            except Exception:
+                self._logger.exception(
+                    'Could not wire Segmentation into the ROI Manager'
+                )
 
     def _wireGraphToDependentWidgets(self) -> None:
         """Late-binding: connect table plot requests after Graph runtime load."""

@@ -14,6 +14,7 @@ from typing import Literal
 import numpy as np
 
 from .roi import ROIRecord
+from .roi_payload import MaskPayload, decode_mask, encode_mask
 
 
 ThresholdMethod = Literal["otsu", "manual", "triangle", "yen", "local", "watershed"]
@@ -35,7 +36,8 @@ class SegmentationRegion:
     bounds: tuple[int, int, int, int]
     mean_intensity: float
     max_intensity: float
-    pixels: tuple[tuple[int, int], ...]
+    #: Encoded mask over ``bounds``. Replaces the old per-pixel tuple list.
+    mask: MaskPayload | None = None
     centroid_row: float | None = None
     centroid_col: float | None = None
     bbox: tuple[int, int, int, int] | None = None
@@ -46,13 +48,33 @@ class SegmentationRegion:
     height_um: float | None = None
     width_um: float | None = None
 
+    @property
+    def pixels(self) -> tuple[tuple[int, int], ...]:
+        """The region's pixels, materialised on demand.
+
+        Kept for callers written against the old field, but no longer what the
+        region stores: building this eagerly was the memory problem.
+        """
+        if self.mask is None:
+            return ()
+        local = decode_mask(self.mask)
+        rows, cols = np.nonzero(local)
+        r0, _r1, c0, _c1 = self.bounds
+        return tuple(
+            (int(row) + r0, int(col) + c0) for row, col in zip(rows, cols)
+        )
+
     def to_roi(self, *, name_prefix: str = "ROI", source: str = "segmentation") -> ROIRecord:
         return ROIRecord(
             name=f"{name_prefix}_{self.label}",
+            # "mask" rather than "composite": both mean an arbitrary pixel
+            # set and both rasterise identically, but this is the name
+            # segmentation output has always carried, and renaming it would
+            # change serialised records for no behavioural gain.
             roi_type="mask",
             bounds=self.bounds,
             source=source,
-            pixels=self.pixels,
+            mask=self.mask,
         )
 
     def to_row(self, *, include_optional: bool = False) -> dict[str, object]:
@@ -525,10 +547,13 @@ def _filter_and_measure(
             centroid_x_um = float(centroid_col * pixel_x_um)
             height_um = float((r1 - r0) * pixel_y_um)
             width_um = float((c1 - c0) * pixel_x_um)
-        pixels = tuple(
-            (int(row), int(col))
-            for row, col in zip(coords[0].tolist(), coords[1].tolist())
-        )
+        # Encoded straight from the coordinate arrays. Materialising one
+        # Python tuple per pixel — which is what this used to do — is roughly
+        # a million objects for a megapixel region, paid on every region of
+        # every segmentation.
+        local = np.zeros((r1 - r0, c1 - c0), dtype=bool)
+        local[coords[0] - r0, coords[1] - c0] = True
+        mask_payload = encode_mask(local)
         output[coords] = next_label
         regions.append(
             SegmentationRegion(
@@ -537,7 +562,7 @@ def _filter_and_measure(
                 bounds=(r0, r1, c0, c1),
                 mean_intensity=mean_intensity,
                 max_intensity=max_intensity,
-                pixels=pixels,
+                mask=mask_payload,
                 centroid_row=centroid_row,
                 centroid_col=centroid_col,
                 bbox=bbox,

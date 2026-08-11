@@ -308,6 +308,18 @@ def _distance_to_polygon(point, polygon) -> float:
     return float(np.min(np.linalg.norm(closest - pt, axis=1)))
 
 
+def _is_in_a_hole(mask: np.ndarray, row: int, col: int) -> bool:
+    """True when (row, col) is an unset pixel enclosed by the mask.
+
+    Distinguishes "inside a hole" from "just outside the shape", which is what
+    lets grab tolerance widen the outer edge without also closing holes.
+    """
+    from scipy.ndimage import binary_fill_holes
+
+    filled = binary_fill_holes(mask)
+    return bool(filled[row, col]) and not bool(mask[row, col])
+
+
 def roi_hit_test(roi: ROIRecord, position, *, tolerance: float = 0.0) -> bool:
     """Is ``position`` (row, col, in ROI pixel coordinates) inside ``roi``?
 
@@ -332,9 +344,16 @@ def roi_hit_test(roi: ROIRecord, position, *, tolerance: float = 0.0) -> bool:
         pixel = (int(np.floor(row)), int(np.floor(col)))
         local, (rs, cs) = roi_mask_local(roi, (max(r1, pixel[0]) + 1, max(c1, pixel[1]) + 1))
         rr, cc = pixel[0] - rs.start, pixel[1] - cs.start
-        if 0 <= rr < local.shape[0] and 0 <= cc < local.shape[1] and local[rr, cc]:
+        inside_box = 0 <= rr < local.shape[0] and 0 <= cc < local.shape[1]
+        if inside_box and local[rr, cc]:
             return True
         if tolerance <= 0:
+            return False
+        if inside_box and _is_in_a_hole(local, rr, cc):
+            # Grab tolerance widens a shape's *outer* edge so a thin ROI stays
+            # clickable; it must not close up its holes. Otherwise clicking the
+            # middle of a small annulus would select the annulus, which is
+            # exactly what "the ROI does not contain that pixel" rules out.
             return False
         return any(
             _distance_to_polygon((row, col), part) <= tolerance

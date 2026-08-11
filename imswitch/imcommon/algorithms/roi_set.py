@@ -25,13 +25,25 @@ from .spatial_frame import SpatialFrame
 class MeasurementConfig:
     """Which measurements are taken, and how they are reported."""
 
-    selected: tuple[str, ...] = ()
+    #: Chosen measurement ids. ``None`` means "not configured" and takes the
+    #: registry's defaults; an empty tuple means the user explicitly wants no
+    #: measurements, which is a different thing and must not silently become
+    #: the defaults again.
+    selected: tuple[str, ...] | None = None
     decimals: int = 3
     scientific: bool = False
     #: Inclusive intensity window for "limit to threshold"; None counts every
     #: finite pixel. Explicit rather than implied by whatever the segmentation
     #: panel last used, so a measurement can be reproduced from the set alone.
     threshold: tuple[float, float] | None = None
+    #: Perpendicular samples averaged for a line ROI, as in ImageJ. Part of
+    #: the configuration rather than a per-measurement argument because it
+    #: changes the numbers, so it has to travel with them.
+    line_width: int = 1
+    #: ImageJ's *Display label*: add a human-readable ``label`` column
+    #: ("image:roi") to published rows. The machine-readable identity columns
+    #: are not affected — §4.8 requires those on every row regardless.
+    display_label: bool = False
     revision: int = 0
 
     def with_changes(self, **changes) -> "MeasurementConfig":
@@ -40,10 +52,12 @@ class MeasurementConfig:
 
     def to_json(self) -> dict:
         return {
-            "selected": list(self.selected),
+            "selected": None if self.selected is None else list(self.selected),
             "decimals": self.decimals,
             "scientific": self.scientific,
             "threshold": list(self.threshold) if self.threshold else None,
+            "line_width": self.line_width,
+            "display_label": self.display_label,
             "revision": self.revision,
         }
 
@@ -52,11 +66,14 @@ class MeasurementConfig:
         if not payload:
             return cls()
         threshold = payload.get("threshold")
+        selected = payload.get("selected")
         return cls(
-            selected=tuple(str(v) for v in payload.get("selected", ())),
+            selected=None if selected is None else tuple(str(v) for v in selected),
             decimals=int(payload.get("decimals", 3)),
             scientific=bool(payload.get("scientific", False)),
             threshold=tuple(float(v) for v in threshold) if threshold else None,  # type: ignore[arg-type]
+            line_width=int(payload.get("line_width", 1)),
+            display_label=bool(payload.get("display_label", False)),
             revision=int(payload.get("revision", 0)),
         )
 
@@ -82,6 +99,15 @@ class ROISet:
             if frame.frame_uid == frame_uid:
                 return frame
         return None
+
+    def with_changes(self, **changes) -> "ROISet":
+        """Any other field, with the set's revision advanced.
+
+        The revision is what the panel and overlay redraw off, so a change
+        applied without it is a change nothing notices.
+        """
+        changes.setdefault("revision", self.revision + 1)
+        return replace(self, **changes)
 
     def with_rois(self, rois) -> "ROISet":
         return replace(self, rois=tuple(rois), revision=self.revision + 1)

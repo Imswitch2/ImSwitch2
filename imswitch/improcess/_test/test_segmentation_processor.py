@@ -3,6 +3,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from imswitch.imcommon.algorithms.roi_geometry import roi_mask_local
+
 from imswitch.improcess.analysis.segmentation import otsu_threshold, segment_image
 from imswitch.improcess.model import PlotPayload, ProcessingResult
 from imswitch.improcess.processors import available_processor_ids
@@ -39,7 +41,11 @@ def test_segment_image_manual_threshold_filters_and_measures_regions():
     assert [roi.name for roi in analysis.rois(name_prefix="Seg")] == ["Seg_1", "Seg_2"]
     assert analysis.rois(name_prefix="Seg")[0].source == "segmentation"
     assert analysis.rois(name_prefix="Seg")[0].roi_type == "mask"
-    assert len(analysis.rois(name_prefix="Seg")[0].pixels) == 12
+    # The region is stored as an encoded mask now, not a pixel-per-tuple list
+    # (C-09), so its extent is asserted through the shared rasteriser.
+    first_roi = analysis.rois(name_prefix="Seg")[0]
+    local, _slices = roi_mask_local(first_roi, (16, 16))
+    assert int(local.sum()) == 12
     assert analysis.region_rows()[0]["mean_intensity"] == 10.0
 
 

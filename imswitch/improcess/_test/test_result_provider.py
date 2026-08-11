@@ -66,3 +66,67 @@ def test_results_changed_is_announced_when_a_result_is_added():
     handler(SimpleNamespace(name="one"), "one")
 
     assert fired == [True]
+
+
+# --------------------------------------------------------------------------
+# C-11 / P-4.6 — a follower panel's result list follows the loaded set
+# --------------------------------------------------------------------------
+
+class _FollowerPanel:
+    """A measurement panel that can both follow and enumerate results."""
+
+    def __init__(self):
+        self.available = None
+        self.current = None
+
+    def setAvailableResults(self, results, selected=None):
+        self.available = list(results)
+
+    def setCurrentResult(self, result):
+        self.current = result
+
+
+def _controllerStub(channel):
+    """A main controller with only the parts _wire_result_follower touches."""
+    from imswitch.improcess.controller.ImProcessMainController import (
+        ImProcessMainController,
+    )
+
+    stub = ImProcessMainController.__new__(ImProcessMainController)
+    stub._resultFollowers = set()
+    # Name-mangled attributes, set directly because __init__ is not run.
+    stub._ImProcessMainController__commChannel = channel
+    stub._ImProcessMainController__logger = SimpleNamespace(
+        debug=lambda *a, **k: None
+    )
+    stub.mainViewController = SimpleNamespace(
+        reconstructionController=SimpleNamespace(getActiveResult=lambda: None)
+    )
+    return stub
+
+
+def test_a_follower_panel_is_seeded_with_the_results_already_loaded():
+    channel = CommunicationChannel()
+    first = SimpleNamespace(name="a")
+    channel.setResultProvider(_Provider([("a", first)], []))
+
+    panel = _FollowerPanel()
+    _controllerStub(channel)._wire_result_follower(panel)
+
+    assert [name for name, _r in panel.available] == ["a"]
+
+
+def test_loading_a_result_reaches_an_already_open_follower_panel():
+    """Opening a reconstruction while the panel is open must update its list."""
+    channel = CommunicationChannel()
+    results = [("a", SimpleNamespace(name="a"))]
+    channel.setResultProvider(_Provider(results, []))
+
+    panel = _FollowerPanel()
+    _controllerStub(channel)._wire_result_follower(panel)
+    assert len(panel.available) == 1
+
+    results.append(("b", SimpleNamespace(name="b")))
+    channel.sigResultsChanged.emit()
+
+    assert [name for name, _r in panel.available] == ["a", "b"]

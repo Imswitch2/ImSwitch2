@@ -458,3 +458,59 @@ def test_viewer_callbacks_are_released_with_the_owner(qapp):
     viewer.dims.events.current_step.emit(None)
 
     assert calls == [], "viewer callback outlived the panel"
+
+
+def test_a_destroyed_panels_handler_is_not_called(qapp):
+    """The broker must not keep a panel alive, nor call into a dead one.
+
+    Holding bound methods strongly meant a panel destroyed without calling
+    release stayed reachable from the service and kept being notified. On a Qt
+    widget whose C++ side has been deleted, that call is a segfault — which is
+    how it showed up: an unrelated widget test crashing at random, four runs
+    in six.
+    """
+    import gc
+
+    viewer = _Viewer()
+    service = ViewerToolService(viewer)
+    calls = []
+
+    class _Panel:
+        def on_shapes(self):
+            calls.append(1)
+
+    panel = _Panel()
+    token = service.acquire("panel", "rectangle")
+    service.on_shapes_changed(token, panel.on_shapes)
+
+    service.manager.get_layer().add_shape(_rect(0, 0, 2, 2), "rectangle")
+    assert calls, "a live panel should be notified"
+
+    del panel
+    gc.collect()
+    calls.clear()
+    service.manager.get_layer().add_shape(_rect(4, 4, 6, 6), "rectangle")
+
+    assert calls == [], "the service called into a destroyed panel"
+
+
+def test_the_broker_does_not_keep_a_panel_alive(qapp):
+    import gc
+    import weakref as wr
+
+    viewer = _Viewer()
+    service = ViewerToolService(viewer)
+
+    class _Panel:
+        def on_shapes(self):
+            pass
+
+    panel = _Panel()
+    probe = wr.ref(panel)
+    token = service.acquire("panel", "rectangle")
+    service.on_shapes_changed(token, panel.on_shapes)
+
+    del panel
+    gc.collect()
+
+    assert probe() is None, "the broker pinned the panel it was notifying"

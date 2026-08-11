@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from imswitch.imcommon.algorithms.roi import ROIRecord
+from imswitch.improcess.analysis.roi_jobs import MeasurementCache
 from imswitch.improcess.analysis.roi_manager import ROIManagerModel, replaced
 
 
@@ -240,3 +241,57 @@ def test_error_rows_survive_serialisation():
     assert row["name"] == "outside"
     assert row["measured"] is False
     assert row["note"]
+
+
+# --------------------------------------------------------------------------
+# P-3.5 — the cache is opt-in, and never guesses
+# --------------------------------------------------------------------------
+
+def test_cache_key_refuses_to_key_on_an_unknown_token():
+    """No token means the image may have changed; caching would be a guess."""
+    from imswitch.improcess.analysis.roi_jobs import cache_key
+
+    roi = ROIRecord("cell", "rectangle", (0, 4, 0, 4), uid="u1")
+    assert cache_key("frame", "", (("Z", 1),), roi, 0) is None
+    assert cache_key("frame", "token", (("Z", 1),), roi, 0) is not None
+
+
+def test_cache_key_separates_planes_configurations_and_revisions():
+    from dataclasses import replace as dataclass_replace
+
+    from imswitch.improcess.analysis.roi_jobs import cache_key
+
+    roi = ROIRecord("cell", "rectangle", (0, 4, 0, 4), uid="u1")
+    base = cache_key("frame", "token", (("Z", 1),), roi, 0)
+
+    assert cache_key("frame", "token", (("Z", 2),), roi, 0) != base
+    assert cache_key("other", "token", (("Z", 1),), roi, 0) != base
+    assert cache_key("frame", "token2", (("Z", 1),), roi, 0) != base
+    assert cache_key("frame", "token", (("Z", 1),), roi, 1) != base
+    moved = dataclass_replace(roi, revision=roi.revision + 1)
+    assert cache_key("frame", "token", (("Z", 1),), moved, 0) != base
+    # A rename deliberately does not bump the revision, so it costs nothing.
+    renamed = dataclass_replace(roi, name="renamed")
+    assert cache_key("frame", "token", (("Z", 1),), renamed, 0) == base
+
+
+def test_compute_stats_uses_a_cached_row_rather_than_measuring_again():
+    model = ROIManagerModel([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+    image = np.arange(256, dtype=float).reshape(16, 16)
+    cache = MeasurementCache()
+
+    def key_for(roi):
+        return ("k", roi.uid)
+
+    first = model.compute_stats(
+        image, selection=("mean",), cache=cache, cache_key_for=key_for
+    )
+    assert len(cache) == 1
+
+    # A different image behind the same key must come back with the cached
+    # answer — which is what proves the second pass did not measure.
+    second = model.compute_stats(
+        np.zeros_like(image), selection=("mean",), cache=cache, cache_key_for=key_for
+    )
+    assert second[0].values["mean"] == first[0].values["mean"]
+    assert second[0].stats.mean == pytest.approx(first[0].values["mean"])

@@ -20,6 +20,7 @@ from imswitch.imcommon.algorithms.spatial_frame import (
     IDENTITY_AFFINE,
     AxisDescriptor,
     SpatialFrame,
+    content_digest_uid,
     mint_uid,
 )
 
@@ -204,4 +205,97 @@ def plane_position(viewer, frame: SpatialFrame) -> tuple[tuple[str, int], ...]:
     return tuple(position)
 
 
-__all__ = ["frame_from_layer", "plane_position"]
+def frame_from_result(result) -> SpatialFrame | None:
+    """The plane a `ProcessingResult` would show, without rendering it.
+
+    Measuring one ROI set across several results has to compare frames for
+    results that were never on screen, so the frame has to come from the result
+    itself. Built from the same fields the render path writes into a layer's
+    metadata, so a result compared here and the same result compared after
+    being displayed give the same verdict.
+    """
+    data = getattr(result, "data", None)
+    if data is None:
+        return None
+    shape = tuple(int(v) for v in np.shape(data))
+    if len(shape) < 2:
+        return None
+    labels = [str(v) for v in (getattr(result, "axis_labels", None) or [])]
+    if len(labels) != len(shape):
+        labels = [f"D{i}" for i in range(len(shape) - 2)] + ["Y", "X"]
+    scales = list(getattr(result, "axis_scales", None) or [1.0] * len(shape))
+    unit = str(getattr(result, "scale_unit", "px") or "px")
+
+    axes = tuple(
+        AxisDescriptor(
+            label=labels[index],
+            size=int(shape[index]),
+            scale=float(scales[index]) if index < len(scales) else 1.0,
+            unit=unit,
+        )
+        for index in range(len(shape))
+    )
+    space_uid = str(getattr(result, "coordinate_space_uid", "") or "")
+    result_uid = str(getattr(result, "result_uid", "") or "")
+    dataset_uid = str(getattr(result, "dataset_uid", "") or "")
+    if not space_uid:
+        # A result with no recorded identity gets one derived from its
+        # content, never a fresh one: two views of the same result must not
+        # look like two different pixel grids.
+        space_uid = content_digest_uid("space", result_uid, labels, shape, scales, unit)
+        return SpatialFrame(
+            coordinate_space_uid=space_uid,
+            result_uid=result_uid or space_uid,
+            dataset_uid=dataset_uid or space_uid,
+            plane_axes=(labels[-2], labels[-1]),
+            axes=axes,
+            shape=(shape[-2], shape[-1]),
+            unit=unit,
+            identity_kind="derived",
+        )
+    return SpatialFrame(
+        coordinate_space_uid=space_uid,
+        result_uid=result_uid,
+        dataset_uid=dataset_uid,
+        plane_axes=(labels[-2], labels[-1]),
+        axes=axes,
+        shape=(shape[-2], shape[-1]),
+        unit=unit,
+        lineage=tuple(str(v) for v in (getattr(result, "lineage", ()) or ())),
+        identity_kind=str(getattr(result, "identity_kind", "minted") or "minted"),
+    )
+
+
+def plane_scales(frame: SpatialFrame | None) -> tuple[float, float, str]:
+    """``(row_scale, col_scale, unit)`` for the plane a frame describes.
+
+    Read off the two displayed axes by *label*, not by position: the displayed
+    pair is view-mode dependent, so taking the last two entries would calibrate
+    a YZ view with the Y and X scales.
+
+    A frame that carries no calibration — or an axis with a non-positive scale,
+    which no real calibration has — reports the pixel domain, so calibrated
+    columns stay honestly equal to the pixel ones instead of being scaled by a
+    number nobody supplied.
+    """
+    if frame is None:
+        return 1.0, 1.0, "px"
+    scales = []
+    for label in frame.plane_axes:
+        axis = frame.axis(str(label))
+        scale = float(axis.scale) if axis is not None else 1.0
+        scales.append(scale if scale > 0 else 1.0)
+    unit = frame.unit or "px"
+    if scales == [1.0, 1.0]:
+        # An uncalibrated frame: saying "px" here is what keeps a calibrated
+        # column from claiming micrometres it never had.
+        unit = "px"
+    return scales[0], scales[1], unit
+
+
+__all__ = [
+    "frame_from_layer",
+    "frame_from_result",
+    "plane_position",
+    "plane_scales",
+]
