@@ -241,6 +241,9 @@ def normalize_recording_lifecycle(
     outcome = _text(attrs.get("recording:completion_outcome"))
     if outcome is not None:
         outcome = outcome.strip()
+        if not outcome:
+            outcome = None
+    if outcome is not None:
         if outcome not in VALID_COMPLETION_OUTCOMES:
             issues.append(
                 LayoutIssue(

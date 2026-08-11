@@ -15,6 +15,8 @@ testable.
 
 from __future__ import annotations
 
+import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -40,6 +42,8 @@ _RECMODE_TO_MODE = {
 
 _SPACE_UNIT = 'µm'   # OME UnitsLength for micrometer
 _TIME_UNIT = 's'     # OME UnitsTime for second
+_OME_NAMESPACE = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
+_IMSWITCH_ANNOTATION_NAMESPACE = "https://imswitch.org/ns/acquisition-metadata/1"
 
 
 def normalize_mode(rec_mode_name: Optional[str], *, is_snap: bool = False) -> str:
@@ -311,7 +315,54 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
     xml = tifffile.OmeXml()
     xml.addimage(dtype, shp, stored, axes=meta.axes_string, **md)
-    return xml.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')
+    serialized = xml.tostring()
+    if meta.annotations:
+        serialized = _add_map_annotation(serialized, meta.annotations)
+    return serialized.encode("ascii", "xmlcharrefreplace").decode("ascii")
+
+
+def _annotation_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, np.generic):
+        value = value.item()
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _add_map_annotation(xml: str, annotations: Dict[str, Any]) -> str:
+    """Attach one OME MapAnnotation and reference it from the image.
+
+    Tifffile's high-level metadata mapping deliberately covers standard OME
+    image fields only. Acquisition layout and recording outcome are arbitrary
+    key/value metadata, for which OME defines ``MapAnnotation``.
+    """
+    root = ET.fromstring(xml)
+    namespace = root.tag.partition("}")[0].lstrip("{") or _OME_NAMESPACE
+    ET.register_namespace("", namespace)
+
+    def qname(name: str) -> str:
+        return f"{{{namespace}}}{name}"
+
+    annotation_id = "Annotation:ImSwitch:0"
+    structured = ET.SubElement(root, qname("StructuredAnnotations"))
+    annotation = ET.SubElement(
+        structured,
+        qname("MapAnnotation"),
+        {
+            "ID": annotation_id,
+            "Namespace": _IMSWITCH_ANNOTATION_NAMESPACE,
+        },
+    )
+    value_element = ET.SubElement(annotation, qname("Value"))
+    for key in sorted(annotations):
+        item = ET.SubElement(value_element, qname("M"), {"K": str(key)})
+        item.text = _annotation_text(annotations[key])
+
+    for image in root.findall(qname("Image")):
+        ET.SubElement(image, qname("AnnotationRef"), {"ID": annotation_id})
+    return ET.tostring(root, encoding="unicode")
 
 
 def build_ome_image_meta(

@@ -10,10 +10,16 @@ import h5py
 import numpy as np
 import zarr
 
+from imswitch.imcommon.model.acquisition_metadata import (
+    RecordingLifecycleMarkers,
+    normalize_recording_lifecycle,
+)
 from imswitch.improcess.model.image_sources import (
     axis_scales_from_element_size,
     dataset_names,
+    decode_layout_attrs,
     default_axis_labels,
+    flatten_metadata_attrs,
     is_zarr_array as _is_zarr_array,
     is_zarr_group as _is_zarr_group,
     resolve_image,
@@ -43,6 +49,32 @@ def _coerce_positive_int(value: Any) -> int | None:
     if not np.isfinite(number) or number <= 0:
         return None
     return max(1, int(number))
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, (bytes, np.bytes_)):
+        value = value.decode(errors="ignore")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+    return bool(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _numeric_vector(value: Any, min_len: int) -> np.ndarray | None:
@@ -192,6 +224,10 @@ class InMemoryStackWrapper:
         dataset_name: str,
         data: np.ndarray,
         attrs: dict[str, Any] | None = None,
+        *,
+        axis_labels: list[str] | None = None,
+        axis_scales: list[float] | None = None,
+        scale_unit: str | None = None,
     ):
         self.name = name
         self._datasetName = dataset_name
@@ -206,9 +242,23 @@ class InMemoryStackWrapper:
         # process() raises AttributeError on the in-memory wrapper.
         ndim = self._data.ndim
         fallback_scales, fallback_unit = axis_scales_from_element_size(self._attrs, ndim)
-        self._axis_labels = default_axis_labels(ndim)
-        self._axis_scales = fallback_scales or [1.0] * ndim
-        self._scale_unit = fallback_unit or "px"
+        self.acquisition_layout = decode_layout_attrs(self._attrs)
+        layout_axes = (
+            list(self.acquisition_layout.storage_axes)
+            if self.acquisition_layout is not None
+            and len(self.acquisition_layout.storage_axes) == ndim
+            else None
+        )
+        self._axis_labels = list(axis_labels or layout_axes or default_axis_labels(ndim))
+        self._axis_scales = list(axis_scales or fallback_scales or [1.0] * ndim)
+        self._scale_unit = scale_unit or fallback_unit or "px"
+        self.recording_lifecycle = normalize_recording_lifecycle(
+            self._attrs,
+            RecordingLifecycleMarkers(
+                writing=_optional_bool(self._attrs.get("writing")),
+                frames_committed=_optional_int(self._attrs.get("recording:frames_committed")),
+            ),
+        )
         self._source_info = {
             "dataset_name": dataset_name,
             "dataset_path": self._attrs.get("recording:dataset_path"),
@@ -314,6 +364,7 @@ class ZarrLiveSource(LiveSource):
 
         frame_shape = self._array.shape[-2:]
         self._refresh_state_from_attrs(attrs)
+        decode_layout_attrs(attrs)
 
         # Legacy / metadata-less stores carry no recording:expected_frames. A
         # completed store (not writing) is one whole stack, so its length is the
@@ -423,18 +474,6 @@ class ZarrLiveSource(LiveSource):
         attrs.update(image.attrs)
         return image.array, attrs
 
-    def _flatten_metadata(self, group: Any, attrs: dict[str, Any], prefix: str) -> None:
-        """Recursively flatten metadata group into attrs dict with category prefixes."""
-        for key in group.attrs.keys():
-            flat_key = f"{prefix}{key}" if prefix else key
-            attrs[flat_key] = group.attrs[key]
-
-        for subgroup_name in group.keys():
-            subgroup = group[subgroup_name]
-            if _is_zarr_group(subgroup):
-                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
-                self._flatten_metadata(subgroup, attrs, new_prefix)
-
     def _open_root(self, path_or_handle: Any) -> Any:
         if _is_zarr_group(path_or_handle) or _is_zarr_array(path_or_handle):
             self._path = None
@@ -462,26 +501,35 @@ class ZarrLiveSource(LiveSource):
         if _is_zarr_group(self._root):
             attrs.update(dict(self._root.attrs))
 
-            if len(self._array_path) == 2:
-                detector_group = self._root[self._array_path[0]]
+            if self._array_path:
+                detector_group = self._root
+                for component in self._array_path[:-1]:
+                    detector_group = detector_group[component]
                 attrs.update(dict(self._array.attrs))
-                if 'metadata' in detector_group:
-                    self._flatten_metadata(detector_group['metadata'], attrs, prefix='')
+                if _is_zarr_group(detector_group) and "metadata" in detector_group:
+                    attrs.update(flatten_metadata_attrs(detector_group["metadata"]))
                 return attrs
 
         attrs.update(dict(self._array.attrs))
         return attrs
 
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
-        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        expected_frames = self._coerce_int(attrs.get("recording:planned_frames"))
+        if expected_frames is None:
+            expected_frames = self._coerce_int(attrs.get("recording:expected_frames"))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
-        committed = self._coerce_int(attrs.get('recording:frames_committed'))
-        if committed is not None:
-            self._frames_committed = committed
-
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        lifecycle = normalize_recording_lifecycle(
+            attrs,
+            RecordingLifecycleMarkers(
+                writing=_optional_bool(attrs.get("writing")),
+                frames_committed=self._coerce_int(attrs.get("recording:frames_committed")),
+                live_writer_attached=True,
+            ),
+        )
+        self._frames_committed = lifecycle.frames_committed
+        self._writing = lifecycle.writer_state == "writing"
 
     def _readable_length(self) -> int:
         if self._array is None:
@@ -971,7 +1019,7 @@ class Hdf5LiveSource(LiveSource):
         self._chunk_size = 1
         self._expected_frames: int | None = None
         self._frames_committed: int | None = None
-        self._stream_complete = False
+        self._stream_complete: bool | None = None
         self._committed_ds = None
         self._complete_ds = None
         self._writing = True
@@ -1022,8 +1070,9 @@ class Hdf5LiveSource(LiveSource):
 
         frame_shape = self._dataset.shape[-2:]
         all_attrs = {**attrs, **dataset_attrs}
-        self._refresh_state_from_attrs(all_attrs)
         self._refresh_barrier_state()
+        self._refresh_state_from_attrs(all_attrs)
+        decode_layout_attrs(all_attrs)
         frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
 
         return StackInfo(
@@ -1043,8 +1092,8 @@ class Hdf5LiveSource(LiveSource):
             return []
 
         self._dataset.refresh()
-        self._refresh_state_from_attrs(self._read_dataset_attrs())
         self._refresh_barrier_state()
+        self._refresh_state_from_attrs(self._read_dataset_attrs())
         readable_length = self._readable_length()
 
         if self._cursor >= readable_length:
@@ -1068,8 +1117,8 @@ class Hdf5LiveSource(LiveSource):
             return True
 
         self._dataset.refresh()
-        self._refresh_state_from_attrs(self._read_dataset_attrs())
         self._refresh_barrier_state()
+        self._refresh_state_from_attrs(self._read_dataset_attrs())
         current_length = self._dataset.shape[0]
 
         if self._expected_frames is not None:
@@ -1201,29 +1250,29 @@ class Hdf5LiveSource(LiveSource):
             if parent_path in self._file:
                 parent = self._file[parent_path]
                 if isinstance(parent, h5py.Group) and 'metadata' in parent:
-                    self._flatten_metadata(parent['metadata'], attrs, prefix='')
+                    attrs.update(flatten_metadata_attrs(parent["metadata"]))
 
         return attrs
 
-    def _flatten_metadata(self, group: h5py.Group, attrs: dict[str, Any], prefix: str) -> None:
-        """Recursively flatten metadata group into attrs dict with category prefixes."""
-        for key in group.attrs.keys():
-            flat_key = f"{prefix}{key}" if prefix else key
-            attrs[flat_key] = group.attrs[key]
-
-        for subgroup_name in group.keys():
-            subgroup = group[subgroup_name]
-            if isinstance(subgroup, h5py.Group):
-                new_prefix = f"{subgroup_name}:" if not prefix else f"{prefix}{subgroup_name}:"
-                self._flatten_metadata(subgroup, attrs, new_prefix)
-
     def _refresh_state_from_attrs(self, attrs: dict[str, Any]) -> None:
         """Update internal state from attributes."""
-        expected_frames = self._coerce_int(attrs.get('recording:expected_frames'))
+        expected_frames = self._coerce_int(attrs.get("recording:planned_frames"))
+        if expected_frames is None:
+            expected_frames = self._coerce_int(attrs.get("recording:expected_frames"))
         if expected_frames is not None:
             self._expected_frames = expected_frames
 
-        self._writing = self._coerce_bool(attrs.get('writing'), default=self._writing)
+        lifecycle = normalize_recording_lifecycle(
+            attrs,
+            RecordingLifecycleMarkers(
+                writing=_optional_bool(attrs.get("writing")),
+                frames_committed=self._frames_committed,
+                stream_complete=self._stream_complete,
+                live_writer_attached=True,
+            ),
+        )
+        self._frames_committed = lifecycle.frames_committed
+        self._writing = lifecycle.writer_state == "writing"
 
     def _readable_length(self) -> int:
         """Return the number of frames that can be read.

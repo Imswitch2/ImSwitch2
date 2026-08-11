@@ -18,7 +18,14 @@ import tifffile as tiff
 from qtpy import QtCore
 
 from imswitch.imcommon.framework import Signal, SignalInterface, Thread, Worker
-from imswitch.imcommon.model import initLogger, JSON_ATTR_PREFIX
+from imswitch.imcommon.model import (
+    ACQUISITION_LAYOUT_SCHEMA,
+    AcquisitionLayout,
+    JSON_ATTR_PREFIX,
+    decode_acquisition_layout,
+    encode_acquisition_layout,
+    initLogger,
+)
 import abc
 import logging
 
@@ -108,6 +115,83 @@ class Storer(abc.ABC):
         # None for legacy/fallback paths; storers that understand it (TiffStorer)
         # use it to write standard OME metadata.
         self.omeMeta: Dict[str, Any] = {}
+
+    @staticmethod
+    def _layout_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in (attrs or {}).items()
+            if isinstance(key, str) and key.startswith("AcquisitionLayout:")
+        }
+
+    @staticmethod
+    def _ome_annotation_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
+        recording_keys = {
+            "recording:completion_outcome",
+            "recording:planned_frames",
+            "recording:actual_frames",
+            "recording:planned_partitions",
+            "recording:actual_partitions",
+        }
+        return {
+            key: value
+            for key, value in (attrs or {}).items()
+            if (
+                isinstance(key, str)
+                and (key.startswith("AcquisitionLayout:") or key in recording_keys)
+            )
+        }
+
+    def _set_ome_annotations(self, detectorName: str, attrs: Dict[str, Any]) -> None:
+        meta = (getattr(self, "omeMeta", None) or {}).get(detectorName)
+        if meta is not None:
+            meta.annotations.update(self._ome_annotation_attrs(attrs))
+
+    def _snapshot_attrs(
+        self,
+        detectorName: str,
+        attrs: Dict[str, Any] | None,
+        image: Any,
+    ) -> Dict[str, Any]:
+        completed = dict(attrs or {})
+        array = np.asarray(image)
+        actual_frames = 1 if array.ndim <= 2 else int(array.shape[0])
+        completed.setdefault("recording:planned_frames", actual_frames)
+        completed["recording:actual_frames"] = actual_frames
+        completed.setdefault("recording:planned_partitions", 1)
+        completed["recording:actual_partitions"] = 1
+        completed["recording:completion_outcome"] = "complete"
+        self._set_ome_annotations(detectorName, completed)
+        return completed
+
+    def _finalize_recording_attrs(
+        self,
+        currentFrames: Dict[str, int],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Add final counts/outcomes without changing writer-liveness markers."""
+        finalized: Dict[str, Dict[str, Any]] = {}
+        source = getattr(self, "_attrs", {}) or {}
+        detector_names = set(source) | set(currentFrames)
+        for detectorName in detector_names:
+            attrs = dict(source.get(detectorName, {}) or {})
+            actual_frames = int(max(0, currentFrames.get(detectorName, 0)))
+            planned_frames = attrs.get("recording:planned_frames")
+            try:
+                planned_frames = int(planned_frames) if planned_frames is not None else None
+            except (TypeError, ValueError):
+                planned_frames = None
+            attrs["recording:actual_frames"] = actual_frames
+            attrs.setdefault("recording:planned_partitions", 1)
+            attrs["recording:actual_partitions"] = 1
+            attrs["recording:completion_outcome"] = (
+                "stopped_early"
+                if planned_frames is not None and actual_frames < planned_frames
+                else "complete"
+            )
+            finalized[detectorName] = attrs
+            self._set_ome_annotations(detectorName, attrs)
+        self._attrs = finalized
+        return finalized
 
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Store snapshot images with metadata.
@@ -393,7 +477,12 @@ class ZarrStorer(Storer):
                                  for name in self._dimension_names(detectorName, dataset.ndim)]
         dataset.attrs['writing'] = writing
 
-        grouped = self._group_metadata_by_category(attrs)
+        for key, value in self._layout_attrs(attrs).items():
+            dataset.attrs[key] = self._zarr_attr_value(value)
+
+        grouped = self._group_metadata_by_category(
+            {key: value for key, value in attrs.items() if key not in self._layout_attrs(attrs)}
+        )
         if grouped:
             meta_group = det_group.create_group('metadata')
             for category, cat_attrs in grouped.items():
@@ -444,6 +533,9 @@ class ZarrStorer(Storer):
         # honours it never reads uninitialised chunks.
         dataset.attrs['recording:frames_committed'] = 0
 
+        for key, value in self._layout_attrs(attrs).items():
+            dataset.attrs[key] = self._zarr_attr_value(value)
+
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
         recording_attrs['detector_name'] = detectorName
         recording_attrs['dataset_path'] = (
@@ -456,7 +548,13 @@ class ZarrStorer(Storer):
             except Exception as e:
                 logger.debug(f'Could not save Zarr recording metadata {key}={value}: {e}')
 
-        grouped = self._group_metadata_by_category(other_attrs)
+        grouped = self._group_metadata_by_category(
+            {
+                key: value
+                for key, value in other_attrs.items()
+                if key not in self._layout_attrs(other_attrs)
+            }
+        )
         if grouped:
             meta_group = det_group.create_group('metadata')
             for category, cat_attrs in grouped.items():
@@ -493,7 +591,7 @@ class ZarrStorer(Storer):
             root.attrs['rec_mode'] = 'snap'
 
             for channel, image in images.items():
-                channel_attrs = attrs.get(channel, {})
+                channel_attrs = self._snapshot_attrs(channel, attrs.get(channel, {}), image)
                 self._createDetectorGroup(
                     root,
                     channel,
@@ -610,6 +708,7 @@ class ZarrStorer(Storer):
     def finalizeStream(self, currentFrames: Dict[str, int], filePaths: Dict[str, str],
                        recordingManager, saveMode: 'SaveMode') -> None:
         """Close Zarr stores and emit memory-recording signals when applicable."""
+        finalized_attrs = self._finalize_recording_attrs(currentFrames)
         for detectorName, dataset in self._datasets.items():
             dataset.attrs['writing'] = False
             if currentFrames[detectorName] < 1:
@@ -617,6 +716,9 @@ class ZarrStorer(Storer):
             dataset.attrs['recording:frames_committed'] = int(
                 max(0, currentFrames.get(detectorName, 0))
             )
+            for key, value in finalized_attrs.get(detectorName, {}).items():
+                if isinstance(key, str) and key.startswith("recording:"):
+                    dataset.attrs[key] = self._zarr_attr_value(value)
 
         if saveMode == SaveMode.DiskAndRAM:
             for detectorName in self._datasets:
@@ -699,7 +801,13 @@ class HDF5Storer(Storer):
         instead of losing it.
         """
         try:
-            target.attrs[key] = value
+            if key in target.attrs:
+                attr_id = target.attrs.get_id(key)
+                if attr_id.dtype.kind == "S" and isinstance(value, str):
+                    value = value.encode("utf-8")
+                target.attrs.modify(key, value)
+            else:
+                target.attrs[key] = value
             return
         except Exception:
             pass
@@ -777,9 +885,23 @@ class HDF5Storer(Storer):
         # Dataset-level metadata
         dataset.attrs['detector_name'] = detectorName
         dataset.attrs['element_size_um'] = self._elementSizeUm(detectorName, dataset.ndim)
+        if data is not None:
+            dataset.attrs["writing"] = False
+
+        layout_attrs = self._layout_attrs(attrs)
+        for key, value in layout_attrs.items():
+            self._set_hdf5_attr(dataset, key, value, "acquisition-layout")
 
         recording_attrs, other_attrs = self._split_recording_attrs(attrs)
         if maxshape is not None or recording_attrs:
+            if maxshape is not None:
+                # These final fields must exist before SWMR is enabled. A live
+                # reader may keep the file open during post-close finalization;
+                # modifying existing attrs is safe, while creating new attrs
+                # can block in HDF5. Blank outcome is normalized as absent.
+                recording_attrs.setdefault("planned_partitions", 1)
+                recording_attrs.setdefault("actual_frames", 0)
+                recording_attrs.setdefault("actual_partitions", 0)
             recording_attrs['detector_name'] = detectorName
             recording_attrs['dataset_path'] = (
                 f'/{groupPath}/{detectorName}/data' if groupPath else f'/{detectorName}/data'
@@ -787,9 +909,17 @@ class HDF5Storer(Storer):
             recording_attrs.setdefault('source_format', 'HDF5')
             for key, value in recording_attrs.items():
                 self._set_hdf5_attr(dataset, f'recording:{key}', value, 'recording')
+            if maxshape is not None and "recording:completion_outcome" not in dataset.attrs:
+                dataset.attrs.create(
+                    "recording:completion_outcome",
+                    np.bytes_(""),
+                    dtype="S13",
+                )
 
         # Group attrs by category and create metadata subgroups
-        grouped = self._group_metadata_by_category(other_attrs)
+        grouped = self._group_metadata_by_category(
+            {key: value for key, value in other_attrs.items() if key not in layout_attrs}
+        )
 
         if grouped:
             meta_group = det_group.create_group('metadata')
@@ -889,7 +1019,7 @@ class HDF5Storer(Storer):
                     file.attrs['rec_mode'] = 'snap'
 
                     # Create structured detector group using shared helper
-                    channel_attrs = attrs.get(channel, {})
+                    channel_attrs = self._snapshot_attrs(channel, attrs.get(channel, {}), image)
                     self._createDetectorGroup(
                         file, channel, image.dtype, channel_attrs,
                         data=image
@@ -1052,6 +1182,7 @@ class HDF5Storer(Storer):
     
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close HDF5 files and emit signals."""
+        finalized_attrs = self._finalize_recording_attrs(currentFrames)
         pending_memory_signals = []
         pending_disk_memory_signals = []
 
@@ -1086,6 +1217,9 @@ class HDF5Storer(Storer):
             # For RAM mode, we can directly modify attributes now (no SWMR).
             if saveMode == SaveMode.RAM and dataset is not None:
                 dataset.attrs['writing'] = False
+                for key, value in finalized_attrs.get(detectorName, {}).items():
+                    if isinstance(key, str) and key.startswith("recording:"):
+                        self._set_hdf5_attr(dataset, key, value, "recording")
                 if currentFrames.get(detectorName, 0) >= 1:
                     self._embed_ome_xml(dataset.parent, detectorName, dataset.shape)
             
@@ -1141,6 +1275,11 @@ class HDF5Storer(Storer):
                         for detectorName, dataset_path in entries:
                             if dataset_path in f:
                                 f[dataset_path].attrs['writing'] = False
+                                for key, value in finalized_attrs.get(detectorName, {}).items():
+                                    if isinstance(key, str) and key.startswith("recording:"):
+                                        self._set_hdf5_attr(
+                                            f[dataset_path], key, value, "recording"
+                                        )
                                 if currentFrames.get(detectorName, 0) >= 1:
                                     self._embed_ome_xml(
                                         f[dataset_path].parent, detectorName, f[dataset_path].shape)
@@ -1229,15 +1368,18 @@ class TiffStorer(Storer):
 
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot as a native OME-TIFF (one shot, shape known)."""
+        attrs = attrs or {}
         storedShapes = {}
         for channel, image in images.items():
             image = np.asarray(image)
+            self._snapshot_attrs(channel, attrs.get(channel, {}), image)
             # OME-TIFF stores the array as handed over.
             storedShapes[channel] = image.shape
             with AsTemporaryFile(f'{self.filepath}_{channel}.ome.tiff') as path:
                 meta = self._meta_for(channel, image=image)
                 tiff.imwrite(path, image, ome=True, bigtiff=True,
                              metadata=meta.tiff_metadata(image.shape))
+                tiff.tiffcomment(path, _ome.build_ome_xml(meta, image.shape))
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
     
         return storedShapes
@@ -1249,6 +1391,7 @@ class TiffStorer(Storer):
         self._paths = {}
         self._spatial = {}            # detectorName -> per-frame shape
         self._dtypeWarned = set()
+        self._attrs = attrs
         for detectorName in detectorNames:
             path = fileDests[detectorName]
             self._paths[detectorName] = path
@@ -1286,6 +1429,7 @@ class TiffStorer(Storer):
 
     def finalizeStream(self, currentFrames, filePaths, recordingManager, saveMode):
         """Close writers, then embed OME-XML now that the frame count is known."""
+        self._finalize_recording_attrs(currentFrames)
         errors = []
         for detectorName, tw in getattr(self, '_writers', {}).items():
             try:
@@ -1648,7 +1792,7 @@ class RecordingManager(SignalInterface):
                        recFrames=None, recTime=None, numCamTTL=None, stallTimeout=None,
                        recLapseTotal=1, recLapseIndex=0, scanDims=None,
                        scanStepSizes=None, recLapseIntervalS=None,
-                       recLapseScheduledTime=None):
+                       recLapseScheduledTime=None, acquisitionLayouts=None):
         """ Starts a recording with the specified detectors, recording mode,
         file name prefix and attributes to save to the recording per detector.
         In SpecFrames mode, recFrames (the number of frames) must be specified,
@@ -1663,6 +1807,10 @@ class RecordingManager(SignalInterface):
             recLapseIndex: 0-based index of this stack within the lapse (default 0).
             recLapseIntervalS: Requested camera-lapse interval in seconds.
             recLapseScheduledTime: ISO-8601 planned start for this timepoint.
+            acquisitionLayouts: Optional synthetic or producer-authored
+                ``{detector: AcquisitionLayout}`` mapping. PR 2 transports this
+                mapping but deliberately does not cross-check it against scan
+                controller frame counts yet.
         """
 
         self.__logger.info('Starting recording')
@@ -1693,6 +1841,7 @@ class RecordingManager(SignalInterface):
         self.__recordingWorker.scanStepSizes = scanStepSizes
         self.__recordingWorker.recLapseIntervalS = recLapseIntervalS
         self.__recordingWorker.recLapseScheduledTime = recLapseScheduledTime
+        self.__recordingWorker.acquisitionLayouts = dict(acquisitionLayouts or {})
         self.__recordingWorker.stallTimeout = stallTimeout if stallTimeout is not None else DEFAULT_STALL_TIMEOUT
 
         self.__activeDetectorNames = detectorNames
@@ -2894,9 +3043,27 @@ class RecordingWorker(Worker):
             if expected_frames is not None and detectorName in expected_frames:
                 frame_count = int(expected_frames[detectorName])
                 new_attrs['recording:expected_frames'] = frame_count
+                new_attrs["recording:planned_frames"] = frame_count
                 # No generic multi-stack boundary exists yet. For single-stack
                 # recording modes, the expected frame count is the stack size.
                 new_attrs['recording:frames_per_stack'] = frame_count
+            new_attrs.setdefault("recording:planned_partitions", 1)
+
+            layout_value = getattr(self, "acquisitionLayouts", {}).get(detectorName)
+            if layout_value is not None:
+                if isinstance(layout_value, AcquisitionLayout):
+                    encoded_layout = encode_acquisition_layout(layout_value)
+                elif isinstance(layout_value, (str, bytes, bytearray)):
+                    encoded_layout = encode_acquisition_layout(
+                        decode_acquisition_layout(layout_value)
+                    )
+                else:
+                    raise TypeError(
+                        f"Acquisition layout for {detectorName!r} must be an "
+                        "AcquisitionLayout or encoded JSON"
+                    )
+                new_attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+                new_attrs["AcquisitionLayout:json"] = encoded_layout
             
             # Add lapse metadata
             new_attrs['recording:num_timepoints'] = int(self.recLapseTotal or 1)

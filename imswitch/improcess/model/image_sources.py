@@ -7,6 +7,7 @@ opening so HDF5, legacy Zarr, and OME-NGFF Zarr can share one dataset contract.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -16,6 +17,16 @@ import tifffile as tiff
 import zarr
 
 from imswitch.imcommon.model.zarr_compat import install_zarr_create_array_compat
+from imswitch.imcommon.model.acquisition_layout import (
+    AcquisitionLayout,
+    decode_acquisition_layout,
+)
+from imswitch.imcommon.model.acquisition_metadata import (
+    RecordingLifecycle,
+    RecordingLifecycleMarkers,
+    flatten_acquisition_metadata,
+    normalize_recording_lifecycle,
+)
 
 
 install_zarr_create_array_compat()
@@ -66,6 +77,84 @@ class ResolvedImage:
     axis_labels: list[str] | None = None
     axis_scales: list[float] | None = None
     scale_unit: str | None = None
+    acquisition_layout: AcquisitionLayout | None = None
+    recording_lifecycle: RecordingLifecycle | None = None
+
+
+def decode_layout_attrs(attrs: dict[str, Any]) -> AcquisitionLayout | None:
+    encoded = attrs.get("AcquisitionLayout:json")
+    declared_schema = attrs.get("AcquisitionLayout:schema")
+    if encoded is None:
+        if declared_schema is not None:
+            raise ValueError("AcquisitionLayout:schema is present without AcquisitionLayout:json")
+        return None
+    layout = decode_acquisition_layout(encoded)
+    if declared_schema is not None:
+        if isinstance(declared_schema, bytes):
+            declared_schema = declared_schema.decode("utf-8", "replace")
+        if str(declared_schema) != layout.schema:
+            raise ValueError("AcquisitionLayout:schema disagrees with the encoded layout")
+    return layout
+
+
+def _marker_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+    return bool(value)
+
+
+def _marker_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _side_dataset_scalar(parent: Any, name: str) -> Any:
+    if parent is None or name not in parent:
+        return None
+    node = parent[name]
+    if not isinstance(node, h5py.Dataset) or node.size != 1:
+        return None
+    try:
+        return node[0]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _hdf5_lifecycle(array: h5py.Dataset, attrs: dict[str, Any]) -> RecordingLifecycle:
+    parent = array.parent if isinstance(array.parent, h5py.Group) else None
+    markers = RecordingLifecycleMarkers(
+        writing=_marker_bool(attrs.get("writing")),
+        frames_committed=_marker_int(_side_dataset_scalar(parent, "frames_committed")),
+        stream_complete=_marker_bool(_side_dataset_scalar(parent, "stream_complete")),
+    )
+    return normalize_recording_lifecycle(attrs, markers)
+
+
+def _zarr_lifecycle(attrs: dict[str, Any]) -> RecordingLifecycle:
+    return normalize_recording_lifecycle(
+        attrs,
+        RecordingLifecycleMarkers(
+            writing=_marker_bool(attrs.get("writing")),
+            frames_committed=_marker_int(attrs.get("recording:frames_committed")),
+        ),
+    )
 
 
 def is_zarr_group(obj: Any) -> bool:
@@ -153,6 +242,8 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             axis_scales=None,
             scale_unit=None,
             source_format="hdf5",
+            acquisition_layout=decode_layout_attrs(attrs),
+            recording_lifecycle=_hdf5_lifecycle(array, attrs),
         )
 
     if is_array_node(node):
@@ -164,6 +255,8 @@ def _resolve_hdf5_image(group: h5py.Group, dataset_name: str | None) -> Resolved
             array_path=dataset_name,
             axis_labels=_axis_labels_from_hdf5_attrs(attrs, node.ndim),
             source_format="hdf5",
+            acquisition_layout=decode_layout_attrs(attrs),
+            recording_lifecycle=_hdf5_lifecycle(node, attrs),
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
@@ -186,6 +279,14 @@ def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> Resolv
         if axis_labels is not None and len(axis_labels) != len(series.shape):
             axis_labels = None
         axis_scales, scale_unit = _axis_scales_from_tiff_attrs(attrs, axis_labels, len(series.shape))
+        observed_frames = 1 if len(series.shape) <= 2 else int(series.shape[0])
+        lifecycle = normalize_recording_lifecycle(
+            attrs,
+            RecordingLifecycleMarkers(
+                writing=False,
+                frames_committed=observed_frames,
+            ),
+        )
         return ResolvedImage(
             name=name,
             array=series,
@@ -195,6 +296,8 @@ def _resolve_tiff_image(file: tiff.TiffFile, dataset_name: str | None) -> Resolv
             axis_labels=axis_labels,
             axis_scales=axis_scales,
             scale_unit=scale_unit,
+            acquisition_layout=decode_layout_attrs(attrs),
+            recording_lifecycle=lifecycle,
         )
 
     raise ValueError(f'Dataset "{dataset_name}" was not found in TIFF series {series_names}')
@@ -215,6 +318,7 @@ def _tiff_series_attrs(file: tiff.TiffFile, series_index: int, series: Any) -> d
         "tiff:axes": getattr(series, "axes", None),
     }
     attrs.update(_ome_pixels_attrs(file, series_index))
+    attrs.update(_ome_map_annotation_attrs(file, series_index))
     return attrs
 
 
@@ -256,6 +360,49 @@ def _ome_pixels_attrs(file: tiff.TiffFile, image_index: int) -> dict[str, Any]:
     if "Name" in image:
         attrs["ome:ImageName"] = image["Name"]
     return attrs
+
+
+def _ome_map_annotation_attrs(file: tiff.TiffFile, image_index: int) -> dict[str, Any]:
+    metadata = getattr(file, "ome_metadata", None)
+    if not metadata:
+        return {}
+    try:
+        root = ET.fromstring(metadata)
+    except ET.ParseError:
+        return {}
+
+    images = root.findall("{*}Image")
+    if image_index >= len(images):
+        return {}
+    annotation_ids = {
+        reference.get("ID")
+        for reference in images[image_index].findall("{*}AnnotationRef")
+        if reference.get("ID")
+    }
+    if not annotation_ids:
+        return {}
+    annotations: dict[str, Any] = {}
+    for annotation in root.findall(".//{*}MapAnnotation"):
+        if annotation.get("ID") not in annotation_ids:
+            continue
+        for item in annotation.findall("./{*}Value/{*}M"):
+            key = item.get("K")
+            if not key:
+                continue
+            value = item.text or ""
+            if key in {
+                "recording:planned_frames",
+                "recording:actual_frames",
+                "recording:planned_partitions",
+                "recording:actual_partitions",
+            }:
+                try:
+                    annotations[key] = int(value)
+                    continue
+                except ValueError:
+                    pass
+            annotations[key] = value
+    return annotations
 
 
 def _zarr_dataset_names(group: Any) -> list[str]:
@@ -303,15 +450,20 @@ def _resolve_zarr_image(group: Any, dataset_name: str | None) -> ResolvedImage:
             attrs=attrs,
             array_path=f"{dataset_name}/data",
             source_format="zarr",
+            acquisition_layout=decode_layout_attrs(attrs),
+            recording_lifecycle=_zarr_lifecycle(attrs),
         )
 
     if is_array_node(node):
+        attrs = dict(node.attrs)
         return ResolvedImage(
             name=dataset_name,
             array=node,
-            attrs=dict(node.attrs),
+            attrs=attrs,
             array_path=dataset_name,
             source_format="zarr",
+            acquisition_layout=decode_layout_attrs(attrs),
+            recording_lifecycle=_zarr_lifecycle(attrs),
         )
 
     raise ValueError(f'Dataset "{dataset_name}" is not an array or structured detector group')
@@ -337,6 +489,9 @@ def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage |
     axis_labels, axis_scales, scale_unit = _ngff_axis_metadata(multiscale, dataset, array)
     attrs = dict(group.attrs)
     attrs.update(dict(array.attrs))
+    metadata = group.get("metadata")
+    if metadata is not None:
+        attrs.update(flatten_metadata_attrs(metadata))
     axes = multiscale.get("axes")
     if axes is not None:
         attrs["ngff:axes"] = axes
@@ -353,6 +508,8 @@ def _ngff_image(group: Any, fallback_name: str | None = None) -> ResolvedImage |
         axis_labels=axis_labels,
         axis_scales=axis_scales,
         scale_unit=scale_unit,
+        acquisition_layout=decode_layout_attrs(attrs),
+        recording_lifecycle=_zarr_lifecycle(attrs),
     )
 
 
@@ -592,15 +749,17 @@ def _normalize_unit(unit: str) -> str:
 
 
 def flatten_metadata_attrs(metadata_group: Any, prefix: list[str] | None = None) -> dict[str, Any]:
-    prefix = [] if prefix is None else prefix
-    attrs = {}
+    """Extract a native metadata tree, then use the shared mapping flattener."""
 
-    for key, value in dict(metadata_group.attrs).items():
-        attrs[":".join([*prefix, key])] = value
+    def nested_mapping(group: Any) -> dict[str, Any]:
+        nested: dict[str, Any] = dict(group.attrs)
+        for name in group.keys():
+            child = group[name]
+            if isinstance(child, h5py.Group) or is_zarr_group(child):
+                nested[name] = nested_mapping(child)
+        return nested
 
-    for name in metadata_group.keys():
-        child = metadata_group[name]
-        if isinstance(child, h5py.Group) or is_zarr_group(child):
-            attrs.update(flatten_metadata_attrs(child, [*prefix, name]))
-
-    return attrs
+    nested: dict[str, Any] = nested_mapping(metadata_group)
+    for component in reversed(prefix or []):
+        nested = {component: nested}
+    return flatten_acquisition_metadata(nested)
