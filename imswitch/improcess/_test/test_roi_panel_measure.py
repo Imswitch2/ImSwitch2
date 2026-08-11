@@ -710,3 +710,155 @@ def test_the_set_holds_the_rois_it_is_a_set_of(qapp):
         assert panel._set.rois == ()
     finally:
         panel.deleteLater()
+
+
+# --------------------------------------------------------------------------
+# P-5 — the operations reach the model through the command log
+# --------------------------------------------------------------------------
+
+def _select(panel, *names):
+    panel.table.clearSelection()
+    for row in range(panel.table.rowCount()):
+        item = panel.table.item(row, panel.column_index("Name"))
+        if item is not None and item.text() in names:
+            panel.table.selectRow(row)
+            panel.table.item(row, 0).setSelected(True)
+
+
+def test_a_boolean_operation_adds_its_result_to_the_model(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([
+            ROIRecord("a", "rectangle", (0, 10, 0, 10)),
+            ROIRecord("b", "rectangle", (5, 15, 5, 15)),
+        ])
+        panel.table.selectAll()
+        panel.combine_selected("and")
+
+        names = [roi.name for roi in panel._model.rois]
+        assert names == ["a", "b", "a_and"]
+        assert panel._model.get("a_and").roi_type == "composite"
+    finally:
+        panel.deleteLater()
+
+
+def test_an_operation_is_undoable(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([
+            ROIRecord("a", "rectangle", (0, 10, 0, 10)),
+            ROIRecord("b", "rectangle", (5, 15, 5, 15)),
+        ])
+        panel.table.selectAll()
+        panel.combine_selected("or")
+        assert len(panel._model.rois) == 3
+
+        panel._commands.undo()
+        assert [roi.name for roi in panel._model.rois] == ["a", "b"]
+    finally:
+        panel.deleteLater()
+
+
+def test_split_replaces_the_original_with_its_parts(qapp):
+    panel = _panel(qapp)
+    try:
+        from imswitch.imcommon.algorithms.roi_geometry import roi_from_mask
+
+        mask = np.zeros((16, 16), dtype=bool)
+        mask[1:4, 1:4] = True
+        mask[10:14, 10:14] = True
+        panel.add_rois([roi_from_mask(mask, name="two", offset=(0, 0))])
+        panel.table.selectAll()
+        panel.split_selected()
+
+        names = [roi.name for roi in panel._model.rois]
+        assert names == ["two_1", "two_2"]
+
+        panel._commands.undo()
+        assert [roi.name for roi in panel._model.rois] == ["two"]
+    finally:
+        panel.deleteLater()
+
+
+def test_an_operation_refusal_is_shown_rather_than_raised(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([
+            ROIRecord("a", "rectangle", (0, 2, 0, 2)),
+            ROIRecord("b", "rectangle", (12, 14, 12, 14)),
+        ])
+        panel.table.selectAll()
+        panel.combine_selected("and")
+
+        assert len(panel._model.rois) == 2      # nothing was added
+        assert "empty" in panel.summaryLabel.text()
+    finally:
+        panel.deleteLater()
+
+
+def test_a_boolean_needs_two_rois_and_says_so(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([ROIRecord("a", "rectangle", (0, 4, 0, 4))])
+        panel.table.selectAll()
+        panel.combine_selected("or")
+        assert len(panel._model.rois) == 1
+        assert "Select 2" in panel.summaryLabel.text()
+    finally:
+        panel.deleteLater()
+
+
+def test_make_inverse_uses_the_image_on_screen(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([ROIRecord("a", "rectangle", (0, 4, 0, 4))])
+        panel.table.selectAll()
+        panel.make_inverse_selected()
+
+        inverse = panel._model.get("a_inverse")
+        assert inverse is not None
+        assert inverse.bounds == (0, 16, 0, 16)   # the layer is 16x16
+    finally:
+        panel.deleteLater()
+
+
+def test_rescaling_to_the_frame_already_in_use_changes_nothing(qapp):
+    panel = _panel(qapp)
+    try:
+        frame = panel._current_frame()
+        panel._set = panel._set.with_frame(frame)
+        panel.add_rois([
+            ROIRecord("a", "rectangle", (0, 4, 0, 4), frame_uid=frame.frame_uid)
+        ])
+        panel.table.selectAll()
+        panel.rescale_selected_to_current_frame()
+
+        assert [roi.name for roi in panel._model.rois] == ["a"]
+        assert "already in this frame" in panel.summaryLabel.text()
+    finally:
+        panel.deleteLater()
+
+
+def test_rescaling_an_roi_with_no_recorded_frame_says_why(qapp):
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([ROIRecord("a", "rectangle", (0, 4, 0, 4))])
+        panel.table.selectAll()
+        panel.rescale_selected_to_current_frame()
+        assert "no recorded frame" in panel.summaryLabel.text()
+    finally:
+        panel.deleteLater()
+
+
+def test_the_table_allows_selecting_more_than_one_roi(qapp):
+    """A set operation cannot be expressed on a single-selection table."""
+    panel = _panel(qapp)
+    try:
+        panel.add_rois([
+            ROIRecord("a", "rectangle", (0, 4, 0, 4)),
+            ROIRecord("b", "rectangle", (8, 12, 8, 12)),
+        ])
+        panel.table.selectAll()
+        assert len(panel._selected_rois()) == 2
+    finally:
+        panel.deleteLater()

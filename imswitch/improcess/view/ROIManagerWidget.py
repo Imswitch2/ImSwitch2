@@ -20,7 +20,20 @@ from imswitch.improcess.analysis.roi_commands import (
     DeleteROI,
     RemoveSliceInfo,
     RenameROI,
+    ReplaceROIs,
     SetVisible,
+)
+from imswitch.imcommon.algorithms.roi_ops import (
+    ROIOperationError,
+    combine,
+    convex_hull,
+    enlarge,
+    make_band,
+    make_inverse,
+    rescale_to_frame,
+    split,
+    to_bounding_box,
+    translate,
 )
 from imswitch.improcess.analysis.roi_frame_adapter import (
     frame_from_layer,
@@ -227,6 +240,13 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.progressBar = QtWidgets.QProgressBar()
         self.progressBar.setVisible(False)
         self.progressBar.setTextVisible(True)
+        self.moreButton = QtWidgets.QToolButton()
+        self.moreButton.setText("More")
+        self.moreButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.moreButton.setToolTip("Set and shape operations on the selected ROIs")
+        self.moreMenu = QtWidgets.QMenu(self.moreButton)
+        self._buildMoreMenu()
+        self.moreButton.setMenu(self.moreMenu)
         self.exportCsvButton = QtWidgets.QPushButton("Export CSV")
         self.exportJsonButton = QtWidgets.QPushButton("Export JSON")
 
@@ -244,6 +264,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.multiMeasureButton,
             self.multiPlotButton,
             self.acrossResultsButton,
+            self.moreButton,
             self.cancelButton,
             self.exportCsvButton,
             self.exportJsonButton,
@@ -262,7 +283,9 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        # Extended, not single: the set operations need two ROIs, and there is
+        # no way to express "these two" with a single-selection table.
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSortingEnabled(True)
 
@@ -1281,6 +1304,172 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self.summaryLabel.setText(f"Measurement failed: {reason}")
         elif result.cancelled:
             self.summaryLabel.setText("Measurement cancelled.")
+
+    # ----------------------------------------------------------------------
+    # P-5 — set and shape operations
+    # ----------------------------------------------------------------------
+
+    def _buildMoreMenu(self) -> None:
+        """The *More* menu: every P-5 operation, in the order ImageJ groups them."""
+        entries = [
+            ("AND (intersection)", lambda: self.combine_selected("and")),
+            ("OR (union)", lambda: self.combine_selected("or")),
+            ("XOR", lambda: self.combine_selected("xor")),
+            ("Subtract", lambda: self.combine_selected("subtract")),
+            None,
+            ("Split", self.split_selected),
+            ("Enlarge…", self.enlarge_selected),
+            ("Make Band…", self.make_band_selected),
+            ("To Bounding Box", self.bounding_box_selected),
+            ("Convex Hull", self.convex_hull_selected),
+            ("Make Inverse", self.make_inverse_selected),
+            ("Translate…", self.translate_selected),
+            None,
+            ("Rescale to this result…", self.rescale_selected_to_current_frame),
+        ]
+        for entry in entries:
+            if entry is None:
+                self.moreMenu.addSeparator()
+                continue
+            text, handler = entry
+            self.moreMenu.addAction(text, handler)
+
+    def _selected_rois(self) -> list[ROIRecord]:
+        """Every selected ROI, in model order.
+
+        Model order rather than click order: an AND is symmetric but Subtract
+        is not, and "the first one I happened to click" is not something the
+        table shows anywhere.
+        """
+        uids = set(self._selected_uids())
+        return [roi for roi in self._model.rois if roi.uid in uids]
+
+    def _runOperation(self, label, produced, *, consumed=()) -> None:
+        """Apply an operation's result through the command log."""
+        self._commands.run(
+            ReplaceROIs(
+                consumed=tuple(consumed), produced=tuple(produced), label=label
+            )
+        )
+        self.refresh_stats()
+
+    def _operation(self, label, function, *, needs: int = 1, consume: bool = False):
+        """Run ``function`` over the selection, reporting a refusal as text.
+
+        Operations refuse for reasons the user can act on — two different
+        planes, an empty intersection, an image too large to invert — so the
+        message is shown rather than swallowed or raised into the event loop.
+        """
+        rois = self._selected_rois()
+        if len(rois) < needs:
+            self.summaryLabel.setText(
+                f"Select {needs} ROI(s) first." if needs > 1 else "Select an ROI first."
+            )
+            return
+        try:
+            produced = function(rois)
+        except ROIOperationError as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+        except Exception as exc:
+            self.summaryLabel.setText(f"{label} failed: {exc}")
+            return
+        if not produced:
+            self.summaryLabel.setText(f"{label} produced nothing.")
+            return
+        self._runOperation(
+            label, produced, consumed=[roi.name for roi in rois] if consume else ()
+        )
+        self.summaryLabel.setText(f"{label}: {len(produced)} ROI(s).")
+
+    def combine_selected(self, op: str) -> None:
+        self._operation(
+            op.upper(), lambda rois: [combine(rois, op)], needs=2
+        )
+
+    def split_selected(self) -> None:
+        # Consuming: the parts *are* the original, partitioned, so keeping both
+        # would double every measurement of that region.
+        self._operation("Split", lambda rois: split(rois[0]), consume=True)
+
+    def enlarge_selected(self) -> None:
+        pixels, ok = QtWidgets.QInputDialog.getInt(
+            self, "Enlarge", "Pixels (negative shrinks):", 1, -999, 999
+        )
+        if ok:
+            self._operation("Enlarge", lambda rois: [enlarge(rois[0], pixels)])
+
+    def make_band_selected(self) -> None:
+        width, ok = QtWidgets.QInputDialog.getInt(
+            self, "Make Band", "Band width (px):", 5, 1, 999
+        )
+        if ok:
+            self._operation("Make Band", lambda rois: [make_band(rois[0], width)])
+
+    def bounding_box_selected(self) -> None:
+        self._operation(
+            "To Bounding Box", lambda rois: [to_bounding_box(roi) for roi in rois]
+        )
+
+    def convex_hull_selected(self) -> None:
+        self._operation(
+            "Convex Hull", lambda rois: [convex_hull(roi) for roi in rois]
+        )
+
+    def make_inverse_selected(self) -> None:
+        image = self._current_image_2d()
+        if image is None:
+            self.summaryLabel.setText("No image layer selected.")
+            return
+        self._operation(
+            "Make Inverse", lambda rois: [make_inverse(rois[0], image.shape)]
+        )
+
+    def translate_selected(self) -> None:
+        drow, ok = QtWidgets.QInputDialog.getInt(self, "Translate", "Rows:", 0, -9999, 9999)
+        if not ok:
+            return
+        dcol, ok = QtWidgets.QInputDialog.getInt(self, "Translate", "Columns:", 0, -9999, 9999)
+        if not ok:
+            return
+        # Moving replaces the ROIs rather than adding copies: a translated ROI
+        # is the same ROI somewhere else, and its uid says so.
+        self._operation(
+            "Translate",
+            lambda rois: [translate(roi, drow, dcol) for roi in rois],
+            consume=True,
+        )
+
+    def rescale_selected_to_current_frame(self) -> None:
+        """P-5.5 — rewrite ROIs into the frame currently on screen.
+
+        The explicit counterpart to A-13's refusal to measure through a
+        transform: reprojection happens once, when asked for, and the result
+        says which frame it now belongs to.
+        """
+        target = self._current_frame()
+        if target is None:
+            self.summaryLabel.setText("No image layer selected.")
+            return
+
+        def rescale(rois):
+            out = []
+            for roi in rois:
+                source = self._set.frame(getattr(roi, "frame_uid", "") or "")
+                if source is None:
+                    raise ROIOperationError(
+                        f"{roi.name!r} has no recorded frame, so there is "
+                        "nothing to map it from"
+                    )
+                if source.frame_uid == target.frame_uid:
+                    continue
+                out.append(rescale_to_frame(roi, source, target))
+            if not out:
+                raise ROIOperationError("already in this frame.")
+            return out
+
+        self._operation("Rescale", rescale, consume=True)
+        self._set = self._set.with_frame(target)
 
     def remove_slice_info(self) -> None:
         """Detach every ROI from the slice it was captured on (ImageJ parity)."""

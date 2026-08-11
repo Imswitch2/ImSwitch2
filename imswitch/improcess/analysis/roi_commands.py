@@ -181,6 +181,37 @@ class RemoveSliceInfo:
         self._before = ()
 
 
+@dataclass
+class ReplaceROIs:
+    """Swap a set of ROIs for the ROIs an operation produced.
+
+    Every P-5 operation reduces to this: the inputs it consumed (which may be
+    none, for an operation that only adds) and the outputs it produced. One
+    command rather than one per operation, because what has to be undone is
+    the same in each case, and an operation-specific inverse would be a second
+    place for the two to disagree.
+    """
+
+    consumed: tuple = ()
+    produced: tuple = ()
+    label: str = "ROI operation"
+    _before: tuple = ()
+
+    def do(self, model):
+        self._before = tuple(model.rois)
+        for name in self.consumed:
+            model.remove(name)
+        added = [model.add(roi) for roi in self.produced]
+        return added
+
+    def undo(self, model) -> None:
+        # Restored wholesale rather than by inverse steps: order is
+        # user-visible, and re-adding a consumed ROI would append it to the
+        # end rather than put it back where it was.
+        model.set_rois(list(self._before))
+        self._before = ()
+
+
 class CommandLog:
     """Runs commands and keeps what is needed to undo them.
 
@@ -239,5 +270,6 @@ __all__ = [
     "CommandLog",
     "DeleteROI",
     "RenameROI",
+    "ReplaceROIs",
     "UpdateROI",
 ]

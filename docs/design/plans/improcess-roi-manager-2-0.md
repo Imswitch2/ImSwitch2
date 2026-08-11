@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap phases C/D not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9); P-S, P-U, P-6, P-P, P-7, P-R, P-F2 not started. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1801,7 +1801,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-G** | ✅ **Implemented** — see §15 |
 | **P-1** | ✅ **Implemented** — see §15.2 |
 | **P-2, P-J, P-3, P-4** | ✅ **Implemented** — see §15.3, §15.4, §15.6, §15.7 |
-| **P-5, P-S, P-U, P-6, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-5** | ✅ **Implemented** — see §15.9 (first roadmap phase delivered) |
+| **P-S, P-U, P-6, P-P, P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1951,7 +1952,8 @@ complete, and all of it is now fixed.
 | **Visibility, Clear and Remove Slice Info bypassed the command log** | `SetVisible`, `ClearROIs`, `RemoveSliceInfo` commands, all undoable |
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
-No roadmap phase (P-5, P-S, P-U, P-6, P-P, P-7, P-R, P-F2) has started.
+Of the roadmap, **P-5** is now done too (§15.9); P-S, P-U, P-6, P-P, P-7, P-R
+and P-F2 have not started.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2074,6 +2076,47 @@ number of loaded results, and the reads are now lazy. It shows a progress bar
 and a wait cursor. Moving it onto the worker would need a plane source that
 fans out across results, which is a larger change than the responsiveness it
 would buy — noted here rather than left as an unstated limitation.
+
+### 15.9 P-5 — Set and selection operations ✅
+
+`imcommon/algorithms/roi_ops.py`, pure and local by construction.
+
+| Task | Outcome |
+| --- | --- |
+| P-5.1 | `combine(rois, op)` for AND / OR / XOR / SUBTRACT over the **union of the operands' boxes**, and `split()` into connected components. Combining ROIs from two different planes is refused: their pixel indices do not refer to the same grid, so the arithmetic would be on unrelated coordinates |
+| P-5.2 | `enlarge`, `make_band`, `to_bounding_box`, `convex_hull`, `translate`, and `make_inverse` as the one A-17 exception |
+| P-5.3 | Deferred, as Q-07 decided |
+| P-5.4 | A *More* menu on the panel; every operation goes through the command log as one `ReplaceROIs`, so all of them are undoable |
+| P-5.5 | `frame_mapping()` + `rescale_to_frame()`: the explicit counterpart to A-13's refusal to measure through a transform. Composed as `inv(target.affine) @ edge @ source.affine` — through world coordinates, the only place two pixel grids are comparable |
+
+**Locality is asserted, not asserted-to.** `test_only_the_a17_operations_ever_build_an_image_sized_mask`
+walks the module's AST and fails if any function other than `make_inverse`
+calls `roi_mask`. The criterion in §9 is a property of the code now rather than
+a claim about it.
+
+**Enlarge grows by distance, not by dilation steps.** Iterated binary dilation
+— the obvious implementation — grows in a diamond: enlarging by 2 reaches two
+pixels sideways but only one diagonally, so a circle comes out a lozenge. It is
+a Euclidean distance transform, which is both what the words mean and what
+ImageJ does; corners come out rounded, correctly, because the pixel diagonally
+two away from a corner is 2.83 pixels from the ROI.
+
+**Rescaling is honest about what it costs.** A vector ROI maps exactly. A
+rectangle whose mapping rotates or shears becomes the polygon it actually is,
+rather than an axis-aligned box quietly larger than the shape. A rasterised ROI
+is resampled and comes back a composite, because a mask has no sub-pixel truth
+to recover and pretending otherwise would be the third way this plan has found
+to report a bounding box as a measurement.
+
+The panel's table is now **extended-selection**: a set operation cannot be
+expressed on a table that only lets one row be chosen.
+
+*Tests:* `test_roi_ops.py` (30) — the full boolean truth table, Split's union
+equalling the original, the A-17 guard refusing with a size in MiB, and the
+rescaling cases including a registered edge and a refused cross-plane mapping.
+`test_roi_panel_measure.py` gained 9 for the menu, the command log and the
+refusal messages.
+
 
 
 
