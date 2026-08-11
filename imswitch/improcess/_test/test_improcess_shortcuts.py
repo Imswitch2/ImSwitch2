@@ -85,7 +85,9 @@ def test_catalog_registers_every_action_and_fires_signals(qapp):
     # The ROI manager's own actions are catalogued (so the editor can rebind
     # them and an override persists) but bound when the panel is built, since
     # it is runtime-loaded and usually absent at startup.
-    panel_scoped = {"roi.undo", "roi.redo"}
+    panel_scoped = {
+        aid for aid in improcess_shortcut_defaults() if aid.startswith("roi.")
+    }
     assert set(actions) == set(improcess_shortcut_defaults()) - panel_scoped
 
     # Signal-backed action fires its view signal.

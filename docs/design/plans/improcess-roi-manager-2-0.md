@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13); P-7, P-R, P-F2 not started. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14); P-R and P-F2 not started. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -1806,7 +1806,8 @@ spinbox (Q-06, separate task — though P-G.4 already unifies those panels'
 | **P-6** | ✅ **Implemented** — see §15.11 (the Fiji fixture corpus needs a Fiji run) |
 | **P-U** | ✅ **Implemented** — see §15.12 |
 | **P-P** | ✅ **Implemented** — see §15.13 |
-| **P-7, P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
+| **P-7** | ✅ **Implemented** — see §15.14 |
+| **P-R, P-F2** | Roadmap (Q-13a) — specified, not committed |
 
 Suggested first commits, in order: **P-0.6** (the mutation helper — the guard
 that makes every later field addition safe), then P-0.1/0.2/0.4/0.5/0.7, then
@@ -1957,8 +1958,8 @@ complete, and all of it is now fixed.
 
 Track B continued with **P-3** and **P-4**, both now complete (§15.6, §15.7).
 Of the roadmap, **P-5** (§15.9), **P-S** (§15.10), **P-6** (§15.11),
-**P-U** (§15.12) and **P-P** (§15.13) are done too; P-7, P-R and P-F2 have not
-started.
+**P-U** (§15.12), **P-P** (§15.13) and **P-7** (§15.14) are done too; P-R and
+P-F2 have not started.
 
 ### 15.6 P-3 — The measurement set ✅
 
@@ -2318,6 +2319,46 @@ to consider active.
 *Tests:* `test_roi_points.py` (25), and a **real-napari Points contract** in a
 subprocess beside the Shapes one, which pins the `edge_color` → `border_color`
 rename the tool inspects for.
+
+### 15.14 P-7 — UX to match the feature set ✅
+
+| Task | Outcome |
+| --- | --- |
+| P-7.1 | The button row is grouped the way ImageJ groups them — draw, edit, measure, files — over two rows with separators, rather than one row of twenty buttons in the order they were written |
+| P-7.2 | Extended selection (landed in P-5) plus **Deselect** |
+| P-7.3 | `T`, `Del`, `F2`, `Ctrl+D` and undo/redo in the config-driven catalog |
+| P-7.4 | **Update**, **Sort**, **Specify…**, **Properties…** (the full `ROIStyle`, F-22) |
+| P-7.5 | A name filter over the table |
+| P-7.6 | A context menu on the rows |
+
+**Properties cannot move an ROI.** The dialog has no geometry fields at all —
+*Specify…* is where numeric coordinates are entered, and its title says so. It
+is the one dialog most likely to be opened by someone who meant to nudge a
+region, and the safest thing it can do is not offer that.
+
+**Every control has an explicit "leave alone" state.** A batch edit over five
+ROIs with different colours has to be able to set the group without flattening
+the colours into one, so `changes()` returns only what was actually touched,
+and the panel *merges* a style change onto each ROI's own rather than replacing
+it. An untouched batch dialog returns `{}`.
+
+**Update keeps identity.** It is the same region redrawn, so rows pushed
+earlier still refer to it; the revision bumps, so nothing serves a cached
+number for the new shape.
+
+**Sort orders the model, not the view.** Sorting a column is a view; this is
+what gets exported, saved, and measured in order — and it is undoable like
+every other operation.
+
+**The filter hides, it never removes.** Deleting "everything" with a filter on
+would delete rows the user cannot see, which is the way this feature usually
+goes wrong. It is reapplied after every table rebuild, since the rows are new
+objects each time.
+
+*Tests:* `test_roi_panel_ux.py` (23), including the two that pin the design
+rather than the code: an untouched batch dialog changing nothing, and a batch
+style change leaving two different stroke colours different.
+
 
 
 

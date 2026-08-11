@@ -15,6 +15,7 @@ from imswitch.imcommon.view.guitools.naparitools import NapariROISetOverlay
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.analysis.roi_frame_adapter import world_to_data
 from imswitch.improcess.layer_selection import active_image_layer
+from imswitch.imcommon.algorithms.roi_style import ROIStyle
 from imswitch.improcess.analysis.roi_commands import (
     AddROI,
     ClearROIs,
@@ -24,7 +25,9 @@ from imswitch.improcess.analysis.roi_commands import (
     RemoveSliceInfo,
     RenameROI,
     ReplaceROIs,
+    SetProperties,
     SetVisible,
+    UpdateROI,
 )
 from imswitch.imcommon.algorithms.roi_geometry import roi_from_points
 from imswitch.imcommon.algorithms.roi_ops import (
@@ -105,6 +108,7 @@ from imswitch.improcess.analysis.roi_report import (
 )
 from .ResultsTableWidget import format_table_value
 from .ROIMeasurementsDialog import ROIMeasurementsDialog
+from .ROIPropertiesDialog import ROIPropertiesDialog, ROISpecifyDialog
 from .ROIPreflightDialog import ROIPreflightDialog
 
 #: Verdict for an ROI whose capture frame the set does not know — an ROI that
@@ -312,6 +316,29 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self._buildSetsMenu()
         self.setsButton.setMenu(self.setsMenu)
 
+        self.deselectButton = QtWidgets.QPushButton("Deselect")
+        self.deselectButton.setToolTip(
+            "Clear the selection, so actions apply to every ROI again"
+        )
+        self.updateButton = QtWidgets.QPushButton("Update")
+        self.updateButton.setToolTip(
+            "Replace the selected ROI's geometry with the shape now drawn, "
+            "keeping its identity"
+        )
+        self.propertiesButton = QtWidgets.QPushButton("Properties…")
+        self.specifyButton = QtWidgets.QPushButton("Specify…")
+        self.specifyButton.setToolTip("Create an ROI at exact coordinates")
+        self.sortButton = QtWidgets.QPushButton("Sort")
+        self.sortButton.setToolTip("Order the list by name")
+        self.filterEdit = QtWidgets.QLineEdit()
+        self.filterEdit.setPlaceholderText("Filter by name…")
+        self.filterEdit.setClearButtonEnabled(True)
+        self.filterEdit.setMaximumWidth(160)
+        self.filterEdit.setToolTip(
+            "Hide rows whose name does not match. A view only — nothing is "
+            "removed, and actions still apply to the selection."
+        )
+
         self.moreButton = QtWidgets.QToolButton()
         self.moreButton.setText("More")
         self.moreButton.setPopupMode(QtWidgets.QToolButton.InstantPopup)
@@ -328,37 +355,46 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self._buildFileMenu()
         self.fileButton.setMenu(self.fileMenu)
 
-        controls = QtWidgets.QHBoxLayout()
-        for btn in (
-            self.addRectangleButton,
-            self.addPointsButton,
-            self.captureButton,
-            self.renameButton,
-            self.duplicateButton,
-            self.deleteButton,
-            self.clearButton,
-            self.undoButton,
-            self.redoButton,
-            self.refreshButton,
-            self.measurementsButton,
-            self.measureButton,
-            self.multiMeasureButton,
-            self.multiPlotButton,
-            self.acrossResultsButton,
-            self.moreButton,
-            self.cancelButton,
-            self.exportCsvButton,
-            self.exportJsonButton,
-            self.fileButton,
+        # Grouped the way ImageJ groups them — draw, edit, measure, files —
+        # rather than as one row of twenty buttons in the order they were
+        # written. Two rows, because one would not fit a docked panel.
+        controls = QtWidgets.QVBoxLayout()
+        controls.setSpacing(2)
+        for group in (
+            (self.addRectangleButton, self.addPointsButton, self.captureButton,
+             self.updateButton, None,
+             self.renameButton, self.propertiesButton, self.specifyButton,
+             self.duplicateButton, self.deleteButton, self.clearButton, None,
+             self.undoButton, self.redoButton, self.deselectButton,
+             self.sortButton, self.moreButton),
+            (self.refreshButton, self.measurementsButton, self.measureButton,
+             self.multiMeasureButton, self.multiPlotButton,
+             self.acrossResultsButton, self.cancelButton, None,
+             self.exportCsvButton, self.exportJsonButton, self.fileButton, None,
+             self.setCombo, self.setsButton),
         ):
-            controls.addWidget(btn)
-        controls.addWidget(self.removeSliceInfoButton)
-        controls.addWidget(self.setCombo)
-        controls.addWidget(self.setsButton)
-        controls.addWidget(self.showAllCheck)
-        controls.addWidget(self.labelsCheck)
-        controls.addWidget(self.associateSlicesCheck)
-        controls.addStretch()
+            row = QtWidgets.QHBoxLayout()
+            row.setSpacing(3)
+            for widget in group:
+                if widget is None:
+                    separator = QtWidgets.QFrame()
+                    separator.setFrameShape(QtWidgets.QFrame.VLine)
+                    separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+                    row.addWidget(separator)
+                    continue
+                row.addWidget(widget)
+            row.addStretch()
+            controls.addLayout(row)
+
+        options = QtWidgets.QHBoxLayout()
+        options.setSpacing(3)
+        options.addWidget(self.showAllCheck)
+        options.addWidget(self.labelsCheck)
+        options.addWidget(self.associateSlicesCheck)
+        options.addWidget(self.removeSliceInfoButton)
+        options.addStretch()
+        options.addWidget(self.filterEdit)
+        controls.addLayout(options)
 
         #: Measurement ids in column order, filled in by _applyColumns().
         self._columnIds: tuple[str, ...] = ()
@@ -392,6 +428,14 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.duplicateButton.clicked.connect(self.duplicate_selected)
         self.deleteButton.clicked.connect(self.delete_selected)
         self.clearButton.clicked.connect(self.clear_rois)
+        self.deselectButton.clicked.connect(self.deselect)
+        self.updateButton.clicked.connect(self.update_selected)
+        self.propertiesButton.clicked.connect(self.edit_properties)
+        self.specifyButton.clicked.connect(self.specify_roi)
+        self.sortButton.clicked.connect(self.sort_rois)
+        self.filterEdit.textChanged.connect(self._filterChanged)
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._tableMenu)
         self.undoButton.clicked.connect(self.undo)
         self.redoButton.clicked.connect(self.redo)
         self.refreshButton.clicked.connect(self.refresh_stats)
@@ -919,6 +963,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         finally:
             self.table.blockSignals(False)
             self.table.setSortingEnabled(sorting)
+        # Rows were rebuilt, so the filter has to be applied to the new ones.
+        self._filterChanged(self.filterEdit.text())
 
     # ----------------------------------------------------------------------
     # P-4 — Measure, Multi Measure, Multi Plot
@@ -2103,6 +2149,158 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self.summaryLabel.setText(
             f"Published a label image of {len(rois)} ROI(s)."
         )
+
+    # ----------------------------------------------------------------------
+    # P-7 — the rest of ImageJ's ROI Manager
+    # ----------------------------------------------------------------------
+
+    def deselect(self) -> None:
+        """Clear the selection.
+
+        ImageJ has this as a button because so much else depends on it: with a
+        selection, Measure and the operations act on it; without, on everything.
+        Clicking empty space in a table does not reliably clear it.
+        """
+        self.table.clearSelection()
+        self._selection_changed()
+
+    def update_selected(self) -> None:
+        """ImageJ's *Update*: replace the selected ROI's geometry with what is drawn.
+
+        Its identity is kept — this is the same region, moved or redrawn — so
+        measurements pushed earlier still refer to it, and its revision bumps
+        so nothing serves a cached number for the new shape.
+        """
+        roi = self._selected_roi()
+        if roi is None:
+            return
+        try:
+            drawn = self._drawn_rois()
+        except Exception as exc:
+            self.summaryLabel.setText(str(exc))
+            return
+        if len(drawn) != 1:
+            self.summaryLabel.setText(
+                "Draw exactly one shape to update this ROI with."
+            )
+            return
+
+        replacement = drawn[0]
+        changes = {
+            "roi_type": replacement.roi_type,
+            "bounds": replacement.bounds,
+            "vertices": replacement.vertices,
+            "mask": replacement.mask,
+        }
+        try:
+            self._commands.run(UpdateROI(roi.name, changes))
+        except Exception as exc:
+            self.summaryLabel.setText(f"Could not update: {exc}")
+            return
+        self._toolService.clear(self._toolToken)
+        self.refresh_stats()
+        self.summaryLabel.setText(f"Updated {roi.name!r} to the drawn shape.")
+
+    def sort_rois(self) -> None:
+        """ImageJ's *Sort*: order the list by name.
+
+        The model's order, not the table's: sorting a column is a view, and
+        this is the thing that gets exported, saved and measured in order.
+        """
+        ordered = sorted(self._model.rois, key=lambda roi: roi.name)
+        if list(ordered) == list(self._model.rois):
+            self.summaryLabel.setText("Already in name order.")
+            return
+        self._runOperation(
+            "Sort", ordered, consumed=[roi.name for roi in self._model.rois]
+        )
+
+    def specify_roi(self) -> None:
+        """ImageJ's *Specify…*: an ROI at exact numeric coordinates."""
+        image = self._current_image_2d()
+        shape = np.asarray(image).shape if image is not None else None
+        chosen = ROISpecifyDialog.specify(shape, self)
+        if chosen is None:
+            return
+        roi_type, bounds = chosen
+        frame = self._current_frame()
+        if frame is not None:
+            self._set = self._set.with_frame(frame)
+        self.add_rois([
+            ROIRecord(
+                name=self._model.unique_name(roi_type.capitalize()),
+                roi_type=roi_type,
+                bounds=bounds,
+                source="specified",
+                position=self._current_position(frame),
+                frame_uid=frame.frame_uid if frame is not None else "",
+            )
+        ])
+
+    def edit_properties(self) -> None:
+        """ImageJ's *Properties…*, over one ROI or the whole selection."""
+        rois = self._selected_rois()
+        if not rois:
+            roi = self._selected_roi()
+            if roi is None:
+                return
+            rois = [roi]
+
+        changes = ROIPropertiesDialog.edit(rois, self)
+        if not changes:
+            return
+
+        style_changes = changes.pop("_style", None)
+        name = changes.pop("name", None)
+        if style_changes:
+            # Merged onto each ROI's own style, not replacing it: a batch that
+            # set only the group must not flatten five different colours into
+            # the first one's.
+            for roi in rois:
+                base = roi.style or ROIStyle()
+                self._commands.run(
+                    SetProperties(
+                        names=(roi.name,),
+                        changes={"style": replace(base, **style_changes)},
+                        label="Set style",
+                    )
+                )
+        if changes:
+            self._commands.run(
+                SetProperties(names=tuple(r.name for r in rois), changes=changes)
+            )
+        if name and len(rois) == 1:
+            try:
+                self._commands.run(RenameROI(rois[0].name, name))
+            except Exception as exc:
+                self.summaryLabel.setText(str(exc))
+        self.refresh_stats()
+
+    def _filterChanged(self, text: str) -> None:
+        """Hide rows whose name does not contain ``text``.
+
+        A *view* filter: it hides rows, it does not change the set. Deleting
+        "everything" while a filter is on would otherwise delete things the
+        user cannot see, which is the way this feature usually goes wrong.
+        """
+        needle = text.strip().lower()
+        column = self.column_index("Name")
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, column) if column >= 0 else None
+            name = item.text().lower() if item is not None else ""
+            self.table.setRowHidden(row, bool(needle) and needle not in name)
+
+    def _tableMenu(self, position) -> None:
+        """Right-click menu: the actions that act on a row."""
+        menu = QtWidgets.QMenu(self.table)
+        menu.addAction("Rename…", self.rename_selected)
+        menu.addAction("Properties…", self.edit_properties)
+        menu.addAction("Duplicate", self.duplicate_selected)
+        menu.addAction("Delete", self.delete_selected)
+        menu.addSeparator()
+        menu.addAction("Measure", self.measure)
+        menu.addAction("Deselect", self.deselect)
+        menu.exec_(self.table.viewport().mapToGlobal(position))
 
     def remove_slice_info(self) -> None:
         """Detach every ROI from the slice it was captured on (ImageJ parity)."""

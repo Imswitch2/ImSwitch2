@@ -69,6 +69,10 @@ _SIGNAL_SPECS = (
 #: Registered against the panel rather than the view, because they act on the
 #: panel's own command log and mean nothing when it is not open.
 _ROI_SPECS = (
+    ("roi.add", "Add ROI", "T", "add_current_rectangle"),
+    ("roi.delete", "Delete ROI", "Del", "delete_selected"),
+    ("roi.rename", "Rename ROI", "F2", "rename_selected"),
+    ("roi.deselect", "Deselect ROIs", "Ctrl+D", "deselect"),
     ("roi.undo", "Undo ROI edit", "Ctrl+Z", "undo"),
     # Ctrl+Shift+Z is the usual redo everywhere else, and is already this
     # catalog's "Channels" — taking it would have made one of the two silently
