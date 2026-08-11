@@ -39,6 +39,8 @@ class MonalisaLiveSession(StreamingSession):
         self.ny_s = None
         self.nx_c = None
         self.ny_c = None
+        self.num_linesteps = 1
+        self.num_frames_per_condition = None
         self.num_frames_in_stack = None
         self.use_gpu = False
         self.bleaching_correction = False
@@ -90,6 +92,10 @@ class MonalisaLiveSession(StreamingSession):
             axis_startpos = np.array(imswitch_meta["ScanStage:axis_startpos"]).flatten()
             axis_length = np.array(imswitch_meta["ScanStage:axis_length"]).flatten()
             axis_step_size = np.array(imswitch_meta["ScanStage:axis_step_size"]).flatten()
+            self.num_linesteps = (
+                self._coerce_positive_int(imswitch_meta.get("ScanTTL:n_linesteps"))
+                or 1
+            )
             step_x_nm, step_y_nm = self.scan_stage_step_size_nm(
                 imswitch_meta, axis_step_size
             )
@@ -104,11 +110,16 @@ class MonalisaLiveSession(StreamingSession):
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
 
-        self.num_frames_in_stack = self.nx_s * self.ny_s
+        self.num_frames_per_condition = self.nx_s * self.ny_s
+        self.num_frames_in_stack = (
+            self.num_frames_per_condition * self.num_linesteps
+        )
         num_time_points = self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        num_output_conditions = num_time_points * self.num_linesteps
 
         self._logger.info(
             f"Scan geometry: nx_s={self.nx_s}, ny_s={self.ny_s}, "
+            f"linesteps={self.num_linesteps}, "
             f"frames_per_stack={self.num_frames_in_stack}, timepoints={num_time_points}"
         )
 
@@ -152,14 +163,20 @@ class MonalisaLiveSession(StreamingSession):
             use_gpu=self.use_gpu,
         )
 
-        if working_data.shape[0] < self.num_frames_in_stack:
+        orientation_indices = self._condition_frame_indices(0)
+        if (
+            orientation_indices.size < self.num_frames_per_condition
+            or working_data.shape[0] <= int(orientation_indices[-1])
+        ):
             self._logger.warning(
                 f"First chunk has only {working_data.shape[0]} frames, need {self.num_frames_in_stack} "
                 f"for orientation detection; using default orientation '+x+y'"
             )
             orientation = "+x+y"
         else:
-            chunk_for_orientation = working_data[: self.num_frames_in_stack]
+            # A contiguous nx*ny prefix mixes line-step conditions. Select one
+            # complete condition from the interleaved first stack instead.
+            chunk_for_orientation = working_data[orientation_indices]
             if self.use_gpu and CUPY_AVAILABLE:
                 chunk_for_orientation = cp.array(chunk_for_orientation)
             proc_pixels = self.processor.process_chunk(chunk_for_orientation)
@@ -182,14 +199,16 @@ class MonalisaLiveSession(StreamingSession):
         self.output_pixel_size_nm = (step_y_nm, step_x_nm)
 
         self.reconstructed = np.zeros(
-            (1, 1, num_time_points, 1, recon_rows, recon_cols), dtype=np.float32
+            (1, 1, num_output_conditions, 1, recon_rows, recon_cols),
+            dtype=np.float32,
         )
 
         self.scan_params = {
             "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
             "directions": ["+", "+", "+", "+"],
-            "steps": [self.nx_s, self.ny_s, 1, num_time_points],
+            "steps": [self.nx_s, self.ny_s, 1, num_output_conditions],
             "step_sizes": [float(step_x_nm), float(step_y_nm), 1.0, 1.0],
+            "n_linesteps": self.num_linesteps,
             "unidirectional": False,
         }
 
@@ -250,31 +269,48 @@ class MonalisaLiveSession(StreamingSession):
 
     def _push_single_stack_chunk(self, chunk: np.ndarray, start: int, end: int) -> None:
         """Scatter a chunk that is guaranteed not to cross a scan-stack boundary."""
-        # start/end are GLOBAL frame indices across timepoints (the lapse source
-        # streams scan0, scan1, ... as one continuous range). frame_inds is
-        # per-stack (length num_frames_in_stack), so derive the timepoint from
-        # the global start and index frame_inds with the LOCAL position within
-        # the stack. A chunk never spans a stack boundary (sources read within
-        # one stack/group), so a single time_index applies to the whole chunk.
-        time_index = start // self.num_frames_in_stack
-        if time_index >= self.reconstructed.shape[2]:
-            self._logger.warning(
-                f"Time index {time_index} exceeds allocated timepoints; skipping chunk"
-            )
-            return
-
-        local_start = start % self.num_frames_in_stack
-        local_end = local_start + (end - start)
-
         if self.bleaching_correction:
             chunk = self._apply_bleaching_correction(chunk)
 
         chunk_gpu = cp.array(chunk) if self.use_gpu and CUPY_AVAILABLE else chunk
         proc_pixels = self.processor.process_chunk(chunk_gpu)
-        pixel_indices = self.processor.frame_inds[local_start:local_end]
 
-        flat_recon = self.reconstructed[0, 0, time_index, 0].reshape(-1)
-        flat_recon[pixel_indices.ravel()] = proc_pixels.ravel()
+        # Advanced-scan frames are grouped by repeated line, not by complete
+        # condition image: [line0/A][line0/B][line1/A][line1/B] ...
+        global_indices = np.arange(start, end, dtype=np.int64)
+        local_indices = global_indices % self.num_frames_in_stack
+        acquisition_indices = global_indices // self.num_frames_in_stack
+        fast_indices = local_indices % self.nx_s
+        expanded_lines = local_indices // self.nx_s
+        linestep_indices = expanded_lines % self.num_linesteps
+        middle_indices = expanded_lines // self.num_linesteps
+        physical_indices = middle_indices * self.nx_s + fast_indices
+        output_indices = acquisition_indices * self.num_linesteps + linestep_indices
+
+        for output_index in np.unique(output_indices):
+            if output_index >= self.reconstructed.shape[2]:
+                self._logger.warning(
+                    f"Time/condition index {output_index} exceeds allocated output; "
+                    "skipping frames"
+                )
+                continue
+            mask = output_indices == output_index
+            pixel_indices = self.processor.frame_inds[physical_indices[mask]]
+            flat_recon = self.reconstructed[0, 0, output_index, 0].reshape(-1)
+            flat_recon[pixel_indices.ravel()] = proc_pixels[mask].ravel()
+
+    def _condition_frame_indices(self, linestep: int) -> np.ndarray:
+        """Return one condition's indices from a line-interleaved stack."""
+        line_starts = (
+            np.arange(self.ny_s, dtype=np.int64)
+            * self.nx_s
+            * self.num_linesteps
+            + int(linestep) * self.nx_s
+        )
+        return (
+            line_starts[:, np.newaxis]
+            + np.arange(self.nx_s, dtype=np.int64)[np.newaxis, :]
+        ).reshape(-1)
 
     def _resolve_gaussian_sigma_px(self, params: dict) -> float:
         """Fit-Gaussian sigma in pixels.
@@ -412,7 +448,7 @@ class MonalisaLiveSession(StreamingSession):
 
         if stack_frames is not None:
             for nx_s, ny_s in unique_candidates:
-                if nx_s * ny_s == stack_frames:
+                if nx_s * ny_s * self.num_linesteps == stack_frames:
                     return nx_s, ny_s
 
         if unique_candidates:
