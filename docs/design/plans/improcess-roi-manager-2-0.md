@@ -2435,6 +2435,47 @@ module; the panel releasing its viewer callbacks and joining its measurement
 thread on close; and every acceptance criterion in this plan resolving to a
 named test.
 
+### 15.17 Rig feedback — ROI outlines far too thick
+
+First real-image run: everything worked, but the outlines were enormous and
+napari's own layer controls would not change them. Both halves have the same
+root.
+
+**The width.** napari measures a shape's ``edge_width`` in **data** units and
+multiplies it by the layer's scale *and* the camera zoom. The overlay computed
+``PIXEL_WIDTH / zoom`` — correct for a layer at scale 1, which is what the
+drawing-tool layer is. But the overlay **copies the target image's scale**
+(`_align_to_target`, added so ROI coordinates line up with a calibrated image),
+so both terms are in play and the two zoom terms cancel:
+
+> on-screen thickness = (PIXEL_WIDTH / zoom) x scale x zoom = **PIXEL_WIDTH x
+> scale**, at every zoom level.
+
+Right by accident on uncalibrated data; 0.2 px on a 0.1 µm/px camera; **200 px
+on a 100 nm/px result calibrated in nm**, which is most of this application's
+data. The fix divides by the scale as well, and `ROIStyle.stroke_width` — long
+documented as *screen* pixels — goes through the same conversion instead of
+being passed through as a data-unit width. A zoom now rescales each ROI's width
+separately rather than assigning one value to the layer, which would have
+discarded every per-ROI width the moment the user zoomed.
+
+Worth naming as a pattern: this was introduced not by writing the width
+formula wrongly, but by a *later* fix (alignment) adding a term the formula
+never knew about. The tool layer's identical-looking formula is still correct
+precisely because that layer stays at scale 1.
+
+**The controls.** They cannot work, by design: the overlay is a managed,
+read-only layer re-rendered from the records, so an edit there is overwritten
+by the next redraw — the same property that stops a dragged vertex from
+desynchronising the model. The width belongs where the model does, so
+**Sets ▸ Default appearance…** now edits `ROISet.default_style` through the
+same Properties dialog, which is one place to set the outline for a whole set.
+
+*Tests:* five in `test_roi_overlay.py`, parametrised over the calibrations
+above and asserting the *arithmetic* — `edge_width x scale x zoom` — rather
+than that the code ran.
+
+
 
 
 

@@ -1812,6 +1812,10 @@ class NapariROISetOverlay:
         self._failures: list[str] = []
         self._suppress_resync = False
         self._click_handler = None
+        #: Requested width per drawn shape, in *screen* pixels. Kept so a zoom
+        #: change can recompute data-unit widths without re-rendering, and
+        #: without collapsing per-ROI widths into one.
+        self._screen_widths: list[float] = []
         # Remembered so remove() can undo them: an overlay that leaves its
         # viewer callbacks connected keeps being driven after its panel is gone.
         self._zoom_signal = None
@@ -1823,16 +1827,59 @@ class NapariROISetOverlay:
 
     # -- appearance ---------------------------------------------------------
 
-    def _get_edge_width(self):
+    def _target_scale(self) -> float:
+        """The overlay's pixel size in world units, along the displayed plane.
+
+        Read from the layer if it has been aligned already, else from the
+        target: `_ensure_layer` needs a width before `_align_to_target` has
+        run.
+        """
+        for source in (self._layer, self._target_layer):
+            scale = getattr(source, 'scale', None)
+            if scale is None:
+                continue
+            try:
+                values = [abs(float(v)) for v in tuple(scale)[-2:] if float(v)]
+            except (TypeError, ValueError):
+                continue
+            if values:
+                return sum(values) / len(values)
+        return 1.0
+
+    def _edge_width_for(self, screen_pixels: float) -> float:
+        """A width in the layer's data units that renders ``screen_pixels`` thick.
+
+        napari measures ``edge_width`` in **data** units and multiplies it by
+        the layer's scale and the camera zoom to get screen pixels. This
+        overlay copies the target image's scale (see `_align_to_target`), so
+        both terms are in play and both have to be divided out.
+
+        Dividing by the zoom alone — which is what this did — makes the two
+        zoom terms cancel, leaving an on-screen width of exactly
+        ``screen_pixels x scale`` at every zoom level. On uncalibrated data
+        that is right by accident; on a 100 nm/px result calibrated in nm it
+        is two hundred screen pixels of outline, and on a 0.1 um/px camera it
+        is a fifth of one.
+        """
         zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        scale = self._target_scale() or 1.0
+        return max(0.05, float(screen_pixels) / (zoom * scale))
+
+    def _get_edge_width(self):
+        return self._edge_width_for(self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, _event=None):
-        if self._layer is not None and self._rois:
-            try:
-                self._layer.edge_width = self._get_edge_width()
-            except Exception:
-                pass
+        if self._layer is None or not self._rois:
+            return
+        try:
+            # Per shape, because an ROI with an explicit stroke width keeps it:
+            # rescaling the whole layer to one value would silently discard
+            # every per-ROI width the moment the user zoomed.
+            self._layer.edge_width = [
+                self._edge_width_for(width) for width in self._screen_widths
+            ] or self._get_edge_width()
+        except Exception:
+            pass
 
     def _style_for(self, index, roi):
         """The ROI's own style over the set's default, with a colour fallback."""
@@ -1976,6 +2023,7 @@ class NapariROISetOverlay:
         self._align_to_target(layer)
 
         shapes, edges, fills, widths, uids, parts, labels = [], [], [], [], [], [], []
+        screen_widths: list[float] = []
         for index, roi in enumerate(drawn):
             try:
                 outline = roi_outline(roi)
@@ -1992,20 +2040,23 @@ class NapariROISetOverlay:
             # otherwise be labelled three times.
             biggest = max(range(len(outline)), key=lambda i: len(outline[i]))
             show_label = self._show_labels and style.label_visible
-            width = style.stroke_width
+            # ROIStyle.stroke_width is documented as *screen* pixels, so it
+            # goes through the same conversion as the default rather than
+            # being passed through as a data-unit width.
+            screen_width = float(style.stroke_width or self._PIXEL_WIDTH)
             for part_index, part in enumerate(outline):
                 shapes.append(np.asarray(part, dtype=float))
                 edges.append(style.stroke_color)
                 fills.append(self._rgba(style.fill_color, style.fill_opacity))
-                widths.append(
-                    float(width) if width else self._get_edge_width()
-                )
+                screen_widths.append(screen_width)
+                widths.append(self._edge_width_for(screen_width))
                 uids.append(roi.uid)
                 parts.append(part_index)
                 labels.append(
                     roi.name if (show_label and part_index == biggest) else ""
                 )
 
+        self._screen_widths = screen_widths
         self._set_layer_data(shapes, edges, fills, widths, uids, parts, labels=labels)
 
     def _align_to_target(self, layer):

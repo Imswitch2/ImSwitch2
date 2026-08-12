@@ -1728,6 +1728,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
             (None, None),
             ("Merge from…", self.merge_set),
             ("Compare with…", self.compare_set),
+            (None, None),
+            ("Default appearance…", self.edit_default_style),
         ):
             if text is None:
                 self.setsMenu.addSeparator()
@@ -1842,6 +1844,37 @@ class ROIManagerWidget(QtWidgets.QWidget):
         self._sets.pop(self._activeIndex)
         self._activeIndex = min(self._activeIndex, len(self._sets) - 1)
         self._loadActiveSet()
+
+    def edit_default_style(self) -> None:
+        """Appearance for every ROI in this set that has none of its own.
+
+        The place to change the outline width once rather than per ROI.
+        napari's own layer controls cannot do it: the overlay is a managed,
+        read-only layer re-rendered from the model, so an edit there is
+        overwritten by the next redraw — which is the same property that stops
+        a dragged vertex from silently desynchronising the records.
+        """
+        from imswitch.imcommon.algorithms.roi import ROIRecord as _Record
+
+        current = self._set.default_style or ROIStyle()
+        # Presented through the same dialog as a single ROI's properties, over
+        # a stand-in carrying the set's default, so "leave alone" means the
+        # same thing in both places.
+        stand_in = _Record("(set default)", "rectangle", (0, 1, 0, 1), style=current)
+        changes = ROIPropertiesDialog.edit([stand_in], self)
+        if not changes:
+            return
+        style_changes = changes.get("_style")
+        if not style_changes:
+            self.summaryLabel.setText("Nothing to change in the set's appearance.")
+            return
+        self._set = self._set.with_changes(
+            default_style=replace(current, **style_changes)
+        )
+        self.refresh_stats()
+        self.summaryLabel.setText(
+            f"Default appearance updated for {self._set.name!r}."
+        )
 
     def _chooseOtherSet(self, title: str) -> int:
         others = [

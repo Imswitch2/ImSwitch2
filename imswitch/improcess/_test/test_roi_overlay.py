@@ -418,3 +418,78 @@ def test_a_3d_target_aligns_the_2d_overlay(overlay):
     assert tuple(overlay.layer.scale) == (0.1, 0.2)
     assert tuple(overlay.layer.translate) == (5.0, 7.0)
     assert overlay.failures == [], overlay.failures
+
+
+# --------------------------------------------------------------------------
+# edge width — reported from a real image: outlines far too thick
+# --------------------------------------------------------------------------
+
+def _overlay_at(scale, zoom):
+    """An overlay aligned to a target image layer with this pixel scale."""
+    from imswitch.imcommon.view.guitools.naparitools import NapariROISetOverlay
+
+    viewer = _Viewer()
+    viewer.camera.zoom = zoom
+    overlay = NapariROISetOverlay(viewer)
+    overlay.set_target_layer(
+        SimpleNamespace(scale=(scale, scale), translate=(0.0, 0.0))
+    )
+    return overlay
+
+
+@pytest.mark.parametrize(
+    "scale,zoom",
+    [(1.0, 0.39), (0.1, 3.9), (65.0, 0.006), (100.0, 0.004), (10.0, 0.039)],
+)
+def test_the_outline_is_the_same_thickness_at_any_calibration(scale, zoom):
+    """napari measures edge_width in DATA units and multiplies by the layer's
+    scale and the camera zoom. The overlay copies the target's scale, so both
+    terms are in play — dividing by the zoom alone makes the zoom terms cancel
+    and leaves `PIXEL_WIDTH x scale` screen pixels, which for a 100 nm/px
+    result calibrated in nm is two hundred pixels of outline.
+    """
+    from imswitch.imcommon.view.guitools.naparitools import NapariROISetOverlay
+
+    overlay = _overlay_at(scale, zoom)
+    edge_width = overlay._get_edge_width()
+    on_screen = edge_width * scale * zoom
+
+    assert on_screen == pytest.approx(NapariROISetOverlay._PIXEL_WIDTH, rel=1e-6)
+
+
+def test_an_explicit_stroke_width_is_screen_pixels_as_documented():
+    """ROIStyle.stroke_width says "screen pixels"; it was passed through as a
+    data-unit width, so it meant something different on every calibration."""
+    overlay = _overlay_at(scale=50.0, zoom=0.01)
+    assert overlay._edge_width_for(6.0) * 50.0 * 0.01 == pytest.approx(6.0)
+
+
+def test_zooming_keeps_per_roi_widths_apart():
+    """Rescaling the layer to one value would discard every per-ROI width the
+    moment the user zoomed."""
+    from imswitch.imcommon.algorithms.roi_style import ROIStyle
+
+    overlay = _overlay_at(scale=1.0, zoom=1.0)
+    overlay.set_rois([
+        _roi("thin", (0, 4, 0, 4), style=ROIStyle(stroke_width=1.0)),
+        _roi("thick", (8, 12, 8, 12), style=ROIStyle(stroke_width=8.0)),
+    ])
+    assert overlay._screen_widths == [1.0, 8.0]
+
+    overlay._viewer.camera.zoom = 4.0
+    overlay._on_zoom_changed()
+    widths = list(overlay._layer.edge_width)
+    assert widths[0] != widths[1]
+    assert widths[0] * 1.0 * 4.0 == pytest.approx(1.0)
+    assert widths[1] * 1.0 * 4.0 == pytest.approx(8.0)
+
+
+def test_the_set_default_width_reaches_rois_without_one():
+    from imswitch.imcommon.algorithms.roi_style import ROIStyle
+
+    overlay = _overlay_at(scale=1.0, zoom=1.0)
+    overlay.set_rois(
+        [_roi("a", (0, 4, 0, 4))],
+        default_style=ROIStyle(stroke_width=5.0),
+    )
+    assert overlay._screen_widths == [5.0]

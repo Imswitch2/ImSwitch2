@@ -4,13 +4,17 @@ A new `imcontrol` widget for **driving scanner DACs by hand** and, later, for
 **measuring the calibration constants** that the scan path currently takes on
 faith from the setup file.
 
-Status: Proposed — **revision 2**, rewritten after review. **P-0 is the agreed
-first deliverable** (manual per-axis voltage entry). P-1..P-3 are roadmap.
+Status: Proposed — **revision 3**, ready for a second review round. **P-0 is the
+agreed first deliverable** (manual per-axis voltage entry). P-1..P-3 are
+roadmap.
 
-Revision 2 changed the safety model substantially: the restore snapshot is now
-session-scoped rather than lifetime-scoped, "Zero all" is gone, and manual
-control takes a real actuator reservation instead of only dodging scans.
-`offsetVolt` was withdrawn. §10 maps every review finding to its resolution.
+Revision 2 changed the safety model after review: session-scoped restore
+snapshot, "Zero all" removed, a real actuator reservation instead of only
+dodging scans, `offsetVolt` withdrawn. Revision 3 is a self-audit of that
+revision against the code, and found three defects **in revision 2's own new
+material** — the focus-lock integration would have introduced a bug, and the
+reservation's stated coverage was wrong in both directions. §10 logs
+everything; §11 lists the decisions this review round should rule on.
 
 Cut and recorded in §8 rather than deleted: parked point-detector reading,
 field-nonlinearity correction, and `offsetVolt`.
@@ -59,8 +63,9 @@ widget key **`ScannerCalib`**.
 | `imswitch/imcontrol/controller/controllers/ScannerCalibController.py` | **new** — `ScannerCalibController(ImConWidgetController, StatefulComponentMixin)` |
 | `imswitch/imcontrol/model/managers/positioners/_analog_scanner.py` | **new** — the voltage capability (§3) |
 | `imswitch/imcontrol/controller/CommunicationChannel.py` | actuator reservation registry + signals (§4); positioner-moved notification (§3) |
-| `imswitch/imcontrol/controller/controllers/FocusLockController.py` | consume the reservation via its existing conflict predicate (§4) |
-| `imswitch/imcontrol/controller/controllers/PositionerController.py` | refuse moves to a reserved actuator; sync display on external moves (§3, §4) |
+| `imswitch/imcontrol/controller/controllers/FocusLockController.py` | generalize scan-suspension bookkeeping to keyed owners, then consume the reservation via its existing conflict predicate (§4) |
+| `imswitch/imcontrol/controller/controllers/PositionerController.py` | refuse moves to a reserved actuator in `move`/`setPos`; sync display on external moves (§3, §4) |
+| `imswitch/imcontrol/controller/controllers/WellPlateController.py` | honour the reservation — the one remaining unguarded direct writer (§4) |
 | `imswitch/imcontrol/controller/basecontrollers.py` | scan start refuses while a manual reservation is held (§4) |
 | `imswitch/imcontrol/view/widgets/__init__.py` | add to `_WIDGET_MODULES` |
 | `imswitch/imcontrol/controller/controllers/__init__.py` | add to `_CONTROLLER_MODULES` |
@@ -157,11 +162,23 @@ entry "for free". It will not. The manager's `_position` changes, but the
 display is written by `PositionerController.updatePosition(name, axis)`, which
 only runs when that controller is the one initiating the move.
 
-So: add `CommunicationChannel.sigPositionerPositionChanged = Signal(str, str)`
+Add `CommunicationChannel.sigPositionerPositionChanged = Signal(str, str)`
 (positioner name, axis). `ScannerCalibController` emits it after every write;
-`PositionerController` connects it to `updatePosition`, which already refreshes
-both the widget and the shared attribute. Any other out-of-band position writer
-can adopt the same signal later.
+`PositionerController` connects it to `updatePosition`, which refreshes both the
+widget and the shared attribute.
+
+**Why not just write the shared attribute**, which already exists and already
+carries positions? Because it is not a notification channel — it is a *command*
+channel. `PositionerController.attrChanged` reacts to a `_positionAttr` key by
+calling `setPositioner(name, axis, value)` → `setPos` →
+`manager.setPosition(...)`. A cross-controller shared-attr write would therefore
+round-trip our voltage through µm and **re-command the DAC**, re-quantizing the
+value we just set. The `settingAttr` re-entrancy guard does not help: it is set
+only around `PositionerController`'s own writes, so it is False for ours.
+
+`updatePosition` internally calls `setSharedAttr`, but that path is safe — it
+runs inside the `settingAttr` guard, so the resulting `attrChanged` early-returns
+rather than re-commanding.
 
 ---
 
@@ -197,9 +214,41 @@ Participants in P-0:
 | Participant | Behaviour |
 |---|---|
 | `ScannerCalibController` | Holds the reservation for the whole manual session (§5). Every write asserts it still holds it. |
-| `FocusLockController` | Connect `sigActuatorsReserved` → the same suspend path it uses for a scan, gated on its existing `scanTouchesFocusActuator` predicate (renamed `touchesFocusActuator`, since the caller is no longer only a scan); `sigActuatorsReleased` → `scanLockFocus`. |
-| `PositionerController` | Refuse a move whose positioner is in `reservedActuators()`, with a message naming the holder. |
+| `FocusLockController` | Suspend on a reservation that its `scanTouchesFocusActuator` predicate says can reach its axis — but **as a separate suspension owner**, see below. |
+| `PositionerController` | Refuse a move whose positioner is in `reservedActuators()`, guarded in `move` and `setPos`, with a message naming the holder. |
+| `WellPlateController` | Same guard — it calls `move`/`setPosition` on managers directly and is otherwise unguarded. |
 | `SuperScanController._beginScanRun` | Refuse to start a scan while a manual reservation is held. This is the direction that makes it *mutual* rather than one-sided. |
+
+### The focus lock needs keyed suspension owners, not the scan counter
+
+Revision 2 said to "connect `sigActuatorsReserved` to the same suspend path it
+uses for a scan". That would introduce a bug. The lock's bookkeeping is a single
+counter plus a single companion flag:
+
+- `scanUnlockFocus` (`sigScanStarting`) increments `_scanSuspendDepth`;
+  `scanLockFocus` (`sigScanEnded`) decrements it.
+- `scanActuatorsResolved` releases early **only when `_scanSuspendDepth == 1`**
+  and `_scanOwnsFocusActuator` — deliberately, because one flag cannot say "every
+  concurrent scan is harmless".
+
+Feed a manual reservation into that same counter and the sources become
+indistinguishable: a scan's harmless-resolve sees depth 2 and declines to
+release (mildly wrong), or with different ordering releases a suspension the
+*reservation* owns (actively wrong — the lock re-engages while the calibration
+widget is driving the axis). `scanUnlockFocus` also early-returns on
+`not scanBlockEnabled()`, a scan-specific user opt-out that has no business
+governing manual control.
+
+So P-0a generalizes the bookkeeping: replace `_scanSuspendDepth` /
+`_scanOwnsFocusActuator` with a small map of suspension owners
+(`'scan'`, `'reservation'`), each with its own conflict flag. Resume happens
+when the map empties; each owner releases only its own entry; `scanBlockEnabled()`
+gates only the `'scan'` owner. Existing scan behaviour is preserved exactly —
+the current pair is the one-owner case — and the depth==1 reasoning becomes
+per-owner instead of global.
+
+This is a focused refactor of another controller's internals, which is why
+§9 gives it its own phase and §11 asks for a ruling on its scope.
 
 ### Scan-side guard, corrected
 
@@ -209,13 +258,25 @@ while the run is still in flight. `ScannerCalibController` therefore also tracks
 the interval locally: `sigScanStarting` sets `_scanInFlight`, `sigScanEnded`
 clears it, and a write is refused if **either** is true.
 
-### What this does not achieve
+### Coverage, stated accurately
 
-Honest limit: `APIExport` position setters and any writer that has not been
-migrated do not consult the registry in P-0. The reservation is *enforced* for
-the participants in the table above and *advisory* everywhere else. The plan
-does not claim exclusivity it cannot deliver; broadening participation is
-follow-up work, and the registry is the place it plugs into.
+Revision 2 claimed `APIExport` position setters would remain unguarded. That was
+wrong: `movePositioner` and `setPositioner` delegate to `move`/`setPos`, so
+guarding those two methods covers the Positioner widget **and** its whole public
+API in one place. Revision 2 was also wrong in the other direction — it implied
+the rest was covered. Enumerating every direct writer:
+
+| Writer | Covered by |
+|---|---|
+| `PositionerController.move` / `setPos` (and the `APIExport`s that delegate to them) | the guard itself |
+| `ScanControllerBase` / `PointScan` / `MoNaLISA` / `Advanced` pre-scan centring, `basecontrollers.py` scan parking | the scan-start refusal — none of them runs outside a scan run |
+| `FocusLockController` corrections | yields on the reservation |
+| `WellPlateController` | **needs the guard added** — the one genuinely unguarded writer |
+| `PositionerController.closeEvent` → `execOnAll(resetOnClose)` | not guarded, and deliberately so: it is shutdown policy and §5 already stands down for it |
+
+That is the complete set in `imcontrol/controller`. The honest residual is
+therefore narrow — plugin or workflow code reaching a manager directly — rather
+than the broad hole revision 2 described.
 
 ---
 
@@ -328,8 +389,13 @@ whole restore design is built on *not* moving.
   and is *not* 0 on a unipolar axis.
 - `test_actuator_reservation.py` — a second reserver is refused; focus lock
   suspends on a reservation that touches its actuator and does **not** on one
-  that provably cannot; `PositionerController` refuses a reserved move;
-  `_beginScanRun` refuses while a reservation is held; release restores all.
+  that provably cannot; **a scan's `sigScanActuatorsResolved` does not release a
+  reservation-owned suspension, and vice versa** (the revision-2 bug); a scan
+  and a reservation suspending concurrently resume only when both release;
+  `scanBlockEnabled()` off still lets a reservation suspend; `move`, `setPos`
+  and the delegating `APIExport`s are all refused for a reserved actuator;
+  `WellPlateController` likewise; `_beginScanRun` refuses while held; release
+  restores everything.
 - `test_scanner_calib_controller.py` — only capable `forScanning` axes are
   offered, aliased duplicates suppressed; no write is possible before session
   start; a write during `sigScanStarting`→`sigScanEnded` is refused *including
@@ -543,7 +609,7 @@ visible as a poor fit even though it is not modelled.
 
 | Phase | Content | Hardware needed |
 |---|---|---|
-| **P-0a** | `AnalogScannerMixin`, actuator reservation (§4) and its consumers, `sigPositionerPositionChanged` | none |
+| **P-0a** | `AnalogScannerMixin`; focus-lock keyed suspension owners; actuator reservation (§4) and its consumers; `sigPositionerPositionChanged` | none |
 | **P-0b** | Widget, session lifecycle, registration, docs, tests | none to develop; a DMM check to trust |
 | P-1 | Camera probe, routine 1 (gain only), results table, copy-on-write write-back | camera + a spot |
 | P-2 | Routine 2 (affine), diagnostic-only; define the scanner↔camera record | camera + a spot |
@@ -554,7 +620,9 @@ is the part that wants review on its own, independent of any GUI.
 
 ---
 
-## 10. Review log (revision 1 → 2)
+## 10. Review log
+
+### Revision 1 → 2 (external review)
 
 | # | Finding | Resolution |
 |---|---|---|
@@ -571,3 +639,42 @@ is the part that wants review on its own, independent of any GUI.
 | 11 | `StatefulComponentMixin` does not auto-register | §5 — explicit `getWidgetStatePersistence().register('ScannerCalib', self)` |
 | 12 | `configOwnedParameters` is detector-specific | §5 — removed, replaced with a plain "read from `setupInfo`, never persist" rule |
 | 13 | Missing from `setupinfo-reference.rst` | §2 — added to the file table |
+
+### Revision 2 → 3 (self-audit)
+
+Revision 2's own new material was audited against the code the same way. Three
+defects, all in the parts revision 2 added rather than in what it inherited:
+
+| # | Defect in revision 2 | Resolution |
+|---|---|---|
+| 14 | "Connect the reservation to the focus lock's existing scan-suspend path" would have introduced a bug: `_scanSuspendDepth` is one counter with one companion flag, and `scanActuatorsResolved`'s `depth == 1` early-release cannot distinguish a scan from a reservation — so a scan's harmless-resolve could release a reservation-owned suspension, re-engaging the lock while the widget drives the axis. `scanUnlockFocus` also gates on the scan-only `scanBlockEnabled()` opt-out. | §4 — keyed suspension owners, per-owner release, `scanBlockEnabled()` gating only `'scan'`. New test asserts the cross-release does not happen. |
+| 15 | Reservation coverage was wrong in **both** directions: it claimed `APIExport` setters were unguarded (they delegate to `move`/`setPos`, so guarding those covers them), and implied everything else was guarded (`WellPlateController` writes to managers directly and was not). | §4 — full enumeration of every direct writer in `imcontrol/controller` with what covers each; `WellPlateController` added to the file table. |
+| 16 | §3 proposed a new position-changed signal without saying why the existing shared-attribute channel is not the answer — a reviewer would reasonably propose it. It is in fact *unsafe*: `attrChanged` reacts to a position key by calling `setPos` → `manager.setPosition`, so a cross-controller write would re-command the DAC, and the `settingAttr` guard does not cover foreign writes. | §3 — rationale added, including why `updatePosition`'s own internal `setSharedAttr` is safe. |
+
+---
+
+## 11. Decisions for this review round
+
+Four points where I chose conservatively and a reviewer may reasonably rule
+otherwise. None blocks drafting P-0a; all change its shape.
+
+1. **Scope of the focus-lock refactor (§4).** Generalizing `_scanSuspendDepth`
+   into keyed owners is the correct fix, but it edits a controller with subtle,
+   hard-won suspend/resume semantics. Alternatives: (a) do it as specified;
+   (b) give the reservation an entirely separate suspension flag inside
+   FocusLock, duplicating a little logic but touching the scan path not at all;
+   (c) land P-0 without focus-lock participation and accept that a running lock
+   can fight a manual voltage on a shared Z actuator. I recommend (a); (b) is
+   the defensible smaller step.
+2. **`WellPlateController` (§4).** Adding the guard there is a two-line change
+   to a controller otherwise unrelated to this work. In scope, or leave it as a
+   documented gap?
+3. **P-2 persistence (§6).** I made routine 2 diagnostic-only rather than
+   dropping persistence entirely or inventing the record now. The record's
+   schema is specified but unwritten. Confirm that split.
+4. **Session ergonomics (§5).** Manual control requires an explicit "Begin
+   manual control" click before any voltage can be sent. That is what bounds
+   the reservation and the restore snapshot, but it is friction on what the
+   user asked for as a simple voltage box. Alternative: begin the session
+   implicitly on the first edit, with the same bounds. I recommend the explicit
+   button for P-0 and revisiting once it has been used on a rig.
