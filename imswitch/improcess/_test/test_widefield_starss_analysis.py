@@ -487,3 +487,28 @@ def test_widefield_starss_recording_carries_its_role_and_state_order(tmp_path):
     # stack[0::2] are the signal frames, so state is the inner loop.
     assert resolved.layout.event_loops[1].labels == ("signal", "background")
     assert WidefieldStarssReconstructor._recorded_role(data_obj) == "H"
+
+
+def test_registry_selects_from_the_recorded_modality(tmp_path):
+    """Modality lives in the layout now, not in a bare attribute."""
+    from imswitch.imcontrol.model.workflows.widefield_starss import (
+        WidefieldStarssWorkflow,
+    )
+    from imswitch.improcess.reconstructors.registry import PluginRegistry
+
+    stack = np.zeros((6, 8, 9), dtype=np.uint16)
+    workflow = WidefieldStarssWorkflow.__new__(WidefieldStarssWorkflow)
+    path = tmp_path / "data_stack_h.tif"
+    tiff.imwrite(
+        path,
+        stack,
+        description=WidefieldStarssWorkflow._acquisition_description(
+            workflow, stack, "h"
+        ),
+    )
+    data_obj = DataObj(path.name, None, path=str(path))
+
+    registry = PluginRegistry()
+    registry.register_reconstructor(WidefieldStarssReconstructor())
+
+    assert registry.auto_select_reconstructor(data_obj).id == "widefield-starss"

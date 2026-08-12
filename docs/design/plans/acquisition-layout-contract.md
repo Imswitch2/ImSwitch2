@@ -1,8 +1,8 @@
 # Acquisition layout metadata contract
 
-**Status:** Active — PR 1–6 implemented on `codex/acquisition-layout-schema`; PR 7 and rig validation pending
+**Status:** Active — all seven PRs implemented on `codex/acquisition-layout-schema`; rig validation pending
 **Date:** 2026-08-11
-**Revision:** 7 — PR 6 landed; SNOUTY and SMLM consume the resolved layout (2026-08-12)
+**Revision:** 8 — PR 7 landed; every reconstructor consumes the resolved layout (2026-08-12)
 **Scope:** Scan producers, recording, file readers, live sources, and ImProcess reconstructors
 **Related audits:** [ImProcess OME read compatibility](../../improcess_ome_read_compatibility_audit.md), [recording data flow](../../recording_dataflow_plan.md), [OME recording standardization](../../recording_ome_standardization_plan.md), [live reconstruction](../../live_reconstruction_audit.md)
 
@@ -10,9 +10,9 @@
 
 ## 0. Implementation status
 
-The contract, its transport, the resolver, every scan producer, and the
-MoNaLISA, BeadRec, SNOUTY and SMLM reconstructors are implemented. Widefield
-STARSS and view-only are untouched, so their behaviour is unchanged.
+The contract, its transport, the resolver, every scan producer, and every
+reconstructor in the delivery sequence are implemented. What remains is
+hardware validation, which no amount of software testing can substitute for.
 
 | PR | Status | Commit |
 |---|---|---|
@@ -22,7 +22,7 @@ STARSS and view-only are untouched, so their behaviour is unchanged.
 | PR 4 — Producers and recording integration | Implemented | `cdcc55da` |
 | PR 5 — MoNaLISA and BeadRec migration | Implemented | `eee2b603`, `baf90d39`, `e2ab1b7a` |
 | PR 6 — SNOUTY and SMLM migration | Implemented | `69f139af`, `66a37936` |
-| PR 7 — Widefield STARSS, view-only, and fallback cleanup | Not started | — |
+| PR 7 — Widefield STARSS, view-only, and fallback cleanup | Implemented | `5474fd05` |
 
 A review of PR 1–4 produced three fixes in `56a1b0eb`: cross-span overlap
 detection no longer expands the selected event set (2.25 s and 141 MB became
@@ -32,12 +32,13 @@ cross-check skips loop kinds it cannot classify instead of refusing to record.
 
 Test evidence (2026-08-12, `QT_QPA_PLATFORM=offscreen`, `-p no:napari`):
 `imswitch/imcommon/_test` + `imswitch/imcontrol/_test/unit` is 2792 passed /
-4 skipped, and `imswitch/improcess/_test` is 1255 passed / 2 skipped.
+4 skipped, and `imswitch/improcess/_test` is 1262 passed / 2 skipped.
 `imcontrol/_test/unit` and `improcess/_test` must be run in separate pytest
 processes; combining them with the improcess suite hangs locally.
 
-Deviations from the delivery-sequence file lists, recorded so the remaining PRs
-build on what exists rather than on the original sketch:
+Deviations from the delivery-sequence file lists, and the judgement calls made
+along the way, recorded so the next change builds on what exists rather than on
+the original sketch:
 
 - PR 3 also touched `ReconstructorManagerController.py` and
   `reconstruction_worker.py` to carry the resolved layout into the worker.
@@ -76,6 +77,15 @@ build on what exists rather than on the original sketch:
   would also reject the `repeat` loop that generic-fallback layouts carry,
   which would break every legacy file; the plugin instead refuses only
   `recorded`/`user-override` layouts that declare non-frame loops.
+- PR 7 gave the STARSS acquisition workflow (§7.5.1) an OME description rather
+  than routing it through `RecordingManager`: the workflow writes its TIFF
+  directly, so it builds the same `AcquisitionLayout:*` annotation through
+  `build_ome_image_meta`/`build_ome_xml`. Metadata failures are logged and the
+  measurement is still saved -- describing an acquisition must never cost it.
+- PR 7 also taught the registry to read the modality from the resolved layout
+  (§7.6, "registry selection can use recorded modality/source identity"). It
+  previously read only a bare `modality` attribute, which nothing in the new
+  contract writes. The bare attribute remains as the fallback.
 
 ### Legacy trailing-axis ambiguity (fixed)
 
@@ -119,9 +129,9 @@ The formula uses a zero-based `frame` index. In human-facing numbering, frames
 1–18 belong to condition A, 19–36 to B, 37–54 to A, and so on. The previous
 interpretation treated the two conditions as two contiguous 324-frame time
 blocks. PR 5 corrects this case for MoNaLISA and BeadRec by placing every frame
-at its recorded coordinate, and PR 6 removes the equivalent readings in SNOUTY
-and SMLM; the same underlying ambiguity still exists in the reconstructors PR 7
-covers. (The separate `codex/hotfix-monalisa-linesteps` branch patched the
+at its recorded coordinate, PR 6 removes the equivalent readings in SNOUTY and
+SMLM, and PR 7 removes the last of them from Widefield STARSS and view-only.
+(The separate `codex/hotfix-monalisa-linesteps` branch patched the
 MoNaLISA case directly and is not merged here — this branch fixes it through
 the contract instead.)
 
@@ -1117,7 +1127,7 @@ Every PR includes tests and may land independently in order.
 
 ### PR 7 — Widefield STARSS, view-only, and fallback cleanup
 
-**Status:** Not started.
+**Status:** Implemented (`5474fd05`).
 
 **Acceptance**
 
