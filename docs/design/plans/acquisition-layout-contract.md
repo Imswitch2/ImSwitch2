@@ -32,7 +32,7 @@ cross-check skips loop kinds it cannot classify instead of refusing to record.
 
 Test evidence (2026-08-12, `QT_QPA_PLATFORM=offscreen`, `-p no:napari`):
 `imswitch/imcommon/_test` + `imswitch/imcontrol/_test/unit` is 2797 passed /
-4 skipped, and `imswitch/improcess/_test` is 1263 passed / 2 skipped.
+4 skipped, and `imswitch/improcess/_test` is 1270 passed / 2 skipped.
 `imcontrol/_test/unit` and `improcess/_test` must be run in separate pytest
 processes; combining them with the improcess suite hangs locally.
 
@@ -100,6 +100,44 @@ the original sketch:
   (§7.6, "registry selection can use recorded modality/source identity"). It
   previously read only a bare `modality` attribute, which nothing in the new
   contract writes. The bare attribute remains as the fallback.
+
+### Seam hardening (after the PR 1-7 sanity check)
+
+Running the imcontrol/improcess boundary end to end for the first time found
+three things, fixed in `82ac99e6`:
+
+- **One authority question, in one place.** Seven sites decided whether a
+  resolved layout could be acted on, using two criteria that disagree for
+  `legacy-adapter`, `ome-ngff` and `shape-inference`. They answer different
+  questions, now named on `ResolvedAcquisitionLayout`: `is_usable` (geometry
+  may be taken from it -- an inference is still the same metadata, read once
+  and consistently) and `is_authoritative` (it may *refuse* a reconstruction --
+  only a producer-authored or user-declared layout qualifies, because an
+  inference must not fail data that used to open). Every plugin now names
+  which it needs.
+- **Producers refuse rather than approximate.** Advanced Scan fell back to a
+  plain X/Y layout for a detector with no line-step mask, describing a
+  648-frame 18x18x2 scan as 324 events. With more than one line step it now
+  refuses to describe that detector and says why.
+- **Tests that cross the boundary.**
+  `improcess/_test/test_acquisition_layout_end_to_end.py` walks producer ->
+  recording gate -> storer -> resolver -> reconstructor. Nothing did before,
+  which is why the producer hole survived seven PRs and a code review.
+
+Its recording gate uses a stub detectors manager: instantiating camera mocks
+inside the ImProcess suite deadlocks, and the gate only ever asks a detector
+whether it assembles its own image.
+
+### What is still not "clean"
+
+The layout is authoritative *when present*, but nothing was retired. ImProcess
+still reads `recording:*`, `ScanStage:*`, `ScanTTL:*`, `MS-RESOLFT_Scan:*`,
+`writing`, `stream_complete`, `axes` and `element_size_um` alongside it, and
+those paths still run whenever a layout is absent. §10 scoped removal out of
+schema version 1 deliberately, so this is by design -- but a genuinely single
+contract across the boundary means picking the channels the layout supersedes,
+making them optional to write, and then not reading them outside the legacy
+adapters. That is schema v2 work and a release gate, not a refactor.
 
 ### Legacy trailing-axis ambiguity (fixed)
 
