@@ -199,6 +199,129 @@ class _FakeDataObj:
         self.dataLoaded = False
 
 
+def _recorded_source(stack, layout, *, axis_labels=None, axis_scales=None, unit="px"):
+    """A DataObj-like source that publishes a producer-authored layout."""
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+
+    data_obj = _FakeDataObj(stack)
+    data_obj.acquisition_layout = ResolvedAcquisitionLayout(
+        layout=layout, source="explicit", confidence="certain"
+    )
+    data_obj.axis_labels = axis_labels or []
+    data_obj.axis_scales = axis_scales or []
+    data_obj.scale_unit = unit
+    return data_obj
+
+
+def _two_condition_layout(frames_per_condition=3):
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    return AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="Cam",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("linestep", "condition", 2, labels=("A", "B")),
+            AcquisitionLoop("time", "time", frames_per_condition),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+
+
+def test_localizer_refuses_to_flatten_a_condition_loop_into_time():
+    """Two illumination states are not six timepoints of one blinking trace."""
+    frame = _synthetic_frame(emitters=[(16.0, 20.0)])
+    data_obj = _recorded_source(np.stack([frame] * 6), _two_condition_layout())
+
+    with pytest.raises(ValueError, match="not a plain frame stream"):
+        SmlmLocalizer().process(
+            data_obj, {"threshold": 20.0, "roi": 9, "pixel_size_nm": 100.0}
+        )
+
+
+def test_localizer_accepts_an_explicit_loop_selection():
+    frame = _synthetic_frame(emitters=[(16.0, 20.0)])
+    data_obj = _recorded_source(np.stack([frame] * 6), _two_condition_layout())
+
+    result = SmlmLocalizer().process(
+        data_obj,
+        {
+            "threshold": 20.0,
+            "roi": 9,
+            "pixel_size_nm": 100.0,
+            "loop_selection": {"linestep": 1},
+        },
+    )
+
+    # Only condition B's three frames were localized, and the choice is recorded.
+    assert set(result.locs["frame"].tolist()) <= {0, 1, 2}
+    assert result.metadata["loop_selection"] == {"linestep": 1}
+
+
+def test_localizer_accepts_a_recorded_plain_frame_stream():
+    """A time-only recording needs no selection."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    frame = _synthetic_frame(emitters=[(16.0, 20.0)])
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="Cam",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("time", "time", 3),),
+    )
+
+    result = SmlmLocalizer().process(
+        _recorded_source(np.stack([frame] * 3), layout),
+        {"threshold": 20.0, "roi": 9, "pixel_size_nm": 100.0},
+    )
+
+    assert result.count > 0
+    assert "loop_selection" not in result.metadata
+
+
+def test_source_calibration_outranks_the_widget_pixel_size():
+    """The file knows its camera pitch; the manual entry is recorded, not used."""
+    frame = _synthetic_frame(emitters=[(16.0, 20.0)])
+    data_obj = _FakeDataObj(np.stack([frame] * 2))
+    data_obj.axis_labels = ["T", "Y", "X"]
+    data_obj.axis_scales = [1.0, 0.065, 0.065]
+    data_obj.scale_unit = "um"
+
+    result = SmlmLocalizer().process(
+        data_obj, {"threshold": 20.0, "roi": 9, "pixel_size_nm": 100.0}
+    )
+
+    assert result.pixel_size_nm == pytest.approx(65.0)
+    assert result.metadata["pixel_size_source"] == "source"
+    assert result.metadata["pixel_size_nm_manual"] == pytest.approx(100.0)
+
+
+def test_manual_pixel_size_is_used_and_recorded_when_the_source_has_none():
+    frame = _synthetic_frame(emitters=[(16.0, 20.0)])
+
+    result = SmlmLocalizer().process(
+        _FakeDataObj(np.stack([frame] * 2)),
+        {"threshold": 20.0, "roi": 9, "pixel_size_nm": 100.0},
+    )
+
+    assert result.pixel_size_nm == pytest.approx(100.0)
+    assert result.metadata["pixel_size_source"] == "manual"
+
+
 def test_localizer_process_produces_localization_result():
     frame = _synthetic_frame(emitters=[(16.0, 20.0), (40.0, 48.0)])
     stack = np.stack([frame, frame, frame])
