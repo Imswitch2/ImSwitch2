@@ -27,6 +27,30 @@ DEFAULT_PARAMS = {
 }
 
 
+def recorded_snouty_geometry(data_obj: Any) -> tuple[int, int, int | None] | None:
+    """``(cycles, planes_in_cycle, timepoints)`` from the resolved layout.
+
+    One code path decides the loop structure for both the combined-array case,
+    where the recording carries a ``time`` loop, and the split case, where each
+    file or group holds one timepoint and time lives in the partition instead.
+    The split case returns 1 timepoint for the array in hand, so the two
+    storage modes reconstruct to the same coordinates.
+
+    ``None`` when the source cannot describe itself, which leaves the widget
+    and attribute values in charge.
+    """
+    resolved = getattr(data_obj, "acquisition_layout", None)
+    layout = getattr(resolved, "layout", None)
+    if layout is None or getattr(resolved, "confidence", None) == "low":
+        return None
+    loops = {loop.kind: loop for loop in layout.event_loops}
+    cycle, plane = loops.get("cycle"), loops.get("plane")
+    if cycle is None or plane is None:
+        return None
+    time = loops.get("time")
+    return cycle.count, plane.count, time.count if time is not None else 1
+
+
 def snouty_param_overrides_from_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     """Return only SNOUTY parameters explicitly represented in ``attrs``.
 

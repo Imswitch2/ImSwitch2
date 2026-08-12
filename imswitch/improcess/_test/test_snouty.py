@@ -80,13 +80,19 @@ class TestSnoutyMetadata:
 class TestRestackInterleaved:
     """Test MS-RESOLFT de-interlacing."""
     
-    def test_no_restack_when_insufficient_planes(self):
-        """Should return original stack if too few planes."""
+    def test_insufficient_planes_is_an_error_not_a_silent_pass_through(self):
+        """A short stream used to come back still interleaved.
+
+        That reads downstream as a successful reconstruction of scrambled
+        planes, which is worse than refusing: nothing tells the caller that
+        restacking was skipped.
+        """
         stack = np.arange(12).reshape(4, 3, 1).astype(np.float32)
-        result = restack_interleaved(stack, cycles=3, planes_in_cycle=2)
-        # Expected 6 planes, got 4 → no change
-        assert np.array_equal(result, stack)
-    
+
+        with pytest.raises(ValueError, match="whole number of timepoints"):
+            restack_interleaved(stack, cycles=3, planes_in_cycle=2)
+
+
     def test_restack_2_cycles_2_planes(self):
         """De-interlace 2 cycles × 2 planes/cycle."""
         # Interleaved order: p0c0, p1c0, p0c1, p1c1
@@ -96,16 +102,33 @@ class TestRestackInterleaved:
         expected = np.array([0, 2, 1, 3]).reshape(4, 1, 1).astype(np.float32)
         assert np.array_equal(result, expected)
     
-    def test_restack_preserves_extra_planes(self):
-        """Should only return restacked first cycles*planes planes (discards extras)."""
+    def test_a_partial_trailing_timepoint_is_rejected(self):
+        """10 frames is 2.5 timepoints of 2x2, which is not a reconstruction.
+
+        This used to return the first 4 planes and discard the other 6.
+        """
         stack = np.arange(10).reshape(10, 1, 1).astype(np.float32)
+
+        with pytest.raises(ValueError, match="whole number of timepoints"):
+            restack_interleaved(stack, cycles=2, planes_in_cycle=2)
+
+    def test_every_timepoint_is_restacked_independently(self):
+        """Restacking used to keep only the first timepoint of a timelapse."""
+        stack = np.arange(8).reshape(8, 1, 1).astype(np.float32)
+
         result = restack_interleaved(stack, cycles=2, planes_in_cycle=2)
-        # Only first 4 planes returned, restacked
-        assert result.shape == (4, 1, 1)
-        assert result[0, 0, 0] == 0
-        assert result[1, 0, 0] == 2  # swapped
-        assert result[2, 0, 0] == 1  # swapped
-        assert result[3, 0, 0] == 3
+
+        # Each 4-frame timepoint is de-interlaced within itself; frames from
+        # one timepoint never migrate into another.
+        expected = np.array([0, 2, 1, 3, 4, 6, 5, 7]).reshape(8, 1, 1)
+        assert result.shape == stack.shape
+        assert np.array_equal(result, expected.astype(np.float32))
+
+    def test_declared_timepoint_count_must_match_the_stream(self):
+        stack = np.arange(8).reshape(8, 1, 1).astype(np.float32)
+
+        with pytest.raises(ValueError, match="expected 3 timepoint"):
+            restack_interleaved(stack, cycles=2, planes_in_cycle=2, timepoints=3)
 
 
 @pytest.fixture
@@ -241,6 +264,61 @@ class TestSnoutyReconstructor:
             assert not np.isnan(tp_data).any()
             assert np.max(tp_data) > 0
     
+    def test_recorded_layout_drives_time_cycle_plane_without_truncation(
+        self, synthetic_3d_stack, tmp_path
+    ):
+        """time x cycle x plane must survive restacking intact.
+
+        Restacking used to slice the stream to one cycles*planes block, so a
+        two-timepoint MS-RESOLFT run silently reconstructed its first
+        timepoint twice and discarded the second.
+        """
+        from imswitch.imcommon.model.acquisition_layout import (
+            ACQUISITION_LAYOUT_SCHEMA,
+            PAYLOAD_DETECTOR_FRAME_STREAM,
+            AcquisitionLayout,
+            AcquisitionLoop,
+            encode_acquisition_layout,
+        )
+
+        layout = AcquisitionLayout(
+            schema=ACQUISITION_LAYOUT_SCHEMA,
+            payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+            detector="Cam",
+            storage_axes=("frame", "detector_y", "detector_x"),
+            event_loops=(
+                AcquisitionLoop("time", "time", 2),
+                AcquisitionLoop("cycle", "cycle", 2),
+                AcquisitionLoop("plane", "plane", 2),
+            ),
+            scan_source="TriggerScopeScanController",
+        )
+        h5_path = tmp_path / "test_snouty_recorded.h5"
+        with h5py.File(h5_path, "w") as handle:
+            dataset = handle.create_dataset("data", data=synthetic_3d_stack)
+            handle.attrs["Detector:Cam:Camera pixel size"] = 0.1
+            # The layout is per detector, so it lives with the detector array.
+            dataset.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+            dataset.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+        data_obj = DataObj(str(h5_path), "recorded")
+
+        params = DEFAULT_PARAMS.copy()
+        params["device"] = "CPU"
+        # Deliberately wrong widget values: the recording outranks them.
+        params["n_timepoints"] = 1
+        params["cycles"] = 1
+        params["planes_in_cycle"] = 1
+
+        result = SnoutyReconstructor().process(data_obj, params)
+
+        assert result.data.ndim == 4
+        assert result.data.shape[0] == 2, "both recorded timepoints must survive"
+        for timepoint in range(2):
+            assert not np.isnan(result.data[timepoint]).any()
+            assert np.max(result.data[timepoint]) > 0
+        # The two timepoints hold different frames, so they cannot be equal.
+        assert not np.array_equal(result.data[0], result.data[1])
+
     def test_expected_output_shape(self, synthetic_3d_stack):
         """Test output shape matches geometry transformation."""
         # Manual computation of expected shape

@@ -86,7 +86,9 @@ class SnoutyProjectionsReconstructor(Reconstructor):
             logger=self._logger,
         )
 
-        if params.get('n_timepoints', 1) > 1:
+        # The pipeline may take the timepoint count from the recording rather
+        # than the widget, so what was actually reconstructed decides the rank.
+        if len(projection_timepoints) > 1:
             # Stack into 4D: (T, 3, H, W)
             result_data = np.stack(projection_timepoints, axis=0)
         else:
