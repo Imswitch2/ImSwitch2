@@ -44,6 +44,11 @@ DEFAULT_CONFIDENCE = {
 }
 
 
+#: Provenance values that mean the layout states what happened, rather than
+#: reconstructing it after the fact.
+DECLARED_PROVENANCE = frozenset({"recorded", "user-override"})
+
+
 @dataclass(frozen=True)
 class ResolvedAcquisitionLayout:
     """A layout together with its interpretation source and diagnostics."""
@@ -53,6 +58,33 @@ class ResolvedAcquisitionLayout:
     confidence: str
     issues: tuple[LayoutIssue, ...] = ()
     replaced_layout: AcquisitionLayout | None = None
+
+    @property
+    def is_usable(self) -> bool:
+        """True when geometry may be taken from this layout.
+
+        A legacy adapter's axes are inference, but they are the *same*
+        metadata every plugin used to parse for itself, read once and read
+        consistently. Preferring them over a plugin's private re-parse is the
+        whole point of the resolver.
+        """
+        return self.confidence != "low"
+
+    @property
+    def is_authoritative(self) -> bool:
+        """True when this layout may refuse a reconstruction.
+
+        Only a producer-authored or user-declared layout states fact. An
+        inference -- however well reported -- must not veto a reconstruction
+        that used to work: a plugin that cannot proceed on an inferred layout
+        falls back to its own older path instead of failing the user's data.
+
+        This is deliberately stricter than :attr:`is_usable`. Conflating the
+        two is what let one reconstructor honour a legacy layout while another
+        ignored it, and let MoNaLISA disagree with itself between its standard
+        and fast-Gauss paths.
+        """
+        return self.layout.provenance in DECLARED_PROVENANCE
 
 
 class AcquisitionLayoutResolutionError(AcquisitionLayoutError):

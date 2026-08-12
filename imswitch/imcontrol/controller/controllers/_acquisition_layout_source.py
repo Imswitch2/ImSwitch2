@@ -396,6 +396,20 @@ def build_advanced_scan_layouts(
         mask = detector_masks.get(detector)
         counts = pulse_counts_by_condition.get(detector)
         if mask is None or counts is None:
+            if condition_count > 1:
+                # Falling back to a plain X/Y layout would drop the line-step
+                # dimension silently: a 648-frame 18x18x2 scan gets described
+                # as 324 events, and the recording is then either refused with
+                # a message about pulse counts or read as half a scan. A
+                # producer that cannot describe a detector has to say so
+                # rather than approximate it.
+                raise ValueError(
+                    f"This scan has {condition_count} line steps, but detector "
+                    f"{detector!r} has no line-step enable mask or pulse count, "
+                    f"so the order of its frames cannot be described. Enable "
+                    f"the detector's TTL for this scan, or record it with a "
+                    f"single-line-step scan."
+                )
             layouts.update(
                 build_point_scan_layouts(
                     scan_info,

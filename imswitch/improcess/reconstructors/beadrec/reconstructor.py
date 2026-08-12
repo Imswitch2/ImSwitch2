@@ -246,15 +246,16 @@ class BeadRecReconstructor(Reconstructor):
     def make_metadata_dialog(self, parent):
         return None
 
-    def _resolved_layout(self, data_obj) -> AcquisitionLayout | None:
-        """The recorded layout, or ``None`` when the source cannot supply one."""
+    @staticmethod
+    def _resolved_layout(data_obj):
+        """The resolved layout, or ``None`` when the source cannot supply one."""
         try:
             resolved = data_obj.acquisition_layout
         except Exception:
             return None
-        if resolved is None or resolved.confidence == "low":
+        if resolved is None or not resolved.is_usable:
             return None
-        return resolved.layout
+        return resolved
 
     def process(
         self, data_obj: "DataObj", params: dict, context=None
@@ -263,7 +264,8 @@ class BeadRecReconstructor(Reconstructor):
         frames = _as_frame_stack(data_obj.data)
         n_frames = int(frames.shape[0])
 
-        layout = self._resolved_layout(data_obj)
+        resolved = self._resolved_layout(data_obj)
+        layout = resolved.layout if resolved is not None else None
         recorded = raster_geometry_from_layout(layout)
         manual_dims = infer_scan_dims(
             n_frames, params.get("scan_x", 0), params.get("scan_y", 0)
@@ -308,6 +310,16 @@ class BeadRecReconstructor(Reconstructor):
         if geometry_source == "layout":
             slots = raster_positions_from_layout(layout, scan_dims)
             if n_frames != len(slots):
+                if not resolved.is_authoritative:
+                    # An inferred layout that disagrees with the data is a bad
+                    # inference, not bad data. Refusing on it would fail a file
+                    # that used to open, so fall back to the manual entries.
+                    raise ValueError(
+                        f"The acquisition layout inferred for this source "
+                        f"describes {len(slots)} frames but it has {n_frames}. "
+                        f"Set Scan X/Y pixels to reconstruct it anyway, or "
+                        f"persist a layout override."
+                    )
                 raise ValueError(
                     f"BeadRec needs exactly {len(slots)} frames for the "
                     f"recorded layout, but this source has {n_frames}. Frames "

@@ -208,9 +208,10 @@ class SmlmLocalizer(StreamingReconstructor):
         the caller has to say which one to localize.
         """
         resolved = getattr(data_obj, "acquisition_layout", None)
-        layout = getattr(resolved, "layout", None)
-        if layout is None or layout.provenance not in ("recorded", "user-override"):
+        # Refusing the user's data needs a statement, not an inference.
+        if resolved is None or not resolved.is_authoritative:
             return data, {}
+        layout = resolved.layout
         extra = non_frame_loops(layout)
         if not extra:
             return data, {}

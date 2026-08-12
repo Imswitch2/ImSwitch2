@@ -266,7 +266,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         resolved = getattr(data_obj, 'acquisition_layout', None)
         if not isinstance(resolved, ResolvedAcquisitionLayout):
             return None
-        if resolved.confidence == 'low':
+        if not resolved.is_usable:
             self._logger.info(
                 'Acquisition layout is low-confidence; using the scan dialog.'
             )
@@ -534,13 +534,13 @@ class MonalisaReconstructor(StreamingReconstructor):
         """
         if not isinstance(resolved, ResolvedAcquisitionLayout):
             return None
-        layout = resolved.layout
-        if layout.provenance not in ('recorded', 'user-override'):
-            # Only a producer-authored or user-declared layout is authoritative
-            # enough to refuse a reconstruction. A legacy adapter's inferred
-            # axes are a stated assumption, so they fall through to the older
-            # metadata inference rather than blocking a file that used to open.
+        if not resolved.is_authoritative:
+            # This path refuses reconstructions it cannot represent, so it may
+            # only act on a layout that states fact. An inferred layout falls
+            # through to the older metadata path rather than blocking a file
+            # that used to open.
             return None
+        layout = resolved.layout
         placement = placement_from_layout(layout)
         if placement is None:
             return None

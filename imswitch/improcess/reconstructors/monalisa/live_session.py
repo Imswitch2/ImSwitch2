@@ -61,9 +61,10 @@ class MonalisaLiveSession(StreamingSession):
         from .coeffs_to_image import placement_from_layout
 
         resolved = getattr(stack_info, "acquisition_layout", None)
-        layout = getattr(resolved, "layout", None)
-        if layout is None or layout.provenance not in ("recorded", "user-override"):
+        # This path refuses what it cannot represent, so it needs a statement.
+        if resolved is None or not resolved.is_authoritative:
             return None
+        layout = resolved.layout
         placement = placement_from_layout(layout)
         if placement is None:
             return None

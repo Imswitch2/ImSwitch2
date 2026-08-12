@@ -158,12 +158,14 @@ class WidefieldStarssReconstructor(Reconstructor):
         if current_scales:
             pairing["pixel_calibration"] = (tuple(current_scales), current_unit)
 
-        current_layout = getattr(getattr(current, "acquisition_layout", None), "layout", None)
-        other_layout = getattr(getattr(counterpart, "acquisition_layout", None), "layout", None)
+        # Rejecting a pair is a refusal, so only declared layouts may do it.
         recorded = [
-            layout
-            for layout in (current_layout, other_layout)
-            if layout is not None and layout.provenance in ("recorded", "user-override")
+            resolved.layout
+            for resolved in (
+                getattr(current, "acquisition_layout", None),
+                getattr(counterpart, "acquisition_layout", None),
+            )
+            if resolved is not None and resolved.is_authoritative
         ]
         if len(recorded) == 2:
             current_kinds = [loop.kind for loop in recorded[0].event_loops]

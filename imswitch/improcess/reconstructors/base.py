@@ -133,10 +133,7 @@ def preflight_acquisition_layout(
                 )
             )
 
-    if not requirements.allow_ambiguous and (
-        resolved.confidence == "low"
-        or resolved.layout.provenance == "generic-fallback"
-    ):
+    if not requirements.allow_ambiguous and not resolved.is_usable:
         issues.append(
             LayoutIssue(
                 "error",
