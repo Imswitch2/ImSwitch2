@@ -468,13 +468,22 @@ def test_widefield_starss_recording_carries_its_role_and_state_order(tmp_path):
         WidefieldStarssReconstructor,
     )
 
+    from imswitch.imcontrol.model.workflows.acquisition_output import (
+        save_acquisition_tiff,
+    )
+
     stack = np.zeros((6, 8, 9), dtype=np.uint16)
     workflow = WidefieldStarssWorkflow.__new__(WidefieldStarssWorkflow)
-    description = WidefieldStarssWorkflow._acquisition_description(workflow, stack, "h")
-    assert description, "the workflow must describe its own acquisition"
+    layout = WidefieldStarssWorkflow._acquisition_layout(workflow, stack, "h")
+    assert layout is not None, "the workflow must describe its own acquisition"
 
-    path = tmp_path / "data_stack_h.tif"
-    tiff.imwrite(path, stack, description=description)
+    path = save_acquisition_tiff(
+        tmp_path / "data_stack_h.tif",
+        stack,
+        layout=layout,
+        name="WidefieldSTARSS H",
+        annotations={"WidefieldStarss:polarization_role": "H"},
+    )
     data_obj = DataObj(path.name, None, path=str(path))
 
     resolved = data_obj.acquisition_layout
@@ -496,15 +505,17 @@ def test_registry_selects_from_the_recorded_modality(tmp_path):
     )
     from imswitch.improcess.reconstructors.registry import PluginRegistry
 
+    from imswitch.imcontrol.model.workflows.acquisition_output import (
+        save_acquisition_tiff,
+    )
+
     stack = np.zeros((6, 8, 9), dtype=np.uint16)
     workflow = WidefieldStarssWorkflow.__new__(WidefieldStarssWorkflow)
-    path = tmp_path / "data_stack_h.tif"
-    tiff.imwrite(
-        path,
+    path = save_acquisition_tiff(
+        tmp_path / "data_stack_h.tif",
         stack,
-        description=WidefieldStarssWorkflow._acquisition_description(
-            workflow, stack, "h"
-        ),
+        layout=WidefieldStarssWorkflow._acquisition_layout(workflow, stack, "h"),
+        name="WidefieldSTARSS H",
     )
     data_obj = DataObj(path.name, None, path=str(path))
 

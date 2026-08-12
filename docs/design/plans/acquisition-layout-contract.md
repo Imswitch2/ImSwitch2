@@ -77,11 +77,25 @@ the original sketch:
   would also reject the `repeat` loop that generic-fallback layouts carry,
   which would break every legacy file; the plugin instead refuses only
   `recorded`/`user-override` layouts that declare non-frame loops.
-- PR 7 gave the STARSS acquisition workflow (§7.5.1) an OME description rather
-  than routing it through `RecordingManager`: the workflow writes its TIFF
-  directly, so it builds the same `AcquisitionLayout:*` annotation through
-  `build_ome_image_meta`/`build_ome_xml`. Metadata failures are logged and the
-  measurement is still saved -- describing an acquisition must never cost it.
+- PR 7 gave the STARSS acquisition workflow (§7.5.1) a self-describing save
+  rather than routing it through `RecordingManager`. Five workflows
+  (`widefield_starss`, `cwstarss`, `z_stack`, `time_resolved`, `tiling`) hold a
+  finished array and save it themselves, so `RecordingManager` -- built around
+  streaming writers, stall watchdogs and completion markers -- is the wrong
+  tool, and adopting it would have helped exactly one of the five. The OME
+  assembly instead lives in `workflows/acquisition_output.py`, beside the
+  existing `provenance.py`/`paths.py` workflow utilities. A workflow supplies
+  only its own `AcquisitionLayout`, which is domain knowledge it alone has.
+  The helper writes atomically (as `z_stack` already did and STARSS did not),
+  passes `photometric="minisblack"` so a three-frame grayscale stack is not
+  stored as RGB, and returns no description rather than raising when metadata
+  cannot be built -- a file without metadata is recoverable, a lost
+  measurement is not.
+- Only STARSS uses the helper so far. `cwstarss` and `time_resolved` would
+  each need their real frame order asserted, and inferring that from the code
+  is the class of assumption that produced the motivating 648-frame bug; their
+  layouts are owed from someone who can confirm the ordering. `tiling` keeps
+  its own manifest, as §7.6 requires.
 - PR 7 also taught the registry to read the modality from the resolved layout
   (§7.6, "registry selection can use recorded modality/source identity"). It
   previously read only a bare `modality` attribute, which nothing in the new
