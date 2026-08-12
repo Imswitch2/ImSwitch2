@@ -1,8 +1,8 @@
 # Acquisition layout metadata contract
 
-**Status:** Active — PR 1–5 implemented on `codex/acquisition-layout-schema`; PR 6–7 and rig validation pending
+**Status:** Active — PR 1–6 implemented on `codex/acquisition-layout-schema`; PR 7 and rig validation pending
 **Date:** 2026-08-11
-**Revision:** 6 — PR 5 landed; MoNaLISA and BeadRec consume the resolved layout (2026-08-12)
+**Revision:** 7 — PR 6 landed; SNOUTY and SMLM consume the resolved layout (2026-08-12)
 **Scope:** Scan producers, recording, file readers, live sources, and ImProcess reconstructors
 **Related audits:** [ImProcess OME read compatibility](../../improcess_ome_read_compatibility_audit.md), [recording data flow](../../recording_dataflow_plan.md), [OME recording standardization](../../recording_ome_standardization_plan.md), [live reconstruction](../../live_reconstruction_audit.md)
 
@@ -11,9 +11,8 @@
 ## 0. Implementation status
 
 The contract, its transport, the resolver, every scan producer, and the
-MoNaLISA and BeadRec reconstructors are implemented. SNOUTY, SMLM, Widefield
-STARSS and view-only still declare `acquisition_requirements = None`, so the
-preflight gate remains inert for them and their behaviour is unchanged.
+MoNaLISA, BeadRec, SNOUTY and SMLM reconstructors are implemented. Widefield
+STARSS and view-only are untouched, so their behaviour is unchanged.
 
 | PR | Status | Commit |
 |---|---|---|
@@ -22,7 +21,7 @@ preflight gate remains inert for them and their behaviour is unchanged.
 | PR 3 — Resolver, legacy adapters, and preflight | Implemented | `0a088493` |
 | PR 4 — Producers and recording integration | Implemented | `cdcc55da` |
 | PR 5 — MoNaLISA and BeadRec migration | Implemented | `eee2b603`, `baf90d39`, `e2ab1b7a` |
-| PR 6 — SNOUTY and SMLM migration | Not started | — |
+| PR 6 — SNOUTY and SMLM migration | Implemented | `69f139af`, `66a37936` |
 | PR 7 — Widefield STARSS, view-only, and fallback cleanup | Not started | — |
 
 A review of PR 1–4 produced three fixes in `56a1b0eb`: cross-span overlap
@@ -33,7 +32,7 @@ cross-check skips loop kinds it cannot classify instead of refusing to record.
 
 Test evidence (2026-08-12, `QT_QPA_PLATFORM=offscreen`, `-p no:napari`):
 `imswitch/imcommon/_test` + `imswitch/imcontrol/_test/unit` is 2792 passed /
-4 skipped, and `imswitch/improcess/_test` is 1245 passed / 2 skipped.
+4 skipped, and `imswitch/improcess/_test` is 1255 passed / 2 skipped.
 `imcontrol/_test/unit` and `improcess/_test` must be run in separate pytest
 processes; combining them with the improcess suite hangs locally.
 
@@ -65,6 +64,18 @@ build on what exists rather than on the original sketch:
   where `DataObj` publishes a `ResolvedAcquisitionLayout`, and
   `inspect_acquisition` raised `AttributeError` for a source without the
   property instead of reporting an undescribed acquisition.
+- PR 6 read §7.4.3 literally: SMLM takes its pixel size from the source's own
+  axis scales when it has them, and the widget value becomes the recorded
+  fallback used when the source has none. The result always records which was
+  used, and keeps the manual value alongside when the two disagree. The SMLM
+  widget defaults to a plausible 100 nm rather than a sentinel, so there is no
+  way to tell a deliberate entry from an untouched default; if the widget
+  should win instead, that needs an explicit override control, not a heuristic.
+- PR 6 gates SMLM inside `process()` rather than through
+  `acquisition_requirements`. The generic `allowed_extra_loops="reject"` gate
+  would also reject the `repeat` loop that generic-fallback layouts carry,
+  which would break every legacy file; the plugin instead refuses only
+  `recorded`/`user-override` layouts that declare non-frame loops.
 
 ### Legacy trailing-axis ambiguity (fixed)
 
@@ -108,10 +119,11 @@ The formula uses a zero-based `frame` index. In human-facing numbering, frames
 1–18 belong to condition A, 19–36 to B, 37–54 to A, and so on. The previous
 interpretation treated the two conditions as two contiguous 324-frame time
 blocks. PR 5 corrects this case for MoNaLISA and BeadRec by placing every frame
-at its recorded coordinate; the same underlying ambiguity still exists in the
-reconstructors PR 6 and PR 7 cover. (The separate `codex/hotfix-monalisa-linesteps`
-branch patched the MoNaLISA case directly and is not merged here — this branch
-fixes it through the contract instead.)
+at its recorded coordinate, and PR 6 removes the equivalent readings in SNOUTY
+and SMLM; the same underlying ambiguity still exists in the reconstructors PR 7
+covers. (The separate `codex/hotfix-monalisa-linesteps` branch patched the
+MoNaLISA case directly and is not merged here — this branch fixes it through
+the contract instead.)
 
 This plan replaces those local interpretations with a versioned,
 per-detector `AcquisitionLayout` contract. Shape-based inference remains
@@ -1092,7 +1104,7 @@ Every PR includes tests and may land independently in order.
 
 ### PR 6 — SNOUTY and SMLM migration
 
-**Status:** Not started.
+**Status:** Implemented (`69f139af`, `66a37936`).
 
 **Acceptance**
 
