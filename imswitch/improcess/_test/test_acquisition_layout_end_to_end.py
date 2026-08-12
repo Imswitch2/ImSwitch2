@@ -303,3 +303,133 @@ def test_live_stack_size_comes_from_the_resolved_layout(tmp_path):
 
     assert info.frames_per_stack == rows * cols
     assert info.acquisition_layout.is_authoritative
+
+
+def test_stage_geometry_alone_is_interpreted_by_the_resolver():
+    """The resolver must understand what the modules it replaces understood.
+
+    Confining interpretation to the resolver is only safe if it is at least as
+    capable. Before the ScanStage-only adapter, a file carrying stage geometry
+    but no ScanTTL counts resolved to a bare frame stream, so routing the live
+    sources through the resolver would have lost geometry they could read.
+    """
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    attrs = {
+        "ScanStage:axis_length": [0.5, 0.5, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+    }
+
+    resolved = resolve_acquisition_layout(attrs, shape=(100, 8, 8), detector="CAM")
+
+    assert resolved.source == "scan-stage-legacy"
+    assert resolved.is_usable
+    # It describes the scan, but it is inference: it may not refuse anything.
+    assert not resolved.is_authoritative
+    counts = {loop.kind: loop.count for loop in resolved.layout.event_loops}
+    assert counts["scan_x"] == 10 and counts["scan_y"] == 10
+
+
+def test_stage_geometry_that_cannot_explain_the_frames_is_declined():
+    """Nothing claims this is a scan, so an unexplained count is not an error."""
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    attrs = {
+        "ScanStage:axis_length": [0.5, 0.5, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+    }
+
+    resolved = resolve_acquisition_layout(attrs, shape=(37, 8, 8), detector="CAM")
+
+    assert resolved.source != "scan-stage-legacy"
+    assert not resolved.is_usable
+
+
+def test_live_session_geometry_comes_from_an_inferred_layout_too():
+    """The resolver decides, even when its answer is an inference.
+
+    The session kept its own ladder over the same ScanStage attributes. Both
+    now agree because only one of them reads the file.
+    """
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+    from imswitch.improcess.reconstructors.base import StackInfo
+    from imswitch.improcess.reconstructors.monalisa.live_session import (
+        MonalisaLiveSession,
+    )
+
+    attrs = {
+        "ScanStage:axis_length": [0.5, 0.5, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+    }
+    stack_info = StackInfo(
+        frame_shape=(8, 8),
+        dtype=np.dtype(np.uint16),
+        acquisition_layout=resolve_acquisition_layout(
+            attrs, shape=(100, 8, 8), detector="CAM"
+        ),
+    )
+
+    assert MonalisaLiveSession._geometry_from_recorded_layout(stack_info) == (10, 10, 1)
+
+
+def test_an_inferred_shape_the_fast_path_cannot_hold_is_declined_not_refused():
+    """A guess must never fail a file; only a declaration may."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+    from imswitch.improcess.reconstructors.base import StackInfo
+    from imswitch.improcess.reconstructors.monalisa.live_session import (
+        MonalisaLiveSession,
+    )
+
+    # A Z stack: the contiguous X/Y fast path cannot represent it.
+    loops = (
+        AcquisitionLoop("scan_z", "scan_z", 3),
+        AcquisitionLoop("scan_y", "scan_y", 4),
+        AcquisitionLoop("scan_x", "scan_x", 5),
+    )
+    body = dict(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=loops,
+    )
+
+    inferred = StackInfo(
+        frame_shape=(8, 8),
+        dtype=np.dtype(np.uint16),
+        acquisition_layout=ResolvedAcquisitionLayout(
+            layout=AcquisitionLayout(provenance="legacy-adapter", **body),
+            source="scan-stage-legacy",
+            confidence="high",
+        ),
+    )
+    declared = StackInfo(
+        frame_shape=(8, 8),
+        dtype=np.dtype(np.uint16),
+        acquisition_layout=ResolvedAcquisitionLayout(
+            layout=AcquisitionLayout(provenance="recorded", **body),
+            source="explicit-metadata",
+            confidence="certain",
+        ),
+    )
+
+    assert MonalisaLiveSession._geometry_from_recorded_layout(inferred) is None
+    with pytest.raises(ValueError, match="Z slices"):
+        MonalisaLiveSession._geometry_from_recorded_layout(declared)

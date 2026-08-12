@@ -534,11 +534,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         """
         if not isinstance(resolved, ResolvedAcquisitionLayout):
             return None
-        if not resolved.is_authoritative:
-            # This path refuses reconstructions it cannot represent, so it may
-            # only act on a layout that states fact. An inferred layout falls
-            # through to the older metadata path rather than blocking a file
-            # that used to open.
+        if not resolved.is_usable:
             return None
         layout = resolved.layout
         placement = placement_from_layout(layout)
@@ -557,6 +553,11 @@ class MonalisaReconstructor(StreamingReconstructor):
         if layout.recorded_event_spans is not None:
             unsupported.append('a detector gated to part of the scan')
         if unsupported:
+            if not resolved.is_authoritative:
+                # An inferred shape this path cannot represent is declined, so
+                # the older metadata ladder still gets its chance; only a
+                # declared one refuses the reconstruction outright.
+                return None
             raise ValueError(
                 'Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and '
                 'cannot represent ' + ', '.join(unsupported) + '. Use the '

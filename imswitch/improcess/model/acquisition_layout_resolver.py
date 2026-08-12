@@ -906,6 +906,40 @@ def adapt_monalisa_scan_metadata(
     )
 
 
+def adapt_scan_stage_metadata(
+    attrs: Mapping[str, Any],
+    *,
+    shape: Sequence[int],
+    detector: str,
+) -> ResolvedAcquisitionLayout | None:
+    """Adapt a recording carrying stage geometry and nothing more specific.
+
+    ImProcess used to interpret these files in the live sources and in
+    MoNaLISA's own geometry helpers, each with its own arithmetic and its own
+    rounding. Interpreting them here instead is what lets those be deleted.
+
+    Unlike the modality adapters this one declines rather than raising when the
+    geometry cannot explain the frame count. Nothing in the file claims to be a
+    scan, so an unexplained count means this is not one -- not that the file is
+    broken -- and the resolution falls through to the generic fallback exactly
+    as it did before this adapter existed.
+    """
+    normalized = _normalized_attrs(attrs)
+    if "ScanStage:axis_length" not in normalized:
+        return None
+    if "ScanStage:axis_step_size" not in normalized:
+        return None
+    try:
+        return _adapt_frame_scan(
+            normalized,
+            shape=shape,
+            detector=detector,
+            source="scan-stage-legacy",
+        )
+    except AcquisitionLayoutResolutionError:
+        return None
+
+
 def adapt_triggerscope_raster_metadata(
     attrs: Mapping[str, Any],
     *,
@@ -1326,6 +1360,9 @@ def resolve_acquisition_layout(
         adapt_snouty_metadata,
         adapt_monalisa_scan_metadata,
         adapt_triggerscope_raster_metadata,
+        # Least specific: only stage geometry, no modality claim. Last so a
+        # file that any modality adapter recognises keeps that reading.
+        adapt_scan_stage_metadata,
     ):
         adapted = adapter(normalized, shape=source_shape, detector=detector)
         if adapted is not None:

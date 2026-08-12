@@ -49,20 +49,24 @@ class MonalisaLiveSession(StreamingSession):
 
     @staticmethod
     def _geometry_from_recorded_layout(stack_info):
-        """``(nx_s, ny_s, timepoints)`` from the recorded layout, or ``None``.
+        """``(nx_s, ny_s, timepoints)`` from the resolved layout, or ``None``.
 
         This is the same resolved contract the offline path consumes, so live
         and batch reconstruction of one recording cannot disagree about the
-        frame order. The streaming path assembles contiguous X/Y stacks, so a
-        recording that declares anything else -- interleaved line-step
-        conditions, a reversed or serpentine fast axis, a gated detector, a Z
-        loop -- is refused rather than silently reshaped into timepoints.
+        frame order -- and it is the resolver, not this module, that decides
+        what the stage metadata means.
+
+        The streaming path assembles contiguous X/Y stacks. A recording that
+        *declares* anything else -- interleaved line-step conditions, a
+        reversed or serpentine fast axis, a gated detector, a Z loop -- is
+        refused rather than silently reshaped into timepoints. The same shape
+        merely *inferred* from legacy metadata is declined instead, so a file
+        that used to open still opens through the older ladder below.
         """
         from .coeffs_to_image import placement_from_layout
 
         resolved = getattr(stack_info, "acquisition_layout", None)
-        # This path refuses what it cannot represent, so it needs a statement.
-        if resolved is None or not resolved.is_authoritative:
+        if resolved is None or not resolved.is_usable:
             return None
         layout = resolved.layout
         placement = placement_from_layout(layout)
@@ -81,6 +85,8 @@ class MonalisaLiveSession(StreamingSession):
         if layout.recorded_event_spans is not None:
             unsupported.append("a detector gated to part of the scan")
         if unsupported:
+            if not resolved.is_authoritative:
+                return None
             raise ValueError(
                 "Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and "
                 "cannot represent " + ", ".join(unsupported) + ". Use the "
@@ -135,25 +141,26 @@ class MonalisaLiveSession(StreamingSession):
             step_x_nm, step_y_nm = self.scan_stage_step_size_nm(
                 imswitch_meta, axis_step_size
             )
-            self.nx_s, self.ny_s = self._resolve_scan_steps(
-                axis_startpos,
-                axis_length,
-                axis_step_size,
-                imswitch_meta,
-                init_obj.stack_info,
-                data.shape[0],
+            # The resolver decides what the stage metadata means. The ladder
+            # below re-derives the same thing with its own arithmetic and is
+            # only for sources the resolver cannot describe.
+            resolved_geometry = self._geometry_from_recorded_layout(
+                init_obj.stack_info
             )
+            if resolved_geometry is not None:
+                self.nx_s, self.ny_s, recorded_timepoints = resolved_geometry
+            else:
+                recorded_timepoints = None
+                self.nx_s, self.ny_s = self._resolve_scan_steps(
+                    axis_startpos,
+                    axis_length,
+                    axis_step_size,
+                    imswitch_meta,
+                    init_obj.stack_info,
+                    data.shape[0],
+                )
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
-
-        recorded = self._geometry_from_recorded_layout(init_obj.stack_info)
-        if recorded is not None:
-            # The recording outranks anything derived from stage extents: it is
-            # the same resolved layout the offline path uses, so live and batch
-            # reconstruction cannot disagree about the frame order.
-            self.nx_s, self.ny_s, recorded_timepoints = recorded
-        else:
-            recorded_timepoints = None
 
         self.num_frames_in_stack = self.nx_s * self.ny_s
         num_time_points = (

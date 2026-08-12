@@ -107,6 +107,33 @@ does not surface, add it to `ResolvedAcquisitionLayout` rather than re-parsing.
 category-A key. A grep for those keys returns the resolver and the tests only.
 A regression asserts that, so the rule cannot quietly erode.
 
+**Progress.** Group 1 (the parsers that can disagree with the resolver about
+the same file) is done: `live/sources.py` (`209e3364`), and
+`monalisa/live_session.py` + `monalisa/reconstructor.py`. Each now asks the
+resolver first and keeps its own ladder only for sources the resolver cannot
+describe.
+
+Two things this surfaced, both fixed:
+
+- `live/sources.py` counted scan positions with `ceil` where ImControl
+  unified on `round`. A 0.52 um axis at 0.05 um is 10 positions to the
+  producer and was 11 to the reader, so a 100-frame stack was read as needing
+  121 and never completed.
+- Confining interpretation is only safe if the resolver is at least as capable
+  as what it replaces. Every legacy adapter required `ScanTTL` keys, so a
+  stage-geometry-only file resolved to a bare frame stream and routing the
+  live sources through the resolver would have *lost* geometry they could
+  read. `adapt_scan_stage_metadata` closes that, registered last so any
+  modality adapter still wins, and declining rather than raising when the
+  geometry cannot explain the frame count -- nothing in such a file claims to
+  be a scan.
+
+Remaining: the UI pre-fill pair (`MoNaLISAController.parseScanParamsFromAttrs`,
+`snouty/metadata.py`), which needs a layout-to-widget-params mapping that does
+not exist yet. `LiveModeController` should be reclassified: it reads
+`recording:num_timepoints` to know when a lapse is finished, which is category
+B (lifecycle), not acquisition semantics.
+
 ### P2 — Add device identity, derive-and-verify
 
 - Add `AcquisitionLoop.device`; producers populate it from
