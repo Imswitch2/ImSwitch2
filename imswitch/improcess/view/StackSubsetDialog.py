@@ -46,7 +46,11 @@ class _AxisRangeRow:
 class StackSubsetDialog(QtWidgets.QDialog):
     """Select first/last/step ranges for a stack subset."""
 
-    def __init__(self, result, parent=None, napari_viewer=None):
+    #: The "type the numbers yourself" entry, and what the combo returns to
+    #: whenever a spinbox is touched.
+    MANUAL = "Manual"
+
+    def __init__(self, result, parent=None, napari_viewer=None, rois=()):
         super().__init__(parent)
         self.setWindowTitle("Crop/Substack")
         self.setMinimumWidth(460)
@@ -54,6 +58,8 @@ class StackSubsetDialog(QtWidgets.QDialog):
         self._shape = shape_for_result(result)
         self._labels = axis_labels_for_result(result)
         self._rows: list[_AxisRangeRow] = []
+        self._rois = list(rois or [])
+        self._appliedROI = None
         # Optional live X/Y crop-rectangle preview drawn into the reconstruction
         # viewer while the dialog is open (removed on close).
         self._viewer = napari_viewer
@@ -73,6 +79,22 @@ class StackSubsetDialog(QtWidgets.QDialog):
         for column in range(1, 5):
             header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
 
+        # Crop from an ROI (P-R adjacent): the ranges below are still what is
+        # applied — an ROI *fills* them rather than replacing them — so the
+        # numbers stay visible, adjustable, and the single source of truth.
+        self.roiCombo = QtWidgets.QComboBox()
+        self.roiCombo.addItem(self.MANUAL, None)
+        for roi in self._rois:
+            self.roiCombo.addItem(f"{roi.name} ({roi.roi_type})", roi.uid)
+        self.roiCombo.setEnabled(bool(self._rois))
+        self.roiCombo.setToolTip(
+            "Fill the Y and X ranges from an ROI in the ROI manager. The "
+            "ranges stay editable; changing one returns this to Manual."
+            if self._rois
+            else "No ROIs in the ROI manager to crop from."
+        )
+        self.roiCombo.currentIndexChanged.connect(self._roiChosen)
+
         self.copyCheck = QtWidgets.QCheckBox("Copy data")
         self.copyCheck.setChecked(False)
 
@@ -84,6 +106,10 @@ class StackSubsetDialog(QtWidgets.QDialog):
         self.buttons.rejected.connect(self.reject)
         self.resetButton.clicked.connect(self.resetRanges)
 
+        source = QtWidgets.QHBoxLayout()
+        source.addWidget(QtWidgets.QLabel("Crop from:"))
+        source.addWidget(self.roiCombo, 1)
+
         bottom = QtWidgets.QHBoxLayout()
         bottom.addWidget(self.copyCheck)
         bottom.addStretch()
@@ -91,10 +117,77 @@ class StackSubsetDialog(QtWidgets.QDialog):
         bottom.addWidget(self.buttons)
 
         layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(source)
         layout.addWidget(self.table)
         layout.addLayout(bottom)
 
         self._update_crop_preview()
+
+    # -- cropping from an ROI ---------------------------------------------
+
+    def _rowForLabel(self, label: str):
+        """The range row for an axis, found **by label**.
+
+        By label rather than by position: axis order is view-mode dependent,
+        so taking "the last two rows" would fill a YZ view's ranges from an
+        ROI drawn on YX.
+        """
+        for row, name in zip(self._rows, self._labels):
+            if str(name).upper() == label:
+                return row
+        return None
+
+    def _roiChosen(self, _index: int) -> None:
+        uid = self.roiCombo.currentData()
+        if uid is None:
+            self._appliedROI = None
+            return
+        roi = next((item for item in self._rois if item.uid == uid), None)
+        if roi is None:
+            return
+        self.applyROI(roi)
+
+    def applyROI(self, roi) -> bool:
+        """Fill the Y and X ranges from an ROI's bounding box.
+
+        Its *box*, even for a polygon or a mask: a crop is rectangular, so the
+        honest thing is to take the rectangle the ROI occupies rather than
+        pretend a shape was applied. Use the ROI manager's own crop-mode
+        restriction on a processor if the shape itself should matter.
+
+        Bounds are clipped by the spinbox ranges, so an ROI drawn on a larger
+        result gives the part of it that exists here.
+        """
+        from imswitch.imcommon.algorithms.roi_geometry import roi_bounds
+
+        r0, r1, c0, c1 = (int(v) for v in roi_bounds(roi))
+        pairs = (("Y", r0, r1), ("X", c0, c1))
+        applied = False
+        self._updating = True
+        try:
+            for label, start, stop in pairs:
+                row = self._rowForLabel(label)
+                if row is None:
+                    continue
+                # ROI bounds are half-open and 0-based; the dialog is
+                # inclusive and 1-based.
+                row.firstSpin.setValue(max(1, start + 1))
+                row.lastSpin.setValue(max(1, min(row.size, stop)))
+                applied = True
+        finally:
+            self._updating = False
+        self._appliedROI = roi if applied else None
+        self._update_crop_preview()
+        return applied
+
+    def _returnToManual(self) -> None:
+        """Any hand edit means the ranges are no longer the ROI's."""
+        if self._updating or self._appliedROI is None:
+            return
+        self._appliedROI = None
+        self.roiCombo.blockSignals(True)
+        self.roiCombo.setCurrentIndex(0)
+        self.roiCombo.blockSignals(False)
 
     def selected_params(self) -> dict:
         ranges = []
@@ -111,12 +204,22 @@ class StackSubsetDialog(QtWidgets.QDialog):
                         "step": step,
                     }
                 )
-        return {
+        params = {
             "ranges": ranges,
             "copy": self.copyCheck.isChecked(),
         }
+        if self._appliedROI is not None:
+            # Recorded so the crop can say where its rectangle came from,
+            # rather than the ROI being a UI convenience that leaves no trace.
+            params["roi_uid"] = str(getattr(self._appliedROI, "uid", ""))
+            params["roi_name"] = str(getattr(self._appliedROI, "name", ""))
+        return params
 
     def resetRanges(self) -> None:
+        self._appliedROI = None
+        self.roiCombo.blockSignals(True)
+        self.roiCombo.setCurrentIndex(0)
+        self.roiCombo.blockSignals(False)
         self._updating = True
         try:
             for row in self._rows:
@@ -127,8 +230,10 @@ class StackSubsetDialog(QtWidgets.QDialog):
             self._updating = False
 
     @classmethod
-    def get_params(cls, result, parent=None, napari_viewer=None) -> dict | None:
-        dialog = cls(result, parent=parent, napari_viewer=napari_viewer)
+    def get_params(
+        cls, result, parent=None, napari_viewer=None, rois=()
+    ) -> dict | None:
+        dialog = cls(result, parent=parent, napari_viewer=napari_viewer, rois=rois)
         try:
             if dialog.exec_() != QtWidgets.QDialog.Accepted:
                 return None
@@ -216,6 +321,8 @@ class StackSubsetDialog(QtWidgets.QDialog):
         last_spin.valueChanged.connect(lambda _value, range_row=row: self._sync_row(range_row))
         first_spin.valueChanged.connect(lambda _value: self._update_crop_preview())
         last_spin.valueChanged.connect(lambda _value: self._update_crop_preview())
+        first_spin.valueChanged.connect(lambda _value: self._returnToManual())
+        last_spin.valueChanged.connect(lambda _value: self._returnToManual())
 
         self.table.setCellWidget(axis, 2, first_spin)
         self.table.setCellWidget(axis, 3, last_spin)

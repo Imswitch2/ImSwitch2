@@ -242,7 +242,10 @@ class ImageToolbarController:
                 getattr(self._view, "reconstructionWidget", None), "napariViewer", None
             )
             params = StackSubsetDialog.get_params(
-                result, parent=self._view, napari_viewer=napari_viewer
+                result,
+                parent=self._view,
+                napari_viewer=napari_viewer,
+                rois=self._croppableROIs(),
             )
         except Exception:
             self._logger.exception("Could not collect crop/substack parameters")
@@ -250,6 +253,28 @@ class ImageToolbarController:
         if params is None:
             return
         self._runProcessor(StackSubsetProcessor(), result, params)
+
+    def _croppableROIs(self) -> list:
+        """Visible ROIs from the ROI manager, if it is open.
+
+        Only the ones that have a rectangle to offer: a crop is rectangular,
+        and a line or a point has no extent to crop to. Empty when the panel
+        is not open, which leaves the dialog exactly as it was.
+        """
+        panel = getattr(self._view, "roiManagerWidget", None)
+        if panel is None:
+            return []
+        try:
+            from imswitch.imcommon.algorithms.roi_geometry import roi_capabilities
+
+            return [
+                roi
+                for roi in panel.rois(visible_only=True)
+                if roi_capabilities(roi.roi_type).is_area
+            ]
+        except Exception:
+            self._logger.debug("Could not read ROIs for cropping", exc_info=True)
+            return []
 
     def maxProjection(self) -> None:
         self._runProcessorOverTargets(

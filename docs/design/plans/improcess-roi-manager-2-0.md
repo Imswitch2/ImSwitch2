@@ -2475,6 +2475,75 @@ same Properties dialog, which is one place to set the outline for a whole set.
 above and asserting the *arithmetic* — `edge_width x scale x zoom` — rather
 than that the code ran.
 
+### 15.18 Crop from an ROI
+
+Rig feedback: the Crop/Substack dialog and the ROI manager did not know about
+each other. A *Crop from* chooser now lists the set's area ROIs beside
+**Manual**, and picking one fills the Y and X ranges from its bounding box.
+
+**The ranges stay the single source of truth.** An ROI *fills* them rather
+than replacing them: they remain visible and editable, touching one returns the
+chooser to Manual, and what is applied is always what is on screen. The
+alternative — an ROI mode where the numbers are derived and hidden — has two
+representations of one crop, and they disagree the moment the ROI moves.
+
+Details that are decisions rather than defaults:
+
+* **Axes matched by label**, so an ROI drawn on a YX view cannot fill a YZ
+  view's ranges. Same rule as `plane_scales`, for the same reason.
+* **Only area ROIs are offered.** A crop is rectangular; a line or a point has
+  no rectangle to crop to, so offering them would invite a question with no
+  answer.
+* **A polygon crops to its box**, which is what a crop *is*. Pretending the
+  shape was applied would be the fourth way this plan has found to report a
+  bounding box as something finer. The shape-aware path already exists: P-R's
+  crop-mode restriction on a processor.
+* **The crop records which ROI it came from** (`roi_uid`/`roi_name` in the
+  params), so it leaves a trace rather than being a UI convenience.
+
+---
+
+## 16. Next: a processing footprint in result metadata (roadmap)
+
+Requested after the first rig runs, and deliberately **not started here** — it
+wants its own branch off this one, after the pull request.
+
+**The ask.** Every reconstruction and processor applied to a result should
+leave a footprint in that result's metadata: reconstruct a raw MoNaLISA
+measurement and the reconstruction's parameters and the source file are
+recorded; crop it and that step is appended, with the ROI and its coordinates.
+A result should be able to say how it was made, end to end.
+
+**What already exists and should be built on rather than duplicated.** Most of
+the vocabulary is in place from Track A and P-R:
+
+* `lineage`, `result_uid`, `dataset_uid` and `coordinate_space_uid` (A-10) —
+  *which* results a result derives from, and whether they share a pixel grid.
+* `attach_provenance` / `preserves_grid` — applied centrally in
+  `normalize_processor_output`, so every processor already contributes without
+  opting in.
+* `roi_provenance` (P-R) — the ROI set, revision, mode and offset behind a
+  restricted run, and now the ROI behind a crop.
+
+What is missing is the **step list**: an ordered record of *what was done*, with
+each step's parameters, rather than only what the result descends from. The
+natural shape is a list of entries appended by the same central hook that
+already attaches provenance, so a processor stays unaware of it.
+
+**The blocker is the same one P-F2 has.** Metadata that lives only in memory
+does not survive a save, and there is **no central save path** — 21 independent
+`save()` implementations call tifffile/h5py directly. Q-14b put container
+writes out of scope for exactly this reason. So the honest sequencing is:
+
+1. a central save hook (the P-F2 prerequisite), then
+2. the step list written through it, then
+3. readers — the Metadata panel already renders arbitrary container metadata,
+   so it should need little.
+
+Doing (2) before (1) produces a footprint that is complete on screen and absent
+in every file, which is the worst of the three states.
+
+
 
 
 
