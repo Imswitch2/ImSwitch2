@@ -137,7 +137,12 @@ those paths still run whenever a layout is absent. §10 scoped removal out of
 schema version 1 deliberately, so this is by design -- but a genuinely single
 contract across the boundary means picking the channels the layout supersedes,
 making them optional to write, and then not reading them outside the legacy
-adapters. That is schema v2 work and a release gate, not a refactor.
+adapters. Planned in
+[acquisition-metadata-channel-retirement.md](acquisition-metadata-channel-retirement.md),
+which corrects the framing: retiring those channels is mostly *not* a schema
+change. Its first phase -- confining interpretation to the resolver, which six
+ImProcess modules still bypass -- needs no schema bump, no flag and no release
+gate, and is the half that removes the actual failure mode.
 
 ### Legacy trailing-axis ambiguity (fixed)
 
