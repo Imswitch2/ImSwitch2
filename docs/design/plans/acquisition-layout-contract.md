@@ -22,7 +22,7 @@ hardware validation, which no amount of software testing can substitute for.
 | PR 4 — Producers and recording integration | Implemented | `cdcc55da` |
 | PR 5 — MoNaLISA and BeadRec migration | Implemented | `eee2b603`, `baf90d39`, `e2ab1b7a` |
 | PR 6 — SNOUTY and SMLM migration | Implemented | `69f139af`, `66a37936` |
-| PR 7 — Widefield STARSS, view-only, and fallback cleanup | Implemented | `5474fd05` |
+| PR 7 — Widefield STARSS, view-only, and fallback cleanup | Implemented | `5474fd05`, `2a105645`, `2b1fd535` |
 
 A review of PR 1–4 produced three fixes in `56a1b0eb`: cross-span overlap
 detection no longer expands the selected event set (2.25 s and 141 MB became
@@ -31,8 +31,8 @@ validate once per layout instead of per frame, and the scan-position
 cross-check skips loop kinds it cannot classify instead of refusing to record.
 
 Test evidence (2026-08-12, `QT_QPA_PLATFORM=offscreen`, `-p no:napari`):
-`imswitch/imcommon/_test` + `imswitch/imcontrol/_test/unit` is 2792 passed /
-4 skipped, and `imswitch/improcess/_test` is 1262 passed / 2 skipped.
+`imswitch/imcommon/_test` + `imswitch/imcontrol/_test/unit` is 2797 passed /
+4 skipped, and `imswitch/improcess/_test` is 1263 passed / 2 skipped.
 `imcontrol/_test/unit` and `improcess/_test` must be run in separate pytest
 processes; combining them with the improcess suite hangs locally.
 
@@ -1141,7 +1141,7 @@ Every PR includes tests and may land independently in order.
 
 ### PR 7 — Widefield STARSS, view-only, and fallback cleanup
 
-**Status:** Implemented (`5474fd05`).
+**Status:** Implemented (`5474fd05`, `2a105645`, `2b1fd535`).
 
 **Acceptance**
 
