@@ -66,19 +66,26 @@ build on what exists rather than on the original sketch:
   `inspect_acquisition` raised `AttributeError` for a source without the
   property instead of reporting an undescribed acquisition.
 
-### Open defect found during PR 5
+### Legacy trailing-axis ambiguity (fixed)
 
-The legacy MoNaLISA adapter invents a `scan_z` loop for frames it cannot
-otherwise explain. For a 200-frame file with `ScanTTL:Nx/Ny = 10` and a third
-stage axis of length 1.0 and step 1.0 — that is, one Z position — it resolves
-`scan_z=2` rather than reporting two timepoints or an unexplained remainder.
-It does emit `LEGACY_SCAN_GEOMETRY_ASSUMPTION`, so the assumption is visible,
-but Z and time are not interchangeable and the choice between them is a guess.
-Because of this, a plugin may only refuse a reconstruction on a `recorded` or
-`user-override` layout; a `legacy-adapter` layout falls through to the older
-inference so files that used to open still open. Fixing the adapter — most
-likely by naming the remainder honestly instead of assigning it to Z — is
-owed before PR 6, which relies on SNOUTY cycle/plane/time semantics.
+The legacy scan adapters choose between two historical conventions for a stage
+axis — size (`length/step`) and endpoint (`(length-start)/step + 1`) — by which
+one matches the observed frame count. When they disagree about whether a
+trailing axis moved at all, the choice is a coin flip: a 200-frame file with
+`ScanTTL:Nx/Ny = 10` and a third axis of length 1.0 / step 1.0 resolves as
+`scan_z=2` under the endpoint convention, but the same frames could equally be
+two timepoints, and Z and time are not interchangeable.
+
+The adapters now emit `AMBIGUOUS_LEGACY_TRAILING_AXIS` naming the axis and the
+alternatives, and lower confidence from `high` to `medium`, whenever a
+candidate activates an axis the size convention calls a single position. A
+genuine Z stack, where both conventions agree the axis moved, keeps full
+confidence and emits no extra issue.
+
+Independently of that, a plugin may only refuse a reconstruction on a
+`recorded` or `user-override` layout. A `legacy-adapter` layout is inference,
+however well reported, so it falls through to the plugin's own older path and
+files that used to open still open.
 
 ---
 

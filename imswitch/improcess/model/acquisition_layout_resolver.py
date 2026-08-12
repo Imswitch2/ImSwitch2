@@ -534,6 +534,37 @@ def _scan_geometry_candidates(
         )
 
     counts = matching[0]
+    assumptions = [
+        _issue(
+            "warning",
+            "LEGACY_SCAN_GEOMETRY_ASSUMPTION",
+            "Scan dimensions were adapted from legacy ScanStage/ScanTTL metadata",
+            "ScanStage",
+        )
+    ]
+    # The size and endpoint conventions can disagree about whether a trailing
+    # axis moved at all, and picking whichever matches the frame count keeps
+    # the file readable. But an axis the size convention calls inactive is not
+    # evidence of a scan axis: the same extra frames could equally be
+    # timepoints or repeats, and Z and time are not interchangeable. Report the
+    # choice instead of presenting it as recorded geometry.
+    for index, count in enumerate(counts):
+        if count <= 1 or index >= len(size_counts) or size_counts[index] != 1:
+            continue
+        kind = _axis_kind(devices[index] if index < len(devices) else None, index)
+        assumptions.append(
+            _issue(
+                "warning",
+                "AMBIGUOUS_LEGACY_TRAILING_AXIS",
+                f"Legacy metadata gives axis {index} a single position, but "
+                f"{count} were needed to explain the frame count. It was "
+                f"adapted as {kind!r}; the same frames could be timepoints or "
+                f"repeats.",
+                "ScanStage:axis_length",
+                kind,
+            )
+        )
+
     loops = []
     for index, count in enumerate(counts):
         kind = _axis_kind(devices[index] if index < len(devices) else None, index)
@@ -552,14 +583,14 @@ def _scan_geometry_candidates(
                 direction=direction,
             )
         )
-    return tuple(loops), (
-        _issue(
-            "warning",
-            "LEGACY_SCAN_GEOMETRY_ASSUMPTION",
-            "Scan dimensions were adapted from legacy ScanStage/ScanTTL metadata",
-            "ScanStage",
-        ),
-    )
+    return tuple(loops), tuple(assumptions)
+
+
+def _legacy_confidence(issues: Sequence[LayoutIssue]) -> str | None:
+    """Lower the adapter's confidence when an axis was a coin flip."""
+    if any(issue.code == "AMBIGUOUS_LEGACY_TRAILING_AXIS" for issue in issues):
+        return "medium"
+    return None
 
 
 def _scan_traversal(loops: Sequence[AcquisitionLoop]) -> tuple[TraversalRule, ...]:
@@ -685,6 +716,7 @@ def adapt_advanced_scan_metadata(
                 source="advanced-scan-legacy-assembled",
                 shape=source_shape,
                 issues=assumptions,
+                confidence=_legacy_confidence(assumptions),
             )
     observed = source_shape[0]
 
@@ -819,6 +851,7 @@ def _adapt_frame_scan(
         source=source,
         shape=source_shape,
         issues=assumptions,
+        confidence=_legacy_confidence(assumptions),
     )
 
 
@@ -910,6 +943,7 @@ def adapt_triggerscope_raster_metadata(
             source="triggerscope-raster-legacy-assembled",
             shape=source_shape,
             issues=assumptions,
+            confidence=_legacy_confidence(assumptions),
         )
     return _adapt_frame_scan(
         normalized,

@@ -237,6 +237,50 @@ def test_ambiguous_legacy_geometry_blocks_instead_of_guessing_time():
     assert "AMBIGUOUS_LEGACY_SCAN_GEOMETRY" in _codes(exc_info.value)
 
 
+def test_legacy_axis_activated_only_to_fit_the_frame_count_is_reported():
+    """A trailing axis chosen to make the arithmetic work is a guess.
+
+    The size convention (length/step) gives the third stage axis one position;
+    the endpoint convention ((length-start)/step + 1) gives two, and only the
+    latter explains 200 frames. Two Z steps and two timepoints are not
+    interchangeable, so the adapter has to say that it chose.
+    """
+    attrs = {
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+        "ScanStage:axis_length": [0.55, 0.55, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanTTL:Nx": 10,
+        "ScanTTL:Ny": 10,
+    }
+
+    resolved = resolve_acquisition_layout(attrs, shape=(200, 100, 100), detector="Cam")
+
+    assert "AMBIGUOUS_LEGACY_TRAILING_AXIS" in _codes(resolved)
+    # High confidence would claim the recording states this; it does not.
+    assert resolved.confidence == "medium"
+    assert [(loop.kind, loop.count) for loop in resolved.layout.event_loops] == [
+        ("scan_z", 2),
+        ("scan_y", 10),
+        ("scan_x", 10),
+    ]
+
+
+def test_a_genuine_legacy_z_stack_keeps_full_adapter_confidence():
+    """Both conventions agree this axis moved, so nothing was guessed."""
+    attrs = {
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+        "ScanStage:axis_length": [0.55, 0.55, 4.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanTTL:Nx": 10,
+        "ScanTTL:Ny": 10,
+    }
+
+    resolved = resolve_acquisition_layout(attrs, shape=(400, 100, 100), detector="Cam")
+
+    assert "AMBIGUOUS_LEGACY_TRAILING_AXIS" not in _codes(resolved)
+    assert resolved.confidence == "high"
+
+
 def test_snouty_time_is_a_loop_only_for_a_combined_array():
     attrs = {
         "MS-RESOLFT_Scan:cycleSteps": 3,
