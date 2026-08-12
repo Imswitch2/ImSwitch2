@@ -267,7 +267,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
         for index, positionerName in enumerate(positionerNames):
             sizePar = QtWidgets.QDoubleSpinBox()
             sizePar.setValue(5)
-            sizePar.setDecimals(2)
+            sizePar.setDecimals(3)
             sizePar.setSingleStep(1)
             sizePar.setMinimum(0)
             sizePar.setMaximum(10_000)
@@ -288,7 +288,7 @@ class ScanWidgetAdvanced(SuperScanWidget):
             self.scanPar["pixels" + positionerName] = numPixelsPar
 
             centerPar = QtWidgets.QDoubleSpinBox()
-            centerPar.setDecimals(2)
+            centerPar.setDecimals(3)
             centerPar.setRange(-1e9, 1e9)
             centerPar.setValue(0)
             centerPar.setSingleStep(.1)
