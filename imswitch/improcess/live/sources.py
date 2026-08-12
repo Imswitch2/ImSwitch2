@@ -211,15 +211,48 @@ def _zarr_store_streamable(path: Any) -> bool:
         return False
 
 
-def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
-    """Return frames per MoNaLISA scan stack from recorder metadata.
+def _positions_for_length_step(length: float, step: float) -> int:
+    """Canonical ImSwitch position count: ``round(length / step)``, at least 1.
 
-    ``recording:frames_per_stack`` wins, followed by explicit ``ScanTTL:Nx`` /
-    ``ScanTTL:Ny`` counts. Otherwise derive the X/Y scan counts from
-    ImControl's scan-size convention, where ``axis_length`` is a physical
-    length and the number of positions is ``ceil(length / step_size)``.
-    Metadata is read from flat attrs or a nested ``ImswitchData`` block so both
-    the ImSwitch2 structured layout and legacy ImSwitch-1 Zarr work.
+    ImControl unified every axis-count computation onto ``round`` precisely
+    because a mix of ``round``/``int``/``ceil`` made the GUI pixel count, the
+    recorded dimensions and the real number of scanned lines disagree for
+    non-divisible ratios. This module kept ``ceil``: a 0.52 um axis at 0.05 um
+    made the live reader wait for 11 positions where the scan produced 10, so
+    the stack never completed.
+    """
+    step = abs(float(step))
+    if step == 0:
+        return 1
+    return max(1, int(round(abs(float(length)) / step)))
+
+
+def _frames_per_stack_from_layout(resolved: Any) -> int | None:
+    """Frames per scan stack according to the resolved layout, or ``None``.
+
+    The resolver that gives :class:`StackInfo` its layout also decides how many
+    frames one stack holds, rather than this module re-deriving it from the
+    same attributes with its own arithmetic.
+    """
+    layout = getattr(resolved, "layout", None)
+    if layout is None or not resolved.is_usable:
+        return None
+    loops = {loop.kind: loop for loop in layout.event_loops}
+    fast, slow = loops.get("scan_x"), loops.get("scan_y")
+    if fast is None or slow is None:
+        return None
+    return fast.count * slow.count
+
+
+def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
+    """Frames per MoNaLISA scan stack for a source with no resolvable layout.
+
+    Prefer :func:`_frames_per_stack_from_layout`; this is the fallback for
+    sources the resolver cannot describe. ``recording:frames_per_stack`` wins,
+    then explicit ``ScanTTL:Nx``/``Ny``, then the canonical position count from
+    ``axis_length``/``axis_step_size``. Metadata is read from flat attrs or a
+    nested ``ImswitchData`` block so both the ImSwitch2 structured layout and
+    legacy ImSwitch-1 Zarr work.
     """
     explicit = _coerce_positive_int(_meta_lookup(attrs, "recording:frames_per_stack"))
     if explicit is not None:
@@ -237,9 +270,10 @@ def _derive_scan_frames_per_stack(attrs: dict[str, Any]) -> int | None:
     if step_sizes[0] == 0 or step_sizes[1] == 0:
         return None
 
-    nx_s = max(1, int(np.ceil(abs(lengths[0]) / abs(step_sizes[0]))))
-    ny_s = max(1, int(np.ceil(abs(lengths[1]) / abs(step_sizes[1]))))
-    return nx_s * ny_s
+    return (
+        _positions_for_length_step(lengths[0], step_sizes[0])
+        * _positions_for_length_step(lengths[1], step_sizes[1])
+    )
 
 
 class LiveSource(ABC):
@@ -454,15 +488,28 @@ class ZarrLiveSource(LiveSource):
         # scan-size guess (which is sensitive to the size-vs-endpoint length
         # convention); only fall back to the ScanStage-derived count for a
         # still-writing store with no explicit metadata.
+        dataset_path = attrs.get('recording:dataset_path') or self._default_dataset_path()
+        resolved = _resolve_stack_layout(
+            attrs,
+            shape=tuple(self._array.shape),
+            detector=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
+            source_path=self._path,
+            dataset_path=dataset_path,
+        )
+
+        # The resolved layout decides the stack size; the older attribute
+        # parses below remain only for sources it cannot describe.
+        recorded_fps = _frames_per_stack_from_layout(resolved)
         explicit_fps = _coerce_positive_int(_meta_lookup(attrs, "recording:frames_per_stack"))
-        if explicit_fps is not None:
+        if recorded_fps is not None:
+            frames_per_stack = recorded_fps
+        elif explicit_fps is not None:
             frames_per_stack = explicit_fps
         elif not self._writing and self._expected_frames is not None:
             frames_per_stack = self._expected_frames
         else:
             frames_per_stack = _derive_scan_frames_per_stack(attrs)
 
-        dataset_path = attrs.get('recording:dataset_path') or self._default_dataset_path()
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._array.dtype,
@@ -472,13 +519,7 @@ class ZarrLiveSource(LiveSource):
             detector_name=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
             dataset_path=dataset_path,
             source_format=attrs.get('recording:source_format') or 'ZARR',
-            acquisition_layout=_resolve_stack_layout(
-                attrs,
-                shape=tuple(self._array.shape),
-                detector=attrs.get('recording:detector_name') or attrs.get('detector_name') or detector_name,
-                source_path=self._path,
-                dataset_path=dataset_path,
-            ),
+            acquisition_layout=resolved,
         )
 
     def poll(self) -> list[Chunk]:
@@ -1173,9 +1214,20 @@ class Hdf5LiveSource(LiveSource):
         all_attrs = {**attrs, **dataset_attrs}
         self._refresh_barrier_state()
         self._refresh_state_from_attrs(all_attrs)
-        frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
-
         dataset_path = all_attrs.get('recording:dataset_path') or self._dataset_path
+        resolved = _resolve_stack_layout(
+            all_attrs,
+            shape=tuple(self._dataset.shape),
+            detector=all_attrs.get('recording:detector_name') or detector_name,
+            source_path=self._path,
+            dataset_path=dataset_path,
+        )
+        # The resolved layout decides the stack size; the older attribute parse
+        # remains only for sources it cannot describe.
+        frames_per_stack = _frames_per_stack_from_layout(resolved)
+        if frames_per_stack is None:
+            frames_per_stack = _derive_scan_frames_per_stack(all_attrs)
+
         return StackInfo(
             frame_shape=frame_shape,
             dtype=self._dataset.dtype,
@@ -1185,13 +1237,7 @@ class Hdf5LiveSource(LiveSource):
             detector_name=all_attrs.get('recording:detector_name') or detector_name,
             dataset_path=dataset_path,
             source_format=all_attrs.get('recording:source_format') or 'HDF5',
-            acquisition_layout=_resolve_stack_layout(
-                all_attrs,
-                shape=tuple(self._dataset.shape),
-                detector=all_attrs.get('recording:detector_name') or detector_name,
-                source_path=self._path,
-                dataset_path=dataset_path,
-            ),
+            acquisition_layout=resolved,
         )
 
     def poll(self) -> list[Chunk]:

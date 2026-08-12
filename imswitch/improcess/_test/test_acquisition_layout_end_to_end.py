@@ -253,3 +253,53 @@ def test_a_layout_the_gate_rejects_never_reaches_a_file(tmp_path):
     assert "DETECTOR_PULSE_COUNT_MISMATCH" in {
         issue.code for issue in error.value.issues
     }
+
+
+def test_live_geometry_uses_the_producers_rounding_convention():
+    """The live reader must count scan positions the way the scan does.
+
+    ImControl unified every axis-count computation onto round(); the live
+    source kept ceil(). A 0.52 um axis at 0.05 um is 10 positions to the
+    producer and was 11 to the reader, so a 10x10 = 100-frame stack was read
+    as needing 121 frames and never completed.
+    """
+    from imswitch.imcontrol.model.scan_parameters import pixels_for_length_step
+    from imswitch.improcess.live.sources import _derive_scan_frames_per_stack
+
+    for length in (0.50, 0.52, 0.55, 0.58, 0.61):
+        attrs = {
+            "ScanStage:axis_length": [length, length, 1.0],
+            "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        }
+        expected = pixels_for_length_step(length, 0.05) ** 2
+        assert _derive_scan_frames_per_stack(attrs) == expected, length
+
+
+def test_live_stack_size_comes_from_the_resolved_layout(tmp_path):
+    """One interpretation: the layout that describes the stack also sizes it."""
+    from imswitch.improcess.live.sources import ZarrLiveSource
+
+    rows = cols = 6
+    layout = build_point_scan_layouts(
+        {
+            "img_dims": [cols, rows],
+            "img_axes_phys": ["x", "y"],
+            "pixel_sizes": [0.05, 0.05],
+        },
+        ("CAM",),
+        scan_source="ScanControllerPointScan",
+    )["CAM"]
+
+    path = tmp_path / "live.zarr"
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+    array = ZarrStorer._create_array(root, "CAM", data=_ramp(rows * cols), chunks=(1, 4, 4))
+    array.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+    array.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+    array.attrs["writing"] = False
+    # Deliberately contradictory: the legacy attribute says something else.
+    array.attrs["recording:frames_per_stack"] = 999
+
+    info = ZarrLiveSource(detector_name="CAM").open(str(path))
+
+    assert info.frames_per_stack == rows * cols
+    assert info.acquisition_layout.is_authoritative
