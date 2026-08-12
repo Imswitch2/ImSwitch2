@@ -98,6 +98,12 @@ class MoNaLISAController(ImProcessWidgetController):
         if not attrs:
             return
 
+        # The resolver already decided what this recording's axes are. Reading
+        # the same attributes again here is what let the dialog disagree with
+        # the reconstruction about the same file.
+        if self._applyLayoutScanParams(dataObj):
+            return
+
         dimensionMap = {
             b'X': self._widget.r_l_text,
             b'Y': self._widget.u_d_text,
@@ -120,13 +126,10 @@ class MoNaLISAController(ImProcessWidgetController):
         except (KeyError, TypeError):
             pass
 
-        try:
-            numFrames = dataObj.numFrames
-        except Exception:
-            numFrames = None
-        if numFrames:
-            for i in range(0, 2):
-                self._scanParDict['steps'][i] = str(int(np.sqrt(numFrames)))
+        # There used to be a sqrt(numFrames) square guess here. It filled the
+        # dialog with 25x25 for the motivating 648-frame 18x18x2 scan, which is
+        # the same wrong shape BeadRec used to invent. A scan whose geometry
+        # nothing records is left for the user to state.
 
         try:
             stepSizesAttr = attrs['ScanStage:axis_step_size']
@@ -137,6 +140,35 @@ class MoNaLISAController(ImProcessWidgetController):
                 self._scanParDict['step_sizes'][i] = str(stepSizesAttr[i] * 1000)  # convert um->nm
 
         self.updateScanParams()
+
+    def _applyLayoutScanParams(self, dataObj) -> bool:
+        """Fill the dialog from the resolved layout. True when it answered."""
+        from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
+            scan_params_from_layout,
+        )
+
+        try:
+            resolved = getattr(dataObj, 'acquisition_layout', None)
+            values = scan_params_from_layout(
+                resolved,
+                {
+                    'r_l_text': self._widget.r_l_text,
+                    'u_d_text': self._widget.u_d_text,
+                    'b_f_text': self._widget.b_f_text,
+                    'timepoints_text': self._widget.timepoints_text,
+                    'p_text': self._widget.p_text,
+                    'n_text': self._widget.n_text,
+                },
+            )
+        except Exception as error:
+            # Pre-filling a dialog must never stop a file from opening.
+            self._logger.debug(f'Could not read the acquisition layout: {error}')
+            return False
+        if values is None:
+            return False
+        self._scanParDict.update(values)
+        self.updateScanParams()
+        return True
 
     def extractData(self, data):
         fwhmNm = self._widget.getFwhmNm()

@@ -319,3 +319,67 @@ def get_orientation(
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+def scan_params_from_layout(resolved, axis_labels: dict) -> dict | None:
+    """MoNaLISA scan-dialog values from a resolved acquisition layout.
+
+    The dialog used to be pre-filled by re-parsing ``ScanStage:*`` attributes,
+    and its position counts came from ``sqrt(numFrames)`` -- the same square
+    guess that turned a 648-frame 18x18x2 line-step scan into 25x25 in
+    BeadRec. The resolver already knows the real counts, pitches and
+    directions, so they come from there.
+
+    ``axis_labels`` maps semantic names to the widget's dimension strings
+    (``r_l_text``/``u_d_text``/``b_f_text``/``timepoints_text``/``p_text``/
+    ``n_text``). Returns ``None`` when the layout describes no scan axis.
+    """
+    layout = getattr(resolved, "layout", None)
+    if layout is None or not getattr(resolved, "is_usable", False):
+        return None
+
+    kind_to_label = {
+        "scan_x": axis_labels["r_l_text"],
+        "scan_y": axis_labels["u_d_text"],
+        "scan_z": axis_labels["b_f_text"],
+        "time": axis_labels["timepoints_text"],
+    }
+    # event_loops run outermost to innermost; the dialog lists the fast axis
+    # first, which is the same order reversed.
+    loops = [
+        loop for loop in reversed(layout.event_loops) if loop.kind in kind_to_label
+    ]
+    if not any(loop.kind.startswith("scan_") for loop in loops):
+        return None
+
+    dimensions: list[str] = []
+    directions: list[str] = []
+    steps: list[str] = []
+    step_sizes: list[str] = []
+    for loop in loops:
+        dimensions.append(kind_to_label[loop.kind])
+        directions.append(
+            axis_labels["n_text"] if loop.direction == -1 else axis_labels["p_text"]
+        )
+        steps.append(str(int(loop.count)))
+        # The dialog holds nanometres; layout pitches are micrometres.
+        step_sizes.append(str(float(loop.step) * 1000.0) if loop.step else "1")
+
+    # Pad to the dialog's fixed four slots, timepoints last.
+    for label in (
+        axis_labels["r_l_text"],
+        axis_labels["u_d_text"],
+        axis_labels["b_f_text"],
+        axis_labels["timepoints_text"],
+    ):
+        if label not in dimensions:
+            dimensions.append(label)
+            directions.append(axis_labels["p_text"])
+            steps.append("1")
+            step_sizes.append("1")
+    return {
+        "dimensions": dimensions[:4],
+        "directions": directions[:3],
+        "steps": steps[:4],
+        "step_sizes": step_sizes[:4],
+    }

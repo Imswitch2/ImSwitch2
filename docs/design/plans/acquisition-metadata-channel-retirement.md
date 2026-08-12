@@ -103,9 +103,17 @@ Six modules parse category-A channels outside the resolver:
 Each becomes a call to the resolver. Where a module needs a value the resolver
 does not surface, add it to `ResolvedAcquisitionLayout` rather than re-parsing.
 
-**Acceptance:** no module outside `acquisition_layout_resolver.py` reads a
-category-A key. A grep for those keys returns the resolver and the tests only.
-A regression asserts that, so the rule cannot quietly erode.
+**Acceptance (corrected).** The criterion first written here -- "a grep for
+category-A keys returns the resolver only" -- is not achievable and should not
+be. Those reads are the compatibility fallbacks for sources the resolver cannot
+describe, and §4 says the legacy path is permanent. Demanding their absence
+would mean dropping support for files that predate the contract.
+
+The property that actually matters is **ordering**: every module consults the
+resolver first, and reaches its own parse only when the resolver declines. That
+is what stops two readers disagreeing about the same file, which is the failure
+mode P1 exists to remove. Retiring the fallbacks themselves belongs to P3/P4,
+once ImControl stops writing the channels they read.
 
 **Progress.** Group 1 (the parsers that can disagree with the resolver about
 the same file) is done: `live/sources.py` (`209e3364`), and
@@ -128,11 +136,24 @@ Two things this surfaced, both fixed:
   geometry cannot explain the frame count -- nothing in such a file claims to
   be a scan.
 
-Remaining: the UI pre-fill pair (`MoNaLISAController.parseScanParamsFromAttrs`,
-`snouty/metadata.py`), which needs a layout-to-widget-params mapping that does
-not exist yet. `LiveModeController` should be reclassified: it reads
-`recording:num_timepoints` to know when a lapse is finished, which is category
-B (lifecycle), not acquisition semantics.
+Group 2, the UI pre-fill pair, is also done. `scan_params_from_layout` maps a
+resolved layout onto MoNaLISA's scan-dialog values, and the SNOUTY parameter
+widget takes its cycle/plane counts from the resolver when it is handed the
+source. The controller now passes the `DataObj` to `load_from_attrs`, falling
+back to the attrs-only signature so the duck-typed hook keeps working.
+
+That surfaced a third instance of the square-raster guess: the MoNaLISA dialog
+was pre-filled with `sqrt(numFrames)` on both axes, which is 25x25 for the
+motivating 648-frame scan -- the same wrong shape BeadRec used to invent,
+reached by a different route. A scan whose geometry nothing records now leaves
+the dialog alone rather than inventing one.
+
+`LiveModeController` is **reclassified**: it reads `recording:num_timepoints`
+to know when a lapse has finished, which is category B (lifecycle), not
+acquisition semantics. §4 says category B stays, so it is out of scope rather
+than outstanding.
+
+P1 is therefore complete: every module consults the resolver first.
 
 ### P2 — Add device identity, derive-and-verify
 

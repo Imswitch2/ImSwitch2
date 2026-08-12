@@ -433,3 +433,111 @@ def test_an_inferred_shape_the_fast_path_cannot_hold_is_declined_not_refused():
     assert MonalisaLiveSession._geometry_from_recorded_layout(inferred) is None
     with pytest.raises(ValueError, match="Z slices"):
         MonalisaLiveSession._geometry_from_recorded_layout(declared)
+
+
+def _dialog_labels():
+    return {
+        "r_l_text": "Right-Left",
+        "u_d_text": "Up-Down",
+        "b_f_text": "Back-Front",
+        "timepoints_text": "Timepoints",
+        "p_text": "pos",
+        "n_text": "neg",
+    }
+
+
+def test_scan_dialog_values_come_from_the_layout_not_a_square_guess():
+    """The dialog used to be pre-filled with sqrt(numFrames) on both axes.
+
+    For the motivating 648-frame 18x18x2 scan that is 25x25 -- the same wrong
+    shape BeadRec used to invent, reached by a different route.
+    """
+    from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
+        scan_params_from_layout,
+    )
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+
+    layout = build_advanced_scan_layouts(
+        _advanced_scan_info(18, 18, 2),
+        ("CAM",),
+        scan_source="ScanControllerAdvanced",
+        detector_masks={"CAM": [True, True]},
+        pulse_counts_by_condition={"CAM": [1, 1]},
+    )["CAM"]
+    resolved = ResolvedAcquisitionLayout(
+        layout=layout, source="explicit-metadata", confidence="certain"
+    )
+
+    values = scan_params_from_layout(resolved, _dialog_labels())
+
+    assert int(np.sqrt(648)) == 25, "the guess this replaces"
+    # Fast axis first, as the dialog lists them.
+    assert values["dimensions"][:2] == ["Right-Left", "Up-Down"]
+    assert values["steps"][:2] == ["18", "18"]
+    # 0.05 um pitch, stated in the nanometres the dialog holds.
+    assert values["step_sizes"][:2] == ["50.0", "50.0"]
+
+
+def test_scan_dialog_reflects_a_recorded_negative_direction():
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+    from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
+        scan_params_from_layout,
+    )
+
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 4, step=0.05, unit="um", direction=-1),
+            AcquisitionLoop("scan_x", "scan_x", 5, step=0.05, unit="um", direction=1),
+        ),
+    )
+    resolved = ResolvedAcquisitionLayout(
+        layout=layout, source="explicit-metadata", confidence="certain"
+    )
+
+    values = scan_params_from_layout(resolved, _dialog_labels())
+
+    assert values["dimensions"][:2] == ["Right-Left", "Up-Down"]
+    assert values["directions"][:2] == ["pos", "neg"]
+
+
+def test_a_layout_with_no_scan_axis_leaves_the_dialog_alone():
+    """Nothing to say is better than a guess."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+    from imswitch.improcess.reconstructors.monalisa.scan_geometry import (
+        scan_params_from_layout,
+    )
+
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("t", "time", 9),),
+    )
+    resolved = ResolvedAcquisitionLayout(
+        layout=layout, source="explicit-metadata", confidence="certain"
+    )
+
+    assert scan_params_from_layout(resolved, _dialog_labels()) is None

@@ -657,3 +657,66 @@ class TestSnoutyGPU:
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+class TestSnoutyWidgetPrefill:
+    """The widget takes acquisition structure from the resolver, not attrs."""
+
+    def test_cycles_and_planes_come_from_the_recorded_layout(self, tmp_path):
+        """The widget re-parsed MS-RESOLFT attrs the resolver already reads.
+
+        Two readers of the same keys can drift; the contradictory legacy
+        values here would win before this change.
+        """
+        from imswitch.imcommon.model.acquisition_layout import (
+            ACQUISITION_LAYOUT_SCHEMA,
+            PAYLOAD_DETECTOR_FRAME_STREAM,
+            AcquisitionLayout,
+            AcquisitionLoop,
+            encode_acquisition_layout,
+        )
+        from imswitch.improcess.model import DataObj
+        from imswitch.improcess.reconstructors.snouty.params_widget import (
+            SnoutyParamsWidget,
+        )
+
+        layout = AcquisitionLayout(
+            schema=ACQUISITION_LAYOUT_SCHEMA,
+            payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+            detector="CAM",
+            storage_axes=("frame", "detector_y", "detector_x"),
+            event_loops=(
+                AcquisitionLoop("cycle", "cycle", 3),
+                AcquisitionLoop("plane", "plane", 4),
+            ),
+        )
+        path = tmp_path / "snouty_prefill.h5"
+        with h5py.File(path, "w") as handle:
+            dataset = handle.create_dataset(
+                "CAM", data=np.zeros((12, 4, 5), dtype=np.uint16)
+            )
+            dataset.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+            dataset.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+            dataset.attrs["MS-RESOLFT_Scan:cycleSteps"] = 99
+            dataset.attrs["MS-RESOLFT_Scan:roSteps"] = 99
+        data_obj = DataObj(path.name, "CAM", path=str(path))
+
+        widget = SnoutyParamsWidget()
+        widget.load_from_attrs(data_obj.attrs or {}, data_obj)
+        values = widget.get_values()
+
+        assert (values["cycles"], values["planes_in_cycle"]) == (3, 4)
+
+    def test_a_source_without_a_layout_still_uses_its_attributes(self):
+        """Files the resolver cannot describe keep the older behaviour."""
+        from imswitch.improcess.reconstructors.snouty.params_widget import (
+            SnoutyParamsWidget,
+        )
+
+        widget = SnoutyParamsWidget()
+        widget.load_from_attrs(
+            {"MS-RESOLFT_Scan:cycleSteps": 5, "MS-RESOLFT_Scan:roSteps": 6}
+        )
+        values = widget.get_values()
+
+        assert (values["cycles"], values["planes_in_cycle"]) == (5, 6)
