@@ -116,13 +116,20 @@ def test_duck_typed_results_default_to_image_kind():
 #: Processors that operate on localization tables (LocalizationResult).
 LOCALIZATION_PROCESSOR_IDS = {"smlm-render", "smlm-filter", "smlm-drift", "smlm-group"}
 #: Processors that operate on label masks (segmentation output).
-LABELS_PROCESSOR_IDS = {"label-morphology"}
+#:
+#: ``image-calculator`` is here because a label image is an array of numbers on
+#: the same grid as the image it came from, and multiplying one into the other
+#: is how a mask gets applied. The gate exists to keep a metrics *table* away
+#: from an image processor, not to stop a mask reaching the image it was drawn
+#: on. The other entries genuinely reinterpret the values as labels.
+LABELS_PROCESSOR_IDS = {"label-morphology", "image-calculator"}
 
 
 def test_non_image_results_are_never_offered_to_image_processors():
     """The load-bearing property: table/curve/rgb results match no processor;
-    labels results match only the morphology post-processing, and
-    localization results match only the SMLM table/render processors."""
+    labels results match only the morphology post-processing and the
+    calculator, and localization results match only the SMLM table/render
+    processors."""
     results = _representative_results()
     for processor in _all_processors():
         for kind_name in ("table", "curve", "rgb"):
