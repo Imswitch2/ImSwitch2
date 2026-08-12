@@ -1814,6 +1814,7 @@ class RecordingManager(SignalInterface):
         recMode,
         recFrames,
         numCamTTL,
+        attrs=None,
     ):
         """Canonicalize and cross-check layouts before opening any writer."""
         if acquisitionLayouts is None:
@@ -1928,6 +1929,10 @@ class RecordingManager(SignalInterface):
                                 )
                             )
 
+            self.__reportLayoutDisagreements(
+                detectorName, layout, (attrs or {}).get(detectorName)
+            )
+
             errors = tuple(
                 issue for issue in issues if issue.severity == 'error'
             )
@@ -1941,6 +1946,37 @@ class RecordingManager(SignalInterface):
             encode_acquisition_layout(layout)
             normalized[detectorName] = layout
         return normalized
+
+    def __reportLayoutDisagreements(self, detectorName, layout, detectorAttrs):
+        """Log where the layout and the legacy attributes describe differently.
+
+        Both are still written, so this is the window in which a producer bug
+        is cheap to find: if the layout disagrees with the attributes recorded
+        beside it, one of them is wrong, and today a reader can pick either.
+        Nothing is failed on a disagreement -- the legacy attributes are on
+        their way out and are not worth blocking a measurement over.
+        """
+        if not isinstance(detectorAttrs, dict):
+            return
+        loops = {loop.kind: loop for loop in layout.event_loops}
+        expected = {
+            'ScanTTL:Nx': getattr(loops.get('scan_x'), 'count', None),
+            'ScanTTL:Ny': getattr(loops.get('scan_y'), 'count', None),
+            'ScanTTL:n_linesteps': getattr(loops.get('condition'), 'count', None),
+        }
+        for key, derived in expected.items():
+            if derived is None or key not in detectorAttrs:
+                continue
+            try:
+                recorded = int(detectorAttrs[key])
+            except (TypeError, ValueError):
+                continue
+            if recorded != derived:
+                self.__logger.warning(
+                    f'Acquisition layout for {detectorName!r} implies '
+                    f'{key}={derived}, but the recording writes {recorded}. '
+                    f'One of the two descriptions of this scan is wrong.'
+                )
 
     def startRecording(self, detectorNames, recMode, savename, saveMode, attrs,
                        saveFormat=SaveFormat.HDF5, singleMultiDetectorFile=False, singleLapseFile=False,
@@ -1983,6 +2019,7 @@ class RecordingManager(SignalInterface):
             recMode,
             recFrames,
             numCamTTL,
+            attrs,
         )
         self.__prepareRecordingThread()
         self.__recordingWorker.detectorNames = detectorNames

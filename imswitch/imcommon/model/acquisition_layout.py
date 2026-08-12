@@ -95,6 +95,13 @@ class AcquisitionLoop:
     direction: int | None = None
     labels: tuple[str, ...] = ()
     storage_axis: str | None = None
+    device: str | None = None
+    """The device that drove this loop, e.g. the positioner behind ``scan_x``.
+
+    Semantics live in :attr:`kind`; this is provenance. Without it a layout
+    cannot say *which* stage moved, which is the one thing the legacy
+    ``ScanStage:target_device`` attribute carried that the layout did not.
+    """
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "labels", tuple(self.labels))
@@ -474,7 +481,17 @@ def _only_fields(value: Mapping[str, Any], fields: set[str], label: str) -> None
 
 def _decode_loop(value: Any) -> AcquisitionLoop:
     item = _expect_mapping(value, "event loop")
-    fields = {"id", "kind", "count", "step", "unit", "direction", "labels", "storage_axis"}
+    fields = {
+        "id",
+        "kind",
+        "count",
+        "step",
+        "unit",
+        "direction",
+        "labels",
+        "storage_axis",
+        "device",
+    }
     _only_fields(item, fields, "event loop")
     return AcquisitionLoop(
         id=item.get("id"),
@@ -485,6 +502,7 @@ def _decode_loop(value: Any) -> AcquisitionLoop:
         direction=item.get("direction"),
         labels=tuple(item.get("labels", ())),
         storage_axis=item.get("storage_axis"),
+        device=item.get("device"),
     )
 
 
@@ -852,6 +870,16 @@ def validate_acquisition_layout(
                 "INVALID_LOOP_STEP",
                 f"Loop {loop.id!r} step must be finite",
                 f"event_loops[{index}].step",
+                loop.id,
+            )
+        if loop.device is not None and (
+            not isinstance(loop.device, str) or not loop.device.strip()
+        ):
+            _issue(
+                issues,
+                "INVALID_LOOP_DEVICE",
+                f"Loop {loop.id!r} device must be a non-empty string",
+                f"event_loops[{index}].device",
                 loop.id,
             )
         if loop.unit is not None and (not isinstance(loop.unit, str) or not loop.unit.strip()):

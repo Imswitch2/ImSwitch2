@@ -541,3 +541,94 @@ def test_a_layout_with_no_scan_axis_leaves_the_dialog_alone():
     )
 
     assert scan_params_from_layout(resolved, _dialog_labels()) is None
+
+
+def test_the_layout_records_which_stage_drove_each_axis():
+    """kind says an axis is the fast one; device says which stage moved.
+
+    This is the one thing ScanStage:target_device carried that the layout
+    could not, and the reason retiring that attribute needed a schema field.
+    """
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    produced = build_point_scan_layouts(
+        {
+            "img_dims": [4, 3],
+            "img_axes_phys": ["x", "y"],
+            "pixel_sizes": [0.1, 0.1],
+        },
+        ("CAM",),
+        scan_source="ScanControllerPointScan",
+        devices={"scan_x": "StageX", "scan_y": "StageY"},
+    )["CAM"]
+    assert {loop.kind: loop.device for loop in produced.event_loops} == {
+        "scan_x": "StageX",
+        "scan_y": "StageY",
+    }
+
+    # It survives serialization, and the legacy adapter recovers it too.
+    assert "StageX" in encode_acquisition_layout(produced)
+    adapted = resolve_acquisition_layout(
+        {
+            "ScanStage:target_device": ["StageX", "StageY"],
+            "ScanStage:axis_length": [0.4, 0.3],
+            "ScanStage:axis_step_size": [0.1, 0.1],
+            "ScanStage:axis_startpos": [0.0, 0.0],
+            "ScanTTL:Nx": 4,
+            "ScanTTL:Ny": 3,
+        },
+        shape=(12, 8, 8),
+        detector="CAM",
+    )
+    assert {loop.kind: loop.device for loop in adapted.layout.event_loops} == {
+        "scan_x": "StageX",
+        "scan_y": "StageY",
+    }
+
+
+def test_a_layout_disagreeing_with_its_legacy_attributes_is_reported(caplog):
+    """Both descriptions are still written, so a mismatch is a producer bug.
+
+    While ImControl writes the layout and the legacy attributes side by side,
+    this is the cheap window to notice they disagree -- a reader can pick
+    either one today. It is logged, not failed: the legacy attributes are on
+    their way out and are not worth blocking a measurement over.
+    """
+    import logging
+
+    layout = build_point_scan_layouts(
+        {
+            "img_dims": [4, 3],
+            "img_axes_phys": ["x", "y"],
+            "pixel_sizes": [0.1, 0.1],
+        },
+        ("CAM",),
+        scan_source="ScanControllerPointScan",
+    )["CAM"]
+
+    from imswitch.imcontrol.model import RecMode, RecordingManager, SaveMode
+
+    manager = RecordingManager(_StubDetectors(["CAM"]))
+    opened: list[bool] = []
+    manager._RecordingManager__prepareRecordingThread = lambda: opened.append(True)
+
+    with caplog.at_level(logging.WARNING):
+        manager.startRecording(
+            detectorNames=["CAM"],
+            recMode=RecMode.ScanOnce,
+            savename="disagreement",
+            saveMode=SaveMode.RAM,
+            # The layout says 4x3; the attributes written beside it say 5x3.
+            attrs={"CAM": {"ScanTTL:Nx": 5, "ScanTTL:Ny": 3}},
+            recFrames=12,
+            numCamTTL={"CAM": 1},
+            acquisitionLayouts={"CAM": layout},
+        )
+
+    assert opened == [True], "a disagreement must not block the measurement"
+    assert any(
+        "ScanTTL:Nx=4" in record.message and "writes 5" in record.message
+        for record in caplog.records
+    )

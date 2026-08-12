@@ -94,34 +94,47 @@ def scan_driven_detector_names(controller: Any, detector_names: Sequence[str]) -
     return tuple(result)
 
 
-def scan_directions(controller: Any, scan_info: Mapping[str, Any]) -> dict[str, int]:
-    """Map ScanInfo physical axes to configured positioner directions."""
+def scan_devices(controller: Any, scan_info: Mapping[str, Any]) -> dict[str, str]:
+    """Map each ScanInfo physical axis to the positioner that drove it.
+
+    The layout records this as provenance: ``kind`` says an axis is the fast
+    one, ``device`` says which stage moved. It is the one thing the legacy
+    ``ScanStage:target_device`` attribute carried that the layout could not.
+    """
     axes = tuple(scan_info.get("img_axes_phys", ()))
-    devices = tuple(scan_info.get("axis_names", ()))
+    named = tuple(scan_info.get("axis_names", ()))
     parameter_devices = tuple(
         getattr(controller, "_analogParameterDict", {}).get(
             "target_device", ()
         )
     )
     positioners = getattr(getattr(controller, "_setupInfo", None), "positioners", {})
-    directions = {}
+    devices = {}
     for index, axis in enumerate(axes):
         candidates = []
-        if index < len(devices):
-            candidates.append(devices[index])
+        if index < len(named):
+            candidates.append(named[index])
         if index < len(parameter_devices):
             candidates.append(parameter_devices[index])
         device = next(
             (candidate for candidate in candidates if candidate in positioners),
             None,
         )
-        if device is None:
-            continue
+        if device is not None:
+            devices[_kind(axis, index)] = str(device)
+    return devices
+
+
+def scan_directions(controller: Any, scan_info: Mapping[str, Any]) -> dict[str, int]:
+    """Map ScanInfo physical axes to configured positioner directions."""
+    positioners = getattr(getattr(controller, "_setupInfo", None), "positioners", {})
+    directions = {}
+    for kind, device in scan_devices(controller, scan_info).items():
         try:
             positive = bool(positioners[device].isPositiveDirection)
         except Exception:
             continue
-        directions[_kind(axis, index)] = 1 if positive else -1
+        directions[kind] = 1 if positive else -1
     return directions
 
 
@@ -144,6 +157,7 @@ def build_controller_point_scan_layouts(
         pulse_counts=controller.getNumCamTTL(),
         scan_driven_detectors=scan_driven_detector_names(controller, detector_names),
         directions=scan_directions(controller, scan_info),
+        devices=scan_devices(controller, scan_info),
     )
 
 
@@ -163,6 +177,7 @@ def _physical_loops(
     *,
     directions: Mapping[str, int] | None = None,
     storage: bool = False,
+    devices: Mapping[str, str] | None = None,
 ) -> tuple[AcquisitionLoop, ...]:
     dims = tuple(int(value) for value in scan_info.get("img_dims", ()))
     axes = tuple(scan_info.get("img_axes_phys", ()))
@@ -193,6 +208,7 @@ def _physical_loops(
                 unit="um" if step is not None else None,
                 direction=direction,
                 storage_axis=kind if storage else None,
+                device=(devices or {}).get(kind),
             )
         )
     # ScanInfoContract is fast-to-slow (X/Y/Z); event chronology is the
@@ -242,10 +258,11 @@ def build_point_scan_layouts(
     pulse_counts: Mapping[str, int] | None = None,
     scan_driven_detectors: Sequence[str] = (),
     directions: Mapping[str, int] | None = None,
+    devices: Mapping[str, str] | None = None,
     modality: str | None = None,
 ) -> dict[str, AcquisitionLayout]:
     """Build detector-local layouts for MoNaLISA and ordinary point scans."""
-    physical = _physical_loops(scan_info, directions=directions)
+    physical = _physical_loops(scan_info, directions=directions, devices=devices)
     scan_driven = set(scan_driven_detectors)
     pulse_counts = pulse_counts or {}
     layouts = {}
@@ -366,10 +383,11 @@ def build_advanced_scan_layouts(
     pulse_counts_by_condition: Mapping[str, Sequence[int]],
     scan_driven_detectors: Sequence[str] = (),
     directions: Mapping[str, int] | None = None,
+    devices: Mapping[str, str] | None = None,
     modality: str | None = None,
 ) -> dict[str, AcquisitionLayout]:
     """Build exact Advanced Scan layouts from line programs and pulse counts."""
-    physical = _physical_loops(scan_info, directions=directions)
+    physical = _physical_loops(scan_info, directions=directions, devices=devices)
     condition_count = max(1, int(scan_info.get("n_linesteps", 1)))
     scan_driven = set(scan_driven_detectors)
     layouts = {}
@@ -416,6 +434,7 @@ def build_advanced_scan_layouts(
                     (detector,),
                     scan_source=scan_source,
                     directions=directions,
+                    devices=devices,
                     modality=modality,
                 )
             )

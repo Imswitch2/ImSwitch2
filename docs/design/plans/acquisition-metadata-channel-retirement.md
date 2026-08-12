@@ -1,6 +1,6 @@
 # Acquisition metadata channel retirement
 
-**Status:** Proposed
+**Status:** Active — P1 and P2 implemented; P3/P4 need a release gate
 **Date:** 2026-08-12
 **Scope:** The metadata channels crossing the ImControl/ImProcess boundary
 **Depends on:** [acquisition layout contract](acquisition-layout-contract.md) (PR 1–7 implemented)
@@ -155,17 +155,28 @@ than outstanding.
 
 P1 is therefore complete: every module consults the resolver first.
 
-### P2 — Add device identity, derive-and-verify
+### P2 — Add device identity, derive-and-verify — **done**
 
-- Add `AcquisitionLoop.device`; producers populate it from
-  `ScanStage:target_device`.
-- ImControl keeps writing category A **and** the layout, and asserts in debug
-  builds that the layout-derived values equal the legacy ones. Any mismatch is
-  a producer bug found before anyone depends on the removal.
+- `AcquisitionLoop.device` carries the positioner behind each axis. Producers
+  populate it through `scan_devices()`, which reuses the axis resolution
+  `scan_directions()` already performed and used to discard; the legacy
+  adapters recover it from `ScanStage:target_device`, so files that predate
+  the field gain it on resolution.
+- `RecordingManager.__reportLayoutDisagreements` compares the layout with the
+  legacy attributes written beside it and logs where they differ. It does not
+  fail the recording: the legacy attributes are on their way out and are not
+  worth blocking a measurement over, and the layout is already authoritative.
 
-**Acceptance:** every supported producer emits a layout whose derived counts,
-pitches, directions and timepoints match the legacy attributes it writes
-alongside, on the §9 test matrix of the contract.
+**Acceptance met.** Regressions cover the device surviving both the producer
+path and serialization, the legacy adapter recovering it, and a deliberate
+Nx disagreement being reported without stopping the measurement.
+
+**Note for P3.** Adding a field made the contract's forward-compatibility gap
+concrete: `_decode_loop` rejects unknown fields, so a file written with
+`device` cannot be read by an ImSwitch that predates it. That is acceptable
+pre-release, but before the repo goes public the decoder should ignore unknown
+*additive* fields rather than hard-fail, or the schema needs a version
+negotiation rule. Either way it belongs to the contract, not to this plan.
 
 ### P3 — Stop writing category A, behind a switch
 

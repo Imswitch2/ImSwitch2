@@ -605,6 +605,7 @@ def _scan_geometry_candidates(
             direction = 1 if bool(directions[index]) else -1
         step = abs(float(steps[index])) if _number(steps[index]) is not None else None
         unit = _text(units[index]) if index < len(units) else scalar_unit
+        device = _text(devices[index]) if index < len(devices) else None
         loops.append(
             AcquisitionLoop(
                 id=kind,
@@ -613,6 +614,7 @@ def _scan_geometry_candidates(
                 step=step,
                 unit=unit,
                 direction=direction,
+                device=device,
             )
         )
     return tuple(loops), tuple(assumptions)
