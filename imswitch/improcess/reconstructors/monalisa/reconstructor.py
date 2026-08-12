@@ -156,7 +156,12 @@ class MonalisaReconstructor(StreamingReconstructor):
 
         if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
             return self._process_fast_gauss_offline(
-                data_obj.name, data, params, scan_params, data_attrs
+                data_obj.name,
+                data,
+                params,
+                scan_params,
+                data_attrs,
+                resolved=getattr(data_obj, 'acquisition_layout', None),
             )
         
         # Bleaching correction
@@ -348,6 +353,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         params: dict,
         scan_params: dict,
         data_attrs: dict | None = None,
+        resolved=None,
     ) -> MonalisaProcessingResult:
         """
         Run the live fast-Gauss MoNaLISA path on a complete offline stack.
@@ -356,21 +362,30 @@ class MonalisaReconstructor(StreamingReconstructor):
         process multiple timepoints, but not Z stacks or scan orders where X/Y
         are not the two scan axes.
         """
-        geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
-        frames_per_stack = geometry['nx_s'] * geometry['ny_s']
-        expected_frames = frames_per_stack * geometry['num_timepoints']
-        if data.shape[0] != expected_frames:
-            metadata_geometry = self._fast_gauss_geometry_from_attrs(
-                data_attrs or {}, data.shape[0]
-            )
-            if metadata_geometry is None:
-                raise ValueError(
-                    'Fast Gauss MoNaLISA expected '
-                    f'{expected_frames} frames ({frames_per_stack} per timepoint x '
-                    f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
-                )
-            geometry = metadata_geometry
+        # The recording outranks the dialog and the shape arithmetic: it either
+        # supplies the geometry or says the fast path cannot represent it.
+        recorded_geometry = self._fast_gauss_geometry_from_layout(
+            resolved, data_attrs or {}, data.shape[0]
+        )
+        if recorded_geometry is not None:
+            geometry = recorded_geometry
             frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+        else:
+            geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
+            frames_per_stack = geometry['nx_s'] * geometry['ny_s']
+            expected_frames = frames_per_stack * geometry['num_timepoints']
+            if data.shape[0] != expected_frames:
+                metadata_geometry = self._fast_gauss_geometry_from_attrs(
+                    data_attrs or {}, data.shape[0]
+                )
+                if metadata_geometry is None:
+                    raise ValueError(
+                        'Fast Gauss MoNaLISA expected '
+                        f'{expected_frames} frames ({frames_per_stack} per timepoint x '
+                        f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
+                    )
+                geometry = metadata_geometry
+                frames_per_stack = geometry['nx_s'] * geometry['ny_s']
 
         session = self.make_session()
         try:
@@ -504,6 +519,59 @@ class MonalisaReconstructor(StreamingReconstructor):
             'step_y_nm': step_y_nm,
             'scan_params': normalized_scan_params,
         }
+
+    def _fast_gauss_geometry_from_layout(
+        self, resolved, attrs: dict, num_frames: int
+    ) -> dict | None:
+        """Derive fast-Gauss geometry from the recorded layout, or ``None``.
+
+        The fast path assembles contiguous X/Y stacks, one per timepoint. That
+        is only the real frame order for a plain forward raster, so anything
+        the recording says it cannot honour -- interleaved line-step
+        conditions, serpentine traversal, a gated detector, a Z loop -- is
+        rejected here. Reassembling those as if they were timepoints is what
+        turned an 18x18 two-condition scan into two 324-frame time blocks.
+        """
+        if not isinstance(resolved, ResolvedAcquisitionLayout):
+            return None
+        layout = resolved.layout
+        if layout.provenance not in ('recorded', 'user-override'):
+            # Only a producer-authored or user-declared layout is authoritative
+            # enough to refuse a reconstruction. A legacy adapter's inferred
+            # axes are a stated assumption, so they fall through to the older
+            # metadata inference rather than blocking a file that used to open.
+            return None
+        placement = placement_from_layout(layout)
+        if placement is None:
+            return None
+
+        unsupported = []
+        if placement.n_conditions > 1:
+            unsupported.append(
+                f'{placement.n_conditions} line-step conditions interleaved per row'
+            )
+        if placement.slices > 1:
+            unsupported.append(f'{placement.slices} Z slices')
+        if any(rule.order != 'forward' for rule in layout.traversal):
+            unsupported.append('a reversed or serpentine fast axis')
+        if layout.recorded_event_spans is not None:
+            unsupported.append('a detector gated to part of the scan')
+        if unsupported:
+            raise ValueError(
+                'Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and '
+                'cannot represent ' + ', '.join(unsupported) + '. Use the '
+                'MoNaLISA reconstruction method, which places every frame by '
+                'its recorded coordinate.'
+            )
+
+        if len(placement.slots) != num_frames:
+            raise ValueError(
+                f'The acquisition layout records {len(placement.slots)} frames '
+                f'but this source has {num_frames}.'
+            )
+        return self._fast_gauss_geometry_from_counts(
+            attrs, placement.cols, placement.rows, num_frames
+        )
 
     def _fast_gauss_geometry_from_attrs(
         self, attrs: dict, num_frames: int

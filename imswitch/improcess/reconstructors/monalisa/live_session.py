@@ -47,6 +47,47 @@ class MonalisaLiveSession(StreamingSession):
         self.scan_params = {}
         self.output_pixel_size_nm = None
 
+    @staticmethod
+    def _geometry_from_recorded_layout(stack_info):
+        """``(nx_s, ny_s, timepoints)`` from the recorded layout, or ``None``.
+
+        This is the same resolved contract the offline path consumes, so live
+        and batch reconstruction of one recording cannot disagree about the
+        frame order. The streaming path assembles contiguous X/Y stacks, so a
+        recording that declares anything else -- interleaved line-step
+        conditions, a reversed or serpentine fast axis, a gated detector, a Z
+        loop -- is refused rather than silently reshaped into timepoints.
+        """
+        from .coeffs_to_image import placement_from_layout
+
+        resolved = getattr(stack_info, "acquisition_layout", None)
+        layout = getattr(resolved, "layout", None)
+        if layout is None or layout.provenance not in ("recorded", "user-override"):
+            return None
+        placement = placement_from_layout(layout)
+        if placement is None:
+            return None
+
+        unsupported = []
+        if placement.n_conditions > 1:
+            unsupported.append(
+                f"{placement.n_conditions} line-step conditions interleaved per row"
+            )
+        if placement.slices > 1:
+            unsupported.append(f"{placement.slices} Z slices")
+        if any(rule.order != "forward" for rule in layout.traversal):
+            unsupported.append("a reversed or serpentine fast axis")
+        if layout.recorded_event_spans is not None:
+            unsupported.append("a detector gated to part of the scan")
+        if unsupported:
+            raise ValueError(
+                "Fast Gauss MoNaLISA reassembles contiguous X/Y stacks and "
+                "cannot represent " + ", ".join(unsupported) + ". Use the "
+                "MoNaLISA reconstruction method, which places every frame by "
+                "its recorded coordinate."
+            )
+        return placement.cols, placement.rows, placement.n_time
+
     def begin(self, init_obj, params: dict) -> StreamPlan:
         """
         Inspect the first frames, allocate state, and return the output plan.
@@ -104,8 +145,21 @@ class MonalisaLiveSession(StreamingSession):
         except KeyError as e:
             raise ValueError(f"Missing required scan geometry key: {e}") from e
 
+        recorded = self._geometry_from_recorded_layout(init_obj.stack_info)
+        if recorded is not None:
+            # The recording outranks anything derived from stage extents: it is
+            # the same resolved layout the offline path uses, so live and batch
+            # reconstruction cannot disagree about the frame order.
+            self.nx_s, self.ny_s, recorded_timepoints = recorded
+        else:
+            recorded_timepoints = None
+
         self.num_frames_in_stack = self.nx_s * self.ny_s
-        num_time_points = self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        num_time_points = (
+            recorded_timepoints
+            if recorded_timepoints is not None
+            else self._resolve_num_timepoints(imswitch_meta, init_obj.stack_info)
+        )
 
         self._logger.info(
             f"Scan geometry: nx_s={self.nx_s}, ny_s={self.ny_s}, "

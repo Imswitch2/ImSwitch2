@@ -138,6 +138,97 @@ def test_live_session_begin(synthetic_stack):
     assert "T" in plan.axis_labels
 
 
+def _recorded_stack_info(frame_shape, layout, num_frames):
+    """StackInfo carrying a producer-authored layout, as the live sources do."""
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        ResolvedAcquisitionLayout,
+    )
+
+    return StackInfo(
+        frame_shape=frame_shape,
+        dtype=np.dtype(np.uint16),
+        expected_frames=num_frames,
+        acquisition_layout=ResolvedAcquisitionLayout(
+            layout=layout, source="explicit", confidence="certain"
+        ),
+    )
+
+
+def test_live_session_prefers_the_recorded_layout_over_stage_extents(synthetic_stack):
+    """Live and offline resolve one recording through the same contract.
+
+    The stage attrs here imply a 10x10 grid; the recording says 5x20. The
+    recording wins, so a live reconstruction cannot disagree with the batch
+    reconstruction of the same file.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 20, step=0.05, unit="um"),
+            AcquisitionLoop("scan_x", "scan_x", 5, step=0.05, unit="um"),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+    init_obj = StreamInit(
+        name="recorded",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
+    )
+
+    session = MonalisaReconstructor().make_session()
+    session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+
+    assert (session.nx_s, session.ny_s) == (5, 20)
+
+
+def test_live_session_refuses_a_recorded_interleaved_scan(synthetic_stack):
+    """The streaming path cannot stack interleaved line steps contiguously."""
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+    )
+
+    stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 5, step=0.05, unit="um"),
+            AcquisitionLoop("linestep", "condition", 2, labels=("A", "B")),
+            AcquisitionLoop("scan_x", "scan_x", 10, step=0.05, unit="um"),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+    init_obj = StreamInit(
+        name="interleaved",
+        dataset_name="detector_0",
+        data=stack,
+        attrs=attrs,
+        stack_info=_recorded_stack_info(stack.shape[-2:], layout, stack.shape[0]),
+    )
+
+    session = MonalisaReconstructor().make_session()
+    with pytest.raises(ValueError, match="line-step conditions"):
+        session.begin(init_obj, params={"use_gpu": False, "num_rects": 3})
+
+
 def test_live_session_treats_null_lapse_metadata_as_missing(synthetic_stack):
     """Legacy `"null"` timepoint metadata must not reach the output shape."""
     stack, attrs, nx_s, ny_s, nx_c, ny_c = synthetic_stack
@@ -498,6 +589,68 @@ def test_monalisa_process_can_run_fast_gauss_offline(synthetic_stack):
     assert result.coeffs is None
     assert np.all(np.isfinite(result.data))
     assert not np.all(result.data == 0)
+
+
+def test_fast_gauss_refuses_a_recorded_interleaved_line_step_scan():
+    """The fast path stacks contiguous X/Y blocks, which line steps are not.
+
+    Reassembling an 18x18x2 interleaved scan as contiguous stacks is exactly
+    the "two 324-frame time blocks" reading this contract exists to prevent,
+    so a recording that declares interleaved conditions is refused rather than
+    quietly reshaped.
+    """
+    from imswitch.imcommon.model.acquisition_layout import (
+        ACQUISITION_LAYOUT_SCHEMA,
+        PAYLOAD_DETECTOR_FRAME_STREAM,
+        AcquisitionLayout,
+        AcquisitionLoop,
+        encode_acquisition_layout,
+    )
+
+    rows = cols = 18
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="detector_0",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", rows, step=0.05, unit="um"),
+            AcquisitionLoop("linestep", "condition", 2, labels=("A", "B")),
+            AcquisitionLoop("scan_x", "scan_x", cols, step=0.05, unit="um"),
+        ),
+        scan_source="ScanControllerAdvanced",
+    )
+    data_obj = InMemoryStackWrapper(
+        name="offline-fast-gauss-linesteps",
+        dataset_name="detector_0",
+        data=np.zeros((rows * cols * 2, 20, 20), dtype=np.uint16),
+        attrs={
+            "AcquisitionLayout:schema": ACQUISITION_LAYOUT_SCHEMA,
+            "AcquisitionLayout:json": encode_acquisition_layout(layout),
+            "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+            "ScanStage:axis_length": [0.9, 0.9, 1.0],
+            "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+            "writing": False,
+            "recording:completion_outcome": "complete",
+        },
+    )
+    params = {
+        "reconstruction_method": "Fast Gauss MoNaLISA",
+        "device": "CPU",
+        "fast_gauss_footprint_num_rects": DEFAULT_FOOTPRINT_NUM_RECTS,
+        "fast_gauss_gaussian_sigma_px": DEFAULT_GAUSSIAN_SIGMA_PX,
+        "bleaching_correction": False,
+        "scan_params": {
+            "dimensions": ["Right-Left", "Up-Down", "Back-Front", "Timepoints"],
+            "directions": ["pos", "pos", "pos"],
+            "steps": ["18", "18", "1", "2"],
+            "step_sizes": ["50", "50", "1", "1"],
+            "unidirectional": False,
+        },
+    }
+
+    with pytest.raises(ValueError, match="line-step conditions"):
+        MonalisaReconstructor().process(data_obj, params)
 
 
 def test_fast_gauss_offline_uses_file_scan_metadata_when_params_mismatch(synthetic_stack):
