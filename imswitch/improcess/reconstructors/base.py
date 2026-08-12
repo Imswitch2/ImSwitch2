@@ -293,15 +293,35 @@ class Reconstructor(ABC):
             return None
         try:
             resolved = data_obj.acquisition_layout
-            issues = preflight_acquisition_layout(resolved, requirements)
-            metadata = {
-                "acquisition_layout_source": resolved.source,
-                "acquisition_layout_confidence": resolved.confidence,
-                "acquisition_payload_kind": resolved.layout.payload_kind,
-            }
         except AcquisitionLayoutResolutionError as exc:
-            issues = tuple(exc.issues)
-            metadata = {}
+            return SourceInspection(
+                source_kind=getattr(data_obj, "sourceKind", "image"),
+                issues=tuple(exc.issues),
+            )
+        except AttributeError:
+            resolved = None
+        if not isinstance(resolved, ResolvedAcquisitionLayout):
+            # A source that cannot describe its acquisition is not an error by
+            # itself; the plugin still has to decide whether it can proceed on
+            # explicit parameters alone. Report it so the choice stays visible
+            # instead of raising out of a preflight the plugin opted into.
+            return SourceInspection(
+                source_kind=getattr(data_obj, "sourceKind", "image"),
+                issues=(
+                    LayoutIssue(
+                        "warning",
+                        "NO_RESOLVED_ACQUISITION_LAYOUT",
+                        "This source does not expose a resolved acquisition layout",
+                        "AcquisitionLayout",
+                    ),
+                ),
+            )
+        issues = preflight_acquisition_layout(resolved, requirements)
+        metadata = {
+            "acquisition_layout_source": resolved.source,
+            "acquisition_layout_confidence": resolved.confidence,
+            "acquisition_payload_kind": resolved.layout.payload_kind,
+        }
         return SourceInspection(
             source_kind=getattr(data_obj, "sourceKind", "image"),
             metadata=metadata,

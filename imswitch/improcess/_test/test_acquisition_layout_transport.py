@@ -298,7 +298,10 @@ def test_in_memory_wrapper_honors_layout_axes(layout):
     )
 
     assert wrapper.axis_labels == ["frame", "detector_y", "detector_x"]
-    assert wrapper.acquisition_layout == layout
+    # The same ResolvedAcquisitionLayout contract DataObj exposes, so a plugin
+    # that opted into preflight can read .source/.confidence off either source.
+    assert wrapper.acquisition_layout.layout == layout
+    assert wrapper.acquisition_layout.confidence == "certain"
     assert wrapper.recording_lifecycle.writer_state == "finalized"
 
 

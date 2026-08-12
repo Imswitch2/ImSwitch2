@@ -294,13 +294,19 @@ class InMemoryStackWrapper:
         # process() raises AttributeError on the in-memory wrapper.
         ndim = self._data.ndim
         fallback_scales, fallback_unit = axis_scales_from_element_size(self._attrs, ndim)
-        self.acquisition_layout = decode_layout_attrs(self._attrs)
+        # Decode eagerly so a self-contradictory schema fails at construction
+        # with a precise message, then publish the same ResolvedAcquisitionLayout
+        # contract DataObj exposes. Handing plugins a bare AcquisitionLayout here
+        # broke every consumer that reads .source/.confidence off the attribute.
+        declared_layout = decode_layout_attrs(self._attrs)
         layout_axes = (
-            list(self.acquisition_layout.storage_axes)
-            if self.acquisition_layout is not None
-            and len(self.acquisition_layout.storage_axes) == ndim
+            list(declared_layout.storage_axes)
+            if declared_layout is not None
+            and len(declared_layout.storage_axes) == ndim
             else None
         )
+        self._acquisitionLayout = None
+        self._acquisitionLayoutAxes = tuple(axis_labels) if axis_labels else None
         self._axis_labels = list(axis_labels or layout_axes or default_axis_labels(ndim))
         self._axis_scales = list(axis_scales or fallback_scales or [1.0] * ndim)
         self._scale_unit = scale_unit or fallback_unit or "px"
@@ -316,6 +322,25 @@ class InMemoryStackWrapper:
             "dataset_path": self._attrs.get("recording:dataset_path"),
             "source_format": self._attrs.get("recording:source_format"),
         }
+
+    @property
+    def acquisition_layout(self) -> ResolvedAcquisitionLayout:
+        """Resolve lazily and cache, exactly as ``DataObj`` does.
+
+        Resolution is deferred so a layout that conflicts with the array
+        surfaces where a plugin asks for it, not while the live pipeline is
+        wrapping a buffer.
+        """
+        if self._acquisitionLayout is None:
+            self._acquisitionLayout = _resolve_stack_layout(
+                self._attrs,
+                shape=tuple(self._data.shape),
+                detector=self._datasetName,
+                source_path=None,
+                dataset_path=self._attrs.get("recording:dataset_path"),
+                axis_labels=self._acquisitionLayoutAxes,
+            )
+        return self._acquisitionLayout
 
     @property
     def datasetName(self) -> str:
