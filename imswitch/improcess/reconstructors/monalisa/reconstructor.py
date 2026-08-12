@@ -7,7 +7,11 @@ import numpy as np
 from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
+from imswitch.improcess.model.acquisition_layout_resolver import (
+    ResolvedAcquisitionLayout,
+)
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
+from .coeffs_to_image import placement_from_layout
 from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
@@ -199,7 +203,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         # minimizing the total variation of the signal-base reconstruction.
         # Mirrors Mini_Recon's get_orientation; user can disable via the
         # 'Auto-detect scan orientation' checkbox to keep the dialog values.
-        if params.get('auto_scan_orientation', True):
+        placement = self._placement_for(data_obj, coeffs.shape[1])
+        if placement is not None:
+            self._logger.info(
+                f'Using the recorded acquisition layout: '
+                f'{placement.rows}x{placement.cols} scan positions, '
+                f'{placement.n_conditions} condition(s), {placement.n_time} timepoint(s).'
+            )
+        elif params.get('auto_scan_orientation', True):
+            # Only guess the orientation when the recording cannot state it.
             try:
                 best_params, best_label, best_score = auto_detect_scan_orientation(
                     coeffs[0], scan_params, self._axis_labels,
@@ -231,10 +243,39 @@ class MonalisaReconstructor(StreamingReconstructor):
             coeffs=coeffs_5d,
             scan_params=scan_params,
             axis_label_map=self._axis_labels,
+            placement=placement,
         )
 
         self._logger.info(f'Reconstruction complete: shape {result.data.shape}')
         return result
+
+    def _placement_for(self, data_obj, frames: int):
+        """Recorded output coordinates for this source, or ``None``.
+
+        The scan-parameter dialog is consulted only when the recording cannot
+        describe itself. A layout that disagrees with the stored frames is an
+        error, not a reason to fall back to arithmetic over the frame count --
+        that arithmetic is what read an 18x18 two-line-step scan as two
+        contiguous 324-frame time blocks.
+        """
+        resolved = getattr(data_obj, 'acquisition_layout', None)
+        if not isinstance(resolved, ResolvedAcquisitionLayout):
+            return None
+        if resolved.confidence == 'low':
+            self._logger.info(
+                'Acquisition layout is low-confidence; using the scan dialog.'
+            )
+            return None
+        placement = placement_from_layout(resolved.layout)
+        if placement is None:
+            return None
+        if len(placement.slots) != frames:
+            raise ValueError(
+                f'The acquisition layout records {len(placement.slots)} frames '
+                f'but signal extraction produced {frames}. Frames are never '
+                f'dropped or padded to fit a scan shape.'
+            )
+        return placement
 
     def consolidate(
         self, results: list[MonalisaProcessingResult]

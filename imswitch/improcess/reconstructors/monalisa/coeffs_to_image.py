@@ -6,11 +6,139 @@ This is specific to MoNaLISA SIM pattern scanning and should not be part of a ge
 processing result base class.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from imswitch.imcommon.model import initLogger
+from imswitch.imcommon.model.acquisition_layout import (
+    PAYLOAD_DETECTOR_FRAME_STREAM,
+    AcquisitionLayout,
+    iter_recorded_coordinates,
+)
 
 _logger = initLogger('MonalisaCoeffsToImage')
+
+
+@dataclass(frozen=True)
+class LayoutPlacement:
+    """Where every stored frame's coefficient block belongs in the output.
+
+    Built from the resolved acquisition layout, so serpentine traversal,
+    detector gating and line-step interleaving are already resolved into
+    logical coordinates and this module never re-derives them from the frame
+    count.
+    """
+
+    slots: tuple[tuple[int, int, int, int], ...]
+    """``(t, z, y, x)`` output coordinate per stored frame, in storage order."""
+
+    timepoints: int
+    slices: int
+    rows: int
+    cols: int
+    condition_labels: tuple[str, ...]
+    n_conditions: int
+    n_time: int
+
+    @property
+    def folds_condition_into_time(self) -> bool:
+        return self.n_conditions > 1
+
+
+def _loops_by_kind(layout: AcquisitionLayout) -> dict:
+    return {loop.kind: loop for loop in layout.event_loops}
+
+
+def placement_from_layout(layout: AcquisitionLayout | None) -> LayoutPlacement | None:
+    """Resolve output coordinates for every stored frame, or ``None``.
+
+    ``None`` means the layout does not describe a MoNaLISA-style scan and the
+    caller must fall back to its scan-parameter arithmetic.
+    """
+    if layout is None or layout.payload_kind != PAYLOAD_DETECTOR_FRAME_STREAM:
+        return None
+    loops = _loops_by_kind(layout)
+    fast, slow = loops.get('scan_x'), loops.get('scan_y')
+    if fast is None or slow is None:
+        return None
+
+    depth = loops.get('scan_z')
+    condition = loops.get('condition')
+    time = loops.get('time')
+    n_conditions = condition.count if condition is not None else 1
+    n_time = time.count if time is not None else 1
+
+    # A negative physical direction means the logical index runs against the
+    # stage, so flip it to keep the reconstructed image in physical order.
+    flip = {
+        loop.id: loop
+        for loop in layout.event_loops
+        if loop.direction == -1
+    }
+
+    def coordinate(coordinates, loop):
+        if loop is None:
+            return 0
+        value = coordinates[loop.id]
+        return loop.count - 1 - value if loop.id in flip else value
+
+    slots = []
+    for coordinates in iter_recorded_coordinates(layout):
+        condition_index = coordinate(coordinates, condition)
+        time_index = coordinate(coordinates, time)
+        slots.append(
+            (
+                # Conditions of one timepoint stay adjacent, so the compatibility
+                # T axis reads as time-major.
+                time_index * n_conditions + condition_index,
+                coordinate(coordinates, depth),
+                coordinate(coordinates, slow),
+                coordinate(coordinates, fast),
+            )
+        )
+
+    labels = tuple(condition.labels) if condition is not None and condition.labels else ()
+    if condition is not None and not labels:
+        labels = tuple(f'condition_{index}' for index in range(condition.count))
+    return LayoutPlacement(
+        slots=tuple(slots),
+        timepoints=n_time * n_conditions,
+        slices=depth.count if depth is not None else 1,
+        rows=slow.count,
+        cols=fast.count,
+        condition_labels=labels,
+        n_conditions=n_conditions,
+        n_time=n_time,
+    )
+
+
+def coeffs_to_image_from_placement(
+    coeffs: np.ndarray, placement: LayoutPlacement
+) -> np.ndarray:
+    """Reassemble one base using recorded coordinates instead of frame order.
+
+    Each scan position contributes a ``gridRows x gridCols`` block of foci that
+    is interleaved at a stride equal to the scan-step count, exactly as the
+    scan-parameter path does; only the source of the coordinates differs.
+    """
+    if coeffs.shape[0] != len(placement.slots):
+        raise ValueError(
+            f'Coefficient frame count ({coeffs.shape[0]}) does not match the '
+            f'{len(placement.slots)} frames the acquisition layout records'
+        )
+    image = np.zeros(
+        [
+            placement.timepoints,
+            placement.slices,
+            placement.rows * coeffs.shape[1],
+            placement.cols * coeffs.shape[2],
+        ],
+        dtype=np.float32,
+    )
+    for index, (t, z, y, x) in enumerate(placement.slots):
+        image[t, z, y::placement.rows, x::placement.cols] = coeffs[index]
+    return image
 
 
 def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str, str]) -> np.ndarray:
@@ -133,7 +261,10 @@ def coeffs_to_image(coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str
 
 
 def reconstruct_images_from_coeffs(
-    coeffs: np.ndarray, scan_params: dict, axis_labels: dict[str, str]
+    coeffs: np.ndarray,
+    scan_params: dict,
+    axis_labels: dict[str, str],
+    placement: LayoutPlacement | None = None,
 ) -> np.ndarray:
     """Reassemble a full 6D MoNaLISA image stack from per-base coefficients.
 
@@ -151,6 +282,16 @@ def reconstruct_images_from_coeffs(
     """
     datasets = coeffs.shape[0]
     bases = coeffs.shape[1]
+    if placement is not None:
+        return np.array(
+            [
+                [
+                    coeffs_to_image_from_placement(coeffs[ds, b], placement)
+                    for b in range(bases)
+                ]
+                for ds in range(datasets)
+            ]
+        )
     return np.array(
         [
             [
