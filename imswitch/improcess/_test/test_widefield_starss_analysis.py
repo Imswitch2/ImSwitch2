@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 import tifffile as tiff
 import h5py
 
@@ -383,3 +386,104 @@ def test_split_detection_otsu_mode_reuses_improcess_segmentation():
     )
 
     np.testing.assert_array_equal(analysis.mask, expected.labels)
+
+
+def test_widefield_starss_rejects_a_mismatched_pair(tmp_path):
+    """Anisotropy is computed pixel by pixel, so the pair must correspond."""
+    background = np.full((8, 10), 5, dtype=np.float32)
+    h_signal = background + _mosaic_frame(i0=100, i45=75, i90=50, i135=75)
+    smaller = np.full((6, 10), 5, dtype=np.float32)
+    h_path = tmp_path / "sample_h.tif"
+    v_path = tmp_path / "sample_v.tif"
+    tiff.imwrite(h_path, _alternating_stack(h_signal, background))
+    tiff.imwrite(v_path, _alternating_stack(smaller, smaller))
+
+    data_obj = DataObj(h_path.name, None, path=str(h_path))
+
+    with pytest.raises(ValueError, match="same shape"):
+        WidefieldStarssReconstructor().process(
+            data_obj,
+            {"current_role": "Auto", "segmentation_mode": "none",
+             "convention": "alternating"},
+        )
+
+
+def test_widefield_starss_will_not_guess_an_unlabelled_role(tmp_path):
+    """An unsuffixed filename used to be silently treated as the H half.
+
+    Getting H and V the wrong way round inverts the anisotropy instead of
+    failing, so an unknown role has to stop the analysis.
+    """
+    background = np.full((8, 10), 5, dtype=np.float32)
+    signal = background + _mosaic_frame(i0=100, i45=75, i90=50, i135=75)
+    unlabelled = tmp_path / "sample.tif"
+    counterpart = tmp_path / "other.tif"
+    tiff.imwrite(unlabelled, _alternating_stack(signal, background))
+    tiff.imwrite(counterpart, _alternating_stack(signal, background))
+
+    data_obj = DataObj(unlabelled.name, None, path=str(unlabelled))
+
+    with pytest.raises(ValueError, match="H or V polarization"):
+        WidefieldStarssReconstructor().process(
+            data_obj,
+            {
+                "current_role": "Auto",
+                "counterpart_path": str(counterpart),
+                "segmentation_mode": "none",
+                "convention": "alternating",
+            },
+        )
+
+
+def test_widefield_starss_prefers_a_recorded_polarization_role(tmp_path):
+    """A role written by the acquisition outranks the filename suffix."""
+    background = np.full((8, 10), 5, dtype=np.float32)
+    signal = background + _mosaic_frame(i0=100, i45=75, i90=50, i135=75)
+    # The suffixes deliberately contradict the recorded roles.
+    h_path = tmp_path / "sample_v.tif"
+    v_path = tmp_path / "sample_h.tif"
+    tiff.imwrite(h_path, _alternating_stack(signal, background))
+    tiff.imwrite(v_path, _alternating_stack(signal, background))
+
+    data_obj = DataObj(h_path.name, None, path=str(h_path))
+    role = WidefieldStarssReconstructor._recorded_role(
+        SimpleNamespace(attrs={"WidefieldStarss:polarization_role": "H"})
+    )
+
+    assert role == "H"
+    assert WidefieldStarssReconstructor._recorded_role(SimpleNamespace(attrs={})) is None
+
+
+def test_widefield_starss_recording_carries_its_role_and_state_order(tmp_path):
+    """The workflow writes what analysis used to infer from the filename.
+
+    Before this, a STARSS pair was two anonymous TIFF stacks: the role came
+    from the ``_h``/``_v`` suffix and the alternating signal/background order
+    was taken on faith.
+    """
+    from imswitch.imcontrol.model.workflows.widefield_starss import (
+        WidefieldStarssWorkflow,
+    )
+    from imswitch.improcess.reconstructors.widefield_starss import (
+        WidefieldStarssReconstructor,
+    )
+
+    stack = np.zeros((6, 8, 9), dtype=np.uint16)
+    workflow = WidefieldStarssWorkflow.__new__(WidefieldStarssWorkflow)
+    description = WidefieldStarssWorkflow._acquisition_description(workflow, stack, "h")
+    assert description, "the workflow must describe its own acquisition"
+
+    path = tmp_path / "data_stack_h.tif"
+    tiff.imwrite(path, stack, description=description)
+    data_obj = DataObj(path.name, None, path=str(path))
+
+    resolved = data_obj.acquisition_layout
+    assert resolved.layout.provenance == "recorded"
+    assert resolved.layout.modality == "widefield-starss"
+    assert [(loop.kind, loop.count) for loop in resolved.layout.event_loops] == [
+        ("time", 3),
+        ("condition", 2),
+    ]
+    # stack[0::2] are the signal frames, so state is the inner loop.
+    assert resolved.layout.event_loops[1].labels == ("signal", "background")
+    assert WidefieldStarssReconstructor._recorded_role(data_obj) == "H"

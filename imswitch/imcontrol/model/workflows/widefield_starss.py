@@ -287,13 +287,80 @@ class WidefieldStarssWorkflow:
         if isinstance(self.datastack, np.ndarray):
             suffix = self.params.measurement_name_addition
             out_path = folder / f"data_stack{suffix}_{pol}.tif"
-            tf.imwrite(out_path, self.datastack)
+            tf.imwrite(
+                out_path,
+                self.datastack,
+                description=self._acquisition_description(self.datastack, pol),
+            )
             logger.info("Saved %s-polarisation stack to %s", pol, out_path)
 
         # TODO: napari display path — deferred to future widget task.
         # The WFS version had a live napari viewer integration for immediate
         # feedback; that requires a Qt widget context. For now, workflows are
         # model-only and headless.
+
+    def _acquisition_description(self, stack: np.ndarray, pol: str) -> str | None:
+        """OME-XML naming the polarization role and the signal/background order.
+
+        Without this the pair was two anonymous TIFF stacks, and analysis had
+        to recover the role from the filename suffix and take the alternating
+        signal/background order on faith. The stack is ``time`` outermost and
+        ``state`` innermost -- ``stack[0::2]`` are the signal frames -- so that
+        nesting is what the layout records.
+        """
+        from imswitch.imcommon.model.acquisition_layout import (
+            ACQUISITION_LAYOUT_SCHEMA,
+            PAYLOAD_DETECTOR_FRAME_STREAM,
+            AcquisitionLayout,
+            AcquisitionLoop,
+            encode_acquisition_layout,
+        )
+        from imswitch.imcontrol.model.managers.recording_metadata import (
+            build_ome_image_meta,
+            build_ome_xml,
+        )
+
+        role = "H" if str(pol).lower().startswith("h") else "V"
+        if stack.ndim != 3 or stack.shape[0] % 2:
+            logger.warning(
+                "WidefieldSTARSS stack shape %s is not an even signal/background "
+                "sequence; saving without an acquisition layout.", stack.shape
+            )
+            return None
+        try:
+            layout = AcquisitionLayout(
+                schema=ACQUISITION_LAYOUT_SCHEMA,
+                payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+                detector=f"WidefieldStarss{role}",
+                storage_axes=("frame", "detector_y", "detector_x"),
+                event_loops=(
+                    AcquisitionLoop("time", "time", stack.shape[0] // 2),
+                    AcquisitionLoop(
+                        "state",
+                        "condition",
+                        2,
+                        labels=("signal", "background"),
+                    ),
+                ),
+                modality="widefield-starss",
+                scan_source=type(self).__name__,
+            )
+            meta = build_ome_image_meta(
+                name=f"WidefieldSTARSS {role}",
+                mode="frames",
+                n_frames=int(stack.shape[0]),
+                dtype=stack.dtype,
+                annotations={
+                    "AcquisitionLayout:schema": ACQUISITION_LAYOUT_SCHEMA,
+                    "AcquisitionLayout:json": encode_acquisition_layout(layout),
+                    "WidefieldStarss:polarization_role": role,
+                },
+            )
+            return build_ome_xml(meta, stack.shape)
+        except Exception as error:
+            # Metadata must never cost the measurement itself.
+            logger.warning("Could not build WidefieldSTARSS OME metadata: %s", error)
+            return None
 
     @staticmethod
     def _calculate_r(img: np.ndarray) -> None:
