@@ -33,6 +33,7 @@ from imswitch.imcommon.model import (
 from imswitch.imcommon.model.acquisition_layout import (
     PAYLOAD_ASSEMBLED_IMAGE,
     PAYLOAD_DETECTOR_FRAME_STREAM,
+    scan_position_count,
 )
 import abc
 import logging
@@ -1873,12 +1874,18 @@ class RecordingManager(SignalInterface):
                         )
                     )
 
-                producerPositions = math.prod(
-                    loop.count
-                    for loop in layout.event_loops
-                    if loop.kind not in {'condition', 'repeat'}
-                )
-                if recFrames is not None and producerPositions != int(recFrames):
+                producerPositions = scan_position_count(layout)
+                if producerPositions is None:
+                    # Loop kinds are an open vocabulary. A layout using a kind
+                    # this version cannot classify must not be rejected before
+                    # a writer opens merely because the unknown loop was
+                    # assumed to advance the scan.
+                    self.__logger.info(
+                        f'Skipping the scan-position cross-check for '
+                        f'{detectorName!r}: its layout uses a loop kind this '
+                        f'version cannot classify as positional.'
+                    )
+                elif recFrames is not None and producerPositions != int(recFrames):
                     issues.append(
                         LayoutIssue(
                             'error',
@@ -1901,7 +1908,8 @@ class RecordingManager(SignalInterface):
                             )
                         )
                     elif (
-                        producerPositions > 0
+                        producerPositions is not None
+                        and producerPositions > 0
                         and plannedFrames % producerPositions == 0
                     ):
                         layoutPulses = plannedFrames // producerPositions

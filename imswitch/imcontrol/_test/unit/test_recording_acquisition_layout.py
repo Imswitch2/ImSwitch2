@@ -78,6 +78,42 @@ def test_scan_position_mismatch_is_rejected_before_prepare_or_writer_open():
     assert manager.record is False
 
 
+def test_unclassifiable_loop_kind_does_not_block_recording():
+    """Loop kinds are an open vocabulary; an unknown one must not veto a scan.
+
+    The scan-position cross-check used to treat every kind outside a fixed
+    ``{condition, repeat}`` exclusion list as advancing the scan, so a producer
+    modelling a non-positional loop under any other name (a polarization state,
+    for instance) was rejected before a writer could open.
+    """
+    manager, prepareCalls = _manager_with_prepare_counter()
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="CAM",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 2),
+            AcquisitionLoop("polarization", "polarization", 2, labels=("H", "V")),
+            AcquisitionLoop("scan_x", "scan_x", 3),
+        ),
+        scan_source="WidefieldStarssWorkflow",
+    )
+
+    manager.startRecording(
+        detectorNames=["CAM"],
+        recMode=RecMode.ScanOnce,
+        savename="unclassified_kind",
+        saveMode=SaveMode.RAM,
+        attrs={"CAM": {}},
+        recFrames=6,
+        numCamTTL={"CAM": 1},
+        acquisitionLayouts={"CAM": layout},
+    )
+
+    assert prepareCalls == [True]
+
+
 def test_layout_detector_mismatch_is_rejected_before_prepare():
     manager, prepareCalls = _manager_with_prepare_counter()
 

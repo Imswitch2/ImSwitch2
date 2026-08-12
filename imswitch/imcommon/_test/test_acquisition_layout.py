@@ -22,6 +22,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     iter_recorded_coordinates,
     producer_event_coordinates,
     recorded_frame_coordinates,
+    scan_position_count,
     unfold_frame_axis,
     validate_acquisition_layout,
 )
@@ -201,6 +202,102 @@ def test_span_validation_detects_overlap_and_bounds(
     assert expected_code in {issue.code for issue in validate_acquisition_layout(layout)}
 
 
+def test_cross_span_overlap_never_expands_selected_events() -> None:
+    """Validation cost follows the run count, not the selected-frame count.
+
+    Expanding every selected ordinal into a set cost seconds and hundreds of
+    megabytes on large point-scan selections. A billion selected frames is far
+    beyond what any expansion could complete, so reaching the assertions at all
+    proves the arithmetic sweep is in use.
+    """
+    event_count = 4_000_000_000
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="APD",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("event", "time", event_count),),
+        recorded_event_spans=(
+            RecordedEventSpan(0, 1_000_000_000, stride=2),
+            RecordedEventSpan(1_999_999_999, 999_999_999, stride=2),
+        ),
+    )
+
+    assert layout.recorded_event_spans is not None
+    assert len(layout.recorded_event_spans) == 2
+    assert not validate_acquisition_layout(layout)
+
+
+@pytest.mark.parametrize(
+    "spans, overlaps",
+    [
+        # Interleaved parities never meet despite covering the same range.
+        ((RecordedEventSpan(0, 50, stride=2), RecordedEventSpan(1, 50, stride=2)), False),
+        # Same progression twice is a complete overlap.
+        ((RecordedEventSpan(0, 10, stride=10), RecordedEventSpan(0, 10, stride=10)), True),
+        # Co-prime strides meet at one shared multiple inside both ranges.
+        ((RecordedEventSpan(0, 20, stride=4), RecordedEventSpan(2, 20, stride=6)), True),
+        # Co-prime strides whose shared value falls outside the shorter range.
+        ((RecordedEventSpan(0, 2, stride=4), RecordedEventSpan(2, 2, stride=6)), False),
+        # A periodic mask against a run that lands only in an unselected gap.
+        ((RecordedEventSpan(0, 2, stride=1, period=10, repeats=5), RecordedEventSpan(5, 4, stride=1)), False),
+        # The same periodic mask against a run that reaches a selected block.
+        ((RecordedEventSpan(0, 2, stride=1, period=10, repeats=5), RecordedEventSpan(5, 6, stride=1)), True),
+    ],
+)
+def test_cross_span_overlap_is_exact_for_interleaved_progressions(
+    spans: tuple[RecordedEventSpan, ...], overlaps: bool
+) -> None:
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="APD",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(AcquisitionLoop("event", "time", 1000),),
+        recorded_event_spans=spans,
+    )
+    codes = {issue.code for issue in validate_acquisition_layout(layout)}
+
+    assert ("DUPLICATE_PRODUCER_EVENT" in codes) is overlaps
+
+
+def test_recorded_coordinates_validate_once_per_layout(monkeypatch) -> None:
+    """Per-frame coordinate lookups must not re-validate the whole layout.
+
+    Validation walks the layout and serializes it to JSON for the size budget,
+    which made a per-frame lookup an order of magnitude more expensive than the
+    iterator it is meant to be interchangeable with.
+    """
+    from imswitch.imcommon.model import acquisition_layout as module
+
+    calls = 0
+    original = module.validate_acquisition_layout
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "validate_acquisition_layout", counting)
+    layout = _frame_layout()
+
+    coordinates = [module.recorded_frame_coordinates(layout, index) for index in range(50)]
+
+    assert calls == 1
+    assert coordinates[0] == {"scan_y": 0, "linestep": 0, "scan_x": 0}
+    assert coordinates[18] == {"scan_y": 0, "linestep": 1, "scan_x": 0}
+
+
+def test_validation_memo_does_not_leak_into_the_serialized_contract() -> None:
+    layout = _frame_layout()
+    recorded_frame_coordinates(layout, 0)
+
+    assert layout == _frame_layout()
+    assert json.loads(encode_acquisition_layout(layout)) == json.loads(
+        encode_acquisition_layout(_frame_layout())
+    )
+
+
 def test_detector_frame_payload_validates_authoritative_selected_count() -> None:
     layout = _frame_layout(spans=(RecordedEventSpan(18, 18, period=36, repeats=18),))
 
@@ -208,6 +305,39 @@ def test_detector_frame_payload_validates_authoritative_selected_count() -> None
     assert "FRAME_COUNT_MISMATCH" in {
         issue.code for issue in validate_acquisition_layout(layout, shape=(325, 8, 8))
     }
+
+
+@pytest.mark.parametrize(
+    "kind, positions",
+    [
+        # Line steps and repeated pulses stay inside one scan position.
+        ("condition", 18 * 18),
+        ("repeat", 18 * 18),
+        # Registered and generated scan axes both advance the scan.
+        ("scan_z", 18 * 18 * 3),
+        ("scan_axis_3", 18 * 18 * 3),
+        # Loop kinds are an open vocabulary: an unknown kind cannot be
+        # classified, so the caller must skip the comparison instead of
+        # assuming it advances the scan and rejecting a valid recording.
+        ("polarization", None),
+    ],
+)
+def test_scan_position_count_refuses_to_guess_unknown_loop_kinds(
+    kind: str, positions: int | None
+) -> None:
+    layout = AcquisitionLayout(
+        schema=ACQUISITION_LAYOUT_SCHEMA,
+        payload_kind=PAYLOAD_DETECTOR_FRAME_STREAM,
+        detector="WidefieldCamera",
+        storage_axes=("frame", "detector_y", "detector_x"),
+        event_loops=(
+            AcquisitionLoop("scan_y", "scan_y", 18),
+            AcquisitionLoop("extra", kind, 3),
+            AcquisitionLoop("scan_x", "scan_x", 18),
+        ),
+    )
+
+    assert scan_position_count(layout) == positions
 
 
 def test_assembled_payload_maps_loops_directly_to_storage_axes() -> None:

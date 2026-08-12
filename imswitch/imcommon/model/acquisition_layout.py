@@ -47,6 +47,9 @@ REGISTERED_LOOP_KINDS = frozenset(
     }
 )
 
+#: Loop kinds that repeat within one scan position instead of advancing it.
+NON_POSITIONAL_LOOP_KINDS = frozenset({"condition", "repeat"})
+
 VALID_PROVENANCE = frozenset(
     {
         "recorded",
@@ -605,6 +608,71 @@ def _expanded_span_ordinals(spans: Sequence[RecordedEventSpan]) -> Iterator[int]
                 yield repetition_start + item * span.stride
 
 
+def _span_runs(span: RecordedEventSpan) -> Iterator[tuple[int, int, int]]:
+    """Yield ``(start, stride, count)`` for each arithmetic run in a span."""
+    period = span.period or 0
+    for repetition in range(span.repeats):
+        yield span.start + repetition * period, span.stride, span.count
+
+
+def _run_last(run: tuple[int, int, int]) -> int:
+    start, stride, count = run
+    return start + (count - 1) * stride
+
+
+def _runs_share_a_value(
+    run_a: tuple[int, int, int], run_b: tuple[int, int, int]
+) -> bool:
+    """Exact constant-time intersection test for two finite arithmetic runs."""
+    a_start, a_stride, _ = run_a
+    b_start, b_stride, _ = run_b
+    low = max(a_start, b_start)
+    high = min(_run_last(run_a), _run_last(run_b))
+    if low > high:
+        return False
+    divisor = math.gcd(a_stride, b_stride)
+    delta = b_start - a_start
+    if delta % divisor:
+        return False
+    # Solve a_start + i * a_stride == b_start + j * b_stride for the smallest
+    # shared value, then walk the combined period into the overlapping range.
+    b_steps = b_stride // divisor
+    if b_steps > 1:
+        inverse = pow((a_stride // divisor) % b_steps, -1, b_steps)
+        steps = (delta // divisor) % b_steps * inverse % b_steps
+    else:
+        steps = 0
+    shared = a_start + steps * a_stride
+    combined_period = a_stride // divisor * b_stride
+    if shared < low:
+        shared += -(-(low - shared) // combined_period) * combined_period
+    return shared <= high
+
+
+def _spans_share_an_event(spans: Sequence[RecordedEventSpan]) -> bool:
+    """True when two spans select the same producer event.
+
+    This works on compressed arithmetic runs, so a periodic span is never
+    expanded into its individual ordinals. Cost follows the number of runs,
+    which canonicalization keeps small, rather than the number of selected
+    frames -- expanding the latter cost seconds and hundreds of megabytes on
+    large point-scan selections.
+    """
+    runs = sorted(
+        (run for span in spans for run in _span_runs(span)),
+        key=lambda run: run[0],
+    )
+    active: list[tuple[int, int, int]] = []
+    for run in runs:
+        start = run[0]
+        active = [other for other in active if _run_last(other) >= start]
+        for other in active:
+            if _runs_share_a_value(other, run):
+                return True
+        active.append(run)
+    return False
+
+
 def _validate_spans(
     layout: AcquisitionLayout,
     producer_event_count: int | None,
@@ -655,10 +723,8 @@ def _validate_spans(
         return None
 
     selected_count = sum(span.count * span.repeats for span in spans)
-    # Most real layouts are a single compact mask. Avoid allocating a set when
-    # simple bounds and the within-span Diophantine overlap test are sufficient.
+    # A single span is fully covered by the within-span Diophantine test below.
     needs_cross_span_check = len(spans) > 1
-    seen: set[int] = set()
     for span_index, span in enumerate(spans):
         last = span.start + (span.repeats - 1) * (span.period or 0) + (span.count - 1) * span.stride
         if span.start < 0 or last >= producer_event_count:
@@ -679,20 +745,14 @@ def _validate_spans(
                     f"recorded_event_spans[{span_index}]",
                 )
                 needs_cross_span_check = False
-        if len(spans) == 1:
-            continue
 
-    if needs_cross_span_check:
-        for ordinal in _expanded_span_ordinals(spans):
-            if ordinal in seen:
-                _issue(
-                    issues,
-                    "DUPLICATE_PRODUCER_EVENT",
-                    f"Producer event {ordinal} is selected more than once",
-                    "recorded_event_spans",
-                )
-                break
-            seen.add(ordinal)
+    if needs_cross_span_check and _spans_share_an_event(spans):
+        _issue(
+            issues,
+            "DUPLICATE_PRODUCER_EVENT",
+            "Two recorded event spans select the same producer event",
+            "recorded_event_spans",
+        )
     return selected_count
 
 
@@ -1039,6 +1099,31 @@ def validate_acquisition_layout(
     return tuple(issues)
 
 
+def scan_position_count(layout: AcquisitionLayout) -> int | None:
+    """Producer scan positions, or ``None`` when a loop kind is unclassifiable.
+
+    Recording cross-checks this against ``getNumScanPositions()``. Loop kinds
+    are an open vocabulary, so a layout using a kind this version does not know
+    cannot be split into positional and non-positional loops. Callers must skip
+    the comparison in that case instead of assuming the unknown loop advances
+    the scan, which would reject a valid recording before a writer is opened.
+    """
+    positions = 1
+    for loop in layout.event_loops:
+        if not isinstance(loop, AcquisitionLoop) or not isinstance(loop.kind, str):
+            return None
+        # ``scan_*`` covers both the registered axes and the ``scan_axis_<n>``
+        # names producers generate for axes without a semantic X/Y/Z label.
+        if loop.kind not in REGISTERED_LOOP_KINDS and not loop.kind.startswith("scan_"):
+            return None
+        if loop.kind in NON_POSITIONAL_LOOP_KINDS:
+            continue
+        if not _is_int(loop.count) or loop.count <= 0:
+            return None
+        positions *= loop.count
+    return positions
+
+
 def _producer_counters(layout: AcquisitionLayout, event_index: int) -> dict[str, int]:
     event_count = _producer_event_count(layout)
     if not _is_int(event_index) or not 0 <= event_index < event_count:
@@ -1072,10 +1157,32 @@ def _producer_event_coordinates_unchecked(
     return {loop.id: coordinates[loop.id] for loop in layout.event_loops}
 
 
-def _raise_for_invalid_coordinates(layout: AcquisitionLayout) -> None:
+def _shape_free_errors(layout: AcquisitionLayout) -> tuple[LayoutIssue, ...]:
+    """Return shape-independent validation errors, once per layout instance.
+
+    The coordinate helpers are called per stored frame, and validation both
+    walks the whole layout and serializes it to JSON to check the inline-size
+    budget. Re-running that on every lookup dominated the cost of resolving a
+    coordinate, so the verdict is memoized on the (frozen, immutable) instance.
+    The cache is not a dataclass field, so equality, hashing, ``asdict`` and
+    ``replace`` are unaffected.
+    """
+    if not isinstance(layout, AcquisitionLayout):
+        return tuple(
+            issue for issue in validate_acquisition_layout(layout) if issue.severity == "error"
+        )
+    cached = getattr(layout, "_cached_shape_free_errors", None)
+    if cached is not None:
+        return cached
     errors = tuple(
         issue for issue in validate_acquisition_layout(layout) if issue.severity == "error"
     )
+    object.__setattr__(layout, "_cached_shape_free_errors", errors)
+    return errors
+
+
+def _raise_for_invalid_coordinates(layout: AcquisitionLayout) -> None:
+    errors = _shape_free_errors(layout)
     if errors:
         raise AcquisitionLayoutError("cannot resolve coordinates for an invalid layout", errors)
 
