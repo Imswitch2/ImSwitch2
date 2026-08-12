@@ -171,12 +171,12 @@ P1 is therefore complete: every module consults the resolver first.
 path and serialization, the legacy adapter recovering it, and a deliberate
 Nx disagreement being reported without stopping the measurement.
 
-**Note for P3.** Adding a field made the contract's forward-compatibility gap
-concrete: `_decode_loop` rejects unknown fields, so a file written with
-`device` cannot be read by an ImSwitch that predates it. That is acceptable
-pre-release, but before the repo goes public the decoder should ignore unknown
-*additive* fields rather than hard-fail, or the schema needs a version
-negotiation rule. Either way it belongs to the contract, not to this plan.
+**Forward compatibility (fixed).** Adding a field made the contract's gap
+concrete: the decoder rejected unknown fields, so a file written with `device`
+could not be read by an ImSwitch that predates it. Both halves are now in the
+contract (§3.4): unknown fields within the same schema version are ignored and
+reported as `UNKNOWN_LAYOUT_FIELD` warnings, and a different schema version is
+refused with `UNSUPPORTED_SCHEMA_VERSION` rather than half-understood.
 
 ### P3 — Stop writing category A, behind a switch
 

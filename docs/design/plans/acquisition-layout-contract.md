@@ -664,6 +664,15 @@ The JSON is per detector. HDF5 and Zarr store it with the detector array's
 metadata. OME-TIFF embeds the same two fields in an OME StructuredAnnotation
 or MapAnnotation and the TIFF reader restores them to normal attributes.
 
+A reader must tolerate what a newer writer adds. Fields it does not recognise
+within its own schema version are additive by this contract's rule: they are
+ignored, and each one is reported as an `UNKNOWN_LAYOUT_FIELD` warning through
+the decode issue list, so the skip is visible rather than silent. A different
+schema *version* is refused outright with `UNSUPPORTED_SCHEMA_VERSION`, since a
+version change may redefine fields the reader thinks it understands, and
+guessing there is not safe. Refusing an unknown field instead would make one
+unrecognised addition cost access to the whole recording.
+
 OME/NGFF axes remain an interoperability projection of the storage array. The
 axes emitted by current writers do not change in schema version 1, preserving
 the existing Fiji/OMERO round trips. If a format uses `T` for a semantic frame

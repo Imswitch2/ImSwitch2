@@ -285,8 +285,9 @@ def _decode_explicit(
                 "AcquisitionLayout:json",
             ),
         )
+    decode_issues: list[LayoutIssue] = []
     try:
-        layout = decode_acquisition_layout(encoded)
+        layout = decode_acquisition_layout(encoded, decode_issues)
     except Exception as exc:
         nested_issues = tuple(getattr(exc, "issues", ()))
         return None, nested_issues or (
@@ -297,7 +298,8 @@ def _decode_explicit(
                 "AcquisitionLayout:json",
             ),
         )
-    issues: list[LayoutIssue] = []
+    # Anything the decoder had to skip is part of this file's story.
+    issues: list[LayoutIssue] = list(decode_issues)
     if declared is not None and declared != layout.schema:
         issues.append(
             _issue(

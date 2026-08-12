@@ -473,13 +473,63 @@ def _expect_mapping(value: Any, label: str) -> Mapping[str, Any]:
     return value
 
 
-def _only_fields(value: Mapping[str, Any], fields: set[str], label: str) -> None:
+SCHEMA_FAMILY, SCHEMA_VERSION = ACQUISITION_LAYOUT_SCHEMA.rsplit("/", 1)
+
+
+def _report_unknown_fields(
+    value: Mapping[str, Any],
+    fields: set[str],
+    label: str,
+    issues: list[LayoutIssue] | None,
+) -> None:
+    """Ignore fields this version does not know, and say that it did.
+
+    Rejecting them would make a file written by a newer ImSwitch unreadable by
+    an older one, which is a worse failure than not understanding one field:
+    the whole recording becomes inaccessible. Additive fields are safe to skip
+    by the contract's own rule, and the schema version is the boundary for
+    anything that is not -- a different version is refused outright rather
+    than half-understood.
+    """
     extra = sorted(set(value) - fields)
-    if extra:
-        raise ValueError(f"{label} contains unknown fields: {', '.join(extra)}")
+    if not extra:
+        return
+    if issues is not None:
+        issues.append(
+            LayoutIssue(
+                "warning",
+                "UNKNOWN_LAYOUT_FIELD",
+                f"{label} carries {', '.join(extra)}, which this version of "
+                f"ImSwitch does not understand and ignored",
+                label,
+            )
+        )
 
 
-def _decode_loop(value: Any) -> AcquisitionLoop:
+def _check_schema_version(schema: Any) -> None:
+    """Refuse a layout from a different version of the contract.
+
+    Unknown *fields* within this version are additive and ignorable; a
+    different *version* may change what the existing fields mean, so guessing
+    is not safe. Failing here gives a clear message instead of a confusing
+    complaint about whichever field happens to be new.
+    """
+    text = schema if isinstance(schema, str) else ""
+    if text == ACQUISITION_LAYOUT_SCHEMA or not text.startswith(f"{SCHEMA_FAMILY}/"):
+        return
+    version = text.rsplit("/", 1)[-1]
+    issue = LayoutIssue(
+        "error",
+        "UNSUPPORTED_SCHEMA_VERSION",
+        f"This recording uses acquisition-layout schema version {version!r}; "
+        f"this version of ImSwitch understands {SCHEMA_VERSION!r}. It was "
+        f"written by a newer ImSwitch.",
+        "schema",
+    )
+    raise AcquisitionLayoutError(issue.message, (issue,))
+
+
+def _decode_loop(value: Any, issues: list[LayoutIssue] | None = None) -> AcquisitionLoop:
     item = _expect_mapping(value, "event loop")
     fields = {
         "id",
@@ -492,7 +542,7 @@ def _decode_loop(value: Any) -> AcquisitionLoop:
         "storage_axis",
         "device",
     }
-    _only_fields(item, fields, "event loop")
+    _report_unknown_fields(item, fields, "event loop", issues)
     return AcquisitionLoop(
         id=item.get("id"),
         kind=item.get("kind"),
@@ -506,10 +556,10 @@ def _decode_loop(value: Any) -> AcquisitionLoop:
     )
 
 
-def _decode_traversal(value: Any) -> TraversalRule:
+def _decode_traversal(value: Any, issues: list[LayoutIssue] | None = None) -> TraversalRule:
     item = _expect_mapping(value, "traversal rule")
     fields = {"loop_id", "order", "parity_loops"}
-    _only_fields(item, fields, "traversal rule")
+    _report_unknown_fields(item, fields, "traversal rule", issues)
     return TraversalRule(
         loop_id=item.get("loop_id"),
         order=item.get("order"),
@@ -517,10 +567,10 @@ def _decode_traversal(value: Any) -> TraversalRule:
     )
 
 
-def _decode_span(value: Any) -> RecordedEventSpan:
+def _decode_span(value: Any, issues: list[LayoutIssue] | None = None) -> RecordedEventSpan:
     item = _expect_mapping(value, "recorded event span")
     fields = {"start", "count", "stride", "period", "repeats"}
-    _only_fields(item, fields, "recorded event span")
+    _report_unknown_fields(item, fields, "recorded event span", issues)
     return RecordedEventSpan(
         start=item.get("start"),
         count=item.get("count"),
@@ -530,10 +580,10 @@ def _decode_span(value: Any) -> RecordedEventSpan:
     )
 
 
-def _decode_partition(value: Any) -> AcquisitionPartition:
+def _decode_partition(value: Any, issues: list[LayoutIssue] | None = None) -> AcquisitionPartition:
     item = _expect_mapping(value, "partition")
     fields = {"kind", "index", "planned_count", "storage"}
-    _only_fields(item, fields, "partition")
+    _report_unknown_fields(item, fields, "partition", issues)
     return AcquisitionPartition(
         kind=item.get("kind"),
         index=item.get("index"),
@@ -542,8 +592,18 @@ def _decode_partition(value: Any) -> AcquisitionPartition:
     )
 
 
-def decode_acquisition_layout(value: str | bytes | bytearray) -> AcquisitionLayout:
-    """Decode, structurally validate, and immediately canonicalize a layout."""
+def decode_acquisition_layout(
+    value: str | bytes | bytearray,
+    issues: list[LayoutIssue] | None = None,
+) -> AcquisitionLayout:
+    """Decode, structurally validate, and immediately canonicalize a layout.
+
+    Pass ``issues`` to collect what the decode had to skip. Fields this
+    version does not know are ignored and reported there rather than refused:
+    a recording written by a newer ImSwitch stays readable, minus whatever it
+    says that this version cannot act on. A different *schema version* is
+    refused outright, because that may change what the known fields mean.
+    """
     if isinstance(value, str):
         raw = value.encode("utf-8")
     elif isinstance(value, (bytes, bytearray)):
@@ -564,6 +624,7 @@ def decode_acquisition_layout(value: str | bytes | bytearray) -> AcquisitionLayo
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("AcquisitionLayout:json is not valid UTF-8 JSON") from exc
     item = _expect_mapping(decoded, "acquisition layout")
+    _check_schema_version(item.get("schema"))
     fields = {
         "schema",
         "payload_kind",
@@ -577,18 +638,22 @@ def decode_acquisition_layout(value: str | bytes | bytearray) -> AcquisitionLayo
         "scan_source",
         "provenance",
     }
-    _only_fields(item, fields, "acquisition layout")
+    _report_unknown_fields(item, fields, "acquisition layout", issues)
     spans_value = item.get("recorded_event_spans")
-    spans = None if spans_value is None else tuple(_decode_span(entry) for entry in spans_value)
+    spans = (
+        None
+        if spans_value is None
+        else tuple(_decode_span(entry, issues) for entry in spans_value)
+    )
     layout = AcquisitionLayout(
         schema=item.get("schema"),
         payload_kind=item.get("payload_kind"),
         detector=item.get("detector"),
         storage_axes=tuple(item.get("storage_axes", ())),
-        event_loops=tuple(_decode_loop(entry) for entry in item.get("event_loops", ())),
-        traversal=tuple(_decode_traversal(entry) for entry in item.get("traversal", ())),
+        event_loops=tuple(_decode_loop(entry, issues) for entry in item.get("event_loops", ())),
+        traversal=tuple(_decode_traversal(entry, issues) for entry in item.get("traversal", ())),
         recorded_event_spans=spans,
-        partitions=tuple(_decode_partition(entry) for entry in item.get("partitions", ())),
+        partitions=tuple(_decode_partition(entry, issues) for entry in item.get("partitions", ())),
         modality=item.get("modality"),
         scan_source=item.get("scan_source"),
         provenance=item.get("provenance", "recorded"),

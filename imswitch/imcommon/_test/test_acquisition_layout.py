@@ -14,6 +14,7 @@ from imswitch.imcommon.model.acquisition_layout import (
     AcquisitionLayoutError,
     AcquisitionLoop,
     AcquisitionPartition,
+    LayoutIssue,
     RecordedEventSpan,
     TraversalRule,
     canonicalize_recorded_event_spans,
@@ -510,3 +511,53 @@ def test_sparse_rectangular_condition_subset_can_unfold_without_a_copy() -> None
     assert unfolded.data.shape == (18, 1, 18, 1, 2)
     assert unfolded.loop_coordinates["linestep"] == (1,)
     assert np.shares_memory(source, unfolded.data)
+
+
+def test_a_field_this_version_does_not_know_is_ignored_not_refused() -> None:
+    """A newer ImSwitch's file must stay readable by an older one.
+
+    Refusing an unknown field makes the whole recording inaccessible over one
+    thing the reader cannot act on, which is a worse failure than skipping it.
+    """
+    document = json.loads(encode_acquisition_layout(_frame_layout()))
+    document["event_loops"][0]["settling_time_ms"] = 5.0
+    document["future_top_level_hint"] = "something"
+    issues: list[LayoutIssue] = []
+
+    decoded = decode_acquisition_layout(json.dumps(document), issues)
+
+    assert [loop.count for loop in decoded.event_loops] == [18, 2, 18]
+    codes = {issue.code for issue in issues}
+    assert codes == {"UNKNOWN_LAYOUT_FIELD"}
+    assert all(issue.severity == "warning" for issue in issues)
+    # The skip is named, so it cannot pass unnoticed.
+    assert any("settling_time_ms" in issue.message for issue in issues)
+    assert any("future_top_level_hint" in issue.message for issue in issues)
+
+
+def test_a_newer_schema_version_is_refused_with_a_clear_reason() -> None:
+    """Unknown fields are additive; a version change may redefine known ones.
+
+    Guessing is unsafe there, so this fails -- but it says why, instead of
+    complaining about whichever field happens to be new.
+    """
+    document = json.loads(encode_acquisition_layout(_frame_layout()))
+    document["schema"] = "imswitch.acquisition-layout/2"
+
+    with pytest.raises(AcquisitionLayoutError) as error:
+        decode_acquisition_layout(json.dumps(document))
+
+    assert error.value.issues[0].code == "UNSUPPORTED_SCHEMA_VERSION"
+    assert "written by a newer ImSwitch" in str(error.value)
+
+
+def test_an_unrelated_schema_is_still_rejected_by_validation() -> None:
+    """Only the acquisition-layout family gets the version treatment."""
+    document = json.loads(encode_acquisition_layout(_frame_layout()))
+    document["schema"] = "something.else/1"
+
+    decoded = decode_acquisition_layout(json.dumps(document))
+
+    assert "UNSUPPORTED_SCHEMA" in {
+        issue.code for issue in validate_acquisition_layout(decoded)
+    }
