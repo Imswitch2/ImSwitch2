@@ -328,3 +328,92 @@ def test_a_drift_correction_does_not_offer_a_region():
         if isinstance(obj, type) and getattr(obj, "accepts_roi", False)
     ]
     assert not offered
+
+
+# --------------------------------------------------------------------------
+# final review — laziness and aliasing
+# --------------------------------------------------------------------------
+
+class _LazyHandle:
+    """Stands in for a zarr/dask-backed result: records how it was read."""
+
+    def __init__(self, shape):
+        self.shape = shape
+        self.ndim = len(shape)
+        self.whole_reads = 0
+        self.slice_reads = 0
+
+    def __getitem__(self, key):
+        self.slice_reads += 1
+        return np.zeros((10, 10))
+
+    def __array__(self, dtype=None, copy=None):
+        self.whole_reads += 1
+        return np.zeros(self.shape)
+
+
+def test_a_crop_slices_the_handle_rather_than_reading_it_whole():
+    """Converting first would make the cheaper mode the more expensive one,
+    on exactly the results where the difference matters."""
+    handle = _LazyHandle((2048, 2048))
+    roi = ROIRecord("a", "rectangle", (10, 20, 10, 20))
+
+    cropped, offset = restrict_array(
+        handle, ["Y", "X"], ROIRestriction(rois=(roi,), mode="crop")
+    )
+    assert handle.whole_reads == 0
+    assert handle.slice_reads == 1
+    assert cropped.shape == (10, 10)
+    assert offset == (10, 10)
+
+
+def test_a_handle_that_cannot_be_sliced_still_works():
+    class _WholeOnly(_LazyHandle):
+        def __getitem__(self, key):
+            raise TypeError("this handle only supports whole reads")
+
+    handle = _WholeOnly((32, 32))
+    cropped, _offset = restrict_array(
+        handle, ["Y", "X"],
+        ROIRestriction(rois=(ROIRecord("a", "rectangle", (2, 6, 2, 6)),), mode="crop"),
+    )
+    assert handle.whole_reads == 1
+    assert cropped.shape == (4, 4)
+
+
+def test_the_narrowed_copy_cannot_write_through_to_the_source():
+    """The copy is shallow, so anything mutable it shares is the user's."""
+    source = _Result(np.zeros((16, 16)))
+    source.roi_provenance["marker"] = "original"
+
+    narrowed, _applied = restrict_result(source, ROIRestriction(rois=_rois()))
+    narrowed.roi_provenance["marker"] = "narrowed"
+
+    assert source.roi_provenance["marker"] == "original"
+
+
+def test_the_restriction_does_not_travel_into_the_processor(monkeypatch):
+    """It is consumed by the run path; a processor that keeps its params
+    would otherwise retain the ROIs and their mask payloads."""
+    import importlib
+
+    module = importlib.import_module(
+        "imswitch.improcess.controller.ResultProcessorController"
+    )
+    monkeypatch.setattr(module, "normalize_processor_output", _normalized)
+
+    seen = {}
+
+    class _Recording(_Processor):
+        def apply(self, result, params):
+            seen.update(params)
+            return _Result(np.asarray(result.data), name="out")
+
+    module._run_restricted(
+        _Recording(),
+        _Result(np.ones((16, 16))),
+        {ROI_PARAM: ROIRestriction(rois=_rois()), "sigma": 2.0},
+        ROIRestriction(rois=_rois()),
+    )
+    assert ROI_PARAM not in seen
+    assert seen["sigma"] == 2.0

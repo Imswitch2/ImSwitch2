@@ -117,12 +117,19 @@ def _run_restricted(processor, input_result, params: dict, restriction):
     existing processor become ROI-aware by declaring one attribute.
     """
     from imswitch.improcess.analysis.roi_restriction import (
+        ROI_PARAM,
         apply_provenance,
         restrict_result,
     )
 
     narrowed, applied = restrict_result(input_result, restriction)
-    output = processor.apply(narrowed, params)
+    # The restriction is consumed here, so it does not travel into `apply`.
+    # Leaving it in would hand every ROI-aware processor a parameter it has no
+    # use for — and one holding the ROIs themselves, so a processor that keeps
+    # its params (segmentation does) would retain their mask payloads and put
+    # a non-serialisable object anywhere params are later written out.
+    inner = {key: value for key, value in params.items() if key != ROI_PARAM}
+    output = processor.apply(narrowed, inner)
     # Provenance is attached against the *original* input, not the narrowed
     # copy: the narrowed one is an implementation detail that never existed
     # outside this call, and lineage pointing at it would dangle.

@@ -15,12 +15,19 @@ import numpy as np
 
 VIEWER_TOOLS_LAYER_NAME = "Viewer Tools"
 ROI_OVERLAY_LAYER_NAME = "ROI Manager"
+VIEWER_TOOL_POINTS_LAYER_NAME = "Viewer Tool Points"
 
 #: Layers that annotate the image rather than being one. Excluded by name as
-#: well as by type: a Shapes layer is already rejected by the ndarray check
-#: below, but naming them here keeps the intent explicit and survives a layer
-#: kind changing.
-ANNOTATION_LAYER_NAMES = (VIEWER_TOOLS_LAYER_NAME, ROI_OVERLAY_LAYER_NAME)
+#: well as by type, and the *Points* layer shows why the name check is not
+#: belt-and-braces: a napari Points layer's ``data`` really is an ``(n, 2)``
+#: float ndarray, so the type check below accepts it. Placing points also
+#: makes it napari's active layer, so without this entry the act of drawing
+#: points would redirect measurement onto an array of coordinates.
+ANNOTATION_LAYER_NAMES = (
+    VIEWER_TOOLS_LAYER_NAME,
+    ROI_OVERLAY_LAYER_NAME,
+    VIEWER_TOOL_POINTS_LAYER_NAME,
+)
 
 
 def is_image_layer(layer, *, min_ndim: int = 2, exclude_names=()) -> bool:

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14) · **P-R ✅** (§15.15); only P-F2 remains. See §15 |
+| **Status** | **Tracks A+B implemented** on `feat/improcess-roi-manager-2-0` (branched from `origin/main` @ fb6efb91). Tracks A+B are the committed scope (Q-13a). **P-0 ✅ · P-T ✅ · P-F ✅ · P-G ✅ · P-1 ✅ · P-2 ✅ · P-J ✅ · P-3 ✅ · P-4 ✅**, with a round-8 review pass folded in (§15.8). Roadmap: **P-5 ✅** (§15.9) · **P-S ✅** (§15.10) · **P-6 ✅** (§15.11, less the Fiji fixture corpus) · **P-U ✅** (§15.12) · **P-P ✅** (§15.13) · **P-7 ✅** (§15.14) · **P-R ✅** (§15.15). Branch reviewed end to end (§15.16). Only P-F2 remains. See §15 |
 | **Date** | 2026-08-08 (r1) · 2026-08-09 (r2–r5) |
 | **Branch** | `Improcess-multi-recon-processing` (plan doc only; no code changed) |
 | **Supersedes** | Phase 2 of [improcess-analysis-widgets.md](improcess-analysis-widgets.md) |
@@ -2400,6 +2400,41 @@ rather than omissions.
 
 *Tests:* `test_roi_restriction.py` (24), covering both modes, the clipping and
 refusal rules, the untouched source, the grid reset, and the two exclusions.
+
+### 15.16 Final review of the branch — six defects found and fixed
+
+A pass over the whole branch, hunting for the class of fault that only appears
+once several phases are stacked: a later phase quietly breaking an earlier
+one's invariant.
+
+| # | Defect | Why it mattered |
+| --- | --- | --- |
+| 1 | The P-R wiring loop swept `self.__dict__` gated on `self.docks` being non-empty | Two unrelated things: a dock dict says nothing about whether a processor panel exists, so the wiring could be skipped entirely — and when it ran it called `getattr` on every string and layout on the view. Now iterated over the runtime tool registry |
+| 2 | `restrict_result`'s shallow copy shared `roi_provenance` with its source | The narrowed copy is meant to be an implementation detail that never existed outside the call; sharing a mutable attribute let a run write through it into the user's actual result |
+| 3 | A **crop materialised the whole array** before slicing | Exactly the fault fixed in `_resultPlane` during P-6, reintroduced: it made the cheaper of the two modes the more expensive one, on precisely the lazily-backed results where the difference matters |
+| 4 | **The Points layer was not an annotation layer** | A napari Points layer's `data` *is* an `(n, 2)` float ndarray, so `is_image_layer()` accepted it — and point mode makes it the active layer. Drawing points could redirect measurement onto an array of coordinates. The same class of bug A-05/F-16 fixed once for Shapes |
+| 5 | The restriction travelled into `apply()` | A parameter no processor needs, holding the ROIs themselves — so a processor that keeps its params (segmentation does) retained their mask payloads, and put a non-serialisable object anywhere params are later written |
+| 6 | **Closing the ROI panel and quitting erased every saved set** | The A-09 adapter guarded "never opened" but not "opened then closed": a destroyed panel raises from every method, so the save fell through to an empty stash and wrote it over everything |
+
+**#4 and #6 are the two that would have cost real work**, and both are
+recurrences rather than novelties — an annotation layer mistaken for an image,
+and a save path that treats "cannot read" as "nothing to save". Each now has a
+test naming the mechanism, and #4 additionally has a guard asserting that
+*every* layer the tool manager creates appears in the exclusion list, since the
+two live in different packages.
+
+The adapter keeps a **last-known payload** now, fed by both a restore and every
+successful read, and the panel publishes its final state from `closeEvent` —
+the last moment there is anything to ask.
+
+Also checked and found sound: no `imcommon` → `improcess` import (F-11); every
+`_px` measurement paired with a `_cal` one; no measurement id colliding with an
+identity column; an empty selection still emitting the always-on columns; no
+stale references to renamed API; no exported name unreferenced outside its own
+module; the panel releasing its viewer callbacks and joining its measurement
+thread on close; and every acceptance criterion in this plan resolving to a
+named test.
+
 
 
 

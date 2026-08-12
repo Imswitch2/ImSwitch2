@@ -336,3 +336,56 @@ def test_an_autosave_failure_never_reaches_the_user(panel, monkeypatch):
     )
     controller._autosaveROIState()      # must not raise
     assert logged
+
+
+# --------------------------------------------------------------------------
+# final review — a closed panel must not erase what it held
+# --------------------------------------------------------------------------
+
+def test_closing_the_panel_then_saving_does_not_erase_the_sets(qapp):
+    """A destroyed panel raises from every method, including roiState(). The
+    adapter guarded "never opened" but not "opened then closed", so quitting
+    after closing the dock saved an empty state over every saved set.
+
+    Builds its own panel rather than taking the fixture: this one is destroyed
+    on purpose, and the fixture's teardown would touch it afterwards.
+    """
+    try:
+        from PyQt5 import sip
+    except ImportError:  # pragma: no cover - Qt binding dependent
+        import sip
+
+    panel = ROIManagerWidget(_Viewer(np.ones((16, 16), dtype=float)))
+    panel.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+    adapter = _ROIManagerStateAdapter(_View(panel=panel))
+    adapter.getWidgetState()          # the panel is read at least once
+
+    panel.close()
+    sip.delete(panel)
+    QtWidgets.QApplication.instance().processEvents()
+
+    state = adapter.getWidgetState()
+    assert state["sets"], "the sets were erased by closing the panel"
+    assert state["sets"][0]["roi_set"]["rois"][0]["name"] == "cell"
+
+
+def test_a_restore_is_remembered_even_if_the_panel_never_reads_it():
+    adapter = _ROIManagerStateAdapter(_View(panel=None))
+    adapter.setWidgetState(
+        sets_payload([ROISet(name="cells", rois=(
+            ROIRecord("a", "rectangle", (0, 4, 0, 4)),
+        ))], 0)
+    )
+    assert adapter.getWidgetState()["sets"][0]["roi_set"]["name"] == "cells"
+
+
+def test_the_panel_says_its_final_state_while_it_can_still_be_asked(qapp):
+    """closeEvent is the last moment the C++ object exists."""
+    widget = ROIManagerWidget(_Viewer(np.ones((16, 16), dtype=float)))
+    widget.add_rois([ROIRecord("cell", "rectangle", (0, 4, 0, 4))])
+    saves = []
+    widget.sigStateChanged.connect(lambda: saves.append(True))
+
+    widget.close()
+    assert saves, "closing did not publish the final state"
+    widget.deleteLater()

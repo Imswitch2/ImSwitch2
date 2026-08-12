@@ -289,3 +289,42 @@ def test_a_point_set_round_trips_through_the_native_format():
     assert restored.roi_type == "multipoint"
     assert restored.group == 2
     assert np.array_equal(roi_points(restored), roi_points(original))
+
+
+# --------------------------------------------------------------------------
+# final review — the point layer must never be mistaken for an image
+# --------------------------------------------------------------------------
+
+def test_the_point_tool_layer_is_not_an_image_source():
+    """A napari Points layer's data *is* an (n, 2) float ndarray, so the type
+    check accepts it — and placing points makes it the active layer, so
+    without the name exclusion the act of drawing would redirect measurement
+    onto an array of coordinates."""
+    from types import SimpleNamespace
+
+    from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+    from imswitch.improcess.layer_selection import is_image_layer
+
+    layer = SimpleNamespace(
+        name=ViewerToolManager.POINTS_LAYER_NAME,
+        data=np.zeros((5, 2)),
+        visible=True,
+    )
+    assert not is_image_layer(layer)
+
+
+def test_every_tool_layer_the_manager_creates_is_excluded_by_name():
+    """The two lists are in different packages; a new tool layer added to one
+    and not the other is the same bug, found later."""
+    from imswitch.imcommon.view.guitools.naparitools import ViewerToolManager
+    from imswitch.improcess.layer_selection import ANNOTATION_LAYER_NAMES
+
+    for attribute in ("LAYER_NAME", "POINTS_LAYER_NAME"):
+        name = getattr(ViewerToolManager, attribute)
+        assert name in ANNOTATION_LAYER_NAMES, attribute
+
+
+def test_drawing_points_does_not_redirect_the_measured_image(panel):
+    before = panel._active_image_layer()
+    panel._startPointDrawing()
+    assert panel._active_image_layer() is before

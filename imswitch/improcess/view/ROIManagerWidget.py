@@ -526,6 +526,14 @@ class ROIManagerWidget(QtWidgets.QWidget):
             self._runner.shutdown()
         except Exception:
             pass
+        try:
+            # Say what the sets are while there is still something to ask.
+            # After this the C++ object goes and every method raises, so a
+            # save at shutdown would have nothing to read.
+            self._autosaveTimer.stop()
+            self.sigStateChanged.emit()
+        except Exception:
+            pass
         super().closeEvent(event)
 
     def add_rois(self, rois: list[ROIRecord], *, on_conflict: str = "rename") -> int:

@@ -135,21 +135,36 @@ def restrict_array(
 
     Every non-plane axis is preserved: restricting a Z-stack to a region gives
     the region on every slice, not one slice of it.
+
+    A **crop slices the handle before converting**, so a lazy or on-disk result
+    is read at the size of the region rather than pulled into memory whole.
+    Converting first — which is the obvious way to write this — would make the
+    cheaper of the two modes the more expensive one, on exactly the results
+    where the difference matters. Masking is defined over the frame and has no
+    such shortcut.
     """
-    array = np.asarray(data)
-    if array.ndim < 2:
+    full_shape = tuple(int(v) for v in np.shape(data))
+    if len(full_shape) < 2:
         raise ROIRestrictionError("this result has no image plane to restrict")
-    shape = array.shape[-2:]
+    shape = full_shape[-2:]
 
     if restriction.mode == "crop":
         r0, r1, c0, c1 = union_bounds(restriction.rois, shape)
-        return array[..., r0:r1, c0:c1], (r0, c0)
+        window = (Ellipsis, slice(r0, r1), slice(c0, c1))
+        try:
+            cropped = np.asarray(data[window])
+        except Exception:
+            # A handle that cannot be sliced this way (an object that only
+            # supports whole reads) still has to work; it just costs what it
+            # always did.
+            cropped = np.asarray(data)[window]
+        return cropped, (r0, c0)
 
     mask = union_mask(restriction.rois, shape)
     # float, because the fill is NaN by default and an integer array cannot
     # hold it — silently casting NaN to 0 there would be exactly the false
     # "measured, and dark" claim the fill exists to avoid.
-    out = array.astype(np.float64, copy=True)
+    out = np.asarray(data).astype(np.float64, copy=True)
     out[..., ~mask] = restriction.fill
     return out, (0, 0)
 
@@ -160,6 +175,12 @@ def restrict_result(result, restriction: ROIRestriction):
     A copy rather than a mutation: the source stays exactly as it was, so a
     failed or cancelled run leaves nothing behind, and the same source can be
     restricted two different ways in one session.
+
+    The copy is **shallow**, which is the ordinary contract for a processor
+    input — `apply` is a pure function of its result — but ``roi_provenance``
+    is given a dict of its own regardless. It is the one mutable attribute
+    this layer writes to, and sharing it would let a run write through the
+    narrowed copy into the user's actual result.
     """
     import copy
 
@@ -171,6 +192,10 @@ def restrict_result(result, restriction: ROIRestriction):
     )
     narrowed = copy.copy(result)
     narrowed.data = restricted
+    try:
+        narrowed.roi_provenance = dict(getattr(result, "roi_provenance", {}) or {})
+    except Exception:
+        pass
     name = getattr(result, "name", "result")
     narrowed.name = f"{name} [{restriction.mode}]"
     # A crop moves every pixel index, so the narrowed input is *not* on its

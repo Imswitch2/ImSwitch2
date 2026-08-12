@@ -819,10 +819,12 @@ class _ROIManagerStateAdapter:
 
     * a restore that arrives before the panel is **stashed**, and applied when
       the panel is next built;
-    * a save with no panel open returns the **stash verbatim**, so a session
-      that never opened the ROI manager does not erase what the previous one
-      saved. Returning an empty state there is the silent data loss this class
-      exists to prevent.
+    * a save that cannot read a panel falls back to the **last state known** —
+      whether that came from a restore this session or from the last
+      successful read. Returning an empty state there is the silent data loss
+      this class exists to prevent, and there are two ways to reach it: never
+      opening the panel, and *closing* it, which leaves the attribute pointing
+      at a destroyed C++ object whose every method raises.
 
     It deliberately does not force the panel open.
     """
@@ -831,22 +833,30 @@ class _ROIManagerStateAdapter:
         self._view = view
         self._logger = logger
         self._stash: Dict[str, Any] | None = None
+        # The last state anyone knew about: a restore, or the last time the
+        # panel could be read. This is what a closed panel falls back to.
+        self._lastKnown: Dict[str, Any] | None = None
 
     def _panel(self):
         return getattr(self._view, 'roiManagerWidget', None)
 
+    def _fallback(self) -> Dict[str, Any]:
+        """What to save when the panel cannot be asked."""
+        return dict(self._lastKnown or self._stash or {})
+
     def getWidgetState(self) -> Dict[str, Any]:
         panel = self._panel()
         if panel is None:
-            # Verbatim: a session that never opened the panel must not erase
-            # what the previous one saved.
-            return dict(self._stash or {})
+            return self._fallback()
         try:
             payload = panel.roiState()
         except Exception:
+            # A destroyed panel raises from every method, including this one.
+            # Saving what it last said beats saving nothing.
             if self._logger is not None:
                 self._logger.debug('Could not read ROI manager state', exc_info=True)
-            return dict(self._stash or {})
+            return self._fallback()
+        self._lastKnown = payload
 
         from imswitch.imcommon.model import dirtools
         from imswitch.improcess.model.roi_persistence import (
@@ -887,6 +897,7 @@ class _ROIManagerStateAdapter:
         from imswitch.improcess.model.roi_persistence import sets_payload
 
         payload = sets_payload(sets, active, options)
+        self._lastKnown = payload
         panel = self._panel()
         if panel is None:
             # Stashed, applied when the panel is next built.

@@ -1296,16 +1296,22 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             elif hasattr(widget, '_roiManagerWidget'):
                 widget._roiManagerWidget = roi_manager
         # Processor panels that accept an ROI restriction (P-R) need the same
-        # late binding, and there can be many of them open at once.
-        for widget in list(self.docks and self.__dict__.values() or []):
+        # late binding, and there can be many of them open at once. Iterated
+        # over the runtime tool registry rather than over this view's
+        # attributes: the attribute sweep it started as was gated on `docks`
+        # being non-empty, which has nothing to do with whether a processor
+        # panel exists, and it reached every string and layout on the view.
+        for tool_id in self._runtimeAnalysisToolAttributes():
+            widget = self.getRuntimeAnalysisWidget(tool_id)
             setter = getattr(type(widget), 'setROIManagerWidget', None)
-            if callable(setter):
-                try:
-                    setter(widget, roi_manager)
-                except Exception:
-                    self._logger.exception(
-                        'Could not wire the ROI Manager into a processor panel'
-                    )
+            if widget is None or not callable(setter):
+                continue
+            try:
+                setter(widget, roi_manager)
+            except Exception:
+                self._logger.exception(
+                    f'Could not wire the ROI Manager into {tool_id!r}'
+                )
 
         # The reverse direction: the ROI manager seeds *Limit to threshold*
         # from the Segmentation panel, and either panel may be opened first.
