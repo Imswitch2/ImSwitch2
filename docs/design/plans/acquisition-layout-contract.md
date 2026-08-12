@@ -1,10 +1,54 @@
 # Acquisition layout metadata contract
 
-**Status:** Proposed
+**Status:** Active — PR 1–4 implemented on `codex/acquisition-layout-schema`; PR 5–7 and rig validation pending
 **Date:** 2026-08-11
-**Revision:** 4 — partition scope, canonical spans, and format-neutral lifecycle markers incorporated
+**Revision:** 5 — implementation status recorded after PR 1–4 landed (2026-08-12)
 **Scope:** Scan producers, recording, file readers, live sources, and ImProcess reconstructors
 **Related audits:** [ImProcess OME read compatibility](../../improcess_ome_read_compatibility_audit.md), [recording data flow](../../recording_dataflow_plan.md), [OME recording standardization](../../recording_ome_standardization_plan.md), [live reconstruction](../../live_reconstruction_audit.md)
+
+---
+
+## 0. Implementation status
+
+The contract, its transport, the resolver, and every scan producer are
+implemented. No reconstructor has been migrated yet, so nothing in the
+reconstruction path has changed behaviour: `acquisition_requirements` is `None`
+everywhere and the new preflight gate is inert.
+
+| PR | Status | Commit |
+|---|---|---|
+| PR 1 — Schema and normalization | Implemented | `4f145653` |
+| PR 2 — Format transport and recording lifecycle | Implemented | `ee91ba7a` |
+| PR 3 — Resolver, legacy adapters, and preflight | Implemented | `0a088493` |
+| PR 4 — Producers and recording integration | Implemented | `cdcc55da` |
+| PR 5 — MoNaLISA and BeadRec migration | Not started | — |
+| PR 6 — SNOUTY and SMLM migration | Not started | — |
+| PR 7 — Widefield STARSS, view-only, and fallback cleanup | Not started | — |
+
+Test evidence (2026-08-12, `QT_QPA_PLATFORM=offscreen`, `-p no:napari`):
+81 acquisition-layout tests pass; `imswitch/imcontrol/_test/unit` is 2655
+passed / 4 skipped and `imswitch/improcess/_test` is 1193 passed / 2 skipped,
+so PR 1–4 introduced no regressions in the touched subsystems.
+
+Deviations from the delivery-sequence file lists, recorded so the remaining PRs
+build on what exists rather than on the original sketch:
+
+- PR 3 also touched `ReconstructorManagerController.py` and
+  `reconstruction_worker.py` to carry the resolved layout into the worker.
+  Neither appeared in the PR 3 file list.
+- PR 4 added `imswitch/imcontrol/controller/controllers/_acquisition_layout_source.py`
+  as the shared layout-builder module for every producer. RESOLFT layouts are
+  published from `TriggerScopeScanGeometryMixin`, so the six controllers that
+  inherit it (Scan, PLSR, PLSR-Multicolor, LSXYR, GalvoDetection,
+  LightSheetMulticolor) gain layouts without individual edits;
+  `TriggerScopeRasterController` keeps its own implementation, as §4.3 requires.
+- The round-trip suite landed as
+  `imswitch/improcess/_test/test_acquisition_layout_transport.py`, and override
+  coverage lives in the resolver test module rather than a separate
+  `test_acquisition_layout_overrides.py`. §9's module list is updated to match.
+- No hardware validation has been done. §4.3.5 (RESOLFT firmware counters
+  against real traces) remains owed regardless of which reconstructor PR lands
+  next.
 
 ---
 
@@ -392,6 +436,12 @@ materializing silently. Live and large-data paths should use the coordinate
 iterator or chunked gathers instead of coercing the complete source through
 `np.asarray`.
 
+Neither validation nor coordinate resolution may expand the selected event set.
+Cost must follow the canonical run count, which compaction keeps small, not the
+number of selected frames. Cross-span overlap is therefore an arithmetic test
+between runs, and a coordinate lookup validates its layout at most once, because
+per-frame lookups are the pattern reconstructors are told to use.
+
 ### 3.3 Validation rules
 
 Common validation rejects an explicit layout when:
@@ -611,6 +661,11 @@ In `imswitch/imcontrol/model/managers/RecordingManager.py`:
 6. Preserve per-partition layout identity across scan-lapse modes. Separate
    files/groups reuse zero-based spans and differ only by `partition.index`;
    only a genuinely combined time array adds time to `event_loops`.
+7. Compare scan positions with `getNumScanPositions()` only when every loop
+   kind can be classified as positional or not. Kinds are an open vocabulary,
+   so a layout using a kind this version does not know must skip the
+   comparison and log why, rather than assume the unknown loop advances the
+   scan and refuse to record.
 
 In `imswitch/imcontrol/model/managers/recording_metadata.py`, retain the
 existing emitted OME axes in version 1 but mark their use as an interoperability
@@ -873,6 +928,8 @@ Every PR includes tests and may land independently in order.
 
 ### PR 1 — Schema and normalization
 
+**Status:** Implemented (`4f145653`).
+
 **Files**
 
 - Add `imswitch/imcommon/model/acquisition_layout.py`,
@@ -895,6 +952,8 @@ Every PR includes tests and may land independently in order.
 - Metadata normalization has no ImControl/ImProcess or format-library imports.
 
 ### PR 2 — Format transport and recording lifecycle
+
+**Status:** Implemented (`ee91ba7a`).
 
 **Files**
 
@@ -923,6 +982,8 @@ Every PR includes tests and may land independently in order.
 
 ### PR 3 — Resolver, legacy adapters, and preflight
 
+**Status:** Implemented (`0a088493`).
+
 **Files**
 
 - Add `imswitch/improcess/model/acquisition_layout_resolver.py` and resolver
@@ -945,6 +1006,8 @@ Every PR includes tests and may land independently in order.
 - Plugin inspection explains which metadata is missing or conflicting.
 
 ### PR 4 — Producers and recording integration
+
+**Status:** Implemented (`cdcc55da`).
 
 **Files**
 
@@ -970,6 +1033,8 @@ Every PR includes tests and may land independently in order.
 
 ### PR 5 — MoNaLISA and BeadRec migration
 
+**Status:** Not started.
+
 **Files**
 
 - Update MoNaLISA offline/live paths and result compatibility handling.
@@ -987,6 +1052,8 @@ Every PR includes tests and may land independently in order.
 
 ### PR 6 — SNOUTY and SMLM migration
 
+**Status:** Not started.
+
 **Acceptance**
 
 - SNOUTY handles time × cycle × plane without cross-timepoint truncation.
@@ -997,6 +1064,8 @@ Every PR includes tests and may land independently in order.
 - Source calibration is used and manual overrides are recorded.
 
 ### PR 7 — Widefield STARSS, view-only, and fallback cleanup
+
+**Status:** Not started.
 
 **Acceptance**
 
@@ -1072,7 +1141,7 @@ Required invariant tests:
 21. A legacy file remains usable only when inference is unique; otherwise it
     requires a user choice.
 
-Suggested new test modules:
+Test modules (as implemented in PR 1–4):
 
 ```text
 imswitch/imcommon/_test/test_acquisition_layout.py
@@ -1080,9 +1149,12 @@ imswitch/imcommon/_test/test_acquisition_metadata.py
 imswitch/imcontrol/_test/unit/test_acquisition_layout_adapters.py
 imswitch/imcontrol/_test/unit/test_recording_acquisition_layout.py
 imswitch/improcess/_test/test_acquisition_layout_resolver.py
-imswitch/improcess/_test/test_acquisition_layout_overrides.py
-imswitch/improcess/_test/test_acquisition_layout_roundtrip.py
+imswitch/improcess/_test/test_acquisition_layout_transport.py
 ```
+
+Layout-override coverage (sidecar reopen, fingerprint mismatch, override
+recovering invalid file metadata) lives in the resolver module rather than a
+separate `test_acquisition_layout_overrides.py`.
 
 Add plugin regressions to their existing test directories rather than placing
 all behavioural coverage in the resolver tests.
