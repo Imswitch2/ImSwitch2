@@ -1,8 +1,8 @@
 # Acquisition layout metadata contract
 
-**Status:** Active — PR 1–4 implemented on `codex/acquisition-layout-schema`; PR 5–7 and rig validation pending
+**Status:** Active — PR 1–5 implemented on `codex/acquisition-layout-schema`; PR 6–7 and rig validation pending
 **Date:** 2026-08-11
-**Revision:** 5 — implementation status recorded after PR 1–4 landed (2026-08-12)
+**Revision:** 6 — PR 5 landed; MoNaLISA and BeadRec consume the resolved layout (2026-08-12)
 **Scope:** Scan producers, recording, file readers, live sources, and ImProcess reconstructors
 **Related audits:** [ImProcess OME read compatibility](../../improcess_ome_read_compatibility_audit.md), [recording data flow](../../recording_dataflow_plan.md), [OME recording standardization](../../recording_ome_standardization_plan.md), [live reconstruction](../../live_reconstruction_audit.md)
 
@@ -10,10 +10,10 @@
 
 ## 0. Implementation status
 
-The contract, its transport, the resolver, and every scan producer are
-implemented. No reconstructor has been migrated yet, so nothing in the
-reconstruction path has changed behaviour: `acquisition_requirements` is `None`
-everywhere and the new preflight gate is inert.
+The contract, its transport, the resolver, every scan producer, and the
+MoNaLISA and BeadRec reconstructors are implemented. SNOUTY, SMLM, Widefield
+STARSS and view-only still declare `acquisition_requirements = None`, so the
+preflight gate remains inert for them and their behaviour is unchanged.
 
 | PR | Status | Commit |
 |---|---|---|
@@ -21,14 +21,21 @@ everywhere and the new preflight gate is inert.
 | PR 2 — Format transport and recording lifecycle | Implemented | `ee91ba7a` |
 | PR 3 — Resolver, legacy adapters, and preflight | Implemented | `0a088493` |
 | PR 4 — Producers and recording integration | Implemented | `cdcc55da` |
-| PR 5 — MoNaLISA and BeadRec migration | Not started | — |
+| PR 5 — MoNaLISA and BeadRec migration | Implemented | `eee2b603`, `baf90d39`, `e2ab1b7a` |
 | PR 6 — SNOUTY and SMLM migration | Not started | — |
 | PR 7 — Widefield STARSS, view-only, and fallback cleanup | Not started | — |
 
+A review of PR 1–4 produced three fixes in `56a1b0eb`: cross-span overlap
+detection no longer expands the selected event set (2.25 s and 141 MB became
+0.3 ms and no allocation on two spans over 2M events), the coordinate helpers
+validate once per layout instead of per frame, and the scan-position
+cross-check skips loop kinds it cannot classify instead of refusing to record.
+
 Test evidence (2026-08-12, `QT_QPA_PLATFORM=offscreen`, `-p no:napari`):
-81 acquisition-layout tests pass; `imswitch/imcontrol/_test/unit` is 2655
-passed / 4 skipped and `imswitch/improcess/_test` is 1193 passed / 2 skipped,
-so PR 1–4 introduced no regressions in the touched subsystems.
+`imswitch/imcommon/_test` + `imswitch/imcontrol/_test/unit` is 2792 passed /
+4 skipped, and `imswitch/improcess/_test` is 1245 passed / 2 skipped.
+`imcontrol/_test/unit` and `improcess/_test` must be run in separate pytest
+processes; combining them with the improcess suite hangs locally.
 
 Deviations from the delivery-sequence file lists, recorded so the remaining PRs
 build on what exists rather than on the original sketch:
@@ -49,6 +56,29 @@ build on what exists rather than on the original sketch:
 - No hardware validation has been done. §4.3.5 (RESOLFT firmware counters
   against real traces) remains owed regardless of which reconstructor PR lands
   next.
+- PR 5 chose the six-dimensional compatibility projection of §7.1 rather than
+  a seventh Condition axis. `MonalisaProcessingResult.acquisition_projection`
+  records the folded components, their order, the condition labels, and names
+  the axis Condition when there is no real elapsed time.
+- PR 5 also fixed two contract defects first reachable once a plugin declares
+  requirements: `InMemoryStackWrapper` published a bare `AcquisitionLayout`
+  where `DataObj` publishes a `ResolvedAcquisitionLayout`, and
+  `inspect_acquisition` raised `AttributeError` for a source without the
+  property instead of reporting an undescribed acquisition.
+
+### Open defect found during PR 5
+
+The legacy MoNaLISA adapter invents a `scan_z` loop for frames it cannot
+otherwise explain. For a 200-frame file with `ScanTTL:Nx/Ny = 10` and a third
+stage axis of length 1.0 and step 1.0 — that is, one Z position — it resolves
+`scan_z=2` rather than reporting two timepoints or an unexplained remainder.
+It does emit `LEGACY_SCAN_GEOMETRY_ASSUMPTION`, so the assumption is visible,
+but Z and time are not interchangeable and the choice between them is a guess.
+Because of this, a plugin may only refuse a reconstruction on a `recorded` or
+`user-override` layout; a `legacy-adapter` layout falls through to the older
+inference so files that used to open still open. Fixing the adapter — most
+likely by naming the remainder honestly instead of assigning it to Z — is
+owed before PR 6, which relies on SNOUTY cycle/plane/time semantics.
 
 ---
 
@@ -70,8 +100,11 @@ frame = ((scan_y * 2 + condition) * 18 + scan_x)
 The formula uses a zero-based `frame` index. In human-facing numbering, frames
 1–18 belong to condition A, 19–36 to B, 37–54 to A, and so on. The previous
 interpretation treated the two conditions as two contiguous 324-frame time
-blocks. The hotfix corrects this case, but the same underlying ambiguity exists
-in several reconstructors and file formats.
+blocks. PR 5 corrects this case for MoNaLISA and BeadRec by placing every frame
+at its recorded coordinate; the same underlying ambiguity still exists in the
+reconstructors PR 6 and PR 7 cover. (The separate `codex/hotfix-monalisa-linesteps`
+branch patched the MoNaLISA case directly and is not merged here — this branch
+fixes it through the contract instead.)
 
 This plan replaces those local interpretations with a versioned,
 per-detector `AcquisitionLayout` contract. Shape-based inference remains
@@ -1033,7 +1066,7 @@ Every PR includes tests and may land independently in order.
 
 ### PR 5 — MoNaLISA and BeadRec migration
 
-**Status:** Not started.
+**Status:** Implemented (`eee2b603`, `baf90d39`, `e2ab1b7a`).
 
 **Files**
 
