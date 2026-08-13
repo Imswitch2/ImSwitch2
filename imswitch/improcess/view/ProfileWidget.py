@@ -237,6 +237,11 @@ class ProfileWidget(QtWidgets.QWidget):
     def _modeChanged(self, button):
         mode = button.property("profileMode")
         self._mode = mode
+        # Picking a drawing mode means drawing is what is wanted, so the
+        # source returns to Drawn. Leaving an ROI named in the chooser while
+        # the plot came from a freshly drawn shape would label the plot with
+        # a region it was not measured on.
+        self._returnToDrawn()
         # Re-acquire so shapes drawn from here on are attributed to this panel,
         # and clear only ours — this used to wipe the shared layer, taking the
         # ROI statistics panel's rectangle with it.
@@ -267,7 +272,20 @@ class ProfileWidget(QtWidgets.QWidget):
             pass
         super().closeEvent(event)
 
+    def _returnToDrawn(self) -> None:
+        if self.sourceCombo.currentIndex() == 0:
+            return
+        self.sourceCombo.blockSignals(True)
+        self.sourceCombo.setCurrentIndex(0)
+        self.sourceCombo.blockSignals(False)
+        self.roiPlotCombo.setVisible(False)
+        self.roiPlotLabel.setVisible(False)
+
     def _shapesChanged(self):
+        # A shape drawn while an ROI is the source is not what is on the plot;
+        # the mode buttons are the way back to drawing, and they say so.
+        if self.selectedROI() is not None:
+            return
         if self._mode == "zprofile":
             self._plotZProfile(self._findFirstShape("rectangle"))
             return

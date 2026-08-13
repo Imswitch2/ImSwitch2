@@ -129,9 +129,24 @@ def history_of(result) -> list[dict]:
 
 
 def set_history(result, history) -> None:
+    """Record the chain on ``result``, giving it a metadata dict if it has none.
+
+    Several result types (projection, segmentation, FRC, colocalization,
+    multicolor registration) carry no ``metadata`` at all. Skipping those would
+    mean the footprint quietly existed for some results and not others -- and
+    "no history recorded" is indistinguishable from "nothing was done to it",
+    which is the failure this whole module exists to prevent.
+    """
     metadata = getattr(result, "metadata", None)
-    if isinstance(metadata, dict):
-        metadata[HISTORY_KEY] = list(history)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        try:
+            result.metadata = metadata
+        except Exception:
+            # A result that refuses the attribute cannot carry a footprint;
+            # nothing else about it should break over that.
+            return
+    metadata[HISTORY_KEY] = list(history)
 
 
 def record_step(results, source, processor, params: dict | None = None, inputs=()):

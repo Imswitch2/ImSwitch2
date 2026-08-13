@@ -145,3 +145,38 @@ def test_the_semi_axes_come_back_from_the_corners():
     assert np.hypot(*axis_a) == pytest.approx(10.0)
     assert np.hypot(*axis_b) == pytest.approx(5.0)
     assert float(axis_a @ axis_b) == pytest.approx(0.0)   # perpendicular
+
+
+# --------------------------------------------------------------------------
+# sanity round: not every ellipse record comes from napari
+# --------------------------------------------------------------------------
+
+def _traced_oval(centre=(10.0, 10.0), radius=5.0, points=24):
+    """How ImageJ hands over an OVAL: the outline traced as many points, not
+    the four corners of a bounding box."""
+    from imswitch.imcommon.algorithms.roi import ROIRecord
+
+    angles = np.linspace(0.0, 2.0 * np.pi, points, endpoint=False)
+    vertices = tuple(
+        (centre[0] + radius * np.sin(a), centre[1] + radius * np.cos(a))
+        for a in angles
+    )
+    return ROIRecord("oval", "ellipse", (5, 15, 5, 15), vertices=vertices)
+
+
+def test_an_imagej_oval_is_read_as_the_curve_it_traces():
+    """Read as four corners, two adjacent samples on the curve become the
+    semi-axes and the shape collapses to a fraction of its size."""
+    mask, _slices = roi_mask_local(_traced_oval(), (20, 20))
+    assert mask.sum() == pytest.approx(np.pi * 5 * 5, rel=0.15)
+
+
+def test_a_traced_oval_outlines_as_what_it_traces():
+    """What is drawn and what is measured have to agree here too."""
+    parts = roi_outline(_traced_oval(points=24))
+    assert len(parts[0]) == 24
+
+
+def test_the_four_corner_form_is_still_read_as_a_quad():
+    mask, _slices = roi_mask_local(_upright(20.0), (24, 24))
+    assert mask.sum() == pytest.approx(np.pi * 10 * 10, rel=0.02)

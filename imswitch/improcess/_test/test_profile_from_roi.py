@@ -213,3 +213,29 @@ def test_an_roi_off_the_image_reports_rather_than_raising(panel):
 
     assert panel._last_payload == []
     assert panel.fitSummary.text()
+
+
+# --------------------------------------------------------------------------
+# sanity round: the chooser and the mode buttons must agree
+# --------------------------------------------------------------------------
+
+def test_picking_a_drawing_mode_returns_the_source_to_drawn(panel):
+    """Otherwise the chooser names an ROI while the plot came from a shape
+    drawn by hand -- a plot labelled with a region it was not measured on."""
+    _choose(panel, "cut")
+    assert panel.selectedROI() is not None
+
+    panel.lineButton.click()
+
+    assert panel.sourceCombo.currentText() == ProfileWidget.DRAWN
+    assert panel.selectedROI() is None
+    assert not panel.roiPlotCombo.isVisibleTo(panel)
+
+
+def test_a_shape_drawn_while_an_roi_is_the_source_does_not_replace_the_plot(panel):
+    _choose(panel, "cut")
+    plotted = panel._last_payload[0][2].copy()
+
+    panel._shapesChanged()
+
+    assert np.array_equal(panel._last_payload[0][2], plotted)

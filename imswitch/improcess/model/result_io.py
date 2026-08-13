@@ -100,13 +100,25 @@ def ome_meta_for_result(result, *, name: str = "") -> OmeImageMeta:
     if ome_unit == "um":
         ome_unit = _SPACE_UNIT
 
+    # OME names each axis exactly once, so an unrecognised label cannot simply
+    # become "z": a result with two of them would claim two Z axes, and
+    # tifffile refuses that outright ("multiple 'Z' dimensions"). Each axis
+    # takes the first name still free instead.
     axes = []
-    for label in labels[: data.ndim] if data.ndim else labels:
+    used: set[str] = set()
+    for label in (labels[: data.ndim] if data.ndim else labels):
         key = label.lower()[:1]
+        if key not in _AXIS_TYPES or key in used:
+            key = next((name for name in "ztcyx" if name not in used), "")
+        if not key:
+            # More axes than OME has names for. Described as far as it goes;
+            # the writer falls back to a plain container for the rest.
+            break
+        used.add(key)
         kind = _AXIS_TYPES.get(key, "space")
         axes.append(
             OmeAxis(
-                key if key in _AXIS_TYPES else "z",
+                key,
                 kind,
                 ome_unit if kind == "space" else (None if kind == "channel" else "s"),
             )
@@ -196,9 +208,22 @@ def _save_tiff(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
     # stored shape then disagrees with the declared axes and the write fails
     # outright. Only a result that really is RGB says so.
     photometric = "rgb" if _is_rgb(result) else "minisblack"
-    tifffile.imwrite(
-        str(path), data, ome=True, metadata=metadata, photometric=photometric
-    )
+    try:
+        tifffile.imwrite(
+            str(path), data, ome=True, metadata=metadata, photometric=photometric
+        )
+    except Exception:
+        # OME cannot describe every array -- more axes than it has names for,
+        # or a shape it will not accept. Refusing to write would be worse than
+        # writing a plainer file: the previous behaviour lost the metadata on
+        # every save and still always produced one. The description, which
+        # carries the calibration and the footprint, goes in either way.
+        metadata.pop("Description", None)
+        tifffile.imwrite(
+            str(path), data,
+            description=json.dumps(description, ensure_ascii=False) or None,
+            metadata=metadata, photometric=photometric,
+        )
 
 
 def _is_rgb(result) -> bool:
@@ -241,7 +266,12 @@ def _save_zarr(result, path: Path, data: np.ndarray, meta: OmeImageMeta, extra=N
     else:  # zarr 2
         array = root.create_dataset("0", data=data)
     attributes = dict(root.attrs)
-    attributes["ome"] = meta.ngff_ome_metadata(path="0", ndim=data.ndim)
+    try:
+        attributes["ome"] = meta.ngff_ome_metadata(path="0", ndim=data.ndim)
+    except Exception:
+        # An array OME cannot describe still gets written, with its axis
+        # labels and footprint in the plain attributes.
+        pass
     attributes.update(_json_attributes(result, extra))
     root.attrs.update(attributes)
 

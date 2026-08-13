@@ -133,6 +133,8 @@ class SegmentationWidget(QtWidgets.QWidget):
         #: Where the last preview cut, so the histogram marker and the summary
         #: line cannot describe different numbers.
         self._last_preview_threshold = None
+        #: Pixel offset of the previewed window within the full frame.
+        self._preview_offset = (0, 0)
 
         self.summaryLabel = QtWidgets.QLabel("Run segmentation on the active image layer.")
         self.summaryLabel.setWordWrap(True)
@@ -401,6 +403,7 @@ class SegmentationWidget(QtWidgets.QWidget):
         """
         import numpy as np
 
+        self._preview_offset = (0, 0)
         rois = self.selectedROIs()
         if not rois:
             return image, None
@@ -415,10 +418,26 @@ class SegmentationWidget(QtWidgets.QWidget):
             rows = np.flatnonzero(mask.any(axis=1))
             cols = np.flatnonzero(mask.any(axis=0))
             window = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
+            # Where the crop sits in the full frame. The preview overlay is a
+            # smaller array than the image it describes, so without this it
+            # would be drawn at the origin -- labels for one part of the frame
+            # sitting over another.
+            self._preview_offset = (int(rows[0]), int(cols[0]))
             return np.asarray(image[window], dtype=float), mask[window]
         restricted = np.asarray(image, dtype=float).copy()
         restricted[~mask] = np.nan
         return restricted, mask
+
+    def _preview_translate(self, layer) -> list[float]:
+        """Where to draw the preview, in world units.
+
+        Zero unless the preview was cropped to a region, in which case the
+        overlay covers only part of the frame and has to be placed where that
+        part actually is.
+        """
+        offset = getattr(self, "_preview_offset", (0, 0))
+        scale = self._spatial_layer_scale(layer)
+        return [float(offset[0]) * scale[0], float(offset[1]) * scale[1]]
 
     # -- the intensity histogram ------------------------------------------
 
@@ -524,6 +543,7 @@ class SegmentationWidget(QtWidgets.QWidget):
                         preview_data,
                         name=preview_name,
                         scale=self._spatial_layer_scale(layer),
+                        translate=self._preview_translate(layer),
                         opacity=0.45,
                         colormap="green",
                         blending="translucent",
@@ -534,6 +554,7 @@ class SegmentationWidget(QtWidgets.QWidget):
                         preview_data,
                         name=preview_name,
                         scale=self._spatial_layer_scale(layer),
+                        translate=self._preview_translate(layer),
                         opacity=0.5,
                         metadata=preview_metadata,
                     )
@@ -545,6 +566,10 @@ class SegmentationWidget(QtWidgets.QWidget):
             else:
                 preview_layer.data = preview_data
                 preview_layer.scale = self._spatial_layer_scale(layer)
+                try:
+                    preview_layer.translate = self._preview_translate(layer)
+                except Exception:
+                    pass
                 try:
                     preview_layer.metadata = preview_metadata
                 except Exception:

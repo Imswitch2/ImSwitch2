@@ -147,6 +147,21 @@ def _ellipse_mask(bounds, shape: tuple[int, int]) -> np.ndarray:
     return (rows / radius_r) ** 2 + (cols / radius_c) ** 2 <= 1.0
 
 
+def _is_ellipse_quad(vertices) -> bool:
+    """True when an ellipse's vertices are the four corners that bound it.
+
+    napari stores an ellipse that way, so the shape has to be recovered from
+    them. ImageJ does not: an imported OVAL carries the traced outline, dozens
+    of points on the curve itself. Reading those as corners takes two adjacent
+    samples for the semi-axes and produces a shape a fraction of the real
+    size, so the count decides which reading applies.
+    """
+    try:
+        return len(vertices) == 4
+    except TypeError:
+        return False
+
+
 def ellipse_axes_from_quad(vertices) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(centre, semi_axis_a, semi_axis_b)`` of the ellipse inscribed in a quad.
 
@@ -237,7 +252,7 @@ def roi_mask_local(
             f"ROI {roi.name!r} of type {roi.roi_type!r} has no measurable area"
         )
 
-    if kind in ("ellipse", "oval") and roi.vertices is not None:
+    if kind in ("ellipse", "oval") and _is_ellipse_quad(roi.vertices):
         # BEFORE the generic vertices branch, not after. An ellipse drawn in
         # napari arrives as the four corners of its bounding box, so treating
         # those vertices as a polygon rasterises the box itself — every ellipse
@@ -373,7 +388,10 @@ def roi_outline(roi: ROIRecord, *, max_vertices: int = 256) -> list[np.ndarray]:
             for r, c in roi_points(roi)
         ]
 
-    if roi.vertices and kind in ("polygon", "freehand", "line", "polyline", "path"):
+    if roi.vertices and (
+        kind in ("polygon", "freehand", "line", "polyline", "path")
+        or (kind in ("ellipse", "oval") and not _is_ellipse_quad(roi.vertices))
+    ):
         return [np.asarray(roi.vertices, dtype=np.float64)]
 
     if roi.mask is not None or roi.pixels is not None:
@@ -398,7 +416,7 @@ def roi_outline(roi: ROIRecord, *, max_vertices: int = 256) -> list[np.ndarray]:
 
     if kind in ("ellipse", "oval"):
         angles = np.linspace(0.0, 2.0 * np.pi, min(max_vertices, 64), endpoint=False)
-        if roi.vertices is not None:
+        if _is_ellipse_quad(roi.vertices):
             # Traced from the semi-axes so a rotated ellipse is drawn rotated;
             # rebuilding it from the bounding box would draw the upright
             # ellipse that shares that box, which is a different shape.

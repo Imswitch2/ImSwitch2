@@ -271,3 +271,113 @@ def test_a_result_with_fewer_labels_than_axes_is_still_saveable(tmp_path):
     )
     save_image_result(odd, tmp_path / "odd.ome.tif", "tiff")
     assert (tmp_path / "odd.ome.tif").exists()
+
+
+# --------------------------------------------------------------------------
+# sanity round: cases the first pass did not cover
+# --------------------------------------------------------------------------
+
+def test_every_processor_output_carries_a_footprint():
+    """Five result types have no metadata dict of their own. Skipping those
+    would leave the footprint present for some results and absent for others,
+    and "no history" is indistinguishable from "nothing was done"."""
+    from imswitch.improcess.processors import _AVAILABLE_PROCESSOR_CLASSES
+
+    source = ArrayProcessingResult(
+        name="src",
+        data=np.random.default_rng(0).random((3, 16, 16)).astype(np.float32),
+        axis_labels=["Z", "Y", "X"],
+    )
+    missing = []
+    for processor_id, cls in sorted(_AVAILABLE_PROCESSOR_CLASSES.items()):
+        processor = cls()
+        if not processor.accepts(source):
+            continue
+        try:
+            outputs = normalize_processor_output(
+                processor.apply(source, {}), source, processor, {}
+            )
+        except Exception:
+            continue           # needs parameters; not this test's business
+        for output in outputs:
+            if not history_of(output):
+                missing.append((processor_id, type(output).__name__))
+    assert missing == []
+
+
+def test_a_result_without_metadata_is_given_one():
+    class _Bare:
+        name = "bare"
+
+    bare = _Bare()
+    record_step((bare,), None, _FakeProcessor(), {"radius": 3})
+
+    assert history_of(bare)[0]["params"] == {"radius": 3}
+
+
+class _FakeProcessor:
+    id = "fake"
+    name = "Fake"
+
+
+# -- axis names OME will actually accept -----------------------------------
+
+@pytest.mark.parametrize(
+    "labels,shape",
+    [
+        (["Y", "X"], (2, 4, 4)),                    # fewer labels than axes
+        (["A", "B", "Y", "X"], (2, 2, 4, 4)),       # two unrecognised labels
+        (["C", "C", "Y", "X"], (2, 2, 4, 4)),       # a duplicated label
+        (list("ABCDEF"), (2, 2, 2, 2, 4, 4)),       # more axes than OME names
+    ],
+)
+def test_an_unusual_axis_set_is_still_saveable(labels, shape, tmp_path):
+    """Saving used to be `imwrite(path, data)`, which always worked. Adding
+    OME metadata must not make a result unwritable -- tifffile refuses
+    "multiple 'Z' dimensions" outright."""
+    import tifffile
+
+    result = ArrayProcessingResult(
+        name="odd", data=np.zeros(shape), axis_labels=list(labels)
+    )
+    path = tmp_path / "odd.ome.tif"
+    save_image_result(result, path, "tiff")
+
+    assert tifffile.imread(path).size == np.zeros(shape).size
+
+
+def test_ome_axes_are_never_duplicated():
+    result = ArrayProcessingResult(
+        name="odd", data=np.zeros((2, 2, 4, 4)), axis_labels=["A", "B", "Y", "X"]
+    )
+    names = [axis.name for axis in ome_meta_for_result(result).axes]
+    assert len(names) == len(set(names))
+
+
+def test_the_footprint_survives_the_fallback_write(tmp_path):
+    """The plainer file is still worth writing *because* it carries this."""
+    import tifffile
+
+    result = ArrayProcessingResult(
+        name="odd", data=np.zeros((2, 2, 2, 2, 4, 4)), axis_labels=list("ABCDEF")
+    )
+    record_step((result,), None, _FakeProcessor(), {"radius": 3})
+    path = tmp_path / "odd.ome.tif"
+    save_image_result(result, path, "tiff")
+
+    with tifffile.TiffFile(path) as handle:
+        description = handle.pages[0].description
+    assert "radius" in description
+
+
+def test_an_unusual_axis_set_is_still_saveable_as_zarr(tmp_path):
+    import zarr
+
+    result = ArrayProcessingResult(
+        name="odd", data=np.zeros((2, 2, 2, 2, 4, 4)), axis_labels=list("ABCDEF")
+    )
+    path = tmp_path / "odd.ome.zarr"
+    save_image_result(result, path, "zarr")
+
+    group = zarr.open_group(str(path), mode="r")
+    assert group["0"].shape == (2, 2, 2, 2, 4, 4)

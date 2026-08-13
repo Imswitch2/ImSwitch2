@@ -47,6 +47,7 @@ class _FakeViewer:
         label_obj = SimpleNamespace(
             data=np.asarray(data),
             scale=kwargs.get("scale", [1.0, 1.0]),
+            translate=kwargs.get("translate", [0.0, 0.0]),
             name=kwargs.get("name", "labels"),
             metadata=kwargs.get("metadata", {}),
             opacity=kwargs.get("opacity", 1.0),
@@ -58,6 +59,7 @@ class _FakeViewer:
         image_obj = SimpleNamespace(
             data=np.asarray(data),
             scale=kwargs.get("scale", [1.0, 1.0]),
+            translate=kwargs.get("translate", [0.0, 0.0]),
             name=kwargs.get("name", "image"),
             metadata=kwargs.get("metadata", {}),
             opacity=kwargs.get("opacity", 1.0),
@@ -660,3 +662,43 @@ def test_the_commit_carries_the_region_for_the_processor_to_apply():
     assert isinstance(restriction, ROIRestriction)
     assert restriction.mode == "mask"
     assert [roi.name for roi in restriction.rois] == ["left"]
+
+
+def test_a_cropped_preview_is_drawn_where_the_region_is():
+    """The overlay is a smaller array than the image it describes, so without
+    a translate it lands at the origin -- labels for one part of the frame
+    sitting over another."""
+    layer = _FakeLayer(_two_population_image(), scale=[0.5, 0.25])
+    viewer = _FakeViewer(layer)
+    widget = _widget_with_rois(viewer, [_roi("left", (4, 8, 2, 6), "u1")])
+    widget.roiModeCombo = _DataCombo("crop")
+    widget.roiCombo.setCurrentIndex(1)
+
+    widget._update_preview()
+
+    preview = viewer.layers[-1]
+    assert preview.data.shape == (4, 4)                 # cropped
+    assert list(preview.translate) == [4 * 0.5, 2 * 0.25]
+
+
+def test_an_uncropped_preview_is_not_displaced():
+    layer = _FakeLayer(_two_population_image(), scale=[0.5, 0.25])
+    viewer = _FakeViewer(layer)
+    widget = _widget_with_rois(viewer, [])
+
+    widget._update_preview()
+
+    assert list(viewer.layers[-1].translate) == [0.0, 0.0]
+
+
+def test_a_masked_preview_covers_the_whole_frame():
+    """Mask mode keeps the frame, so it is aligned already."""
+    layer = _FakeLayer(_two_population_image(), scale=[1.0, 1.0])
+    viewer = _FakeViewer(layer)
+    widget = _widget_with_rois(viewer, [_roi("left", (4, 8, 2, 6), "u1")])
+    widget.roiCombo.setCurrentIndex(1)
+
+    widget._update_preview()
+
+    assert viewer.layers[-1].data.shape == (16, 16)
+    assert list(viewer.layers[-1].translate) == [0.0, 0.0]
