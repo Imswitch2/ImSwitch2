@@ -43,36 +43,38 @@ class _AxisRangeRow:
     stepSpin: QtWidgets.QSpinBox
 
 
-class StackSubsetDialog(QtWidgets.QDialog):
-    """Select first/last/step ranges for a stack subset."""
+class StackSubsetRangesWidget(QtWidgets.QWidget):
+    """The per-axis range table, and the ROI chooser that fills it.
+
+    A widget rather than part of the dialog because there are two ways to
+    crop -- the toolbar's dialog and the processor panel -- and when they were
+    two implementations only one of them learned about ROIs. Anything that can
+    host a widget now gets the same controls, and :meth:`setResult` retargets
+    them when the panel's input changes.
+    """
 
     #: The "type the numbers yourself" entry, and what the combo returns to
     #: whenever a spinbox is touched.
     MANUAL = "Manual"
 
-    def __init__(self, result, parent=None, napari_viewer=None, rois=()):
+    def __init__(self, result=None, parent=None, napari_viewer=None, rois=()):
         super().__init__(parent)
-        self.setWindowTitle("Crop/Substack")
-        self.setMinimumWidth(460)
         self._updating = False
-        self._shape = shape_for_result(result)
-        self._labels = axis_labels_for_result(result)
+        self._shape = ()
+        self._labels = []
         self._rows: list[_AxisRangeRow] = []
-        self._rois = list(rois or [])
+        self._rois = []
         self._appliedROI = None
         # Optional live X/Y crop-rectangle preview drawn into the reconstruction
-        # viewer while the dialog is open (removed on close).
+        # viewer while the widget is up (removed on close).
         self._viewer = napari_viewer
         self._preview_layer = None
 
-        self.table = QtWidgets.QTableWidget(len(self._shape), 5)
+        self.table = QtWidgets.QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Axis", "Size", "First", "Last", "Step"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-
-        for axis, (label, size) in enumerate(zip(self._labels, self._shape, strict=True)):
-            self._add_axis_row(axis, label, int(size))
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
@@ -83,27 +85,12 @@ class StackSubsetDialog(QtWidgets.QDialog):
         # applied — an ROI *fills* them rather than replacing them — so the
         # numbers stay visible, adjustable, and the single source of truth.
         self.roiCombo = QtWidgets.QComboBox()
-        self.roiCombo.addItem(self.MANUAL, None)
-        for roi in self._rois:
-            self.roiCombo.addItem(f"{roi.name} ({roi.roi_type})", roi.uid)
-        self.roiCombo.setEnabled(bool(self._rois))
-        self.roiCombo.setToolTip(
-            "Fill the Y and X ranges from an ROI in the ROI manager. The "
-            "ranges stay editable; changing one returns this to Manual."
-            if self._rois
-            else "No ROIs in the ROI manager to crop from."
-        )
         self.roiCombo.currentIndexChanged.connect(self._roiChosen)
 
         self.copyCheck = QtWidgets.QCheckBox("Copy data")
         self.copyCheck.setChecked(False)
 
         self.resetButton = QtWidgets.QPushButton("Reset")
-        self.buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-        )
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
         self.resetButton.clicked.connect(self.resetRanges)
 
         source = QtWidgets.QHBoxLayout()
@@ -114,14 +101,58 @@ class StackSubsetDialog(QtWidgets.QDialog):
         bottom.addWidget(self.copyCheck)
         bottom.addStretch()
         bottom.addWidget(self.resetButton)
-        bottom.addWidget(self.buttons)
 
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(source)
         layout.addWidget(self.table)
         layout.addLayout(bottom)
 
+        self.setResult(result, rois)
+
+    # -- retargeting -------------------------------------------------------
+
+    def setResult(self, result, rois=()) -> None:
+        """Rebuild the rows for ``result`` and re-offer ``rois``.
+
+        The panel's input changes under it -- a different reconstruction has
+        different axes and sizes -- so the table is rebuilt rather than
+        adjusted. Any ranges typed for the previous result are dropped with
+        it: keeping numbers that referred to a different image is how a crop
+        silently applies to the wrong extent.
+        """
+        self._appliedROI = None
+        self._rows = []
+        self._shape = shape_for_result(result) if result is not None else ()
+        self._labels = axis_labels_for_result(result) if result is not None else []
+        self.table.setRowCount(len(self._shape))
+        for axis, (label, size) in enumerate(
+            zip(self._labels, self._shape, strict=True)
+        ):
+            self._add_axis_row(axis, label, int(size))
+        self.setROIs(rois)
         self._update_crop_preview()
+
+    def setROIs(self, rois=()) -> None:
+        """Re-offer the ROI manager's current set without touching the ranges."""
+        self._rois = [roi for roi in (rois or []) if _croppable(roi)]
+        current = self.roiCombo.currentData()
+        self.roiCombo.blockSignals(True)
+        self.roiCombo.clear()
+        self.roiCombo.addItem(self.MANUAL, None)
+        for roi in self._rois:
+            self.roiCombo.addItem(f"{roi.name} ({roi.roi_type})", roi.uid)
+        if current is not None:
+            index = self.roiCombo.findData(current)
+            self.roiCombo.setCurrentIndex(max(0, index))
+        self.roiCombo.blockSignals(False)
+        self.roiCombo.setEnabled(bool(self._rois))
+        self.roiCombo.setToolTip(
+            "Fill the Y and X ranges from an ROI in the ROI manager. The "
+            "ranges stay editable; changing one returns this to Manual."
+            if self._rois
+            else "No ROIs with an extent in the ROI manager to crop from."
+        )
 
     # -- cropping from an ROI ---------------------------------------------
 
@@ -215,6 +246,10 @@ class StackSubsetDialog(QtWidgets.QDialog):
             params["roi_name"] = str(getattr(self._appliedROI, "name", ""))
         return params
 
+    def get_values(self) -> dict:
+        """What the generic processor panel asks its parameter widget for."""
+        return self.selected_params()
+
     def resetRanges(self) -> None:
         self._appliedROI = None
         self.roiCombo.blockSignals(True)
@@ -228,18 +263,6 @@ class StackSubsetDialog(QtWidgets.QDialog):
                 row.stepSpin.setValue(1)
         finally:
             self._updating = False
-
-    @classmethod
-    def get_params(
-        cls, result, parent=None, napari_viewer=None, rois=()
-    ) -> dict | None:
-        dialog = cls(result, parent=parent, napari_viewer=napari_viewer, rois=rois)
-        try:
-            if dialog.exec_() != QtWidgets.QDialog.Accepted:
-                return None
-            return dialog.selected_params()
-        finally:
-            dialog._remove_crop_preview()
 
     # -- live crop-rectangle preview -------------------------------------
 
@@ -277,14 +300,6 @@ class StackSubsetDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._preview_layer = None
-
-    def accept(self) -> None:
-        self._remove_crop_preview()
-        super().accept()
-
-    def reject(self) -> None:
-        self._remove_crop_preview()
-        super().reject()
 
     def closeEvent(self, event) -> None:
         self._remove_crop_preview()
@@ -346,4 +361,70 @@ class StackSubsetDialog(QtWidgets.QDialog):
             self._updating = False
 
 
-__all__ = ["StackSubsetDialog"]
+def _croppable(roi) -> bool:
+    """Only ROIs with an extent: a crop is a rectangle, and a line or a point
+    has no rectangle to crop to."""
+    from imswitch.imcommon.algorithms.roi_geometry import roi_capabilities
+
+    try:
+        return bool(roi_capabilities(roi.roi_type).is_area)
+    except Exception:
+        return False
+
+
+class StackSubsetDialog(QtWidgets.QDialog):
+    """The toolbar's Crop/Substack, wrapping the shared range controls."""
+
+    MANUAL = StackSubsetRangesWidget.MANUAL
+
+    def __init__(self, result, parent=None, napari_viewer=None, rois=()):
+        super().__init__(parent)
+        self.setWindowTitle("Crop/Substack")
+        self.setMinimumWidth(460)
+        self.ranges = StackSubsetRangesWidget(
+            result, parent=self, napari_viewer=napari_viewer, rois=rois
+        )
+
+        self.buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(self.ranges)
+        layout.addWidget(self.buttons)
+
+    # The dialog is a thin shell; everything it is asked about lives on the
+    # widget, so the two cannot answer differently.
+    def __getattr__(self, name):
+        # Only reached for attributes the dialog itself does not define, and
+        # only after __init__ has run -- guarded so a lookup during
+        # construction raises normally instead of recursing.
+        ranges = self.__dict__.get("ranges")
+        if ranges is None:
+            raise AttributeError(name)
+        return getattr(ranges, name)
+
+    def accept(self) -> None:
+        self.ranges._remove_crop_preview()
+        super().accept()
+
+    def reject(self) -> None:
+        self.ranges._remove_crop_preview()
+        super().reject()
+
+    @classmethod
+    def get_params(
+        cls, result, parent=None, napari_viewer=None, rois=()
+    ) -> dict | None:
+        dialog = cls(result, parent=parent, napari_viewer=napari_viewer, rois=rois)
+        try:
+            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                return None
+            return dialog.selected_params()
+        finally:
+            dialog.ranges._remove_crop_preview()
+
+
+__all__ = ["StackSubsetDialog", "StackSubsetRangesWidget"]

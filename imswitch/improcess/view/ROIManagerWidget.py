@@ -164,6 +164,20 @@ class ROIManagerWidget(QtWidgets.QWidget):
     #: Stable owner key for the shared drawing tool (see ViewerToolService).
     TOOL_OWNER = "improcess.roi-manager"
 
+    #: ``(label, viewer-tool mode)`` for the shape chooser, in ImageJ's own
+    #: toolbar order. Every one of these already captured correctly; only the
+    #: rectangle was reachable from this panel. ``point`` is last because it
+    #: is the odd one out -- it draws onto the Points layer, and a capture
+    #: gathers the whole set as one multipoint ROI rather than one ROI each.
+    DRAW_MODES = (
+        ("Rectangle", "rectangle"),
+        ("Ellipse", "ellipse"),
+        ("Polygon", "polygon"),
+        ("Freehand", "path"),
+        ("Line", "line"),
+        ("Points", "point"),
+    )
+
     #: An image with no mutation token is snapshotted so a run measures one
     #: coherent moment (A-22). Above this the copy is refused instead: a
     #: snapshot larger than this is more likely to take the session down than
@@ -199,7 +213,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolService = ViewerToolService.for_viewer(napariViewer)
-        # Register only; the tool is acquired when Draw Rectangle is used.
+        # Register only; the tool is acquired when Draw is pressed.
         self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._model = ROIManagerModel()
         # Every model change goes through the log, so there is one audited
@@ -241,15 +255,25 @@ class ROIManagerWidget(QtWidgets.QWidget):
         # The committed ROI set, drawn read-only in the viewer (P-1).
         self._overlay = NapariROISetOverlay(napariViewer)
 
-        self.addRectangleButton = QtWidgets.QPushButton("Draw Rectangle")
-        self.addRectangleButton.setToolTip("Switch the viewer tool to rectangle drawing")
-        self.addPointsButton = QtWidgets.QPushButton("Draw Points")
-        self.addPointsButton.setToolTip(
-            "Switch the viewer tool to placing points; Add Shape then captures "
-            "them as one multipoint ROI"
+        # One chooser rather than a button per shape. The panel has always
+        # captured whatever was drawn -- an ellipse, a polygon, a line -- but
+        # only offered a rectangle, so the other shapes were reachable only by
+        # changing napari's own mode, which is not somewhere to go looking.
+        self.shapeCombo = QtWidgets.QComboBox()
+        for label, mode in self.DRAW_MODES:
+            self.shapeCombo.addItem(label, mode)
+        self.shapeCombo.setToolTip(
+            "What the next drag draws. Add Shape captures whatever is on the "
+            "layer, so shapes of different kinds can be added together."
+        )
+        self.drawButton = QtWidgets.QPushButton("Draw")
+        self.drawButton.setToolTip(
+            "Take the viewer tool and start drawing the chosen shape"
         )
         self.captureButton = QtWidgets.QPushButton("Add Shape")
-        self.captureButton.setToolTip("Add the first rectangle from the current shapes layer")
+        self.captureButton.setToolTip(
+            "Add every shape drawn on the current layer, points included"
+        )
         self.renameButton = QtWidgets.QPushButton("Rename")
         self.duplicateButton = QtWidgets.QPushButton("Duplicate")
         self.deleteButton = QtWidgets.QPushButton("Delete")
@@ -361,7 +385,7 @@ class ROIManagerWidget(QtWidgets.QWidget):
         controls = QtWidgets.QVBoxLayout()
         controls.setSpacing(2)
         for group in (
-            (self.addRectangleButton, self.addPointsButton, self.captureButton,
+            (self.shapeCombo, self.drawButton, self.captureButton,
              self.updateButton, None,
              self.renameButton, self.propertiesButton, self.specifyButton,
              self.duplicateButton, self.deleteButton, self.clearButton, None,
@@ -421,8 +445,8 @@ class ROIManagerWidget(QtWidgets.QWidget):
         layout.addWidget(self.summaryLabel)
         self.setLayout(layout)
 
-        self.addRectangleButton.clicked.connect(self._startRectangleDrawing)
-        self.addPointsButton.clicked.connect(self._startPointDrawing)
+        self.drawButton.clicked.connect(self._startDrawing)
+        self.shapeCombo.currentIndexChanged.connect(self._drawModeChanged)
         self.captureButton.clicked.connect(self.add_current_rectangle)
         self.renameButton.clicked.connect(self.rename_selected)
         self.duplicateButton.clicked.connect(self.duplicate_selected)
@@ -481,20 +505,39 @@ class ROIManagerWidget(QtWidgets.QWidget):
 
         self.refresh_stats()
 
-    def _startRectangleDrawing(self) -> None:
-        # Re-acquire so the rectangle drawn next is attributed to this panel.
-        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
-        # This panel adds every shape drawn, so it must be allowed to hold
-        # more than one at a time; the single-shape rule would silently keep
-        # only the newest and capture one of three.
-        self._toolService.set_multi_shape(self._toolToken, True)
-        self._toolService.set_mode(self._toolToken, "rectangle")
+    def selected_draw_mode(self) -> str:
+        """The viewer-tool mode the chooser is on."""
+        mode = self.shapeCombo.currentData()
+        return str(mode or self.DRAW_MODES[0][1])
 
-    def _startPointDrawing(self) -> None:
-        """Place points instead of drawing shapes (P-P, C-08)."""
+    def _startDrawing(self) -> None:
+        """Take the tool and draw the chosen shape.
+
+        Re-acquired every time so the next shape is attributed to this panel,
+        and multi-shape so several can be drawn before one capture: the
+        single-shape rule would silently keep only the newest and add one of
+        three. Points go onto their own layer, which the service handles.
+        """
         self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
         self._toolService.set_multi_shape(self._toolToken, True)
-        self._toolService.set_mode(self._toolToken, "point")
+        self._toolService.set_mode(self._toolToken, self.selected_draw_mode())
+
+    def _drawModeChanged(self, _index=None) -> None:
+        """Switch live when the tool is already held.
+
+        Picking a different shape while drawing means the next drag should be
+        that shape; making the user press Draw again would be a second step
+        for a decision they already made. If the tool is not held, the choice
+        just waits for Draw.
+        """
+        if self._toolToken is None or not self._toolService.is_active(self.TOOL_OWNER):
+            return
+        try:
+            self._toolService.set_mode(self._toolToken, self.selected_draw_mode())
+        except Exception:
+            # Another panel took the tool between the two calls; pressing Draw
+            # is then the way back, and that is what the button is for.
+            pass
 
     def add_current_rectangle(self) -> None:
         try:

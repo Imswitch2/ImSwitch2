@@ -357,9 +357,16 @@ def test_update_refuses_to_change_identity_or_collide_on_name():
 # P-2.4 at the widget level: every drawn shape is captured (D-08)
 # --------------------------------------------------------------------------
 
+def _start_drawing(panel, mode):
+    """Pick a shape in the chooser and take the tool, as the user would."""
+    index = [m for _label, m in panel.DRAW_MODES].index(mode)
+    panel.shapeCombo.setCurrentIndex(index)
+    panel._startDrawing()
+
+
 def _draw(panel, *rects):
     """Draw rectangles into the panel's scratch layer, as the user would."""
-    panel._startRectangleDrawing()
+    _start_drawing(panel, "rectangle")
     layer = panel._toolService.manager.get_layer()
     for r0, c0, r1, c1 in rects:
         layer.add_shape([[r0, c0], [r0, c1], [r1, c1], [r1, c0]], "rectangle")

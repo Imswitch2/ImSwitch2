@@ -130,6 +130,7 @@ class ResultProcessorWidget(QtWidgets.QWidget):
 
     def setCurrentResult(self, result) -> None:
         self._currentResult = result
+        self._retargetParamWidget(result)
         if self.isMultiInput():
             self._refreshMultiInput()
             return
@@ -237,6 +238,38 @@ class ResultProcessorWidget(QtWidgets.QWidget):
         """
         self._roiManagerWidget = panel
         self._refreshROIChoices()
+
+    def _retargetParamWidget(self, result) -> None:
+        """Tell a parameter widget which result it is now editing.
+
+        Most parameter widgets are the same whatever the input, so this is
+        opt-in: a widget that needs the result -- one showing a row per axis,
+        say -- declares ``setResult`` and gets told. Without it such a widget
+        would keep showing the previous result's axes, and a crop typed
+        against those would apply to the wrong extent.
+        """
+        setter = getattr(self.paramWidget, "setResult", None)
+        if not callable(setter):
+            return
+        try:
+            setter(result, self._visibleROIs())
+        except Exception:
+            # A parameter widget that cannot show this result leaves the panel
+            # usable; the status line and the run itself still report properly.
+            # This is a view with no logger of its own, and raising here would
+            # take down every result switch.
+            self.statusLabel.setText(
+                "Could not show parameters for this result."
+            )
+
+    def _visibleROIs(self) -> list:
+        panel = getattr(self, "_roiManagerWidget", None)
+        if panel is None:
+            return []
+        try:
+            return [roi for roi in panel.rois() if roi.visible]
+        except Exception:
+            return []
 
     def _refreshROIChoices(self) -> None:
         if self.roiCombo is None:

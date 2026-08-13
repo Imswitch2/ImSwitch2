@@ -207,14 +207,21 @@ def test_the_group_is_reported_so_fiducial_sets_are_distinguishable():
 # the panel
 # --------------------------------------------------------------------------
 
+def _start_drawing(panel, mode):
+    """Pick a shape in the chooser and take the tool, as the user would."""
+    index = [m for _label, m in panel.DRAW_MODES].index(mode)
+    panel.shapeCombo.setCurrentIndex(index)
+    panel._startDrawing()
+
+
 def test_the_point_mode_switches_the_viewer_tool(panel):
-    panel._startPointDrawing()
+    _start_drawing(panel, "point")
     assert panel._toolService.get_mode() == "point"
 
 
 def test_placed_points_are_captured_as_one_multipoint(panel):
     """A fiducial set is a thing; forty separate ROIs would not be one."""
-    panel._startPointDrawing()
+    _start_drawing(panel, "point")
     manager = panel._toolService._manager
     manager._ensure_points_layer()
     manager._points_layer.data = [(2.0, 3.0), (8.0, 9.0), (11.0, 4.0)]
@@ -233,7 +240,7 @@ def test_capturing_with_nothing_drawn_says_what_to_do(panel):
 
 
 def test_a_captured_point_set_measures_in_the_table(panel):
-    panel._startPointDrawing()
+    _start_drawing(panel, "point")
     manager = panel._toolService._manager
     manager._ensure_points_layer()
     manager._points_layer.data = [(2.0, 3.0), (8.0, 9.0)]
@@ -326,5 +333,5 @@ def test_every_tool_layer_the_manager_creates_is_excluded_by_name():
 
 def test_drawing_points_does_not_redirect_the_measured_image(panel):
     before = panel._active_image_layer()
-    panel._startPointDrawing()
+    _start_drawing(panel, "point")
     assert panel._active_image_layer() is before
