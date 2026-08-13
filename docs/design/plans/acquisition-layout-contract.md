@@ -664,6 +664,11 @@ The JSON is per detector. HDF5 and Zarr store it with the detector array's
 metadata. OME-TIFF embeds the same two fields in an OME StructuredAnnotation
 or MapAnnotation and the TIFF reader restores them to normal attributes.
 
+Not understanding a recording is not the same as the recording being broken.
+An explicit layout that is self-contradictory is a hard error, but one this
+version merely cannot interpret degrades to unknown semantics with a visible
+issue, so the data stays viewable and only strict reconstructors refuse it.
+
 A reader must tolerate what a newer writer adds. Fields it does not recognise
 within its own schema version are additive by this contract's rule: they are
 ignored, and each one is reported as an `UNKNOWN_LAYOUT_FIELD` warning through

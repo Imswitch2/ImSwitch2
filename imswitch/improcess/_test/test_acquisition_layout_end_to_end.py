@@ -632,3 +632,76 @@ def test_a_layout_disagreeing_with_its_legacy_attributes_is_reported(caplog):
         "ScanTTL:Nx=4" in record.message and "writes 5" in record.message
         for record in caplog.records
     )
+
+
+def test_a_recording_from_a_newer_imswitch_stays_viewable(tmp_path):
+    """Not understanding a file is not the same as the file being broken.
+
+    A future schema version cannot be interpreted, but its pixels are
+    perfectly readable. Refusing it outright made a recording impossible even
+    to look at, which contradicts the contract's own promise that ambiguous
+    acquisitions remain viewable.
+    """
+    import json
+
+    from imswitch.improcess.reconstructors.view_only.reconstructor import (
+        ViewOnlyReconstructor,
+    )
+
+    layout = build_point_scan_layouts(
+        {"img_dims": [4, 3], "img_axes_phys": ["x", "y"], "pixel_sizes": [0.1, 0.1]},
+        ("CAM",),
+        scan_source="ScanControllerPointScan",
+    )["CAM"]
+    document = json.loads(encode_acquisition_layout(layout))
+    document["schema"] = "imswitch.acquisition-layout/2"
+
+    path = tmp_path / "future.zarr"
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+    array = ZarrStorer._create_array(root, "CAM", data=_ramp(12), chunks=(1, 4, 4))
+    array.attrs["AcquisitionLayout:schema"] = "imswitch.acquisition-layout/2"
+    array.attrs["AcquisitionLayout:json"] = json.dumps(document)
+    array.attrs["writing"] = False
+    data_obj = DataObj(path.name, "CAM", path=str(path))
+
+    resolved = data_obj.acquisition_layout
+    assert "UNSUPPORTED_SCHEMA_VERSION" in {issue.code for issue in resolved.issues}
+    # Unknown semantics, so nothing may act on it -- but it opens.
+    assert not resolved.is_usable and not resolved.is_authoritative
+
+    result = ViewOnlyReconstructor().process(data_obj, {})
+    assert result.data.shape == (12, 4, 4)
+    assert result.axis_labels == ["Frame", "Y", "X"]
+
+
+def test_stage_extents_do_not_turn_a_timelapse_into_a_raster():
+    """Configured stage extents are not evidence that a scan ran.
+
+    A timelapse that never moved the stage still carries them, and 100 frames
+    coincides with a configured 10x10 area -- which read a hundred timepoints
+    as a raster, at high confidence, while num_timepoints sat in the same
+    attributes saying otherwise.
+    """
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    stage = {
+        "ScanStage:axis_length": [0.5, 0.5, 1.0],
+        "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+        "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+    }
+
+    for contradiction in ({"recording:num_timepoints": 100}, {"Rec:LapseTime": 4}):
+        resolved = resolve_acquisition_layout(
+            {**stage, **contradiction}, shape=(100, 8, 8), detector="CAM"
+        )
+        assert resolved.source != "scan-stage-legacy", contradiction
+        assert not resolved.is_usable
+
+    # With nothing contradicting it, the raster reading stands -- but as the
+    # least specific adapter it says so with medium confidence, not high.
+    resolved = resolve_acquisition_layout(stage, shape=(100, 8, 8), detector="CAM")
+    assert resolved.source == "scan-stage-legacy"
+    assert resolved.confidence == "medium"
+    assert resolved.is_usable and not resolved.is_authoritative

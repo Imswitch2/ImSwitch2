@@ -290,6 +290,18 @@ def _decode_explicit(
         layout = decode_acquisition_layout(encoded, decode_issues)
     except Exception as exc:
         nested_issues = tuple(getattr(exc, "issues", ()))
+        if any(issue.code == "UNSUPPORTED_SCHEMA_VERSION" for issue in nested_issues):
+            # The file is not broken, this reader just cannot interpret it.
+            # Failing here would make a recording from a newer ImSwitch
+            # impossible even to look at, when only its semantics are unknown
+            # and its pixels are perfectly readable. Downgrade to a warning so
+            # resolution falls through to the unknown-semantics fallback.
+            return None, tuple(
+                replace(issue, severity="warning")
+                if issue.code == "UNSUPPORTED_SCHEMA_VERSION"
+                else issue
+                for issue in nested_issues
+            )
         return None, nested_issues or (
             _issue(
                 "error",
@@ -857,6 +869,7 @@ def _adapt_frame_scan(
     shape: Sequence[int],
     detector: str,
     source: str,
+    confidence: str | None = None,
 ) -> ResolvedAcquisitionLayout:
     normalized = _normalized_attrs(attrs)
     source_shape = _shape_tuple(shape)
@@ -882,12 +895,18 @@ def _adapt_frame_scan(
         scan_source=source,
         provenance="legacy-adapter",
     )
+    requested = _legacy_confidence(assumptions)
+    if confidence is not None:
+        # _confidence() only ever lowers, so the stricter of the two wins.
+        requested = confidence if requested is None else min(
+            (requested, confidence), key=CONFIDENCE_LEVELS.index
+        )
     return _validated_result(
         layout,
         source=source,
         shape=source_shape,
         issues=assumptions,
-        confidence=_legacy_confidence(assumptions),
+        confidence=requested,
     )
 
 
@@ -933,12 +952,28 @@ def adapt_scan_stage_metadata(
         return None
     if "ScanStage:axis_step_size" not in normalized:
         return None
+
+    # Stage extents describe what was *configured*, not necessarily what ran.
+    # A timelapse that never moved the stage still carries them, and its frame
+    # count can coincide with the configured position product -- which would
+    # read a hundred timepoints as a 10x10 raster. When the file says it holds
+    # several timepoints, a positional reading that leaves no room for them is
+    # a coincidence, not a description.
+    timepoints = _positive_int(
+        normalized.get("recording:num_timepoints")
+    ) or _positive_int(normalized.get("Rec:LapseTime"))
+    if timepoints is not None and timepoints > 1:
+        return None
+
     try:
         return _adapt_frame_scan(
             normalized,
             shape=shape,
             detector=detector,
             source="scan-stage-legacy",
+            # The least specific adapter: it matches on stage extents alone,
+            # with no statement anywhere that this recording was a scan.
+            confidence="medium",
         )
     except AcquisitionLayoutResolutionError:
         return None
@@ -1344,7 +1379,7 @@ def resolve_acquisition_layout(
             allow_frame_mismatch=allow_frame_mismatch,
         )
 
-    if explicit_layout is not None or explicit_issues:
+    if explicit_layout is not None or _errors(explicit_issues):
         errors = _errors(explicit_issues)
         if errors or explicit_layout is None:
             raise AcquisitionLayoutResolutionError(
@@ -1358,6 +1393,10 @@ def resolve_acquisition_layout(
             issues=(*sidecar_issues, *explicit_issues, *_projection_issues(explicit_layout, axis_labels)),
             allow_frame_mismatch=allow_frame_mismatch,
         )
+
+    # A layout this version cannot interpret still has to be reported, whatever
+    # the fallback chain settles on.
+    sidecar_issues = (*sidecar_issues, *explicit_issues)
 
     for adapter in (
         adapt_advanced_scan_metadata,
