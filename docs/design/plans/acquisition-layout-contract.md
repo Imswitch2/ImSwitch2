@@ -55,7 +55,10 @@ the original sketch:
   `test_acquisition_layout_overrides.py`. §9's module list is updated to match.
 - No hardware validation has been done. §4.3.5 (RESOLFT firmware counters
   against real traces) remains owed regardless of which reconstructor PR lands
-  next.
+  next. The session is prepared in
+  [acquisition-layout-rig-validation.md](../../acquisition-layout-rig-validation.md),
+  with `tools/inspect_acquisition_layout.py` to dump how any recording is
+  interpreted.
 - PR 5 chose the six-dimensional compatibility projection of §7.1 rather than
   a seventh Condition axis. `MonalisaProcessingResult.acquisition_projection`
   records the folded components, their order, the condition labels, and names
