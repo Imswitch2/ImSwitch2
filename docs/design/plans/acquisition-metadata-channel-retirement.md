@@ -135,6 +135,12 @@ Two things this surfaced, both fixed:
   modality adapter still wins, and declining rather than raising when the
   geometry cannot explain the frame count -- nothing in such a file claims to
   be a scan.
+  A later sanity check tightened it further: stage extents describe what
+  was *configured*, so a timelapse that never moved the stage still
+  carries them and its frame count can coincide with the configured
+  position product. It now declines when the file also says it holds
+  several timepoints, and reports `medium` rather than `high` confidence,
+  being the least specific adapter in the chain.
 
 Group 2, the UI pre-fill pair, is also done. `scan_params_from_layout` maps a
 resolved layout onto MoNaLISA's scan-dialog values, and the SNOUTY parameter
