@@ -622,6 +622,93 @@ def test_widget_keeps_showing_the_configured_pixel_size(configuredCameras):
     assert shown == pytest.approx(camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value)
 
 
+# --- the widget must show what the detector holds ------------------------
+
+def displayedValue(param):
+    """What the operator actually sees, as opposed to what the param holds.
+
+    pyqtgraph keeps a parameter and its tree item's editor in sync only via
+    ``sigValueChanged``. A readback that suppresses that signal (``setValue(v,
+    blockSignal=True)``) updates the parameter and leaves the spinbox on screen
+    showing the previous value -- so asserting on ``param.value()`` passes while
+    the panel misreports the hardware. Assert on this instead.
+    """
+    item = list(param.items.keys())[0]
+    widget = item.widget
+    return widget.currentText() if hasattr(widget, 'currentText') else widget.value()
+
+
+def test_restore_updates_what_the_operator_sees(cameras):
+    """Regression: the restore reached hardware but never repainted the panel.
+
+    The ROI stayed applied across a restart while the fields still showed the
+    pre-restore geometry.
+    """
+    controller, camera1, _ = cameras
+
+    controller.applyComponentState(
+        savedState(), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    params = controller.allParams['Camera1']
+    assert (displayedValue(params.x0), displayedValue(params.y0)) == camera1.frameStart
+    assert (displayedValue(params.width), displayedValue(params.height)) == camera1.shape
+    assert int(displayedValue(params.binning)) == camera1.binning
+    assert displayedValue(params.frameMode) == 'Custom'
+
+
+def test_restored_display_does_not_push_stale_values_at_hardware(cameras):
+    """An edit after a restore must build on the restored value, not the old one.
+
+    While the fields showed pre-restore values, the embedded spinbox held them
+    too -- so the next edit sent that stale number to the detector.
+    """
+    controller, camera1, _ = cameras
+    controller.applyComponentState(
+        savedState(), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+    camera1.calls.clear()
+
+    exposure = controller._widget.trees['Camera1'].p.param('Timings').param(
+        'Set exposure time')
+    assert displayedValue(exposure) == pytest.approx(0.02)
+
+    list(exposure.items.keys())[0].widget.setValue(0.05)
+
+    assert ('setParameter', 'Set exposure time', 0.05) in camera1.parameterCalls()
+    assert camera1.parameters['Set exposure time'].value == pytest.approx(0.05)
+
+
+def test_restore_readback_does_not_write_back_to_hardware(cameras):
+    """Refreshing the panel from the detector must stay a pure read.
+
+    The params emit "user intent" whoever set them, so an unguarded readback
+    re-enters the write handlers -- which resolve their target through the
+    *displayed* detector, not the one being restored.
+    """
+    controller, camera1, camera2 = cameras
+
+    controller.applyComponentState(
+        savedState('Camera2'), applyMode=ComponentStateApplyMode.STARTUP_RESTORE)
+
+    assert camera1.calls == []
+    assert camera2.cropCalls() == [('crop', 512, 256, 400, 300)]
+    assert [call for call in camera2.calls if call[0] == 'setBinning'] == [('setBinning', 2)]
+
+
+def test_configured_pixel_size_stays_on_screen_too(configuredCameras):
+    """The config-owned value must win in the panel, not just in the manager."""
+    controller, camera = configuredCameras
+
+    controller.applyComponentState(
+        savedState(parameters={CAMERA_PIXEL_SIZE_PARAM: 0.15}),
+        applyMode=ComponentStateApplyMode.STARTUP_RESTORE,
+    )
+
+    shown = displayedValue(controller._widget.trees['Camera1'].p.param(
+        'Miscellaneous').param(CAMERA_PIXEL_SIZE_PARAM))
+    assert shown == pytest.approx(0.082)
+    assert shown == pytest.approx(camera.parameters[CAMERA_PIXEL_SIZE_PARAM].value)
+
+
 def test_get_component_state_hazards_returns_empty(settings_controller):
     """Detector settings are passive configuration; no hazards in either mode."""
     state = savedState()

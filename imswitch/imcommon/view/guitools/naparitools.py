@@ -27,6 +27,60 @@ import matplotlib.pyplot as plt
 from .imagetools import minmaxLevels
 
 
+#: Floor for overlay edge widths, as a fraction of ONE DATA PIXEL.
+#: Only ever reached at pathological zoom levels; its job is to keep
+#: edge_width strictly positive, not to set a visible thickness.
+_MIN_EDGE_WIDTH_DATA_PIXELS = 0.1
+
+
+def dataPixelWorldSize(viewer) -> float:
+    """World-unit size of one image pixel in ``viewer`` (µm/px), or 1.0.
+
+    Image layers carry the detector's pixel size as their ``scale``; the
+    overlay Shapes layers are scale-(1, 1) and must be excluded, or the answer
+    is always 1.0 -- which is the whole bug this exists to avoid.
+    """
+    sizes = []
+    try:
+        for layer in viewer.layers:
+            if not isinstance(layer, napari.layers.Image):
+                continue
+            scale = getattr(layer, 'scale', None)
+            if scale is None:
+                continue
+            sizes.extend(
+                abs(float(value)) for value in tuple(scale)[-2:] if value
+            )
+    except Exception:
+        return 1.0
+    return min(sizes) if sizes else 1.0
+
+
+def worldEdgeWidth(viewer, screenPixels: float) -> float:
+    """Edge width in world units that renders ~``screenPixels`` px thick.
+
+    ``camera.zoom`` is screen pixels per world unit, so ``screenPixels / zoom``
+    is already independent of the detector's µm/px pitch. The FLOOR is not:
+    a fixed 0.5 world-unit (µm) minimum is a third of a data pixel on a
+    0.5 µm/px camera but nearly EIGHT data pixels on a 65 nm/px one, so
+    fine-pitch detectors drew visibly coarse crosshairs, grids and profile
+    lines that no amount of zooming would thin out. Scale the floor to the
+    data instead.
+
+    napari's own edge-width slider cannot be used to correct this by hand: as
+    of 0.7.1 it is an integer ``QLabeledSlider`` clamped to 0-40 that does
+    ``int(value)`` on the way in and ``np.clip(int(value), 0, 40)`` on the way
+    back, so every sub-micron width collapses to 0 or 1.
+    """
+    zoom = getattr(getattr(viewer, 'camera', None), 'zoom', 1.0) or 1.0
+    try:
+        width = float(screenPixels) / float(zoom)
+    except (TypeError, ValueError, ZeroDivisionError):
+        width = float(screenPixels)
+    floor = _MIN_EDGE_WIDTH_DATA_PIXELS * dataPixelWorldSize(viewer)
+    return max(floor, width)
+
+
 def addNapariGrayclipColormap():
     try:
         if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, 'grayclip'):
@@ -1192,8 +1246,7 @@ class ViewerToolManager(QtCore.QObject):
 
     def _get_edge_width(self):
         """Edge width in world units that renders to ~PIXEL_WIDTH screen pixels."""
-        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        return worldEdgeWidth(self._viewer, self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, event):
         """Rescale existing shapes' edge widths to match the new zoom."""
@@ -1449,7 +1502,7 @@ class ViewerToolManager(QtCore.QObject):
             self._shapes_layer.add_lines(
                 [[[row - s, col], [row + s, col]],
                  [[row, col - s], [row, col + s]]],
-                edge_color='yellow', edge_width=2,
+                edge_color='yellow', edge_width=self._get_edge_width(),
             )
         finally:
             self._processing_data_change = False
@@ -1470,7 +1523,8 @@ class ViewerToolManager(QtCore.QObject):
         self._processing_data_change = True
         try:
             self._shapes_layer.data = []
-            self._shapes_layer.add_lines(lines, edge_color='yellow', edge_width=1)
+            self._shapes_layer.add_lines(
+                lines, edge_color='yellow', edge_width=self._get_edge_width())
         finally:
             self._processing_data_change = False
     
@@ -1536,8 +1590,7 @@ class NapariCrosshairOverlay:
 
     def _get_edge_width(self):
         """Convert PIXEL_WIDTH to data-unit edge_width for the current zoom."""
-        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        return worldEdgeWidth(self._viewer, self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, event):
         if self._layer is not None and self._layer in self._viewer.layers \
@@ -1614,8 +1667,7 @@ class NapariGridOverlay:
 
     def _get_edge_width(self):
         """Convert PIXEL_WIDTH to data-unit edge_width for the current zoom."""
-        zoom = getattr(self._viewer.camera, 'zoom', 1.0) or 1.0
-        return max(0.5, self._PIXEL_WIDTH / zoom)
+        return worldEdgeWidth(self._viewer, self._PIXEL_WIDTH)
 
     def _on_zoom_changed(self, event):
         if self._layer is not None and self._layer in self._viewer.layers \
