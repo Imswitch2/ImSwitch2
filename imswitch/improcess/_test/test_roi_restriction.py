@@ -227,7 +227,7 @@ class _Processor:
         return out
 
 
-def _normalized(output, source=None, processor=None):
+def _normalized(output, source=None, processor=None, params=None, inputs=()):
     return (output,) if not isinstance(output, tuple) else output
 
 

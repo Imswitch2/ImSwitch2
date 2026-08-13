@@ -11,6 +11,7 @@ import tifffile
 
 from imswitch.improcess.model.contrast import finite_range
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
+from imswitch.improcess.model.result_io import save_image_result
 
 
 class CompositeResult(ProcessingResult):
@@ -80,28 +81,7 @@ class CompositeResult(ProcessingResult):
         return layers
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        data = np.asarray(self.data)
-        if fmt in ("tiff", "tif"):
-            tifffile.imwrite(
-                str(path),
-                data,
-                imagej=data.ndim <= 5,
-                metadata={
-                    "axes": "".join(self.axis_labels),
-                    "mode": "composite",
-                },
-            )
-        elif fmt in ("hdf5", "h5", "hdf"):
-            with h5py.File(str(path), "w") as h5:
-                h5.create_dataset("data", data=data)
-                h5.attrs["axis_labels"] = ",".join(self.axis_labels)
-                h5.attrs["scale_unit"] = self.scale_unit
-                h5.attrs["display_mode"] = "composite"
-                h5.attrs["channel_axis"] = self.channel_axis
-                h5.attrs["channel_colormaps"] = ",".join(self.channel_colormaps)
-        else:
-            raise ValueError(f"Composite result supports TIFF or HDF5, got {fmt!r}")
+        save_image_result(self, path, fmt, extra={"mode": "composite"})
 
 
 __all__ = ["CompositeResult"]

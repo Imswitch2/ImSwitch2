@@ -5,12 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import h5py
 import numpy as np
-import tifffile
 
 from .lazy_array import identity_lazy_view
 from .result import ProcessingResult, ViewMode
+from .result_io import save_image_result
 
 
 class ArrayProcessingResult(ProcessingResult):
@@ -64,20 +63,10 @@ class ArrayProcessingResult(ProcessingResult):
         return duplicate
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        data = np.asarray(self.data)
-        if fmt in ("tiff", "tif"):
-            tifffile.imwrite(str(path), data)
-        elif fmt in ("hdf5", "h5", "hdf"):
-            with h5py.File(str(path), "w") as h5:
-                h5.create_dataset("data", data=data)
-                h5.attrs["axis_labels"] = ",".join(self.axis_labels)
-                h5.attrs["scale_unit"] = self.scale_unit
-                for key, value in self.metadata.items():
-                    if isinstance(value, (str, int, float, bool, np.number)):
-                        h5.attrs[key] = value
-        else:
-            raise ValueError(f"ArrayProcessingResult supports TIFF or HDF5, got {fmt!r}")
+        """Written through the shared image writer, which carries the
+        calibration, the metadata and the processing footprint into whichever
+        container the filename asks for."""
+        save_image_result(self, path, fmt)
 
 
 __all__ = ["ArrayProcessingResult"]

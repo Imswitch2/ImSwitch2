@@ -297,8 +297,11 @@ class ImageToolbarController:
         if params is None:
             return
         try:
-            output = ChannelMergeProcessor().apply(params["results"][0], params)
-            results = normalize_processor_output(output)
+            processor = ChannelMergeProcessor()
+            output = processor.apply(params["results"][0], params)
+            results = normalize_processor_output(
+                output, params["results"][0], processor, params, params["results"]
+            )
         except Exception as exc:
             self._logger.exception("Could not merge the chosen channel results")
             self._showMessage(f"Could not merge channels: {exc}")
@@ -337,8 +340,11 @@ class ImageToolbarController:
         if params is None:
             return
         try:
-            output = StackCombineProcessor().apply(params["results"][0], params)
-            results = normalize_processor_output(output)
+            processor = StackCombineProcessor()
+            output = processor.apply(params["results"][0], params)
+            results = normalize_processor_output(
+                output, params["results"][0], processor, params, params["results"]
+            )
         except Exception as exc:
             self._logger.exception("Could not stack/combine the chosen results")
             self._showMessage(f"Could not stack/combine: {exc}")
@@ -358,8 +364,11 @@ class ImageToolbarController:
         if params is None:
             return
         try:
-            output = ImageCalculatorProcessor().apply(params["results"][0], params)
-            results = normalize_processor_output(output)
+            processor = ImageCalculatorProcessor()
+            output = processor.apply(params["results"][0], params)
+            results = normalize_processor_output(
+                output, params["results"][0], processor, params, params["results"]
+            )
         except Exception as exc:
             self._logger.exception("Could not run the image calculator")
             self._showMessage(f"Could not run the image calculator: {exc}")
@@ -425,7 +434,7 @@ class ImageToolbarController:
     def _runProcessor(self, processor, result, params: dict) -> None:
         try:
             output = processor.apply(result, params)
-            results = normalize_processor_output(output)
+            results = normalize_processor_output(output, result, processor, params)
         except Exception as exc:
             self._logger.exception(
                 "Could not run image toolbar processor %s",
@@ -454,7 +463,11 @@ class ImageToolbarController:
         failures = []
         for target in targets:
             try:
-                results.extend(normalize_processor_output(processor.apply(target, params)))
+                results.extend(
+                    normalize_processor_output(
+                        processor.apply(target, params), target, processor, params
+                    )
+                )
             except Exception as exc:
                 self._logger.exception(
                     "Could not run image toolbar processor %s on %s",

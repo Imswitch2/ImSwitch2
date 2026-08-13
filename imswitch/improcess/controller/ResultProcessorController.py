@@ -79,7 +79,11 @@ def _run_multi(processor, inputs, params: dict, logger):
         output = processor.apply(inputs[0], {**params, "results": inputs})
         # inputs[0] is the primary source for a multi-input run — it is what
         # apply() is handed. Merges of several results keep only that lineage.
-        return list(normalize_processor_output(output, inputs[0], processor)), []
+        return list(
+            normalize_processor_output(
+                output, inputs[0], processor, params, inputs
+            )
+        ), []
     except Exception as exc:
         logger.exception(
             "Failed to run processor %s on %d inputs",
@@ -133,7 +137,15 @@ def _run_restricted(processor, input_result, params: dict, restriction):
     # Provenance is attached against the *original* input, not the narrowed
     # copy: the narrowed one is an implementation detail that never existed
     # outside this call, and lineage pointing at it would dangle.
-    results = list(normalize_processor_output(output, input_result, processor))
+    #
+    # The footprint gets the region alongside the processor's own settings.
+    # "Filtered with radius 3" is only half of what happened when it was
+    # filtered inside an ROI, and the region is the half that cannot be
+    # guessed from the output.
+    footprint_params = {**inner, "region": applied.provenance()}
+    results = list(
+        normalize_processor_output(output, input_result, processor, footprint_params)
+    )
     apply_provenance(results, applied)
     return results
 
@@ -153,7 +165,7 @@ def _run_batch(processor, inputs, params: dict, logger):
                 continue
             output = processor.apply(input_result, params)
             results.extend(
-                normalize_processor_output(output, input_result, processor)
+                normalize_processor_output(output, input_result, processor, params)
             )
         except Exception as exc:
             logger.exception(

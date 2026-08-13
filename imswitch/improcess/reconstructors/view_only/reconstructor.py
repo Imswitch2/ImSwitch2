@@ -23,6 +23,7 @@ from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
 
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.model.result_io import save_image_result
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -59,11 +60,7 @@ class ViewOnlyResult(ProcessingResult):
     """Raw frame stack wrapped as a ProcessingResult."""
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt == "tiff":
-            tiff.imwrite(str(path), np.asarray(self.data))
-        else:
-            raise ValueError(f'ViewOnlyResult only supports fmt="tiff", got "{fmt}"')
+        save_image_result(self, path, fmt)
 
 
 class _NoParamsWidget(QtWidgets.QWidget):

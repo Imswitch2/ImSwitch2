@@ -22,8 +22,15 @@ class ProcessorOutput:
         object.__setattr__(self, "results", normalized)
 
 
-def attach_provenance(results, source, processor) -> tuple[ProcessingResult, ...]:
+def attach_provenance(
+    results, source, processor, params=None, inputs=()
+) -> tuple[ProcessingResult, ...]:
     """Record on each result what it was derived from.
+
+    Two kinds of provenance, attached together because they answer two halves
+    of the same question. The spatial identity says which pixels the result
+    shares with its source; the processing footprint says what was done to get
+    there, and travels into the saved file's metadata.
 
     Applied centrally rather than in every processor: there are twenty-odd of
     them, and provenance that depends on each author remembering to add a line
@@ -31,30 +38,39 @@ def attach_provenance(results, source, processor) -> tuple[ProcessingResult, ...
     ``preserves_grid``; if it declares nothing, the output gets its own
     coordinate space, which is the answer that cannot mislead.
     """
+    from imswitch.improcess.model.footprint import record_step
+
+    results = tuple(results)
+    # The footprint is recorded even for a source-less run: "cropped with these
+    # ranges" is worth keeping whether or not the input is still identifiable.
+    record_step(results, source, processor, params, inputs)
     if source is None:
-        return tuple(results)
+        return results
     same_grid = bool(getattr(processor, "preserves_grid", None))
     for result in results:
         adopt = getattr(result, "adopt_identity_from", None)
         if callable(adopt):
             adopt(source, same_grid=same_grid)
-    return tuple(results)
+    return results
 
 
-def normalize_processor_output(output, source=None, processor=None) -> tuple[ProcessingResult, ...]:
+def normalize_processor_output(
+    output, source=None, processor=None, params=None, inputs=()
+) -> tuple[ProcessingResult, ...]:
     """Normalize a processor return value to a tuple of results.
 
     When ``source`` and ``processor`` are given, provenance is attached here so
-    every processor inherits it without having to opt in.
+    every processor inherits it without having to opt in. ``params`` are what
+    the run was asked for, and become the footprint step's settings.
     """
     if isinstance(output, ProcessorOutput):
-        return attach_provenance(output.results, source, processor)
+        return attach_provenance(output.results, source, processor, params, inputs)
     if isinstance(output, ProcessingResult):
-        return attach_provenance((output,), source, processor)
+        return attach_provenance((output,), source, processor, params, inputs)
     if isinstance(output, (list, tuple)):
         results = tuple(output)
         if all(isinstance(result, ProcessingResult) for result in results):
-            return attach_provenance(results, source, processor)
+            return attach_provenance(results, source, processor, params, inputs)
     raise TypeError(
         "Processor output must be a ProcessingResult, ProcessorOutput, "
         "or a sequence of ProcessingResult objects"
