@@ -147,6 +147,39 @@ def _ellipse_mask(bounds, shape: tuple[int, int]) -> np.ndarray:
     return (rows / radius_r) ** 2 + (cols / radius_c) ** 2 <= 1.0
 
 
+def ellipse_axes_from_quad(vertices) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(centre, semi_axis_a, semi_axis_b)`` of the ellipse inscribed in a quad.
+
+    napari stores an ellipse as the four corners of the box bounding it, so the
+    ellipse has to be recovered from them. The two semi-axis vectors carry the
+    rotation with them, which is what keeps a rotated ellipse an ellipse rather
+    than the upright one that happens to have the same bounding box.
+    """
+    quad = np.asarray(vertices, dtype=np.float64)[:, -2:]
+    centre = quad.mean(axis=0)
+    # Adjacent edges from one corner: half of each spans a semi-axis.
+    return centre, (quad[1] - quad[0]) / 2.0, (quad[-1] - quad[0]) / 2.0
+
+
+def _ellipse_mask_from_quad(vertices, shape, origin) -> np.ndarray:
+    """Rasterise the ellipse inscribed in ``vertices`` over a local window."""
+    centre, axis_a, axis_b = ellipse_axes_from_quad(vertices)
+    rows = np.arange(shape[0], dtype=np.float64)[:, None] + float(origin[0]) - centre[0]
+    cols = np.arange(shape[1], dtype=np.float64)[None, :] + float(origin[1]) - centre[1]
+
+    # Project each pixel onto the two semi-axes. Dividing by the squared length
+    # normalises the projection to the axis, so the unit-circle test holds for
+    # any rotation. A degenerate axis would divide by zero; such an ellipse has
+    # no interior, and an empty mask is the honest answer.
+    len_a = float(axis_a @ axis_a)
+    len_b = float(axis_b @ axis_b)
+    if len_a <= 0.0 or len_b <= 0.0:
+        return np.zeros(shape, dtype=bool)
+    u = (rows * axis_a[0] + cols * axis_a[1]) / len_a
+    v = (rows * axis_b[0] + cols * axis_b[1]) / len_b
+    return (u * u + v * v) <= 1.0
+
+
 def roi_mask_local(
     roi: ROIRecord, shape: tuple[int, int]
 ) -> tuple[np.ndarray, tuple[slice, slice]]:
@@ -202,6 +235,18 @@ def roi_mask_local(
         # rectangle it spans. Refuse instead; line sampling is its own feature.
         raise UnsupportedROIGeometry(
             f"ROI {roi.name!r} of type {roi.roi_type!r} has no measurable area"
+        )
+
+    if kind in ("ellipse", "oval") and roi.vertices is not None:
+        # BEFORE the generic vertices branch, not after. An ellipse drawn in
+        # napari arrives as the four corners of its bounding box, so treating
+        # those vertices as a polygon rasterises the box itself — every ellipse
+        # would measure its enclosing rectangle (400 px where the ellipse has
+        # 314), and every boolean combination of ellipses would come out
+        # rectangular.
+        return (
+            _ellipse_mask_from_quad(roi.vertices, local_shape, (r0, c0)),
+            slices,
         )
 
     if roi.vertices is not None:
@@ -353,6 +398,17 @@ def roi_outline(roi: ROIRecord, *, max_vertices: int = 256) -> list[np.ndarray]:
 
     if kind in ("ellipse", "oval"):
         angles = np.linspace(0.0, 2.0 * np.pi, min(max_vertices, 64), endpoint=False)
+        if roi.vertices is not None:
+            # Traced from the semi-axes so a rotated ellipse is drawn rotated;
+            # rebuilding it from the bounding box would draw the upright
+            # ellipse that shares that box, which is a different shape.
+            centre, axis_a, axis_b = ellipse_axes_from_quad(roi.vertices)
+            points = (
+                centre
+                + np.cos(angles)[:, None] * axis_a
+                + np.sin(angles)[:, None] * axis_b
+            )
+            return [np.asarray(points, dtype=np.float64)]
         centre_r, centre_c = (r0 + r1) / 2.0, (c0 + c1) / 2.0
         radius_r, radius_c = (r1 - r0) / 2.0, (c1 - c0) / 2.0
         return [
