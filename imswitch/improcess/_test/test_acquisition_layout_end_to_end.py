@@ -705,3 +705,123 @@ def test_stage_extents_do_not_turn_a_timelapse_into_a_raster():
     assert resolved.source == "scan-stage-legacy"
     assert resolved.confidence == "medium"
     assert resolved.is_usable and not resolved.is_authoritative
+
+
+def test_a_scan_lapse_reconstructs_the_same_way_in_every_partition(tmp_path):
+    """Time lives in the partition when timepoints are separate files.
+
+    Each file holds one timepoint, so its event ordinals restart at zero and
+    the layouts differ only by partition.index. Both must reconstruct to the
+    same coordinates, which is what makes the two lapse storage modes
+    interchangeable to a reconstructor.
+    """
+    from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
+        with_time_partition,
+    )
+
+    rows, cols = 3, 4
+    base = build_point_scan_layouts(
+        {"img_dims": [cols, rows], "img_axes_phys": ["x", "y"], "pixel_sizes": [0.1, 0.1]},
+        ("CAM",),
+        scan_source="ScanControllerPointScan",
+    )["CAM"]
+
+    images = []
+    for index in (0, 1):
+        layout = with_time_partition(
+            base, index=index, planned_count=2, single_file=False
+        )
+        path = tmp_path / f"lapse_{index}.zarr"
+        root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+        array = ZarrStorer._create_array(
+            root, "CAM", data=_ramp(rows * cols), chunks=(1, 4, 4)
+        )
+        array.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+        array.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+        array.attrs["writing"] = False
+        array.attrs["recording:completion_outcome"] = "complete"
+
+        data_obj = DataObj(path.name, "CAM", path=str(path))
+        resolved = data_obj.acquisition_layout
+        partition = resolved.layout.partitions[0]
+        assert (partition.kind, partition.index, partition.planned_count) == (
+            "time",
+            index,
+            2,
+        )
+        assert partition.storage == "one-file-per-item"
+        # Time is a partition here, so it is not also an event loop.
+        assert "time" not in {loop.kind for loop in resolved.layout.event_loops}
+        images.append(BeadRecReconstructor().process(data_obj, {"fit_model": "none"}).data)
+
+    np.testing.assert_array_equal(images[0], images[1])
+
+
+def test_complementary_detectors_each_reconstruct_their_own_condition(tmp_path):
+    """One scan, two detectors, opposite line steps, two correct readings."""
+    rows = cols = 6
+    layouts = build_advanced_scan_layouts(
+        _advanced_scan_info(cols, rows, 2),
+        ("CAM_A", "CAM_B"),
+        scan_source="ScanControllerAdvanced",
+        detector_masks={"CAM_A": [True, False], "CAM_B": [False, True]},
+        pulse_counts_by_condition={"CAM_A": [1, 0], "CAM_B": [0, 1]},
+    )
+
+    path = tmp_path / "two_detectors.zarr"
+    root = zarr.group(store=ZarrStorer._make_store(str(path)), overwrite=True)
+    for name, layout in layouts.items():
+        array = ZarrStorer._create_array(
+            root, name, data=_ramp(rows * cols), chunks=(1, 4, 4)
+        )
+        array.attrs["AcquisitionLayout:schema"] = ACQUISITION_LAYOUT_SCHEMA
+        array.attrs["AcquisitionLayout:json"] = encode_acquisition_layout(layout)
+        array.attrs["writing"] = False
+        array.attrs["recording:completion_outcome"] = "complete"
+
+    for name, condition in (("CAM_A", 0), ("CAM_B", 1)):
+        resolved = DataObj(path.name, name, path=str(path)).acquisition_layout
+        assert resolved.layout.detector == name
+        placement = placement_from_layout(resolved.layout)
+        assert len(placement.slots) == rows * cols
+        assert {slot[0] for slot in placement.slots} == {condition}
+
+
+def test_an_unreadable_layout_falls_back_to_readable_legacy_attributes():
+    """Degrading is better than refusing when the older description survives.
+
+    A file from a newer ImSwitch whose legacy attributes are still readable
+    reconstructs from those, and says both that the newer description was
+    ignored and that the geometry was adapted.
+    """
+    import json
+
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    layout = build_point_scan_layouts(
+        {"img_dims": [10, 10], "img_axes_phys": ["x", "y"], "pixel_sizes": [0.05, 0.05]},
+        ("CAM",),
+        scan_source="ScanControllerPointScan",
+    )["CAM"]
+    document = json.loads(encode_acquisition_layout(layout))
+    document["schema"] = "imswitch.acquisition-layout/2"
+
+    resolved = resolve_acquisition_layout(
+        {
+            "AcquisitionLayout:schema": "imswitch.acquisition-layout/2",
+            "AcquisitionLayout:json": json.dumps(document),
+            "ScanStage:axis_length": [0.5, 0.5, 1.0],
+            "ScanStage:axis_step_size": [0.05, 0.05, 1.0],
+            "ScanStage:axis_startpos": [0.0, 0.0, 0.0],
+        },
+        shape=(100, 8, 8),
+        detector="CAM",
+    )
+
+    assert resolved.source == "scan-stage-legacy"
+    assert resolved.is_usable and not resolved.is_authoritative
+    codes = {issue.code for issue in resolved.issues}
+    assert "UNSUPPORTED_SCHEMA_VERSION" in codes
+    assert "LEGACY_SCAN_GEOMETRY_ASSUMPTION" in codes
