@@ -119,6 +119,9 @@ class NapariStormDisplay:
         try:
             if entry is None:
                 entry = self._open(result)
+                # Frame the new cloud once, on open only: doing it on every
+                # reselection would throw away a zoom the user set.
+                self._focus(entry)
             else:
                 self._reveal(entry)
         except Exception as exc:  # noqa: BLE001 - degrade to the preview
@@ -284,6 +287,46 @@ class NapariStormDisplay:
         self._logger.warning(
             "napari-storm substituted %d of %d unusable %s values", repaired, total, column
         )
+
+    def _layer(self, entry: _Dataset):
+        for layer in getattr(self._viewer, "layers", ()):
+            if getattr(layer, "name", None) == entry.name:
+                return layer
+        return None
+
+    def _focus(self, entry: _Dataset) -> None:
+        """Frame the camera on this dataset alone.
+
+        ``reset_view`` frames every layer, and ImProcess's protected image
+        layer is a 1x1 blank pinned at the origin that napari counts even when
+        it is hidden. Localizations sit at real sample coordinates, so the
+        union runs from the origin out to the data and the cloud ends up a
+        speck in the corner. Correcting the camera afterwards keeps napari's
+        own canvas-size arithmetic instead of reimplementing it.
+
+        Read off the layer's reported extent rather than our own columns, so
+        it stays right whatever axis order the renderer draws in.
+        """
+        layer = self._layer(entry)
+        if layer is None:
+            return
+        try:
+            self._viewer.reset_view()
+            union = np.asarray(self._viewer.layers.extent.world, dtype=float)
+            target = np.asarray(layer.extent.world, dtype=float)
+            # Compare only the two displayed axes; a flat z would give 0/0.
+            union_span = (union[1] - union[0])[-2:]
+            target_span = (target[1] - target[0])[-2:]
+            ratios = [
+                whole / part
+                for whole, part in zip(union_span, target_span)
+                if part > 0 and whole > 0
+            ]
+            self._viewer.camera.center = tuple(target.mean(axis=0))
+            if ratios:
+                self._viewer.camera.zoom = self._viewer.camera.zoom * min(ratios)
+        except Exception as exc:  # noqa: BLE001 - framing is never fatal
+            self._logger.debug("Could not frame %r: %s", entry.name, exc)
 
     def _apply_ndisplay(self, result) -> None:
         """3D data needs napari's 3D canvas; 2D is left alone.
