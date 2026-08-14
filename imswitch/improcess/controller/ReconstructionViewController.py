@@ -52,7 +52,48 @@ class ReconstructionViewController(ImProcessWidgetController):
 
     def _resultsChanged(self) -> None:
         """Announce that the loaded set or the selection moved."""
+        self._retainNapariStormDatasets()
         self._commChannel.sigResultsChanged.emit()
+
+    def _napariStormDisplay(self):
+        """The point-cloud backend, if there is one and it can draw.
+
+        Two independent gates, either of which leaves localization results on
+        their built-in preview: the view only builds a display when the config
+        asks for it, and the display only reports itself importable when the
+        optional package is installed.
+        """
+        display = getattr(self._widget, "napariStormDisplay", None)
+        if display is None or not display.importable:
+            return None
+        return display
+
+    def _showWithNapariStorm(self, result) -> bool:
+        """Draw a localization result as a point cloud, if we can."""
+        if result_kind(result) != "localization":
+            # Anything else takes the ordinary path, so whatever the point
+            # cloud was showing must stop competing with it for the canvas.
+            display = self._napariStormDisplay()
+            if display is not None:
+                display.hide()
+            return False
+
+        display = self._napariStormDisplay()
+        if display is None:
+            return False
+        return display.show(result)
+
+    def _retainNapariStormDatasets(self) -> None:
+        """Close point clouds whose result has left the list."""
+        display = self._napariStormDisplay()
+        if display is None:
+            return
+        try:
+            results = [data for _name, data in self._widget.getAllItemDatas()]
+        except Exception as exc:
+            self._logger.debug("Could not enumerate results: %s", exc)
+            return
+        display.retain_only(results)
 
     def listItemChanged(self):
         currItem = self._widget.getCurrentItemData()
@@ -92,6 +133,14 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._setProcessingResultSlice(current, autoLevels=autoLevels, levels=levels)
 
     def _setProcessingResultSlice(self, result, autoLevels=False, levels=None):
+        if self._showWithNapariStorm(result):
+            # The point cloud is the display; the preview histogram it would
+            # otherwise fall back to would only sit behind it.
+            self._transposeOrder = []
+            self._displayedAxisLabels = []
+            self._widget.clearImage()
+            return
+
         display_layers = result.display_layers() if hasattr(result, "display_layers") else []
         if display_layers:
             if hasattr(result, "applyDisplayLayerSettings"):

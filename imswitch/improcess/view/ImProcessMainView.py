@@ -94,6 +94,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         self,
         showParameterPanel: bool = True,
         showNapariLayerControls: bool = True,
+        useNapariStormViewer: bool = False,
         showReconstructionPanel: bool = True,
         showActionsPanel: bool = True,
         showFileWatcherPanel: bool = True,
@@ -278,7 +279,8 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         btnFrame.sigUpdate.connect(self.sigUpdate)
 
         self.reconstructionWidget = ReconstructionView(
-            showLayerControls=showNapariLayerControls
+            showLayerControls=showNapariLayerControls,
+            useNapariStormViewer=useNapariStormViewer,
         )
         self.graphWidget = GraphWidget() if showGraphPanel else None
         self.profileWidget = (

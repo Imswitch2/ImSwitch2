@@ -7,6 +7,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.imcommon.view.guitools import naparitools
 from imswitch.improcess.model.contrast import safe_display_levels
 from . import guitools
+from .NapariStormDisplay import NapariStormDisplay
 
 
 def _spec_kind(spec) -> str:
@@ -38,7 +39,13 @@ class ReconstructionView(QtWidgets.QFrame):
     sigViewChanged = QtCore.Signal()
 
     # Methods
-    def __init__(self, *args, showLayerControls: bool = True, **kwargs):
+    def __init__(
+        self,
+        *args,
+        showLayerControls: bool = True,
+        useNapariStormViewer: bool = False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._logger = initLogger(self)
 
@@ -53,6 +60,14 @@ class ReconstructionView(QtWidgets.QFrame):
         )
         self.setNapariLayerControlsVisible(showLayerControls)
         self._displayLayers = []
+        # Optional GPU point-cloud backend for localization results. Retained
+        # across selections, so it deliberately sits outside _displayLayers,
+        # which is cleared and rebuilt on every result change. None unless the
+        # config asks for it; the adapter then gates itself again on the
+        # optional package actually being installed.
+        self.napariStormDisplay = (
+            NapariStormDisplay(self.napariViewer) if useNapariStormViewer else None
+        )
         # Tracks which managed/protected layer is the selected result's canonical
         # output (may be a labels/points layer, not imgLayer) so the toolbar and
         # active-image accessors can target it by role rather than by identity.
