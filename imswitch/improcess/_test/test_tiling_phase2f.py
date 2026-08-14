@@ -17,10 +17,19 @@ from imswitch.improcess.reconstructors.view_only import ViewOnlyReconstructor
 
 
 def test_non_tiling_reconstructors_keep_image_only_inline_defaults():
+    """No reconstructor but the tiling one may opt into the manifest path.
+
+    Asserted as "does not accept tiling-manifest" rather than "accepts exactly
+    ('image',)", which was the same thing only while tiling was the sole
+    non-image source kind. The SMLM localizer also declares "localizations" —
+    a table that opens straight to a result and never reaches a reconstructor —
+    and that must not weaken this contract.
+    """
     for plugin_id, plugin_class in _AVAILABLE_RECONSTRUCTOR_CLASSES.items():
         if plugin_id == "tiling-mosaic":
             continue
-        assert plugin_class.accepted_source_kinds == ("image",)
+        assert "image" in plugin_class.accepted_source_kinds
+        assert "tiling-manifest" not in plugin_class.accepted_source_kinds
         assert plugin_class.execution_policy == "inline"
 
 

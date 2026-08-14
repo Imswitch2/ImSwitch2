@@ -8,6 +8,10 @@ from qtpy import QtWidgets
 
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
+from imswitch.improcess.analysis.smlm_import import (
+    read_localizations,
+    sniff_localization_format,
+)
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
     LOCATOR_DIRECTORY,
@@ -184,6 +188,13 @@ class FileIOController(ImProcessWidgetController):
             ``'cancelled'``   — user dismissed the picker dialog,
             ``'empty'``       — no datasets in the file or none selected.
         """
+        # Recognised by content, before the suffix-based resolver runs: a
+        # Picasso .hdf5 and an image .hdf5 are the same name, and a
+        # localization .csv is not something DataObj can open at all.
+        localizationFormat = sniff_localization_format(dataPath)
+        if localizationFormat is not None and localizationFormat != 'generic-csv':
+            return self._loadLocalizationsAsResult(dataPath, localizationFormat)
+
         try:
             source = resolve_dataset_source(dataPath, allowed_specs=self._activeSourceSpecs())
             dataPath = str(source.path)
@@ -229,6 +240,42 @@ class FileIOController(ImProcessWidgetController):
                 name, datasetName, path=dataPath
             )
         return 'multidata'
+
+    def _loadLocalizationsAsResult(self, dataPath, localizationFormat) -> str:
+        """Open a coordinate table straight into the reconstruction list.
+
+        A localization table is a *result*, not data to reconstruct, so it
+        bypasses DataObj entirely and is published the same way a reconstructor
+        publishes its output.
+        """
+        try:
+            result = read_localizations(dataPath)
+        except Exception as exc:
+            self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
+            return 'empty'
+
+        if result.metadata.get('pixel_size_assumed'):
+            # The coordinates are exact; only the preview bin floor and any
+            # later pixel-native export depend on this. Say so rather than let
+            # a guess be mistaken for a measurement.
+            self._logger.warning(
+                f"{os.path.basename(dataPath)} declares no pixel size; assuming "
+                f"{result.pixel_size_nm:g} nm for preview and export"
+            )
+
+        reconstructionController = getattr(self._main, 'reconstructionController', None)
+        if reconstructionController is None:
+            self._logger.error(
+                "No reconstruction controller available to receive localizations"
+            )
+            return 'empty'
+
+        reconstructionController.resultProduced(result, result.name)
+        self._logger.info(
+            f"Loaded {len(result)} localizations from {os.path.basename(dataPath)} "
+            f"({localizationFormat})"
+        )
+        return 'current'
 
     def _loadMetadataAsCurrent(self, source) -> str:
         """Inspect and route a non-array source without asking DataObj to open it."""

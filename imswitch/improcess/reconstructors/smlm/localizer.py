@@ -117,6 +117,11 @@ class SmlmLocalizer(StreamingReconstructor):
     name = "SMLM localizer"
     id = "smlm-localizer"
     file_extensions = ["hdf5", "tiff", "tif", "zarr"]
+    # Image stacks are what this localizes. Localization tables are not input
+    # to it at all -- they open straight to a result, bypassing the
+    # reconstructor -- but this is the tool a user is in when they want to
+    # open one, so its Open dialog offers them.
+    accepted_source_kinds = ("image", "localizations")
     description = "Single-molecule localization (net-gradient detect + fit)"
     default_save_subdir = "smlm"
 
