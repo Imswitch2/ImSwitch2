@@ -83,6 +83,29 @@ _CANONICAL_TO_NAPARI_STORM: tuple[tuple[str, str], ...] = tuple(
     zip(LOCALIZATION_COLUMNS, NAPARI_STORM_DTYPE.names)
 )
 
+#: Keyword arguments declaring our canonical schema to a napari-storm
+#: ``LocalizationTable``. Since napari-storm 1.0 the sigma and photon columns
+#: are declarable alongside the position ones, so the *viewer* reads our nm
+#: recarray in place — no rename, no unit conversion, no copy.
+#:
+#: This is deliberately not the same path as :func:`to_napari_storm_recarray`,
+#: which still exists for the Picasso/HDF5 *export* (a pixel-native file
+#: format). Display reads nm; export writes pixels.
+#:
+#: ``position_scale_nm=1.0`` says our columns are already nanometres, and
+#: ``sigma_scale_nm`` follows it by default, so widths need no separate
+#: declaration.
+NAPARI_STORM_TABLE_KWARGS: dict[str, Any] = {
+    "position_columns": {"x": "x_nm", "y": "y_nm", "z": "z_nm"},
+    "position_scale_nm": 1.0,
+    "sigma_columns": {
+        "x": "sigma_x_nm",
+        "y": "sigma_y_nm",
+        "z": "sigma_z_nm",
+    },
+    "photon_column": "photons",
+}
+
 
 def empty_localizations(count: int = 0) -> np.recarray:
     """Return a zero-filled localization recarray with ``count`` rows."""
@@ -199,6 +222,7 @@ __all__ = [
     "LOCALIZATION_DTYPE",
     "REQUIRED_INPUT_COLUMNS",
     "NAPARI_STORM_DTYPE",
+    "NAPARI_STORM_TABLE_KWARGS",
     "empty_localizations",
     "localizations_from_columns",
     "as_localizations",
