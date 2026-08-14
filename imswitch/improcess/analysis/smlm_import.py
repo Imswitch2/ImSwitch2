@@ -69,6 +69,9 @@ _LENGTH_UNITS_NM: dict[str, float] = {
 }
 _PIXEL_UNITS = frozenset({"px", "pixel", "pixels"})
 
+#: Units offered by the import dialog, in the order it lists them.
+LENGTH_UNIT_CHOICES: tuple[str, ...] = ("nm", "um", "px", "m")
+
 #: ThunderSTORM column -> canonical column(s). Split by kind because only the
 #: length-valued ones get a unit conversion.
 _TS_POSITION = {"x": ("x_nm",), "y": ("y_nm",), "z": ("z_nm",)}
@@ -187,6 +190,80 @@ def _read_csv_columns_stdlib(
                 column[row_index] = np.nan
         values[header] = column
     return headers, values
+
+
+#: Column names other tools plausibly use, per canonical column, best first.
+#: Only consulted to *pre-fill* an import dialog — a guess the user then
+#: confirms — never to read a file unattended.
+_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "x_nm": ("x", "x_nm", "x_pos", "xpos", "pos_x", "posx", "x_position", "xcenter"),
+    "y_nm": ("y", "y_nm", "y_pos", "ypos", "pos_y", "posy", "y_position", "ycenter"),
+    "z_nm": ("z", "z_nm", "z_pos", "zpos", "pos_z", "posz", "z_position"),
+    "frame": ("frame", "frame_number", "framenumber", "t", "slice", "image_id"),
+    "photons": ("photons", "intensity", "photon_count", "n_photons", "counts"),
+    "sigma_x_nm": ("sigma_x", "sigmax", "sx", "sigma1", "width_x", "sigma"),
+    "sigma_y_nm": ("sigma_y", "sigmay", "sy", "sigma2", "width_y", "sigma"),
+    "sigma_z_nm": ("sigma_z", "sigmaz", "sz", "width_z"),
+    "lp_x_nm": ("uncertainty_xy", "uncertainty", "lpx", "lp_x", "precision_x"),
+    "lp_y_nm": ("uncertainty_xy", "uncertainty", "lpy", "lp_y", "precision_y"),
+    "lp_z_nm": ("uncertainty_z", "lpz", "lp_z", "precision_z"),
+}
+
+#: Aliases that legitimately serve two canonical columns at once — an
+#: isotropic width, or one uncertainty quoted for both lateral axes.
+_SHARED_ALIASES = frozenset({"sigma", "uncertainty", "uncertainty_xy"})
+
+
+def read_csv_headers(path: Path | str) -> list[str]:
+    """The header row of a delimited text file, verbatim.
+
+    For populating an import dialog without reading the whole table, which may
+    be millions of rows.
+    """
+    path = Path(path)
+    delimiter = _detect_delimiter(path)
+    with open(path, newline="") as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
+        try:
+            return [cell.strip().strip('"') for cell in next(reader)]
+        except StopIteration:
+            raise LocalizationImportError(f"{path.name} is empty") from None
+
+
+def guess_column_mapping(headers: list[str]) -> dict[str, str]:
+    """Best-effort canonical column -> header, for pre-filling a dialog.
+
+    Deliberately incomplete rather than creative: a column it cannot place is
+    left out for the user to set, because a wrong guess that looks right is
+    worse than an obvious blank.
+    """
+    normalized = {}
+    for header in headers:
+        key, _unit = _split_unit(header)
+        normalized.setdefault(key, header)
+
+    mapping: dict[str, str] = {}
+    claimed: set[str] = set()
+    for canonical, aliases in _COLUMN_ALIASES.items():
+        for alias in aliases:
+            header = normalized.get(alias)
+            if header is None:
+                continue
+            if header in claimed and alias not in _SHARED_ALIASES:
+                continue
+            mapping[canonical] = header
+            claimed.add(header)
+            break
+    return mapping
+
+
+def guess_length_unit(headers: list[str]) -> str:
+    """The unit a file declares for its coordinates, defaulting to nm."""
+    for header in headers:
+        key, unit = _split_unit(header)
+        if key in ("x", "y", "x_nm", "y_nm", "xpos", "ypos") and unit:
+            return unit
+    return "nm"
 
 
 def read_thunderstorm_csv(
@@ -419,7 +496,11 @@ def read_localizations(
 
 __all__ = [
     "ASSUMED_PIXEL_SIZE_NM",
+    "LENGTH_UNIT_CHOICES",
     "LocalizationImportError",
+    "guess_column_mapping",
+    "guess_length_unit",
+    "read_csv_headers",
     "read_generic_csv",
     "read_localizations",
     "read_picasso_hdf5",

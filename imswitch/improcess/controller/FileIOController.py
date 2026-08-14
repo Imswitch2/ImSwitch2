@@ -9,11 +9,13 @@ from qtpy import QtWidgets
 import imswitch.imcommon.view.guitools as guitools
 from imswitch.imcommon.controller import PickDatasetsController
 from imswitch.improcess.analysis.smlm_import import (
+    read_generic_csv,
     read_localizations,
     sniff_localization_format,
 )
 from imswitch.improcess.model import DataObj
 from imswitch.improcess.model.dataset_sources import (
+    LOCALIZATIONS_SPEC,
     LOCATOR_DIRECTORY,
     TILING_MANIFEST_SPEC,
     file_dialog_filter,
@@ -192,7 +194,13 @@ class FileIOController(ImProcessWidgetController):
         # Picasso .hdf5 and an image .hdf5 are the same name, and a
         # localization .csv is not something DataObj can open at all.
         localizationFormat = sniff_localization_format(dataPath)
-        if localizationFormat is not None and localizationFormat != 'generic-csv':
+        if localizationFormat == 'generic-csv':
+            # An unrecognised table: only a localization file if the user says
+            # so, and only readable once they name the columns. Offered rather
+            # than assumed, and only where a table cannot be image data anyway.
+            if self._localizationSpecActive():
+                return self._loadMappedLocalizationsAsResult(dataPath)
+        elif localizationFormat is not None:
             return self._loadLocalizationsAsResult(dataPath, localizationFormat)
 
         try:
@@ -241,6 +249,34 @@ class FileIOController(ImProcessWidgetController):
             )
         return 'multidata'
 
+    def _localizationSpecActive(self) -> bool:
+        """Whether the active reconstructor offers localization tables."""
+        specs = self._activeSourceSpecs() or []
+        return any(spec.id == LOCALIZATIONS_SPEC.id for spec in specs)
+
+    def _loadMappedLocalizationsAsResult(self, dataPath) -> str:
+        """Ask what the columns mean, then read the table as a result."""
+        from imswitch.improcess.view.LocalizationImportDialog import (
+            LocalizationImportDialog,
+        )
+
+        try:
+            kwargs = LocalizationImportDialog.get_import_kwargs(
+                dataPath, parent=self._widget
+            )
+        except Exception as exc:
+            self._logger.error(f"Could not inspect {dataPath}: {exc}")
+            return 'empty'
+        if kwargs is None:
+            return 'cancelled'
+
+        try:
+            result = read_generic_csv(dataPath, **kwargs)
+        except Exception as exc:
+            self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
+            return 'empty'
+        return self._publishLocalizations(result, dataPath, 'generic-csv')
+
     def _loadLocalizationsAsResult(self, dataPath, localizationFormat) -> str:
         """Open a coordinate table straight into the reconstruction list.
 
@@ -253,7 +289,10 @@ class FileIOController(ImProcessWidgetController):
         except Exception as exc:
             self._logger.error(f"Could not read localizations from {dataPath}: {exc}")
             return 'empty'
+        return self._publishLocalizations(result, dataPath, localizationFormat)
 
+    def _publishLocalizations(self, result, dataPath, localizationFormat) -> str:
+        """Hand a freshly read localization table to the reconstruction list."""
         if result.metadata.get('pixel_size_assumed'):
             # The coordinates are exact; only the preview bin floor and any
             # later pixel-native export depend on this. Say so rather than let

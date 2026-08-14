@@ -145,6 +145,77 @@ def test_an_unreadable_localization_file_does_not_publish(controller, tmp_path):
     assert controller.errors
 
 
+def _generic_csv(tmp_path):
+    path = tmp_path / "custom.csv"
+    path.write_text("n,xpos,ypos,counts\n1,1000.0,2000.0,900\n2,3000.0,4000.0,700\n")
+    return path
+
+
+def _offer_localizations(controller, offered=True):
+    """Make the active reconstructor accept (or not) localization tables."""
+    controller._main._activeReconstructor = SmlmLocalizer if offered else SimpleNamespace(
+        file_extensions=["tiff"], accepted_source_kinds=("image",)
+    )
+
+
+def test_a_generic_csv_asks_what_the_columns_mean(controller, tmp_path, monkeypatch):
+    path = _generic_csv(tmp_path)
+    _offer_localizations(controller)
+    controller._widget = None
+
+    from imswitch.improcess.view import LocalizationImportDialog as module
+
+    monkeypatch.setattr(
+        module.LocalizationImportDialog,
+        "get_import_kwargs",
+        classmethod(lambda cls, p, parent=None: {
+            "mapping": {"frame": "n", "x_nm": "xpos", "y_nm": "ypos",
+                        "photons": "counts"},
+            "unit": "nm",
+            "pixel_size_nm": 120.0,
+            "frame_base": 1,
+        }),
+    )
+
+    outcome = controller._loadFromPath(str(path))
+
+    assert outcome == 'current'
+    result, _name = controller._recon.published[0]
+    np.testing.assert_allclose(result.locs.x_nm, [1000.0, 3000.0], rtol=1e-5)
+    np.testing.assert_array_equal(result.locs.frame, [0, 1])
+    assert result.pixel_size_nm == pytest.approx(120.0)
+
+
+def test_cancelling_the_mapping_dialog_publishes_nothing(
+    controller, tmp_path, monkeypatch
+):
+    path = _generic_csv(tmp_path)
+    _offer_localizations(controller)
+    controller._widget = None
+
+    from imswitch.improcess.view import LocalizationImportDialog as module
+
+    monkeypatch.setattr(
+        module.LocalizationImportDialog,
+        "get_import_kwargs",
+        classmethod(lambda cls, p, parent=None: None),
+    )
+
+    assert controller._loadFromPath(str(path)) == 'cancelled'
+    assert controller._recon.published == []
+
+
+def test_a_generic_csv_is_not_offered_to_other_reconstructors(controller, tmp_path):
+    """No dialog when localization tables are not on the menu."""
+    path = _generic_csv(tmp_path)
+    _offer_localizations(controller, offered=False)
+
+    outcome = controller._loadFromPath(str(path))
+
+    assert outcome == 'empty'
+    assert controller._recon.published == []
+
+
 def test_a_plain_hdf5_still_takes_the_image_path(controller, tmp_path):
     """The localization branch must not swallow ordinary image files."""
     import h5py
