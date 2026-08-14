@@ -22,6 +22,7 @@ from imswitch.improcess.reconstructors.base import StreamingReconstructor
 from .detection import detect_spots
 from .fitting import fit_spots
 from .params_widget import SmlmParamsWidget
+from .precision import localization_precision_nm
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -65,6 +66,7 @@ def localize_stack(
     sxs: list[float] = []
     sys: list[float] = []
     photons: list[float] = []
+    backgrounds: list[float] = []
 
     for frame_index, frame in iter_frames(data):
         coords = detect_spots(frame, threshold=threshold, roi=roi, sigma=sigma)
@@ -75,20 +77,36 @@ def localize_stack(
             sxs.append(fit["sigma_x"])
             sys.append(fit["sigma_y"])
             photons.append(fit["intensity"])
+            backgrounds.append(fit.get("background", 0.0))
 
     if not frames:
         from imswitch.improcess.model.localization_schema import empty_localizations
 
         return empty_localizations(0)
 
+    sigma_x_nm = np.asarray(sxs, dtype=np.float32) * pixel_size_nm
+    sigma_y_nm = np.asarray(sys, dtype=np.float32) * pixel_size_nm
+    photon_counts = np.asarray(photons, dtype=np.float32)
+    background = np.asarray(backgrounds, dtype=np.float32)
+
+    # Precision per axis, from that axis's own fitted width. gausslq gives an
+    # elliptical second moment, so lp_x and lp_y genuinely differ; the MLE
+    # branch fits one symmetric sigma, so they come out equal.
+    lp_kwargs = {"pixel_size_nm": pixel_size_nm, "background": background}
     return localizations_from_columns(
         {
             "frame": np.asarray(frames, dtype=np.int32),
             "x_nm": np.asarray(xs, dtype=np.float32) * pixel_size_nm,
             "y_nm": np.asarray(ys, dtype=np.float32) * pixel_size_nm,
-            "sigma_x_nm": np.asarray(sxs, dtype=np.float32) * pixel_size_nm,
-            "sigma_y_nm": np.asarray(sys, dtype=np.float32) * pixel_size_nm,
-            "photons": np.asarray(photons, dtype=np.float32),
+            "sigma_x_nm": sigma_x_nm,
+            "sigma_y_nm": sigma_y_nm,
+            "photons": photon_counts,
+            "lp_x_nm": localization_precision_nm(
+                sigma_x_nm, photon_counts, **lp_kwargs
+            ),
+            "lp_y_nm": localization_precision_nm(
+                sigma_y_nm, photon_counts, **lp_kwargs
+            ),
         }
     )
 

@@ -32,10 +32,13 @@ from imswitch.improcess.model.localization_result import LocalizationResult
 
 
 def _picasso_dtype(dims: str) -> np.dtype:
+    #: ``sx``/``sy`` are the PSF widths and ``lpx``/``lpy`` the localization
+    #: precisions — separate columns in Picasso, and separate here too.
     fields = [("frame", "i4"), ("x", "f4"), ("y", "f4"),
-              ("photons", "f4"), ("lpx", "f4"), ("lpy", "f4")]
+              ("photons", "f4"), ("sx", "f4"), ("sy", "f4"),
+              ("lpx", "f4"), ("lpy", "f4")]
     if dims == "3D":
-        fields += [("z", "f4"), ("lpz", "f4")]
+        fields += [("z", "f4"), ("sz", "f4"), ("lpz", "f4")]
     return np.dtype(fields)
 
 
@@ -48,11 +51,14 @@ def to_picasso_recarray(result: LocalizationResult) -> np.recarray:
     out.x = locs.x_nm / pixel
     out.y = locs.y_nm / pixel
     out.photons = locs.photons
-    out.lpx = locs.sigma_x_nm / pixel
-    out.lpy = locs.sigma_y_nm / pixel
+    out.sx = locs.sigma_x_nm / pixel
+    out.sy = locs.sigma_y_nm / pixel
+    out.lpx = locs.lp_x_nm / pixel
+    out.lpy = locs.lp_y_nm / pixel
     if result.dims == "3D":
         out.z = locs.z_nm  # nm on purpose (napari-storm divides by pixel size)
-        out.lpz = locs.sigma_z_nm / pixel
+        out.sz = locs.sigma_z_nm / pixel
+        out.lpz = locs.lp_z_nm / pixel
     return out
 
 
@@ -143,14 +149,26 @@ def read_picasso_hdf5(path: Path, *, pixel_size_nm: float | None = None,
     }
     if "photons" in recs.dtype.names:
         columns["photons"] = np.asarray(recs.photons, dtype=np.float32)
-    if "lpx" in recs.dtype.names:
-        columns["sigma_x_nm"] = np.asarray(recs.lpx, dtype=np.float32) * pixel_size_nm
-    if "lpy" in recs.dtype.names:
-        columns["sigma_y_nm"] = np.asarray(recs.lpy, dtype=np.float32) * pixel_size_nm
+    # Picasso keeps PSF width (sx/sy) and localization precision (lpx/lpy) as
+    # separate columns, and so do we. An earlier revision of this reader mapped
+    # lpx onto sigma_x_nm, which made that column mean "precision" for imported
+    # data and "PSF width" for anything localized here.
+    for storm_name, canonical in (
+        ("sx", "sigma_x_nm"),
+        ("sy", "sigma_y_nm"),
+        ("lpx", "lp_x_nm"),
+        ("lpy", "lp_y_nm"),
+    ):
+        if storm_name in recs.dtype.names:
+            columns[canonical] = (
+                np.asarray(recs[storm_name], dtype=np.float32) * pixel_size_nm
+            )
     if has_z:
         columns["z_nm"] = np.asarray(recs.z, dtype=np.float32)  # already nm
+        if "sz" in recs.dtype.names:
+            columns["sigma_z_nm"] = np.asarray(recs.sz, dtype=np.float32) * pixel_size_nm
         if "lpz" in recs.dtype.names:
-            columns["sigma_z_nm"] = np.asarray(recs.lpz, dtype=np.float32) * pixel_size_nm
+            columns["lp_z_nm"] = np.asarray(recs.lpz, dtype=np.float32) * pixel_size_nm
 
     locs = localizations_from_columns(columns)
     return LocalizationResult(

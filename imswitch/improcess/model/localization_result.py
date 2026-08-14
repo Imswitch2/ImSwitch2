@@ -216,7 +216,10 @@ class LocalizationResult(ProcessingResult):
         """Column order for the shared ResultsTableWidget."""
         columns = list(LOCALIZATION_COLUMNS)
         if self.dims == "2D":
-            columns = [c for c in columns if c not in ("z_nm", "sigma_z_nm")]
+            columns = [
+                c for c in columns
+                if c not in ("z_nm", "sigma_z_nm", "lp_z_nm")
+            ]
         return columns
 
     def table_records(self) -> list[dict[str, Any]]:

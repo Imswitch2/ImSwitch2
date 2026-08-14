@@ -21,7 +21,7 @@ import pytest
 
 from imswitch.improcess.model.localization_result import LocalizationResult
 from imswitch.improcess.model.localization_schema import (
-    NAPARI_STORM_TABLE_KWARGS,
+    napari_storm_table_kwargs,
     localizations_from_columns,
     to_napari_storm_recarray,
 )
@@ -74,7 +74,7 @@ def _traits(result, **overrides):
 def _plan_nm(result, settings, traits=None):
     """The display path: our own recarray, declared rather than converted."""
     table = storm_core.LocalizationTable(
-        result.locs, copy=False, **NAPARI_STORM_TABLE_KWARGS
+        result.locs, copy=False, **napari_storm_table_kwargs(result.locs)
     )
     return storm_core.RenderPlanner().plan(
         table, settings, traits or _traits(result), name=result.name
@@ -115,7 +115,7 @@ def test_table_reads_our_array_in_place():
     """``copy=False`` means the viewer shares our buffer, not a duplicate."""
     result = _result(count=64)
     table = storm_core.LocalizationTable(
-        result.locs, copy=False, **NAPARI_STORM_TABLE_KWARGS
+        result.locs, copy=False, **napari_storm_table_kwargs(result.locs)
     )
     assert table.records.base is result.locs or table.records is result.locs
     assert table.has_axis("z")
@@ -173,7 +173,7 @@ def test_two_dimensional_table_without_z_sigma_column():
     flat = result.locs[
         ["frame", "x_nm", "y_nm", "sigma_x_nm", "sigma_y_nm", "photons"]
     ].copy()
-    kwargs = dict(NAPARI_STORM_TABLE_KWARGS)
+    kwargs = dict(napari_storm_table_kwargs(flat))
     kwargs["position_columns"] = {"x": "x_nm", "y": "y_nm"}
     kwargs["sigma_columns"] = {"x": "sigma_x_nm", "y": "sigma_y_nm"}
 
