@@ -83,7 +83,12 @@ def worldEdgeWidth(viewer, screenPixels: float) -> float:
 
 def addNapariGrayclipColormap():
     try:
-        if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, 'grayclip'):
+        # Membership, not hasattr: AVAILABLE_COLORMAPS is a dict, so hasattr
+        # asked whether it had an *attribute* called 'grayclip' and was always
+        # False. The guard therefore never fired, and registering a second
+        # time raises -- which meant a second viewer could not be built in a
+        # process that had already made one.
+        if 'grayclip' in napari.utils.colormaps.AVAILABLE_COLORMAPS:
             return
 
         grayclip = []
