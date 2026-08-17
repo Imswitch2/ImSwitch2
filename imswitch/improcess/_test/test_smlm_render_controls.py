@@ -284,3 +284,88 @@ def test_appearance_changes_do_not_replan(display):
     assert display.set_appearance(result, colormap="green", opacity=0.5) is True
     assert display._renderer.updates == before
     assert display._renderer.appearance[-1].colormap == "green"
+
+
+# -- depth colouring --------------------------------------------------------
+
+
+def test_depth_colouring_switches_to_a_hue_colormap(qtbot):
+    """On a grey ramp, depth reads as brightness and looks like a no-op."""
+    widget = SmlmRenderWidget()
+    qtbot.addWidget(widget)
+    widget.setResultContext(available=True, has_z=True, has_uncertainty=True)
+    widget._mode.setCurrentIndex(widget._mode.findData(0))
+    assert widget.appearance()["colormap"] == "gray"
+
+    widget._zColor.setChecked(True)
+
+    assert widget.appearance()["colormap"] == "hsv"
+
+
+def test_switching_depth_colouring_off_restores_the_previous_colormap(qtbot):
+    widget = SmlmRenderWidget()
+    qtbot.addWidget(widget)
+    widget.setResultContext(available=True, has_z=True, has_uncertainty=True)
+    widget._mode.setCurrentIndex(widget._mode.findData(0))
+    widget._colormap.setCurrentText("green")
+
+    widget._zColor.setChecked(True)
+    assert widget.appearance()["colormap"] == "hsv"
+
+    widget._zColor.setChecked(False)
+    assert widget.appearance()["colormap"] == "green"
+
+
+def test_a_hue_colormap_the_user_chose_is_left_alone(qtbot):
+    widget = SmlmRenderWidget()
+    qtbot.addWidget(widget)
+    widget.setResultContext(available=True, has_z=True, has_uncertainty=True)
+    widget._mode.setCurrentIndex(widget._mode.findData(0))
+    widget._colormap.setCurrentText("turbo")
+
+    widget._zColor.setChecked(True)
+
+    assert widget.appearance()["colormap"] == "turbo"
+
+
+def test_hsv_is_offered_at_all(qtbot):
+    widget = SmlmRenderWidget()
+    qtbot.addWidget(widget)
+    choices = [widget._colormap.itemText(i) for i in range(widget._colormap.count())]
+    assert "hsv" in choices
+
+
+def test_depth_colouring_reaches_the_plan_as_depth(display):
+    """The rendered values must be the z coordinate, not the intensity."""
+    result = _result(with_z=True)
+    display.show(result)
+    display.apply_settings(result, {"mode": 0, "z_color_encoding": True})
+
+    values = np.asarray(display._renderer.request.values)
+    z = np.asarray(result.locs.z_nm, dtype=float)
+    # Normalized depth: perfectly rank-correlated with z, unlike intensity.
+    assert np.corrcoef(values, z)[0, 1] == pytest.approx(1.0, abs=1e-6)
+
+
+# -- mode seeding -----------------------------------------------------------
+
+
+def test_an_untouched_panel_follows_the_renderer_default(qtbot):
+    """Otherwise the panel claims 'fixed' while the canvas shows variable."""
+    widget = SmlmRenderWidget()
+    qtbot.addWidget(widget)
+
+    widget.setResultContext(available=True, has_z=False, has_uncertainty=True)
+
+    assert widget.overrides()["mode"] == 1
+
+
+def test_a_users_choice_survives_a_result_change(qtbot):
+    widget = SmlmRenderWidget()
+    qtbot.addWidget(widget)
+    widget.setResultContext(available=True, has_z=False, has_uncertainty=True)
+    widget._mode.setCurrentIndex(widget._mode.findData(0))  # user picks fixed
+
+    widget.setResultContext(available=True, has_z=False, has_uncertainty=True)
+
+    assert widget.overrides()["mode"] == 0

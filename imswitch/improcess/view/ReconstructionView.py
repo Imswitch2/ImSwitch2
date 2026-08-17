@@ -551,7 +551,15 @@ class ReconstructionView(QtWidgets.QFrame):
         self.imgLayer.contrast_limits_range = safe_display_levels(minimum, maximum)
 
     def getActiveImageLayer(self):
-        """Return the active image-like Napari layer, falling back to imgLayer."""
+        """Return the active image-like Napari layer, falling back to imgLayer.
+
+        "Image-like" means the data really is an array, not merely that the
+        layer has the two attributes. A point-cloud layer has ``contrast_limits``
+        *and* a ``data`` holding a tuple of geometry arrays, so attribute
+        presence alone let it through to every contrast tool built on this
+        accessor, where the tuple then failed whatever tried to take its min
+        and max.
+        """
         layer = None
         try:
             layer = self.napariViewer.layers.selection.active
@@ -559,8 +567,8 @@ class ReconstructionView(QtWidgets.QFrame):
             layer = None
         if (
             layer is not None
-            and hasattr(layer, "data")
             and hasattr(layer, "contrast_limits")
+            and isinstance(getattr(layer, "data", None), np.ndarray)
         ):
             return layer
         return self.imgLayer

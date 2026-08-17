@@ -22,6 +22,14 @@ _SIGMA_RANGE_NM = (0.5, 500.0)
 #: while the renderer takes sigma, and the factor is otherwise a mystery.
 _FWHM_PER_SIGMA = 2.3548
 
+#: Colormap used when depth is encoded as colour. Depth on a monotonic ramp is
+#: indistinguishable from depth on no ramp at all -- it just looks like
+#: brightness variation -- so a hue sweep is what makes the encoding readable.
+_DEPTH_COLORMAP = "hsv"
+
+#: Colormaps that already sweep hue, and so need no substitution.
+_HUE_COLORMAPS = frozenset({"hsv", "twilight", "turbo", "viridis", "inferno", "magma"})
+
 
 class SmlmRenderWidget(QtWidgets.QWidget):
     """Panel driving the napari-storm point-cloud renderer."""
@@ -37,6 +45,13 @@ class SmlmRenderWidget(QtWidgets.QWidget):
         # that change it (selection change, and mode change).
         self._hasZ = False
         self._hasUncertainty = False
+        #: Colormap to put back when depth colouring is switched off again.
+        self._restoreColormap = ""
+        #: Whether the user has changed anything yet. Until they have, the
+        #: width mode follows the data the way the renderer's own default
+        #: does, so the panel agrees with what is already on screen instead of
+        #: silently forcing "fixed" the first time any control is touched.
+        self._touched = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -91,7 +106,7 @@ class SmlmRenderWidget(QtWidgets.QWidget):
         self._mode.currentIndexChanged.connect(self._onModeChanged)
         self._sigmaXY.valueChanged.connect(self._onSigmaChanged)
         self._sigmaZ.valueChanged.connect(self._emitSettings)
-        self._zColor.toggled.connect(self._emitSettings)
+        self._zColor.toggled.connect(self._onDepthColourToggled)
         return group
 
     def _sigmaSpin(self, tooltip: str) -> QtWidgets.QDoubleSpinBox:
@@ -142,7 +157,7 @@ class SmlmRenderWidget(QtWidgets.QWidget):
         # arbitrary unnamed one, which the instanced backend draws as black.
         self._colormap.addItems(
             ["gray", "red", "green", "blue", "cyan", "magenta", "yellow",
-             "viridis", "inferno", "magma", "turbo"]
+             "viridis", "inferno", "magma", "turbo", "hsv", "twilight"]
         )
         form.addRow("Colormap:", self._colormap)
 
@@ -224,7 +239,20 @@ class SmlmRenderWidget(QtWidgets.QWidget):
         )
         self._hasZ = bool(has_z)
         self._hasUncertainty = bool(has_uncertainty)
-        self._withoutEmitting(self._applyEnablement)
+
+        def shape():
+            if not self._touched:
+                # Match the renderer's own rule: width from uncertainty when
+                # the data carries one. Otherwise the panel would claim
+                # "fixed" while the canvas showed variable, and the first
+                # touch of any control would quietly change the render.
+                wanted = 1 if self._hasUncertainty else 0
+                index = self._mode.findData(wanted)
+                if index >= 0:
+                    self._mode.setCurrentIndex(index)
+            self._applyEnablement()
+
+        self._withoutEmitting(shape)
 
     def _applyEnablement(self) -> None:
         """Derive every control's enabled state from the held context."""
@@ -291,6 +319,27 @@ class SmlmRenderWidget(QtWidgets.QWidget):
         self._withoutEmitting(self._applyEnablement)
         self._emitSettings()
 
+    def _onDepthColourToggled(self, enabled: bool) -> None:
+        """Switch to a hue-sweeping colormap, and put the old one back after.
+
+        Depth encoded on a monotonic ramp reads as brightness, not depth, so
+        turning the setting on with a grey colormap looks like it did nothing.
+        A colormap the user picked deliberately is left alone.
+        """
+        if enabled:
+            current = self._colormap.currentText()
+            if current not in _HUE_COLORMAPS:
+                self._restoreColormap = current
+                index = self._colormap.findText(_DEPTH_COLORMAP)
+                if index >= 0:
+                    self._colormap.setCurrentIndex(index)
+        elif self._restoreColormap:
+            index = self._colormap.findText(self._restoreColormap)
+            self._restoreColormap = ""
+            if index >= 0:
+                self._colormap.setCurrentIndex(index)
+        self._emitSettings()
+
     def _onSigmaChanged(self) -> None:
         self._updateFwhmHint()
         self._emitSettings()
@@ -302,6 +351,7 @@ class SmlmRenderWidget(QtWidgets.QWidget):
     def _emitSettings(self) -> None:
         if self._emitting:
             return
+        self._touched = True
         self.sigSettingsChanged.emit(self.overrides(), self.renderRange())
 
     def _emitAppearance(self) -> None:
