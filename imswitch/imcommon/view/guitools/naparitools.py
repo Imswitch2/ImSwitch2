@@ -257,9 +257,29 @@ class NapariUpdateLevelsWidget(NapariBaseWidget):
         layer.contrast_limits_range = (lo, hi)
         layer.contrast_limits = (lo, hi)
 
+    @staticmethod
+    def _intensityArray(layer):
+        """The layer's intensity array, or None if it has no such thing.
+
+        Not every napari layer stores an image in ``data``. A point-cloud
+        layer holds a tuple of geometry arrays, and asking it for ``.max()``
+        raised ``AttributeError`` straight out of the button handler. Layers
+        without contrast limits are skipped for the same reason: there is
+        nothing for this widget to set on them.
+        """
+        if not hasattr(layer, 'contrast_limits'):
+            return None
+        data = getattr(layer, 'data', None)
+        if not isinstance(data, np.ndarray) or data.size == 0:
+            return None
+        return data
+
     def _on_update_levels(self):
         for layer in self.viewer.layers.selection:
-            mn, mx = minmaxLevels(layer.data)
+            data = self._intensityArray(layer)
+            if data is None:
+                continue
+            mn, mx = minmaxLevels(data)
             self._set_layer_range(layer, mn, mx)
             # Populate manual inputs so the user can fine-tune from here
             self._minInput.setText(f'{mn:.6g}')
@@ -273,6 +293,8 @@ class NapariUpdateLevelsWidget(NapariBaseWidget):
             return
         lo, hi = min(lo, hi), max(lo, hi)
         for layer in self.viewer.layers.selection:
+            if not hasattr(layer, 'contrast_limits'):
+                continue
             self._set_layer_range(layer, lo, hi)
 
 
