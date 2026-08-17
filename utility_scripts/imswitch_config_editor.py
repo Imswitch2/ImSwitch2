@@ -3388,6 +3388,7 @@ class MainWindow(QMainWindow):
             self._left.set_folder(start_folder)
 
         self._detect_options_file()
+        self._open_active_config(start_folder)
 
     # ── Build UI ──────────────────────────────────────────────────────────
     def _build_toolbar(self):
@@ -3820,6 +3821,56 @@ class MainWindow(QMainWindow):
                 self._update_active_banner()
                 return
         self._active_banner.setVisible(False)
+
+    def _active_setup_name(self) -> str:
+        """The setup file name ``imcontrol_options.json`` marks as active."""
+        if not self._options_path:
+            return ""
+        try:
+            with open(self._options_path, encoding="utf-8") as fh:
+                return str(json.load(fh).get("setupFileName") or "")
+        except Exception:
+            return ""
+
+    def _active_setup_path(self, start_folder: str = "") -> str:
+        """Locate the active setup file on disk, or "" if it cannot be found.
+
+        The browsed folder is searched first so that a folder passed on the
+        command line wins over the default location; a stale or deleted
+        ``setupFileName`` simply resolves to nothing.
+        """
+        name = self._active_setup_name()
+        if not name:
+            return ""
+        roots = []
+        if start_folder:
+            roots.append(Path(start_folder))
+        roots.append(_default_setup_dir())
+        for root in roots:
+            try:
+                candidate = Path(root) / name
+                if candidate.is_file():
+                    return str(candidate)
+            except Exception:
+                continue
+        return ""
+
+    def _open_active_config(self, start_folder: str = "") -> None:
+        """Open the config ImSwitch is actually set up to use, at startup.
+
+        The editor already knows which one that is -- it shows it in the
+        banner -- so opening to an empty pane made everyone's first action the
+        same one. Silent when there is no options file, no active name, or the
+        named file is missing: an editor that opens empty is a far better
+        outcome than one that refuses to start.
+        """
+        path = self._active_setup_path(start_folder)
+        if not path:
+            return
+        try:
+            self._load_file(path)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            self._status.setText(f"Could not open the active config: {exc}")
 
     def _update_active_banner(self):
         if not self._options_path:
