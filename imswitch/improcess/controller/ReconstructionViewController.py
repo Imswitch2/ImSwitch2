@@ -35,6 +35,11 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.sigSelectionChanged.connect(self._resultsChanged)
         if hasattr(self._widget, "sigResultsRemoved"):
             self._widget.sigResultsRemoved.connect(self._resultsChanged)
+        # The render-controls panel emits intent; the renderer lives here.
+        self._commChannel.sigSmlmRenderSettingsChanged.connect(
+            self.applyNapariStormSettings)
+        self._commChannel.sigSmlmRenderAppearanceChanged.connect(
+            self.applyNapariStormAppearance)
 
     def getActiveResult(self):
         return self._widget.getCurrentItemData()
@@ -54,6 +59,20 @@ class ReconstructionViewController(ImProcessWidgetController):
         """Announce that the loaded set or the selection moved."""
         self._retainNapariStormDatasets()
         self._commChannel.sigResultsChanged.emit()
+
+    def applyNapariStormSettings(self, result, overrides, renderRange) -> None:
+        """Redraw a point cloud with new Gaussian settings and render range."""
+        display = self._napariStormDisplay()
+        if display is None:
+            return
+        display.apply_settings(result, overrides=overrides, render_range=renderRange)
+
+    def applyNapariStormAppearance(self, result, appearance) -> None:
+        """Recolour a point cloud, which rebuilds no geometry."""
+        display = self._napariStormDisplay()
+        if display is None:
+            return
+        display.set_appearance(result, **appearance)
 
     def _napariStormDisplay(self):
         """The point-cloud backend, if there is one and it can draw.

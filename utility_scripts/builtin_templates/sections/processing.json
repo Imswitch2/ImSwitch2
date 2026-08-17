@@ -196,6 +196,16 @@
       "opts": []
     },
     {
+      "key": "smlmRenderPanel",
+      "label": "Show SMLM render controls",
+      "type": "bool",
+      "default": false,
+      "req": false,
+      "grp": "Viewer",
+      "tip": "Show the panel controlling how localization point clouds are drawn: Gaussian width, colour-by-depth, and render range. Only useful together with the point-cloud renderer above.",
+      "opts": []
+    },
+    {
       "key": "napariStormViewer",
       "label": "Render localizations as point clouds",
       "type": "bool",

@@ -135,6 +135,11 @@ def is_napari_storm_viewer_enabled(processing_config: dict[str, Any]) -> bool:
     return bool(processing_config.get("napariStormViewer", False))
 
 
+def is_smlm_render_panel_enabled(processing_config: dict[str, Any]) -> bool:
+    """Return whether the SMLM point-cloud render-controls panel should be shown."""
+    return bool(processing_config.get("smlmRenderPanel", False))
+
+
 def is_multicolor_panel_enabled(processing_config: dict[str, Any]) -> bool:
     """Return whether the optional ImProcess multicolor alignment panel should be shown."""
     return bool(processing_config.get("multicolorPanel", False))

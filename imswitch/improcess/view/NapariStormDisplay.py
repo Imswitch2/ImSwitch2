@@ -65,6 +65,12 @@ class NapariStormDisplay:
         # The *map key* (a result's id), not a dataset id: the two are
         # different integers and mixing them looks up nothing.
         self._visible: int | None = None
+        # User overrides for the Gaussian settings. Empty means "decide from
+        # the data", which is what an untouched viewer should do; a key
+        # appears only once the user has actually chosen that value.
+        self._overrides: dict[str, Any] = {}
+        #: Per-axis render range as fractions of the dataset extent.
+        self._render_range: dict[str, tuple[float, float]] = {}
 
     # -- availability -----------------------------------------------------
 
@@ -251,15 +257,123 @@ class NapariStormDisplay:
         )
 
     def _settings(self, traits):
-        """Variable-width when there is a real uncertainty, fixed otherwise."""
+        """The Gaussian settings to plan with.
+
+        Chosen from the data unless the user has said otherwise: variable
+        width where a real uncertainty exists, fixed otherwise. Overrides are
+        applied on top and then sanity-checked against ``traits``, because the
+        planner *raises* on variable mode without uncertainty or z-colour
+        without a z axis, and a stale control must not be able to cause that.
+        """
         core = self._core
         if traits.uncertainty_defined:
-            return core.GaussianSettings(mode=1)
-        return core.GaussianSettings(
-            mode=0,
-            fixed_sigma_xy_nm=FALLBACK_SIGMA_NM,
-            fixed_sigma_z_nm=FALLBACK_SIGMA_NM,
-        )
+            fields: dict[str, Any] = {"mode": 1}
+        else:
+            fields = {
+                "mode": 0,
+                "fixed_sigma_xy_nm": FALLBACK_SIGMA_NM,
+                "fixed_sigma_z_nm": FALLBACK_SIGMA_NM,
+            }
+        fields.update(self._overrides)
+
+        if fields.get("mode") == 1 and not traits.uncertainty_defined:
+            fields["mode"] = 0
+        if fields.get("z_color_encoding"):
+            # Colour-by-depth is fixed-mode only, and needs a z axis to read.
+            if not traits.zdim_present or fields.get("mode") != 0:
+                fields["z_color_encoding"] = False
+        return core.GaussianSettings(**fields)
+
+    # -- live controls ----------------------------------------------------
+
+    def settings_overrides(self) -> dict[str, Any]:
+        """The user's current Gaussian choices, if any."""
+        return dict(self._overrides)
+
+    def effective_settings(self, result):
+        """What planning ``result`` would actually use right now."""
+        if self._load() is None:
+            return None
+        return self._settings(self._traits(result))
+
+    def apply_settings(self, result, overrides: dict[str, Any] | None = None,
+                       render_range: dict[str, tuple[float, float]] | None = None) -> bool:
+        """Change how ``result`` is drawn and redraw it in place.
+
+        ``update`` rather than ``open``, so changing a slider keeps the
+        dataset's GPU resources instead of recreating the layer.
+        """
+        if overrides is not None:
+            self._overrides = dict(overrides)
+        if render_range is not None:
+            self._render_range = dict(render_range)
+        if result is None:
+            return False
+
+        entry = self._entry(result)
+        if entry is None:
+            return self.show(result)
+        try:
+            self._apply_render_range(entry, result)
+            self._renderer.update(
+                entry.dataset_id, self._plan(entry.table, result, entry.name)
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad setting must not kill the view
+            self._logger.warning("Could not apply render settings: %s", exc)
+            return False
+        return True
+
+    def set_appearance(self, result, **appearance: Any) -> bool:
+        """Colormap/opacity, which rebuild nothing on napari-storm's side."""
+        entry = self._entry(result)
+        if entry is None or self._renderer is None:
+            return False
+        try:
+            self._renderer.set_appearance(
+                entry.dataset_id, self._core.LayerAppearance(**appearance)
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("Could not set appearance: %s", exc)
+            return False
+        return True
+
+    def _apply_render_range(self, entry: _Dataset, result) -> None:
+        """Restrict the drawn set to a sub-volume of the dataset extent.
+
+        A boolean mask over the *filter* set, which is what napari-storm's
+        cheap replan path expects — no copy of the data, and the display
+        budget is re-applied on top because the two masks are independent.
+        """
+        locs = result.locs
+        if not self._render_range:
+            # An all-true mask, not None: set_filter_mask validates shape and
+            # dtype, and it is also what clears a previously narrowed range.
+            entry.table.set_filter_mask(np.ones(len(locs), dtype=bool))
+        else:
+            keep = np.ones(len(locs), dtype=bool)
+            for axis, (low, high) in self._render_range.items():
+                column = f"{axis}_nm"
+                names = getattr(np.asarray(locs).dtype, "names", None) or ()
+                if column not in names or (low <= 0.0 and high >= 1.0):
+                    continue
+                values = np.asarray(locs[column], dtype=np.float64)
+                if not values.size:
+                    continue
+                floor, ceiling = float(values.min()), float(values.max())
+                span = ceiling - floor
+                if span <= 0:
+                    continue
+                keep &= (values >= floor + low * span) & (
+                    values <= floor + high * span
+                )
+            if not keep.any():
+                # An empty selection has nothing to normalize against, and the
+                # planner would refuse it. Keeping the previous set is a
+                # friendlier answer than a blank canvas and a warning.
+                self._logger.debug("Render range selects no localizations; ignored")
+                return
+            entry.table.set_filter_mask(keep)
+        self._limit_to_budget(entry.table)
 
     @staticmethod
     def _has_positive(locs, column) -> bool:

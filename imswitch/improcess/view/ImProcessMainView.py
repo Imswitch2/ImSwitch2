@@ -24,6 +24,7 @@ from .WatcherFrame import WatcherFrame
 from .ReconstructionView import ReconstructionView
 from .GraphWidget import GraphWidget
 from .MetadataWidget import MetadataWidget
+from .SmlmRenderWidget import SmlmRenderWidget
 from .ProfileWidget import ProfileWidget
 from .PSFResolutionWidget import PSFResolutionWidget
 from .ROIManagerWidget import ROIManagerWidget
@@ -95,6 +96,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
         showParameterPanel: bool = True,
         showNapariLayerControls: bool = True,
         useNapariStormViewer: bool = False,
+        showSmlmRenderPanel: bool = False,
         showReconstructionPanel: bool = True,
         showActionsPanel: bool = True,
         showFileWatcherPanel: bool = True,
@@ -289,6 +291,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             else None
         )
         self.metadataWidget = MetadataWidget() if showMetadataPanel else None
+        self.smlmRenderWidget = SmlmRenderWidget() if showSmlmRenderPanel else None
         # Registry-backed startup panels are created by the controller after
         # plugin registration. The view is constructed first, so building
         # ResultProcessorWidget instances here would race an empty registry.
@@ -459,6 +462,7 @@ class ImProcessMainView(QtWidgets.QMainWindow):
             ('Graph', self.graphWidget),
             ('Profile', self.profileWidget),
             ('Metadata', self.metadataWidget),
+            ('SMLM render', self.smlmRenderWidget),
             ('Results', self.resultsTableWidget),
             ('Projection', self.projectionWidget),
             ('Segmentation', self.segmentationWidget),
