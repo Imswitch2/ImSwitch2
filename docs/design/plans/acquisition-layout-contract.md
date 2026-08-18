@@ -138,8 +138,8 @@ v1 describes a scan as nested loops where each loop *is* an axis. A loop cannot
 cycle/plane transpose fall outside it -- the latter is why `restack_interleaved`
 exists outside the layout at all. Detector rank is also assumed to be 2, so a
 point, line and camera detector are described identically.
-[generalized-scan-order-model.md](generalized-scan-order-model.md) proposes the
-affine generalization, deliberately held until v1 is validated on hardware.
+[scan-acquisition-order-spec.md](scan-acquisition-order-spec.md) drafts the
+portable generalization; this contract is a strict special case of it.
 
 ### What is still not "clean"
 
