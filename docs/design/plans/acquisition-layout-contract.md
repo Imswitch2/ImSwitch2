@@ -131,6 +131,16 @@ Its recording gate uses a stub detectors manager: instantiating camera mocks
 inside the ImProcess suite deadlocks, and the gate only ever asks a detector
 whether it assembles its own image.
 
+### Where this model stops
+
+v1 describes a scan as nested loops where each loop *is* an axis. A loop cannot
+*contribute* to an axis, so a strided visiting order (`x = 2k + p`) and SNOUTY's
+cycle/plane transpose fall outside it -- the latter is why `restack_interleaved`
+exists outside the layout at all. Detector rank is also assumed to be 2, so a
+point, line and camera detector are described identically.
+[generalized-scan-order-model.md](generalized-scan-order-model.md) proposes the
+affine generalization, deliberately held until v1 is validated on hardware.
+
 ### What is still not "clean"
 
 The layout is authoritative *when present*, but nothing was retired. ImProcess
