@@ -22,7 +22,7 @@ the rationale behind the current code stays discoverable.
 | [tiled-target-timelapse-smart-events.md](tiled-target-timelapse-smart-events.md) | Active — T1-T4 workflow foundations implemented, T5 UI/controller adapters pending | Tiled target timelapse, smart modes, and event-gated acquisition |
 | [config-editor-discovery-and-schema.md](config-editor-discovery-and-schema.md) | Proposed | Registry-backed config editor discovery, plugin templates, and shared setup validation |
 | [acquisition-layout-contract.md](acquisition-layout-contract.md) | Active — all seven PRs implemented (schema through every reconstructor), rig validation pending | Versioned frame-layout metadata from scan producers through recording and reconstruction |
-| [scan-acquisition-order-spec.md](scan-acquisition-order-spec.md) | Draft 2 for review — adversarial review folded in | Portable description of how a scan was performed, complementing OME |
+| [scan-acquisition-order-spec.md](scan-acquisition-order-spec.md) | Draft 3 for review — review #1 (9 findings) resolved | Portable description of how a scan was performed, complementing OME |
 | [acquisition-metadata-channel-retirement.md](acquisition-metadata-channel-retirement.md) | Active — P1/P2 implemented, P3/P4 release-gated | Retiring the duplicate acquisition-metadata channels the layout contract superseded |
 | [tis-camera-ic4-migration.md](tis-camera-ic4-migration.md) | Active — shipped as the `imswitch-device-tis` plugin (mock-complete), rig validation pending | Replacing the vendored `pyicic`/IC3 wrapper with the IC4 Python library for per-trigger TIS frame capture |
 | [dynamic-layer-lifecycle.md](dynamic-layer-lifecycle.md) | Historical | Napari layer lifecycle redesign |
