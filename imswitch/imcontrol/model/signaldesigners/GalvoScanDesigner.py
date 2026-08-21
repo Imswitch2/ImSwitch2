@@ -243,7 +243,12 @@ class GalvoScanDesigner(ScanDesigner):
         sig_dict = {self.axis_devs_order[i]: axis_signals[i] for i in range(axis_count_scan)}
 
         # create scan information dictionary via ScanInfoContract
-        tot_scan_time = n_scan_samples_dx[-1] * self.__timestep * 1e-6
+        # Truthful total duration: the full emitted signal, padding and
+        # positioning included. scan_samples stays NOMINAL (the detector's
+        # line-read contract); the old n_scan_samples_dx[-1] * timestep
+        # understated the real duration, and its only consumer is the Swabian
+        # manager's diagnostics log.
+        tot_scan_time = len(axis_signals[0]) * self.__timestep * 1e-6
         contract = ScanInfoContract(
             img_dims=list(n_steps_dx),
             img_axes_phys=["x", "y", "z"][:len(n_steps_dx)],

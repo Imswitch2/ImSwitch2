@@ -312,7 +312,11 @@ Known sites:
    - the physical scan device and axis are retained as metadata (e.g.
      `scan_axis_device = 'ND-PiezoZ'`, `scan_axis_physical = 'Z'`, sourced
      from `scanInfo.axis_names` plus the positioner's `axes`), written by
-     all three storers (OME-TIFF, HDF5+OME-XML, OME-NGFF);
+     all three storers (OME-TIFF, HDF5+OME-XML, OME-NGFF). **Write-only
+     provenance**: no ImProcess reader is added for these fields — a reader
+     would create a fresh duplicate interpreter to retire later. The
+     acquisition-layout spec side (draft 4) is untouched by any of this: a
+     one-loop scan is trivially within the model;
    - an OME regression test asserts the stored shape, the scales, and the
      physical scan-axis annotation (listed in Phase D).
 7. `SwabianTimeTaggerManager._infer_dims_from_scanInfo` (:1021–1033):
