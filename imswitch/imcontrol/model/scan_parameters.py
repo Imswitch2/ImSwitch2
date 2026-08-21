@@ -47,6 +47,30 @@ def pixels_for_length_step(length, step) -> int:
     return max(1, int(round(float(length) / step)))
 
 
+def scan_axis_provenance(positioners_scan, positioners_info):
+    """WRITE-ONLY recording provenance for the scanned dims.
+
+    Returns ``(devices, physical_axes)``: the devices assigned to scan dims
+    (in dim order, ``'None'`` dims dropped) and each device's physical stage
+    axis from its :class:`PositionerInfo` (``'?'`` when unknown). Recorded
+    images are stored with compatibility ``YX`` axes even for a single-axis
+    scan (a Z-only profile is a ``(1, N)`` image whose ``PhysicalSizeX`` is
+    the Z step), so this is what preserves *which physical axis was actually
+    scanned* — e.g. ``(['ND-PiezoZ'], ['Z'])``.
+
+    Deliberately not consumed anywhere in ImSwitch (no ImProcess reader): it
+    exists for the person or tool opening the file. See
+    ``docs/galvo-designer-single-axis-findings.md``, phase C.
+    """
+    devices = [dev for dev in positioners_scan if dev and dev != 'None']
+    physical = []
+    for dev in devices:
+        info = positioners_info.get(dev) if positioners_info else None
+        axes = list(getattr(info, 'axes', None) or [])
+        physical.append(str(axes[0]) if axes else '?')
+    return devices, physical
+
+
 def axis_pixel_positions(n_pixels, step, *, center=None, start=0.0):
     """Physical positions of ``n_pixels`` scan pixels spaced *exactly* ``step``.
 

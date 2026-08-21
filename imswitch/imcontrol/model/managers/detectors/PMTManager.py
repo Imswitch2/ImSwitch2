@@ -644,6 +644,10 @@ class PMTManager(DetectorManager):
         Raw buffer is allocated as reversed + leading 1.
         """
         img_dims = tuple(int(x) for x in img_dims)
+        # Defensive: logical dims are always at least (Nx, Ny) -- a bare (N,)
+        # (1-axis scan reaching here unnormalized) becomes one line (N, 1).
+        if len(img_dims) < 2:
+            img_dims = img_dims + (1,) * (2 - len(img_dims))
 
         img_dims_extra = tuple(reversed(img_dims))
 
@@ -690,7 +694,11 @@ class PMTManager(DetectorManager):
             s = None
 
         # ---- S == 1: could be 2D (1, Ny, Nx) OR 3D (1, Nz, Ny, Nx) (or higher) ----
-        if np.squeeze(self._image).ndim == 2:
+        # <= 2, not == 2: a single-line scan's (1, N) buffer squeezes to rank
+        # 1, and with the old == 2 dispatch NEITHER branch ran -- every pixel
+        # of a 1-axis scan was silently dropped. The [..., y, :n] write below
+        # handles the (1, N) buffer as-is (y == 0).
+        if np.squeeze(self._image).ndim <= 2:
             # (1, Ny, Nx)
             Ny = self._image.shape[-2]
             if y >= Ny:
@@ -790,6 +798,10 @@ class PMTManager(DetectorManager):
 
         while im.ndim > self._image_display.ndim:
             im = np.squeeze(im[0])
+        # a single-line scan squeezes to rank 1; the display contract is a
+        # 2-D (1, N) image
+        if im.ndim < 2:
+            im = im.reshape(1, -1)
 
         self._image_display = im
         # Set the boundary flag before the shared broker drains getChunk().
@@ -926,6 +938,13 @@ class ScanWorker(Worker):
         # img_dims contains physical scan axes only (no linestep); n_linesteps is separate.
         scan_dims = list(scanInfoDict["img_dims"])
         scan_axes = list(scanInfoDict.get("img_axes_phys", ["x", "y", "z"][:len(scan_dims)]))
+        # Singleton-line normalization: a 1-axis scan is ONE line of N
+        # pixels. Pad the logical dims to (N, 1) with a size-1 'y' so the
+        # line-based assembly keeps its 2-D contract: loop dims [N, 1], raw
+        # buffer (1, N), display (1, N), chunks (frames, 1, N).
+        if len(scan_dims) == 1:
+            scan_dims.append(1)
+            scan_axes.append("y")
         self._linestep = max(1, int(scanInfoDict.get("n_linesteps", 1)))
 
         # identify Y axis (default to 1)
@@ -988,7 +1007,12 @@ class ScanWorker(Worker):
 
         # allocate buffers
         self._manager.initiateImage(self._output_image_dims)
-        self._manager.setPixelSize(scanInfoDict["pixel_sizes"])
+        # A 1-axis scan reports one pixel size; pad the unscanned singleton
+        # 'y' with the fast step so the display scale stays two-dimensional.
+        pixel_sizes = list(scanInfoDict["pixel_sizes"])
+        if len(pixel_sizes) == 1:
+            pixel_sizes.append(pixel_sizes[0])
+        self._manager.setPixelSize(pixel_sizes)
 
     def throwdata(self, datalen):
         if datalen > 0:

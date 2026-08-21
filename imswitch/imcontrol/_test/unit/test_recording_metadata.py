@@ -111,3 +111,51 @@ def test_element_size_um_zyx_for_hdf5():
     # 2D snap: z defaults to 1.0
     m2 = build_ome_image_meta('Cam', MODE_SNAP, 1, pixel_size_yx_um=(0.2, 0.1))
     assert m2.element_size_um() == [1.0, 0.2, 0.1]
+
+# --- 1-axis (single-line) scans: the YX-compat + provenance contract ----------
+# See docs/galvo-designer-single-axis-findings.md, phase C item 6.
+
+
+def test_axes_for_single_line_scan_stay_compat_yx():
+    """A Z-only profile records as compatibility YX (one line, SizeY=1);
+    the scanned physical axis is preserved separately as provenance."""
+    # getDimsScan for a 1-axis scan: N pixels on the scanned dim, 1 elsewhere
+    assert axes_for_recording(MODE_SCAN, 1, (20, 1, 1)) == ['y', 'x']
+
+
+def test_build_single_line_scan_meta_shape_and_scale():
+    m = build_ome_image_meta(
+        'APD', MODE_SCAN, n_frames=1, scan_dims=(20, 1, 1),
+        pixel_size_yx_um=(0.5, 0.5), dtype=np.uint16)
+    assert m.axes_string == 'YX'
+    # the fast axis carries the scan step; the singleton y is padded with it
+    assert m.scale == [0.5, 0.5]
+    md = m.tiff_metadata(shape=(1, 20))
+    assert md['axes'] == 'YX'
+    assert md['PhysicalSizeX'] == 0.5 and md['PhysicalSizeY'] == 0.5
+
+
+def test_scan_axis_provenance_is_write_only_metadata():
+    """The provenance helper names the scanned devices and their physical
+    axes; a Z-only scan yields (['ND-PiezoZ'], ['Z']). Deliberately no
+    ImProcess reader exists for these fields."""
+    from types import SimpleNamespace
+    from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
+
+    positioners = {
+        'ND-GalvoX': SimpleNamespace(axes=['X']),
+        'ND-PiezoZ': SimpleNamespace(axes=['Z']),
+        'Weird': SimpleNamespace(axes=[]),
+    }
+    devices, physical = scan_axis_provenance(
+        ['ND-PiezoZ', 'None', 'None'], positioners)
+    assert devices == ['ND-PiezoZ']
+    assert physical == ['Z']
+
+    devices, physical = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ', 'Weird'], positioners)
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ', 'Weird']
+    assert physical == ['X', 'Z', '?']
+
+    assert scan_axis_provenance([], positioners) == ([], [])
+    assert scan_axis_provenance(['None'], {}) == ([], [])

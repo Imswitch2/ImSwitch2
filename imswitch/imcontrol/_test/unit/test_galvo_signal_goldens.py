@@ -62,7 +62,10 @@ def _setup_sted_like():
         "Mock-Timelapse": positioner(1, 1000, 1000, 0, 200),
     }
     return SimpleNamespace(
-        scan=SimpleNamespace(sampleRate=100000), positioners=positioners
+        scan=SimpleNamespace(sampleRate=100000, lineClockLine=None,
+                             frameClockLine=None, frameStartClockLine=None,
+                             frameEndClockLine=None),
+        positioners=positioners,
     )
 
 
