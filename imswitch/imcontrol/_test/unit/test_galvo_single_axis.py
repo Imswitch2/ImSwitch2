@@ -98,3 +98,85 @@ def test_zero_sample_period_raises_actionable_error():
     setup.scan.sampleRate = 10  # 100 ms sample step >> one line period
     with pytest.raises(ValueError, match="zero samples"):
         _run(params, setup)
+
+
+# --- Phase B: per-device smoothScan -> stepped fast axis -------------------
+
+
+def _setup_stepped_piezo(with_limits=True):
+    """The sted-like setup with the piezo declared stepped (smoothScan
+    false), optionally without vel_max/acc_max at all."""
+    setup = _setup_sted_like()
+    props = setup.positioners["PiezoZ"].managerProperties
+    props["smoothScan"] = False
+    if not with_limits:
+        del props["vel_max"], props["acc_max"]
+    return setup
+
+
+def test_z_only_stepped_staircase():
+    """With smoothScan false, a Z-only scan is a step-and-dwell staircase:
+    each of the N centered ABSOLUTE positions held for exactly the per-pixel
+    samples — no mock-style re-zeroing, since the AO writes the signal with
+    no offset added."""
+    params = _params(["PiezoZ", "GalvoX", "GalvoY"],
+                     [10.0, 1.0, 1.0], [0.5, 1.0, 1.0],
+                     centers=[5.0, 0.0, 0.0])
+    sig, positions, info = _run(params, _setup_stepped_piezo())
+
+    assert list(sig) == ["PiezoZ"]
+    assert positions == [20]
+    assert info["img_dims"] == [20]
+    assert info["smooth_axes"] == [False]
+
+    z = np.asarray(sig["PiezoZ"], dtype=float)
+    spp = info["samples_per_pixel"]
+    pad = info["scan_throw_startzero"]
+    core = z[pad:pad + 20 * spp]
+    # 20 plateaus of spp samples at the centered absolute positions
+    expected = np.repeat(np.arange(20) * 0.5 + 0.25, spp)
+    assert np.allclose(core, expected)
+    # nothing but padding outside the staircase
+    assert np.all(z[:pad] == 0) and np.all(z[pad + 20 * spp:] == 0)
+
+
+def test_stepped_piezo_needs_no_velocity_limits():
+    """A smoothScan-false device without vel_max/acc_max must reach the
+    stepped path instead of dying in the spline-limits guard."""
+    params = _params(["PiezoZ", "GalvoX", "GalvoY"],
+                     [10.0, 1.0, 1.0], [0.5, 1.0, 1.0],
+                     centers=[5.0, 0.0, 0.0])
+    sig, positions, _info = _run(params, _setup_stepped_piezo(with_limits=False))
+    assert list(sig) == ["PiezoZ"]
+    assert positions == [20]
+
+
+def test_stepped_piezo_d1_with_galvo_d2():
+    """ZX with a stepped piezo d1: the piezo staircase repeats once per
+    galvo-d2 step, and both signals stay on their own devices."""
+    params = _params(["PiezoZ", "GalvoX", "GalvoY"],
+                     [10.0, 5.0, 1.0], [0.5, 0.1, 1.0],
+                     centers=[5.0, 0.0, 0.0])
+    sig, positions, info = _run(params, _setup_stepped_piezo())
+    assert list(sig) == ["PiezoZ", "GalvoX"]
+    assert positions == [20, 50]
+    assert info["smooth_axes"] == [False, True]
+    z = np.asarray(sig["PiezoZ"], dtype=float)
+    # the staircase values are the centered absolute positions, not re-zeroed
+    vals = set(np.round(np.unique(z), 9))
+    assert {0.25, 9.75}.issubset(vals)
+
+
+def test_stepped_piezo_d2_keeps_absolute_positions():
+    """XZ with the piezo stepped on d2: the staircase holds the centered
+    ABSOLUTE Z positions (a real stepped axis is not re-zeroed the way
+    virtual mock axes are)."""
+    params = _params(["GalvoX", "PiezoZ", "GalvoY"],
+                     [5.0, 10.0, 1.0], [0.1, 0.5, 1.0],
+                     centers=[0.0, 5.0, 0.0])
+    sig, positions, _info = _run(params, _setup_stepped_piezo())
+    assert positions == [50, 20]
+    z = np.asarray(sig["PiezoZ"], dtype=float)
+    vals = set(np.round(np.unique(z), 9))
+    # first and last centered plateau values present, span centered on 5 V
+    assert {0.25, 9.75}.issubset(vals)

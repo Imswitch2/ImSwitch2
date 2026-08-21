@@ -95,14 +95,17 @@ class GalvoScanDesigner(ScanDesigner):
                            if setupInfo.positioners[positioner].forScanning]
         positionersProps = [positioner.managerProperties for positioner in positioners]
 
-        # Real (non-mock) galvo axes need vel_max/acc_max for the smooth-scan
-        # spline. The old ``else 1e6`` fallback silently accepted a missing limit
-        # and then produced degenerate spline knots + an opaque BPoly crash mid
-        # build. Require them explicitly so a misconfigured setup fails early with
-        # an actionable message. (Mock/alignment axes are non-smooth and exempt.)
+        # Smoothly-swept (galvo-like) axes need vel_max/acc_max for the
+        # smooth-scan spline. The old ``else 1e6`` fallback silently accepted a
+        # missing limit and then produced degenerate spline knots + an opaque
+        # BPoly crash mid build. Require them explicitly so a misconfigured
+        # setup fails early with an actionable message. Stepped axes are
+        # exempt -- they never enter the spline: devices with
+        # managerProperties['smoothScan'] false, or mock/alignment axes by the
+        # historical name heuristic (see _device_smooth_scan).
         missing = [
             name for name, props in zip(positionerNames, positionersProps)
-            if 'mock' not in name.lower()
+            if self._device_smooth_scan(name, props)
             and ('vel_max' not in props or 'acc_max' not in props)
         ]
         if missing:
@@ -110,7 +113,9 @@ class GalvoScanDesigner(ScanDesigner):
                 "GalvoScanDesigner requires 'vel_max' (µm/µs) and 'acc_max' "
                 f"(µm/µs^2) in managerProperties for scanning positioner(s) {missing}. "
                 "Add realistic values (example_sted uses vel_max=0.1, acc_max=0.0001); "
-                "without them the smooth-scan spline degenerates."
+                "without them the smooth-scan spline degenerates. A stage-like "
+                "device that should be stepped instead of swept can set "
+                "'smoothScan': false and needs no limits."
             )
 
         device_count = len(positioners)
@@ -150,12 +155,21 @@ class GalvoScanDesigner(ScanDesigner):
         self.axis_acc_max = [acc_max[pos_idx[j]] for j in range(len(active))]
         self.axis_jerk_max = [jerk_max[pos_idx[j]] for j in range(len(active))]
 
+        # Which active axes are swept smoothly vs stepped: resolved ONCE per
+        # device (managerProperties['smoothScan'], defaulting to the
+        # historical name heuristic -- 'mock' devices are stepped) and used
+        # for EVERY smoothness decision: the spline-limits guard above,
+        # dt_fix below, and the d1/d2+ path selection.
+        self.__smooth_axis = [
+            self._device_smooth_scan(self.axis_devs_order[j],
+                                     positionersProps[pos_idx[j]])
+            for j in range(len(active))
+        ]
+
         # Compute jerk-transition time (dt_fix): acc_max / jerk_max for each smooth axis with jerk_max
         dt_fix_candidates = []
         for j in range(len(active)):
-            # Only consider smooth scanning axes (not mock) with jerk_max configured
-            is_smooth = not ('mock' in self.axis_devs_order[j].lower())
-            if is_smooth and self.axis_jerk_max[j] is not None:
+            if self.__smooth_axis[j] and self.axis_jerk_max[j] is not None:
                 dt_fix_candidates.append(self.axis_acc_max[j] / self.axis_jerk_max[j])
         # Use max of computed values, or fall back to legacy 1e-2 if no jerk_max configured
         self.__dt_fix = max(dt_fix_candidates) if dt_fix_candidates else 1e-2
@@ -177,9 +191,6 @@ class GalvoScanDesigner(ScanDesigner):
         # img_dims used int(), so the returned positions disagreed with the
         # generated waveform for non-divisible ratios)
         axis_positions = list(n_steps_dx)
-
-        # get parameter for which axes should be smooth
-        self.__smooth_axis = [False if 'mock' in axis_name.lower() else True for axis_name in self.axis_devs_order]
 
         # generate axis signals for all d axes
         pos = []  # list with all axis positions lists
@@ -287,6 +298,21 @@ class GalvoScanDesigner(ScanDesigner):
         """Return indices of axes with more than 1 scan step."""
         return [i for i in range(device_count)
                 if pixels_for_length_step(axis_lengths[i], axis_step_sizes[i]) > 1]
+
+    @staticmethod
+    def _device_smooth_scan(name, props):
+        """Whether this device is swept smoothly (the galvo-like d1 profile)
+        or stepped (held at each position for the dwell time).
+
+        ``managerProperties['smoothScan']`` decides when present -- a piezo
+        or stage on the fast axis sets it false. The default is the
+        historical name heuristic: devices with 'mock' in the name are
+        stepped virtual axes, everything else is assumed a sweepable galvo.
+        """
+        smooth = props.get('smoothScan')
+        if smooth is not None:
+            return bool(smooth)
+        return 'mock' not in name.lower()
 
     def __calc_settling_time(self, axis_length, axis_centerpos, vel_max, acc_max):
         """ Calculate settling time based on all axis parameters. """
@@ -404,8 +430,13 @@ class GalvoScanDesigner(ScanDesigner):
                 pad_prev_axis = [max(0, padlen_init), max(0, padlen_final)]
 
         else:
-            # non-smooth (mock) axis: realign positions
-            positions = positions - positions[0]
+            # Non-smooth axis. VIRTUAL mock axes are re-zeroed (their
+            # positions are relative counters, not physical targets); a REAL
+            # stepped axis ('smoothScan': false) keeps its absolute,
+            # center-anchored positions -- the AO writes designer signals
+            # with no offset added, so re-zeroing would move the scan.
+            if 'mock' in self.axis_devs_order[dim].lower():
+                positions = positions - positions[0]
             if dim == 1:
                 axis_reps = np.asarray(axis_reps, dtype=int)
                 if axis_reps.size != positions_phys.size:
