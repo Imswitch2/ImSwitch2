@@ -190,3 +190,77 @@ def test_beta_centered_scan_stays_in_voltage_range():
     assert min_v <= lo and hi <= max_v
     assert np.isclose((lo + hi) / 2, center_um / conv, atol=0.1)
 
+
+# --- convFactors follow target_device, not positioner order (see
+# --- docs/galvo-designer-single-axis-findings.md, defect 4) ---
+
+
+def _beta_setup_sted():
+    """example_sted-like: galvos with large factors listed FIRST, piezo last,
+    so positional indexing and per-device lookup give different answers."""
+    props = {
+        "GalvoX": {"conversionFactor": 17.44, "minVolt": -10, "maxVolt": 10},
+        "GalvoY": {"conversionFactor": 16.63, "minVolt": -10, "maxVolt": 10},
+        "PiezoZ": {"conversionFactor": 1.0, "minVolt": 0, "maxVolt": 10},
+    }
+    positioners = {
+        name: SimpleNamespace(forScanning=True, managerProperties=mp)
+        for name, mp in props.items()
+    }
+    return SimpleNamespace(
+        scan=SimpleNamespace(sampleRate=1000), positioners=positioners
+    )
+
+
+def _beta_z_first_params(z_center, middle_center=0.0):
+    # Z piezo assigned to scan dim 0 (fast axis); galvos parked (length 0).
+    return {
+        "target_device": ["PiezoZ", "GalvoX", "GalvoY"],
+        "axis_length": [10.0, 0.0, 0.0],
+        "axis_step_size": [0.5, 0.1, 0.1],
+        "axis_startpos": [[z_center], [middle_center], [0]],
+        "axis_centerpos": [z_center, middle_center, 0.0],
+        "return_time": 0.001, "sequence_time": 0.002, "n_linesteps": 1,
+    }
+
+
+def test_beta_conv_factors_follow_target_device_order():
+    """A 10 um piezo-Z scan spans 10 um / conv 1.0 in volts no matter which
+    scan dim the piezo is assigned to. Previously convFactors were indexed by
+    POSITION over setupInfo.positioners, so Z on dim 0 was divided by the
+    galvo's 17.44 -- a silent 17x range shrink."""
+    sig, positions, _info = BetaScanDesigner().make_signal(
+        _beta_z_first_params(z_center=5.0), _beta_setup_sted()
+    )
+    z = np.asarray(sig["PiezoZ"], dtype=float)
+    # 20 pixels, pitch 0.5 um, centered on 5 um -> [0.25, 9.75] um at conv 1.0
+    assert positions[0] == 20
+    assert np.isclose(z.min(), 0.25) and np.isclose(z.max(), 9.75)
+
+
+def test_beta_unknown_target_device_raises():
+    params = _beta_z_first_params(z_center=5.0)
+    params["target_device"] = ["Nope", "GalvoX", "GalvoY"]
+    with pytest.raises(ValueError, match="Nope"):
+        BetaScanDesigner().make_signal(params, _beta_setup_sted())
+
+
+def test_beta_check_signal_comp_uses_minmaxes():
+    """checkSignalComp (previously a ``return True`` stub) rejects scans whose
+    waveform leaves the target positioner's [minVolt, maxVolt], and only for
+    axes that actually scan: parked axes held at their (in-range-by-definition)
+    current position are exempt, matching GalvoScanDesigner's >1-pixel guard."""
+    designer = BetaScanDesigner()
+    setup = _beta_setup_sted()
+
+    def check(z_center, middle_center=0.0):
+        params = _beta_z_first_params(z_center, middle_center)
+        _sig, _pos, info = designer.make_signal(params, setup)
+        return designer.checkSignalComp(params, setup, info)
+
+    assert check(5.0) is True    # [0.25, 9.75] V inside the piezo's [0, 10]
+    assert check(0.0) is False   # dips to -4.75 V, below the 0 V floor
+    assert check(9.0) is False   # tops at 13.75 V, above 10 V
+    # a parked (1-position) galvo held at an out-of-range center is skipped
+    assert check(5.0, middle_center=500.0) is True
+
