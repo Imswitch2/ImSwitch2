@@ -1,12 +1,14 @@
 # Single-axis / piezo-fast-axis scans: findings and fix plan
 
-*Status: defect 4 (Beta convFactor + compliance stub) FIXED on this branch;
-defects 1–3 are findings with the implementation plan below. WIP working doc
-(per repo convention, durable docs go to Sphinx `.rst` once this is
-implemented). Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
-reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
-against `example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63,
-ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000).*
+*Status: defect 4 (Beta convFactor + compliance stub) and defect 5
+(active-axis collapse misrouting, found in review) FIXED on this branch;
+defects 1–3 are findings with the implementation plan below, revised after a
+review round (see the review notes inline). WIP working doc (per repo
+convention, durable docs go to Sphinx `.rst` once this is implemented). Found
+2026-08-21 while rig-testing the ROI Manager 2.0 branch; reproduced headlessly
+with `scripts/diagnostics/repro-single-axis-scan.py` against
+`example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63, ND-PiezoZ
+conv 1.0 / vel_max 1000 / acc_max 1000).*
 
 ## Symptom
 
@@ -108,13 +110,38 @@ Z-piezo assigned to scan dim 0 under example_sted, a 10 µm Z request produced
 piezo's 1.0) — a silent 17× range shrink.
 
 Fixed on this branch: conversion factors are looked up per target-device
-name (unknown targets raise), `checkSignalComp` replaces the old
-`return True` stub with a real `minVolt`/`maxVolt` check against the new
-`minmaxes` the designer now emits (only for axes with >1 position, mirroring
-GalvoScanDesigner; positioners without configured limits are skipped), and
-`test_scan.py` / `test_scan_pixel_count_convention.py` carry regression
-tests, including the reordered-dims case and an out-of-range rejection.
-Changelog entry under Unreleased → Bug Fixes.
+name (unknown targets raise), and `checkSignalComp` replaces the old
+`return True` stub with a real `minVolt`/`maxVolt` check against the
+`minmaxes` the designer now emits — one `[min, max]` per **emitted** signal,
+parked axes included. The first version of this fix exempted 1-position axes
+"like the galvo designer", which review correctly rejected: Galvo omits
+inactive axes from its signal dict, while Beta drives parked axes to their
+center for the whole scan, so an out-of-range center is a real out-of-range
+AO output. Every emitted waveform is checked; positioners without configured
+limits are skipped. `test_scan.py` / `test_scan_pixel_count_convention.py`
+carry regression tests: the reordered-dims case, out-of-range rejection, and
+both the in-range and out-of-range parked-axis cases. Changelog entry under
+Unreleased → Bug Fixes.
+
+## Defect 5 (found in review) — active-axis collapse misrouted waveforms — **FIXED**
+
+`GalvoScanDesigner` filters 1-step axes out of the scan
+(`_active_axis_indices`), but `sig_dict`, `pixel_sizes` and the
+voltage-compliance indexing were built from the *unfiltered* parameter order.
+With a configured d1 collapsed to one step and d2/d3 active, d2's sweep was
+keyed under d1's device name — and driven onto d1's AO channel — pixel sizes
+belonged to other axes, and `checkSignalComp` compared each waveform against
+another device's rails (`minmaxes` has active-axes entries but was indexed by
+target position). Reachable from the GUI: assign dim 0 a range at or below
+1.5 steps.
+
+Fixed on this branch: `sig_dict` keys and `pixel_sizes` are bound through
+`active`/`axis_devs_order`, and `checkSignalComp` iterates the aligned
+`axis_names`/`minmaxes` pairs the contract already emits instead of
+re-deriving the mapping. Regression test:
+`test_galvo_collapsed_d1_keeps_signals_on_their_devices` (inverse-collapse:
+1-step d1 + active d2/d3). Note the *fully* collapsed case (only one axis
+left active) still crashes — that is Defect 1, unchanged.
 
 ## Verified behavior matrix (repro script output, example_sted params)
 
@@ -168,7 +195,12 @@ lands independently and multi-axis behavior is provably untouched.
    `_smooth_scan_bpoly`), never a bare numpy reduction error.
 4. **Golden tests first**: capture multi-axis `make_signal` outputs (the six
    diagnostics parameter sets) before refactoring and assert byte-identity
-   after.
+   after. Baseline = this branch's HEAD (the defect-5 fix already changed
+   `sig_dict` keys / `pixel_sizes` for collapse cases — deliberately).
+
+Already done on this branch (defect 5): `sig_dict`, `pixel_sizes` and the
+compliance check are bound through `active`/`axis_devs_order` — do not redo,
+but keep them bound when refactoring.
 
 ### Phase B — per-device sweepability (piezo becomes a legal d1)
 
@@ -180,6 +212,13 @@ are instant) degenerates the smooth spline anyway.
 1. New optional `managerProperties.smoothScan: bool`; default falls back to
    the existing name heuristic, so no existing config changes behavior.
    PiezoZ gets `smoothScan: false` in the rig / example_sted configs.
+   **Resolve the flag ONCE per device and use that result at every site that
+   currently applies the name heuristic** (review finding): the
+   vel_max/acc_max-required guard (:92–103 — a `smoothScan: false` device
+   must not be rejected for lacking galvo limits it will never use), the
+   `__dt_fix` jerk-transition candidates (:144–150), `__smooth_axis` (:168),
+   and the d1 scan-path selection. A `smoothScan: false` device without
+   vel/acc limits must reach the stepped path, not die in the guard.
 2. Stepped d1 for **real** (non-mock) non-smooth axes: reuse the existing
    mock-d1 step path but do NOT re-zero positions (:367
    `positions -= positions[0]` is for virtual mock axes; a real stepped axis
@@ -188,18 +227,37 @@ are instant) degenerates the smooth spline anyway.
    `sequence_time` (dwell); `smooth_axes[0] = False` flows to the consumers,
    whose non-smooth-d1 parsing already exists (the diagnostics harness runs
    mock-d1 sets).
-3. Config-editor/schema touchpoint: register `smoothScan` in
-   `setup_metadata` and document in `setupinfo-reference.rst`.
+3. Config-editor touchpoint (corrected in review): the built-in editor field
+   belongs in the manager-property template
+   `utility_scripts/builtin_templates/positioners/NidaqPositionerManager.json`
+   (its `props` array, beside `vel_max`/`acc_max`) — `setup_metadata.py`
+   holds device-kind↔category mappings, not manager-property fields. Document
+   in `setupinfo-reference.rst`.
 
 Outcome: ZX (piezo d1 + galvo d2) works, and combined with Phase A a Z-only
 scan generates a correct signal.
 
 ### Phase C — consumer chain for 1-dim scans
 
-Decision (recommended): keep `scanInfo.img_dims = [N]` truthful, and
-normalize to `(N, 1)` at the detector-consumer boundary so the line-based
-assembly loop, live display, and recording all see a normal one-line 2-D
-image. Known sites:
+Decision: keep `scanInfo.img_dims = [N]` truthful and normalize at the
+detector-consumer boundary. **Review correction: `(N, 1)` normalization does
+NOT let the image handling "run unchanged".** Passing logical dims `(N, 1)`
+allocates a raw buffer shaped `(1, N)`, and both managers dispatch their
+line-insert on `np.squeeze(self._image).ndim` (APD :682/:700, PMT :693) —
+the squeezed buffer is rank 1, neither the `== 2` nor the `>= 3` branch runs,
+and **no pixels are written, silently**. The singleton-line case must be
+handled explicitly, preserving this contract:
+
+- logical loop dimensions: `[N, 1]` (one line of N pixels);
+- spatial image shape: `(1, N)` — Ny=1, Nx=N — not `(N, 1)`;
+- emitted chunk shape: `(frames, 1, N)`;
+- a two-dimensional display scale.
+
+Dispatch on the logical rank (e.g. `len(_loop_dims)`), never on the squeezed
+buffer's rank. Tests must assert actual pixel contents and final shapes, not
+merely that initialization no longer raises.
+
+Known sites:
 
 1. `APDManager.initiateScan` (~:1031–1037): `_loop_dims[y_idx]` with
    `y_idx = 1` on a 1-element list → IndexError. PMTManager already guards
@@ -208,27 +266,40 @@ image. Known sites:
 2. `initiateImage` in BOTH managers (APD :740, PMT :661):
    `range(max(len(img_dims), 2))` indexes `img_dims[1]` on a 1-dim tuple →
    IndexError. Pad with 1 instead.
-3. The sample-to-image assembly loop (`run_loop_dx`, `_pos[1]`,
-   `len(self._loop_dims) == 2` special cases) — with the `(N, 1)`
-   normalization it runs as a single-line 2-D scan unchanged; verify the
-   first-line throw arithmetic (`throw_startzero + initpos + settling +
-   startacc`) against the Phase A signal layout.
+3. The line-insert dispatch above (APD :682/:700, PMT :693) plus the
+   assembly loop (`run_loop_dx`, `_pos[1]`, `len(self._loop_dims) == 2`
+   special cases); verify the first-line throw arithmetic
+   (`throw_startzero + initpos + settling + startacc`) against the Phase A
+   signal layout.
 4. `scan_samples`/`tot_scan_time_s` for 1-axis stay *nominal* line values
    (multi-axis appends actual signal lengths at :203) — check what the scan
    watchdog and progress reporting consume and align.
 5. TTL designers (PointScan + Advanced) with `scan_samples = [per_pixel,
    per_line]` and `Ny = 1`; frame/line clock emission for a one-line scan.
-6. Recording/OME: an (N, 1) recording gets the scan-step pixel size on the
+6. Recording/OME: an (1, N) recording gets the scan-step pixel size on the
    fast axis (per-axis calibration already exists); axis labels must not
    claim a scanned Y.
+7. `SwabianTimeTaggerManager._infer_dims_from_scanInfo` (:1021–1033):
+   without both `x` and `y` labels it falls back to `scan_dims[-2]`, which
+   IndexErrors on one dimension. In scope for the "must not crash" bar
+   (guard → Ny=1); full 1-D *validation* is scoped to APD/PMT, with the
+   time-resolved path re-validated separately on the Swabian rig.
 
 ### Phase D — validation
 
 1. Unit: 1-axis smooth (galvo), 1-axis stepped (piezo), 1-step-d2 collapse,
    piezo-as-d1 ZX, APD/PMT initiateScan/initiateImage with 1-dim inputs,
    plus the Phase A golden tests. Headless: `QT_QPA_PLATFORM=offscreen`.
-2. Headless end-to-end with `mock_scan_setup_APD.json` (established
-   pattern): scripted Z-only scan through ScanController → recorded image.
+2. Headless end-to-end (established mock-setup pattern) — **review
+   correction: no `mock_scan_setup_APD.json` is tracked in the repo** (that
+   name exists only in the local `~/ImSwitchConfig`). The tracked fixtures
+   are `mock_scan_setup.json` (MoNaLISA/Beta, no APD) and
+   `mixed_hamamatsu_apd_mock_scan_setup.json` (APD, but Base widget + Beta
+   designer). Add a new tracked Galvo/Advanced/APD fixture (e.g.
+   `galvo_apd_mock_scan_setup.json` under
+   `imswitch/_data/user_defaults/imcontrol_setups/`), or explicitly adapt
+   the mixed fixture to the Advanced widget + GalvoScanDesigner; then run a
+   scripted Z-only scan through ScanController → recorded image.
 3. Rig: Z-only piezo scan vs. the degenerate-XZ workaround on the same bead
    (profiles must agree); XZ regression (galvo d1) unchanged.
 

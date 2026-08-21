@@ -25,10 +25,14 @@ class BetaScanDesigner(ScanDesigner):
         """ Check analog scanning signals so that they are inside the range of
         the acceptable scanner voltages.
 
-        Mirrors GalvoScanDesigner: only axes that actually scan (>1 position)
-        are checked, against ``scanInfo['minmaxes']`` (emitted per target axis
-        in fast/middle/slow order). Positioners without ``minVolt``/``maxVolt``
-        are skipped rather than rejected, since older stage configs omit them.
+        Every EMITTED waveform is checked, including axes held at a single
+        position: unlike GalvoScanDesigner (which omits inactive axes from its
+        signal dict, so parking is free), Beta drives parked axes to their
+        center for the whole scan -- an out-of-range center is a real
+        out-of-range output. ``scanInfo['minmaxes']`` carries one [min, max]
+        per emitted signal, in ``target_device`` (fast, middle, slow) order.
+        Positioners without ``minVolt``/``maxVolt`` are skipped rather than
+        rejected, since older stage configs omit them.
         """
         minmaxes = scanInfo.get('minmaxes') if scanInfo else None
         if not minmaxes:
@@ -37,9 +41,6 @@ class BetaScanDesigner(ScanDesigner):
         for i in range(min(len(targets), len(minmaxes))):
             name = targets[i]
             if name == 'None' or 'Mock' in name:
-                continue
-            if pixels_for_length_step(scanParameters['axis_length'][i],
-                                      scanParameters['axis_step_size'][i]) <= 1:
                 continue
             props = setupInfo.positioners[name].managerProperties
             minv = props.get('minVolt')
@@ -249,11 +250,14 @@ class BetaScanDesigner(ScanDesigner):
             n_linesteps=n_linesteps,
             positions=positions,
             return_time=parameterDict['return_time'],
-            # Per target axis (fast, middle, slow), same indexing as
-            # checkSignalComp; the slow signal exists even when omitted from
-            # sig_dict (inactive axes are skipped by the >1-position guard).
+            # One [min, max] per EMITTED signal, aligned with sig_dict /
+            # target_device order, so checkSignalComp checks exactly what will
+            # be written to the AO channels (parked axes included -- they are
+            # driven to their center) and nothing that will not.
             minmaxes=[[float(np.min(s)), float(np.max(s))] for s in
-                      (fastAxisSignal, middleAxisSignal, slowAxisSignal)],
+                      ((fastAxisSignal, middleAxisSignal, slowAxisSignal)
+                       if slow_axis_size > 0 else
+                       (fastAxisSignal, middleAxisSignal))],
         )
         scanInfoDict = contract.to_dict()
 
