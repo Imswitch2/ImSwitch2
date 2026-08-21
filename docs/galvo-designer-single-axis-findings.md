@@ -60,10 +60,12 @@ period_trimmed[min_idx:]`) and its head equals the head
 `period[:-1]`. For `n_d2 == 1`, `pre3 + post1` = min→center + center→max = the
 one full sweep (period start/end are both at center with v = v_scan).
 
-Open decision for the 1-axis case: `n_scan_samples_dx[-1]` (and therefore
-`tot_scan_time_s`) stays the *nominal* line length — for multi-axis scans the
-last level is an actual signal length. Check what ScanController/watchdog
-consume before changing (tracked as Phase C item 4).
+Timing contract (resolved in review, see Phase C item 4): `scan_samples =
+[per_pixel, per_line]` stays *nominal* — the detector uses it to read the
+line — but `tot_scan_time_s` becomes truthful: `scan_samples_total *
+scan_time_step`. Verified: its only consumer is
+`SwabianTimeTaggerManager`'s diagnostics log (:450–463); no watchdog or
+progress consumer depends on the old last-level value.
 
 ## Defect 2 — a piezo as the d1 fast axis breaks even with 2 active axes
 
@@ -198,10 +200,24 @@ so each lands independently and multi-axis behavior is provably untouched.
    Use explicit `len(pos) - end` indexing / guards. Where a configuration is
    genuinely unsupported, raise an actionable ValueError (pattern:
    `_smooth_scan_bpoly`), never a bare numpy reduction error.
-4. **Golden tests first**: capture multi-axis `make_signal` outputs (the six
-   diagnostics parameter sets) before refactoring and assert byte-identity
-   after. Baseline = this branch's HEAD (the defect-5 fix already changed
-   `sig_dict` keys / `pixel_sizes` for collapse cases — deliberately).
+4. **Golden tests first**: capture *successful* multi-axis `make_signal`
+   outputs at this branch's HEAD and assert byte-identity after the
+   refactor. The repro script is NOT the golden set — several of its seven
+   cases crash by design before Phase A. Explicit baseline fixtures (all
+   currently succeed):
+   - XY galvo–galvo (smooth d1 + step d2);
+   - XZ galvo d1 + piezo d2 (the rig's standard use);
+   - XYZ 3-axis (d3 staircase);
+   - a linestep variant (`n_linesteps > 1`);
+   - non-smooth/mock combinations from
+     `scripts/diagnostics/test-galvoscandesigner.py`'s parameter sets
+     (mock d1; mock between active axes);
+   - degenerate XZ (2-step d1).
+   Keep the repro script's crash cases (Z-only, ZX piezo-d1, 1-step-Z
+   collapse) as *characterization tests* that flip from expected-crash to
+   asserted-success as Phases A/B land. Baseline = this branch's HEAD (the
+   defect-5 fix already changed `sig_dict` keys / `pixel_sizes` for
+   collapse cases — deliberately).
 
 Already done on this branch (defect 5): `sig_dict`, `pixel_sizes` and the
 compliance check are bound through `active`/`axis_devs_order` — do not redo,
@@ -276,14 +292,29 @@ Known sites:
    special cases); verify the first-line throw arithmetic
    (`throw_startzero + initpos + settling + startacc`) against the Phase A
    signal layout.
-4. `scan_samples`/`tot_scan_time_s` for 1-axis stay *nominal* line values
-   (multi-axis appends actual signal lengths at :203) — check what the scan
-   watchdog and progress reporting consume and align.
+4. Timing (resolved in review): keep `scan_samples`/`samples_d2_period`
+   nominal — that is the detector's line-read contract — and set
+   `tot_scan_time_s = scan_samples_total * scan_time_step` for *every* scan
+   (its current `n_scan_samples_dx[-1] * timestep` understates the real
+   duration). Safe: its only consumer is Swabian's diagnostics log
+   (:450–463). The one-line designer change can land with Phase A.
 5. TTL designers (PointScan + Advanced) with `scan_samples = [per_pixel,
    per_line]` and `Ny = 1`; frame/line clock emission for a one-line scan.
-6. Recording/OME: a (1, N) recording gets the scan-step pixel size on the
-   fast axis (per-axis calibration already exists); axis labels must not
-   claim a scanned Y.
+6. Recording/OME — the 1-D metadata contract (review-specified).
+   `axes_for_recording` (`recording_metadata.py` :52) always returns
+   `lead + ['y', 'x']`, and the Galvo contract labels the first logical scan
+   dimension `x` whatever the device — so a Z-only profile would be stored
+   as `YX` with `PhysicalSizeX = Z step` and nothing preserving that
+   physical Z was scanned. Contract:
+   - stored axes stay compatibility `YX`, with `SizeY = 1`;
+   - the fast axis carries the scan-step pixel size (per-axis calibration
+     already exists);
+   - the physical scan device and axis are retained as metadata (e.g.
+     `scan_axis_device = 'ND-PiezoZ'`, `scan_axis_physical = 'Z'`, sourced
+     from `scanInfo.axis_names` plus the positioner's `axes`), written by
+     all three storers (OME-TIFF, HDF5+OME-XML, OME-NGFF);
+   - an OME regression test asserts the stored shape, the scales, and the
+     physical scan-axis annotation (listed in Phase D).
 7. `SwabianTimeTaggerManager._infer_dims_from_scanInfo` (:1021–1033):
    without both `x` and `y` labels it falls back to `scan_dims[-2]`, which
    IndexErrors on one dimension. In scope for the "must not crash" bar
@@ -294,7 +325,10 @@ Known sites:
 
 1. Unit: 1-axis smooth (galvo), 1-axis stepped (piezo), 1-step-d2 collapse,
    piezo-as-d1 ZX, APD/PMT initiateScan/initiateImage with 1-dim inputs,
-   plus the Phase A golden tests. Headless: `QT_QPA_PLATFORM=offscreen`.
+   the Phase A golden + characterization tests, and the 1-D OME metadata
+   regression (stored shape `(1, N)` as `YX`/`SizeY=1`, scales, physical
+   scan-axis annotation — Phase C item 6). Headless:
+   `QT_QPA_PLATFORM=offscreen`.
 2. Headless end-to-end (established mock-setup pattern) — **review
    correction: no `mock_scan_setup_APD.json` is tracked in the repo** (that
    name exists only in the local `~/ImSwitchConfig`). The tracked fixtures
