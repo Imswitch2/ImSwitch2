@@ -35,6 +35,29 @@ Measured read counts in ImProcess (excluding tests):
 `AcquisitionPartition` carries both the storage mode and the index, so they
 retire with A.
 
+**Incoming channels (coordination with the single-axis scan fix).** The 1-D
+scan plan on `fix/galvo-designer-single-axis-scan` (Phase C item 6 of
+`docs/galvo-designer-single-axis-findings.md`) adds `scan_axis_device` and
+`scan_axis_physical` attributes, written by all three storers, because the
+Galvo contract labels the first logical scan dimension `x` whatever the
+device and OME would otherwise lose that a Z-only scan was physically Z.
+On main today that side channel is necessary and correct. Once the branches
+converge it is category A: the layout carries the same facts as `loop.kind`
+plus `loop.device`. Two follow-ups when rebasing over that fix:
+
+- Derive the loop *kind* from the driving positioner's physical axis (the
+  device is already resolved by `scan_devices()`), so a Z-only scan's loop
+  says `scan_z` natively instead of inheriting the designer's `x` label.
+- Add the two new attributes to category A, and optionally teach the legacy
+  adapters to read them for pre-layout files.
+
+Verified 2026-08-12: the layout builders, gate, round-trip and
+`scan_position_count` already handle single-axis `scan_info`
+(`img_dims=[N]`), so the fix enables no acquisition our producers cannot
+describe. Expected textual conflicts on convergence: `recording_metadata.py`
+(our hunks at :15/:42/:315+, Phase C targets `axes_for_recording` at :52)
+and the `RecordingManager` storers — adjacent, distinct concerns, small.
+
 ## 3. This is mostly not a schema change
 
 Calling it "schema v2" was wrong, and the distinction matters for sequencing.
