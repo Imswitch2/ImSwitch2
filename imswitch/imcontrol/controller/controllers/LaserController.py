@@ -30,6 +30,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # Lasers this scan armed, so teardown touches exactly those and no
         # others (see scanDevicesResolved / _disarmScanLasers).
         self._scanArmedLasers = []
+        # The subset of _scanArmedLasers whose emission the arming itself
+        # switched on (the declared power devices). These are what
+        # scanPartDone pauses during the waits of a multi-part run.
+        self._scanEnabledLasers = []
+        self._scanLasersPaused = False
 
         # Set up lasers
         for lName, lManager in self._master.lasersManager:
@@ -74,6 +79,11 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
         # starts. This is where lasers are armed; sigScanBuilt is too late for
         # NI-DAQ writes and only a compatibility event for TriggerScope.
         self._commChannel.sigScanDevicesResolved.connect(self.scanDevicesResolved)
+        # One part of a multi-part run finished (a timelapse timepoint; never
+        # a repeat frame -- those re-arm without publishing). The run keeps
+        # its lasers armed across the wait, so darkness between timepoints is
+        # produced here by pausing the emission the arming switched on.
+        self._commChannel.sigScanDone.connect(self.scanPartDone)
         self._commChannel.sigScanEnded.connect(lambda: self.scanChanged(False))
 
         # Connect LaserWidget signals
@@ -313,12 +323,18 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
 
         Arming happens once per scan RUN. Membership is republished for every
         repeat frame, and several managers issue blocking RS232 commands here,
-        so re-arming each frame would stall a fast repeat scan.
+        so re-arming each frame would stall a fast repeat scan. When the
+        republish belongs to a later part of a multi-part run (a timelapse
+        timepoint), it instead switches back on exactly the power devices
+        ``scanPartDone`` paused during the preceding wait — this fires before
+        the execution backend claims the hardware, so the writes get through.
         """
         if self._scanArmedLasers:
+            self._resumeScanLasersForNextPart()
             return
 
         armed = []
+        enabled = []
         for lName, _ in self._master.lasersManager:
             if lName not in deviceList:
                 continue
@@ -341,8 +357,12 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
             armed.append(lName)
             if powerDevice is not None and powerDevice not in armed:
                 armed.append(powerDevice)
+            if powerDevice is not None and powerDevice not in enabled:
+                enabled.append(powerDevice)
 
         self._scanArmedLasers = list(armed)
+        self._scanEnabledLasers = list(enabled)
+        self._scanLasersPaused = False
         for lName in armed:
             self._widget.setLaserEnableEditable(lName, False)
 
@@ -365,6 +385,56 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 f'Scan requested these lasers but they could not be armed and '
                 f'will not emit: {", ".join(failed)}'
             )
+
+    def scanPartDone(self):
+        """ One part of a multi-part scan run finished (a timelapse timepoint).
+
+        The run is not over — ``sigScanEnded`` is deliberately withheld for
+        non-final parts so the run-level reservation survives — which means
+        the armed lasers stay armed straight through the wait until the next
+        timepoint. Hardware whose TTL input really gates emission is dark
+        anyway (the gate lines park low between parts), but a power device
+        switched on over serial would keep emitting into the sample for the
+        whole wait.
+
+        So pause exactly the emission the arming switched on, and nothing
+        else: a laser the user enabled by hand keeps its manual state here,
+        just as it does at arming. ``scanDevicesResolved`` switches the paused
+        lasers back on when the next part republishes membership.
+
+        This also fires once when a single scan completes; the pause is then
+        immediately followed by the full teardown, which switches the same
+        lasers off anyway.
+        """
+        if self._scanLasersPaused or not self._scanEnabledLasers:
+            return
+        self._scanLasersPaused = True
+        for lName in self._scanEnabledLasers:
+            try:
+                self._master.lasersManager[lName].setEnabled(False)
+                self._widget.setLaserActive(lName, False, emitSignal=False)
+            except Exception as e:
+                self._logger.error(
+                    f'Failed to pause laser "{lName}" between scan parts: '
+                    f'{e}',
+                    exc_info=True,
+                )
+
+    def _resumeScanLasersForNextPart(self):
+        """ Switch the lasers ``scanPartDone`` paused back on. """
+        if not self._scanLasersPaused:
+            return
+        self._scanLasersPaused = False
+        for lName in self._scanEnabledLasers:
+            try:
+                self._master.lasersManager[lName].setEnabled(True)
+                self._widget.setLaserActive(lName, True, emitSignal=False)
+            except Exception as e:
+                self._logger.error(
+                    f'Failed to switch laser "{lName}" back on for the next '
+                    f'scan part: {e}',
+                    exc_info=True,
+                )
 
     def _disarmScanLasers(self):
         """ Return every laser this scan armed to a known-off idle state.
@@ -405,6 +475,8 @@ class LaserController(ImConWidgetController, StatefulComponentMixin):
                 f'{", ".join(self._scanArmedLasers)}'
             )
         self._scanArmedLasers = []
+        self._scanEnabledLasers = []
+        self._scanLasersPaused = False
 
     def attrChanged(self, key, value):
         if self.settingAttr or len(key) != 3 or key[0] != _attrCategory:
