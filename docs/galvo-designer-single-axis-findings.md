@@ -1,10 +1,11 @@
 # Single-axis / piezo-fast-axis scans: findings and fix plan
 
-*Status: findings only, nothing fixed yet. WIP working doc (per repo convention,
-durable docs go to Sphinx `.rst` once this is implemented). Found 2026-08-21
-while rig-testing the ROI Manager 2.0 branch; reproduced headlessly with
-`scripts/diagnostics/repro-single-axis-scan.py` against
-`example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63,
+*Status: defect 4 (Beta convFactor + compliance stub) FIXED on this branch;
+defects 1–3 are findings with the implementation plan below. WIP working doc
+(per repo convention, durable docs go to Sphinx `.rst` once this is
+implemented). Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
+reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
+against `example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63,
 ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000).*
 
 ## Symptom
@@ -98,17 +99,22 @@ else 1`, then `self._loop_dims[y_idx]` with `len(_loop_dims) == 1`. Check
 PMTManager for the same pattern, plus anything else assuming ≥ 2 dims
 (`ScanWorker._output_image_dims`, image allocation, recording).
 
-## Defect 4 (found in passing) — BetaScanDesigner maps convFactors by position
+## Defect 4 — BetaScanDesigner mapped convFactors by position — **FIXED**
 
-`BetaScanDesigner.make_signal` builds `convFactors` in `setupInfo.positioners`
-order (lines ~48–55) but indexes it with the GUI-dim-ordered
-`target_device[i]`. With the Z-piezo assigned to scan dim 0 under
-example_sted, a 10 µm Z request produced **±0.27 V instead of ±4.75 V**
-(divided by galvo X's 17.44 instead of the piezo's 1.0) — a silent 17×
-range shrink. Fix: look conversion factors (and any other per-device
-properties) up by target-device name, as GalvoScanDesigner does via `pos_idx`.
-Beta's `checkSignalComp` is also still a `return True` stub — add the
-min/maxVolt compliance check while there.
+`BetaScanDesigner.make_signal` built `convFactors` in `setupInfo.positioners`
+order but indexed it with the GUI-dim-ordered `target_device[i]`. With the
+Z-piezo assigned to scan dim 0 under example_sted, a 10 µm Z request produced
+**±0.27 V instead of ±4.75 V** (divided by galvo X's 17.44 instead of the
+piezo's 1.0) — a silent 17× range shrink.
+
+Fixed on this branch: conversion factors are looked up per target-device
+name (unknown targets raise), `checkSignalComp` replaces the old
+`return True` stub with a real `minVolt`/`maxVolt` check against the new
+`minmaxes` the designer now emits (only for axes with >1 position, mirroring
+GalvoScanDesigner; positioners without configured limits are skipped), and
+`test_scan.py` / `test_scan_pixel_count_convention.py` carry regression
+tests, including the reordered-dims case and an out-of-range rejection.
+Changelog entry under Unreleased → Bug Fixes.
 
 ## Verified behavior matrix (repro script output, example_sted params)
 
@@ -120,7 +126,7 @@ min/maxVolt compliance check while there.
 | XZ with 1-step Z | CRASH same as Z-only (active-axis collapse) |
 | Degenerate XZ: X = 2 steps × 0.1 µm, Z d2 | OK — X swing ±0.22 µm, piezo full range |
 | Beta, dims in setup order (X,Y size 0, Z third) | OK — piezo staircase ±4.75 V |
-| Beta, Z on dim 0 | OK but WRONG — ±0.27 V (convFactor mismatch, Defect 4) |
+| Beta, Z on dim 0 | pre-fix: ±0.27 V (Defect 4); post-fix: ±4.75 V, correct |
 
 ## Rig workaround (no code/config changes)
 
@@ -129,19 +135,104 @@ Run the Z profile as a **degenerate XZ scan**: galvo X active with 2 steps
 usual. Yields a `[2, Nz]` image; average or discard the second column.
 
 Switching `scan.scanDesigner` to `BetaScanDesigner` also works for a
-step-and-settle Z stack, but: needs `"return_time"` in `scanDesignerParams` +
-restart, dims MUST be assigned in setup-JSON positioner order until Defect 4
-is fixed, there is no voltage compliance check, and Beta + the point-scan
-TTL/APD chain is untested on this rig.
+step-and-settle Z stack (needs `"return_time"` in `scanDesignerParams` +
+restart; since the Defect 4 fix, dim order no longer matters and voltages are
+compliance-checked) — but Beta + the point-scan TTL/APD chain is untested on
+this rig, so the degenerate-XZ form remains the recommended interim.
 
-## Test plan for the fix
+## 1D scan implementation plan (defects 1–3)
 
-Regression tests (headless, `QT_QPA_PLATFORM=offscreen`), extending
-`imswitch/imcontrol/_test/unit/test_galvo_scan_designer.py`:
+Goal: a Z-piezo-only scan from the advanced widget produces a correct 1-axis
+signal, records a correct 1-D (N×1) image through the APD/PMT chain, and any
+1-active-axis collapse (1-step d2) stops crashing. Phases are ordered so each
+lands independently and multi-axis behavior is provably untouched.
 
-1. 1-active-axis smooth scan builds, and multi-axis output is unchanged
-   (golden comparison pre/post refactor).
-2. XZ with 1-step d2 (collapse case).
-3. Piezo-as-d1 with vel/acc = 1000 (whichever of 2a/2b was chosen).
-4. APD/PMT `initiateScan` with `img_dims` of length 1.
-5. Beta convFactor lookup with reordered dims (10 µm Z on dim 0 → ±4.75 V).
+### Phase A — designer hardening (no behavior change for existing scans)
+
+1. **Empty-tile fix** (the crash at :671): in `__generate_smooth_scan`,
+   evaluate the line period once (`period = curve_poly(x_eval)`), keep
+   `pos = np.tile(period[:-1], n_d2 - 1)` (legitimately empty for `n_d2 == 1`),
+   and pass `period[:-1]` into `__add_start_end` as the slicing source for
+   `pre3`/`post1`/`pos_halfscand2step`. Byte-identical for `n_d2 > 1` (the
+   tiled array's head/tail equal one trimmed period's head/tail); for
+   `n_d2 == 1`, `pre3 + post1` is exactly the one full sweep (the period
+   starts and ends at center with v = v_scan). Enables: smooth 1-axis scans
+   (galvo-only line) and the XZ-with-1-step-Z collapse.
+2. **Non-smooth d1 guard**: `n_steps_dx[axis+1]` at :186 → 1 when there is no
+   d2 axis.
+3. **Zero-length-piece hardening**: `__init_positioning`/`__final_positioning`
+   with sub-timestep durations return empty arrays; every negative-end slice
+   (`pos[start:-end_skip]` in `__get_axis_reps` etc.) breaks on `end == 0`.
+   Use explicit `len(pos) - end` indexing / guards. Where a configuration is
+   genuinely unsupported, raise an actionable ValueError (pattern:
+   `_smooth_scan_bpoly`), never a bare numpy reduction error.
+4. **Golden tests first**: capture multi-axis `make_signal` outputs (the six
+   diagnostics parameter sets) before refactoring and assert byte-identity
+   after.
+
+### Phase B — per-device sweepability (piezo becomes a legal d1)
+
+Today `__smooth_axis` is decided purely by `'mock' in name` (:168): every
+real device is assumed galvo-sweepable. The piezo needs to be *stepped*
+instead — and its huge vel/acc (1000/1000, set so its d2+ positioning ramps
+are instant) degenerates the smooth spline anyway.
+
+1. New optional `managerProperties.smoothScan: bool`; default falls back to
+   the existing name heuristic, so no existing config changes behavior.
+   PiezoZ gets `smoothScan: false` in the rig / example_sted configs.
+2. Stepped d1 for **real** (non-mock) non-smooth axes: reuse the existing
+   mock-d1 step path but do NOT re-zero positions (:367
+   `positions -= positions[0]` is for virtual mock axes; a real stepped axis
+   must keep its absolute, center-anchored `axis_pixel_positions` — the AO
+   writes designer signals with no offset added). Each position held for
+   `sequence_time` (dwell); `smooth_axes[0] = False` flows to the consumers,
+   whose non-smooth-d1 parsing already exists (the diagnostics harness runs
+   mock-d1 sets).
+3. Config-editor/schema touchpoint: register `smoothScan` in
+   `setup_metadata` and document in `setupinfo-reference.rst`.
+
+Outcome: ZX (piezo d1 + galvo d2) works, and combined with Phase A a Z-only
+scan generates a correct signal.
+
+### Phase C — consumer chain for 1-dim scans
+
+Decision (recommended): keep `scanInfo.img_dims = [N]` truthful, and
+normalize to `(N, 1)` at the detector-consumer boundary so the line-based
+assembly loop, live display, and recording all see a normal one-line 2-D
+image. Known sites:
+
+1. `APDManager.initiateScan` (~:1031–1037): `_loop_dims[y_idx]` with
+   `y_idx = 1` on a 1-element list → IndexError. PMTManager already guards
+   this (`if len(self._loop_dims) > y_idx`, :939) — mirror it, or normalize
+   dims before this point.
+2. `initiateImage` in BOTH managers (APD :740, PMT :661):
+   `range(max(len(img_dims), 2))` indexes `img_dims[1]` on a 1-dim tuple →
+   IndexError. Pad with 1 instead.
+3. The sample-to-image assembly loop (`run_loop_dx`, `_pos[1]`,
+   `len(self._loop_dims) == 2` special cases) — with the `(N, 1)`
+   normalization it runs as a single-line 2-D scan unchanged; verify the
+   first-line throw arithmetic (`throw_startzero + initpos + settling +
+   startacc`) against the Phase A signal layout.
+4. `scan_samples`/`tot_scan_time_s` for 1-axis stay *nominal* line values
+   (multi-axis appends actual signal lengths at :203) — check what the scan
+   watchdog and progress reporting consume and align.
+5. TTL designers (PointScan + Advanced) with `scan_samples = [per_pixel,
+   per_line]` and `Ny = 1`; frame/line clock emission for a one-line scan.
+6. Recording/OME: an (N, 1) recording gets the scan-step pixel size on the
+   fast axis (per-axis calibration already exists); axis labels must not
+   claim a scanned Y.
+
+### Phase D — validation
+
+1. Unit: 1-axis smooth (galvo), 1-axis stepped (piezo), 1-step-d2 collapse,
+   piezo-as-d1 ZX, APD/PMT initiateScan/initiateImage with 1-dim inputs,
+   plus the Phase A golden tests. Headless: `QT_QPA_PLATFORM=offscreen`.
+2. Headless end-to-end with `mock_scan_setup_APD.json` (established
+   pattern): scripted Z-only scan through ScanController → recorded image.
+3. Rig: Z-only piezo scan vs. the degenerate-XZ workaround on the same bead
+   (profiles must agree); XZ regression (galvo d1) unchanged.
+
+Estimated effort: A+B are each small and well-bounded (the sketches above are
+worked out); C is the open-ended half — the assembly-loop and
+recording/metadata audit is where unknowns live. The degenerate-XZ workaround
+remains the interim answer on the rig until D2 passes.

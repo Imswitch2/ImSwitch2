@@ -10,8 +10,9 @@ ND-GalvoY conv 16.63, ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000):
    pieces from the piezo's huge vel/acc -> empty-slice argmax).
 4. XZ whose Z collapses to 1 step degenerates to case 1.
 5. Degenerate XZ (2-step X) = the zero-change rig workaround.
-6. BetaScanDesigner maps convFactors by position: Z on dim 0 silently
-   shrinks a 10 um Z scan 17x (+-0.27 V instead of +-4.75 V).
+6. BetaScanDesigner convFactor mapping: Z on dim 0 used to be divided by the
+   galvo's factor (+-0.27 V, a silent 17x shrink); since the defect-4 fix
+   both dim orders give the correct +-4.75 V.
 
 Run headless:  QT_QPA_PLATFORM=offscreen python scripts/diagnostics/repro-single-axis-scan.py
 """
@@ -96,6 +97,6 @@ run('Z slow, X/Y size 0 (setup order) — correct',
     ['ND-GalvoX', 'ND-GalvoY', 'ND-PiezoZ'],
     [0.0, 0.0, 10.0], [0.1, 0.1, 0.5], use_beta=True)
 
-run('Z FIRST (fast axis) — positional convFactor trap',
+run('Z FIRST (fast axis) — was the positional convFactor trap, now correct',
     ['ND-PiezoZ', 'ND-GalvoX', 'ND-GalvoY'],
     [10.0, 0.0, 0.0], [0.5, 0.1, 0.1], use_beta=True)
