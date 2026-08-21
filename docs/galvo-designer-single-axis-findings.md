@@ -63,7 +63,7 @@ one full sweep (period start/end are both at center with v = v_scan).
 Open decision for the 1-axis case: `n_scan_samples_dx[-1]` (and therefore
 `tot_scan_time_s`) stays the *nominal* line length — for multi-axis scans the
 last level is an actual signal length. Check what ScanController/watchdog
-consume before changing.
+consume before changing (tracked as Phase C item 4).
 
 ## Defect 2 — a piezo as the d1 fast axis breaks even with 2 active axes
 
@@ -81,25 +81,30 @@ init/final positioning pieces shorter than one sample at 100 kHz
 arithmetic, e.g. `__get_axis_reps`: `pos[start_skip:-end_skip]` with
 `end_skip == 0` → `pos[start:-0]` → empty → `np.argmax` dies.
 
-Decision needed: either
-
-- (a) support a stepped d1 for non-sweepable devices (each position held for
-  `sequence_time` — physically the right profile for a piezo), or
-- (b) reject piezo/stage-like d1 with an actionable error that names the
-  degenerate-XZ workaround (below).
-
-Either way the cryptic numpy errors must go. Note "sweepable" is currently
-decided purely by `'mock' not in name` (line ~168) — there is no per-device
-"this is a galvo" flag.
+Two options existed: (a) support a stepped d1 for non-sweepable devices
+(each position held for `sequence_time` — physically the right profile for a
+piezo), or (b) reject piezo/stage-like d1 with an actionable error naming
+the degenerate-XZ workaround. **The plan resolves this as (a)** — Phase B
+introduces per-device sweepability and the stepped d1 — with (b)'s
+actionable-error style as the remaining behavior for genuinely unsupported
+configurations. Either way the cryptic numpy errors must go. Note "sweepable"
+is currently decided purely by `'mock' not in name` (line ~168) — there is
+no per-device "this is a galvo" flag; Phase B adds one.
 
 ## Defect 3 — downstream consumers assume ≥ 2 scan dims
 
 Even with both designer defects fixed, `APDManager.initiateScan`
 (`imswitch/imcontrol/model/managers/detectors/APDManager.py` ~1031–1037)
 IndexErrors on 1-dim scans: `y_idx = scan_axes.index("y") if "y" in scan_axes
-else 1`, then `self._loop_dims[y_idx]` with `len(_loop_dims) == 1`. Check
-PMTManager for the same pattern, plus anything else assuming ≥ 2 dims
-(`ScanWorker._output_image_dims`, image allocation, recording).
+else 1`, then `self._loop_dims[y_idx]` with `len(_loop_dims) == 1`.
+
+The audit of the sibling consumers is done (results in the Phase C site
+list): PMTManager guards that particular index but shares the
+`initiateImage` crash and the squeeze-rank line-insert dispatch; both
+managers would *silently write zero pixels* for a naive `(N, 1)`
+normalization; and `SwabianTimeTaggerManager` crashes on `scan_dims[-2]`.
+Image allocation, the assembly loop, TTL designers and recording/OME are
+enumerated there as well.
 
 ## Defect 4 — BetaScanDesigner mapped convFactors by position — **FIXED**
 
@@ -170,9 +175,9 @@ this rig, so the degenerate-XZ form remains the recommended interim.
 ## 1D scan implementation plan (defects 1–3)
 
 Goal: a Z-piezo-only scan from the advanced widget produces a correct 1-axis
-signal, records a correct 1-D (N×1) image through the APD/PMT chain, and any
-1-active-axis collapse (1-step d2) stops crashing. Phases are ordered so each
-lands independently and multi-axis behavior is provably untouched.
+signal, records a correct one-line `(1, N)` image through the APD/PMT chain,
+and any 1-active-axis collapse (1-step d2) stops crashing. Phases are ordered
+so each lands independently and multi-axis behavior is provably untouched.
 
 ### Phase A — designer hardening (no behavior change for existing scans)
 
@@ -276,7 +281,7 @@ Known sites:
    watchdog and progress reporting consume and align.
 5. TTL designers (PointScan + Advanced) with `scan_samples = [per_pixel,
    per_line]` and `Ny = 1`; frame/line clock emission for a one-line scan.
-6. Recording/OME: an (1, N) recording gets the scan-step pixel size on the
+6. Recording/OME: a (1, N) recording gets the scan-step pixel size on the
    fast axis (per-axis calibration already exists); axis labels must not
    claim a scanned Y.
 7. `SwabianTimeTaggerManager._infer_dims_from_scanInfo` (:1021–1033):
