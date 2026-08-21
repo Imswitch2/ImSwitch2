@@ -197,7 +197,9 @@ class GalvoScanDesigner(ScanDesigner):
             samples_d2_period_read = samples_d2_period - 1
         else:
             pos_temp, _ = self.__generate_step_scan(axis, n_scan_samples_dx[axis], n_steps_dx[axis], self.__smooth_axis, v_max=self.axis_vel_max[axis], a_max=self.axis_acc_max[axis])
-            pos_temp = self.__generate_tiledstep_multid2(pos_temp, n_steps_dx[axis+1] * n_linesteps)
+            # single-active-axis scans have no d2 axis: one d2 step
+            n_d2_steps = n_steps_dx[axis + 1] if axis_count_scan > 1 else 1
+            pos_temp = self.__generate_tiledstep_multid2(pos_temp, n_d2_steps * n_linesteps)
             samples_d2_period = n_scan_samples_dx[axis+1]
             samples_d2_period_read = samples_d2_period
         pos.append(pos_temp)
@@ -299,10 +301,26 @@ class GalvoScanDesigner(ScanDesigner):
         curve_poly, time_fix, pos_fix = self.__d2scan_poly(parameterDict, v_max, a_max)
         # calculate number of evaluation points for a d2 step for decided timestep
         n_eval = int(time_fix[-1] / self.__timestep)
-        # generate multi-d2-step curve for the whole d3 step
-        pos = self.__generate_smooth_multid2(curve_poly, time_fix, pos_fix, n_eval, n_d2)
+        # evaluate ONE d2 period; the final sample would duplicate the start
+        # of the next period, so the tiled form drops it
+        x_eval = np.linspace(0, time_fix[-1], n_eval)
+        period = curve_poly(x_eval)[:-1]
+        if period.size == 0:
+            raise ValueError(
+                'GalvoScanDesigner: one fast-axis period evaluates to zero '
+                f'samples (period {time_fix[-1]:.4g} µs < sample step '
+                f'{self.__timestep:.4g} µs). Check sequence_time, the scan '
+                'sampleRate and the fast axis\'s vel_max/acc_max.'
+            )
+        # middle of the scan: (n_d2 - 1) whole periods -- legitimately EMPTY
+        # for a single-d2-step (1-active-axis) scan. __add_start_end slices
+        # the missing start/end half-periods from ``period`` itself, so
+        # n_d2 == 1 degenerates to exactly one full sweep instead of crashing
+        # on np.min of an empty array (defect 1 in
+        # docs/galvo-designer-single-axis-findings.md).
+        pos = np.tile(period, n_d2 - 1)
         # add missing start and end piece
-        pos_ret = self.__add_start_end(pos, pos_fix, v_max, a_max)
+        pos_ret = self.__add_start_end(pos, period, pos_fix, v_max, a_max)
         return pos_ret, n_eval
 
     def __generate_step_scan(self, dim, len_axis, n_axis, smooth_axis,
@@ -414,7 +432,21 @@ class GalvoScanDesigner(ScanDesigner):
             # get length of first d2 step
             start_skip = np.max(self._samples_initpos) + self._samples_settling + self._samples_startacc
             end_skip = np.max(self._samples_finalpos)
-            first_d2 = [np.argmax(pos[start_skip:-end_skip]) + start_skip]
+            # NB len(pos) - end_skip, not -end_skip: a device whose final
+            # positioning is shorter than one sample gives end_skip == 0, and
+            # pos[start:-0] is EMPTY -- the old "argmax of an empty sequence"
+            # crash for stiff (piezo-like) devices on d1.
+            search = pos[start_skip:len(pos) - end_skip]
+            if search.size == 0:
+                raise ValueError(
+                    'GalvoScanDesigner: cannot locate the first fast-axis '
+                    f'period (positioning takes {start_skip}+{end_skip} of '
+                    f'{len(pos)} samples). The d1 device is likely not '
+                    'sweepable with its vel_max/acc_max; mark it '
+                    "'smoothScan': false in managerProperties to scan it "
+                    'stepwise.'
+                )
+            first_d2 = [np.argmax(search) + start_skip]
             # get length of all other d2 steps
             rest_d2s = np.repeat(samples_period - 1, n_d2 - 1)
         else:
@@ -528,18 +560,6 @@ class GalvoScanDesigner(ScanDesigner):
         # return polynomial, that can be evaluated at any timepoints you want
         # return fixed points position and time
         return bpoly, time, pos
-
-    def __generate_smooth_multid2(self, pos_bpoly, time_fix, pos_fix, n_eval, n_d2):
-        """ Generate a smooth multi-d2-step curve by evaluating the polynomial with
-        the clock frequency used and copying it """
-        # get evaluation times for one d2 step
-        x_eval = np.linspace(0, time_fix[-1], n_eval)
-        # evaluate polynomial
-        x_bpoly = pos_bpoly(x_eval)
-        pos_ret = []
-        # concatenate for number of d2 steps in scan
-        pos_ret = np.tile(x_bpoly[:-1], n_d2 - 1)
-        return pos_ret
 
     def __generate_tiledstep_multid2(self, pos, n_d2):
         pos_ret = np.tile(pos, n_d2)
@@ -687,25 +707,37 @@ class GalvoScanDesigner(ScanDesigner):
         # return evaluated polynomial at the timestep I want
         return poly_eval
 
-    def __add_start_end(self, pos, pos_fix, v_max, a_max):
-        """ Add start and end half-d2-steps to smooth scanning curve """
+    def __add_start_end(self, pos, period, pos_fix, v_max, a_max):
+        """ Add start and end half-d2-steps to smooth scanning curve.
+
+        ``pos`` is the tiled middle — (n_d2 - 1) whole periods, possibly
+        empty — and ``period`` is ONE evaluated d2 period (trailing duplicate
+        sample already trimmed). The start piece (last minimum → period end)
+        and end piece (period start → first maximum) are sliced from
+        ``period``: with a tiled middle these slices are byte-identical to
+        slicing the middle itself (its tail/head ARE one period), and with an
+        empty middle (single-d2-step scan) they compose the one full sweep —
+        the period starts and ends at the scan center with v = v_scan, so
+        pre3 + post1 is continuous.
+        """
         # generate five pieces, three before and two after, to be concatenated to the given positions array
+        min_idx = np.where(period == np.min(period))[0][-1]
+        max_idx = np.where(period == np.max(period))[0][0]
         # initial smooth acceleration piece from 0
-        pos_pre1 = self.__init_positioning(initpos=np.min(pos), v_max=v_max, a_max=a_max)
+        pos_pre1 = self.__init_positioning(initpos=np.min(period), v_max=v_max, a_max=a_max)
         self._samples_initpos.append(len(pos_pre1))
         # initial settling time before first d2 step
         settlinglen = int(round(self.__settlingtime / self.__timestep))
-        pos_pre2 = np.repeat(np.min(pos), settlinglen)  # settling positions
+        pos_pre2 = np.repeat(np.min(period), settlinglen)  # settling positions
         self._samples_settling = len(pos_pre2)
-        pos_pre3 = pos[np.where(pos == np.min(pos))[0][-1]:]  # first half scan curve
+        pos_pre3 = period[min_idx:]  # first half scan curve
         # alt: last half scan curve to last peak after last d2 step
-        pos_post1 = pos[:np.where(pos == np.max(pos))[0][0]]
+        pos_post1 = period[:max_idx]
         # final smooth acceleration piece from max to 0
         pos_post2 = self.__final_positioning(initpos=pos_post1[-1], v_max=v_max, a_max=a_max)
         pos_ret = np.concatenate((pos_pre1, pos_pre2, pos_pre3, pos, pos_post1, pos_post2))
         # half scan d2 step
-        pos_halfscand2step =\
-            pos[:np.argmin(abs(pos[:np.where(pos == np.max(pos))[0][0]] - pos_fix[2]))]
+        pos_halfscand2step = period[:np.argmin(abs(period[:max_idx] - pos_fix[2]))]
         self._samples_startacc = len(pos_pre3) - len(pos_halfscand2step)
         self._samples_finalpos.append(len(pos_post2))
         return pos_ret
