@@ -7,7 +7,7 @@ import threading
 import queue
 from datetime import datetime, timezone
 from io import BytesIO
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import h5py
@@ -1227,6 +1227,18 @@ class TiffStorer(Storer):
             detectorName, mode, n_frames or 1,
             pixel_size_yx_um=(py, px), dtype=det.dtype)
 
+    @staticmethod
+    def _with_attr_annotations(meta, detector_attrs):
+        """Copy of ``meta`` with the detector's shared attrs merged into its
+        OME annotations (never mutates -- ``self.omeMeta`` is shared across
+        storers). HDF5/Zarr serialize the shared attributes natively; TIFF's
+        equivalent is the MapAnnotation ``build_ome_xml`` emits, so without
+        this the scan-axis provenance would be absent from OME-TIFF."""
+        if not detector_attrs:
+            return meta
+        return dataclass_replace(
+            meta, annotations={**meta.annotations, **detector_attrs})
+
     def snap(self, images: Dict[str, np.ndarray], attrs: Dict[str, Dict[str, str]] = None):
         """Save snapshot as a native OME-TIFF (one shot, shape known)."""
         storedShapes = {}
@@ -1238,8 +1250,17 @@ class TiffStorer(Storer):
                 meta = self._meta_for(channel, image=image)
                 tiff.imwrite(path, image, ome=True, bigtiff=True,
                              metadata=meta.tiff_metadata(image.shape))
+                channel_attrs = (attrs or {}).get(channel)
+                if channel_attrs:
+                    # tifffile's metadata mapping has no slot for arbitrary
+                    # key/values; rewrite the description with our own OME-XML
+                    # (same axes/sizes) carrying the attrs as a MapAnnotation.
+                    stored_meta = self._with_attr_annotations(meta, channel_attrs)
+                    tiff.tiffcomment(
+                        path, _ome.build_ome_xml(
+                            stored_meta.padded_to(image.ndim), image.shape))
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
-    
+
         return storedShapes
 
     def openStream(self, fileDests, detectorNames, shapes, attrs, *,
@@ -1249,6 +1270,13 @@ class TiffStorer(Storer):
         self._paths = {}
         self._spatial = {}            # detectorName -> per-frame shape
         self._dtypeWarned = set()
+        # Kept for finalize: the OME-XML embedded there carries these shared
+        # attributes as a MapAnnotation (TIFF's counterpart of the HDF5/Zarr
+        # attribute serialization).
+        self._streamAttrs = {
+            detectorName: dict((attrs or {}).get(detectorName) or {})
+            for detectorName in detectorNames
+        }
         for detectorName in detectorNames:
             path = fileDests[detectorName]
             self._paths[detectorName] = path
@@ -1312,6 +1340,9 @@ class TiffStorer(Storer):
                 else:
                     shape = (n, *frame_shape)
                     stored_meta = meta.padded_to(len(shape))
+                stored_meta = self._with_attr_annotations(
+                    stored_meta,
+                    getattr(self, '_streamAttrs', {}).get(detectorName))
                 tiff.tiffcomment(path, _ome.build_ome_xml(stored_meta, shape))
             except Exception as e:
                 errors.append((
