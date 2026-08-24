@@ -1634,10 +1634,22 @@ class SuperScanController(StatefulComponentMixin, ScanLifecycleMixin, ImConWidge
         # say PhysicalSizeX = Z step with nothing preserving that physical Z
         # was scanned. Follows the positive_direction precedent above; every
         # storer persists shared attrs; nothing in ImSwitch reads these back.
-        devices, physical = scan_axis_provenance(
-            getattr(self, '_positionersScan', []) or [],
-            self._setupInfo.positioners,
-        )
+        # Derived from the analog dict (device/length/step aligned) so an
+        # assigned axis the designer collapses to one step is not claimed.
+        analogParameterDict = getattr(self, '_analogParameterDict', None) or {}
+        targetDevices = analogParameterDict.get('target_device')
+        if targetDevices:
+            devices, physical = scan_axis_provenance(
+                targetDevices,
+                self._setupInfo.positioners,
+                axis_lengths=analogParameterDict.get('axis_length'),
+                axis_step_sizes=analogParameterDict.get('axis_step_size'),
+            )
+        else:
+            devices, physical = scan_axis_provenance(
+                getattr(self, '_positionersScan', []) or [],
+                self._setupInfo.positioners,
+            )
         self.setSharedAttr(_attrCategoryStage, 'scan_axis_devices', devices)
         self.setSharedAttr(_attrCategoryStage, 'scan_axis_physical', physical)
 

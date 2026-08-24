@@ -159,3 +159,50 @@ def test_scan_axis_provenance_is_write_only_metadata():
 
     assert scan_axis_provenance([], positioners) == ([], [])
     assert scan_axis_provenance(['None'], {}) == ([], [])
+
+
+def test_scan_axis_provenance_drops_collapsed_axes():
+    """An assigned axis whose length/step collapses to a single step emits no
+    waveform (GalvoScanDesigner active-axis collapse), so provenance must not
+    claim it was scanned. Regression: collapsed X + active Z used to claim
+    both X and Z."""
+    from types import SimpleNamespace
+    from imswitch.imcontrol.model.scan_parameters import scan_axis_provenance
+
+    positioners = {
+        'ND-GalvoX': SimpleNamespace(axes=['X']),
+        'ND-PiezoZ': SimpleNamespace(axes=['Z']),
+        'ND-GalvoY': SimpleNamespace(axes=['Y']),
+    }
+
+    # Collapsed X (one step) followed by active Z: only Z is claimed.
+    devices, physical = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ'], positioners,
+        axis_lengths=[0.4, 10.0], axis_step_sizes=[1.0, 0.5])
+    assert devices == ['ND-PiezoZ']
+    assert physical == ['Z']
+
+    # The 1-length/1-step dummy entries build_analog appends for non-scan
+    # axes are filtered by the same rule.
+    devices, physical = scan_axis_provenance(
+        ['ND-PiezoZ', 'ND-GalvoX', 'ND-GalvoY'], positioners,
+        axis_lengths=[10.0, 1.0, 1.0], axis_step_sizes=[0.5, 1.0, 1.0])
+    assert devices == ['ND-PiezoZ']
+    assert physical == ['Z']
+
+    # Both axes active: both claimed, in dim order.
+    devices, physical = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ'], positioners,
+        axis_lengths=[10.0, 10.0], axis_step_sizes=[0.5, 0.5])
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ']
+    assert physical == ['X', 'Z']
+
+    # No lengths/steps given: legacy behavior, every assigned device kept.
+    devices, _ = scan_axis_provenance(['ND-GalvoX', 'ND-PiezoZ'], positioners)
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ']
+
+    # An entry beyond the length/step lists is kept (misaligned caller).
+    devices, _ = scan_axis_provenance(
+        ['ND-GalvoX', 'ND-PiezoZ'], positioners,
+        axis_lengths=[10.0], axis_step_sizes=[0.5])
+    assert devices == ['ND-GalvoX', 'ND-PiezoZ']
