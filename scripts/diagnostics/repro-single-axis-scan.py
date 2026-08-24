@@ -1,15 +1,16 @@
-"""Repro for docs/galvo-designer-single-axis-findings.md.
+"""Repro/demonstrator for docs/galvo-designer-single-axis-findings.md.
 
-Demonstrates, with the real example_sted setup (ND-GalvoX conv 17.44,
-ND-GalvoY conv 16.63, ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000):
+Originally the crash reproduction; since the branch's fixes EVERY case below
+generates. With the real example_sted setup (ND-GalvoX conv 17.44, ND-GalvoY
+conv 16.63, ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000, smoothScan
+false since the Phase B fix -> Z-only runs as a stepped staircase):
 
-1. Z-piezo-only scan -> GalvoScanDesigner crash at __add_start_end (np.min of
-   the empty ``np.tile(period[:-1], n_d2 - 1 = 0)`` middle array).
-2. XZ (galvo fast, piezo d2) works -- the intended use.
-3. ZX (piezo as fast axis) crashes differently (zero-length positioning
-   pieces from the piezo's huge vel/acc -> empty-slice argmax).
-4. XZ whose Z collapses to 1 step degenerates to case 1.
-5. Degenerate XZ (2-step X) = the zero-change rig workaround.
+1. Z-piezo-only scan — used to crash at __add_start_end (np.min of the empty
+   ``np.tile(period, n_d2 - 1 = 0)`` middle); now a single line.
+2. XZ (galvo fast, piezo d2) — the classic intended use, unchanged.
+3. ZX (piezo as fast axis) — used to crash on an empty end-slice argmax.
+4. XZ whose Z collapses to 1 step — degenerates to a working single line.
+5. Degenerate XZ (2-step X) — the historical zero-change rig workaround.
 6. BetaScanDesigner convFactor mapping: Z on dim 0 used to be divided by the
    galvo's factor (+-0.27 V, a silent 17x shrink); since the defect-4 fix
    both dim orders give the correct +-4.75 V.

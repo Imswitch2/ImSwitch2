@@ -1,14 +1,18 @@
 # Single-axis / piezo-fast-axis scans: findings and fix plan
 
-*Status: defect 4 (Beta convFactor + compliance stub) and defect 5
-(active-axis collapse misrouting, found in review) FIXED on this branch;
-defects 1–3 are findings with the implementation plan below, revised after a
-review round (see the review notes inline). WIP working doc (per repo
-convention, durable docs go to Sphinx `.rst` once this is implemented). Found
-2026-08-21 while rig-testing the ROI Manager 2.0 branch; reproduced headlessly
-with `scripts/diagnostics/repro-single-axis-scan.py` against
-`example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63, ND-PiezoZ
-conv 1.0 / vel_max 1000 / acc_max 1000).*
+*Status: ALL FIVE DEFECTS FIXED on this branch, and the 1D plan below is
+IMPLEMENTED (Phases A–D; only D3, rig validation, remains open). Phase A
+landed 2026-08-24 as the period-slicing refactor proven byte-identical by the
+pre-captured golden baselines; Phase B as `managerProperties.smoothScan` with
+the stepped fast axis; Phase C as the singleton-line consumer contract +
+write-only recording provenance; Phase D as the tracked
+`galvo_apd_mock_scan_setup.json` fixture and a simulated end-to-end Z-only
+scan test. The plan text is kept as the record of what was built and why.
+Durable documentation lives in `setupinfo-reference.rst` (smoothScan) and the
+changelog. Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
+reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
+against `example_sted.json` (ND-GalvoX conv 17.44, ND-GalvoY conv 16.63,
+ND-PiezoZ conv 1.0 / vel_max 1000 / acc_max 1000).*
 
 ## Symptom
 
@@ -174,12 +178,33 @@ restart; since the Defect 4 fix, dim order no longer matters and voltages are
 compliance-checked) — but Beta + the point-scan TTL/APD chain is untested on
 this rig, so the degenerate-XZ form remains the recommended interim.
 
-## 1D scan implementation plan (defects 1–3)
+## 1D scan implementation plan (defects 1–3) — IMPLEMENTED
 
 Goal: a Z-piezo-only scan from the advanced widget produces a correct 1-axis
 signal, records a correct one-line `(1, N)` image through the APD/PMT chain,
 and any 1-active-axis collapse (1-step d2) stops crashing. Phases are ordered
 so each lands independently and multi-axis behavior is provably untouched.
+
+All four phases are implemented on this branch (one commit per phase); the
+text below is kept as the record of the contracts that were built.
+Implementation notes where reality differed from the plan:
+
+- The Phase A slice-hardening alone also cured the ZX "argmax of empty
+  sequence" crash (the empty end-slice WAS the whole failure), so a piezo d1
+  generates even on the smooth path; Phase B's stepped profile remains the
+  physically right one and is what `example_sted.json` now selects.
+- Phase C's line-insert dispatch uses squeezed-rank `<= 2` rather than a
+  stored logical rank: buffer-rank or logical-rank dispatch would REROUTE
+  the existing single-plane-3D case (buffer `(1, Ny, Nx)`), which today
+  takes the 2-D writer and gets its per-line live preview from it. `<= 2`
+  extends the dispatch to the new rank-1 case while every existing shape
+  keeps its route; the pixel-content tests are the guarantee.
+- Verifying TTL designers (item 5) found and fixed a real crash:
+  `PointScanTTLCycleDesigner` indexed `n_steps_dx[1]` and a per-frame
+  `scan_samples` level a 1-axis scan does not emit.
+- The provenance (item 6) rides the shared-attribute channel
+  (`updateScanStageAttrs` → every storer), following the
+  `positive_direction` precedent — no serializer changes needed.
 
 ### Phase A — designer hardening (no behavior change for existing scans)
 

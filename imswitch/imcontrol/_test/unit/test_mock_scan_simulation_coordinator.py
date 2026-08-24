@@ -896,3 +896,65 @@ def test_mixed_hamamatsu_apd_mock_scan_once_records_each_target(tmp_path):
                 file.close()
     finally:
         recording.endRecording(emitSignal=False, wait=True)
+
+
+def test_z_only_stepped_scan_end_to_end_from_galvo_fixture():
+    """Phase D of docs/galvo-designer-single-axis-findings.md: the tracked
+    galvo_apd_mock_scan_setup.json powers a full simulated Z-only scan — the
+    real GalvoScanDesigner output (stepped piezo, single axis) runs through
+    the simulated NIDAQ, the APD scan worker assembles the one-line image,
+    and the chunk emerges with the (frames, 1, N) contract."""
+    from imswitch.imcontrol.model.signaldesigners.GalvoScanDesigner import (
+        GalvoScanDesigner,
+    )
+
+    setup_info = _setup_from_user_default('galvo_apd_mock_scan_setup.json')
+
+    params = {
+        'target_device': ['Z', 'X', 'Y'],
+        'axis_length': [10.0, 1.0, 1.0],
+        'axis_step_size': [0.5, 1.0, 1.0],
+        'axis_centerpos': [5.0, 0.0, 0.0],
+        'axis_startpos': [[5.0], [0.0], [0.0]],
+        'sequence_time': 2e-05,
+        'phase_delay': 100.0,
+        'd3step_delay': 0.0,
+    }
+    sig_dict, positions, scan_info = GalvoScanDesigner().make_signal(
+        params, setup_info)
+    assert positions == [20]
+    assert scan_info['img_dims'] == [20]
+    assert list(sig_dict) == ['Z']  # only the active axis emits a waveform
+
+    nidaq = NidaqManager(setup_info)
+    apd = APDManager(setup_info.detectors['APD'], 'APD', nidaq)
+    done = []
+    chunks = []
+    nidaq.sigScanDone.connect(lambda: done.append(True))
+
+    def chunk_ready():
+        if chunks:
+            return True
+        chunk = apd.getChunk()
+        if chunk.size > 0:
+            chunks.append(chunk)
+        return bool(chunks)
+
+    try:
+        nidaq.runScan(
+            {'scanSignalsDict': sig_dict, 'TTLCycleSignalsDict': {}},
+            scan_info,
+        )
+        assert _wait_for(
+            lambda: done and chunk_ready() and apd.mockScanDone(),
+            timeout=5.0,
+        )
+        chunk = chunks[0]
+        assert chunk.shape == (1, 1, 20)
+        assert apd.shape == (1, 20)
+        assert len(apd.scale) == 2
+        assert _wait_for(
+            lambda: apd._scanThread is None or not apd._scanThread.isRunning()
+        )
+    finally:
+        apd.stopAcquisition()
