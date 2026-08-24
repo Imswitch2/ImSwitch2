@@ -43,20 +43,29 @@ Galvo contract labels the first logical scan dimension `x` whatever the
 device and OME would otherwise lose that a Z-only scan was physically Z.
 On main today that side channel is necessary and correct. Once the branches
 converge it is category A: the layout carries the same facts as `loop.kind`
-plus `loop.device`. Two follow-ups when rebasing over that fix:
+plus `loop.device`.
 
-- Derive the loop *kind* from the driving positioner's physical axis (the
-  device is already resolved by `scan_devices()`), so a Z-only scan's loop
-  says `scan_z` natively instead of inheriting the designer's `x` label.
-- Add the two new attributes to category A, and optionally teach the legacy
-  adapters to read them for pre-layout files.
+**Both follow-ups implemented 2026-08-24** (the fix is now implemented on its
+branch: `ScanStage:scan_axis_devices`/`scan_axis_physical`, written from
+`updateScanStageAttrs` via `scan_axis_provenance()`, confirmed write-only —
+zero ImProcess readers):
 
-Verified 2026-08-12: the layout builders, gate, round-trip and
-`scan_position_count` already handle single-axis `scan_info`
-(`img_dims=[N]`), so the fix enables no acquisition our producers cannot
-describe. Expected textual conflicts on convergence: `recording_metadata.py`
-(our hunks at :15/:42/:315+, Phase C targets `axes_for_recording` at :52)
-and the `RecordingManager` storers — adjacent, distinct concerns, small.
+- Producers derive the loop *kind* from the driving positioner's physical
+  axis: `physical_kind_overrides()` corrects the designer's `x` label when
+  the resolved positioner controls exactly one axis, so a Z-piezo-only scan
+  emits `scan_z` with `device='ND-PiezoZ'`. Multi-axis stages keep the
+  designer label — which of their axes a dim used is not derivable from
+  setup info.
+- The legacy scan-stage path reads the provenance keys when present: a
+  recorded physical axis outranks the old device-name-substring guess, so a
+  `'GalvoX'`-named drive performing a Z sweep resolves as `scan_z`. Files
+  without the keys behave exactly as before.
+
+The two attributes are hereby category A (retire in P3/P4 with the rest).
+Verified: builders, gate, round-trip and `scan_position_count` handle
+single-axis `scan_info`; the Z-only case passes the whole seam. Expected
+textual conflicts on convergence remain `recording_metadata.py` and the
+`RecordingManager` storers — adjacent, distinct concerns, small.
 
 ## 3. This is mostly not a schema change
 

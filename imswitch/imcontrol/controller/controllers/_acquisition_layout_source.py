@@ -125,6 +125,31 @@ def scan_devices(controller: Any, scan_info: Mapping[str, Any]) -> dict[str, str
     return devices
 
 
+def physical_kind_overrides(
+    controller: Any, scan_info: Mapping[str, Any]
+) -> dict[str, str]:
+    """Designer axis kinds corrected to the driving stage's physical axis.
+
+    The designers label the first logical scan dimension ``x`` whatever
+    device drives it, so a Z-piezo-only scan's loop would be called
+    ``scan_x``. When the resolved positioner controls exactly one physical
+    axis, that axis is authoritative for the loop's kind; a multi-axis stage
+    keeps the designer label, because which of its axes a scan dim used is
+    not derivable from setup info alone.
+    """
+    positioners = getattr(getattr(controller, "_setupInfo", None), "positioners", {})
+    mapped = {"x": "scan_x", "y": "scan_y", "z": "scan_z"}
+    overrides: dict[str, str] = {}
+    for kind, device in scan_devices(controller, scan_info).items():
+        axes = list(getattr(positioners.get(device), "axes", None) or [])
+        if len(axes) != 1:
+            continue
+        physical = mapped.get(str(axes[0]).strip().lower())
+        if physical and physical != kind:
+            overrides[kind] = physical
+    return overrides
+
+
 def scan_directions(controller: Any, scan_info: Mapping[str, Any]) -> dict[str, int]:
     """Map ScanInfo physical axes to configured positioner directions."""
     positioners = getattr(getattr(controller, "_setupInfo", None), "positioners", {})
@@ -158,6 +183,7 @@ def build_controller_point_scan_layouts(
         scan_driven_detectors=scan_driven_detector_names(controller, detector_names),
         directions=scan_directions(controller, scan_info),
         devices=scan_devices(controller, scan_info),
+        kind_overrides=physical_kind_overrides(controller, scan_info),
     )
 
 
@@ -178,6 +204,7 @@ def _physical_loops(
     directions: Mapping[str, int] | None = None,
     storage: bool = False,
     devices: Mapping[str, str] | None = None,
+    kind_overrides: Mapping[str, str] | None = None,
 ) -> tuple[AcquisitionLoop, ...]:
     dims = tuple(int(value) for value in scan_info.get("img_dims", ()))
     axes = tuple(scan_info.get("img_axes_phys", ()))
@@ -188,7 +215,10 @@ def _physical_loops(
     controller_order = []
     seen = set()
     for index, (axis, count) in enumerate(zip(axes, dims)):
-        kind = _kind(axis, index)
+        raw_kind = _kind(axis, index)
+        # directions/devices are keyed by the designer's label; the corrected
+        # kind names the loop and its storage axis.
+        kind = (kind_overrides or {}).get(raw_kind, raw_kind)
         if kind in seen:
             raise ValueError(f"ScanInfoContract repeats semantic axis {kind!r}")
         seen.add(kind)
@@ -198,7 +228,7 @@ def _physical_loops(
                 step = abs(float(steps[index]))
             except (TypeError, ValueError):
                 step = None
-        direction = (directions or {}).get(kind)
+        direction = (directions or {}).get(raw_kind)
         controller_order.append(
             AcquisitionLoop(
                 id=kind,
@@ -208,7 +238,7 @@ def _physical_loops(
                 unit="um" if step is not None else None,
                 direction=direction,
                 storage_axis=kind if storage else None,
-                device=(devices or {}).get(kind),
+                device=(devices or {}).get(raw_kind),
             )
         )
     # ScanInfoContract is fast-to-slow (X/Y/Z); event chronology is the
@@ -259,10 +289,13 @@ def build_point_scan_layouts(
     scan_driven_detectors: Sequence[str] = (),
     directions: Mapping[str, int] | None = None,
     devices: Mapping[str, str] | None = None,
+    kind_overrides: Mapping[str, str] | None = None,
     modality: str | None = None,
 ) -> dict[str, AcquisitionLayout]:
     """Build detector-local layouts for MoNaLISA and ordinary point scans."""
-    physical = _physical_loops(scan_info, directions=directions, devices=devices)
+    physical = _physical_loops(
+        scan_info, directions=directions, devices=devices, kind_overrides=kind_overrides
+    )
     scan_driven = set(scan_driven_detectors)
     pulse_counts = pulse_counts or {}
     layouts = {}
@@ -384,10 +417,13 @@ def build_advanced_scan_layouts(
     scan_driven_detectors: Sequence[str] = (),
     directions: Mapping[str, int] | None = None,
     devices: Mapping[str, str] | None = None,
+    kind_overrides: Mapping[str, str] | None = None,
     modality: str | None = None,
 ) -> dict[str, AcquisitionLayout]:
     """Build exact Advanced Scan layouts from line programs and pulse counts."""
-    physical = _physical_loops(scan_info, directions=directions, devices=devices)
+    physical = _physical_loops(
+        scan_info, directions=directions, devices=devices, kind_overrides=kind_overrides
+    )
     condition_count = max(1, int(scan_info.get("n_linesteps", 1)))
     scan_driven = set(scan_driven_detectors)
     layouts = {}
@@ -435,6 +471,7 @@ def build_advanced_scan_layouts(
                     scan_source=scan_source,
                     directions=directions,
                     devices=devices,
+                    kind_overrides=kind_overrides,
                     modality=modality,
                 )
             )

@@ -18,6 +18,7 @@ from imswitch.imcommon.view.guitools import colorutils
 from ...model import SignalDesignerFactory
 from ._acquisition_layout_source import (
     build_advanced_scan_layouts,
+    physical_kind_overrides,
     scan_devices,
     scan_directions,
     scan_driven_detector_names,
@@ -609,6 +610,7 @@ class ScanControllerAdvanced(SuperScanController):
             ),
             directions=scan_directions(self, scanInfo),
             devices=scan_devices(self, scanInfo),
+            kind_overrides=physical_kind_overrides(self, scanInfo),
         )
         validate_detector_edge_counts(
             layouts,

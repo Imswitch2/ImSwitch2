@@ -157,6 +157,20 @@ change. Its first phase -- confining interpretation to the resolver, which six
 ImProcess modules still bypass -- needs no schema bump, no flag and no release
 gate, and is the half that removes the actual failure mode.
 
+### Convergence with the single-axis scan fix (2026-08-24)
+
+`fix/galvo-designer-single-axis-scan` is implemented: Z-piezo-only scans work
+end to end there, and recordings carry write-only
+`ScanStage:scan_axis_devices`/`scan_axis_physical` provenance. This branch is
+ready for it: producers describe 1-axis scans (verified through the seam),
+`physical_kind_overrides()` makes a Z-only loop say `scan_z` natively, and
+the legacy adapter prefers the recorded physical axis over the device-name
+guess. Once both merge, the tracked `galvo_apd_mock_scan_setup.json` plus its
+simulated end-to-end test enable a *real* headless producer→record→resolve
+run for the point-detector family — strengthening simulated validation,
+without substituting for the rig session, which remains owed (§4.3.5's
+RESOLFT firmware order above all).
+
 ### Legacy trailing-axis ambiguity (fixed)
 
 The legacy scan adapters choose between two historical conventions for a stage

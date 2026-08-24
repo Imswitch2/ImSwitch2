@@ -825,3 +825,109 @@ def test_an_unreadable_layout_falls_back_to_readable_legacy_attributes():
     codes = {issue.code for issue in resolved.issues}
     assert "UNSUPPORTED_SCHEMA_VERSION" in codes
     assert "LEGACY_SCAN_GEOMETRY_ASSUMPTION" in codes
+
+
+def test_z_only_scan_is_described_as_scan_z_not_scan_x(tmp_path):
+    """The single-axis fix makes Z-piezo-only scans possible; describe them truly.
+
+    The designers label the first logical scan dimension 'x' whatever device
+    drives it. The driving positioner controls exactly one physical axis, so
+    that axis is authoritative for the loop's kind -- otherwise a Z profile
+    records a layout whose kind says X and only the device name tells the
+    truth.
+    """
+    from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
+        physical_kind_overrides,
+    )
+
+    controller = SimpleNamespace(
+        _setupInfo=SimpleNamespace(
+            positioners={
+                "ND-PiezoZ": SimpleNamespace(axes=["Z"], isPositiveDirection=True)
+            }
+        ),
+        _analogParameterDict={"target_device": ["ND-PiezoZ"]},
+    )
+    scan_info = {
+        "img_dims": [200],
+        "img_axes_phys": ["x"],
+        "pixel_sizes": [0.05],
+        "axis_names": ["ND-PiezoZ"],
+    }
+
+    overrides = physical_kind_overrides(controller, scan_info)
+    assert overrides == {"scan_x": "scan_z"}
+
+    layout = build_point_scan_layouts(
+        scan_info,
+        ("APD",),
+        scan_source="ScanControllerPointScan",
+        devices={"scan_x": "ND-PiezoZ"},
+        kind_overrides=overrides,
+    )["APD"]
+    assert [(l.kind, l.count, l.device) for l in layout.event_loops] == [
+        ("scan_z", 200, "ND-PiezoZ")
+    ]
+
+    # And it survives the recording gate, the file, and resolution.
+    assert _gate(layout, detector="APD", recFrames=200, numCamTTL=1) == [True]
+    data_obj = _record(tmp_path, layout, _ramp(200), detector="APD")
+    resolved = data_obj.acquisition_layout
+    assert resolved.is_authoritative
+    assert [l.kind for l in resolved.layout.event_loops] == ["scan_z"]
+
+
+def test_multi_axis_stage_keeps_the_designer_label():
+    """Which axis of an XY stage a scan dim used is not derivable from setup."""
+    from imswitch.imcontrol.controller.controllers._acquisition_layout_source import (
+        physical_kind_overrides,
+    )
+
+    controller = SimpleNamespace(
+        _setupInfo=SimpleNamespace(
+            positioners={
+                "XYStage": SimpleNamespace(axes=["X", "Y"], isPositiveDirection=True)
+            }
+        ),
+        _analogParameterDict={"target_device": ["XYStage"]},
+    )
+    scan_info = {
+        "img_dims": [10],
+        "img_axes_phys": ["x"],
+        "pixel_sizes": [0.1],
+        "axis_names": ["XYStage"],
+    }
+
+    assert physical_kind_overrides(controller, scan_info) == {}
+
+
+def test_resolver_prefers_recorded_physical_axis_over_the_name_guess():
+    """scan_axis_physical is a statement; the device-name substring is a guess.
+
+    'GalvoX' driving what is physically a Z sweep used to resolve as scan_x
+    because the name contains an x. The single-axis fix records the physical
+    axis per scanned dim; when present it wins.
+    """
+    from imswitch.improcess.model.acquisition_layout_resolver import (
+        resolve_acquisition_layout,
+    )
+
+    attrs = {
+        "ScanStage:target_device": ["GalvoX"],
+        "ScanStage:axis_length": [10.0],
+        "ScanStage:axis_step_size": [0.05],
+        "ScanStage:axis_startpos": [0.0],
+        "ScanStage:scan_axis_devices": ["GalvoX"],
+        "ScanStage:scan_axis_physical": ["Z"],
+    }
+
+    resolved = resolve_acquisition_layout(attrs, shape=(200, 8, 8), detector="APD")
+
+    assert resolved.source == "scan-stage-legacy"
+    kinds = {loop.kind: loop.device for loop in resolved.layout.event_loops}
+    assert kinds == {"scan_z": "GalvoX"}
+
+    # Without the provenance keys, the old name-substring guess still applies.
+    del attrs["ScanStage:scan_axis_devices"], attrs["ScanStage:scan_axis_physical"]
+    fallback = resolve_acquisition_layout(attrs, shape=(200, 8, 8), detector="APD")
+    assert {l.kind for l in fallback.layout.event_loops} == {"scan_x"}

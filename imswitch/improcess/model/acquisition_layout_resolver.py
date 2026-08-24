@@ -525,6 +525,28 @@ def _scan_geometry_candidates(
             ),
         )
 
+    # The single-axis scan fix records each scanned dim's physical stage axis
+    # (write-only provenance). When present it is a statement, not a guess, so
+    # it outranks inferring the axis from a substring of the device's name --
+    # which calls a 'GalvoX'-named Z-drive scan_x and 'NDMover1' whatever its
+    # position happens to be.
+    prov_devices = _sequence(attrs.get("ScanStage:scan_axis_devices"))
+    prov_physical = _sequence(attrs.get("ScanStage:scan_axis_physical"))
+
+    def _kind_for(index: int) -> str:
+        device = devices[index] if index < len(devices) else None
+        name = _text(device)
+        if name and prov_devices and prov_physical:
+            for prov_device, physical in zip(prov_devices, prov_physical):
+                if _text(prov_device) == name:
+                    mapped = {"x": "scan_x", "y": "scan_y", "z": "scan_z"}.get(
+                        (_text(physical) or "").lower()
+                    )
+                    if mapped:
+                        return mapped
+                    break
+        return _axis_kind(device, index)
+
     nx = _positive_int(attrs.get("ScanTTL:Nx"))
     ny = _positive_int(attrs.get("ScanTTL:Ny"))
     candidate_counts: list[tuple[int, ...]] = []
@@ -597,7 +619,7 @@ def _scan_geometry_candidates(
     for index, count in enumerate(counts):
         if count <= 1 or index >= len(size_counts) or size_counts[index] != 1:
             continue
-        kind = _axis_kind(devices[index] if index < len(devices) else None, index)
+        kind = _kind_for(index)
         assumptions.append(
             _issue(
                 "warning",
@@ -613,7 +635,7 @@ def _scan_geometry_candidates(
 
     loops = []
     for index, count in enumerate(counts):
-        kind = _axis_kind(devices[index] if index < len(devices) else None, index)
+        kind = _kind_for(index)
         direction = None
         if index < len(directions):
             direction = 1 if bool(directions[index]) else -1
