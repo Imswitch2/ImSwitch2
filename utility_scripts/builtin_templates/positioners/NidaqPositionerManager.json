@@ -14,6 +14,6 @@
     {"key": "maxVolt",          "label": "Max Voltage (V)",    "type": "float", "default": 10.0,  "req": true,  "grp": "Basic",    "tip": "",     "opts": []},
     {"key": "vel_max",          "label": "Max Velocity",       "type": "float", "default": 0.5,   "req": false, "grp": "Advanced", "tip": "",     "opts": []},
     {"key": "acc_max",          "label": "Max Acceleration",   "type": "float", "default": 0.1,   "req": false, "grp": "Advanced", "tip": "",     "opts": []},
-    {"key": "smoothScan",       "label": "Smooth Scan Sweep",  "type": "bool",  "default": true,  "req": false, "grp": "Advanced", "tip": "On: swept continuously like a galvo when on the fast scan axis. Off: stepped and held per pixel (piezo/stage); vel_max/acc_max not needed.", "opts": []}
+    {"key": "smoothScan",       "label": "Smooth Scan Sweep",  "type": "bool_auto", "default": null, "req": false, "grp": "Advanced", "tip": "Automatic (key absent): decided by the device name -- 'mock' devices are stepped, everything else sweeps like a galvo. On: swept continuously when on the fast scan axis. Off: stepped and held per pixel (piezo/stage); vel_max/acc_max not needed.", "opts": []}
   ]
 }

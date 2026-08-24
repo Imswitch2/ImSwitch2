@@ -647,3 +647,85 @@ class TestNullableSchemaTypes:
         assert _infer_type_from_schema(
             {"type": ["string", "null"], "enum": ["Off", "Hardware"]}
         ) == "select"
+
+
+class TestBoolAutoTriState:
+    """A ``bool_auto`` template field is a tri-state boolean whose absent
+    state is meaningful: the consumer applies its own fallback when the key
+    is missing (e.g. GalvoScanDesigner's smoothScan device-name heuristic).
+    The editor must therefore never materialize a value for it — an older
+    mock-named Nidaq positioner would otherwise flip from its historical
+    stepped behavior to smooth scanning just by being opened and applied."""
+
+    def test_bool_auto_with_null_default_stays_absent(self):
+        template = {
+            "props": [
+                {"key": "smoothScan", "label": "Smooth Scan Sweep",
+                 "type": "bool_auto", "default": None, "req": False,
+                 "grp": "Advanced", "tip": "", "opts": []},
+                {"key": "conversionFactor", "label": "Conversion Factor",
+                 "type": "float", "default": 1.0, "req": True,
+                 "grp": "Basic", "tip": "", "opts": []},
+            ],
+        }
+        result = build_default_device(
+            "NidaqPositionerManager", template=template, json_schema=None)
+        assert "smoothScan" not in result["managerProperties"]
+        assert result["managerProperties"]["conversionFactor"] == 1.0
+
+    def test_bool_auto_with_explicit_default_is_written_as_bool(self):
+        template = {
+            "props": [
+                {"key": "smoothScan", "label": "Smooth Scan Sweep",
+                 "type": "bool_auto", "default": False, "req": False,
+                 "grp": "Advanced", "tip": "", "opts": []},
+            ],
+        }
+        result = build_default_device(
+            "NidaqPositionerManager", template=template, json_schema=None)
+        assert result["managerProperties"]["smoothScan"] is False
+
+    def test_shipped_nidaq_template_does_not_materialize_smooth_scan(self):
+        """Regression against the real template file: applying the shipped
+        NidaqPositionerManager defaults must not add smoothScan."""
+        template_path = (
+            Path(__file__).parents[4] / "utility_scripts" / "builtin_templates"
+            / "positioners" / "NidaqPositionerManager.json"
+        )
+        if not template_path.exists():
+            pytest.skip("NidaqPositionerManager.json template not found")
+        with open(template_path, encoding="utf-8") as f:
+            template = json.load(f)
+
+        smooth = [
+            field for field in template.get("props", [])
+            if field["key"] == "smoothScan"
+        ]
+        assert smooth and smooth[0]["type"] == "bool_auto"
+        assert smooth[0]["default"] is None
+
+        result = build_default_device(
+            "NidaqPositionerManager", template=template, json_schema=None)
+        assert "smoothScan" not in result["managerProperties"]
+        # The other advanced defaults still materialize as before.
+        assert result["managerProperties"]["vel_max"] == 0.5
+
+    def test_merge_drops_bool_auto_key_the_user_reset_to_automatic(self):
+        """Selecting Automatic omits the key from the edited dict; the merge
+        must not resurrect the original value (it is a known schema key, so
+        its omission is an explicit user choice, not an unknown field)."""
+        original = {
+            "managerName": "NidaqPositionerManager",
+            "managerProperties": {"smoothScan": True, "custom": 7},
+        }
+        edited = {
+            "managerName": "NidaqPositionerManager",
+            "managerProperties": {},
+        }
+        merged = merge_preserving_unknown(
+            original, edited,
+            schema_top_keys=set(),
+            schema_prop_keys={"smoothScan"},
+        )
+        assert "smoothScan" not in merged["managerProperties"]
+        assert merged["managerProperties"]["custom"] == 7

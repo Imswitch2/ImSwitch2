@@ -573,6 +573,14 @@ def _build_default_device(manager_name: str) -> dict:
             d[f["key"]] = _display_to_json(str(v), f["type"]) if v != "" else v
     for f in schema.get("props", []):
         v = f["default"]
+        if f["type"] == "bool_auto":
+            # Tri-state boolean: a null default means "absent = automatic",
+            # and materializing a value would override the consumer's
+            # fallback (e.g. smoothScan's device-name heuristic).
+            if v in (None, "", "null"):
+                continue
+            d["managerProperties"][f["key"]] = bool(v)
+            continue
         d["managerProperties"][f["key"]] = (
             _display_to_json(str(v), f["type"]) if v != "" else v
         )
@@ -1153,6 +1161,19 @@ class FieldWidget(QWidget):
         if tp == "bool":
             self._w = QCheckBox()
             self._w.setChecked(bool(value) if value is not None else False)
+        elif tp == "bool_auto":
+            # Tri-state boolean: "Automatic" means the key stays ABSENT from
+            # the saved config so the consumer's fallback applies (e.g.
+            # smoothScan's device-name heuristic). Apply omits the key for
+            # Automatic instead of writing a default.
+            self._w = QComboBox()
+            self._w.addItem("Automatic (not set)", None)
+            self._w.addItem("On", True)
+            self._w.addItem("Off", False)
+            if value is None or value == "null":
+                self._w.setCurrentIndex(0)
+            else:
+                self._w.setCurrentIndex(1 if bool(value) else 2)
         elif tp == "int":
             self._w = QSpinBox()
             self._w.setRange(-999999, 999999)
@@ -1253,6 +1274,8 @@ class FieldWidget(QWidget):
         tp = self._def["type"]
         if tp == "bool":
             return self._w.isChecked()
+        if tp == "bool_auto":
+            return self._w.currentData()  # None (Automatic) / True / False
         if tp == "int":
             return self._w.value()
         if tp == "float":
@@ -1720,6 +1743,10 @@ class PropertyEditor(QWidget):
                     new_device[key] = value
                 continue
             val = fw.get_value()
+            if fw._def.get("type") == "bool_auto" and val is None:
+                # "Automatic": keep the key absent so the consumer's own
+                # fallback applies (never write a default for it).
+                continue
             if section == "top":
                 if key == "axes":
                     # Axes stored as array in JSON
