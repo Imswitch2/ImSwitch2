@@ -8,6 +8,7 @@ import tifffile
 
 from imswitch.improcess.analysis.multicolor import alignment_summary
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
+from imswitch.improcess.model.result_io import save_image_result
 
 
 class MulticolorApplyResult(ProcessingResult):
@@ -53,29 +54,4 @@ class MulticolorApplyResult(ProcessingResult):
         )
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt in ("tiff", "tif"):
-            axes = "".join(self.axis_labels)
-            tifffile.imwrite(
-                str(path),
-                np.asarray(self.data, dtype=np.float32),
-                imagej=len(axes) <= 5,
-                metadata={"axes": axes, "summary": self.summary},
-                photometric="minisblack",
-            )
-        elif fmt in ("hdf5", "h5", "hdf"):
-            with h5py.File(str(path), "w") as h5:
-                h5.create_dataset("aligned", data=np.asarray(self.data), compression="gzip")
-                h5.attrs["summary"] = self.summary
-                h5.attrs["axis_labels"] = ",".join(self.axis_labels)
-                h5.attrs["scale_unit"] = self.scale_unit
-                h5.attrs["alignment_mode"] = self.alignment["mode"]
-                h5.attrs["alignment_x_bounds"] = np.asarray(
-                    self.alignment["x_bounds"],
-                    dtype=np.int64,
-                )
-                for key, value in self.params.items():
-                    if value is not None:
-                        h5.attrs[f"param_{key}"] = value
-        else:
-            raise ValueError(f"Multicolor apply supports TIFF or HDF5, got {fmt!r}")
+        save_image_result(self, path, fmt, extra={"summary": self.summary})

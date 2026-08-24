@@ -22,16 +22,55 @@ class ProcessorOutput:
         object.__setattr__(self, "results", normalized)
 
 
-def normalize_processor_output(output) -> tuple[ProcessingResult, ...]:
-    """Normalize a processor return value to a tuple of results."""
+def attach_provenance(
+    results, source, processor, params=None, inputs=()
+) -> tuple[ProcessingResult, ...]:
+    """Record on each result what it was derived from.
+
+    Two kinds of provenance, attached together because they answer two halves
+    of the same question. The spatial identity says which pixels the result
+    shares with its source; the processing footprint says what was done to get
+    there, and travels into the saved file's metadata.
+
+    Applied centrally rather than in every processor: there are twenty-odd of
+    them, and provenance that depends on each author remembering to add a line
+    is provenance that is mostly missing. A processor only has to declare
+    ``preserves_grid``; if it declares nothing, the output gets its own
+    coordinate space, which is the answer that cannot mislead.
+    """
+    from imswitch.improcess.model.footprint import record_step
+
+    results = tuple(results)
+    # The footprint is recorded even for a source-less run: "cropped with these
+    # ranges" is worth keeping whether or not the input is still identifiable.
+    record_step(results, source, processor, params, inputs)
+    if source is None:
+        return results
+    same_grid = bool(getattr(processor, "preserves_grid", None))
+    for result in results:
+        adopt = getattr(result, "adopt_identity_from", None)
+        if callable(adopt):
+            adopt(source, same_grid=same_grid)
+    return results
+
+
+def normalize_processor_output(
+    output, source=None, processor=None, params=None, inputs=()
+) -> tuple[ProcessingResult, ...]:
+    """Normalize a processor return value to a tuple of results.
+
+    When ``source`` and ``processor`` are given, provenance is attached here so
+    every processor inherits it without having to opt in. ``params`` are what
+    the run was asked for, and become the footprint step's settings.
+    """
     if isinstance(output, ProcessorOutput):
-        return output.results
+        return attach_provenance(output.results, source, processor, params, inputs)
     if isinstance(output, ProcessingResult):
-        return (output,)
+        return attach_provenance((output,), source, processor, params, inputs)
     if isinstance(output, (list, tuple)):
         results = tuple(output)
         if all(isinstance(result, ProcessingResult) for result in results):
-            return results
+            return attach_provenance(results, source, processor, params, inputs)
     raise TypeError(
         "Processor output must be a ProcessingResult, ProcessorOutput, "
         "or a sequence of ProcessingResult objects"
@@ -74,6 +113,27 @@ class Processor(ABC):
     #: because ``apply`` is a pure function of one result.
     min_inputs: int = 1
     max_inputs: int | None = 1
+    #: Whether this processor's output sits on the *same pixel grid* as its
+    #: input, so an ROI drawn on one measures the same features on the other.
+    #: True for filters, thresholds, projections along a non-spatial axis;
+    #: False for anything that crops, resamples, rescales or reprojects.
+    #: ``None`` means "not declared", and the output then gets a fresh
+    #: coordinate space — the safe answer, because wrongly claiming a shared
+    #: grid makes ROIs measure the wrong pixels.
+    preserves_grid: bool | None = None
+    #: Whether this processor can be run over an ROI rather than a whole frame
+    #: (P-R). Opt-in, because the answer is not universal: a drift correction
+    #: over a cropped region is a different measurement, not a cheaper one, and
+    #: offering it would invite a result nobody can interpret.
+    #:
+    #: The restriction is applied **around** the processor by the run path —
+    #: `apply` still receives an ordinary result — so declaring this is the
+    #: whole of what a processor has to do.
+    accepts_roi: bool = False
+    #: Which restriction modes make sense here, in the order offered. A filter
+    #: usually wants `mask` first (its output stays pixel-aligned); anything
+    #: whose cost scales with the frame usually wants `crop`.
+    roi_modes: tuple[str, ...] = ("crop", "mask")
 
     def accepts(self, result: ProcessingResult) -> bool:
         """Full compatibility gate: semantic kind, then shape/axis contract.

@@ -23,6 +23,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         self._commChannel.sigScanParamsUpdated.connect(self.scanParamsUpdated)
         self._commChannel.sigResultProduced.connect(self.resultProduced)
         self._commChannel.sigLiveResultUpdated.connect(self.liveResultUpdated)
+        # Results that have ever arrived as a live update. Their pixels can be
+        # rewritten between render passes, so they never get a mutation token
+        # and nothing downstream caches a measurement of them.
+        self._liveResultUids: set = set()
         # The list widget owns the loaded results; registering here is what
         # lets any panel enumerate them through the channel instead of
         # reaching for this controller.
@@ -100,7 +104,18 @@ class ReconstructionViewController(ImProcessWidgetController):
             # Display layers carry their own per-layer contrast and have no
             # shared sliced axis, so there is no "Base" axis to rescale against.
             self._displayedAxisLabels = list(display_layers[0].axis_labels)
-            self._widget.setDisplayLayers(display_layers)
+            first = display_layers[0]
+            self._widget.setDisplayLayers(
+                display_layers,
+                identity=self._resultIdentity(
+                    result,
+                    np.asarray(first.data),
+                    list(first.axis_labels),
+                    first.axis_scales,
+                    first.scale_unit,
+                    view_mode=None,
+                ),
+            )
             return
 
         if result_kind(result) in ("curve", "table"):
@@ -131,6 +146,10 @@ class ReconstructionViewController(ImProcessWidgetController):
             else "grayclip"
         )
         result_name = getattr(result, 'name', None)
+        identity = self._resultIdentity(
+            result, im, list(axisLabels), list(axisScales), result.scale_unit,
+            view_mode=mode.name,
+        )
         self._widget.setImage(
             im,
             axisLabels,
@@ -138,6 +157,7 @@ class ReconstructionViewController(ImProcessWidgetController):
             result.scale_unit,
             colormap=colormap,
             name=result_name,
+            identity=identity,
         )
         # Re-activate the main layer so tools operate on the selected result.
         # (setDisplayLayers already does this; here we match that behavior for the setImage path.)
@@ -150,6 +170,58 @@ class ReconstructionViewController(ImProcessWidgetController):
             self._widget.setImageDisplayLevels(*levels)
         elif autoLevels:
             self.updateLevelsRange(base=None)
+
+    def _mutationToken(self, result) -> str | None:
+        """A token that changes whenever this layer's pixels can have changed.
+
+        Minted per render pass, which is exactly when the array behind the
+        layer is replaced — and *withheld* for live results, whose array can be
+        rewritten in place between passes. A token there would certify data
+        that had changed, so the honest answer is None: consumers that cache on
+        it simply do not cache.
+        """
+        uid = getattr(result, "result_uid", None)
+        # Read through __dict__: on a controller whose base __init__ has not
+        # run, plain getattr raises rather than falling back to the default.
+        if uid and uid in self.__dict__.get("_liveResultUids", ()):
+            return None
+        generation = self.__dict__.get("_renderGeneration", 0) + 1
+        self.__dict__["_renderGeneration"] = generation
+        return f"render:{uid or id(result)}:{generation}"
+
+    def _resultIdentity(self, result, data, axis_labels, axis_scales, scale_unit, *, view_mode):
+        """Spatial provenance for the layer about to be rendered.
+
+        Assembled here because this is the only place that knows all of it at
+        once: the result supplies the identities, the view mode decides which
+        two axes are on screen, and the transposed array supplies the sizes.
+        Anything measuring the layer later reads it back off the layer itself.
+        """
+        data = np.asarray(data)
+        labels = [str(label) for label in axis_labels]
+        scales = list(axis_scales or [1.0] * data.ndim)
+        axes = [
+            {
+                "label": labels[axis] if axis < len(labels) else str(axis),
+                "size": int(data.shape[axis]),
+                "scale": float(scales[axis]) if axis < len(scales) else 1.0,
+                "unit": scale_unit,
+            }
+            for axis in range(data.ndim)
+        ]
+        return {
+            "result_uid": getattr(result, "result_uid", None),
+            "dataset_uid": getattr(result, "dataset_uid", None),
+            "coordinate_space_uid": getattr(result, "coordinate_space_uid", None),
+            "identity_kind": getattr(result, "identity_kind", "minted"),
+            "lineage": tuple(getattr(result, "lineage", ()) or ()),
+            # The displayed plane is always the last two axes after the view
+            # mode's transposition.
+            "plane_axes": tuple(labels[-2:]) if len(labels) >= 2 else tuple(labels),
+            "view_mode": view_mode,
+            "axes": axes,
+            "mutation_token": self._mutationToken(result),
+        }
 
     def _processingViewMode(self, result):
         view_name = self._widget.getViewName()
@@ -394,6 +466,10 @@ class ReconstructionViewController(ImProcessWidgetController):
         if result is None:
             return
         
+        uid = getattr(result, "result_uid", None)
+        if uid:
+            self._liveResultUids.add(uid)
+
         current = self._widget.getCurrentItemData()
         if current is None or getattr(current, 'name', '') != getattr(result, 'name', ''):
             self._widget.addNewData(result, getattr(result, 'name', 'Live'))

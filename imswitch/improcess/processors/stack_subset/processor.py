@@ -32,25 +32,17 @@ class StackSubsetProcessor(Processor):
         return lambda result: len(shape_for_result(result)) >= 2
 
     def make_param_widget(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget(parent)
-        layout = QtWidgets.QFormLayout(widget)
+        """The same range table and ROI chooser the toolbar dialog shows.
 
-        ranges_edit = QtWidgets.QLineEdit()
-        ranges_edit.setPlaceholderText("Z=0:10,T=0:5:2")
-        ranges_edit.setToolTip("Comma-separated zero-based ranges: label=start:stop[:step].")
-        copy_check = QtWidgets.QCheckBox("Copy data")
+        It used to be a text field taking ``Z=0:10,T=0:5:2`` while the toolbar
+        opened a per-axis table -- two ways to do one thing, which is how only
+        one of them came to offer cropping from an ROI. ``setResult`` is what
+        the panel calls when its input changes; the table has to know the
+        axes and their sizes, which the generic panel has no way to guess.
+        """
+        from imswitch.improcess.view.StackSubsetDialog import StackSubsetRangesWidget
 
-        layout.addRow("Ranges", ranges_edit)
-        layout.addRow("", copy_check)
-
-        def get_values():
-            return {
-                "ranges": _parse_range_text(ranges_edit.text()),
-                "copy": copy_check.isChecked(),
-            }
-
-        widget.get_values = get_values
-        return widget
+        return StackSubsetRangesWidget(parent=parent)
 
     def apply(self, result: ProcessingResult, params: dict) -> ProcessingResult:
         ranges = normalize_subset_ranges(
@@ -104,7 +96,20 @@ def subset_result(
     else:
         subset = np.asarray(data)[tuple(slices)]
 
-    return ArrayProcessingResult(
+    # A subset stays on the same pixel grid only while the *spatial* axes are
+    # untouched: trimming Z or T keeps every pixel where it was, but cropping
+    # in Y/X moves the origin, so coordinates from the source no longer point
+    # at the same features.
+    spatial_axes = range(max(0, len(shape) - 2), len(shape))
+    same_grid = all(
+        (slices[axis].start or 0) == 0
+        and (slices[axis].stop is None or slices[axis].stop == shape[axis])
+        and (slices[axis].step in (None, 1))
+        for axis in spatial_axes
+        if axis < len(slices) and isinstance(slices[axis], slice)
+    )
+
+    subset_result = ArrayProcessingResult(
         name=f"{result.name} (subset)",
         data=subset,
         axis_labels=labels,
@@ -119,6 +124,7 @@ def subset_result(
             "copied": bool(copy),
         },
     )
+    return subset_result.adopt_identity_from(result, same_grid=same_grid)
 
 
 def normalize_subset_ranges(
@@ -178,29 +184,6 @@ def _resolve_axis(axis, labels: Sequence[str]) -> int:
     if index < 0 or index >= len(labels):
         raise ValueError(f"Subset axis index {index} outside result rank {len(labels)}")
     return index
-
-
-def _parse_range_text(text: str) -> list[dict]:
-    specs = []
-    for chunk in str(text or "").split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if "=" not in chunk:
-            raise ValueError(f"Invalid range {chunk!r}")
-        axis, raw_range = [part.strip() for part in chunk.split("=", 1)]
-        parts = [part.strip() for part in raw_range.split(":")]
-        if len(parts) not in (2, 3):
-            raise ValueError(f"Invalid range {chunk!r}")
-        specs.append(
-            {
-                "axis": axis,
-                "start": int(parts[0]) if parts[0] else None,
-                "stop": int(parts[1]) if parts[1] else None,
-                "step": int(parts[2]) if len(parts) == 3 and parts[2] else 1,
-            }
-        )
-    return specs
 
 
 __all__ = [

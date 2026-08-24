@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+
+from imswitch.imcommon.algorithms.line_sampling import line_samples
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets
-from scipy.ndimage import map_coordinates
 
 from imswitch.imcommon.view.guitools.viewer_tools import ViewerToolService
 from imswitch.improcess.layer_selection import active_image_layer
@@ -23,6 +24,16 @@ from imswitch.improcess.model.plotting import (
 )
 
 
+def _roi_is_area(roi) -> bool:
+    """True for a shape with an interior. A line has only its own profile."""
+    from imswitch.imcommon.algorithms.roi_geometry import roi_capabilities
+
+    try:
+        return bool(roi_capabilities(roi.roi_type).is_area)
+    except Exception:
+        return False
+
+
 class ProfileWidget(QtWidgets.QWidget):
     """Draw line/rectangle ROIs on a napari viewer and plot their profiles."""
 
@@ -37,7 +48,8 @@ class ProfileWidget(QtWidgets.QWidget):
         super().__init__(*args, **kwargs)
         self._viewer = napariViewer
         self._toolService = ViewerToolService.for_viewer(napariViewer)
-        self._toolToken = self._toolService.acquire(self.TOOL_OWNER)
+        # Register only; the tool is acquired when the user picks a mode.
+        self._toolToken = self._toolService.register(self.TOOL_OWNER)
         self._fitters = {
             fit.id: fit
             for fit in (
@@ -61,6 +73,29 @@ class ProfileWidget(QtWidgets.QWidget):
         self._current_record_inputs = []
         self._measurementRegion: pg.LinearRegionItem | None = None
         self._measurementValues: tuple[float, float] | None = None
+        #: Late-bound by the main view; see ImProcessMainView's ROI wiring.
+        self._roiManagerWidget = None
+        self._rois: list = []
+
+        # Profile something already measured, not only something drawn now.
+        # The panel's own shapes are transient scratch; an ROI in the manager
+        # is named, saved and re-measurable across reconstructions, and that
+        # is what a profile is usually wanted for.
+        self.sourceCombo = QtWidgets.QComboBox()
+        self.sourceCombo.addItem(self.DRAWN, None)
+        self.sourceCombo.setToolTip(
+            "Profile the shape drawn here, or a named ROI from the ROI manager"
+        )
+        self.roiPlotLabel = QtWidgets.QLabel("Plot")
+        self.roiPlotCombo = QtWidgets.QComboBox()
+        for label, kind in self.AREA_PLOTS:
+            self.roiPlotCombo.addItem(label, kind)
+        self.roiPlotCombo.setToolTip(
+            "What to plot for an ROI with an interior: intensity round its "
+            "outline, or the mean along each axis over its own pixels"
+        )
+        self.roiPlotLabel.setVisible(False)
+        self.roiPlotCombo.setVisible(False)
 
         self.modeButtons = QtWidgets.QButtonGroup(self)
         self.panButton = self._makeModeButton("Pan", "pan", checked=True)
@@ -110,6 +145,11 @@ class ProfileWidget(QtWidgets.QWidget):
 
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.addWidget(QtWidgets.QLabel("Source"))
+        toolbar.addWidget(self.sourceCombo)
+        toolbar.addWidget(self.roiPlotLabel)
+        toolbar.addWidget(self.roiPlotCombo)
+        toolbar.addSpacing(8)
         toolbar.addWidget(self.panButton)
         toolbar.addWidget(self.lineButton)
         toolbar.addWidget(self.rectangleButton)
@@ -136,6 +176,8 @@ class ProfileWidget(QtWidgets.QWidget):
         layout.addWidget(self.fitSummary)
         self.setLayout(layout)
 
+        self.sourceCombo.currentIndexChanged.connect(self._profileSourceChanged)
+        self.roiPlotCombo.currentIndexChanged.connect(self._profileSourceChanged)
         self.modeButtons.buttonClicked.connect(self._modeChanged)
         self.clearButton.clicked.connect(self._clearShapes)
         self.measureButton.toggled.connect(self._measurementToggled)
@@ -144,11 +186,15 @@ class ProfileWidget(QtWidgets.QWidget):
         self.pushButton.clicked.connect(self._onPushToTable)
         self.pushGraphButton.clicked.connect(self._onPushToGraph)
         self.saveButton.clicked.connect(self._onSaveCSV)
-        self._toolService.add_callback(
-            self._toolToken, self._toolService.sigShapesChanged, self._shapesChanged
-        )
+        self._toolService.on_shapes_changed(self._toolToken, self._shapesChanged)
         try:
-            self._viewer.dims.events.current_step.connect(lambda _event: self._refresh())
+            # Through the broker so release() tears this down too; connecting
+            # straight to the viewer left the callback firing after close.
+            self._toolService.on_viewer_event(
+                self._toolToken,
+                self._viewer.dims.events.current_step,
+                lambda _event=None: self._refresh(),
+            )
         except Exception:
             pass
 
@@ -162,7 +208,15 @@ class ProfileWidget(QtWidgets.QWidget):
         — but nothing here notices a result change on its own, and a profile
         left over from the previous result looks exactly like a valid one.
         """
+        self.refreshProfileSources()
         self._refresh()
+
+    def showEvent(self, event):  # noqa: N802 - Qt naming
+        # The ROI manager is bound after the panels are built, so a chooser
+        # populated only in __init__ would stay empty until something else
+        # refreshed it.
+        self.refreshProfileSources()
+        super().showEvent(event)
 
     def _setPlotLabels(self, title: str, x_label: str, y_label: str) -> None:
         """Title and label the plot, remembering both for pushed payloads."""
@@ -183,6 +237,11 @@ class ProfileWidget(QtWidgets.QWidget):
     def _modeChanged(self, button):
         mode = button.property("profileMode")
         self._mode = mode
+        # Picking a drawing mode means drawing is what is wanted, so the
+        # source returns to Drawn. Leaving an ROI named in the chooser while
+        # the plot came from a freshly drawn shape would label the plot with
+        # a region it was not measured on.
+        self._returnToDrawn()
         # Re-acquire so shapes drawn from here on are attributed to this panel,
         # and clear only ours — this used to wipe the shared layer, taking the
         # ROI statistics panel's rectangle with it.
@@ -213,7 +272,20 @@ class ProfileWidget(QtWidgets.QWidget):
             pass
         super().closeEvent(event)
 
+    def _returnToDrawn(self) -> None:
+        if self.sourceCombo.currentIndex() == 0:
+            return
+        self.sourceCombo.blockSignals(True)
+        self.sourceCombo.setCurrentIndex(0)
+        self.sourceCombo.blockSignals(False)
+        self.roiPlotCombo.setVisible(False)
+        self.roiPlotLabel.setVisible(False)
+
     def _shapesChanged(self):
+        # A shape drawn while an ROI is the source is not what is on the plot;
+        # the mode buttons are the way back to drawing, and they say so.
+        if self.selectedROI() is not None:
+            return
         if self._mode == "zprofile":
             self._plotZProfile(self._findFirstShape("rectangle"))
             return
@@ -233,6 +305,10 @@ class ProfileWidget(QtWidgets.QWidget):
         return None
 
     def _refresh(self):
+        roi = self.selectedROI()
+        if roi is not None:
+            self._plotROIProfile(roi)
+            return
         if self._last_kind == "line":
             self._plotLineProfile(self._findFirstShape("line"))
         elif self._last_kind == "rectangle":
@@ -300,6 +376,173 @@ class ProfileWidget(QtWidgets.QWidget):
         
         unit = self._distanceUnit()
         self._current_record_inputs = [("line", x, profile, length_px, length_scaled, unit)]
+        self._applyFits()
+        self._setMeasurementAvailable(True)
+
+    # -- profiling an ROI from the ROI manager ----------------------------
+
+    #: What can be plotted for an ROI that encloses an area. A line has only
+    #: one answer and does not offer a choice.
+    #: The entry meaning "whatever is drawn on the layer" -- the panel's
+    #: original and default behaviour.
+    DRAWN = "Drawn"
+
+    AREA_PLOTS = (
+        ("Outline", "outline"),
+        ("Mean along X", "mean-x"),
+        ("Mean along Y", "mean-y"),
+    )
+
+    def refreshProfileSources(self) -> None:
+        """Re-offer the ROI manager's visible ROIs beside Drawn."""
+        rois = []
+        panel = getattr(self, "_roiManagerWidget", None)
+        if panel is not None:
+            try:
+                rois = [roi for roi in panel.rois() if roi.visible]
+            except Exception:
+                rois = []
+        self._rois = rois
+
+        current = self.sourceCombo.currentData()
+        self.sourceCombo.blockSignals(True)
+        self.sourceCombo.clear()
+        self.sourceCombo.addItem(self.DRAWN, None)
+        for roi in rois:
+            self.sourceCombo.addItem(f"{roi.name} ({roi.roi_type})", roi.uid)
+        if current is not None:
+            self.sourceCombo.setCurrentIndex(max(0, self.sourceCombo.findData(current)))
+        self.sourceCombo.blockSignals(False)
+
+    def selectedROI(self):
+        uid = self.sourceCombo.currentData()
+        if uid is None:
+            return None
+        return next((roi for roi in self._rois if roi.uid == uid), None)
+
+    def _profileSourceChanged(self, _index=None) -> None:
+        roi = self.selectedROI()
+        # The plot chooser only means something for a shape with an interior.
+        is_area = roi is not None and _roi_is_area(roi)
+        self.roiPlotCombo.setVisible(is_area)
+        self.roiPlotLabel.setVisible(is_area)
+        if roi is None:
+            # Back to Drawn: re-plot whatever is on the layer, as before.
+            self._shapesChanged()
+            return
+        self._plotROIProfile(roi)
+
+    def _plotROIProfile(self, roi) -> None:
+        """Profile an ROI from the manager rather than a freshly drawn shape.
+
+        ROI records are in *pixel* coordinates, so unlike the drawn shapes
+        there is no world-to-pixel conversion here -- only a pixel-to-distance
+        one for the axis.
+        """
+        from imswitch.imcommon.algorithms.line_sampling import polyline_samples
+        from imswitch.imcommon.algorithms.roi_geometry import (
+            roi_bounds as _roi_bounds,
+        )
+        from imswitch.imcommon.algorithms.roi_geometry import (
+            roi_mask_local,
+            roi_outline,
+        )
+
+        self._removeMeasurementRegion(clear_values=False)
+        self.plot.clear()
+        self._last_payload = []
+        self._last_fit_curves = []
+        self._current_record_inputs = []
+
+        image = self._currentImage2D()
+        if image is None:
+            self._setMeasurementAvailable(False)
+            self.fitSummary.setText("No image layer selected.")
+            return
+
+        # An ROI that misses the image entirely is reported rather than
+        # sampled. Sampling outside the array returns zeros, and a flat zero
+        # profile is indistinguishable from a real region with no signal.
+        height, width = image.shape
+        r0, r1, c0, c1 = (int(v) for v in _roi_bounds(roi))
+        if r1 <= 0 or c1 <= 0 or r0 >= height or c0 >= width:
+            self._setMeasurementAvailable(False)
+            self.fitSummary.setText(
+                f"{roi.name} lies outside this result ({height} x {width} px)."
+            )
+            return
+
+        row_scale, col_scale = self._visiblePixelScales()
+        unit = self._distanceUnit()
+        # One scale for a path that runs in both directions at once; the mean
+        # of the two is the honest single number when they differ.
+        path_scale = (float(row_scale) + float(col_scale)) / 2.0
+        plot_kind = self.roiPlotCombo.currentData() if _roi_is_area(roi) else "line"
+
+        try:
+            if plot_kind in ("line", "outline"):
+                self._last_kind = "roi-line"
+                parts = roi_outline(roi)
+                if plot_kind == "line" and getattr(roi, "vertices", None):
+                    # An open path: sampled end to end, not closed back on
+                    # itself the way an outline is.
+                    parts = [np.asarray(roi.vertices, dtype=float)]
+                elif plot_kind == "outline":
+                    parts = [np.vstack([part, part[:1]]) for part in parts if len(part)]
+                profile = None
+                for part in parts:
+                    profile = polyline_samples(
+                        image, part, width=self.widthSpinBox.value()
+                    )
+                    if profile is not None:
+                        break
+                if profile is None or profile.size == 0:
+                    self._setMeasurementAvailable(False)
+                    self.fitSummary.setText("This ROI has no path to sample.")
+                    return
+                x = np.arange(profile.size, dtype=float) * path_scale
+                label = "outline" if plot_kind == "outline" else "line"
+                self._setPlotLabels(
+                    f"{roi.name} {label}", f"Distance ({unit})", "Intensity"
+                )
+                self.plot.plot(x, profile, pen=pg.mkPen("r", width=2), name=label)
+                self._last_payload = [(label, x, profile)]
+                self._current_record_inputs = [
+                    (label, x, profile, float(profile.size), float(x[-1] if x.size else 0.0), unit)
+                ]
+            else:
+                self._last_kind = "roi-mean"
+                mask, (rows, cols) = roi_mask_local(roi, image.shape)
+                if not mask.any():
+                    self._setMeasurementAvailable(False)
+                    self.fitSummary.setText("This ROI covers no pixels of the image.")
+                    return
+                window = np.asarray(image[rows, cols], dtype=float)
+                # Averaged over the ROI's own pixels, not its bounding box:
+                # for anything but a rectangle those are different numbers,
+                # and the box is the one nobody asked for.
+                inside = np.where(mask, window, np.nan)
+                axis, scale, name = (
+                    (0, col_scale, "mean x") if plot_kind == "mean-x"
+                    else (1, row_scale, "mean y")
+                )
+                with np.errstate(invalid="ignore"):
+                    profile = np.nanmean(inside, axis=axis)
+                x = np.arange(profile.size, dtype=float) * scale
+                self._setPlotLabels(
+                    f"{roi.name} {name}", f"Distance ({unit})", "Mean intensity"
+                )
+                self.plot.plot(x, profile, pen=pg.mkPen("r", width=2), name=name)
+                self._last_payload = [(name, x, profile)]
+                self._current_record_inputs = [
+                    (name, x, profile, float(profile.size),
+                     float(x[-1] if x.size else 0.0), unit)
+                ]
+        except Exception as exc:
+            self._setMeasurementAvailable(False)
+            self.fitSummary.setText(f"Could not profile this ROI: {exc}")
+            return
+
         self._applyFits()
         self._setMeasurementAvailable(True)
 
@@ -784,40 +1027,16 @@ class ProfileWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _computeLineProfile(image, r0, c0, r1, c1, width=1):
+        """This panel's profile, through the shared sampler.
+
+        ``gaussian`` keeps this panel's long-standing across-width weighting;
+        the ROI manager's line measurements use the uniform mean, which is what
+        ImageJ's line width does. One sampler either way, so a plotted profile
+        and a measured line mean cannot disagree about what the line covers.
+        """
         try:
-            num_points = max(int(np.ceil(np.hypot(r1 - r0, c1 - c0))) + 1, 2)
-            r_samples = np.linspace(r0, r1, num_points)
-            c_samples = np.linspace(c0, c1, num_points)
-            if width <= 1:
-                return map_coordinates(
-                    image,
-                    [r_samples, c_samples],
-                    order=1,
-                    mode="constant",
-                    cval=0,
-                )
-
-            drow = r1 - r0
-            dcol = c1 - c0
-            length = np.hypot(drow, dcol)
-            if length <= 0:
-                return None
-            perp_r = -dcol / length
-            perp_c = drow / length
-            offsets = np.linspace(-(width - 1) / 2, (width - 1) / 2, width)
-            sigma = max(width / 4.0, 1e-6)
-            weights = np.exp(-(offsets ** 2) / (2 * sigma ** 2))
-            weights /= weights.sum()
-
-            profile = np.zeros(num_points, dtype=float)
-            for weight, offset in zip(weights, offsets):
-                profile += weight * map_coordinates(
-                    image,
-                    [r_samples + offset * perp_r, c_samples + offset * perp_c],
-                    order=1,
-                    mode="constant",
-                    cval=0,
-                )
-            return profile
+            return line_samples(
+                image, r0, c0, r1, c1, width=width, weighting="gaussian"
+            )
         except Exception:
             return None

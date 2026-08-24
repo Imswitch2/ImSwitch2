@@ -11,6 +11,7 @@ lazy data handle wrapped as a ProcessingResult so the rest of ImProcess
 (ReconstructionView, WatcherFrame save, etc.) can handle it uniformly.
 """
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,8 +19,11 @@ import numpy as np
 import tifffile as tiff
 from qtpy import QtWidgets
 
+from imswitch.imcommon.algorithms.spatial_frame import content_digest_uid
+
 from imswitch.improcess.model.result import ProcessingResult, ViewMode
 from imswitch.improcess.reconstructors.base import Reconstructor
+from imswitch.improcess.model.result_io import save_image_result
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -29,15 +33,34 @@ if TYPE_CHECKING:
 _DEFAULT_AXIS_LABELS = ["T", "Z", "C", "Y", "X"]
 
 
+def _source_identity(data_obj) -> str | None:
+    """A stable identity for the file this result was loaded from, if any.
+
+    Uses the *source*, never the pixels. Sampling content was both unsound and
+    expensive: a strided sum collides easily (two acquisitions of the same
+    static field, or any two all-zero arrays), and calling ``np.asarray`` on a
+    lazily-loaded stack materialises gigabytes purely to compute an id.
+
+    A file path plus its size and mtime identifies the data without reading
+    it. When there is no path — data handed over in memory — there is nothing
+    trustworthy to derive an identity from, and the caller mints a fresh one
+    instead of inventing an equivalence.
+    """
+    path = getattr(data_obj, "dataPath", None)
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+        return content_digest_uid("data", path, stat.st_size, int(stat.st_mtime))
+    except OSError:
+        return content_digest_uid("data", path)
+
+
 class ViewOnlyResult(ProcessingResult):
     """Raw frame stack wrapped as a ProcessingResult."""
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt == "tiff":
-            tiff.imwrite(str(path), np.asarray(self.data))
-        else:
-            raise ValueError(f'ViewOnlyResult only supports fmt="tiff", got "{fmt}"')
+        save_image_result(self, path, fmt)
 
 
 class _NoParamsWidget(QtWidgets.QWidget):
@@ -117,6 +140,23 @@ class ViewOnlyReconstructor(Reconstructor):
         )
         view_modes = [ViewMode("Standard", tuple(range(ndim)))]
 
+        # Loaded data carries no recorded identity. When it came from a file we
+        # can identify the *source*, so the same file reopened lines up with an
+        # ROI set saved against it. With no path there is nothing sound to
+        # derive from, so the ids are minted: two unidentifiable datasets must
+        # come out unrelated rather than accidentally equal.
+        dataset_uid = _source_identity(data_obj)
+        if dataset_uid is None:
+            return ViewOnlyResult(
+                name=data_obj.name,
+                data=data,
+                axis_labels=axis_labels,
+                view_modes=view_modes,
+                display_levels=None,
+                axis_scales=axis_scales,
+                scale_unit=source_scale_unit or "px",
+                identity_kind="derived",
+            )
         return ViewOnlyResult(
             name=data_obj.name,
             data=data,
@@ -125,4 +165,8 @@ class ViewOnlyReconstructor(Reconstructor):
             display_levels=None,
             axis_scales=axis_scales,
             scale_unit=source_scale_unit or "px",
+            dataset_uid=dataset_uid,
+            result_uid=content_digest_uid("result", dataset_uid, tuple(axis_labels)),
+            coordinate_space_uid=content_digest_uid("space", dataset_uid, data.shape[-2:]),
+            identity_kind="derived",
         )

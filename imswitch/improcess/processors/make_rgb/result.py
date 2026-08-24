@@ -10,6 +10,7 @@ import numpy as np
 import tifffile
 
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
+from imswitch.improcess.model.result_io import save_image_result
 
 
 class RGBResult(ProcessingResult):
@@ -63,18 +64,10 @@ class RGBResult(ProcessingResult):
         ]
 
     def save(self, path: Path, fmt: str = "tiff") -> None:
-        path = Path(path)
-        if fmt in ("tiff", "tif"):
-            tifffile.imwrite(str(path), self.data, photometric="rgb")
-        elif fmt in ("hdf5", "h5", "hdf"):
-            with h5py.File(str(path), "w") as h5:
-                h5.create_dataset("rgb", data=self.data)
-                h5.attrs["axis_labels"] = ",".join(self.axis_labels)
-                h5.attrs["scale_unit"] = self.scale_unit
-                h5.attrs["source_result"] = self.source_result
-                h5.attrs["source_channel_axis"] = self.source_channel_axis
-        else:
-            raise ValueError(f"RGB result supports TIFF or HDF5, got {fmt!r}")
+        save_image_result(self, path, fmt, extra={
+            "source_result": self.source_result,
+            "source_channel_axis": self.source_channel_axis,
+        })
 
 
 __all__ = ["RGBResult"]

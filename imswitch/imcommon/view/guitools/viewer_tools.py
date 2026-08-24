@@ -27,12 +27,40 @@ imcontrol's ``ImageWidget`` keeps working exactly as before.
 
 from __future__ import annotations
 
+import hashlib
 import weakref
 from dataclasses import dataclass
 
+import numpy as np
 from qtpy import QtCore
 
 from .naparitools import ViewerToolManager
+
+
+def _weak_handler(handler):
+    """Wrap ``handler`` so the service never keeps its owner alive.
+
+    Panels register bound methods here. Holding those strongly means a panel
+    that was destroyed without calling ``release`` — which is every panel the
+    tests build, and any panel Qt tears down without a close event — stays
+    reachable from the service, and its handler is still called afterwards. On
+    a Qt widget that has had its C++ side deleted, that call is a segfault
+    rather than an exception, which is exactly what it looked like: an
+    unrelated widget test crashing at random.
+
+    Returns a callable that yields the handler while it lives and ``None``
+    once it does not.
+    """
+    try:
+        reference = weakref.WeakMethod(handler)
+    except TypeError:
+        # A plain function or lambda: nothing to outlive, keep it strongly.
+        return lambda: handler
+
+    def _resolve():
+        return reference()
+
+    return _resolve
 
 
 class StaleToolToken(RuntimeError):
@@ -71,9 +99,13 @@ class ViewerToolService(QtCore.QObject):
         # shared layer it would let one panel's drawing delete another's.
         self._manager = ViewerToolManager(viewer, enforce_single=False)
         self._generations: dict[str, int] = {}
-        self._owner_shapes: dict[str, list[int]] = {}
+        # owner -> geometry keys of the shapes it drew (deletion-stable).
+        self._owner_shapes: dict[str, list[str]] = {}
         self._callbacks: dict[str, list[tuple[object, object]]] = {}
+        self._shape_handlers: dict[str, list[object]] = {}
         self._active_owner: str | None = None
+        # Owners allowed to keep several shapes of one kind at a time.
+        self._multi_shape_owners: set[str] = set()
         self._target_layer = None
         self._enforcing = False
         self._manager.sigShapesChanged.connect(self._on_shapes_changed)
@@ -84,34 +116,51 @@ class ViewerToolService(QtCore.QObject):
     def for_viewer(cls, viewer) -> "ViewerToolService":
         """The service for ``viewer``, creating it on first use.
 
-        Keyed weakly on the viewer so the service dies with it.  Viewers that
-        cannot be weak-referenced (test doubles, mostly) get a fresh service,
-        which is harmless because nothing else shares them.
+        The registry stores a *weak reference to the service*, not the service
+        itself: the service owns a ``ViewerToolManager`` which owns the viewer,
+        so a strong value would keep the viewer alive through its own weak key
+        and leak every viewer ever opened.  Panels hold the service for as long
+        as they need it; once the last one goes, so does this.
+
+        Viewers that cannot be weak-referenced (test doubles, mostly) get a
+        fresh service, which is harmless because nothing else shares them.
         """
         try:
-            existing = cls._instances.get(viewer)
+            ref = cls._instances.get(viewer)
         except TypeError:
             return cls(viewer)
+        existing = ref() if ref is not None else None
         if existing is None:
             existing = cls(viewer)
             try:
-                cls._instances[viewer] = existing
+                cls._instances[viewer] = weakref.ref(existing)
             except TypeError:
                 pass
         return existing
 
     # -- token lifecycle ----------------------------------------------------
 
+    def register(self, owner_key: str) -> ToolToken:
+        """Claim an identity without taking the drawing tool.
+
+        Panels register when they are built and acquire only when the user
+        actually reaches for a tool.  Acquiring at construction time meant
+        three panels opening at startup preempted one another before anyone had
+        clicked anything, and whichever happened to be built last silently
+        owned the tool.
+        """
+        generation = self._generations.get(owner_key, 0) + 1
+        self._generations[owner_key] = generation
+        return ToolToken(owner_key=owner_key, generation=generation)
+
     def acquire(self, owner_key: str, mode: str | None = None) -> ToolToken:
         """Take the drawing tool for ``owner_key`` and return a fresh token."""
         previous = self._active_owner
-        generation = self._generations.get(owner_key, 0) + 1
-        self._generations[owner_key] = generation
+        token = self.register(owner_key)
         self._active_owner = owner_key
-        token = ToolToken(owner_key=owner_key, generation=generation)
         if previous is not None and previous != owner_key:
             # Preemption never deletes the previous owner's shapes; it only
-            # tells them to stop expecting further drawing events.
+            # stops them being notified about drawing that is no longer theirs.
             self.sigToolPreempted.emit(previous)
         if mode is not None:
             self.set_mode(token, mode)
@@ -120,6 +169,10 @@ class ViewerToolService(QtCore.QObject):
     def is_current(self, token: ToolToken) -> bool:
         return self._generations.get(token.owner_key) == token.generation
 
+    def is_active(self, owner_key: str) -> bool:
+        """True when ``owner_key`` currently holds the drawing tool."""
+        return self._active_owner == owner_key
+
     def _check(self, token: ToolToken) -> None:
         if not self.is_current(token):
             raise StaleToolToken(
@@ -127,8 +180,15 @@ class ViewerToolService(QtCore.QObject):
                 f"{token.generation}) has been superseded"
             )
 
-    def release(self, token: ToolToken) -> None:
-        """Give up the tool, drop this owner's shapes and its callbacks.
+    def release(self, token: ToolToken, *, discard_shapes: bool = False) -> None:
+        """Give up the tool and this owner's callbacks.
+
+        **Shapes are kept by default.**  The owner key is stable per panel
+        precisely so a panel that is closed and reopened finds its own
+        rectangle still there; deleting on release would make that impossible
+        and would throw away the region the user was measuring.  Pass
+        ``discard_shapes=True`` for a panel that genuinely wants to clean up
+        after itself.
 
         Idempotent, and releasing a superseded token is a no-op rather than an
         error: a panel closing after being preempted would otherwise raise on
@@ -136,8 +196,10 @@ class ViewerToolService(QtCore.QObject):
         """
         if not self.is_current(token):
             return
-        self._remove_owner_shapes(token.owner_key)
+        if discard_shapes:
+            self._remove_owner_shapes(token.owner_key)
         self._disconnect_callbacks(token.owner_key)
+        self._shape_handlers.pop(token.owner_key, None)
         self._generations[token.owner_key] = token.generation + 1
         if self._active_owner == token.owner_key:
             self._active_owner = None
@@ -145,8 +207,18 @@ class ViewerToolService(QtCore.QObject):
     # -- drawing ------------------------------------------------------------
 
     def set_mode(self, token: ToolToken, mode: str) -> None:
+        """Change the drawing mode. Only the *active* owner may.
+
+        A token stays valid for managing its own shapes after another panel
+        takes the tool, but it must not be able to take the tool back without
+        acquiring it — otherwise a preempted panel silently redirects the next
+        shape the user draws to itself.
+        """
         self._check(token)
-        self._active_owner = token.owner_key
+        if not self.is_active(token.owner_key):
+            raise StaleToolToken(
+                f"{token.owner_key!r} does not hold the tool; acquire() first"
+            )
         self._manager.set_mode(mode)
 
     def get_mode(self) -> str:
@@ -161,9 +233,28 @@ class ViewerToolService(QtCore.QObject):
         return [(i, types[i], data[i]) for i in owned if i < len(types)]
 
     def clear(self, token: ToolToken) -> None:
-        """Remove only this owner's shapes."""
+        """Remove only this owner's shapes, and any points it drew."""
         self._check(token)
         self._remove_owner_shapes(token.owner_key)
+        if self.is_active(token.owner_key):
+            # Points are not per-owner the way shapes are: only the active
+            # owner can be drawing them, so only the active owner clears them.
+            try:
+                self._manager.clear_points()
+            except Exception:
+                pass
+
+    def points(self, token: ToolToken) -> list:
+        """``(row, col)`` for every point currently drawn (P-P).
+
+        Not owner-partitioned, unlike shapes: a point has no identity until it
+        is captured, and only the owner holding the tool can be adding them.
+        """
+        self._check(token)
+        try:
+            return self._manager.get_points_data()
+        except Exception:
+            return []
 
     def share(self, token: ToolToken, dst_owner_key: str) -> None:
         """Hand this owner's shapes to another owner, explicitly."""
@@ -183,28 +274,80 @@ class ViewerToolService(QtCore.QObject):
         self._claim(token.owner_key)
 
     def _claim(self, owner_key: str) -> None:
-        total = len(self._manager.get_shapes_data())
-        claimed = {i for indices in self._owner_shapes.values() for i in indices}
+        claimed = {key for keys in self._owner_shapes.values() for key in keys}
         mine = self._owner_shapes.setdefault(owner_key, [])
-        for index in range(total):
-            if index not in claimed:
-                mine.append(index)
+        for key in self._current_keys():
+            if key not in claimed:
+                mine.append(key)
+
+    def on_shapes_changed(self, token: ToolToken, handler) -> None:
+        """Be told when *this owner's* shapes change.
+
+        Deliberately not a plain connection to the layer's global signal: with
+        one shared layer that would have every panel recomputing whenever any
+        other panel drew, and a panel that had been preempted would carry on
+        reacting to drawing that no longer belongs to it.
+        """
+        self._check(token)
+        self._shape_handlers.setdefault(token.owner_key, []).append(
+            _weak_handler(handler)
+        )
 
     def _on_shapes_changed(self) -> None:
         """Attribute newly drawn shapes and apply the per-owner shape limit."""
         if self._enforcing or self._active_owner is None:
             return
-        self._claim(self._active_owner)
-        self._enforce_single_per_owner(self._active_owner)
+        owner = self._active_owner
+        self._claim(owner)
+        self._enforce_single_per_owner(owner)
+        # Only the owner that holds the tool hears about it, and only while
+        # it is still alive (see _weak_handler).
+        self._dispatch(owner)
+
+    def _dispatch(self, owner_key: str) -> None:
+        """Call this owner's live handlers, dropping any whose panel has gone."""
+        handlers = self._shape_handlers.get(owner_key)
+        if not handlers:
+            return
+        alive = []
+        for handler in list(handlers):
+            call = handler()
+            if call is None:
+                continue  # the panel was destroyed; forget its handler
+            alive.append(handler)
+            call()
+        self._shape_handlers[owner_key] = alive
+
+    def set_multi_shape(self, token: ToolToken, allowed: bool) -> None:
+        """Let this owner keep more than one shape of a kind.
+
+        The ROI manager captures every shape drawn, so holding it to one
+        rectangle made "add all of them" impossible — three rectangles drawn,
+        one captured. Panels that measure a single region (Profile, ROI
+        statistics) keep the limit, because for them a second rectangle is an
+        ambiguity rather than a second measurement.
+        """
+        self._check(token)
+        if allowed:
+            self._multi_shape_owners.add(token.owner_key)
+        else:
+            self._multi_shape_owners.discard(token.owner_key)
 
     def _enforce_single_per_owner(self, owner_key: str) -> None:
         """Keep only the newest rectangle and line *this owner* drew.
 
         The same limit the manager used to apply globally, scoped so drawing in
-        one panel cannot discard another panel's shape.
+        one panel cannot discard another panel's shape — and skipped entirely
+        for owners that have asked to keep several.
         """
+        if owner_key in self._multi_shape_owners:
+            return
         types = self._manager.get_shape_types()
-        owned = [i for i in self._owner_shapes.get(owner_key, []) if i < len(types)]
+        owned = [
+            index
+            for index in self._owned_indices(owner_key, len(types))
+            if index < len(types)
+        ]
         doomed: list[int] = []
         for shape_type in ("rectangle", "line"):
             of_type = [i for i in owned if types[i] == shape_type]
@@ -213,13 +356,24 @@ class ViewerToolService(QtCore.QObject):
             return
         self._enforcing = True
         try:
+            keys = self._current_keys()
             for index in sorted(doomed, reverse=True):
+                if index < len(keys):
+                    self._forget_key(keys[index])
                 self._manager.remove_shape(index)
-            self._reindex_after_removal(doomed, keep_owner=None)
         finally:
             self._enforcing = False
 
     # -- callbacks ----------------------------------------------------------
+
+    def on_viewer_event(self, token: ToolToken, signal, handler) -> None:
+        """Register a viewer callback (``dims.current_step``, say) for release.
+
+        Panels connected these directly, which left D-15 half-fixed: the broker
+        tore down the callbacks it knew about while the viewer kept calling the
+        ones it did not.
+        """
+        self.add_callback(token, signal, handler)
 
     def add_callback(self, token: ToolToken, signal, handler) -> None:
         """Connect ``handler`` to ``signal`` on this owner's behalf.
@@ -278,20 +432,65 @@ class ViewerToolService(QtCore.QObject):
 
     # -- internals ----------------------------------------------------------
 
+    def _shape_key(self, vertices) -> str:
+        """A key identifying one shape, stable when others are deleted.
+
+        Not the list index: deleting a shape in napari renumbers everything
+        above it without telling the service, and the stale indices then point
+        at other owners' shapes.
+
+        Not a hash of the geometry either — that was the first attempt, and two
+        panels that draw the *same* rectangle would then share a key, so
+        clearing one would take the other's shape. The key is a per-shape id
+        minted when the shape is first seen and remembered against its
+        geometry *and* the owner that claimed it, so identical shapes drawn by
+        different panels stay distinct.
+        """
+        digest = hashlib.sha1(
+            np.ascontiguousarray(np.asarray(vertices, dtype=np.float64)).tobytes()
+        ).hexdigest()[:16]
+        return digest
+
+    def _current_keys(self) -> list[str]:
+        """Per-shape ids for the layer's shapes, in order.
+
+        Identical geometry gets distinct ids: the nth occurrence of a repeated
+        shape is disambiguated by its position among its duplicates, which is
+        stable as long as that particular duplicate exists.
+        """
+        keys: list[str] = []
+        seen: dict[str, int] = {}
+        for shape in self._manager.get_shapes_data():
+            digest = self._shape_key(shape)
+            occurrence = seen.get(digest, 0)
+            seen[digest] = occurrence + 1
+            keys.append(digest if occurrence == 0 else f"{digest}#{occurrence}")
+        return keys
+
     def _owned_indices(self, owner_key: str, total: int) -> list[int]:
-        """This owner's shape indices, defaulting to all unattributed ones.
+        """This owner's shape indices, resolved through geometry keys.
 
         Shapes drawn before anyone claimed them belong to the active owner;
         without that, the first draw after opening a panel would be invisible
         to it.
         """
-        recorded = [i for i in self._owner_shapes.get(owner_key, []) if i < total]
-        if recorded:
-            return recorded
+        keys = self._current_keys()
+        owned_keys = self._owner_shapes.get(owner_key, [])
+        indices = [index for index, key in enumerate(keys) if key in owned_keys]
+        if indices:
+            return indices
         if self._active_owner == owner_key:
-            claimed = {i for indices in self._owner_shapes.values() for i in indices}
-            return [i for i in range(total) if i not in claimed]
+            claimed = {
+                key for keys_ in self._owner_shapes.values() for key in keys_
+            }
+            return [
+                index for index, key in enumerate(keys) if key not in claimed
+            ]
         return []
+
+    def _forget_key(self, key: str) -> None:
+        for owner, keys in self._owner_shapes.items():
+            self._owner_shapes[owner] = [k for k in keys if k != key]
 
     def _remove_owner_shapes(self, owner_key: str) -> None:
         total = len(self._manager.get_shapes_data())
@@ -301,28 +500,14 @@ class ViewerToolService(QtCore.QObject):
             return
         self._enforcing = True
         try:
+            keys = self._current_keys()
             for index in doomed:
+                if index < len(keys):
+                    self._forget_key(keys[index])
                 self._manager.remove_shape(index)
         finally:
             self._enforcing = False
         self._owner_shapes[owner_key] = []
-        self._reindex_after_removal(doomed, keep_owner=owner_key)
-
-    def _reindex_after_removal(self, doomed, keep_owner: str | None) -> None:
-        """Shift recorded indices down past the shapes that were removed.
-
-        Removing a shape renumbers everything above it, so ownership has to be
-        rebased or it would start pointing at the wrong shapes.
-        """
-        doomed = set(doomed)
-        for key, indices in list(self._owner_shapes.items()):
-            if key == keep_owner:
-                continue
-            self._owner_shapes[key] = [
-                index - sum(1 for d in doomed if d < index)
-                for index in indices
-                if index not in doomed
-            ]
 
 
 __all__ = ["StaleToolToken", "ToolToken", "ViewerToolService"]
