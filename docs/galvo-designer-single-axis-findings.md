@@ -7,7 +7,14 @@ pre-captured golden baselines; Phase B as `managerProperties.smoothScan` with
 the stepped fast axis; Phase C as the singleton-line consumer contract +
 write-only recording provenance; Phase D as the tracked
 `galvo_apd_mock_scan_setup.json` fixture and a simulated end-to-end Z-only
-scan test. The plan text is kept as the record of what was built and why.
+scan test. Review round 2 (2026-08-24, four findings — see the section at the
+end) is RESOLVED: the e2e test now runs the controller signal-construction +
+shared-attribute + RecordingManager chain to a stored file, OME-TIFF carries
+the provenance as a MapAnnotation, provenance skips collapsed axes, the
+config editor got a tri-state smoothScan that preserves absence, and the
+rig's `~/ImSwitchConfig/imcontrol_setups/example_sted.json` now has
+`smoothScan: false` on ND-PiezoZ. The plan text is kept as the record of
+what was built and why.
 Durable documentation lives in `setupinfo-reference.rst` (smoothScan) and the
 changelog. Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
 reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
@@ -375,3 +382,66 @@ Estimated effort: A+B are each small and well-bounded (the sketches above are
 worked out); C is the open-ended half — the assembly-loop and
 recording/metadata audit is where unknowns live. The degenerate-XZ workaround
 remains the interim answer on the rig until D2 passes.
+
+## Review round 2 (2026-08-24) — four findings, all RESOLVED
+
+1. **[P1] D2 stopped before the controller and recorder — FIXED.** The
+   "end-to-end" test called `GalvoScanDesigner` directly and checked only
+   `APD.getChunk()`. `test_z_only_stepped_scan_end_to_end_from_galvo_fixture`
+   now runs the layers the real controller runs: the
+   `AdvancedScanParameterSerializer` (widget state → analog/digital dicts,
+   the exact code `ScanControllerAdvanced._buildAnalogParameterDict`
+   delegates to), the real `ScanControllerAdvanced._make_full_scan` unbound
+   on duck-typed controller state (`checkSignalLength` guard +
+   GalvoScanDesigner + AdvancedScanTTLCycleDesigner), an explicit
+   `checkSignalComp` compliance assertion, the real
+   `SuperScanController.updateScanStageAttrs` publishing into a real
+   `SharedAttributes`, and `RecordingManager` (RAM/HDF5, scan-synchronized
+   via `markScanStarted`). It asserts the recorded `(1, 1, 20)` dataset and
+   the `ScanStage` metadata group's `scan_axis_devices == ['Z']` /
+   `scan_axis_physical == ['Z']` in the stored file.
+
+2. **[P1] OME-TIFF dropped scan-axis provenance — FIXED.** `TiffStorer.snap()`
+   and `openStream()` ignored their `attrs` arguments, so
+   `scan_axis_devices`/`scan_axis_physical` were absent from OME-TIFF
+   recordings. The TIFF representation is an OME `MapAnnotation`
+   (`Namespace="https://imswitch.org/ns/acquisition-metadata/1"`, one `M`
+   element per flattened `Category:key` shared attribute, values JSON-encoded,
+   `AnnotationRef` from the image) emitted by `build_ome_xml` when the meta
+   carries annotations — the identical representation the
+   acquisition-layout branch already uses, so the branches converge. Snap
+   rewrites the description via `tifffile.tiffcomment` when attrs exist;
+   streams capture attrs at `openStream` and merge them into the finalize
+   OME-XML. `test_scan_axis_provenance_roundtrip.py` round-trips the
+   provenance through TIFF, HDF5 and Zarr (snap + stream each).
+
+3. **[P1] Provenance included collapsed axes — FIXED.**
+   `scan_axis_provenance()` dropped only `'None'` entries, so an assigned
+   axis the designer collapses (one realized step) was still claimed as
+   scanned. It now also takes the index-aligned `axis_length`/
+   `axis_step_size` lists and applies the designer's own active-axis rule
+   (`pixels_for_length_step > 1`); `updateScanStageAttrs` feeds it the
+   analog dict's `target_device`/lengths/steps, which also filters the
+   1-length dummy entries `build_analog` appends. Collapse regression:
+   `test_scan_axis_provenance_drops_collapsed_axes`.
+
+4. **[P1] Config-editor default defeated the fallback heuristic — FIXED.**
+   `utility_scripts/builtin_templates/positioners/NidaqPositionerManager.json`
+   declared `smoothScan` as `"type": "bool", "default": true`, and the editor
+   materializes template defaults for absent fields — applying an older
+   mock-named Nidaq positioner would have added `smoothScan: true` and
+   flipped its historical stepped behavior to smooth. The field is now the
+   new tri-state type `bool_auto` (`Automatic (not set)` / `On` / `Off`,
+   default Automatic): Automatic keeps the key ABSENT — `build_default_device`
+   (model + script fallback) skips it and the editor's Apply omits it — so
+   the name heuristic stays in charge until the user explicitly chooses.
+   Selecting Automatic on a device that had the key removes it (the merge
+   treats the omission of a known schema key as intent, not as an unknown
+   field to restore). Tests: `TestBoolAutoTriState` in
+   `test_configeditor_schema_defaults.py`, including a regression against
+   the shipped template file.
+
+**Rig config for D3:** `/Users/lenny/ImSwitchConfig/imcontrol_setups/example_sted.json`
+(the config the rig actually loads) now sets `"smoothScan": false` on
+`ND-PiezoZ`, matching the tracked example — the earlier demonstrator ran the
+smooth piezo path because the untracked rig config lacked the key.
