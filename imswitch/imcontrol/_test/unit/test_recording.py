@@ -4025,6 +4025,12 @@ def test_hdf5_stream_preserves_linestep_axis(tmp_path):
         assert dataset.shape == (1, 2, 4, 5)
         assert dataset.attrs['axes'] == 'TCYX'
         np.testing.assert_array_equal(dataset[:], frames)
+        # The OME-XML must survive SizeC > 1: build_ome_xml used to supply
+        # one channel name against SizeC = n_linesteps, and the resulting
+        # IndexError silently dropped this attribute.
+        xml = file[detectorName].attrs['ome_xml']
+        assert 'SizeC="2"' in xml
+        assert xml.count(f'Name="{detectorName}"') == 2
 
 
 def test_detector_dtype_contract(tmp_path):

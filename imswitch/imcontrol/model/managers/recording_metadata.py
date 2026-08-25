@@ -314,8 +314,23 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
     # Same channel serialization as tiff_metadata(): this XML REPLACES the
     # description tifffile wrote natively (stream finalize always; snap when
     # attrs exist), so dropping channels here would strip e.g. the laser name.
+    # tifffile requires exactly SizeC names, and SizeC comes from the FINAL
+    # axes/shape, not from the channel list: a retained line-step scan is
+    # stored TCYX with SizeC = n_linesteps while meta.channels has one entry
+    # per detector. Those extra C planes are line-steps of the SAME physical
+    # channel, so a single name is replicated across them; any other
+    # mismatch omits the Channel mapping (names that don't describe every C
+    # plane must not fail the finalize -- that lost the whole OME-XML).
     if meta.channels:
-        md['Channel'] = {'Name': [c.get('name', meta.name) for c in meta.channels]}
+        names = [c.get('name', meta.name) for c in meta.channels]
+        size_c = 1
+        for axis, size in zip(meta.axes, shp):
+            if axis.name == 'c':
+                size_c = int(size)
+        if len(names) == 1 and size_c > 1:
+            names = names * size_c
+        if len(names) == size_c:
+            md['Channel'] = {'Name': names}
 
     md.update(meta.plane_position_metadata(shp))
 

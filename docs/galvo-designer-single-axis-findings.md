@@ -14,11 +14,16 @@ the provenance as a MapAnnotation, provenance skips collapsed axes, the
 config editor got a tri-state smoothScan that preserves absence, and the
 rig's `~/ImSwitchConfig/imcontrol_setups/example_sted.json` now has
 `smoothScan: false` on ND-PiezoZ. Review round 3 (2026-08-24, three
-findings — final section) is RESOLVED: `_make_full_scan` now enforces
-`checkSignalComp` so the Advanced path refuses out-of-range voltages before
-arming, the TIFF attr rewrite preserves channel names, and NumPy-valued
-shared attributes serialize into the MapAnnotation instead of failing the
-recording. The plan text is kept as the record of what was built and why.
+findings) is RESOLVED: `_make_full_scan` now enforces `checkSignalComp` so
+the Advanced path refuses out-of-range voltages before arming, the TIFF
+attr rewrite preserves channel names, and NumPy-valued shared attributes
+serialize into the MapAnnotation instead of failing the recording. Review
+round 4 (2026-08-25, one finding — final section) is RESOLVED:
+`build_ome_xml` derives `SizeC` from the final axes/shape and replicates a
+single channel name across retained line-step planes, so a two-line-step
+`TCYX` recording no longer fails TIFF finalization (nor silently loses
+HDF5's `ome_xml`). The plan text is kept as the record of what was built
+and why.
 Durable documentation lives in `setupinfo-reference.rst` (smoothScan) and the
 changelog. Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
 reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
@@ -487,3 +492,23 @@ smooth piezo path because the untracked rig config lacked the key.
    never fail over metadata; `TiffStorer.snap` additionally guards the
    rewrite so a metadata failure keeps the already-written image with its
    native description. Unit + storer-level tests with nested NumPy values.
+
+## Review round 4 (2026-08-25) — one finding, RESOLVED
+
+**[P1] Multi-line-step TIFF recording failed during finalization — FIXED.**
+The round-3 channel fix supplied one `Channel/Name` per `meta.channels`
+entry (defaulting to one detector entry), but a retained line-step scan is
+stored `TCYX` with `SizeC = n_linesteps` — and tifffile requires exactly
+one name per C plane. With two line-steps the `IndexError` made
+`TiffStorer.finalizeStream` raise `RuntimeError` (the recording failed);
+HDF5's guarded embed caught it, so pixels and `axes` survived but
+`ome_xml` was silently omitted. `build_ome_xml` now derives `SizeC` from
+the FINAL axes/shape: a single channel entry is replicated across the C
+planes (they are line-steps of that one physical channel), an exact
+name-count match is emitted as-is, and any other mismatch omits the
+`Channel` mapping rather than failing the finalize. Tests: TIFF and HDF5
+`TCYX` streams with two line-steps
+(`test_streaming_linestep_tcyx_finalizes_with_per_plane_channels`,
+`test_streaming_linestep_tcyx_keeps_ome_xml`), and the production
+line-step test `test_hdf5_stream_preserves_linestep_axis` now asserts
+`ome_xml` with `SizeC="2"` and both names.
