@@ -203,6 +203,44 @@ def build_exact_sampling(
     return pixel_rows, pixel_cols, weights
 
 
+def extract_lattice_amplitudes(
+    frames: np.ndarray,
+    centers_x: np.ndarray,
+    centers_y: np.ndarray,
+    footprint: tuple[np.ndarray, np.ndarray],
+    gaussian_sigma_px: float,
+    fit_background: bool = True,
+    chunk_frames: int = 256,
+) -> np.ndarray:
+    """Per-frame LSQ amplitudes at an arbitrary list of focus centers.
+
+    The general-lattice reassignment path: focus centers come from lattice
+    detection instead of the axis-aligned grid, so there is no shared-weight
+    shortcut — every focus gets exact-pixel per-focus weights (see
+    :func:`build_exact_sampling`). Processes ``frames`` in chunks to bound
+    the transient gather memory.
+
+    Returns:
+        Array of shape ``(num_frames, num_foci)``.
+    """
+    frames = np.asarray(frames)
+    if frames.ndim != 3:
+        raise ValueError(f"Expected 3D frames (N, Y, X), got shape {frames.shape}")
+    num_frames, num_rows, num_cols = frames.shape
+    pixel_rows, pixel_cols, weights = build_exact_sampling(
+        centers_x, centers_y, footprint, gaussian_sigma_px,
+        fit_background, num_rows, num_cols,
+    )
+
+    amplitudes = np.empty((num_frames, pixel_rows.shape[0]), dtype=np.float64)
+    chunk_frames = max(1, int(chunk_frames))
+    for start in range(0, num_frames, chunk_frames):
+        stop = min(num_frames, start + chunk_frames)
+        samples = frames[start:stop][:, pixel_rows, pixel_cols]
+        amplitudes[start:stop] = (samples * weights).sum(axis=-1)
+    return amplitudes
+
+
 class GaussProcessorCPU:
     """
     CPU-based image reconstruction using Gaussian least-squares weighting and bilinear interpolation.

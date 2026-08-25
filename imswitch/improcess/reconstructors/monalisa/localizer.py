@@ -309,6 +309,31 @@ def _summed_image(img_data: np.ndarray) -> np.ndarray:
     raise ValueError(f"Expected 2D or 3D array, got {img_data.ndim}D")
 
 
+def detection_band(
+    xp_guess: float | None = None, yp_guess: float | None = None
+) -> dict:
+    """Spectral period band for lattice detection, from rough period guesses.
+
+    Real summed stacks carry strong low-frequency *sample* structure whose
+    spectral peaks outweigh the illumination pattern's; an unbanded detection
+    happily locks onto them (measured: a 464 px frame with an 11 px grid
+    "detected" 163 px basis vectors). The pattern period is always known to
+    within a factor of ~2 (widget values, or the historical ~10 px scale), so
+    the band is derived from that rough scale rather than searched globally.
+    """
+    guesses = [
+        float(guess)
+        for guess in (xp_guess, yp_guess)
+        if guess is not None and np.isfinite(guess) and float(guess) > 0
+    ]
+    if not guesses:
+        guesses = [10.0]
+    return {
+        "min_period": max(3.0, 0.35 * min(guesses)),
+        "max_period": 2.5 * max(guesses),
+    }
+
+
 def robust_localize(
     img_data: np.ndarray,
     xp_guess: float | None = None,
@@ -341,7 +366,9 @@ def robust_localize(
 
     detected = None
     try:
-        detected = detect_lattice(summed)
+        detected = detect_lattice(
+            summed, **detection_band(xp_guess, yp_guess)
+        )
     except ValueError:
         pass
 

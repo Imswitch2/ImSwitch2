@@ -1869,6 +1869,16 @@ class ReconParTree(ParameterTree):
                  'values': ['Constant', 'Gaussian', 'No background'], 'children': [
                     {'name': 'BG Gaussian size', 'type': 'float', 'value': 500, 'suffix': 'nm'}]}]},
             {'name': 'Fast Gauss options', 'type': 'group', 'children': [
+                {'name': 'Pattern geometry', 'type': 'list',
+                 'value': 'Auto',
+                 'values': ['Auto', 'Rectangular grid', 'General lattice'],
+                 'tip': ('Auto detects the illumination pattern and keeps '
+                         'axis-aligned grids on the exact legacy pipeline, '
+                         'rerouting rotated-square (diamond) or hexagonal '
+                         'patterns to the scatter-and-grid reassignment. '
+                         'The general path needs a correct Pixel size and '
+                         'also stores the pre-gridding spot positions and '
+                         'intensities on the result.')},
                 {'name': 'Footprint mode', 'type': 'list',
                  'value': 'Rectangular shells',
                  'values': ['Rectangular shells', 'Circular pinhole'],
@@ -1941,6 +1951,8 @@ class ReconParTree(ParameterTree):
             'psf_fwhm_nm': recon_opts.param('PSF FWHM').value(),
             'bg_modelling': bg_modelling.value(),
             'bg_gaussian_size_nm': bg_modelling.param('BG Gaussian size').value(),
+            'fast_gauss_pattern_geometry': fast_gauss_opts.param(
+                'Pattern geometry').value(),
             'fast_gauss_footprint_mode': fast_gauss_opts.param(
                 'Footprint mode').value(),
             'fast_gauss_footprint_num_rects': fast_gauss_opts.param(

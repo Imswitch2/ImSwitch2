@@ -305,6 +305,7 @@ def detect_lattice(
     min_period: float = 3.0,
     max_period: float | None = None,
     num_candidate_peaks: int = 12,
+    min_peak_significance: float = 8.0,
 ) -> Lattice:
     """Detect a 2D Bravais lattice of bright foci in ``image`` — no guess.
 
@@ -321,10 +322,16 @@ def detect_lattice(
             smaller image dimension so at least ~3 repeats support the peak.
         num_candidate_peaks: How many spectral maxima to consider when
             pairing basis vectors.
+        min_peak_significance: A local maximum only counts as a lattice peak
+            when its magnitude exceeds this multiple of the band's median
+            magnitude. Noise-only bands top out below ~4x their median while
+            genuine focus patterns measure 60-180x, so the default separates
+            the two with wide margin and makes patternless data fail loudly
+            instead of returning a junk basis.
 
     Raises:
-        ValueError: If fewer than two non-collinear spectral peaks exist in
-            the period band.
+        ValueError: If fewer than two significant non-collinear spectral
+            peaks exist in the period band.
     """
     image = np.asarray(image, dtype=float)
     if image.ndim != 2:
@@ -347,12 +354,19 @@ def detect_lattice(
         (radius >= 1.0 / max_period) & (radius <= 1.0 / min_period), magnitude, 0.0
     )
 
-    is_peak = (banded == maximum_filter(banded, size=3)) & (banded > 0)
+    band_median = float(np.median(magnitude[(radius >= 1.0 / max_period)
+                                            & (radius <= 1.0 / min_period)]))
+    significance_floor = float(min_peak_significance) * max(band_median, 1e-30)
+    is_peak = (
+        (banded == maximum_filter(banded, size=3))
+        & (banded > significance_floor)
+    )
     peak_rows, peak_cols = np.nonzero(is_peak)
     if peak_rows.size == 0:
         raise ValueError(
-            f"No spectral peaks found for periods in [{min_period:.3g}, "
-            f"{max_period:.3g}] px — is there a periodic focus pattern?"
+            f"No significant spectral peaks found for periods in "
+            f"[{min_period:.3g}, {max_period:.3g}] px — is there a periodic "
+            f"focus pattern?"
         )
     strengths = banded[peak_rows, peak_cols]
     order = np.argsort(strengths)[::-1][:num_candidate_peaks]

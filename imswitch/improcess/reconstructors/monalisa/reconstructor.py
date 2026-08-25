@@ -8,11 +8,24 @@ from qtpy import QtWidgets
 
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
+from .gauss_processor import (
+    _build_footprint,
+    extract_lattice_amplitudes,
+    validate_gaussian_fit_options,
+)
+from .lattice import Lattice, detect_lattice
+from .lattice_recon import (
+    assemble_image,
+    choose_orientation,
+    sample_positions,
+    scan_offsets_px,
+)
 from .live_session import MonalisaLiveSession
+from .localizer import detection_band
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
-from .result import MonalisaProcessingResult, MonalisaSweepResult
+from .result import MonalisaProcessingResult, MonalisaSpotCloud, MonalisaSweepResult
 from .signal_extractor import SignalExtractor
 from .sweep import SWEEPABLE_PARAMETERS, parse_sweep_values, resolve_sweep_parameter
 
@@ -351,15 +364,44 @@ class MonalisaReconstructor(StreamingReconstructor):
         data_attrs: dict | None = None,
     ) -> MonalisaProcessingResult:
         """
-        Run the live fast-Gauss MoNaLISA path on a complete offline stack.
+        Run the fast-Gauss MoNaLISA path on a complete offline stack.
 
-        The fast-Gauss implementation is a 2D X/Y reassignment path. It can
-        process multiple timepoints, but not Z stacks or scan orders where X/Y
-        are not the two scan axes.
+        Dispatches on the pattern geometry: axis-aligned rectangular grids go
+        through the exact live-session pipeline (one output pixel per sample,
+        no interpolation), while any other Bravais lattice — rotated square
+        ("diamond"), hexagonal — goes through the general scatter-and-grid
+        path. The default ``Auto`` mode detects the pattern and only reroutes
+        when it is measurably non-rectangular, so rectangular data keeps its
+        historical output bit for bit.
         """
+        geometry = self._resolve_fast_gauss_geometry(data, scan_params, data_attrs)
+
+        mode = self._resolve_pattern_geometry_mode(params)
+        lattice = None
+        if mode != 'rectangular':
+            lattice = self._detect_offline_lattice(
+                data, params, required=(mode == 'general')
+            )
+        use_general = mode == 'general' or (
+            mode == 'auto'
+            and lattice is not None
+            and not lattice.is_axis_aligned_rectangular(tol=0.05)
+        )
+        if use_general:
+            return self._process_fast_gauss_general(
+                name, data, params, geometry, lattice
+            )
+        return self._process_fast_gauss_rectangular(name, data, params, geometry)
+
+    def _resolve_fast_gauss_geometry(
+        self,
+        data: np.ndarray,
+        scan_params: dict,
+        data_attrs: dict | None,
+    ) -> dict:
+        """Scan geometry from the dialog values, falling back to file attrs."""
         geometry = self._fast_gauss_geometry_from_scan_params(scan_params)
-        frames_per_stack = geometry['frames_per_stack']
-        expected_frames = frames_per_stack * geometry['num_timepoints']
+        expected_frames = geometry['frames_per_stack'] * geometry['num_timepoints']
         if data.shape[0] != expected_frames:
             metadata_geometry = self._fast_gauss_geometry_from_attrs(
                 data_attrs or {}, data.shape[0]
@@ -367,12 +409,69 @@ class MonalisaReconstructor(StreamingReconstructor):
             if metadata_geometry is None:
                 raise ValueError(
                     'Fast Gauss MoNaLISA expected '
-                    f'{expected_frames} frames ({frames_per_stack} per timepoint x '
-                    f'{geometry["num_timepoints"]} timepoints), got {data.shape[0]}'
+                    f'{expected_frames} frames ({geometry["frames_per_stack"]} '
+                    f'per timepoint x {geometry["num_timepoints"]} timepoints), '
+                    f'got {data.shape[0]}'
                 )
             geometry = metadata_geometry
-            frames_per_stack = geometry['frames_per_stack']
+        return geometry
 
+    @staticmethod
+    def _resolve_pattern_geometry_mode(params: dict) -> str:
+        """Normalize the pattern-geometry choice to auto/rectangular/general."""
+        text = str(params.get('fast_gauss_pattern_geometry', 'auto')).strip().lower()
+        if not text or 'auto' in text:
+            return 'auto'
+        if 'general' in text or 'lattice' in text:
+            return 'general'
+        if 'rect' in text:
+            return 'rectangular'
+        raise ValueError(
+            f'Unknown pattern geometry {params.get("fast_gauss_pattern_geometry")!r}; '
+            "use 'Auto', 'Rectangular grid' or 'General lattice'"
+        )
+
+    def _detect_offline_lattice(
+        self, data: np.ndarray, params: dict, required: bool
+    ) -> Lattice | None:
+        """Detect the illumination lattice on the frame sum.
+
+        The widget's pattern periods set the spectral search band (the exact
+        values need not be right — they bound the scale so the detection is
+        not captured by low-frequency sample structure).
+        """
+        summed = np.asarray(data, dtype=np.float64).sum(axis=0)
+        band = detection_band(params.get('col_period'), params.get('row_period'))
+        try:
+            lattice = detect_lattice(summed, **band)
+        except ValueError as exc:
+            if required:
+                raise ValueError(
+                    'General-lattice reconstruction was requested but no '
+                    f'illumination lattice was detected: {exc}'
+                ) from exc
+            self._logger.info(
+                f'No illumination lattice detected ({exc}); '
+                'using the rectangular pipeline'
+            )
+            return None
+        self._logger.info(f'Detected illumination lattice: {lattice.describe()}')
+        return lattice
+
+    def _process_fast_gauss_rectangular(
+        self,
+        name: str,
+        data: np.ndarray,
+        params: dict,
+        geometry: dict,
+    ) -> MonalisaProcessingResult:
+        """Axis-aligned grid path: the live session run over the whole stack.
+
+        The fast-Gauss implementation is a 2D X/Y reassignment path. It can
+        process multiple timepoints, but not Z stacks or scan orders where X/Y
+        are not the two scan axes.
+        """
+        frames_per_stack = geometry['frames_per_stack']
         session = self.make_session()
         try:
             first_stack = data[:frames_per_stack]
@@ -407,12 +506,170 @@ class MonalisaReconstructor(StreamingReconstructor):
         result = MonalisaProcessingResult(
             name=name,
             data=live_result.data,
-            scan_params=geometry.get('scan_params', scan_params),
+            scan_params=geometry['scan_params'],
             display_levels=display_levels,
             output_pixel_size_nm=out_px,
             axis_label_map=self._axis_labels,
         )
         self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
+        return result
+
+    def _process_fast_gauss_general(
+        self,
+        name: str,
+        data: np.ndarray,
+        params: dict,
+        geometry: dict,
+        lattice: Lattice,
+    ) -> MonalisaProcessingResult:
+        """Scatter-and-grid reassignment for non-axis-aligned lattices.
+
+        Amplitudes are extracted per detected focus (exact-pixel per-focus
+        weights — arbitrary centers have no shared-weight shortcut), assigned
+        their sample-space positions ``focus + scan offset``, and gridded
+        onto a square output raster of pitch equal to the scan step by
+        bilinear splatting with weight normalization. The scan orientation is
+        resolved by total variation exactly as in the rectangular path;
+        output pixels the scan never covered are NaN. The pre-gridding spot
+        cloud is retained on the result.
+        """
+        if geometry['n_linesteps'] != 1:
+            raise ValueError(
+                'General-lattice fast Gauss currently supports a single line '
+                f'step (got n_linesteps={geometry["n_linesteps"]})'
+            )
+        try:
+            pixel_size_nm = float(params.get('pixel_size_nm'))
+        except (TypeError, ValueError):
+            pixel_size_nm = 0.0
+        if pixel_size_nm <= 0:
+            raise ValueError(
+                'General-lattice reconstruction needs the camera pixel size '
+                "(the widget's 'Pixel size', in nm) to place scan offsets in "
+                'camera pixels'
+            )
+
+        nx_s, ny_s = geometry['nx_s'], geometry['ny_s']
+        frames_per_stack = geometry['frames_per_stack']
+        num_timepoints = geometry['num_timepoints']
+        step_x_px = geometry['step_x_nm'] / pixel_size_nm
+        step_y_px = geometry['step_y_nm'] / pixel_size_nm
+        num_rows, num_cols = data.shape[-2:]
+
+        foci_x, foci_y = lattice.points_in_frame(num_rows, num_cols)
+        if foci_x.size < 3:
+            raise ValueError(
+                'Fewer than three lattice foci fall inside the frame '
+                f'({lattice.describe()})'
+            )
+        foci_xy = np.column_stack([foci_x, foci_y])
+
+        session = self.make_session()
+        gaussian_sigma_px = session._resolve_gaussian_sigma_px(params)
+        pinhole_radius_px = session._resolve_pinhole_radius_px(
+            params, gaussian_sigma_px
+        )
+        fit_background = session._resolve_fit_background(params)
+        num_rects, gaussian_sigma_px, pinhole_radius_px = (
+            validate_gaussian_fit_options(
+                params.get('fast_gauss_footprint_num_rects'),
+                gaussian_sigma_px,
+                pinhole_radius_px,
+            )
+        )
+        footprint = _build_footprint(num_rects, pinhole_radius_px)
+
+        self._logger.info(
+            f'General-lattice fast Gauss: {foci_xy.shape[0]} foci, '
+            f'{lattice.describe()}; scan {nx_s}x{ny_s} steps of '
+            f'({step_x_px:.3f}, {step_y_px:.3f}) px '
+            f'(pixel size {pixel_size_nm:g} nm)'
+        )
+        scan_cell_ratio = (
+            nx_s * step_x_px * ny_s * step_y_px / lattice.cell_area
+        )
+        self._logger.info(
+            f'Scan area covers {scan_cell_ratio:.2f}x the lattice unit cell '
+            '(1.0 = every sample position visited once)'
+        )
+
+        amplitudes = extract_lattice_amplitudes(
+            data, foci_x, foci_y, footprint, gaussian_sigma_px, fit_background
+        ).reshape(num_timepoints, frames_per_stack, -1)
+
+        orientation = choose_orientation(
+            foci_xy, amplitudes[0], nx_s, ny_s, (step_x_px, step_y_px)
+        )
+        self._logger.info(
+            f'Scan orientation (total-variation pick): fast axis '
+            f'{orientation[0]}, signs ({orientation[1]:+d}, {orientation[2]:+d})'
+        )
+        offsets = scan_offsets_px(nx_s, ny_s, step_x_px, step_y_px, orientation)
+        positions = sample_positions(foci_xy, offsets)
+
+        first = assemble_image(
+            positions, amplitudes[0].reshape(-1), pitch=(step_x_px, step_y_px)
+        )
+        images = [first.image]
+        for time_index in range(1, num_timepoints):
+            images.append(
+                assemble_image(
+                    positions,
+                    amplitudes[time_index].reshape(-1),
+                    pitch=first.pitch_px,
+                    origin=first.origin_px,
+                    shape=first.image.shape,
+                ).image
+            )
+        stacked = np.stack(images).astype(np.float32)
+        data_6d = stacked[np.newaxis, np.newaxis, :, np.newaxis, :, :]
+        self._logger.info(
+            f'Gridded {positions.shape[0]} samples/timepoint onto '
+            f'{first.image.shape} px; coverage {first.coverage:.1%}'
+        )
+
+        frame_indices = np.repeat(np.arange(frames_per_stack), foci_xy.shape[0])
+        focus_indices = np.tile(np.arange(foci_xy.shape[0]), frames_per_stack)
+        spots = MonalisaSpotCloud(
+            positions_px=positions.astype(np.float64),
+            intensities=amplitudes.reshape(num_timepoints, -1),
+            frame_indices=frame_indices,
+            focus_indices=focus_indices,
+            pixel_size_nm=pixel_size_nm,
+        )
+
+        finite = stacked[np.isfinite(stacked)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)),
+                float(np.percentile(finite, 99.9)),
+            )
+
+        result = MonalisaProcessingResult(
+            name=name,
+            data=data_6d,
+            scan_params=geometry['scan_params'],
+            display_levels=display_levels,
+            output_pixel_size_nm=(geometry['step_y_nm'], geometry['step_x_nm']),
+            axis_label_map=self._axis_labels,
+            spots=spots,
+            recon_diagnostics={
+                'pattern_geometry': 'general',
+                'lattice': lattice.describe(),
+                'lattice_spacing_px': lattice.nearest_spacing(),
+                'num_foci': int(foci_xy.shape[0]),
+                'pixel_size_nm': pixel_size_nm,
+                'step_px': (step_x_px, step_y_px),
+                'scan_orientation': orientation,
+                'output_origin_px': first.origin_px,
+                'coverage': first.coverage,
+                'scan_cell_ratio': scan_cell_ratio,
+            },
+        )
+        self._logger.info(
+            f'General-lattice reconstruction complete: shape {result.data.shape}'
+        )
         return result
 
     def _process_fast_gauss_sweep(

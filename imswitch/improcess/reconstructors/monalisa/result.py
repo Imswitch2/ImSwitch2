@@ -1,13 +1,110 @@
 """MoNaLISA-specific processing result."""
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterator
 
 import numpy as np
 import tifffile as tiff
 
 from imswitch.improcess.model.result import DisplayLayerSpec, ProcessingResult, ViewMode
 from .coeffs_to_image import output_pixel_size_nm, reconstruct_images_from_coeffs
+
+
+@dataclass
+class MonalisaSpotCloud:
+    """Pre-gridding output of the general-lattice fast-Gauss path.
+
+    One row per (frame, focus) sample of a scan stack: the sample-space
+    position the extracted amplitude belongs to (camera pixel coordinates)
+    and the amplitude itself, before any interpolation onto the output
+    raster. Positions are shared across timepoints (the pattern and scan
+    repeat identically); intensities carry one row per timepoint.
+    """
+
+    positions_px: np.ndarray  # (N, 2) columns x, y
+    intensities: np.ndarray  # (T, N)
+    frame_indices: np.ndarray  # (N,) frame within the scan stack
+    focus_indices: np.ndarray  # (N,) index into the enumerated lattice foci
+    pixel_size_nm: float
+
+    def __post_init__(self):
+        self.positions_px = np.asarray(self.positions_px, dtype=np.float64)
+        self.intensities = np.atleast_2d(
+            np.asarray(self.intensities, dtype=np.float64)
+        )
+        self.frame_indices = np.asarray(self.frame_indices, dtype=np.int64)
+        self.focus_indices = np.asarray(self.focus_indices, dtype=np.int64)
+        n = self.positions_px.shape[0]
+        if (
+            self.positions_px.ndim != 2
+            or self.positions_px.shape[1] != 2
+            or self.intensities.shape[1] != n
+            or self.frame_indices.shape != (n,)
+            or self.focus_indices.shape != (n,)
+        ):
+            raise ValueError(
+                'Inconsistent spot-cloud shapes: positions '
+                f'{self.positions_px.shape}, intensities '
+                f'{self.intensities.shape}, frames {self.frame_indices.shape}, '
+                f'foci {self.focus_indices.shape}'
+            )
+
+    @property
+    def num_spots(self) -> int:
+        return int(self.positions_px.shape[0])
+
+    @property
+    def num_timepoints(self) -> int:
+        return int(self.intensities.shape[0])
+
+    def table_columns(self) -> list[str]:
+        return [
+            'timepoint', 'frame', 'focus',
+            'x_px', 'y_px', 'x_nm', 'y_nm', 'intensity',
+        ]
+
+    def iter_records(self) -> Iterator[dict[str, Any]]:
+        """One dict per (timepoint, spot) row — lazily, the table can be large."""
+        scale = float(self.pixel_size_nm)
+        for timepoint in range(self.num_timepoints):
+            values = self.intensities[timepoint]
+            for index in range(self.num_spots):
+                x_px = float(self.positions_px[index, 0])
+                y_px = float(self.positions_px[index, 1])
+                yield {
+                    'timepoint': timepoint,
+                    'frame': int(self.frame_indices[index]),
+                    'focus': int(self.focus_indices[index]),
+                    'x_px': x_px,
+                    'y_px': y_px,
+                    'x_nm': x_px * scale,
+                    'y_nm': y_px * scale,
+                    'intensity': float(values[index]),
+                }
+
+    def save_csv(self, path: Path) -> None:
+        """Write the full table as CSV (one row per timepoint and spot)."""
+        path = Path(path)
+        timepoints = np.repeat(
+            np.arange(self.num_timepoints), self.num_spots
+        )
+        frames = np.tile(self.frame_indices, self.num_timepoints)
+        foci = np.tile(self.focus_indices, self.num_timepoints)
+        x_px = np.tile(self.positions_px[:, 0], self.num_timepoints)
+        y_px = np.tile(self.positions_px[:, 1], self.num_timepoints)
+        scale = float(self.pixel_size_nm)
+        table = np.column_stack([
+            timepoints, frames, foci,
+            x_px, y_px, x_px * scale, y_px * scale,
+            self.intensities.reshape(-1),
+        ])
+        header = ','.join(self.table_columns())
+        np.savetxt(
+            str(path), table, delimiter=',', header=header, comments='',
+            fmt=['%d', '%d', '%d', '%.4f', '%.4f', '%.2f', '%.2f', '%.6g'],
+        )
 
 # Canonical semantic-name → scan-dimension-name map. Reconstructions produced
 # by MonalisaReconstructor use these names; the legacy controller path passes
@@ -44,6 +141,8 @@ class MonalisaProcessingResult(ProcessingResult):
         output_pixel_size_nm: tuple[float, float] | None = None,
         coeffs: np.ndarray | None = None,
         axis_label_map: dict[str, str] | None = None,
+        spots: "MonalisaSpotCloud | None" = None,
+        recon_diagnostics: dict | None = None,
     ):
         """
         Args:
@@ -69,6 +168,13 @@ class MonalisaProcessingResult(ProcessingResult):
                 how ``scan_params['dimensions']`` is named. Defaults to the
                 canonical reconstructor names; the legacy controller path
                 passes its widget-text names instead.
+            spots: Optional :class:`MonalisaSpotCloud` — the pre-gridding
+                per-spot positions and intensities of the general-lattice
+                path. Saved as a ``*_spots.csv`` next to the TIFF and exposed
+                through :meth:`table_columns`/:meth:`table_records`.
+            recon_diagnostics: Optional free-form dict describing how the
+                reconstruction was assembled (detected lattice, chosen scan
+                orientation, output origin, coverage, ...).
         """
         if axis_labels is None:
             axis_labels = ["Dataset", "Base", "T", "Z", "Y", "X"]
@@ -123,6 +229,8 @@ class MonalisaProcessingResult(ProcessingResult):
         self.output_pixel_size_nm = output_pixel_size_nm
         self.coeffs = coeffs
         self.axis_label_map = axis_label_map
+        self.spots = spots
+        self.recon_diagnostics = dict(recon_diagnostics or {})
 
     @classmethod
     def from_coeffs(
@@ -270,9 +378,25 @@ class MonalisaProcessingResult(ProcessingResult):
         
         return layers
     
+    def table_columns(self) -> list[str]:
+        """Spot-cloud columns when the general-lattice path produced spots."""
+        if self.spots is None:
+            return super().table_columns()
+        return self.spots.table_columns()
+
+    def table_records(self) -> list[dict[str, Any]]:
+        """Spot-cloud rows for explicit export (can be large; not auto-shown)."""
+        if self.spots is None:
+            return super().table_records()
+        return list(self.spots.iter_records())
+
     def save(self, path: Path, fmt: str = "tiff") -> None:
         """
         Save MoNaLISA reconstruction as ImageJ-compatible 6D TIFF.
+
+        When the result carries a pre-gridding spot cloud (general-lattice
+        path), the per-spot positions and intensities are written alongside
+        as ``<name>_spots.csv``.
 
         Args:
             path: Output file path
@@ -280,7 +404,10 @@ class MonalisaProcessingResult(ProcessingResult):
         """
         if fmt != "tiff":
             raise ValueError(f"MoNaLISA result only supports 'tiff' format, got '{fmt}'")
+        path = Path(path)
         self._write_imagej_hyperstack(self.data, path)
+        if self.spots is not None:
+            self.spots.save_csv(path.with_name(f"{path.stem}_spots.csv"))
 
     def _write_imagej_hyperstack(
         self,
