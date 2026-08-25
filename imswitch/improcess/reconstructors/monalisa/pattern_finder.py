@@ -4,14 +4,28 @@ from .localizer import localizer
 
 
 class PatternFinder:
-    def findPattern(self, image):
-        """Find pattern as [row_offset, col_offset, row_period, col_period]."""
-        loc = localizer(image)
+    def findPattern(self, image, xp_guess=None, yp_guess=None):
+        """Find pattern as [row_offset, col_offset, row_period, col_period].
+
+        ``xp_guess``/``yp_guess`` seed the localizer's period search (in px;
+        x == column axis, y == row axis). The search window only covers
+        roughly +-20% around the guess, so callers that already hold pattern
+        parameters (widget values, a previous fit) should pass them instead
+        of relying on the 10 px default.
+        """
+        kwargs = {}
+        for key, guess in (("xp_guess", xp_guess), ("yp_guess", yp_guess)):
+            try:
+                if guess is not None and float(guess) > 0:
+                    kwargs[key] = float(guess)
+            except (TypeError, ValueError):
+                pass
+        loc = localizer(image, **kwargs)
         return [loc.yo, loc.xo, loc.yp, loc.xp]
 
-    def find(self, image):
+    def find(self, image, xp_guess=None, yp_guess=None):
         """Compatibility alias for the plugin-style reconstructor API."""
-        return self.findPattern(image)
+        return self.findPattern(image, xp_guess=xp_guess, yp_guess=yp_guess)
 
     def findBestPeak(self, peaks):
         """ Finds the best peak in a list of peaks. """

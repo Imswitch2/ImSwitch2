@@ -346,7 +346,11 @@ class MonalisaLiveSession(StreamingSession):
         Live reconstruction intentionally uses automatic localization on the
         incoming data. Offline fast-Gauss reconstruction sets
         ``_monalisa_pattern_params`` so it follows the parameter widget in the
-        same way as the full SignalExtractor path.
+        same way as the full SignalExtractor path. When only period values are
+        available (the live path passes the parameter widget's dict), they
+        seed the localizer's period search — its window only covers ~+-20%
+        around the guess, so the hardcoded 10 px default alone would silently
+        mislocalize coarser patterns.
         """
         pattern = params.get("_monalisa_pattern_params")
         if pattern:
@@ -358,7 +362,15 @@ class MonalisaLiveSession(StreamingSession):
                 num_rows=data.shape[-2],
                 num_cols=data.shape[-1],
             )
-        return localizer(data)
+        guesses = {}
+        for key, param_key in (("xp_guess", "col_period"), ("yp_guess", "row_period")):
+            try:
+                value = float(params.get(param_key))
+                if value > 0:
+                    guesses[key] = value
+            except (TypeError, ValueError):
+                pass
+        return localizer(data, **guesses)
 
     @staticmethod
     def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:

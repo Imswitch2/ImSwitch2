@@ -52,7 +52,13 @@ class MoNaLISAController(ImProcessWidgetController):
             return
 
         self._logger.debug('Finding pattern')
-        pattern = self._patternFinder.findPattern(meanData)
+        # Seed the period search with the widget's current pattern values
+        # (row_offset, col_offset, row_period, col_period) — the localizer
+        # only scans ~+-20% around its guess.
+        current = self._widget.getPatternParams()
+        pattern = self._patternFinder.findPattern(
+            meanData, xp_guess=current[3], yp_guess=current[2]
+        )
         self._logger.debug(f'Pattern found as: {self._pattern}')
         self.setPatternParams(pattern)
         self.updatePattern()

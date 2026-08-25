@@ -100,24 +100,41 @@ def _estimate_period(period_guess: float, input_data: np.ndarray) -> float:
     Estimate the dominant period in the 1D input data using FFT and Gaussian fitting.
 
     Args:
-        period_guess: Initial period guess.
+        period_guess: Initial period guess. Only spectral peaks within
+            ``1/period_guess +- 0.025`` cycles/px are considered, so the guess
+            must be within roughly +-20% of the true period (tighter for short
+            periods, looser for long ones).
         input_data: 1D data array (e.g., row or column averages).
 
     Returns:
         Refined estimate of the period.
+
+    Raises:
+        ValueError: If no spectral peak exists near the guessed frequency.
     """
     data_size = input_data.size
 
     fft_max_index = data_size // 2 + 1
     abs_fft = np.abs(np.fft.fft(input_data)[0:fft_max_index])
-    fft_freqs = np.fft.fftfreq(fft_max_index)
+    # Frequency labels for the positive-frequency bins of the length-N
+    # transform. An earlier version passed fft_max_index to fftfreq, which
+    # compressed the axis by ~2x (compensated by targeting 2/period) and
+    # labeled the upper half of the bins with negative frequencies — silently
+    # making every period below ~4 px unfindable.
+    fft_freqs = np.fft.rfftfreq(data_size)
 
-    target_freq = 2 / period_guess
-    tol = 0.05
+    target_freq = 1 / period_guess
+    tol = 0.025
     abs_fft[fft_freqs < target_freq - tol] = 0
     abs_fft[fft_freqs > target_freq + tol] = 0
 
     peaks = find_peaks(abs_fft, prominence=[0, np.inf], width=0, height=0)
+    if len(peaks[0]) == 0:
+        raise ValueError(
+            f'No periodic component found near the period guess '
+            f'{period_guess:.4g} px. Check the pattern period parameters '
+            f'(the search window only covers roughly +-20% around the guess).'
+        )
     best_peak_index = _find_best_peak_index(peaks)
     peak_index = peaks[0][best_peak_index]
     peak_width = peaks[1]["widths"][best_peak_index]
@@ -225,7 +242,11 @@ def localizer(
     else:
         raise ValueError(f"Expected 2D or 3D array, got {img_data.ndim}D")
 
-    sigma_low = 2.0
+    # Band-pass around the expected pattern frequency: the low-pass sigma is
+    # a fifth of the mean period (== the historical fixed 2.0 px at the
+    # default 10 px guess), so localization of coarser or finer patterns is
+    # smoothed proportionally instead of with a constant kernel.
+    sigma_low = (xp_guess + yp_guess) / 10
     sigma_high = (xp_guess + yp_guess) / 2
     img_stack_sum -= gaussian_filter(img_stack_sum, sigma_high)
     img_stack_sum = gaussian_filter(img_stack_sum, sigma_low)

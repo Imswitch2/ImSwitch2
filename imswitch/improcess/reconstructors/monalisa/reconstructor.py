@@ -99,9 +99,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         
         # Use first frame for pattern detection
         test_frame = data[0] if data.ndim == 3 else data
-        
-        # Find pattern
-        row_offset, col_offset, row_period, col_period = self._pattern_finder.find(test_frame)
+
+        # Find pattern, seeding the period search with the widget's current
+        # values — the localizer only scans ~+-20% around its guess.
+        current = param_widget.get_values()
+        row_offset, col_offset, row_period, col_period = self._pattern_finder.find(
+            test_frame,
+            xp_guess=current.get('col_period'),
+            yp_guess=current.get('row_period'),
+        )
         
         # Update widget
         param_widget.set_pattern_params(row_offset, col_offset, row_period, col_period)
@@ -616,19 +622,28 @@ class MonalisaReconstructor(StreamingReconstructor):
     def _apply_bleaching_correction(self, data: np.ndarray) -> np.ndarray:
         """
         Apply photobleaching correction to raw data.
-        
-        Uses 4th-power energy normalization: c = (E_0 / E_i)^4
-        
+
+        Rescales each frame by ``E_0 / E_i`` so every frame carries the first
+        frame's total energy. Fluorescence intensity is linear in the
+        remaining fluorophore population, so the linear energy ratio is the
+        correct compensation; the 4th power a legacy version applied
+        overcorrected bleaching by the cube of the energy loss. This matches
+        the live fast-Gauss path
+        (:meth:`MonalisaLiveSession._apply_bleaching_correction`).
+
         Args:
             data: 3D array (frames, rows, cols)
-        
+
         Returns:
-            Corrected 3D array
+            Corrected 3D array (input dtype preserved — the SignalExtractor
+            DLL reads the raw buffer, so the dtype must not change here)
         """
         corrected_data = data.copy()
-        energy = np.sum(data, axis=(1, 2))
+        energy = np.sum(data, axis=(1, 2), dtype=np.float64)
         for i in range(data.shape[0]):
-            c = (energy[0] / energy[i]) ** 4
+            if energy[i] <= 0:
+                continue
+            c = energy[0] / energy[i]
             corrected_data[i, :, :] = data[i, :, :] * c
         return corrected_data
 
