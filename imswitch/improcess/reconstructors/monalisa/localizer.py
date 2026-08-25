@@ -1,16 +1,26 @@
 """Localization of MoNaLISA scan grid from raw frames."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import least_squares
 from scipy.signal import find_peaks
 
+from .lattice import Lattice, detect_lattice
+
 
 @dataclass(frozen=True)
 class LocalizationResult:
-    """Result of scan grid localization."""
+    """Result of scan grid localization.
+
+    ``xp/xo/yp/yo`` are the axis-aligned grid parameters the reassignment
+    pipeline consumes. ``lattice`` is the best-known general description of
+    the illumination pattern — normally the equivalent rectangular
+    :class:`~.lattice.Lattice`, but a detection-backed result may carry a
+    slightly tilted basis so callers can inspect how rectangular the pattern
+    really was.
+    """
 
     xp: float
     xo: float
@@ -20,6 +30,7 @@ class LocalizationResult:
     ny_c: int
     num_cols: int
     num_rows: int
+    lattice: Lattice | None = None
 
 
 def localization_from_pattern(
@@ -42,8 +53,8 @@ def localization_from_pattern(
     xp = float(col_period)
     if xp <= 0 or yp <= 0:
         raise ValueError("Pattern periods must be positive")
-    yo = np.mod(float(row_offset), yp)
-    xo = np.mod(float(col_offset), xp)
+    yo = float(np.mod(float(row_offset), yp))
+    xo = float(np.mod(float(col_offset), xp))
 
     nx_c = int(np.ceil((int(num_cols) - xo) / xp))
     ny_c = int(np.ceil((int(num_rows) - yo) / yp))
@@ -56,7 +67,22 @@ def localization_from_pattern(
         ny_c=ny_c,
         num_cols=int(num_cols),
         num_rows=int(num_rows),
+        lattice=Lattice.rectangular(xp, yp, xo, yo),
     )
+
+
+def localization_result_centers(
+    loc: LocalizationResult,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Focus centers for a localization, in legacy row-major order.
+
+    Uses the general lattice enumeration, which for the axis-aligned grid
+    reproduces ``scan_geometry.get_center_coords`` exactly. This is the seam
+    a non-rectangular pattern will flow through once reassignment learns to
+    handle one.
+    """
+    lattice = loc.lattice or Lattice.rectangular(loc.xp, loc.yp, loc.xo, loc.yo)
+    return lattice.points_in_frame(loc.num_rows, loc.num_cols)
 
 
 def _find_best_peak_index(peaks: tuple) -> int:
@@ -233,14 +259,8 @@ def localizer(
     Returns:
         Localization result containing periods, offsets, and grid dimensions.
     """
-    if img_data.ndim == 3:
-        _, num_rows, num_cols = img_data.shape
-        img_stack_sum = np.double(img_data.sum(axis=0))
-    elif img_data.ndim == 2:
-        num_rows, num_cols = img_data.shape
-        img_stack_sum = np.double(img_data)
-    else:
-        raise ValueError(f"Expected 2D or 3D array, got {img_data.ndim}D")
+    img_stack_sum = _summed_image(img_data)
+    num_rows, num_cols = img_stack_sum.shape
 
     # Band-pass around the expected pattern frequency: the low-pass sigma is
     # a fifth of the mean period (== the historical fixed 2.0 px at the
@@ -276,7 +296,91 @@ def localizer(
         ny_c,
         num_cols,
         num_rows,
+        lattice=Lattice.rectangular(xp, yp, xo, yo),
     )
+
+
+def _summed_image(img_data: np.ndarray) -> np.ndarray:
+    """Collapse an optional frame axis into the 2D image localization uses."""
+    if img_data.ndim == 3:
+        return np.double(img_data.sum(axis=0))
+    if img_data.ndim == 2:
+        return np.double(img_data)
+    raise ValueError(f"Expected 2D or 3D array, got {img_data.ndim}D")
+
+
+def robust_localize(
+    img_data: np.ndarray,
+    xp_guess: float | None = None,
+    yp_guess: float | None = None,
+    rectangular_tol: float = 0.05,
+) -> LocalizationResult:
+    """Localize the scan grid without requiring a good period guess.
+
+    Runs the guess-free 2D lattice detection first and uses the detected
+    periods to seed :func:`localizer`'s precise 1D refinement — so coarse or
+    fine patterns localize correctly even when the caller's guess (or the
+    10 px default) is far off. A detected pattern that is not an axis-aligned
+    rectangular grid (rotated beyond ``rectangular_tol`` radians, hexagonal,
+    ...) raises a ValueError describing the measured geometry, since the
+    reassignment step cannot consume it — a readable failure instead of a
+    silently scrambled reconstruction.
+
+    Args:
+        img_data: 2D frame or 3D stack of frames.
+        xp_guess: Fallback x-period seed when detection finds nothing.
+        yp_guess: Fallback y-period seed when detection finds nothing.
+        rectangular_tol: Maximum relative off-axis basis component (~tilt in
+            radians) still treated as an axis-aligned rectangular grid.
+
+    Returns:
+        Localization result; its ``lattice`` field carries the detected
+        basis (including any small tilt) when detection succeeded.
+    """
+    summed = _summed_image(img_data)
+
+    detected = None
+    try:
+        detected = detect_lattice(summed)
+    except ValueError:
+        pass
+
+    grid_params = None
+    if detected is not None:
+        try:
+            grid_params = detected.to_grid_params(tol=rectangular_tol)
+        except ValueError:
+            raise
+
+    if grid_params is not None:
+        seed_xp, _, seed_yp, _ = grid_params
+    else:
+        seed_xp = float(xp_guess) if xp_guess and float(xp_guess) > 0 else 10.0
+        seed_yp = float(yp_guess) if yp_guess and float(yp_guess) > 0 else 10.0
+
+    try:
+        result = localizer(img_data, xp_guess=seed_xp, yp_guess=seed_yp)
+    except ValueError:
+        if grid_params is None:
+            raise
+        # The 1D refinement found no usable projection peak, but the 2D
+        # detection did localize the lattice — fall back to it directly.
+        det_xp, det_xo, det_yp, det_yo = grid_params
+        num_rows, num_cols = summed.shape
+        result = localization_from_pattern(
+            row_offset=det_yo,
+            col_offset=det_xo,
+            row_period=det_yp,
+            col_period=det_xp,
+            num_rows=num_rows,
+            num_cols=num_cols,
+        )
+
+    if detected is not None:
+        # Preserve the detection-backed basis (it may carry a small tilt the
+        # axis-aligned grid parameters cannot express).
+        result = replace(result, lattice=detected)
+    return result
 
 
 # Copyright (C) 2020-2026 ImSwitch developers

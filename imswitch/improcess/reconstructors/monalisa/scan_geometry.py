@@ -146,9 +146,26 @@ def get_interp_coords(
         Xr, Yr = footprint
     else:
         Xr, Yr = get_rectangles_coords(num_rects)
+    return get_interp_coords_for_centers(Xc, Yc, (Xr, Yr), num_rows, num_cols)
 
-    Xi = Xc.reshape((-1, 1)) + Xr
-    Yi = Yc.reshape((-1, 1)) + Yr
+
+def get_interp_coords_for_centers(
+    Xc: np.ndarray,
+    Yc: np.ndarray,
+    footprint: tuple[np.ndarray, np.ndarray],
+    num_rows: int,
+    num_cols: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Interpolation coordinates for an explicit list of focus centers.
+
+    Lattice-agnostic core of :func:`get_interp_coords`: the extraction step
+    only needs focus centers plus a footprint, so a non-rectangular pattern
+    (e.g. hexagonal, enumerated via ``Lattice.points_in_frame``) can reuse it
+    unchanged. Coordinates are clipped to the frame boundaries.
+    """
+    Xr, Yr = footprint
+    Xi = np.asarray(Xc, dtype=float).reshape((-1, 1)) + Xr
+    Yi = np.asarray(Yc, dtype=float).reshape((-1, 1)) + Yr
 
     Xi[Xi < 0] = 0
     Xi[Xi > num_cols - 1] = num_cols - 1

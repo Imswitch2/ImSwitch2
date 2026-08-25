@@ -1,17 +1,17 @@
 import numpy as np
 
-from .localizer import localizer
+from .localizer import robust_localize
 
 
 class PatternFinder:
     def findPattern(self, image, xp_guess=None, yp_guess=None):
         """Find pattern as [row_offset, col_offset, row_period, col_period].
 
-        ``xp_guess``/``yp_guess`` seed the localizer's period search (in px;
-        x == column axis, y == row axis). The search window only covers
-        roughly +-20% around the guess, so callers that already hold pattern
-        parameters (widget values, a previous fit) should pass them instead
-        of relying on the 10 px default.
+        Uses the guess-free 2D lattice detection to seed the precise 1D
+        refinement, so the true period does not need to be near any guess.
+        ``xp_guess``/``yp_guess`` (in px; x == column axis, y == row axis)
+        only serve as fallback seeds when the 2D detection finds no usable
+        spectral peaks.
         """
         kwargs = {}
         for key, guess in (("xp_guess", xp_guess), ("yp_guess", yp_guess)):
@@ -20,7 +20,7 @@ class PatternFinder:
                     kwargs[key] = float(guess)
             except (TypeError, ValueError):
                 pass
-        loc = localizer(image, **kwargs)
+        loc = robust_localize(image, **kwargs)
         return [loc.yo, loc.xo, loc.yp, loc.xp]
 
     def find(self, image, xp_guess=None, yp_guess=None):

@@ -10,7 +10,7 @@ from .gauss_processor import (
     DEFAULT_GAUSSIAN_SIGMA_PX,
     make_gauss_processor,
 )
-from .localizer import localization_from_pattern, localizer
+from .localizer import localization_from_pattern, robust_localize
 from .result import MonalisaProcessingResult
 from .scan_geometry import get_orientation
 
@@ -137,6 +137,15 @@ class MonalisaLiveSession(StreamingSession):
             f"yp={loc_result.yp:.2f}, yo={loc_result.yo:.2f}, "
             f"nx_c={loc_result.nx_c}, ny_c={loc_result.ny_c}"
         )
+        if loc_result.lattice is not None:
+            tilt = loc_result.lattice.axis_tilt_deg()
+            if 0.5 < tilt <= 45.0:
+                self._logger.warning(
+                    f"Illumination lattice is tilted {tilt:.2f} deg from the "
+                    f"pixel axes ({loc_result.lattice.describe()}); the "
+                    "rectangular-grid reassignment will blur foci toward the "
+                    "frame edges"
+                )
 
         num_rects = params.get(
             "fast_gauss_footprint_num_rects",
@@ -344,13 +353,13 @@ class MonalisaLiveSession(StreamingSession):
         """Use explicit widget pattern params when provided; otherwise localize.
 
         Live reconstruction intentionally uses automatic localization on the
-        incoming data. Offline fast-Gauss reconstruction sets
-        ``_monalisa_pattern_params`` so it follows the parameter widget in the
-        same way as the full SignalExtractor path. When only period values are
-        available (the live path passes the parameter widget's dict), they
-        seed the localizer's period search — its window only covers ~+-20%
-        around the guess, so the hardcoded 10 px default alone would silently
-        mislocalize coarser patterns.
+        incoming data — the guess-free 2D lattice detection seeds the precise
+        1D refinement, so patterns coarser or finer than the historical 10 px
+        default localize correctly. Offline fast-Gauss reconstruction sets
+        ``_monalisa_pattern_params`` so it follows the parameter widget in
+        the same way as the full SignalExtractor path. Period values from the
+        widget dict (when present) only serve as fallback seeds if the 2D
+        detection finds nothing.
         """
         pattern = params.get("_monalisa_pattern_params")
         if pattern:
@@ -370,7 +379,7 @@ class MonalisaLiveSession(StreamingSession):
                     guesses[key] = value
             except (TypeError, ValueError):
                 pass
-        return localizer(data, **guesses)
+        return robust_localize(data, **guesses)
 
     @staticmethod
     def _resolve_pinhole_radius_px(params: dict, gaussian_sigma_px: float) -> float | None:
