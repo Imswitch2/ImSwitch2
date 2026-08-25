@@ -943,9 +943,9 @@ def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
     assert analog['target_device'] == ['Z', 'X', 'Y']  # scan dim + dummies
 
     # 2) Signal construction: the real ScanControllerAdvanced._make_full_scan
-    #    (checkSignalLength guard + GalvoScanDesigner + AdvancedScanTTLCycle-
-    #    Designer), run unbound on duck-typed controller state so no Qt widget
-    #    is needed. checkSignalComp is asserted explicitly on top.
+    #    (checkSignalLength guard + GalvoScanDesigner + checkSignalComp
+    #    voltage compliance + AdvancedScanTTLCycleDesigner), run unbound on
+    #    duck-typed controller state so no Qt widget is needed.
     class _AdvancedScanBuilder:
         _make_full_scan = ScanControllerAdvanced._make_full_scan
         _get_scan_designer = ScanControllerAdvanced._get_scan_designer
@@ -970,9 +970,17 @@ def test_z_only_stepped_scan_end_to_end_from_galvo_fixture(tmp_path):
     assert signals is not None, 'signal construction refused the Z-only scan'
     assert scan_info['img_dims'] == [20]
     assert list(signals['scanSignalsDict']) == ['Z']  # only the active axis
-    assert builder._get_scan_designer().checkSignalComp(
-        analog, setup_info, scan_info
-    ), 'compliance validation refused the Z-only scan voltages'
+
+    # Production control flow enforces voltage compliance: the same scan
+    # centered at 0 um sweeps -4.75..+4.75 V, outside the piezo's configured
+    # 0..10 V range, and _make_full_scan itself must refuse it (previously
+    # the only remaining bound was the DAQ task's generic +-10 V range).
+    widget.center = {'Z': 0.0}
+    bad_analog, _ = serializer.build_analog(widget, setup_info.positioners)
+    bad_digital = serializer.build_digital(
+        widget, bad_analog, setup_info.positioners, setup_info.getTTLDevices())
+    assert builder._make_full_scan(bad_analog, bad_digital) == (None, None)
+    widget.center = {'Z': 5.0}
 
     # 3) Shared attributes: the real SuperScanController.updateScanStageAttrs
     #    publishing into a real SharedAttributes (duck-typed controller state,
