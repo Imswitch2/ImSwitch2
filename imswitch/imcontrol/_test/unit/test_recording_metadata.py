@@ -161,6 +161,31 @@ def test_scan_axis_provenance_is_write_only_metadata():
     assert scan_axis_provenance(['None'], {}) == ([], [])
 
 
+def test_annotation_text_serializes_numpy_at_any_depth():
+    """Shared-attribute values may be NumPy arrays/scalars, nested in lists
+    or dicts; they must JSON-encode instead of raising (a snapshot or stream
+    finalize must never fail over metadata)."""
+    import json
+
+    import numpy as np
+
+    from imswitch.imcontrol.model.managers.recording_metadata import (
+        _annotation_text,
+    )
+
+    assert json.loads(_annotation_text(np.array([1, 2]))) == [1, 2]
+    assert json.loads(_annotation_text(np.float32(0.5))) == 0.5
+    assert json.loads(_annotation_text(
+        {'roi': np.array([0, 4]), 'gain': np.int64(3),
+         'flags': [np.bool_(True), b'ok']}
+    )) == {'roi': [0, 4], 'gain': 3, 'flags': [True, 'ok']}
+    # Unknown objects fall back to str() rather than failing the recording.
+    class _Odd:
+        def __str__(self):
+            return 'odd'
+    assert json.loads(_annotation_text([_Odd()])) == ['odd']
+
+
 def test_scan_axis_provenance_drops_collapsed_axes():
     """An assigned axis whose length/step collapses to a single step emits no
     waveform (GalvoScanDesigner active-axis collapse), so provenance must not

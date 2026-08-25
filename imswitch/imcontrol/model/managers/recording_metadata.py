@@ -311,6 +311,12 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
         elif axis.name == 't':
             md['TimeIncrement'] = float(size); md['TimeIncrementUnit'] = axis.unit
 
+    # Same channel serialization as tiff_metadata(): this XML REPLACES the
+    # description tifffile wrote natively (stream finalize always; snap when
+    # attrs exist), so dropping channels here would strip e.g. the laser name.
+    if meta.channels:
+        md['Channel'] = {'Name': [c.get('name', meta.name) for c in meta.channels]}
+
     md.update(meta.plane_position_metadata(shp))
 
     dtype = str(np.dtype(meta.dtype)) if meta.dtype is not None else 'uint16'
@@ -322,6 +328,22 @@ def build_ome_xml(meta: 'OmeImageMeta', shape: Sequence[int]) -> str:
     return serialized.encode('ascii', 'xmlcharrefreplace').decode('ascii')
 
 
+def _annotation_json_default(value: Any):
+    """Normalize values ``json`` can't encode natively, at ANY nesting depth.
+
+    Shared attributes carry raw detector/scan parameter values -- NumPy
+    arrays and scalars, possibly nested in lists or dicts -- and a recording
+    must never fail over its metadata, so the last resort is ``str``.
+    """
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
 def _annotation_text(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
@@ -329,7 +351,8 @@ def _annotation_text(value: Any) -> str:
         return value
     if isinstance(value, np.generic):
         value = value.item()
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"),
+                      sort_keys=True, default=_annotation_json_default)
 
 
 def _add_map_annotation(xml: str, annotations: Dict[str, Any]) -> str:

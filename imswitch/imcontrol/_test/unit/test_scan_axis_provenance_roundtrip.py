@@ -98,6 +98,52 @@ def test_tiff_snap_roundtrips_scan_axis_provenance(detman, tmp_path):
         np.testing.assert_array_equal(t.asarray(), img)
 
 
+def test_tiff_attr_rewrite_keeps_the_channel_name(detman, tmp_path):
+    """The provenance rewrite replaces tifffile's native OME description, so
+    build_ome_xml must carry the channel metadata too -- a channel named
+    'Laser 488' used to be present before the rewrite and absent after."""
+    storer = TiffStorer(str(tmp_path / 'chan'), detman)
+    storer.omeMeta = {'Cam': build_ome_image_meta(
+        'Cam', MODE_SNAP, 1, pixel_size_yx_um=(0.2, 0.1), dtype=np.uint16,
+        channels=[{'name': 'Laser 488'}])}
+    storer.snap({'Cam': np.zeros((8, 8), np.uint16)},
+                attrs={'Cam': dict(PROVENANCE_ATTRS)})
+
+    path = str(tmp_path / 'chan_Cam.ome.tiff')
+    _assert_tiff_provenance(path)
+    with tifffile.TiffFile(path) as t:
+        xml = t.ome_metadata or ''
+    root = ET.fromstring(xml)
+    ns = root.tag.partition('}')[0].lstrip('{')
+    names = [c.attrib.get('Name') for c in root.iter(f'{{{ns}}}Channel')]
+    assert names == ['Laser 488']
+
+
+def test_tiff_snap_with_numpy_attr_values_still_records(detman, tmp_path):
+    """Shared attributes carry raw detector/scan parameter values -- NumPy
+    arrays and scalars, possibly nested. They must serialize into the
+    MapAnnotation instead of failing the snapshot."""
+    storer = TiffStorer(str(tmp_path / 'np'), detman)
+    storer.omeMeta = {'Cam': build_ome_image_meta(
+        'Cam', MODE_SNAP, 1, pixel_size_yx_um=(0.2, 0.1), dtype=np.uint16)}
+    img = np.random.randint(1, 4096, (8, 8), np.uint16)
+    storer.snap({'Cam': img}, attrs={'Cam': {
+        'ScanStage:positive_direction': np.array([True, False]),
+        'ScanStage:axis_length': [np.float32(10.0), np.float64(1.0)],
+        'Detector:params': {'binning': np.int64(2),
+                            'roi': np.array([0, 0, 8, 8])},
+    }})
+
+    path = str(tmp_path / 'np_Cam.ome.tiff')
+    annotations = _tiff_map_annotations(path)
+    assert json.loads(annotations['ScanStage:positive_direction']) == [True, False]
+    assert json.loads(annotations['ScanStage:axis_length']) == [10.0, 1.0]
+    assert json.loads(annotations['Detector:params']) == {
+        'binning': 2, 'roi': [0, 0, 8, 8]}
+    with tifffile.TiffFile(path) as t:
+        np.testing.assert_array_equal(t.asarray(), img)
+
+
 def test_tiff_snap_without_attrs_stays_untouched(detman, tmp_path):
     storer = TiffStorer(str(tmp_path / 'plain'), detman)
     storer.omeMeta = {'Cam': build_ome_image_meta(

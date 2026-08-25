@@ -1255,10 +1255,21 @@ class TiffStorer(Storer):
                     # tifffile's metadata mapping has no slot for arbitrary
                     # key/values; rewrite the description with our own OME-XML
                     # (same axes/sizes) carrying the attrs as a MapAnnotation.
-                    stored_meta = self._with_attr_annotations(meta, channel_attrs)
-                    tiff.tiffcomment(
-                        path, _ome.build_ome_xml(
-                            stored_meta.padded_to(image.ndim), image.shape))
+                    # A metadata failure must not cost the already-written
+                    # image -- the native OME description then stands.
+                    try:
+                        stored_meta = self._with_attr_annotations(
+                            meta, channel_attrs)
+                        tiff.tiffcomment(
+                            path, _ome.build_ome_xml(
+                                stored_meta.padded_to(image.ndim), image.shape))
+                    except Exception:
+                        logger.error(
+                            f'Could not embed shared attributes in the '
+                            f'OME-TIFF snapshot for "{channel}"; the image '
+                            f'is saved without them.',
+                            exc_info=True,
+                        )
                 logger.info(f"Saved OME-TIFF snapshot to {path}")
 
         return storedShapes
