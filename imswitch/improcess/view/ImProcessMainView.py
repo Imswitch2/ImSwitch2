@@ -1886,7 +1886,23 @@ class ReconParTree(ParameterTree):
                  'value': DEFAULT_PINHOLE_RADIUS_SIGMA, 'limits': (0.01, 99),
                  'suffix': '×σ',
                  'tip': ('Circular detection pinhole radius as a multiple of the '
-                         'Gaussian sigma. Used only in Circular pinhole mode.')}]},
+                         'Gaussian sigma. Used only in Circular pinhole mode.')},
+                {'name': 'Parameter sweep', 'type': 'group', 'children': [
+                    {'name': 'Enable sweep', 'type': 'bool', 'value': False,
+                     'tip': ('Advanced: reconstruct once per sweep value and '
+                             'stack the results along a leading Sweep axis — '
+                             'slide through it in the viewer to find the best '
+                             'setting. Offline Fast Gauss only.')},
+                    {'name': 'Sweep parameter', 'type': 'list',
+                     'value': 'Pinhole radius (×σ)',
+                     'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)'],
+                     'tip': ('Which fast-Gauss parameter to sweep. Sweeping '
+                             'the pinhole radius forces Circular pinhole '
+                             'footprint mode.')},
+                    {'name': 'Sweep values', 'type': 'str',
+                     'value': '0.75, 1.0, 1.25, 1.5, 2.0, 2.5',
+                     'tip': ('Comma-separated values, or an inclusive range '
+                             'start:step:stop (e.g. 0.5:0.25:2.5).')}]}]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -1923,6 +1939,12 @@ class ReconParTree(ParameterTree):
                 'Gaussian sigma').value(),
             'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
                 'Pinhole radius').value(),
+            'sweep_enabled': fast_gauss_opts.param('Parameter sweep').param(
+                'Enable sweep').value(),
+            'sweep_parameter': fast_gauss_opts.param('Parameter sweep').param(
+                'Sweep parameter').value(),
+            'sweep_values_text': fast_gauss_opts.param('Parameter sweep').param(
+                'Sweep values').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
         }
 

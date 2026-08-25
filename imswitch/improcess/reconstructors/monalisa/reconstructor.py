@@ -12,8 +12,9 @@ from .live_session import MonalisaLiveSession
 from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
-from .result import MonalisaProcessingResult
+from .result import MonalisaProcessingResult, MonalisaSweepResult
 from .signal_extractor import SignalExtractor
+from .sweep import SWEEPABLE_PARAMETERS, parse_sweep_values, resolve_sweep_parameter
 
 if TYPE_CHECKING:
     from imswitch.improcess.model import DataObj
@@ -174,10 +175,20 @@ class MonalisaReconstructor(StreamingReconstructor):
             raise ValueError(f'Expected 3D data (frames, rows, cols), got shape {data.shape}')
 
         if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
+            if params.get('sweep_enabled'):
+                return self._process_fast_gauss_sweep(
+                    data_obj.name, data, params, scan_params, data_attrs
+                )
             return self._process_fast_gauss_offline(
                 data_obj.name, data, params, scan_params, data_attrs
             )
-        
+
+        if params.get('sweep_enabled'):
+            raise ValueError(
+                'Parameter sweep is only supported for the Fast Gauss '
+                'MoNaLISA method; disable the sweep or switch methods'
+            )
+
         # Bleaching correction
         if params.get('bleaching_correction', False):
             data = self._apply_bleaching_correction(data)
@@ -275,6 +286,14 @@ class MonalisaReconstructor(StreamingReconstructor):
         results = list(results)
         if not results:
             raise ValueError('No results to consolidate')
+        if any(isinstance(result, MonalisaSweepResult) for result in results):
+            # The Dataset axis sits at index 1 for sweeps, so the axis-0
+            # concatenation below would silently merge along the Sweep axis.
+            raise ValueError(
+                'Parameter-sweep results cannot be consolidated; disable the '
+                'sweep for multi-data merges (or sweep each dataset '
+                'individually)'
+            )
         if len(results) == 1:
             return results[0]
 
@@ -395,6 +414,75 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         self._logger.info(f'Fast Gauss reconstruction complete: shape {result.data.shape}')
         return result
+
+    def _process_fast_gauss_sweep(
+        self,
+        name: str,
+        data: np.ndarray,
+        params: dict,
+        scan_params: dict,
+        data_attrs: dict | None = None,
+    ) -> MonalisaSweepResult:
+        """Run the offline fast-Gauss path once per sweep value.
+
+        Optional advanced mode: the chosen parameter (pinhole radius or fit
+        sigma) is overridden per run and the per-value reconstructions are
+        stacked along a leading Sweep axis, so the viewer exposes a slider to
+        find the best setting empirically.
+        """
+        parameter_key = resolve_sweep_parameter(params.get('sweep_parameter'))
+        values = parse_sweep_values(params.get('sweep_values_text'))
+        params_key, ui_label = SWEEPABLE_PARAMETERS[parameter_key]
+
+        per_value_results = []
+        for index, value in enumerate(values):
+            run_params = dict(params)
+            run_params['sweep_enabled'] = False
+            run_params[params_key] = value
+            if parameter_key == 'pinhole_radius_sigma':
+                # Sweeping a pinhole radius the shell footprint would ignore
+                # is meaningless; force the mode that uses it.
+                run_params['fast_gauss_footprint_mode'] = 'Circular pinhole'
+            self._logger.info(
+                f'Sweep {index + 1}/{len(values)}: {ui_label} = {value:g}'
+            )
+            per_value_results.append(
+                self._process_fast_gauss_offline(
+                    name, data, run_params, scan_params, data_attrs
+                )
+            )
+
+        first = per_value_results[0]
+        for result in per_value_results[1:]:
+            if result.data.shape != first.data.shape:
+                raise ValueError(
+                    'Sweep runs produced differing shapes '
+                    f'({result.data.shape} vs {first.data.shape}); cannot stack'
+                )
+
+        stacked = np.stack([result.data for result in per_value_results])
+        finite = stacked[np.isfinite(stacked)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)),
+                float(np.percentile(finite, 99.9)),
+            )
+        sweep_result = MonalisaSweepResult(
+            name=name,
+            data=stacked,
+            scan_params=first.scan_params,
+            sweep_parameter_label=ui_label,
+            sweep_values=values,
+            display_levels=display_levels,
+            output_pixel_size_nm=first.output_pixel_size_nm,
+            axis_label_map=self._axis_labels,
+        )
+        self._logger.info(
+            f'Fast Gauss sweep complete: {len(values)} x {ui_label}, '
+            f'shape {sweep_result.data.shape}'
+        )
+        return sweep_result
 
     @staticmethod
     def _fast_gauss_session_params(params: dict) -> dict:

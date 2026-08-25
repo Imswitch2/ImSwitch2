@@ -70,7 +70,23 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                  'tip': ('Circular detection pinhole radius as a multiple of the '
                          'Gaussian sigma (image-scanning-microscopy style). '
                          'Used only in Circular pinhole mode; smaller trades '
-                         'signal for resolution, larger trades resolution for SNR.')}]},
+                         'signal for resolution, larger trades resolution for SNR.')},
+                {'name': 'Parameter sweep', 'type': 'group', 'children': [
+                    {'name': 'Enable sweep', 'type': 'bool', 'value': False,
+                     'tip': ('Advanced: reconstruct once per sweep value and '
+                             'stack the results along a leading Sweep axis — '
+                             'slide through it in the viewer to find the best '
+                             'setting. Offline Fast Gauss only.')},
+                    {'name': 'Sweep parameter', 'type': 'list',
+                     'value': 'Pinhole radius (×σ)',
+                     'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)'],
+                     'tip': ('Which fast-Gauss parameter to sweep. Sweeping '
+                             'the pinhole radius forces Circular pinhole '
+                             'footprint mode.')},
+                    {'name': 'Sweep values', 'type': 'str',
+                     'value': '0.75, 1.0, 1.25, 1.5, 2.0, 2.5',
+                     'tip': ('Comma-separated values, or an inclusive range '
+                             'start:step:stop (e.g. 0.5:0.25:2.5).')}]}]},
             {'name': 'Bleaching correction', 'type': 'bool', 'value': False},
             {'name': 'Auto-detect scan orientation', 'type': 'bool', 'value': True,
              'tip': (
@@ -125,6 +141,9 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 - fast_gauss_footprint_num_rects: int
                 - fast_gauss_gaussian_sigma_px: float
                 - fast_gauss_pinhole_radius_sigma: float
+                - sweep_enabled: bool
+                - sweep_parameter: str (UI label of the swept parameter)
+                - sweep_values_text: str (unparsed sweep-values field)
                 - bleaching_correction: bool
         """
         pattern_pars = self.p.param('Pattern')
@@ -151,6 +170,12 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 'Gaussian sigma').value(),
             'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
                 'Pinhole radius').value(),
+            'sweep_enabled': fast_gauss_opts.param('Parameter sweep').param(
+                'Enable sweep').value(),
+            'sweep_parameter': fast_gauss_opts.param('Parameter sweep').param(
+                'Sweep parameter').value(),
+            'sweep_values_text': fast_gauss_opts.param('Parameter sweep').param(
+                'Sweep values').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
             'auto_scan_orientation': self.p.param('Auto-detect scan orientation').value(),
         }
