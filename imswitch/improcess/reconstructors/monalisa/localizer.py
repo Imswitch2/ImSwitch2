@@ -347,10 +347,8 @@ def robust_localize(
 
     grid_params = None
     if detected is not None:
-        try:
-            grid_params = detected.to_grid_params(tol=rectangular_tol)
-        except ValueError:
-            raise
+        # Raises with the measured geometry for non-rectangular lattices.
+        grid_params = detected.to_grid_params(tol=rectangular_tol)
 
     if grid_params is not None:
         seed_xp, _, seed_yp, _ = grid_params
