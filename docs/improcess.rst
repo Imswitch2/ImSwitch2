@@ -886,16 +886,47 @@ with the sweep on the T axis and each plane labeled by its value; with
 multiple timepoints, one file per value is written. Sweep results cannot be
 consolidated across datasets.
 
-Pattern localization no longer needs a good period guess: a guess-free 2D
-spectral detection first recovers the illumination lattice (period, offset
-and any rotation) and seeds the precise 1D refinement with it, so patterns
-coarser or finer than the widget values localize correctly in both the live
-and offline paths. A pattern that is not an axis-aligned rectangular grid —
-rotated beyond a small tolerance, or hexagonal — is reported with its
-measured geometry instead of being silently reconstructed wrong; the lattice
-machinery itself (:py:mod:`imswitch.improcess.reconstructors.monalisa.lattice`)
-already represents and detects such patterns as groundwork for supporting
-them end to end.
+Pattern localization no longer needs a good period guess: a 2D spectral
+detection first recovers the illumination lattice (period, offset and any
+rotation) and seeds the precise 1D refinement with it, so patterns coarser
+or finer than the widget values localize correctly in both the live and
+offline paths. The detection searches a period band derived from the rough
+pattern scale (the widget's period values), because real summed stacks carry
+low-frequency *sample* structure whose spectral peaks would otherwise
+out-compete the pattern's, and only accepts peaks that stand far above the
+band's noise floor — patternless data fails with a readable error instead of
+returning a junk basis.
+
+``Fast Gauss options -> Pattern geometry`` chooses the offline reassignment
+for non-rectangular illumination patterns. The rectangular pipeline places
+one amplitude per output pixel by integer arithmetic, which only works when
+an axis-aligned grid is scanned in steps subdividing its periods; any other
+Bravais lattice — a rotated square ("diamond") pattern, hexagonal — lands
+its samples off the square raster. The **general-lattice** path detects the
+lattice, extracts per-focus amplitudes at the detected centers (always with
+exact-pixel per-focus weights), assigns each amplitude its sample-space
+position ``focus + scan offset``, resolves the scan orientation by total
+variation exactly as the rectangular path does, and grids the scattered
+samples onto a square output raster of pitch equal to the scan step by
+bilinear splatting with weight normalization. Output pixels the scan never
+covered are NaN rather than silently zero, and the diagnostics record the
+detected lattice, chosen orientation, coverage, and how many lattice unit
+cells the scan area spans (1.0 = every sample position visited once — a
+useful cross-check of the scan geometry and pixel size). The default
+``Auto`` detects the pattern and keeps axis-aligned grids on the exact
+legacy pipeline — rectangular data reconstructs bit for bit as before —
+while measurably non-rectangular patterns reroute automatically. The general
+path needs a correct ``Pixel size`` (scan offsets are placed in camera
+pixels), currently supports a single line step, and is offline-only; live
+reconstruction remains rectangular.
+
+The general path also keeps the **pre-gridding result**: every sample's
+position and extracted intensity (the spot cloud, before any interpolation)
+is retained on the result, written as ``<name>_spots.csv`` next to the saved
+TIFF (columns ``timepoint, frame, focus, x_px, y_px, x_nm, y_nm,
+intensity``), and exposed through the result's table interface for explicit
+export — so custom gridding, per-focus flat-fielding, or artifact analysis
+can start from the raw localized samples.
 
 The fast-Gauss offline mode intentionally has the same geometry scope as the
 live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
