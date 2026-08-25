@@ -71,6 +71,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                          'Gaussian sigma (image-scanning-microscopy style). '
                          'Used only in Circular pinhole mode; smaller trades '
                          'signal for resolution, larger trades resolution for SNR.')},
+                {'name': 'Sampling', 'type': 'list',
+                 'value': 'Bilinear (legacy)',
+                 'values': ['Bilinear (legacy)', 'Exact pixel'],
+                 'tip': ('How footprint samples are read. Bilinear (legacy) '
+                         'interpolates at fixed offsets from the fractional '
+                         'focus center, which low-passes the peak and biases '
+                         'amplitudes by a few percent depending on each '
+                         "focus' subpixel position. Exact pixel fits the "
+                         'true integer pixels with per-focus weights: '
+                         'unbiased and slightly faster.')},
                 {'name': 'Parameter sweep', 'type': 'group', 'children': [
                     {'name': 'Enable sweep', 'type': 'bool', 'value': False,
                      'tip': ('Advanced: reconstruct once per sweep value and '
@@ -141,6 +151,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 - fast_gauss_footprint_num_rects: int
                 - fast_gauss_gaussian_sigma_px: float
                 - fast_gauss_pinhole_radius_sigma: float
+                - fast_gauss_sampling_mode: str (UI label; normalized by the
+                  processor to 'bilinear' or 'exact')
                 - sweep_enabled: bool
                 - sweep_parameter: str (UI label of the swept parameter)
                 - sweep_values_text: str (unparsed sweep-values field)
@@ -170,6 +182,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 'Gaussian sigma').value(),
             'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
                 'Pinhole radius').value(),
+            'fast_gauss_sampling_mode': fast_gauss_opts.param(
+                'Sampling').value(),
             'sweep_enabled': fast_gauss_opts.param('Parameter sweep').param(
                 'Enable sweep').value(),
             'sweep_parameter': fast_gauss_opts.param('Parameter sweep').param(

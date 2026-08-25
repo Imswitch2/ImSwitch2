@@ -1887,6 +1887,16 @@ class ReconParTree(ParameterTree):
                  'suffix': '×σ',
                  'tip': ('Circular detection pinhole radius as a multiple of the '
                          'Gaussian sigma. Used only in Circular pinhole mode.')},
+                {'name': 'Sampling', 'type': 'list',
+                 'value': 'Bilinear (legacy)',
+                 'values': ['Bilinear (legacy)', 'Exact pixel'],
+                 'tip': ('How footprint samples are read. Bilinear (legacy) '
+                         'interpolates at fixed offsets from the fractional '
+                         'focus center, which low-passes the peak and biases '
+                         'amplitudes by a few percent depending on each '
+                         "focus' subpixel position. Exact pixel fits the "
+                         'true integer pixels with per-focus weights: '
+                         'unbiased and slightly faster.')},
                 {'name': 'Parameter sweep', 'type': 'group', 'children': [
                     {'name': 'Enable sweep', 'type': 'bool', 'value': False,
                      'tip': ('Advanced: reconstruct once per sweep value and '
@@ -1939,6 +1949,8 @@ class ReconParTree(ParameterTree):
                 'Gaussian sigma').value(),
             'fast_gauss_pinhole_radius_sigma': fast_gauss_opts.param(
                 'Pinhole radius').value(),
+            'fast_gauss_sampling_mode': fast_gauss_opts.param(
+                'Sampling').value(),
             'sweep_enabled': fast_gauss_opts.param('Parameter sweep').param(
                 'Enable sweep').value(),
             'sweep_parameter': fast_gauss_opts.param('Parameter sweep').param(

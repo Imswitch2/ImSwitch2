@@ -9,6 +9,7 @@ from .gauss_processor import (
     DEFAULT_FOOTPRINT_NUM_RECTS,
     DEFAULT_GAUSSIAN_SIGMA_PX,
     make_gauss_processor,
+    normalize_sampling_mode,
 )
 from .localizer import localization_from_pattern, robust_localize
 from .result import MonalisaProcessingResult
@@ -154,6 +155,9 @@ class MonalisaLiveSession(StreamingSession):
         gaussian_sigma_px = self._resolve_gaussian_sigma_px(params)
         pinhole_radius_px = self._resolve_pinhole_radius_px(params, gaussian_sigma_px)
         fit_background = self._resolve_fit_background(params)
+        sampling_mode = normalize_sampling_mode(
+            params.get("fast_gauss_sampling_mode")
+        )
         self.processor = make_gauss_processor(
             loc_result.xp,
             loc_result.xo,
@@ -169,6 +173,7 @@ class MonalisaLiveSession(StreamingSession):
             gaussian_sigma_px=gaussian_sigma_px,
             pinhole_radius_px=pinhole_radius_px,
             fit_background=fit_background,
+            sampling_mode=sampling_mode,
             use_gpu=self.use_gpu,
         )
 
@@ -674,10 +679,12 @@ class MonalisaLiveSession(StreamingSession):
     def close(self) -> None:
         """Free optional GPU resources."""
         if self.use_gpu and CUPY_AVAILABLE:
-            if hasattr(self.processor, "x_interp"):
-                del self.processor.x_interp
-                del self.processor.y_interp
-                del self.processor.lsq_weights
+            for attr in (
+                "x_interp", "y_interp", "lsq_weights",
+                "pixel_rows", "pixel_cols", "exact_weights",
+            ):
+                if hasattr(self.processor, attr):
+                    delattr(self.processor, attr)
             cp.get_default_memory_pool().free_all_blocks()
 
 

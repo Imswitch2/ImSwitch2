@@ -8,6 +8,7 @@ from imswitch.imcommon.model import initLogger
 
 from .scan_geometry import (
     get_1d_indices,
+    get_center_coords,
     get_interp_coords,
     get_pinhole_footprint,
     get_rectangles_coords,
@@ -29,6 +30,35 @@ if TYPE_CHECKING:
 DEFAULT_FOOTPRINT_NUM_RECTS = 3
 DEFAULT_GAUSSIAN_SIGMA_PX = 2.0
 DEFAULT_PINHOLE_RADIUS_SIGMA = 1.5
+
+SAMPLING_MODE_BILINEAR = "bilinear"
+SAMPLING_MODE_EXACT = "exact"
+
+
+def normalize_sampling_mode(mode: object) -> str:
+    """Normalize a sampling-mode value ('bilinear' default).
+
+    ``bilinear`` is the legacy path: footprint offsets are integers relative
+    to the *fractional* focus center, so every sample needs bilinear
+    interpolation — which low-passes the peak and biases the fitted amplitude
+    by several percent, varying with each focus' subpixel phase. ``exact``
+    samples the real integer pixels around each focus and fits with
+    per-focus weights evaluated at the true offsets: no interpolation, no
+    phase-dependent bias, and one gather instead of four.
+    """
+    if mode is None:
+        return SAMPLING_MODE_BILINEAR
+    text = str(mode).strip().lower()
+    if not text:
+        return SAMPLING_MODE_BILINEAR
+    if "exact" in text:
+        return SAMPLING_MODE_EXACT
+    if "bilinear" in text or "legacy" in text:
+        return SAMPLING_MODE_BILINEAR
+    raise ValueError(
+        f"Unknown fast-Gauss sampling mode {mode!r}; "
+        f"use '{SAMPLING_MODE_BILINEAR}' or '{SAMPLING_MODE_EXACT}'"
+    )
 
 
 def validate_gaussian_fit_options(
@@ -101,6 +131,78 @@ def _build_footprint(
     return get_rectangles_coords(num_rects)
 
 
+def build_exact_sampling(
+    centers_x: np.ndarray,
+    centers_y: np.ndarray,
+    footprint: tuple[np.ndarray, np.ndarray],
+    gaussian_sigma_px: float,
+    fit_background: bool,
+    num_rows: int,
+    num_cols: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Integer pixel sets and per-focus LSQ weights for exact sampling.
+
+    For each (fractional) focus center, the footprint offsets are anchored to
+    the nearest integer pixel and the Gaussian+background model is evaluated
+    at the *true* pixel-minus-center offsets, so the fit matches the samples
+    without any interpolation. Out-of-frame pixels are masked out of the fit
+    (weight 0) rather than clamped onto border pixels, so edge foci get a
+    proper least squares over the pixels that exist. The amplitude weights
+    come from the closed-form 2x2 normal equations of ``a*g + b*1``; a focus
+    left with fewer than two usable pixels falls back to the pure matched
+    filter, and one with no usable pixels gets zero weights.
+
+    Returns:
+        ``(pixel_rows, pixel_cols, weights)``, each of shape
+        ``(num_foci, pts_per_focus)`` — apply as
+        ``(frame[pixel_rows, pixel_cols] * weights).sum(axis=-1)``.
+    """
+    centers_x = np.asarray(centers_x, dtype=float)
+    centers_y = np.asarray(centers_y, dtype=float)
+    offsets_x = np.round(np.asarray(footprint[0], dtype=float)).astype(np.int64)
+    offsets_y = np.round(np.asarray(footprint[1], dtype=float)).astype(np.int64)
+
+    anchor_x = np.round(centers_x).astype(np.int64)
+    anchor_y = np.round(centers_y).astype(np.int64)
+    pixel_cols = anchor_x[:, None] + offsets_x[None, :]
+    pixel_rows = anchor_y[:, None] + offsets_y[None, :]
+
+    in_frame = (
+        (pixel_cols >= 0)
+        & (pixel_cols < num_cols)
+        & (pixel_rows >= 0)
+        & (pixel_rows < num_rows)
+    )
+    pixel_cols = np.clip(pixel_cols, 0, num_cols - 1)
+    pixel_rows = np.clip(pixel_rows, 0, num_rows - 1)
+
+    true_dx = pixel_cols - centers_x[:, None]
+    true_dy = pixel_rows - centers_y[:, None]
+    gauss = np.exp(
+        -((true_dx**2 + true_dy**2) / (2 * float(gaussian_sigma_px) ** 2))
+    )
+    gauss = np.where(in_frame, gauss, 0.0)
+    ones = in_frame.astype(float)
+
+    sum_gg = (gauss * gauss).sum(axis=1)
+    sum_g1 = gauss.sum(axis=1)
+    sum_11 = ones.sum(axis=1)
+
+    safe_gg = np.where(sum_gg > 0, sum_gg, 1.0)
+    matched = gauss / safe_gg[:, None]
+    matched = np.where(sum_gg[:, None] > 0, matched, 0.0)
+
+    if not fit_background:
+        return pixel_rows, pixel_cols, matched
+
+    det = sum_gg * sum_11 - sum_g1**2
+    usable = (det > 1e-12) & (sum_11 >= 2)
+    safe_det = np.where(usable, det, 1.0)
+    weights = (sum_11[:, None] * gauss - sum_g1[:, None] * ones) / safe_det[:, None]
+    weights = np.where(usable[:, None], weights, matched)
+    return pixel_rows, pixel_cols, weights
+
+
 class GaussProcessorCPU:
     """
     CPU-based image reconstruction using Gaussian least-squares weighting and bilinear interpolation.
@@ -138,6 +240,7 @@ class GaussProcessorCPU:
         pinhole_radius_px: float | None = None,
         fit_background: bool = True,
         scan_ori: str = "+x+y",
+        sampling_mode: str = SAMPLING_MODE_BILINEAR,
     ):
         num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
             num_rects, gaussian_sigma_px, pinhole_radius_px
@@ -150,13 +253,25 @@ class GaussProcessorCPU:
         self.pinhole_radius_px = pinhole_radius_px
         self.fit_background = fit_background
         self.scan_ori = scan_ori
+        self.sampling_mode = normalize_sampling_mode(sampling_mode)
         footprint = _build_footprint(num_rects, pinhole_radius_px)
-        self.x_interp, self.y_interp = get_interp_coords(
-            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects, footprint=footprint
-        )
-        self.lsq_weights, self.pts_per_focus = self._calculate_weights(
-            footprint, gaussian_sigma_px, fit_background
-        )
+        if self.sampling_mode == SAMPLING_MODE_EXACT:
+            centers_x, centers_y = get_center_coords(xp, xo, yp, yo, nx_c, ny_c)
+            self.pixel_rows, self.pixel_cols, self.exact_weights = (
+                build_exact_sampling(
+                    centers_x, centers_y, footprint, gaussian_sigma_px,
+                    fit_background, num_rows, num_cols,
+                )
+            )
+            self.pts_per_focus = self.pixel_rows.shape[1]
+        else:
+            self.x_interp, self.y_interp = get_interp_coords(
+                xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects,
+                footprint=footprint,
+            )
+            self.lsq_weights, self.pts_per_focus = self._calculate_weights(
+                footprint, gaussian_sigma_px, fit_background
+            )
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = nx_s * ny_s
 
@@ -185,7 +300,7 @@ class GaussProcessorCPU:
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
-        Perform bilinear interpolation on the input frame and apply weights.
+        Extract per-focus amplitudes from one frame.
 
         Args:
             frame: The 2D raw image frame.
@@ -193,6 +308,10 @@ class GaussProcessorCPU:
         Returns:
             1D array of reconstructed intensity values.
         """
+        if self.sampling_mode == SAMPLING_MODE_EXACT:
+            samples = frame[self.pixel_rows, self.pixel_cols]
+            return (samples * self.exact_weights).sum(axis=-1)
+
         x0 = np.clip(np.floor(self.x_interp).astype(np.int32), 0, self.num_cols - 1)
         x1 = np.clip(x0 + 1, 0, self.num_cols - 1)
 
@@ -221,6 +340,10 @@ class GaussProcessorCPU:
         Returns:
             Processed pixels for each raw frame in the chunk.
         """
+        if self.sampling_mode == SAMPLING_MODE_EXACT:
+            samples = chunk[:, self.pixel_rows, self.pixel_cols]
+            return (samples * self.exact_weights).sum(axis=-1)
+
         x0 = np.clip(np.floor(self.x_interp).astype(np.int32), 0, self.num_cols - 1)
         x1 = np.clip(x0 + 1, 0, self.num_cols - 1)
         y0 = np.clip(np.floor(self.y_interp).astype(np.int32), 0, self.num_rows - 1)
@@ -298,6 +421,7 @@ class GaussProcessorGPU:
         pinhole_radius_px: float | None = None,
         fit_background: bool = True,
         scan_ori: str = "+x+y",
+        sampling_mode: str = SAMPLING_MODE_BILINEAR,
     ):
         num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
             num_rects, gaussian_sigma_px, pinhole_radius_px
@@ -310,15 +434,28 @@ class GaussProcessorGPU:
         self.pinhole_radius_px = pinhole_radius_px
         self.fit_background = fit_background
         self.scan_ori = scan_ori
+        self.sampling_mode = normalize_sampling_mode(sampling_mode)
         footprint = _build_footprint(num_rects, pinhole_radius_px)
-        x_interp, y_interp = get_interp_coords(
-            xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects, footprint=footprint
-        )
-        self.x_interp = cp.array(x_interp)
-        self.y_interp = cp.array(y_interp)
-        self.lsq_weights, self.pts_per_focus = self._calculate_weights(
-            footprint, gaussian_sigma_px, fit_background
-        )
+        if self.sampling_mode == SAMPLING_MODE_EXACT:
+            centers_x, centers_y = get_center_coords(xp, xo, yp, yo, nx_c, ny_c)
+            pixel_rows, pixel_cols, exact_weights = build_exact_sampling(
+                centers_x, centers_y, footprint, gaussian_sigma_px,
+                fit_background, num_rows, num_cols,
+            )
+            self.pixel_rows = cp.array(pixel_rows)
+            self.pixel_cols = cp.array(pixel_cols)
+            self.exact_weights = cp.array(exact_weights)
+            self.pts_per_focus = pixel_rows.shape[1]
+        else:
+            x_interp, y_interp = get_interp_coords(
+                xp, xo, yp, yo, nx_c, ny_c, num_rows, num_cols, num_rects,
+                footprint=footprint,
+            )
+            self.x_interp = cp.array(x_interp)
+            self.y_interp = cp.array(y_interp)
+            self.lsq_weights, self.pts_per_focus = self._calculate_weights(
+                footprint, gaussian_sigma_px, fit_background
+            )
         self.frame_inds = get_1d_indices(nx_c, ny_c, nx_s, ny_s, scan_ori)
         self.num_frames_in_stack = nx_s * ny_s
 
@@ -347,7 +484,7 @@ class GaussProcessorGPU:
 
     def process_frame(self, frame_gpu: Any) -> np.ndarray:
         """
-        Perform bilinear interpolation on the input frame and apply weights.
+        Extract per-focus amplitudes from one frame (on GPU).
 
         Args:
             frame_gpu: The 2D raw image frame (already on GPU).
@@ -355,6 +492,10 @@ class GaussProcessorGPU:
         Returns:
             1D array of reconstructed intensity values on CPU.
         """
+        if self.sampling_mode == SAMPLING_MODE_EXACT:
+            samples = frame_gpu[self.pixel_rows, self.pixel_cols]
+            return cp.asnumpy((samples * self.exact_weights).sum(axis=-1))
+
         x0 = cp.clip(cp.floor(self.x_interp).astype(cp.int32), 0, self.num_cols - 1)
         x1 = cp.clip(x0 + 1, 0, self.num_cols - 1)
 
@@ -383,6 +524,10 @@ class GaussProcessorGPU:
         Returns:
             Processed pixels for each raw frame in the chunk (on CPU).
         """
+        if self.sampling_mode == SAMPLING_MODE_EXACT:
+            samples = chunk_gpu[:, self.pixel_rows, self.pixel_cols]
+            return cp.asnumpy((samples * self.exact_weights).sum(axis=-1))
+
         x0 = cp.clip(cp.floor(self.x_interp).astype(cp.int32), 0, self.num_cols - 1)
         x1 = cp.clip(x0 + 1, 0, self.num_cols - 1)
         y0 = cp.clip(cp.floor(self.y_interp).astype(cp.int32), 0, self.num_rows - 1)
@@ -437,6 +582,7 @@ def make_gauss_processor(
     pinhole_radius_px: float | None = None,
     fit_background: bool = True,
     scan_ori: str = "+x+y",
+    sampling_mode: str = SAMPLING_MODE_BILINEAR,
     use_gpu: bool = False,
 ) -> GaussProcessorCPU | GaussProcessorGPU:
     """
@@ -460,6 +606,10 @@ def make_gauss_processor(
             governs the footprint instead of ``num_rects``.
         fit_background: Whether to also fit a constant background term.
         scan_ori: Scan orientation string.
+        sampling_mode: ``"bilinear"`` (legacy, shared weights on interpolated
+            samples) or ``"exact"`` (per-focus weights on true integer
+            pixels; unbiased and cheaper — see
+            :func:`normalize_sampling_mode`).
         use_gpu: If True, attempt to use GPU; falls back to CPU if unavailable.
 
     Returns:
@@ -469,9 +619,11 @@ def make_gauss_processor(
     num_rects, gaussian_sigma_px, pinhole_radius_px = validate_gaussian_fit_options(
         num_rects, gaussian_sigma_px, pinhole_radius_px
     )
+    sampling_mode = normalize_sampling_mode(sampling_mode)
     args = (
         xp, xo, yp, yo, nx_c, ny_c, nx_s, ny_s, num_rows, num_cols,
-        num_rects, gaussian_sigma_px, pinhole_radius_px, fit_background, scan_ori,
+        num_rects, gaussian_sigma_px, pinhole_radius_px, fit_background,
+        scan_ori, sampling_mode,
     )
 
     if use_gpu and CUPY_AVAILABLE:
