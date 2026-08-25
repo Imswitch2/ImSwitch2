@@ -13,8 +13,12 @@ shared-attribute + RecordingManager chain to a stored file, OME-TIFF carries
 the provenance as a MapAnnotation, provenance skips collapsed axes, the
 config editor got a tri-state smoothScan that preserves absence, and the
 rig's `~/ImSwitchConfig/imcontrol_setups/example_sted.json` now has
-`smoothScan: false` on ND-PiezoZ. The plan text is kept as the record of
-what was built and why.
+`smoothScan: false` on ND-PiezoZ. Review round 3 (2026-08-24, three
+findings — final section) is RESOLVED: `_make_full_scan` now enforces
+`checkSignalComp` so the Advanced path refuses out-of-range voltages before
+arming, the TIFF attr rewrite preserves channel names, and NumPy-valued
+shared attributes serialize into the MapAnnotation instead of failing the
+recording. The plan text is kept as the record of what was built and why.
 Durable documentation lives in `setupinfo-reference.rst` (smoothScan) and the
 changelog. Found 2026-08-21 while rig-testing the ROI Manager 2.0 branch;
 reproduced headlessly with `scripts/diagnostics/repro-single-axis-scan.py`
@@ -445,3 +449,41 @@ remains the interim answer on the rig until D2 passes.
 (the config the rig actually loads) now sets `"smoothScan": false` on
 `ND-PiezoZ`, matching the tracked example — the earlier demonstrator ran the
 smooth piezo path because the untracked rig config lacked the key.
+
+## Review round 3 (2026-08-24) — three findings, all RESOLVED
+
+1. **[P1] Advanced scans bypassed voltage compliance — FIXED.**
+   `ScanControllerAdvanced._make_full_scan` checked signal length and went
+   straight to TTL generation; `checkSignalComp` was never called on the
+   Advanced path (it lives in PointScan's `makeFullScan`), and the NI-DAQ
+   task's generic ±10 V range was the only remaining bound — a Z-only scan
+   centered at 0 µm (−4.75..+4.75 V against the piezo's configured 0..10 V)
+   armed successfully. `_make_full_scan` now runs `checkSignalComp` right
+   after the scan designer and returns `(None, None)` with the PointScan-style
+   actionable error when it fails; `runScanAdvanced` already routes that to
+   `scanFailed()`. The D2 e2e no longer asserts compliance separately
+   (which had masked the production gap): the positive flow passes through
+   the production check, and a companion case proves `_make_full_scan`
+   itself refuses the center-0 scan. The demonstrator
+   `repro-single-axis-scan.py` now prints each case's compliance verdict,
+   scans Z centered at 5 µm (mid-range of the rig piezo), and ends with the
+   refused center-0 case.
+
+2. **[P2] The TIFF attr rewrite dropped the channel name — FIXED.**
+   `build_ome_xml` did not serialize `OmeImageMeta.channels`, and the
+   provenance rewrite replaces tifffile's native description (snap when
+   attrs exist; stream finalize always — the stream path was silently
+   channel-lossy even before this branch). `build_ome_xml` now emits
+   `Channel/Name` exactly as `tiff_metadata()` does; regression test
+   asserts 'Laser 488' survives the rewrite.
+
+3. **[P2] NumPy attr values broke TIFF metadata embedding — FIXED.**
+   `_annotation_text` handled top-level NumPy scalars only; an
+   `np.ndarray` (or NumPy values nested in lists/dicts) raised
+   `TypeError: Object of type ndarray is not JSON serializable`, which
+   could fail a snapshot or strip a stream's final OME metadata.
+   `json.dumps` now gets a recursive `default` hook (ndarray → tolist,
+   generic → item, bytes → decode, last-resort `str`) so a recording can
+   never fail over metadata; `TiffStorer.snap` additionally guards the
+   rewrite so a metadata failure keeps the already-written image with its
+   native description. Unit + storer-level tests with nested NumPy values.
