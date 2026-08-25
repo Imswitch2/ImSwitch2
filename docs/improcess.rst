@@ -836,9 +836,11 @@ handles both paths:
 
 The MoNaLISA parameter widget's ``Bleaching correction`` checkbox applies to
 the full offline path, the fast-Gauss offline path, and live fast-Gauss. When
-enabled, raw frames are normalized with the same 4th-power frame-energy
-correction, ``(E_0 / E_i) ** 4``, before reconstruction. The option is off by
-default.
+enabled, raw frames are rescaled by the linear frame-energy ratio
+``E_0 / E_i`` before reconstruction, so every frame carries the first frame's
+total energy. (A legacy version of the offline path raised the ratio to the
+4th power, overcorrecting bleaching by the cube of the energy loss, while the
+live path was already linear; both now agree.) The option is off by default.
 
 Fast-Gauss uses the Mini_Recon-style Gaussian footprint: concentric
 rectangular shells around each localized focus, followed by a least-squares
@@ -857,6 +859,43 @@ filter.
 Automatic scan-orientation detection is also used for fast-Gauss by trying
 the eight possible fast/slow-axis and direction combinations and choosing the
 one with the lowest total variation.
+
+``Fast Gauss options -> Sampling`` chooses how the footprint samples are
+read. ``Bilinear (legacy)`` interpolates the frame at integer offsets from
+each focus' fractional center — the historical behavior, kept as the default.
+Interpolation low-passes the focus peak, which biases the fitted amplitudes a
+few percent low by an amount that depends on each focus' subpixel position.
+``Exact pixel`` instead fits the true integer pixels around each focus with
+per-focus weights evaluated at the real offsets: no interpolation bias, edge
+foci fit only the pixels that exist, and extraction is slightly faster.
+Rig output is byte-identical until the mode is switched.
+
+``Fast Gauss options -> Parameter sweep`` is an optional advanced mode for
+offline fast-Gauss reconstruction: instead of one reconstruction, the run is
+repeated once per value of the chosen parameter (``Pinhole radius (×σ)`` or
+``Gaussian sigma (px)``) and the results are stacked along a leading Sweep
+axis, which the viewer exposes as a slider — slide through the stack to find
+the best setting empirically. Values are entered as a comma-separated list or
+an inclusive ``start:step:stop`` range. The pinhole optimum is a genuine
+data-dependent tradeoff (smaller buys sectioning and resolution at the price
+of noise; beyond ~2–2.5 sigma at the standard period-to-sigma ratio,
+neighbor-focus crosstalk bleeds in), which is exactly what the sweep makes
+visible. Sweeping the pinhole radius forces ``Circular pinhole`` footprint
+mode. Saving a sweep with a single timepoint writes one ImageJ hyperstack
+with the sweep on the T axis and each plane labeled by its value; with
+multiple timepoints, one file per value is written. Sweep results cannot be
+consolidated across datasets.
+
+Pattern localization no longer needs a good period guess: a guess-free 2D
+spectral detection first recovers the illumination lattice (period, offset
+and any rotation) and seeds the precise 1D refinement with it, so patterns
+coarser or finer than the widget values localize correctly in both the live
+and offline paths. A pattern that is not an axis-aligned rectangular grid —
+rotated beyond a small tolerance, or hexagonal — is reported with its
+measured geometry instead of being silently reconstructed wrong; the lattice
+machinery itself (:py:mod:`imswitch.improcess.reconstructors.monalisa.lattice`)
+already represents and detects such patterns as groundwork for supporting
+them end to end.
 
 The fast-Gauss offline mode intentionally has the same geometry scope as the
 live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
