@@ -20,7 +20,6 @@ from ....cgh.localization.parameters import LOCALIZATION_PARAMS
 from ....cgh.localization.policy import suggest_localization_sources
 from ....cgh.localization.reference import TargetLocalizationReference
 from ....cgh.localization.workflow import localize_measurement
-from ....host.calibration import CalibrationPreferences
 from ....measurement import ImageMeasurement,create_image_measurement
 from ...calibration.dialog import (
     CalibrationDialog,
@@ -69,7 +68,7 @@ class CalibrationManager(QtCore.QObject):
         *,
         measurements: QtMeasurementDispatcher,
         store: SLMCalibrationStore | None,
-        preferences: CalibrationPreferences | None,
+        preferences,
         display_name: str,
         apply_startup_defaults: bool=False,
         parent: QtCore.QObject | None=None,
@@ -134,12 +133,12 @@ class CalibrationManager(QtCore.QObject):
             return
         runtime = self.controller.runtime
         for section_key in runtime.section_keys:
-            plane = self.preferences.get(section_key)
+            plane = self.preferences.default_plane(section_key)
             if not plane:
                 continue
             if not self.store.has_plane(plane):
                 try:
-                    self.preferences.set(section_key,None)
+                    self.preferences.set_default_plane(section_key,None)
                 except Exception as error:
                     self._error("SLM calibration preference failed",error)
                 continue
@@ -217,7 +216,7 @@ class CalibrationManager(QtCore.QObject):
         previous_calibration = runtime.get_section_calibration_copy(section_key)
         previous_default = (
             None if self.preferences is None
-            else self.preferences.get(section_key)
+            else self.preferences.default_plane(section_key)
         )
         previous_active = self._runtime_active_plane(section_key)
         try:
@@ -246,7 +245,7 @@ class CalibrationManager(QtCore.QObject):
                     return False
             self._commit_runtime_calibration(section_key,calibration)
             if self.preferences is not None:
-                self.preferences.set(section_key,plane_name)
+                self.preferences.set_default_plane(section_key,plane_name)
             self.refresh_planes()
             if plane_name != previous_active:
                 self.discard_target_state(section_key)
@@ -256,7 +255,7 @@ class CalibrationManager(QtCore.QObject):
             try:
                 self._commit_runtime_calibration(section_key,previous_calibration)
                 if self.preferences is not None:
-                    self.preferences.set(section_key,previous_default)
+                    self.preferences.set_default_plane(section_key,previous_default)
             except Exception as rollback_error:
                 self._error("SLM plane selection rollback failed",rollback_error)
             self.controller._restore_section(section_key)
@@ -335,9 +334,9 @@ class CalibrationManager(QtCore.QObject):
             with self.controller.defer_frame_upload():
                 for section_key in runtime.section_keys:
                     if self.preferences is not None:
-                        preferred = self.preferences.get(section_key)
+                        preferred = self.preferences.default_plane(section_key)
                         if preferred and not self.store.has_plane(preferred):
-                            self.preferences.set(section_key,None)
+                            self.preferences.set_default_plane(section_key,None)
                     calibration = runtime.get_section_calibration_copy(section_key)
                     active = str(getattr(calibration,"plane",None) or "").strip()
                     if active and not self.store.has_plane(active):
@@ -810,7 +809,7 @@ class CalibrationManager(QtCore.QObject):
             return False
         runtime = self.controller.runtime
         previous_calibration = runtime.get_section_calibration_copy(section_key)
-        previous_default = None if self.preferences is None else self.preferences.get(section_key)
+        previous_default = None if self.preferences is None else self.preferences.default_plane(section_key)
         try:
             definition = self.store.plane_definition(plane_name)
             value = SLMSectionCalibration.from_dict(calibration).copy()
@@ -824,7 +823,7 @@ class CalibrationManager(QtCore.QObject):
                 runtime.identity,self.display_name,section_key,plane_name,value,
             )
             if self.preferences is not None:
-                self.preferences.set(section_key,plane_name)
+                self.preferences.set_default_plane(section_key,plane_name)
             self.refresh_planes()
             self.controller.sigInfo.emit(
                 "SLM Section Calibration",
@@ -840,7 +839,7 @@ class CalibrationManager(QtCore.QObject):
             try:
                 self._commit_runtime_calibration(section_key,previous_calibration)
                 if self.preferences is not None:
-                    self.preferences.set(section_key,previous_default)
+                    self.preferences.set_default_plane(section_key,previous_default)
             except Exception as rollback_error:
                 self._error("SLM calibration rollback failed",rollback_error)
             self.controller._restore_section(section_key)

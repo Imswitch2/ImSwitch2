@@ -31,7 +31,7 @@ class SectionSettingsManager(QtCore.QObject):
         section_host,
         setup: SLMSetup | None,
         runtime_factory: SLMRuntimeFactory | None,
-        view_preferences=None,
+        startup_preferences=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -39,7 +39,7 @@ class SectionSettingsManager(QtCore.QObject):
         self.section_host = section_host
         self.setup = setup
         self.runtime_factory = runtime_factory
-        self.view_preferences = view_preferences
+        self.startup_preferences = startup_preferences
         self._disposed = False
         self._connect()
 
@@ -104,9 +104,9 @@ class SectionSettingsManager(QtCore.QObject):
     def _apply_display_mode(self,display_mode) -> None:
         mode = SectionsDisplayMode.normalize(display_mode)
         self.section_host.set_display_mode(mode)
-        if self.view_preferences is not None:
+        if self.startup_preferences is not None:
             try:
-                self.view_preferences.set(mode.value)
+                self.startup_preferences.set_section_display_mode(mode.value)
             except Exception as error:
                 self.controller._emit_exception("SLM section view setting failed",error)
 

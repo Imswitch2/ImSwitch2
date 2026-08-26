@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass,field
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any,Mapping
 
@@ -45,6 +44,8 @@ class SLMSectionsSetup:
 
     @classmethod
     def from_dict(cls,data: Mapping[str,Any]) -> "SLMSectionsSetup":
+        if not isinstance(data,Mapping):
+            raise TypeError("sections must be a mapping")
         layout_data = data.get("layout",data)
         if not isinstance(layout_data,Mapping):
             raise TypeError("sections layout must be a mapping")
@@ -57,48 +58,7 @@ class SLMSectionsSetup:
                 sizes=None if sizes is None else tuple(int(value) for value in sizes),
                 key_prefix=str(layout_data.get("key_prefix","sec_")),
             ),
-            customizable=data.get("customizable",False),
-        )
-
-
-@dataclass(frozen=True)
-class SLMCorrectionSetup:
-    """Installed correction resources for one physical SLM.
-
-    ``preferred_directory`` mirrors the existing host behavior: if supplied
-    and it exists, it is preferred over the workspace's serial-number based
-    correction directory. slmcore never creates a correction directory merely
-    because corrections are configured.
-    """
-
-    wavelength_table_file: str | None = None
-    preferred_directory: str | Path | None = None
-
-    def __post_init__(self) -> None:
-        table = self.wavelength_table_file
-        if table is not None:
-            table = str(table).strip() or None
-        directory = self.preferred_directory
-        if directory is not None:
-            directory = str(directory).strip() or None
-            if directory is not None:
-                directory = str(Path(directory).expanduser())
-        object.__setattr__(self,"wavelength_table_file",table)
-        object.__setattr__(self,"preferred_directory",directory)
-
-    def to_dict(self) -> dict[str,Any]:
-        return {
-            "wavelength_table_file":self.wavelength_table_file,
-            "preferred_directory":self.preferred_directory,
-        }
-
-    @classmethod
-    def from_dict(cls,data: Mapping[str,Any] | None) -> "SLMCorrectionSetup | None":
-        if data is None:
-            return None
-        return cls(
-            wavelength_table_file=data.get("wavelength_table_file"),
-            preferred_directory=data.get("preferred_directory"),
+            customizable=bool(data.get("customizable",False)),
         )
 
 
@@ -128,12 +88,15 @@ class SLMHardwareSetup:
 
 @dataclass(frozen=True)
 class SLMSetup:
-    """Canonical slmcore description of one installed physical SLM."""
+    """Canonical slmcore description of one installed physical SLM.
+
+    Filesystem locations are deliberately excluded. Persistent resources are
+    resolved by :class:`SLMWorkspace` from the physical serial number.
+    """
 
     identity: SLMIdentity
     geometry: SLMGeometry
     sections: SLMSectionsSetup
-    corrections: SLMCorrectionSetup | None = None
     hardware: SLMHardwareSetup | None = None
     _section_geometries: Mapping[str,SectionGeometry] = field(
         init=False,repr=False,compare=False,
@@ -146,10 +109,6 @@ class SLMSetup:
             raise TypeError("geometry must be an SLMGeometry")
         if not isinstance(self.sections,SLMSectionsSetup):
             raise TypeError("sections must be an SLMSectionsSetup")
-        if self.corrections is not None and not isinstance(
-            self.corrections,SLMCorrectionSetup,
-        ):
-            raise TypeError("corrections must be an SLMCorrectionSetup or None")
         if self.hardware is not None and not isinstance(self.hardware,SLMHardwareSetup):
             raise TypeError("hardware must be an SLMHardwareSetup or None")
         geometries = create_split_section_geometries(
@@ -187,18 +146,21 @@ class SLMSetup:
             "identity":self.identity.to_dict(),
             "geometry":self.geometry.to_dict(),
             "sections":self.sections.to_dict(),
-            "corrections":(
-                None if self.corrections is None else self.corrections.to_dict()
-            ),
             "hardware":None if self.hardware is None else self.hardware.to_dict(),
         }
 
     @classmethod
-    def from_dict(cls,data: Mapping[str,Any]) -> "SLMSetup":
+    def from_dict(
+        cls,data: Mapping[str,Any],*,key: str | None=None,
+    ) -> "SLMSetup":
+        if not isinstance(data,Mapping):
+            raise TypeError("setup must be a mapping")
+        identity_data = data.get("identity")
+        if not isinstance(identity_data,Mapping):
+            raise TypeError("setup.identity must be a mapping")
         return cls(
-            identity=SLMIdentity.from_dict(data["identity"]),
+            identity=SLMIdentity.from_dict(identity_data,key=key),
             geometry=SLMGeometry.from_dict(data["geometry"]),
             sections=SLMSectionsSetup.from_dict(data["sections"]),
-            corrections=SLMCorrectionSetup.from_dict(data.get("corrections")),
             hardware=SLMHardwareSetup.from_dict(data.get("hardware")),
         )

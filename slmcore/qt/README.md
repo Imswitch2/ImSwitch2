@@ -55,22 +55,23 @@ rather than routing dependencies back through public package facades.
 
 A host normally:
 
-1. translates its setup representation into the canonical `SLMSetup`;
+1. loads/adapts its canonical `SLMSetup` and `SLMStartupPreferences`;
 2. creates one shared `SLMWorkspace` rooted at its SLM data directory;
-3. supplies physical capabilities and any host-specific preference overrides
-   through `SLMHostServices`;
+3. supplies physical capabilities through `SLMHostServices`;
 4. constructs one `SLMQtSessionFactory(workspace=...)` (optionally with custom registries);
-5. calls `qt_session, panel = factory.create(setup=..., host_services=...)`;
+5. calls `qt_session, panel = factory.create(...)`, either with `setup_file` for
+   standard slmcore JSON persistence or with `on_startup_preferences_changed`
+   when the host owns a larger setup file;
 6. mounts/registers the returned objects in the host;
 7. only then calls `qt_session.initialize_device()` when the configured output
    device should be initialized/published at startup.
 
 `SLMQtSessionFactory` owns default registry selection, workspace-backed config /
-correction / calibration / preference resolution, `SLMRuntimeFactory`
-construction, and the generic startup/runtime/panel/session assembly. Explicit
-host preference capabilities override workspace defaults. The factory does not
-initialize hardware, allowing an embedding host to complete its own
-registration/mount transaction before physical device side effects begin.
+correction / calibration resolution, startup preference semantics,
+`SLMRuntimeFactory` construction, and the generic startup/runtime/panel/session
+assembly. The factory does not initialize hardware, allowing an embedding host
+to complete its own registration/mount transaction before physical device side
+effects begin.
 
 `SLMPanel` owns the standard composition currently used by ImSwitch. Its
 presentation-only `SLMPanelLayoutPolicy` controls integrated preview placement:
@@ -98,14 +99,14 @@ config controls, section views, and optional device connection requests. The
 session signals remain observable, but a normal host does not wire those
 standard UI behaviors itself.
 
-Current host capabilities/preferences are:
+Current host capabilities are:
 
 - `device: SLMDeviceProvider` for physical upload and optional explicit
   connect/disconnect;
-- `measurement_provider` for asynchronous, cancellable image acquisition;
-- `calibration_preferences` for setup-level default active planes;
-- `configuration_preferences` for the startup config filename;
-- `section_view_preferences` for setup-level section display mode.
+- `measurement_provider` for asynchronous, cancellable image acquisition.
+
+Startup config, default active planes and section display mode are represented
+together by `SLMStartupPreferences`, not as host capabilities.
 
 `SLMDeviceProvider` is callback-backed and normalizes connect/disconnect results
 to `DeviceConnectionResult`. `requires_explicit_connection` determines whether
@@ -228,10 +229,12 @@ anyway. A startup config receives no modal override: any internal
 calibration/section geometry mismatch rejects the startup config and the host
 can surface the returned startup warning in its status UI.
 
-The host only supplies the storage root and optional `CalibrationPreferences`
-callbacks for its setup-level default plane per section. A successfully loaded
-startup config's calibration remains authoritative; default-plane calibration
-is applied only when no startup config was restored.
+The setup supplies the default active plane per section through
+`SLMStartupPreferences`. A successfully loaded startup config's calibration
+remains authoritative; default-plane calibration is applied only when no
+startup config was restored. Preference changes are persisted either directly
+to a canonical setup JSON file or through the host callback supplied to the
+factory.
 
 ## Automatic intensity feedback
 
@@ -309,13 +312,14 @@ loads may explicitly accept or clear calibration geometry mismatches.
 
 ## Current host boundary
 
-The host owns only translation from its setup objects into `SLMSetup`, workspace
-root selection, host-specific capability/preference overrides, SetupMode
-integration, the outer multi-SLM shell, and the concrete callbacks/driver behind
-`SLMDeviceProvider`. Standard config/calibration/correction/preferences
-persistence is supplied by `SLMWorkspace`. The reusable one-SLM UI composition,
-preview, connection control, config controls and section presentation live in
-`SLMPanel`.
+The host owns only adaptation of its setup format into canonical `SLMSetup` /
+`SLMStartupPreferences`, workspace root selection, SetupMode integration, the
+outer multi-SLM shell, and the concrete callbacks/driver behind
+`SLMDeviceProvider`. `SLMWorkspace` supplies standard config/calibration/
+correction resource persistence. Startup preferences remain in the setup
+configuration and are rewritten either by slmcore's standard JSON path or by a
+host callback. The reusable one-SLM UI composition, preview, connection control,
+config controls and section presentation live in `SLMPanel`.
 
 Cross-SLM policies remain host-level. For example, ImSwitch deliberately
 propagates `RuntimeViewInteractionSettings` changes from one SLM session to

@@ -20,12 +20,15 @@ _load_default_registrations()
 
 from .application import SLMRuntimeFactory,StartupRuntime
 from .setup import (
-    SLMCorrectionSetup,
+    SLM_SETUP_FILE_SCHEMA_VERSION,
     SLMHardwareSetup,
     SLMSectionsSetup,
     SLMSetup,
+    SLMStartupPreferences,
+    load_slm_setup_file,
+    save_slm_startup_preferences,
 )
-from .workspace import SLMPreferenceStore,SLMWorkspace,SLMWorkspaceLayout
+from .workspace import SLMWorkspace
 from .engine.section import (
     SectionContext,
     SectionGeometry,
@@ -84,14 +87,13 @@ __all__ = [
     "SectionSplitLayout",
     "SectionUpdate",
     "SLM_CONFIG_SCHEMA_VERSION",
+    "SLM_SETUP_FILE_SCHEMA_VERSION",
     "SLMCompiledFrame",
-    "SLMCorrectionSetup",
     "SLMHardwareSetup",
     "SLMSectionsSetup",
     "SLMSetup",
-    "SLMPreferenceStore",
+    "SLMStartupPreferences",
     "SLMWorkspace",
-    "SLMWorkspaceLayout",
     "SLMRuntimeFactory",
     "StartupRuntime",
     "SLMConfigRepository",
@@ -123,5 +125,7 @@ __all__ = [
     "split_layout_signature",
     "split_slm_geometry",
     "validate_config_section_layout",
+    "load_slm_setup_file",
+    "save_slm_startup_preferences",
     "validate_split_section_geometries",
 ]
