@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "setup": {
+    "identity": {
+      "key": "demo_slm_1",
+      "serial_number": "DEMO-001",
+      "display_name": "Demo SLM 1 — Single section"
+    },
+    "geometry": {
+      "width": 512,
+      "height": 512,
+      "pixel_size_um": 8.0
+    },
+    "sections": {
+      "layout": {
+        "n_sections": 1,
+        "axis": "x",
+        "mode": "even",
+        "sizes": null,
+        "key_prefix": "sec_"
+      },
+      "customizable": false
+    },
+    "hardware": null
+  },
+  "startup_preferences": {
+    "startup_config": null,
+    "default_planes": {},
+    "section_display_mode": "tabs"
+  }
+}
