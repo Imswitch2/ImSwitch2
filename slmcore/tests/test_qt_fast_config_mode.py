@@ -78,7 +78,7 @@ def test_fast_switch_uploads_saved_frame_without_mutating_editor_runtime(tmp_pat
     session.sigFrameChanged.connect(lambda frame:frames.append(np.array(frame,copy=True)))
     try:
         path_a = _save_compiled(session,"a.h5",17)
-        path_b = _save_compiled(session,"b.h5",93,pixel_size_um=7.5)
+        path_b = _save_compiled(session,"b.h5",93)
         assert session.load_config(
             str(path_a),confirm_layout_change=False,
             calibration_mismatch_policy="reject",
@@ -164,7 +164,40 @@ def test_fast_activation_rejects_wrong_identity_without_changing_selection(tmp_p
     finally:
         session.dispose()
         panel.deleteLater()
+        
+def test_fast_activation_rejects_wrong_geometry_without_changing_selection(tmp_path):
+    _app()
+    from slmcore.qt import SLMControlMode
 
+    session,panel,_device = _create_session(tmp_path)
+    errors = []
+    session.sigError.disconnect(panel.show_error)
+    session.sigError.connect(lambda title,error:errors.append((title,error)))
+
+    try:
+        path_a = _save_compiled(session,"a.h5",17)
+        wrong = _save_compiled(
+            session,
+            "wrong_geometry.h5",
+            44,
+            pixel_size_um=7.5,
+        )
+
+        assert session.load_config(
+            str(path_a),
+            confirm_layout_change=False,
+            calibration_mismatch_policy="reject",
+        )
+
+        assert session.set_control_mode(SLMControlMode.FAST_CONFIG)
+
+        assert not session.activate_compiled_config(str(wrong))
+        assert session.fast_config_path == str(path_a)
+        assert errors
+
+    finally:
+        session.dispose()
+        panel.deleteLater()
 
 def test_session_group_is_optional_and_rolls_back_failed_mode_change(tmp_path,monkeypatch):
     _app()

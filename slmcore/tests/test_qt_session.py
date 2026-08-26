@@ -59,7 +59,11 @@ class _Executor:
 
     def complete(self,index=-1):
         job,on_result,_on_error,_handle = self.submissions[index]
-        pattern = np.ones(job.spec.context.shape,dtype=np.complex128)
+        pattern = np.full(
+            job.spec.context.shape,
+            1j,
+            dtype=np.complex128,
+        )
         on_result(CGHResult(
             generation=job.generation,
             spec=job.spec,

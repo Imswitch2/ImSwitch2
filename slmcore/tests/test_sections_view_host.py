@@ -29,7 +29,7 @@ def _runtime(n_sections=2) -> SLMRuntime:
 
 
 def test_sections_view_host_switches_modes_without_recreating_views():
-    _app()
+    app =_app()
     from slmcore.qt import SectionsDisplayMode
     from slmcore.qt.sections.collection import SectionsCollectionView
     from slmcore.qt.sections.view_host import SectionsViewHost
@@ -42,17 +42,13 @@ def test_sections_view_host_switches_modes_without_recreating_views():
     try:
         host.resize(900,500)
         host.show()
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            app.processEvents()
         view = collection.section_view("sec_0")
 
         assert host.display_mode == SectionsDisplayMode.TABS
         assert view.parent() is not None
 
         host.set_display_mode(SectionsDisplayMode.HORIZONTAL)
-        if app is not None:
-            app.processEvents()
+        app.processEvents()
 
         assert host.display_mode == SectionsDisplayMode.HORIZONTAL
         assert collection.section_view("sec_0") is view
@@ -61,8 +57,7 @@ def test_sections_view_host_switches_modes_without_recreating_views():
         assert view.isVisible()
 
         host.set_display_mode(SectionsDisplayMode.TABS)
-        if app is not None:
-            app.processEvents()
+        app.processEvents()
 
         assert collection.section_view("sec_0") is view
         assert view.parent() is not None
