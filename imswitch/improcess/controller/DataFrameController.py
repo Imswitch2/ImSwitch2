@@ -40,10 +40,15 @@ class DataFrameController(ImProcessWidgetController):
         self._widget.sigFrameSliderChanged.connect(self.setImgSlice)
 
     def patternUpdated(self, pattern):
+        changed = list(pattern) != list(self._pattern)
         self._pattern = pattern
-        # Widget edits describe a rectangular grid again — drop any explicit
-        # non-rectangular points Find pattern put on the overlay.
-        self._explicitPatternPoints = None
+        if changed:
+            # A genuine edit of the rectangular fields returns the overlay to
+            # the grid. Unchanged re-emissions must not wipe explicit lattice
+            # points: the Pattern group re-fires sigTreeStateChanged on any
+            # interaction — including the Find pattern button, which lives
+            # inside that group.
+            self._explicitPatternPoints = None
         self._patternGridMade = False
         if self._patternVisible:
             self.makePatternGrid()
@@ -52,6 +57,10 @@ class DataFrameController(ImProcessWidgetController):
         """Show explicit focus positions (non-rectangular detected lattices)."""
         self._explicitPatternPoints = (np.asarray(x), np.asarray(y))
         self._patternGridMade = False
+        self._logger.debug(
+            f'Received {self._explicitPatternPoints[0].size} explicit '
+            f'pattern points'
+        )
         if self._patternVisible:
             self.makePatternGrid()
 
