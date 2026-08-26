@@ -352,7 +352,7 @@ def test_historical_round_is_read_only_and_can_request_reset():
         index = window.round_selector.findData("round:0")
         assert index >= 0
         window.round_selector.setCurrentIndex(index)
-        assert window.reset_round_button.isVisible()
+        assert not window.reset_round_button.isHidden()
         controls = window.measurement_view._workbench.measurement_controls
         assert not controls.acquire_button.isEnabled()
         assert controls.status_label.full_text() == "Historical round · read only"
@@ -770,7 +770,7 @@ def test_position_history_selector_separates_reference_from_intensity_rounds():
         assert window.position_selector.currentText() == "Not Corrected"
         assert not window.round_selector.isEnabled()
         assert window.round_selector.currentText() == "—"
-        assert not window.reset_round_button.isVisible()
+        assert window.reset_round_button.isHidden()
         assert window.measurement_view.measurement is not None
         assert (
             window.measurement_view.measurement.measurement_id

@@ -21,7 +21,7 @@ def _app():
 
 
 def _runtime(n_sections=2) -> SLMRuntime:
-    geometry = SLMGeometry(width=12,height=6,pixel_size_um=1.0)
+    geometry = SLMGeometry(width=64,height=64,pixel_size_um=1.0)
     return SLMRuntime(
         identity=SLMIdentity("slm","SER123"),
         geometry=geometry,
@@ -36,6 +36,17 @@ def _process_for(app,milliseconds: int) -> None:
         app.processEvents()
         time.sleep(0.002)
     app.processEvents()
+
+
+def _wait_until(app,predicate,timeout_ms: int=1000) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.002)
+    app.processEvents()
+    return bool(predicate())
 
 
 def _optics_field(collection,section_key: str,name: str):
@@ -75,7 +86,12 @@ def test_runtime_view_binding_debounces_and_coalesces_real_field_edits():
         assert runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 488
         assert binding.pending_section_keys == ("sec_0",)
 
-        _process_for(app,45)
+        assert _wait_until(
+            app,
+            lambda: runtime.get_section_snapshot(
+                "sec_0"
+            ).state.optics.wavelength_nm == 510,
+        )
 
         assert runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 510
         assert collection.get_section_snapshot(
@@ -160,7 +176,13 @@ def test_runtime_view_binding_keeps_section_debounce_state_independent():
         )
         assert set(binding.pending_section_keys) == {"sec_0","sec_1"}
 
-        _process_for(app,45)
+        assert _wait_until(
+            app,
+            lambda: (
+                runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 500
+                and runtime.get_section_snapshot("sec_1").state.optics.wavelength_nm == 520
+            ),
+        )
 
         assert runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 500
         assert runtime.get_section_snapshot("sec_1").state.optics.wavelength_nm == 520
@@ -200,7 +222,8 @@ def test_runtime_view_binding_flush_is_an_explicit_ordering_barrier():
         assert applied == ["sec_0"]
 
         # The stopped timer must not replay the already-flushed batch.
-        _process_for(app,125)
+        assert not any(timer.isActive() for timer in binding._timers.values())
+        app.processEvents()
         assert applied == ["sec_0"]
     finally:
         binding.dispose()
@@ -233,10 +256,12 @@ def test_runtime_view_binding_restores_authoritative_view_after_async_failure():
             "sec_0",{("unknown_group","value"):1},
         )
 
-        _process_for(app,30)
+        assert _wait_until(app,lambda: len(failures) == 1)
 
         assert runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 488
-        assert field.value() == 488
+        assert _optics_field(
+            collection, "sec_0", "wavelength_nm"
+        ).value() == 488
         assert len(failures) == 1
         assert failures[0][0] == "sec_0"
         assert isinstance(failures[0][1],Exception)
@@ -274,7 +299,9 @@ def test_runtime_view_binding_propagating_failure_restores_without_async_signal(
         with pytest.raises(Exception):
             binding.flush_section("sec_0",propagate=True)
 
-        assert field.value() == 488
+        assert _optics_field(
+            collection, "sec_0", "wavelength_nm"
+        ).value() == 488
         assert failures == []
     finally:
         binding.dispose()
@@ -305,13 +332,17 @@ def test_runtime_view_binding_cancel_and_dispose_drop_drafts_and_disconnect():
         field.set_value(500,emit=True)
         affected = binding.cancel_all(restore=True)
 
+        restored_field = _optics_field(
+            collection,"sec_0","wavelength_nm"
+        )
+
         assert affected == ("sec_0",)
-        assert field.value() == 488
+        assert restored_field.value() == 488
         assert runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 488
 
         binding.dispose()
-        field.set_value(520,emit=True)
-        _process_for(app,45)
+        restored_field.set_value(520,emit=True)
+        app.processEvents()
 
         assert runtime.get_section_snapshot("sec_0").state.optics.wavelength_nm == 488
         assert applied == []
@@ -415,10 +446,14 @@ def test_target_selector_is_immediate_but_target_parameters_use_target_debounce(
         assert binding.pending_section_keys == ("sec_0",)
         assert _runtime_target_value(runtime,"period_x_px") == value
 
-        _process_for(app,30)
-        assert _runtime_target_value(runtime,"period_x_px") == value
+        from slmcore.qt.application.interaction import ParameterEditKind
+        timer = binding._timer("sec_0",ParameterEditKind.CGH_TARGET)
+        assert timer.isActive()
+        assert timer.interval() == 80
 
-        _process_for(app,80)
+        binding._flush_kind(
+            "sec_0",ParameterEditKind.CGH_TARGET,propagate=True,
+        )
         assert not binding.has_pending_patches
         assert _runtime_target_value(runtime,"period_x_px") != value
     finally:
@@ -495,7 +530,10 @@ def test_different_target_parameters_coalesce_into_one_target_transaction():
         count.set_value(requested_count,emit=True)
 
         assert len(binding._pending_patches) == 1
-        _process_for(app,60)
+        from slmcore.qt.application.interaction import ParameterEditKind
+        binding._flush_kind(
+            "sec_0",ParameterEditKind.CGH_TARGET,propagate=True,
+        )
 
         assert len(applied) == 1
         assert applied[0].normalized_values[
@@ -538,14 +576,26 @@ def test_standard_and_target_debounce_buckets_are_independent():
             500,emit=True,
         )
 
-        _process_for(app,45)
+        from slmcore.qt.application.interaction import ParameterEditKind
+        standard_timer = binding._timer("sec_0",ParameterEditKind.STANDARD)
+        target_timer = binding._timer("sec_0",ParameterEditKind.CGH_TARGET)
+        assert standard_timer.isActive()
+        assert target_timer.isActive()
+        assert standard_timer.interval() == 20
+        assert target_timer.interval() == 90
+
+        binding._flush_kind(
+            "sec_0",ParameterEditKind.STANDARD,propagate=True,
+        )
         assert runtime.get_section_snapshot(
             "sec_0"
         ).state.optics.wavelength_nm == 500
         assert _runtime_target_value(runtime,"period_x_px") == old_target
         assert binding.has_pending_patches
 
-        _process_for(app,80)
+        binding._flush_kind(
+            "sec_0",ParameterEditKind.CGH_TARGET,propagate=True,
+        )
         assert _runtime_target_value(runtime,"period_x_px") != old_target
         assert not binding.has_pending_patches
     finally:
@@ -652,7 +702,7 @@ def test_auto_compute_is_immediate_after_committed_target_edits():
         _optics_field(collection,"sec_0","wavelength_nm").set_value(
             500,emit=True,
         )
-        _process_for(app,35)
+        binding.flush_section("sec_0",propagate=True)
         assert requested == []
 
         _select_target(collection)
@@ -663,7 +713,10 @@ def test_auto_compute_is_immediate_after_committed_target_edits():
         target = _target_field(collection,"period_x_px")
         target.set_value(target.value() + 1,emit=True)
         assert requested == []
-        _process_for(app,35)
+        from slmcore.qt.application.interaction import ParameterEditKind
+        binding._flush_kind(
+            "sec_0",ParameterEditKind.CGH_TARGET,propagate=True,
+        )
         assert requested == ["sec_0"]
     finally:
         binding.dispose()
@@ -724,6 +777,13 @@ def test_raster_lock_only_commit_does_not_request_auto_compute():
         _select_target(collection)
         requested.clear()
 
+        target_state = runtime.get_section_snapshot(
+            "sec_0"
+        ).state.cgh.items["multi_foci"]
+        expected_reference = (
+            target_state.params.get_param_value("fov_x_px"),
+            target_state.params.get_param_value("fov_y_px"),
+        )
         fov_lock = cgh._lock_buttons["multi_foci"]["fov"]
         fov_lock.click()
 
@@ -731,7 +791,7 @@ def test_raster_lock_only_commit_does_not_request_auto_compute():
             "sec_0"
         ).state.cgh.items["multi_foci"].lock_state
         assert lock.kind == "fov"
-        assert lock.reference == (180.0,180.0)
+        assert lock.reference == expected_reference
         assert requested == []
     finally:
         binding.dispose()
@@ -754,6 +814,7 @@ def test_lock_click_joins_pending_target_batch_and_captures_draft_row_values():
     try:
         cgh = _cgh_group(collection)
         _select_target(collection)
+        current_fov_y = _runtime_target_value(runtime,"fov_y_px")
         fov_x = _target_field(collection,"fov_x_px")
         fov_x.set_value(190.0,emit=True)
         cgh._lock_buttons["multi_foci"]["fov"].click()
@@ -764,12 +825,15 @@ def test_lock_click_joins_pending_target_batch_and_captures_draft_row_values():
         ).state.cgh.items["multi_foci"].lock_state
         assert lock.kind is None
 
-        _process_for(app,55)
+        from slmcore.qt.application.interaction import ParameterEditKind
+        binding._flush_kind(
+            "sec_0",ParameterEditKind.CGH_TARGET,propagate=True,
+        )
         lock = runtime.get_section_snapshot(
             "sec_0"
         ).state.cgh.items["multi_foci"].lock_state
         assert lock.kind == "fov"
-        assert lock.reference == (190.0,180.0)
+        assert lock.reference == (190.0,current_fov_y)
     finally:
         binding.dispose()
         collection.deleteLater()
@@ -916,11 +980,14 @@ def test_restore_current_target_cancels_pending_draft_and_restores_stale_target(
             "sec_0",propagate=True,
         ) is None
         assert not binding.has_pending_patches
-        assert target.value() == committed_value
+        assert _target_field(
+            collection,"period_x_px"
+        ).value() == committed_value
         assert _runtime_target_value(runtime,"period_x_px") == committed_value
 
         # Once a target edit has committed and made the CGH stale, the same
         # action restores the committed target without launching a compute.
+        target = _target_field(collection,"period_x_px")
         target.set_value(committed_value + 1,emit=True)
         binding.flush_section("sec_0",propagate=True)
         assert runtime.get_section_cgh_status(

@@ -361,13 +361,10 @@ class SLMQtSession(QtCore.QObject):
                 "Compiled config identity does not match this SLM"
             )
         expected = self.runtime.geometry
-        if (
-            compiled.geometry.width != expected.width
-            or compiled.geometry.height != expected.height
-        ):
+        if compiled.geometry != expected:
             raise ValueError(
-                "Compiled config physical shape %s does not match SLM shape %s"
-                % (compiled.geometry.shape,expected.shape)
+                "Compiled config geometry %s does not match SLM geometry %s"
+                % (compiled.geometry,expected)
             )
         return resolved,compiled.final_eightbit
 
