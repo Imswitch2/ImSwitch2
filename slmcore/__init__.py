@@ -1,0 +1,127 @@
+"""Public facade for the reusable SLM control package."""
+
+# Registry primitives are intentionally imported first. Populate the default
+# registry explicitly before exposing runtime/application objects that consume
+# it.
+from .engine.registry import (
+    DEFAULT_REGISTRIES,
+    SLMRegistries,
+    TargetPresentation,
+    TargetPresentationField,
+    TargetPresentationFieldKind,
+    load_default_registrations as _load_default_registrations,
+    register_aberration,
+    register_cgh_algorithm,
+    register_pattern,
+    register_target,
+)
+
+_load_default_registrations()
+
+from .application import SLMRuntimeFactory,StartupRuntime
+from .setup import (
+    SLMCorrectionSetup,
+    SLMHardwareSetup,
+    SLMSectionsSetup,
+    SLMSetup,
+)
+from .workspace import SLMPreferenceStore,SLMWorkspace,SLMWorkspaceLayout
+from .engine.section import (
+    SectionContext,
+    SectionGeometry,
+    SectionGroupSnapshot,
+    SectionLayoutSignature,
+    SectionPresentation,
+    SectionSplitLayout,
+    SectionTopology,
+    SectionUpdate,
+    SLMSectionRuntime,
+    SLMSectionSnapshot,
+    SLMSectionState,
+    create_split_section_geometries,
+    split_layout_signature,
+    split_slm_geometry,
+    validate_config_section_layout,
+    validate_split_section_geometries,
+)
+from .engine.device import SLMGeometry,SLMIdentity
+from .engine.runtime import SLMArtifacts,SLMRuntime
+from .engine.state import GroupTopology
+from .engine.transition import GroupStateDelta,SectionStateTransition
+from .config import (
+    CorrectionInfo,
+    GroupConfigDelta,
+    SectionConfigLoadResult,
+    SLM_CONFIG_SCHEMA_VERSION,
+    SLMCompiledFrame,
+    SLMConfig,
+    SLMConfigInspection,
+    SLMConfigLoadReport,
+    SLMConfigMetadata,
+    SLMSectionConfig,
+    SLMConfigStore,
+    SLMConfigRepository,
+)
+from .calibration import SLMCalibrationStore,SLMSectionCalibration
+from .corrections import SLMCorrectionStore
+from .measurement import ImageMeasurement
+
+__all__ = [
+    "CorrectionInfo",
+    "DEFAULT_REGISTRIES",
+    "GroupConfigDelta",
+    "GroupStateDelta",
+    "GroupTopology",
+    "ImageMeasurement",
+    "SectionGroupSnapshot",
+    "SectionPresentation",
+    "SectionConfigLoadResult",
+    "SectionContext",
+    "SectionGeometry",
+    "SectionTopology",
+    "SectionLayoutSignature",
+    "SectionStateTransition",
+    "SectionSplitLayout",
+    "SectionUpdate",
+    "SLM_CONFIG_SCHEMA_VERSION",
+    "SLMCompiledFrame",
+    "SLMCorrectionSetup",
+    "SLMHardwareSetup",
+    "SLMSectionsSetup",
+    "SLMSetup",
+    "SLMPreferenceStore",
+    "SLMWorkspace",
+    "SLMWorkspaceLayout",
+    "SLMRuntimeFactory",
+    "StartupRuntime",
+    "SLMConfigRepository",
+    "SLMArtifacts",
+    "SLMConfig",
+    "SLMConfigInspection",
+    "SLMConfigLoadReport",
+    "SLMConfigMetadata",
+    "SLMConfigStore",
+    "SLMCorrectionStore",
+    "SLMGeometry",
+    "SLMIdentity",
+    "SLMRegistries",
+    "SLMRuntime",
+    "SLMSectionConfig",
+    "SLMSectionSnapshot",
+    "SLMCalibrationStore",
+    "SLMSectionCalibration",
+    "SLMSectionRuntime",
+    "SLMSectionState",
+    "TargetPresentation",
+    "TargetPresentationField",
+    "TargetPresentationFieldKind",
+    "create_split_section_geometries",
+    "register_aberration",
+    "register_cgh_algorithm",
+    "register_pattern",
+    "register_target",
+    "split_layout_signature",
+    "split_slm_geometry",
+    "validate_config_section_layout",
+    "validate_split_section_geometries",
+]
