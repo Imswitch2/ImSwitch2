@@ -291,16 +291,21 @@ def _simulate_ism_acquisition(
     spot_sigma: float = 2.4,
     orientation=("x", 1, 1),
     background: float = 0.0,
+    background_fn=None,
 ):
     """Render the ISM forward model: the camera pixel at offset ``d`` from a
     focus sees the specimen at ``alpha_true * d`` beside the excitation spot,
-    weighted by the emission-spot envelope."""
+    weighted by the emission-spot envelope. ``background_fn(x, y)`` adds a
+    camera-fixed haze field on top of the constant ``background``."""
     rows, cols = shape
     margin = 3 * spot_sigma
     foci_x, foci_y = lattice.points_in_frame(rows, cols, margin=margin)
     offsets = scan_offsets_px(nx_s, ny_s, step_px[0], step_px[1], orientation)
 
     frames = np.full((nx_s * ny_s, rows, cols), background, dtype=np.float64)
+    if background_fn is not None:
+        ys_full, xs_full = np.mgrid[0:rows, 0:cols].astype(float)
+        frames += background_fn(xs_full, ys_full)[None, :, :]
     half = int(np.ceil(margin))
     for cx, cy in zip(foci_x, foci_y):
         x1 = max(0, int(np.floor(cx - half)))
@@ -371,7 +376,11 @@ class TestEnhancedConfocalISM:
         frames = _simulate_ism_acquisition(
             lattice, nx_s, ny_s, step_px, (160, 160), alpha_true=0.5
         )
-        result = self._run(frames, nx_s, ny_s, step_px)
+        # Raw mode isolates the reassignment geometry; the hybrid background
+        # subtraction has its own dedicated haze test below.
+        result = self._run(
+            frames, nx_s, ny_s, step_px, ism_background="None (raw)"
+        )
 
         assert result.recon_diagnostics["pattern_geometry"] == "ism"
         assert result.recon_diagnostics["ism_reassignment_factor"] == 0.5
@@ -401,7 +410,9 @@ class TestEnhancedConfocalISM:
         frames = _simulate_ism_acquisition(
             lattice, nx_s, ny_s, step_px, (160, 160), alpha_true=0.5
         )
-        result = self._run(frames, nx_s, ny_s, step_px)
+        result = self._run(
+            frames, nx_s, ny_s, step_px, ism_background="None (raw)"
+        )
         assert _affine_accuracy(result) < 0.08
 
     def test_ism_factor_sweep(self):
@@ -441,6 +452,31 @@ class TestEnhancedConfocalISM:
         )
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
             self._run(frames, nx_s, ny_s, step_px, ism_reassignment_factor=1.5)
+
+    def test_hybrid_background_subtraction_removes_haze(self):
+        """The hybrid (default): each focus's fitted constant background is
+        subtracted before reassignment, so a strong smooth haze field that
+        overwhelms the raw enhanced-confocal image is removed."""
+
+        def haze(x, y):
+            return 80.0 * np.exp(
+                -(((np.asarray(x) - 70.0) ** 2) + ((np.asarray(y) - 90.0) ** 2))
+                / (2 * 35.0**2)
+            )
+
+        lattice, nx_s, ny_s, step_px = _diamond_setup()
+        frames = _simulate_ism_acquisition(
+            lattice, nx_s, ny_s, step_px, (160, 160), background_fn=haze
+        )
+        hybrid = self._run(frames, nx_s, ny_s, step_px)
+        raw = self._run(frames, nx_s, ny_s, step_px, ism_background="None (raw)")
+
+        assert hybrid.recon_diagnostics["ism_background"] == "per-focus"
+        assert raw.recon_diagnostics["ism_background"] == "none"
+        hybrid_error = _affine_accuracy(hybrid)
+        raw_error = _affine_accuracy(raw)
+        assert hybrid_error < raw_error / 2
+        assert hybrid_error < 0.1
 
 
 class TestSpotCloudResult:

@@ -960,10 +960,16 @@ offsets, and a plain sum or mean would imprint a tile-scale collection
 ripple. Each pixel is therefore treated as measuring the specimen with gain
 ``g = envelope(d)`` and combined inverse-variance weighted
 (``Σ g·value / Σ g²``), which makes the signal gain exactly uniform.
-Background is not modeled — a constant camera offset becomes a smooth
-tile-scale offset pattern — so this method shows haze the fast-Gauss
-background fit would remove; in exchange it uses every collected photon and
-has no per-focus fit to destabilize near very bright structures.
+
+``ISM options → Background`` selects how background is handled.
+``Per-focus constant`` (the default) is the hybrid with the fast-Gauss fit:
+the constant-background term of the same per-focus Gaussian+constant least
+squares the fitted path solves is subtracted from each focus's footprint
+pixels *before* reassignment — the fitted path's haze removal combined with
+ISM's photon use and sharpening, and still with no per-focus amplitude to
+destabilize near very bright structures. ``None (raw)`` keeps the classic
+enhanced-confocal sum, where background is not modeled and a constant
+camera offset becomes a smooth tile-scale offset pattern.
 
 Pass-through reconstructors
 ===========================

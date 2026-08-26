@@ -139,6 +139,7 @@ def build_exact_sampling(
     fit_background: bool,
     num_rows: int,
     num_cols: int,
+    term: str = "amplitude",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Integer pixel sets and per-focus LSQ weights for exact sampling.
 
@@ -147,16 +148,24 @@ def build_exact_sampling(
     at the *true* pixel-minus-center offsets, so the fit matches the samples
     without any interpolation. Out-of-frame pixels are masked out of the fit
     (weight 0) rather than clamped onto border pixels, so edge foci get a
-    proper least squares over the pixels that exist. The amplitude weights
-    come from the closed-form 2x2 normal equations of ``a*g + b*1``; a focus
-    left with fewer than two usable pixels falls back to the pure matched
-    filter, and one with no usable pixels gets zero weights.
+    proper least squares over the pixels that exist. The weights come from
+    the closed-form 2x2 normal equations of ``a*g + b*1``: ``term`` selects
+    whether they extract the amplitude ``a`` (the default) or the constant
+    background ``b`` (used by the ISM path's per-focus background
+    subtraction). For the amplitude, a focus left with fewer than two usable
+    pixels falls back to the pure matched filter and one with no usable
+    pixels gets zero weights; degenerate background fits get zero weights
+    (background estimate 0).
 
     Returns:
         ``(pixel_rows, pixel_cols, weights)``, each of shape
         ``(num_foci, pts_per_focus)`` — apply as
         ``(frame[pixel_rows, pixel_cols] * weights).sum(axis=-1)``.
     """
+    if term not in ("amplitude", "background"):
+        raise ValueError(f"term must be 'amplitude' or 'background', got {term!r}")
+    if term == "background" and not fit_background:
+        raise ValueError("Background weights require fit_background=True")
     centers_x = np.asarray(centers_x, dtype=float)
     centers_y = np.asarray(centers_y, dtype=float)
     offsets_x = np.round(np.asarray(footprint[0], dtype=float)).astype(np.int64)
@@ -198,6 +207,11 @@ def build_exact_sampling(
     det = sum_gg * sum_11 - sum_g1**2
     usable = (det > 1e-12) & (sum_11 >= 2)
     safe_det = np.where(usable, det, 1.0)
+    if term == "background":
+        weights = (
+            sum_gg[:, None] * ones - sum_g1[:, None] * gauss
+        ) / safe_det[:, None]
+        return pixel_rows, pixel_cols, np.where(usable[:, None], weights, 0.0)
     weights = (sum_11[:, None] * gauss - sum_g1[:, None] * ones) / safe_det[:, None]
     weights = np.where(usable[:, None], weights, matched)
     return pixel_rows, pixel_cols, weights

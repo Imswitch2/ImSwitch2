@@ -1941,7 +1941,16 @@ class ReconParTree(ParameterTree):
                          'degenerates to a binned open-pinhole confocal. '
                          'Sweep it to find the sharpest setting. The '
                          'footprint/pinhole options above are shared with '
-                         'Fast Gauss.')}]},
+                         'Fast Gauss.')},
+                {'name': 'Background', 'type': 'list',
+                 'value': 'Per-focus constant',
+                 'values': ['Per-focus constant', 'None (raw)'],
+                 'tip': ('Per-focus constant (default) subtracts each '
+                         "focus's fitted constant background before "
+                         'reassignment — the fast-Gauss haze removal '
+                         "combined with ISM's photon use and sharpening. "
+                         'None (raw) keeps the classic enhanced-confocal '
+                         'sum including background.')}]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -1990,6 +1999,8 @@ class ReconParTree(ParameterTree):
                 'Sweep values').value(),
             'ism_reassignment_factor': self.p.param('ISM options').param(
                 'Reassignment factor').value(),
+            'ism_background': self.p.param('ISM options').param(
+                'Background').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
         }
 

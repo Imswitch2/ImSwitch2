@@ -10,6 +10,7 @@ from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
 from .gauss_processor import (
     _build_footprint,
+    build_exact_sampling,
     extract_lattice_amplitudes,
     validate_gaussian_fit_options,
 )
@@ -735,8 +736,15 @@ class MonalisaReconstructor(StreamingReconstructor):
         therefore treated as measuring the specimen with gain
         ``g = envelope(d)`` and combined inverse-variance weighted,
         ``S = sum(g * value) / sum(g^2)``, which makes the signal gain
-        exactly uniform. Background is not modeled (a constant camera offset
-        turns into a smooth tile-scale offset pattern).
+        exactly uniform.
+
+        The default ``Background: Per-focus constant`` is the hybrid with the
+        fast-Gauss fit: each focus's constant-background term (the same 2x2
+        LSQ the fitted path solves) is subtracted from its footprint pixels
+        before reassignment, giving the fitted path's haze removal on top of
+        ISM's photon use and sharpening. ``None (raw)`` keeps the classic
+        enhanced-confocal sum, where a constant camera offset turns into a
+        smooth tile-scale offset pattern.
         """
         geometry = self._resolve_fast_gauss_geometry(data, scan_params, data_attrs)
         if geometry['n_linesteps'] != 1:
@@ -808,6 +816,10 @@ class MonalisaReconstructor(StreamingReconstructor):
             (pixel_cols >= 0) & (pixel_cols < num_cols)
             & (pixel_rows >= 0) & (pixel_rows < num_rows)
         )
+        # Clipped copies for the (M, P) grid gather; out-of-frame entries are
+        # excluded by the mask and carry zero background weight.
+        grid_rows = np.clip(pixel_rows, 0, num_rows - 1)
+        grid_cols = np.clip(pixel_cols, 0, num_cols - 1)
         focus_x_flat = np.broadcast_to(foci_x[:, None], in_frame.shape)[in_frame]
         focus_y_flat = np.broadcast_to(foci_y[:, None], in_frame.shape)[in_frame]
         rows_index = pixel_rows[in_frame]
@@ -825,9 +837,29 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         gain_squared = gain * gain
 
+        # Hybrid mode: subtract each focus's fitted constant background from
+        # its footprint pixels before reassignment — the fast-Gauss LSQ's
+        # background term, applied to the residual pixels instead of
+        # collapsing them to one amplitude. Combines the fitted path's haze
+        # removal with ISM's photon use and sharpening.
+        subtract_background = 'none' not in str(
+            params.get('ism_background', 'Per-focus constant')
+        ).strip().lower()
+        background_weights = None
+        focus_ids = None
+        if subtract_background:
+            _, _, background_weights = build_exact_sampling(
+                foci_x, foci_y, footprint, gaussian_sigma_px,
+                True, num_rows, num_cols, term='background',
+            )
+            focus_ids = np.broadcast_to(
+                np.arange(foci_x.size)[:, None], in_frame.shape
+            )[in_frame]
+
         self._logger.info(
             f'ISM reassignment: alpha={alpha:g}, {foci_xy.shape[0]} foci x '
             f'{footprint[0].size} footprint px ({base.shape[0]} samples/frame), '
+            f'background {"per-focus" if subtract_background else "none"}, '
             f'{lattice.describe()}'
         )
 
@@ -861,10 +893,14 @@ class MonalisaReconstructor(StreamingReconstructor):
             weights = np.zeros(shape, dtype=np.float64)
             for local_index in range(frames_per_stack):
                 frame_index = time_index * frames_per_stack + local_index
-                values = (
-                    data[frame_index][rows_index, cols_index].astype(np.float64)
+                frame_grid = (
+                    data[frame_index][grid_rows, grid_cols].astype(np.float64)
                     * bleach_scale[frame_index]
                 )
+                values = frame_grid[in_frame]
+                if subtract_background:
+                    per_focus_bg = (frame_grid * background_weights).sum(axis=1)
+                    values = values - per_focus_bg[focus_ids]
                 splat_add(
                     accumulated, weights,
                     base + offsets[local_index][None, :], gain * values,
@@ -898,6 +934,9 @@ class MonalisaReconstructor(StreamingReconstructor):
             recon_diagnostics={
                 'pattern_geometry': 'ism',
                 'ism_reassignment_factor': alpha,
+                'ism_background': (
+                    'per-focus' if subtract_background else 'none'
+                ),
                 'lattice': lattice.describe(),
                 'num_foci': int(foci_xy.shape[0]),
                 'pixel_size_nm': pixel_size_nm,
