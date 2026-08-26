@@ -349,6 +349,41 @@ class ReconstructorManagerController(ImProcessWidgetController):
             except Exception:
                 pass
 
+    def findPattern(self):
+        """Dispatch the shared Find Pattern action to the active plugin.
+
+        MoNaLISA keeps its legacy controller path. New reconstructors can opt
+        in by exposing ``find_pattern(data_obj, param_widget)``.
+        """
+        reconstructor = self._main._activeReconstructor
+        data_obj = getattr(self._main, '_currentDataObj', None)
+        if reconstructor is None or data_obj is None:
+            return
+
+        if reconstructor.id == "monalisa":
+            self._main.monalisaController.findPattern()
+            return
+
+        finder = getattr(reconstructor, "find_pattern", None)
+        if not callable(finder):
+            self._logger.warning(
+                f"{reconstructor.name} does not provide pattern localization"
+            )
+            return
+        try:
+            pattern = finder(data_obj, self._widget.parTree)
+        except Exception as exc:
+            self._logger.warning(f"Find pattern failed: {exc}")
+            return
+
+        if pattern is not None:
+            row_offset, col_offset, row_period, col_period = pattern
+            self._logger.info(
+                f"Pattern found: row_offset={row_offset:.4f}, "
+                f"col_offset={col_offset:.4f}, row_period={row_period:.4f}, "
+                f"col_period={col_period:.4f}"
+            )
+
     def reconstructCurrent(self):
         if self._main._currentDataObj is None:
             return

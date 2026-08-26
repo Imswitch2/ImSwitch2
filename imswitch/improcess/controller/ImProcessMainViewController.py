@@ -93,7 +93,7 @@ class ImProcessMainViewController(ImProcessWidgetController):
         self._widget.sigUpdate.connect(lambda: self.monalisaController.updateScanParams(applyOnCurrentRecon=True))
 
         self._widget.sigShowPatternChanged.connect(self.monalisaController.togglePattern)
-        self._widget.sigFindPattern.connect(self.monalisaController.findPattern)
+        self._widget.sigFindPattern.connect(self.reconstructorManager.findPattern)
         self._widget.sigShowScanParamsClicked.connect(self.monalisaController.showScanParamsDialog)
         self._widget.sigPatternParamsChanged.connect(self.monalisaController.updatePattern)
         self._widget.sigFilesDropped.connect(self.fileIOController.handleDroppedFiles)
