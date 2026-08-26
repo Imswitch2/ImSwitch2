@@ -3,35 +3,42 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from typing import Mapping,Any
 
 @dataclass(frozen=True)
 class SLMIdentity:
     key: str
     serial_number: str
+    display_name: str | None = field(default=None,compare=False)
 
     def __post_init__(self) -> None:
         key = str(self.key or "").strip()
         serial = str(self.serial_number or "").strip()
+        display_name = str(self.display_name or "").strip() or None
         if not key:
             raise ValueError("SLM key cannot be empty")
         if not serial:
             raise ValueError("SLM serial_number cannot be empty")
         object.__setattr__(self,"key",key)
         object.__setattr__(self,"serial_number",serial)
+        object.__setattr__(self,"display_name",display_name)
 
     def to_dict(self):
         return {
             "key":self.key,
             "serial_number":self.serial_number,
+            "display_name":self.display_name,
         }
 
     @classmethod
-    def from_dict(cls,data: Mapping[str,Any]) -> SLMIdentity:
+    def from_dict(
+        cls,data: Mapping[str,Any],*,key: str | None=None,
+    ) -> SLMIdentity:
         return cls(
-            key=data["key"],
+            key=data.get("key") if key is None else key,
             serial_number=data["serial_number"],
+            display_name=data.get("display_name"),
         )
 
 

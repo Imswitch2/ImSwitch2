@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Union
 
-from dataclasses_json import dataclass_json, Undefined, CatchAll
+from dataclasses_json import dataclass_json, Undefined, CatchAll, config
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -167,50 +168,160 @@ class SLMInfo:
     wavelength. """
 
     serial_number: Optional[str] = None
-    """ Unique n° of the SLM head you use. ``null``/omitted if not needed
+    """ Unique number of the SLM head you use. ``null``/omitted if not needed
     (e.g. simulated SLMs). """
 
 
 
 
+@dataclass_json(undefined=Undefined.EXCLUDE)
 @dataclass(frozen=True, kw_only=True)
 class SLMsInfo(DeviceInfo):
-    monitorIdx: int
-    """ Index of the monitor in the system list of monitors (indexing starts at
-    0). """
+    setup: Dict[str, Any] = field(default_factory=dict)
+    """ Canonical slmcore setup mapping for one physical SLM.
 
-    width: int
-    """ Width of SLM, in pixels. """
+    New multiple-SLM configurations should define identity, geometry, sections,
+    and future native hardware binding here. Geometry values are exposed through
+    the compatibility properties below. """
 
-    height: int
-    """ Height of SLM, in pixels. """
+    startup_preferences: Dict[str, Any] = field(default_factory=dict)
+    """ slmcore startup preferences for UI/session startup.
 
-    wavelength: int
-    """ Wavelength of the laser line used with the SLM. """
+    This is the startup-config owner for the new multiple-SLM controller. Setup
+    mode applies may explicitly push a saved config to hardware; startup restore
+    does not rewrite this mapping. """
 
-    pixelSize: float
-    """ Pixel size or pixel pitch of the SLM, in millimetres. """
+    legacySerialNumber: Optional[str] = field(
+        default=None,
+        metadata=config(field_name="serial_number"),
+    )
+    """ Legacy JSON field ``serial_number`` kept only for compatibility.
 
-    correctionPatternsDir: str
-    """ Directory of .bmp images provided by Hamamatsu for flatness correction
-    at various wavelengths. A combination will be chosen based on the
-    wavelength. """
+    New multiple-SLM configurations should declare the serial number at
+    ``setup.identity.serial_number``. """
 
-    wavelengthTableFile: str
-    """ Name of JSON file with table of wavelength correction values to transform
-    2pi modulation into gray values (given my manufacturer.) File is expected to be
-    in the same direction than `correctionPatternsDir """
+    legacyWidth: Optional[int] = field(
+        default=None,
+        metadata=config(field_name="width"),
+    )
+    """ Legacy JSON field ``width`` kept only for compatibility.
 
-    nSections: Optional[int] = None
-    """ Numbers of sections the SLM is divided into (e.g. 2 for double-pass).
-    If none, considered as single section. """
+    New code should read ``setup.geometry.width`` or the ``width`` property,
+    which resolves from ``setup.geometry`` before falling back to this value. """
 
-    widgetOptions: Optional[Dict[str,Any]] = None
-    """ Widget options just as which patterns to display """
+    legacyHeight: Optional[int] = field(
+        default=None,
+        metadata=config(field_name="height"),
+    )
+    """ Legacy JSON field ``height`` kept only for compatibility.
 
-    serial_number: Optional[str] = None
-    """ Unique n° of the SLM head you use. ``null``/omitted if not needed
-    (e.g. simulated SLMs). """
+    New code should read ``setup.geometry.height`` or the ``height`` property,
+    which resolves from ``setup.geometry`` before falling back to this value. """
+
+    legacyPixelSize: Optional[float] = field(
+        default=None,
+        metadata=config(field_name="pixelSize"),
+    )
+    """ Legacy JSON field ``pixelSize`` kept only for compatibility.
+
+    New code should read ``setup.geometry.pixel_size_um`` or the ``pixelSize``
+    property, which resolves from ``setup.geometry`` before falling back to this
+    value. """
+
+    monitorIdx: Optional[int] = None
+    """ Legacy ImSwitch display-manager monitor index.
+
+    This is still consumed by DVI-style managers. Native slmcore hardware
+    binding should eventually carry display selection instead. """
+
+    correctionPatternsDir: Optional[str] = None
+    """ Legacy multiple-SLM correction directory.
+
+    Kept for ``SLMsController_legacy`` compatibility. The new slmcore-backed
+    controller resolves persistent SLM resources through the slmcore workspace. """
+
+    wavelengthTableFile: Optional[str] = None
+    """ Legacy multiple-SLM wavelength table file.
+
+    Kept for ``SLMsController_legacy`` compatibility. It is not read by the new
+    slmcore-backed controller. """
+
+    legacyNSections: Optional[int] = field(
+        default=None,
+        metadata=config(field_name="nSections"),
+    )
+    """ Legacy JSON field ``nSections`` kept for compatibility.
+
+    New code should read ``setup.sections.layout.n_sections`` or the
+    ``nSections`` property, which resolves from ``setup.sections`` before
+    falling back to this value. """
+
+    widgetOptions: Optional[Dict[str, Any]] = None
+    """ Legacy multiple-SLM widget options.
+
+    Kept for ``SLMsWidget_legacy`` compatibility. It is not read by the new
+    slmcore-backed widget/controller path. """
+
+    @property
+    def width(self) -> int:
+        """ Resolved SLM width from ``setup.geometry.width``. """
+        return int(self._geometryValue("width", self.legacyWidth, "width"))
+
+    @property
+    def height(self) -> int:
+        """ Resolved SLM height from ``setup.geometry.height``. """
+        return int(self._geometryValue("height", self.legacyHeight, "height"))
+
+    @property
+    def pixelSize(self) -> float:
+        """ Resolved SLM pixel pitch from ``setup.geometry.pixel_size_um``. """
+        return float(
+            self._geometryValue(
+                "pixel_size_um",
+                self.legacyPixelSize,
+                "pixelSize",
+            )
+        )
+
+    @property
+    def nSections(self) -> Optional[int]:
+        """ Resolved SLM section count from ``setup.sections.layout.n_sections``. """
+        value = self._setupValue("sections", "layout", "n_sections")
+        if value is None:
+            value = self.legacyNSections
+        return None if value is None else int(value)
+
+    @property
+    def serial_number(self) -> Optional[str]:
+        """ Resolved SLM serial number from ``setup.identity.serial_number``. """
+        value = self._setupValue("identity", "serial_number")
+        if value is None:
+            value = self.legacySerialNumber
+        return None if value is None else str(value)
+
+    def _geometryValue(
+        self,
+        setupField: str,
+        legacyValue: Any,
+        publicName: str,
+    ) -> Any:
+        value = self._setupValue("geometry", setupField)
+        if value is None:
+            value = legacyValue
+        if value is None:
+            raise AttributeError(
+                f"SLMsInfo.{publicName} requires setup.geometry.{setupField} "
+                f"or legacy JSON field {publicName!r}"
+            )
+        return value
+
+    def _setupValue(self, *path: str) -> Any:
+        value: Any = self.setup
+        for key in path:
+            if not isinstance(value, Mapping):
+                return None
+            value = value.get(key)
+        return value
 
 @dataclass(frozen=True)
 class FocusLockInfo:

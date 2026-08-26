@@ -34,6 +34,7 @@ from .runtime_binding import SLMRuntimeViewBinding
 from .measurement_dispatcher import QtMeasurementDispatcher
 from .feedback.coordinator import FeedbackCoordinator
 from .section_settings import SectionSettingsManager
+from .startup_preferences import _StartupPreferencesState
 from ..configuration.manager import ConfigurationManager
 
 
@@ -76,6 +77,7 @@ class SLMQtSession(QtCore.QObject):
         runtime: SLMRuntime,
         panel: SLMPanel,
         host_services: SLMHostServices | None=None,
+        startup_preferences: _StartupPreferencesState | None=None,
         interaction_settings: RuntimeViewInteractionSettings=(
             DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS
         ),
@@ -104,6 +106,7 @@ class SLMQtSession(QtCore.QObject):
         self.config_repository = config_repository
         self._display_name = str(display_name or runtime.identity.key)
         self.host_services = host_services or SLMHostServices()
+        self.startup_preferences = startup_preferences
         self.auto_upload_frame = bool(auto_upload_frame)
         self.presenter = cgh_presenter or CGHPresenter(
             display_name=self._display_name,
@@ -145,7 +148,7 @@ class SLMQtSession(QtCore.QObject):
             self,
             measurements=self._measurements,
             store=calibration_store,
-            preferences=self.host_services.calibration_preferences,
+            preferences=self.startup_preferences,
             display_name=self._display_name,
             apply_startup_defaults=bool(apply_startup_calibration_defaults),
             parent=self,
@@ -158,7 +161,7 @@ class SLMQtSession(QtCore.QObject):
                 else runtime_factory.setup
             ),
             runtime_factory=runtime_factory,
-            view_preferences=self.host_services.section_view_preferences,
+            startup_preferences=self.startup_preferences,
             parent=self,
         )
         self._configuration = ConfigurationManager(
@@ -166,7 +169,7 @@ class SLMQtSession(QtCore.QObject):
             repository=config_repository,
             controls=self.panel.config_controls,
             runtime_factory=runtime_factory,
-            preferences=self.host_services.configuration_preferences,
+            startup_preferences=self.startup_preferences,
             current_config_path=current_config_path,
             parent=self,
         )

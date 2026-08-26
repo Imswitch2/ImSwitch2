@@ -9,6 +9,19 @@ from .Options import Options
 
 
 _LEGACY_SETUP_INFO_KEYS = {'defaultLaserPresetForScan'}
+_SLMS_NULL_COMPAT_KEYS = {
+    'analogChannel',
+    'digitalLine',
+    'serial_number',
+    'width',
+    'height',
+    'pixelSize',
+    'monitorIdx',
+    'correctionPatternsDir',
+    'wavelengthTableFile',
+    'nSections',
+    'widgetOptions',
+}
 
 
 def getSetupList():
@@ -52,7 +65,20 @@ def pruneDefaultSetupInfoFields(setupInfo) -> dict:
             continue
         if getattr(setupInfo, name) == default:
             del data[name]
+    _pruneSlmsNullCompatFields(data)
     return data
+
+
+def _pruneSlmsNullCompatFields(data: dict) -> None:
+    slms = data.get('slms')
+    if not isinstance(slms, dict):
+        return
+    for slmInfo in slms.values():
+        if not isinstance(slmInfo, dict):
+            continue
+        for key in _SLMS_NULL_COMPAT_KEYS:
+            if slmInfo.get(key) is None:
+                slmInfo.pop(key, None)
 
 
 def saveSetupInfo(options, setupInfo):

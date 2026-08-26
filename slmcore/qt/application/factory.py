@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
+from typing import Callable
 
 from qtpy import QtWidgets
 
 from ...application.runtime_factory import SLMRuntimeFactory
 from ...cgh.execution.executor import CGHExecutor
-from ...corrections import SLMCorrectionStore
-from ...host.services import SLMHostServices
 from ...engine.registry import DEFAULT_REGISTRIES,SLMRegistries
-from ...setup import SLMSetup
+from ...host.services import SLMHostServices
+from ...setup import (
+    SLMSetup,
+    SLMStartupPreferences,
+    save_slm_startup_preferences,
+)
 from ...workspace import SLMWorkspace
 from ..panel.panel import SLMPanel
 from ..panel.policy import (
@@ -23,16 +28,16 @@ from .interaction import (
     RuntimeViewInteractionSettings,
 )
 from .session import SLMQtSession
+from .startup_preferences import _StartupPreferencesState
 
 
 class SLMQtSessionFactory:
     """Construct the standard reusable Qt session and panel for one SLM.
 
-    The factory owns generic setup resolution, runtime/startup construction,
-    persistence wiring, panel construction and session assembly. A workspace
-    supplies standard slmcore persistence; explicit host capabilities override
-    the workspace defaults. Physical device initialization remains a host-side
-    lifecycle decision after the returned session/panel are mounted.
+    Normal hosts provide a canonical :class:`SLMSetup`, startup preferences and
+    one :class:`SLMWorkspace`. The workspace owns config/correction/calibration
+    locations. Hosts only provide physical/external capabilities and, when they
+    own a larger setup file, an optional startup-preference persistence callback.
     """
 
     def __init__(
@@ -54,8 +59,12 @@ class SLMQtSessionFactory:
         self,
         *,
         setup: SLMSetup,
+        startup_preferences: SLMStartupPreferences | None=None,
+        setup_file: str | Path | None=None,
+        on_startup_preferences_changed: (
+            Callable[[SLMStartupPreferences],None] | None
+        )=None,
         host_services: SLMHostServices | None=None,
-        display_name: str="",
         interaction_settings: RuntimeViewInteractionSettings=(
             DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS
         ),
@@ -67,18 +76,33 @@ class SLMQtSessionFactory:
     ) -> tuple[SLMQtSession, SLMPanel]:
         if not isinstance(setup,SLMSetup):
             raise TypeError("setup must be an SLMSetup")
+        preferences = (
+            SLMStartupPreferences()
+            if startup_preferences is None
+            else startup_preferences
+        )
+        if not isinstance(preferences,SLMStartupPreferences):
+            raise TypeError(
+                "startup_preferences must be an SLMStartupPreferences or None"
+            )
+        preference_callback = self._preference_callback(
+            setup_file=setup_file,
+            callback=on_startup_preferences_changed,
+        )
+        preference_state = _StartupPreferencesState(
+            preferences,preference_callback,
+        )
+        services = host_services or SLMHostServices()
+        if not isinstance(services,SLMHostServices):
+            raise TypeError("host_services must be an SLMHostServices or None")
 
         workspace = self.workspace
-        defaults = None if workspace is None else workspace.default_host_services(setup)
-        services = (host_services or SLMHostServices()).with_fallbacks(defaults)
         config_repository = (
             None if workspace is None
             else workspace.config_repository(setup,self.registries)
         )
         correction_store = (
-            self._preferred_correction_store(setup)
-            if workspace is None
-            else workspace.correction_store(setup)
+            None if workspace is None else workspace.correction_store(setup)
         )
         calibration_store = (
             None if workspace is None else workspace.calibration_store
@@ -89,11 +113,11 @@ class SLMQtSessionFactory:
             correction_store=correction_store,
             config_repository=config_repository,
         )
-        startup_name = None
-        if services.configuration_preferences is not None:
-            startup_name = services.configuration_preferences.get()
-        startup = runtime_factory.create_startup(startup_name)
-        display_mode = self._display_mode(services)
+        startup = runtime_factory.create_startup(
+            preference_state.startup_config()
+        )
+        display_mode = self._display_mode(preference_state)
+        display_name = setup.identity.display_name or setup.identity.key
 
         panel = None
         session = None
@@ -111,6 +135,7 @@ class SLMQtSessionFactory:
                 runtime=startup.runtime,
                 panel=panel,
                 host_services=services,
+                startup_preferences=preference_state,
                 interaction_settings=interaction_settings,
                 cgh_executor=cgh_executor,
                 auto_upload_frame=auto_upload_frame,
@@ -136,27 +161,26 @@ class SLMQtSessionFactory:
             raise
 
     @staticmethod
-    def _preferred_correction_store(setup: SLMSetup) -> SLMCorrectionStore | None:
-        correction_setup = setup.corrections
-        if correction_setup is None or not correction_setup.preferred_directory:
-            return None
-        directory = Path(correction_setup.preferred_directory).expanduser()
-        if not directory.is_dir():
-            return None
-        return SLMCorrectionStore(
-            identity=setup.identity,
-            directory=directory,
-            wavelength_table_file=correction_setup.wavelength_table_file,
-        )
+    def _preference_callback(
+        *,
+        setup_file: str | Path | None,
+        callback: Callable[[SLMStartupPreferences],None] | None,
+    ) -> Callable[[SLMStartupPreferences],None]:
+        if callback is not None:
+            if not callable(callback):
+                raise TypeError("on_startup_preferences_changed must be callable or None")
+            return callback
+        if setup_file is None:
+            raise ValueError(
+                "setup_file is required when startup preference persistence "
+                "is not provided by the host"
+            )
+        path = Path(setup_file).expanduser()
+        return partial(save_slm_startup_preferences,path)
 
     @staticmethod
-    def _display_mode(host_services: SLMHostServices) -> SectionsDisplayMode:
-        preferences = host_services.section_view_preferences
-        if preferences is None:
-            return SectionsDisplayMode.TABS
-        value = preferences.get()
-        if not value:
-            return SectionsDisplayMode.TABS
+    def _display_mode(preferences: _StartupPreferencesState) -> SectionsDisplayMode:
+        value = preferences.section_display_mode()
         try:
             return SectionsDisplayMode.normalize(value)
         except ValueError:

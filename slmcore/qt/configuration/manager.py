@@ -31,7 +31,7 @@ class ConfigurationManager(QtCore.QObject):
         repository: SLMConfigRepository | None,
         controls: ConfigControls | None,
         runtime_factory: SLMRuntimeFactory | None,
-        preferences=None,
+        startup_preferences=None,
         current_config_path: str | None=None,
         parent=None,
     ) -> None:
@@ -40,7 +40,7 @@ class ConfigurationManager(QtCore.QObject):
         self.repository = repository
         self.controls = controls
         self.runtime_factory = runtime_factory
-        self.preferences = preferences
+        self.startup_preferences = startup_preferences
         self._disposed = False
         self._connect_controls()
         self.refresh()
@@ -318,8 +318,8 @@ class ConfigurationManager(QtCore.QObject):
             was_startup = self._is_startup(path)
             was_current = _same_path(path,self.current_config_path)
             metadata = self.repository.rename(path,new,overwrite=False)
-            if was_startup and self.preferences is not None:
-                self.preferences.set(metadata.name)
+            if was_startup and self.startup_preferences is not None:
+                self.startup_preferences.set_startup_config(metadata.name)
             if was_current:
                 self._set_current_metadata(metadata)
             self.refresh()
@@ -355,8 +355,8 @@ class ConfigurationManager(QtCore.QObject):
             was_startup = self._is_startup(path)
             was_current = _same_path(path,self.current_config_path)
             self.repository.delete(path)
-            if was_startup and self.preferences is not None:
-                self.preferences.set(None)
+            if was_startup and self.startup_preferences is not None:
+                self.startup_preferences.set_startup_config(None)
             if was_current:
                 self.controls.set_current_config(None)
             self.refresh()
@@ -368,12 +368,12 @@ class ConfigurationManager(QtCore.QObject):
         if not self.controller.editor_writes_allowed:
             return
         try:
-            if self.repository is None or self.preferences is None:
+            if self.repository is None or self.startup_preferences is None:
                 raise RuntimeError("Startup config preferences are not configured")
             metadata = self.repository.read_metadata(path)
             if metadata.path.parent.absolute() != self.repository.directory.absolute():
                 raise ValueError("Startup config must be in the SLM config directory")
-            self.preferences.set(metadata.name)
+            self.startup_preferences.set_startup_config(metadata.name)
             self.controller.sigInfo.emit(
                 "Startup config",
                 "'%s' will be loaded at startup for %s."
@@ -432,9 +432,9 @@ class ConfigurationManager(QtCore.QObject):
             self.controls.set_current_config(_metadata_dict(metadata))
 
     def _is_startup(self,path: str) -> bool:
-        if self.preferences is None:
+        if self.startup_preferences is None:
             return False
-        startup = self.preferences.get()
+        startup = self.startup_preferences.startup_config()
         return bool(startup) and startup == os.path.basename(str(path))
 
     def _require_editor_mode(self) -> None:

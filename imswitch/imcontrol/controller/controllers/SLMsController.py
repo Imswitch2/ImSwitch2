@@ -1,27 +1,16 @@
 from __future__ import annotations
 
 import os
-import re
 import traceback
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from slmcore import (
-    SLMCorrectionSetup,
-    SLMGeometry,
-    SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
-    SLMWorkspace,
-    SLMWorkspaceLayout,
-    SectionSplitLayout,
-)
-from slmcore.calibration import get_default_active_planes,set_default_active_plane
+from slmcore import SLMSetup,SLMStartupPreferences,SLMWorkspace
 from slmcore.host import SLMDeviceProvider,SLMHostServices
 from slmcore.measurement import create_image_measurement
 from slmcore.qt import (
-    DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,SectionsDisplayMode,
+    DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     SLMControlMode,SLMQtSession,SLMQtSessionFactory,SLMQtSessionGroup,
 )
 
@@ -49,7 +38,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
     def __init__(self,*args: Any,**kwargs: Any) -> None:
         super().__init__(*args,**kwargs)
         self.__logger = initLogger(self)
-        self._slm_names: dict[str,str] = {}
+        self._slm_display_names: dict[str,str] = {}
         self._slm_infos: dict[str,Any] = {}
         self._slm_qt_sessions: dict[str,SLMQtSession] = {}
         self._interaction_settings = DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS
@@ -69,7 +58,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             self.on_control_mode_requested,
         )
         self._initialize_slms()
-        if self._slm_names:
+        if self._slm_display_names:
             getWidgetStatePersistence().register("SLMs",self)
 
     # ------------------------------------------------------------------
@@ -78,7 +67,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
 
     def getComponentState(self) -> dict:
         slms = {}
-        for slm_key,slm_name in self._slm_names.items():
+        for slm_key,slm_name in self._slm_display_names.items():
             session = self._slm_qt_session(slm_key)
             control_mode = session.control_mode
             path = (
@@ -153,13 +142,13 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
                 warnings.append(f'SLM "{saved_key}" saved state is not a dictionary.')
                 continue
             slm_key = saved_key
-            if slm_key not in self._slm_names:
+            if slm_key not in self._slm_display_names:
                 saved_name = slm_state.get("slmName")
                 slm_key = next((
-                    key for key,name in self._slm_names.items()
+                    key for key,name in self._slm_display_names.items()
                     if name == saved_name
                 ),None)
-            if slm_key not in self._slm_names:
+            if slm_key not in self._slm_display_names:
                 warnings.append(
                     f'SLM "{saved_key}" ({slm_state.get("slmName")}) is not available.'
                 )
@@ -169,7 +158,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             if path is None:
                 name = slm_state.get("configName") or slm_state.get("configPath")
                 warnings.append(
-                    f'SLM "{self._slm_names[slm_key]}" config "{name}" is not available.'
+                    f'SLM "{self._slm_display_names[slm_key]}" config "{name}" is not available.'
                 )
                 continue
 
@@ -178,7 +167,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
                 control_mode = self._saved_control_mode(slm_state)
             except ValueError as error:
                 warnings.append(
-                    f'SLM "{self._slm_names[slm_key]}" saved control mode is invalid: {error}.'
+                    f'SLM "{self._slm_display_names[slm_key]}" saved control mode is invalid: {error}.'
                 )
                 continue
             if control_mode is not None and qt_session.control_mode is not control_mode:
@@ -200,7 +189,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             )
             if not load_ok:
                 warnings.append(
-                    f'Failed to load SLM "{self._slm_names[slm_key]}" config "{path}".'
+                    f'Failed to load SLM "{self._slm_display_names[slm_key]}" config "{path}".'
                 )
                 continue
             loaded = (
@@ -210,14 +199,14 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             )
             if not loaded:
                 warnings.append(
-                    f'SLM "{self._slm_names[slm_key]}" config "{path}" may not have loaded.'
+                    f'SLM "{self._slm_display_names[slm_key]}" config "{path}" may not have loaded.'
                 )
             elif (
                 os.path.normcase(os.path.abspath(str(loaded)))
                 != os.path.normcase(os.path.abspath(str(path)))
             ):
                 warnings.append(
-                    f'SLM "{self._slm_names[slm_key]}" loaded "{loaded}" instead of "{path}".'
+                    f'SLM "{self._slm_display_names[slm_key]}" loaded "{loaded}" instead of "{path}".'
                 )
         return warnings
 
@@ -260,48 +249,48 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
     # ------------------------------------------------------------------
 
     def _initialize_storage(self) -> None:
+        # ImSwitch owns only the root. slmcore owns the standard workspace
+        # layout below it (configs/, corrections/, calibrations/).
         self._slm_dir = os.path.join(dirtools.UserFileDirs.Root,"imcontrol_slm")
-        self._workspace = SLMWorkspace(
-            self._slm_dir,
-            layout=SLMWorkspaceLayout(
-                configs="configs",
-                corrections="Corrections",
-                calibrations="calibrations",
-                preferences="preferences.json",
-            ),
-        )
+        self._workspace = SLMWorkspace(self._slm_dir)
 
     def _initialize_slms(self) -> None:
-        for slm_name,slm_manager in self._master.slmsManager:
+        # The ImSwitch setup key is the canonical logical SLM key. It is not
+        # derived from the human-readable display name.
+        for slm_key,slm_manager in self._master.slmsManager:
             try:
-                self._initialize_slm(slm_name,slm_manager)
+                self._initialize_slm(str(slm_key),slm_manager)
             except Exception as error:
                 self.__logger.error(traceback.format_exc())
                 self._widget.show_error(
                     "SLM initialization failed",
-                    f"Could not initialize '{slm_name}':\n{error}",
+                    f"Could not initialize '{slm_key}':\n{error}",
                 )
 
-    def _initialize_slm(self,slm_name: str,slm_manager: Any) -> None:
+    def _initialize_slm(self,slm_key: str,slm_manager: Any) -> None:
         """Prepare one SLM completely, then atomically commit it to ImSwitch."""
         slm_info = slm_manager.slmInfo
         if slm_info is None:
-            raise ValueError(f"SLM '{slm_name}' has no slmInfo")
-        slm_key = self._make_slm_key(slm_name)
-        if slm_key in self._slm_names:
+            raise ValueError(f"SLM '{slm_key}' has no slmInfo")
+        if slm_key in self._slm_display_names:
             raise KeyError(f"SLM key {slm_key!r} is already initialized")
 
-        # Prepare: no ImSwitch UI or controller registries are mutated here.
-        setup = self._create_setup(slm_key,slm_info)
+        setup,startup_preferences = self._read_slm_configuration(
+            slm_key,slm_info,
+        )
+        display_name = setup.identity.display_name or slm_key
         host_services = self._create_host_services(
-            slm_name=slm_name,
-            slm_info=slm_info,
+            slm_key=slm_key,
             slm_manager=slm_manager,
         )
         qt_session,panel = self._slm_qt_factory.create(
             setup=setup,
+            startup_preferences=startup_preferences,
+            on_startup_preferences_changed=(
+                lambda preferences,key=slm_key,info=slm_info:
+                    self._save_startup_preferences_for(key,info,preferences)
+            ),
             host_services=host_services,
-            display_name=slm_name,
             interaction_settings=self._interaction_settings,
             auto_upload_frame=True,
         )
@@ -309,9 +298,9 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         # Commit only after reusable construction has completed successfully.
         try:
             self._widget.add_slm(
-                slm_key=slm_key,slm_name=slm_name,panel=panel,
+                slm_key=slm_key,slm_name=display_name,panel=panel,
             )
-            self._slm_names[slm_key] = slm_name
+            self._slm_display_names[slm_key] = display_name
             self._slm_infos[slm_key] = slm_info
             self._slm_qt_sessions[slm_key] = qt_session
             self._slm_qt_group.add_session(qt_session,key=slm_key)
@@ -319,7 +308,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         except Exception:
             self._slm_qt_group.remove_session(slm_key)
             self._widget.remove_slm(slm_key)
-            self._slm_names.pop(slm_key,None)
+            self._slm_display_names.pop(slm_key,None)
             self._slm_infos.pop(slm_key,None)
             self._slm_qt_sessions.pop(slm_key,None)
             try:
@@ -364,28 +353,31 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
     def _create_host_services(
         self,
         *,
-        slm_name: str,
-        slm_info: Any,
+        slm_key: str,
         slm_manager: Any,
     ) -> SLMHostServices:
-        return SLMHostServices.from_callbacks(
-            device=self._create_device_provider(slm_name,slm_manager),
+        return SLMHostServices(
+            device=self._create_device_provider(slm_key,slm_manager),
             measurement_provider=_SlmMeasurementProvider(
                 master=self._master,comm_channel=self._commChannel,
             ),
-            get_startup_config=lambda name=slm_name,info=slm_info:
-                self._get_startup_config_for(name,info),
-            set_startup_config=lambda value,name=slm_name,info=slm_info:
-                self._set_startup_config_for(name,info,value),
-            get_default_plane=lambda section,name=slm_name,info=slm_info:
-                self._get_default_active_plane_for(name,info,section),
-            set_default_plane=lambda section,plane,name=slm_name,info=slm_info:
-                self._set_default_active_plane_for(name,info,section,plane),
-            get_section_display_mode=lambda name=slm_name,info=slm_info:
-                self._get_section_view_mode_for(name,info),
-            set_section_display_mode=lambda value,name=slm_name,info=slm_info:
-                self._set_section_view_mode_for(name,info,value),
         )
+
+    @staticmethod
+    def _read_slm_configuration(
+        slm_key: str,slm_info: Any,
+    ) -> tuple[SLMSetup,SLMStartupPreferences]:
+        setup_data = getattr(slm_info,"setup",None)
+        if not isinstance(setup_data,Mapping) or not setup_data:
+            raise ValueError(
+                f"SLM {slm_key!r} must define a canonical slmcore 'setup' "
+                f"mapping with identity, geometry, and sections"
+            )
+        setup = SLMSetup.from_dict(setup_data,key=slm_key)
+        preferences = SLMStartupPreferences.from_dict(
+            getattr(slm_info,"startup_preferences",None) or {}
+        )
+        return setup,preferences
 
     def _install_session_signals(
         self,slm_key: str,qt_session: SLMQtSession,
@@ -398,152 +390,33 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             self.on_interaction_settings_changed,
         )
 
-    def _create_setup(self,slm_key: str,slm_info: Any) -> SLMSetup:
-        serial_number = getattr(slm_info,"serial_number",None)
-        if serial_number is None or not str(serial_number).strip():
-            raise ValueError(
-                f"SLM {slm_key!r} must define a non-empty serial_number"
-            )
-
-        geometry = SLMGeometry(
-            width=int(slm_info.width),
-            height=int(slm_info.height),
-            pixel_size_um=float(slm_info.pixelSize),
-        )
-        layout_info = self._read_setup_section_layout(slm_info)
-        n_sections = int(getattr(slm_info,"nSections",None) or 1)
-        layout = SectionSplitLayout(
-            n_sections=n_sections,
-            axis=str(self._layout_value(layout_info,"splitAxis",default="x") or "x"),
-            mode=str(self._layout_value(layout_info,"layoutMode",default="even") or "even"),
-            sizes=(
-                None if self._layout_value(layout_info,"layoutSizes",default=None) is None
-                else tuple(int(value) for value in self._layout_value(layout_info,"layoutSizes"))
-            ),
-        )
-        return SLMSetup(
-            identity=SLMIdentity(
-                key=slm_key,
-                serial_number=str(serial_number),
-            ),
-            geometry=geometry,
-            sections=SLMSectionsSetup(
-                layout=layout,
-                customizable=self._layout_bool(
-                    layout_info,"customizable",default=False,
-                ),
-            ),
-            corrections=SLMCorrectionSetup(
-                preferred_directory=getattr(
-                    slm_info,"correctionPatternsDir",None,
-                ),
-                wavelength_table_file=getattr(
-                    slm_info,"wavelengthTableFile",None,
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _read_setup_section_layout(slm_info: Any) -> Any:
-        value = getattr(slm_info,"sectionLayout",None)
-        if value is not None:
-            return value
-        properties = getattr(slm_info,"managerProperties",None) or {}
-        return properties.get("sectionLayout") if isinstance(properties,Mapping) else None
-
-    @classmethod
-    def _layout_bool(cls,layout_info: Any,name: str,*,default=False) -> bool:
-        value = cls._layout_value(layout_info,name,default=default)
-        if isinstance(value,str):
-            return value.strip().lower() in ("1","true","yes","on")
-        return bool(value)
-
-    @staticmethod
-    def _layout_value(layout_info: Any,name: str,*,default=None):
-        if layout_info is None:
-            return default
-        value = (
-            layout_info.get(name,default)
-            if isinstance(layout_info,Mapping)
-            else getattr(layout_info,name,default)
-        )
-        return default if value is None else value
-
     # ------------------------------------------------------------------
-    # setupInfo-backed preferences
+    # ImSwitch-owned persistence of canonical SLM startup preferences
     # ------------------------------------------------------------------
 
-    def _get_setup_slm_info_by_name(
-        self,slm_name: str,fallback: Any | None=None,
+    def _get_setup_slm_info(
+        self,slm_key: str,fallback: Any | None=None,
     ):
-        slm_info = (getattr(self._setupInfo,"slms",{}) or {}).get(slm_name)
+        slm_info = (getattr(self._setupInfo,"slms",{}) or {}).get(slm_key)
         if slm_info is None:
             slm_info = fallback
         if slm_info is None:
-            raise KeyError(f"Could not find SLM '{slm_name}' in setup info")
+            raise KeyError(f"Could not find SLM '{slm_key}' in setup info")
         return slm_info
 
-    def _manager_properties_for(
-        self,slm_name: str,fallback: Any | None=None,
-    ):
-        slm_info = self._get_setup_slm_info_by_name(slm_name,fallback)
-        properties = getattr(slm_info,"managerProperties",None)
-        if properties is None:
-            properties = {}
-            object.__setattr__(slm_info,"managerProperties",properties)
-        return properties
-
-    def _get_default_active_plane_for(
-        self,slm_name: str,slm_info: Any,section_key: str,
-    ):
-        return get_default_active_planes(
-            self._manager_properties_for(slm_name,slm_info)
-        ).get(section_key)
-
-    def _set_default_active_plane_for(
+    def _save_startup_preferences_for(
         self,
-        slm_name: str,
-        slm_info: Any,
-        section_key: str,
-        plane_name: str | None,
+        slm_key: str,
+        fallback: Any,
+        preferences: SLMStartupPreferences,
     ) -> None:
-        set_default_active_plane(
-            self._manager_properties_for(slm_name,slm_info),
-            section_key,
-            plane_name,
+        if not isinstance(preferences,SLMStartupPreferences):
+            raise TypeError("preferences must be an SLMStartupPreferences")
+        slm_info = self._get_setup_slm_info(slm_key,fallback)
+        object.__setattr__(
+            slm_info,"startup_preferences",preferences.to_dict(),
         )
-        self._save_setup_info()
-
-    def _get_startup_config_for(
-        self,slm_name: str,slm_info: Any,
-    ) -> str | None:
-        return self._manager_properties_for(slm_name,slm_info).get("startConfig")
-
-    def _set_startup_config_for(
-        self,slm_name: str,slm_info: Any,filename: str | None,
-    ) -> None:
-        properties = self._manager_properties_for(slm_name,slm_info)
-        if filename:
-            properties["startConfig"] = str(filename)
-        else:
-            properties.pop("startConfig",None)
-        self._save_setup_info()
-
-    def _get_section_view_mode_for(self,slm_name: str,slm_info: Any):
-        return getattr(
-            self._get_setup_slm_info_by_name(slm_name,slm_info),
-            "sectionViewMode",
-            None,
-        )
-
-    def _set_section_view_mode_for(
-        self,slm_name: str,slm_info: Any,value: Any,
-    ) -> None:
-        mode = SectionsDisplayMode.normalize(value)
-        setup_slm_info = self._get_setup_slm_info_by_name(slm_name,slm_info)
-        if getattr(setup_slm_info,"sectionViewMode",None) == mode.value:
-            return
-        object.__setattr__(setup_slm_info,"sectionViewMode",mode.value)
+        self._slm_infos[slm_key] = slm_info
         self._save_setup_info()
 
     def _save_setup_info(self) -> None:
@@ -576,7 +449,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         self.__logger.error(f"[{slm_key}] {detail}")
 
     def _create_device_provider(
-        self,slm_name: str,slm_manager: Any,
+        self,slm_key: str,slm_manager: Any,
     ) -> SLMDeviceProvider:
         requires_connection = bool(
             getattr(slm_manager,"requires_device_connection",False)
@@ -584,17 +457,17 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
 
         def upload(frame):
             return self._master.slmsManager.execOn(
-                slm_name,lambda manager:manager.upload_pattern(frame),
+                slm_key,lambda manager:manager.upload_pattern(frame),
             )
 
         def connect():
             return self._master.slmsManager.execOn(
-                slm_name,lambda manager:manager.connect_to_device(),
+                slm_key,lambda manager:manager.connect_to_device(),
             )
 
         def disconnect():
             return self._master.slmsManager.execOn(
-                slm_name,lambda manager:manager.close_device(),
+                slm_key,lambda manager:manager.close_device(),
             )
 
         return SLMDeviceProvider(
@@ -603,14 +476,6 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
             disconnect=(disconnect if requires_connection else None),
             requires_explicit_connection=requires_connection,
         )
-
-    @staticmethod
-    def _make_slm_key(name: str) -> str:
-        key = re.sub(r"[^0-9a-zA-Z_]+","_",name.strip())
-        key = key.strip("_").lower()
-        if not key:
-            raise ValueError(f"Cannot derive an SLM key from {name!r}")
-        return key
 
     def _fmt(self,value):
         if value is None:
