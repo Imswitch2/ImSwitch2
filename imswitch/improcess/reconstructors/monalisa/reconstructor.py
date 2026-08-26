@@ -17,8 +17,10 @@ from .lattice import Lattice, detect_lattice
 from .lattice_recon import (
     assemble_image,
     choose_orientation,
+    finalize_splat,
     sample_positions,
     scan_offsets_px,
+    splat_add,
 )
 from .live_session import MonalisaLiveSession
 from .localizer import detection_band
@@ -199,19 +201,23 @@ class MonalisaReconstructor(StreamingReconstructor):
         if data.ndim != 3:
             raise ValueError(f'Expected 3D data (frames, rows, cols), got shape {data.shape}')
 
-        if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
+        method = params.get('reconstruction_method')
+        runner = {
+            'Fast Gauss MoNaLISA': self._process_fast_gauss_offline,
+            'Enhanced confocal (ISM)': self._process_ism_offline,
+        }.get(method)
+        if runner is not None:
             if params.get('sweep_enabled'):
-                return self._process_fast_gauss_sweep(
-                    data_obj.name, data, params, scan_params, data_attrs
+                return self._process_parameter_sweep(
+                    runner, data_obj.name, data, params, scan_params, data_attrs
                 )
-            return self._process_fast_gauss_offline(
-                data_obj.name, data, params, scan_params, data_attrs
-            )
+            return runner(data_obj.name, data, params, scan_params, data_attrs)
 
         if params.get('sweep_enabled'):
             raise ValueError(
-                'Parameter sweep is only supported for the Fast Gauss '
-                'MoNaLISA method; disable the sweep or switch methods'
+                'Parameter sweep is only supported for the Fast Gauss and '
+                'Enhanced confocal (ISM) methods; disable the sweep or '
+                'switch methods'
             )
 
         # Bleaching correction
@@ -550,16 +556,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 'General-lattice fast Gauss currently supports a single line '
                 f'step (got n_linesteps={geometry["n_linesteps"]})'
             )
-        try:
-            pixel_size_nm = float(params.get('pixel_size_nm'))
-        except (TypeError, ValueError):
-            pixel_size_nm = 0.0
-        if pixel_size_nm <= 0:
-            raise ValueError(
-                'General-lattice reconstruction needs the camera pixel size '
-                "(the widget's 'Pixel size', in nm) to place scan offsets in "
-                'camera pixels'
-            )
+        pixel_size_nm = self._require_pixel_size_nm(params)
 
         nx_s, ny_s = geometry['nx_s'], geometry['ny_s']
         frames_per_stack = geometry['frames_per_stack']
@@ -575,21 +572,9 @@ class MonalisaReconstructor(StreamingReconstructor):
                 f'({lattice.describe()})'
             )
         foci_xy = np.column_stack([foci_x, foci_y])
-
-        session = self.make_session()
-        gaussian_sigma_px = session._resolve_gaussian_sigma_px(params)
-        pinhole_radius_px = session._resolve_pinhole_radius_px(
-            params, gaussian_sigma_px
+        footprint, gaussian_sigma_px, fit_background = (
+            self._resolve_extraction_footprint(params)
         )
-        fit_background = session._resolve_fit_background(params)
-        num_rects, gaussian_sigma_px, pinhole_radius_px = (
-            validate_gaussian_fit_options(
-                params.get('fast_gauss_footprint_num_rects'),
-                gaussian_sigma_px,
-                pinhole_radius_px,
-            )
-        )
-        footprint = _build_footprint(num_rects, pinhole_radius_px)
 
         self._logger.info(
             f'General-lattice fast Gauss: {foci_xy.shape[0]} foci, '
@@ -684,24 +669,274 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         return result
 
-    def _process_fast_gauss_sweep(
+    @staticmethod
+    def _require_pixel_size_nm(params: dict) -> float:
+        try:
+            pixel_size_nm = float(params.get('pixel_size_nm'))
+        except (TypeError, ValueError):
+            pixel_size_nm = 0.0
+        if pixel_size_nm <= 0:
+            raise ValueError(
+                'This reconstruction needs the camera pixel size (the '
+                "widget's 'Pixel size', in nm) to place scan offsets in "
+                'camera pixels'
+            )
+        return pixel_size_nm
+
+    def _resolve_extraction_footprint(self, params: dict):
+        """Footprint offsets + fit options from the shared widget params."""
+        session = self.make_session()
+        gaussian_sigma_px = session._resolve_gaussian_sigma_px(params)
+        pinhole_radius_px = session._resolve_pinhole_radius_px(
+            params, gaussian_sigma_px
+        )
+        fit_background = session._resolve_fit_background(params)
+        num_rects, gaussian_sigma_px, pinhole_radius_px = (
+            validate_gaussian_fit_options(
+                params.get('fast_gauss_footprint_num_rects'),
+                gaussian_sigma_px,
+                pinhole_radius_px,
+            )
+        )
+        footprint = _build_footprint(num_rects, pinhole_radius_px)
+        return footprint, gaussian_sigma_px, fit_background
+
+    def _process_ism_offline(
         self,
         name: str,
         data: np.ndarray,
         params: dict,
         scan_params: dict,
         data_attrs: dict | None = None,
-    ) -> MonalisaSweepResult:
-        """Run the offline fast-Gauss path once per sweep value.
+    ) -> MonalisaProcessingResult:
+        """Enhanced-confocal reconstruction by ISM pixel reassignment.
 
-        Optional advanced mode: the chosen parameter (pinhole radius or fit
-        sigma) is overridden per run and the per-value reconstructions are
-        stacked along a leading Sweep axis, so the viewer exposes a slider to
-        find the best setting empirically.
+        A MoNaLISA frame is a massively parallel image-scanning-microscopy
+        measurement: each focus's emission spot is *imaged*, and the camera
+        pixel at offset ``d`` from a focus predominantly sees the specimen at
+        ``alpha * d`` beside the excitation spot, with
+        ``alpha = sigma_exc^2 / (sigma_exc^2 + sigma_det^2)`` (1/2 for
+        equal-width PSFs). Pixel reassignment therefore deposits every
+        footprint pixel's raw value at
+
+            focus + scan_offset + alpha * (pixel - focus)
+
+        and grids the lot — no per-focus fitting at all: open-pinhole photon
+        collection with up-to-sqrt(2) resolution gain over confocal.
+        ``alpha = 0`` degenerates to a binned open-pinhole confocal, which
+        makes it a useful sweep anchor. Works identically for rectangular and
+        non-rectangular lattices (the reassigned positions never form a
+        square raster anyway).
+
+        Unlike co-scanned detector-array ISM, this parallel geometry covers
+        each specimen point once, so any output point only receives a
+        partial, position-dependent subset of detector offsets — a plain
+        sum/mean would imprint a tile-scale collection ripple. Each pixel is
+        therefore treated as measuring the specimen with gain
+        ``g = envelope(d)`` and combined inverse-variance weighted,
+        ``S = sum(g * value) / sum(g^2)``, which makes the signal gain
+        exactly uniform. Background is not modeled (a constant camera offset
+        turns into a smooth tile-scale offset pattern).
+        """
+        geometry = self._resolve_fast_gauss_geometry(data, scan_params, data_attrs)
+        if geometry['n_linesteps'] != 1:
+            raise ValueError(
+                'Enhanced confocal (ISM) currently supports a single line '
+                f'step (got n_linesteps={geometry["n_linesteps"]})'
+            )
+        pixel_size_nm = self._require_pixel_size_nm(params)
+        try:
+            alpha = float(params.get('ism_reassignment_factor', 0.5))
+        except (TypeError, ValueError):
+            raise ValueError('ISM reassignment factor must be a number')
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError(
+                f'ISM reassignment factor must be in [0, 1], got {alpha:g}'
+            )
+
+        nx_s, ny_s = geometry['nx_s'], geometry['ny_s']
+        frames_per_stack = geometry['frames_per_stack']
+        num_timepoints = geometry['num_timepoints']
+        step_x_px = geometry['step_x_nm'] / pixel_size_nm
+        step_y_px = geometry['step_y_nm'] / pixel_size_nm
+        num_rows, num_cols = data.shape[-2:]
+
+        lattice = self._detect_offline_lattice(data, params, required=False)
+        if lattice is None:
+            # Fall back to the rectangular pattern the widget describes.
+            xp = float(params.get('col_period') or 0)
+            yp = float(params.get('row_period') or 0)
+            if xp <= 0 or yp <= 0:
+                raise ValueError(
+                    'No illumination lattice detected and the widget pattern '
+                    'periods are unset; cannot place ISM foci'
+                )
+            lattice = Lattice.rectangular(
+                xp, yp,
+                float(params.get('col_offset') or 0),
+                float(params.get('row_offset') or 0),
+            )
+        foci_x, foci_y = lattice.points_in_frame(num_rows, num_cols)
+        if foci_x.size < 3:
+            raise ValueError(
+                'Fewer than three lattice foci fall inside the frame '
+                f'({lattice.describe()})'
+            )
+        foci_xy = np.column_stack([foci_x, foci_y])
+        footprint, gaussian_sigma_px, fit_background = (
+            self._resolve_extraction_footprint(params)
+        )
+
+        # Scan orientation from the same total-variation criterion, using the
+        # cheap per-focus amplitudes of the first stack.
+        amplitudes_first = extract_lattice_amplitudes(
+            data[:frames_per_stack], foci_x, foci_y, footprint,
+            gaussian_sigma_px, fit_background,
+        )
+        orientation = choose_orientation(
+            foci_xy, amplitudes_first, nx_s, ny_s, (step_x_px, step_y_px)
+        )
+        offsets = scan_offsets_px(nx_s, ny_s, step_x_px, step_y_px, orientation)
+
+        # Static per-focus pixel table: camera indices and reassigned base
+        # positions focus + alpha * (pixel - focus), in-frame pixels only.
+        offsets_x = np.round(np.asarray(footprint[0])).astype(np.int64)
+        offsets_y = np.round(np.asarray(footprint[1])).astype(np.int64)
+        pixel_cols = np.round(foci_x).astype(np.int64)[:, None] + offsets_x[None, :]
+        pixel_rows = np.round(foci_y).astype(np.int64)[:, None] + offsets_y[None, :]
+        in_frame = (
+            (pixel_cols >= 0) & (pixel_cols < num_cols)
+            & (pixel_rows >= 0) & (pixel_rows < num_rows)
+        )
+        focus_x_flat = np.broadcast_to(foci_x[:, None], in_frame.shape)[in_frame]
+        focus_y_flat = np.broadcast_to(foci_y[:, None], in_frame.shape)[in_frame]
+        rows_index = pixel_rows[in_frame]
+        cols_index = pixel_cols[in_frame]
+        offset_dx = cols_index - focus_x_flat
+        offset_dy = rows_index - focus_y_flat
+        base = np.column_stack([
+            focus_x_flat + alpha * offset_dx,
+            focus_y_flat + alpha * offset_dy,
+        ])
+        # Per-sample detection gain: the emission-spot envelope at the
+        # pixel's offset from its focus (see the estimator note above).
+        gain = np.exp(
+            -(offset_dx**2 + offset_dy**2) / (2.0 * gaussian_sigma_px**2)
+        )
+        gain_squared = gain * gain
+
+        self._logger.info(
+            f'ISM reassignment: alpha={alpha:g}, {foci_xy.shape[0]} foci x '
+            f'{footprint[0].size} footprint px ({base.shape[0]} samples/frame), '
+            f'{lattice.describe()}'
+        )
+
+        bleach_scale = np.ones(data.shape[0])
+        if params.get('bleaching_correction'):
+            energies = data.sum(axis=(1, 2), dtype=np.float64)
+            reference = energies[0] if energies[0] > 0 else 1.0
+            bleach_scale = np.where(energies > 0, reference / energies, 1.0)
+
+        # Raster extent from the full (alpha = 1) footprint reach, so the
+        # output geometry is independent of the reassignment factor and every
+        # slice of a factor sweep lands on the identical raster.
+        reach_x = float(np.abs(offsets_x).max())
+        reach_y = float(np.abs(offsets_y).max())
+        origin = (
+            float(foci_x.min() - reach_x + offsets[:, 0].min()),
+            float(foci_y.min() - reach_y + offsets[:, 1].min()),
+        )
+        extent_x = float(foci_x.max() + reach_x + offsets[:, 0].max()) - origin[0]
+        extent_y = float(foci_y.max() + reach_y + offsets[:, 1].max()) - origin[1]
+        pitch = (step_x_px, step_y_px)
+        shape = (
+            int(np.floor(extent_y / pitch[1] + 0.5)) + 1,
+            int(np.floor(extent_x / pitch[0] + 0.5)) + 1,
+        )
+
+        images = []
+        first_assembly = None
+        for time_index in range(num_timepoints):
+            accumulated = np.zeros(shape, dtype=np.float64)
+            weights = np.zeros(shape, dtype=np.float64)
+            for local_index in range(frames_per_stack):
+                frame_index = time_index * frames_per_stack + local_index
+                values = (
+                    data[frame_index][rows_index, cols_index].astype(np.float64)
+                    * bleach_scale[frame_index]
+                )
+                splat_add(
+                    accumulated, weights,
+                    base + offsets[local_index][None, :], gain * values,
+                    origin, pitch, sample_weights=gain_squared,
+                )
+            assembly = finalize_splat(accumulated, weights, origin, pitch)
+            if first_assembly is None:
+                first_assembly = assembly
+            images.append(assembly.image)
+        stacked = np.stack(images).astype(np.float32)
+        data_6d = stacked[np.newaxis, np.newaxis, :, np.newaxis, :, :]
+        self._logger.info(
+            f'ISM reconstruction: {shape} px, coverage '
+            f'{first_assembly.coverage:.1%}'
+        )
+
+        finite = stacked[np.isfinite(stacked)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)),
+                float(np.percentile(finite, 99.9)),
+            )
+        return MonalisaProcessingResult(
+            name=name,
+            data=data_6d,
+            scan_params=geometry['scan_params'],
+            display_levels=display_levels,
+            output_pixel_size_nm=(geometry['step_y_nm'], geometry['step_x_nm']),
+            axis_label_map=self._axis_labels,
+            recon_diagnostics={
+                'pattern_geometry': 'ism',
+                'ism_reassignment_factor': alpha,
+                'lattice': lattice.describe(),
+                'num_foci': int(foci_xy.shape[0]),
+                'pixel_size_nm': pixel_size_nm,
+                'step_px': pitch,
+                'scan_orientation': orientation,
+                'output_origin_px': origin,
+                'coverage': first_assembly.coverage,
+            },
+        )
+
+    def _process_parameter_sweep(
+        self,
+        runner,
+        name: str,
+        data: np.ndarray,
+        params: dict,
+        scan_params: dict,
+        data_attrs: dict | None = None,
+    ) -> MonalisaSweepResult:
+        """Run one offline method (``runner``) once per sweep value.
+
+        Optional advanced mode: the chosen parameter (pinhole radius, fit
+        sigma or ISM reassignment factor) is overridden per run and the
+        per-value reconstructions are stacked along a leading Sweep axis, so
+        the viewer exposes a slider to find the best setting empirically.
         """
         parameter_key = resolve_sweep_parameter(params.get('sweep_parameter'))
         values = parse_sweep_values(params.get('sweep_values_text'))
         params_key, ui_label = SWEEPABLE_PARAMETERS[parameter_key]
+        if (
+            parameter_key == 'ism_reassignment_factor'
+            and getattr(runner, '__func__', runner)
+            is not MonalisaReconstructor._process_ism_offline
+        ):
+            raise ValueError(
+                'The ISM reassignment factor only applies to the '
+                "'Enhanced confocal (ISM)' method; every sweep value would "
+                'produce the identical reconstruction here'
+            )
 
         per_value_results = []
         for index, value in enumerate(values):
@@ -716,9 +951,7 @@ class MonalisaReconstructor(StreamingReconstructor):
                 f'Sweep {index + 1}/{len(values)}: {ui_label} = {value:g}'
             )
             per_value_results.append(
-                self._process_fast_gauss_offline(
-                    name, data, run_params, scan_params, data_attrs
-                )
+                runner(name, data, run_params, scan_params, data_attrs)
             )
 
         first = per_value_results[0]
@@ -748,7 +981,7 @@ class MonalisaReconstructor(StreamingReconstructor):
             axis_label_map=self._axis_labels,
         )
         self._logger.info(
-            f'Fast Gauss sweep complete: {len(values)} x {ui_label}, '
+            f'Parameter sweep complete: {len(values)} x {ui_label}, '
             f'shape {sweep_result.data.shape}'
         )
         return sweep_result

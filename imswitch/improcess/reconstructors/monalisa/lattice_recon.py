@@ -144,16 +144,43 @@ def assemble_image(
             int(np.floor(extent_x / pitch[0] + 0.5)) + 1,
         )
     rows, cols = int(shape[0]), int(shape[1])
+    accumulated = np.zeros((rows, cols), dtype=np.float64)
+    weights = np.zeros((rows, cols), dtype=np.float64)
+    splat_add(accumulated, weights, positions, values, origin, pitch)
+    return finalize_splat(accumulated, weights, origin, pitch, min_weight)
 
-    gx = (positions[:, 0] - float(origin[0])) / float(pitch[0])
-    gy = (positions[:, 1] - float(origin[1])) / float(pitch[1])
+
+def splat_add(
+    accumulated: np.ndarray,
+    weights: np.ndarray,
+    positions: np.ndarray,
+    values: np.ndarray,
+    origin: tuple[float, float],
+    pitch: tuple[float, float],
+    sample_weights: np.ndarray | None = None,
+) -> None:
+    """Deposit one batch of samples into an existing splat accumulator.
+
+    The incremental core of :func:`assemble_image`, exposed so callers with
+    too many samples to materialize at once (the ISM path deposits every
+    footprint pixel of every frame) can accumulate chunk by chunk and call
+    :func:`finalize_splat` at the end. ``sample_weights`` (default 1) lets a
+    caller weight samples individually — the normalized image becomes
+    ``sum(w * values) / sum(w * sample_weights)`` per pixel, which the ISM
+    path uses for its gain-corrected estimator.
+    """
+    rows, cols = accumulated.shape
+    gx = (np.asarray(positions[:, 0], dtype=np.float64) - float(origin[0])) / float(pitch[0])
+    gy = (np.asarray(positions[:, 1], dtype=np.float64) - float(origin[1])) / float(pitch[1])
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if sample_weights is None:
+        sample_weights = np.ones_like(values)
+    else:
+        sample_weights = np.asarray(sample_weights, dtype=np.float64).reshape(-1)
     x0 = np.floor(gx).astype(np.int64)
     y0 = np.floor(gy).astype(np.int64)
     fx = gx - x0
     fy = gy - y0
-
-    accumulated = np.zeros((rows, cols), dtype=np.float64)
-    weights = np.zeros((rows, cols), dtype=np.float64)
     for dy in (0, 1):
         for dx in (0, 1):
             px = x0 + dx
@@ -161,8 +188,17 @@ def assemble_image(
             weight = (fx if dx else 1.0 - fx) * (fy if dy else 1.0 - fy)
             keep = (px >= 0) & (px < cols) & (py >= 0) & (py < rows) & (weight > 0)
             np.add.at(accumulated, (py[keep], px[keep]), weight[keep] * values[keep])
-            np.add.at(weights, (py[keep], px[keep]), weight[keep])
+            np.add.at(weights, (py[keep], px[keep]), weight[keep] * sample_weights[keep])
 
+
+def finalize_splat(
+    accumulated: np.ndarray,
+    weights: np.ndarray,
+    origin: tuple[float, float],
+    pitch: tuple[float, float],
+    min_weight: float = MIN_SPLAT_WEIGHT,
+) -> ScatterAssembly:
+    """Normalize a splat accumulator into a :class:`ScatterAssembly`."""
     covered = weights >= float(min_weight)
     image = np.full(weights.shape, np.nan, dtype=np.float64)
     image[covered] = accumulated[covered] / weights[covered]

@@ -932,6 +932,39 @@ live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
 timepoints. Use the default ``MoNaLISA`` method for the full coefficient-based
 pipeline.
 
+Enhanced confocal (ISM)
+=======================
+
+The third ``Reconstruction method`` treats a MoNaLISA scan as what it also
+is: a massively parallel image-scanning-microscopy measurement. Each focus's
+emission spot is *imaged* rather than integrated, and the camera pixel at
+offset ``d`` from a focus predominantly sees the specimen at ``factor × d``
+beside the excitation spot, where the ideal factor is
+``σ_exc² / (σ_exc² + σ_det²)`` — 0.5 for equal-width PSFs, slightly less
+with a Stokes-shifted detection PSF. Instead of fitting anything, every
+footprint pixel's raw value is deposited at
+``focus + scan offset + factor × (pixel − focus)`` and gridded: open-pinhole
+photon collection with up to √2 resolution gain over the confocal
+equivalent. ``ISM options → Reassignment factor`` is the single parameter
+(0 degenerates to a binned open-pinhole confocal), and it can be swept like
+the fast-Gauss parameters to find the sharpest setting empirically. The
+footprint/pinhole options are shared with Fast Gauss, and the method works
+identically for rectangular and non-rectangular lattices (the reassigned
+positions never form a square raster anyway; the pattern is detected
+automatically, falling back to the widget's rectangular fields).
+
+One geometric difference from co-scanned detector-array ISM is handled
+internally: the parallel scan covers each specimen point once, so an output
+point only receives a partial, position-dependent subset of detector
+offsets, and a plain sum or mean would imprint a tile-scale collection
+ripple. Each pixel is therefore treated as measuring the specimen with gain
+``g = envelope(d)`` and combined inverse-variance weighted
+(``Σ g·value / Σ g²``), which makes the signal gain exactly uniform.
+Background is not modeled — a constant camera offset becomes a smooth
+tile-scale offset pattern — so this method shows haze the fast-Gauss
+background fit would remove; in exchange it uses every collected photon and
+has no per-focus fit to destabilize near very bright structures.
+
 Pass-through reconstructors
 ===========================
 

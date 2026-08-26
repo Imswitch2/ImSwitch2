@@ -1849,11 +1849,15 @@ class ReconParTree(ParameterTree):
             {'name': 'Pixel size', 'type': 'float', 'value': 77, 'suffix': 'nm'},
             {'name': 'Reconstruction method', 'type': 'list',
              'value': 'Fast Gauss MoNaLISA',
-             'values': ['Fast Gauss MoNaLISA', 'MoNaLISA'],
+             'values': ['Fast Gauss MoNaLISA', 'MoNaLISA',
+                        'Enhanced confocal (ISM)'],
              'tip': (
                  'Fast Gauss MoNaLISA (default) uses the low-latency Gaussian '
                  'reassignment path that live reconstruction always uses. '
-                 'MoNaLISA runs the full post-acquisition SignalExtractor path.'
+                 'MoNaLISA runs the full post-acquisition SignalExtractor '
+                 'path. Enhanced confocal (ISM) skips fitting entirely and '
+                 'pixel-reassigns every footprint pixel (image scanning '
+                 'microscopy); see ISM options.'
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [
@@ -1912,17 +1916,32 @@ class ReconParTree(ParameterTree):
                      'tip': ('Advanced: reconstruct once per sweep value and '
                              'stack the results along a leading Sweep axis — '
                              'slide through it in the viewer to find the best '
-                             'setting. Offline Fast Gauss only.')},
+                             'setting. Offline Fast Gauss and ISM only.')},
                     {'name': 'Sweep parameter', 'type': 'list',
                      'value': 'Pinhole radius (×σ)',
-                     'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)'],
-                     'tip': ('Which fast-Gauss parameter to sweep. Sweeping '
-                             'the pinhole radius forces Circular pinhole '
-                             'footprint mode.')},
+                     'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)',
+                                'ISM reassignment factor'],
+                     'tip': ('Which parameter to sweep. Sweeping the pinhole '
+                             'radius forces Circular pinhole footprint mode; '
+                             'the ISM factor applies to the Enhanced '
+                             'confocal method only.')},
                     {'name': 'Sweep values', 'type': 'str',
                      'value': '0.75, 1.0, 1.25, 1.5, 2.0, 2.5',
                      'tip': ('Comma-separated values, or an inclusive range '
                              'start:step:stop (e.g. 0.5:0.25:2.5).')}]}]},
+            {'name': 'ISM options', 'type': 'group', 'children': [
+                {'name': 'Reassignment factor', 'type': 'float', 'value': 0.5,
+                 'limits': (0.0, 1.0),
+                 'tip': ('Enhanced confocal (ISM): each footprint pixel at '
+                         'offset d from a focus is deposited at focus + '
+                         'factor x d. The ideal value is '
+                         'sigma_exc^2/(sigma_exc^2 + sigma_det^2) — 0.5 for '
+                         'equal excitation/detection PSF widths, slightly '
+                         'less with a Stokes-shifted detection PSF; 0 '
+                         'degenerates to a binned open-pinhole confocal. '
+                         'Sweep it to find the sharpest setting. The '
+                         'footprint/pinhole options above are shared with '
+                         'Fast Gauss.')}]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -1969,6 +1988,8 @@ class ReconParTree(ParameterTree):
                 'Sweep parameter').value(),
             'sweep_values_text': fast_gauss_opts.param('Parameter sweep').param(
                 'Sweep values').value(),
+            'ism_reassignment_factor': self.p.param('ISM options').param(
+                'Reassignment factor').value(),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
         }
 

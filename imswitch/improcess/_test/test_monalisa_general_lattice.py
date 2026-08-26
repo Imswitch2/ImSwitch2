@@ -273,6 +273,176 @@ class TestGeneralLatticeReconstruction:
             MonalisaReconstructor().process(data_obj, params)
 
 
+def _ism_sample_field(x, y):
+    """Specimen with structure near the emission-spot scale, so reassignment
+    quality is actually measurable (the smooth field barely blurs)."""
+    return _sample_field(x, y) + 25.0 * np.sin(
+        2 * np.pi * np.asarray(x) / 10.7
+    ) * np.cos(2 * np.pi * np.asarray(y) / 9.3)
+
+
+def _simulate_ism_acquisition(
+    lattice: Lattice,
+    nx_s: int,
+    ny_s: int,
+    step_px: tuple[float, float],
+    shape: tuple[int, int],
+    alpha_true: float = 0.5,
+    spot_sigma: float = 2.4,
+    orientation=("x", 1, 1),
+    background: float = 0.0,
+):
+    """Render the ISM forward model: the camera pixel at offset ``d`` from a
+    focus sees the specimen at ``alpha_true * d`` beside the excitation spot,
+    weighted by the emission-spot envelope."""
+    rows, cols = shape
+    margin = 3 * spot_sigma
+    foci_x, foci_y = lattice.points_in_frame(rows, cols, margin=margin)
+    offsets = scan_offsets_px(nx_s, ny_s, step_px[0], step_px[1], orientation)
+
+    frames = np.full((nx_s * ny_s, rows, cols), background, dtype=np.float64)
+    half = int(np.ceil(margin))
+    for cx, cy in zip(foci_x, foci_y):
+        x1 = max(0, int(np.floor(cx - half)))
+        x2 = min(cols, int(np.ceil(cx + half)) + 1)
+        y1 = max(0, int(np.floor(cy - half)))
+        y2 = min(rows, int(np.ceil(cy + half)) + 1)
+        if x1 >= x2 or y1 >= y2:
+            continue
+        ys, xs = np.mgrid[y1:y2, x1:x2].astype(float)
+        dx = xs - cx
+        dy = ys - cy
+        envelope = np.exp(-((dx**2) + (dy**2)) / (2 * spot_sigma**2))
+        window = (slice(y1, y2), slice(x1, x2))
+        for index, offset in enumerate(offsets):
+            specimen = _ism_sample_field(
+                cx + offset[0] + alpha_true * dx,
+                cy + offset[1] + alpha_true * dy,
+            )
+            frames[index][window] += envelope * specimen
+    return frames
+
+
+def _affine_accuracy(result):
+    """Relative RMS after an affine (gain + offset) fit to the specimen.
+
+    ISM is linear in the specimen up to a collection-efficiency gain and the
+    unsubtracted background offset, so the fit removes exactly those two
+    nuisance parameters before comparing structure.
+    """
+    image = result.data[0, 0, 0, 0]
+    diag = result.recon_diagnostics
+    origin = diag["output_origin_px"]
+    step_x, step_y = diag["step_px"]
+    ys, xs = np.mgrid[0 : image.shape[0], 0 : image.shape[1]]
+    truth = _ism_sample_field(origin[0] + xs * step_x, origin[1] + ys * step_y)
+
+    crop_y = max(2, int(0.12 * image.shape[0]))
+    crop_x = max(2, int(0.12 * image.shape[1]))
+    inner = np.zeros(image.shape, dtype=bool)
+    inner[crop_y:-crop_y, crop_x:-crop_x] = True
+    valid = inner & np.isfinite(image)
+    assert valid.sum() > 100
+    design = np.column_stack([truth[valid], np.ones(valid.sum())])
+    coefficients, _, _, _ = np.linalg.lstsq(design, image[valid], rcond=None)
+    fitted = design @ coefficients
+    return float(
+        np.sqrt(np.mean((image[valid] - fitted) ** 2))
+        / (abs(coefficients[0]) * np.std(truth[valid]))
+    )
+
+
+class TestEnhancedConfocalISM:
+    def _run(self, frames, nx_s, ny_s, step_px, **overrides):
+        data_obj = InMemoryStackWrapper(
+            name="ism", dataset_name="det", data=frames, attrs={}
+        )
+        settings = dict(
+            reconstruction_method="Enhanced confocal (ISM)",
+            fast_gauss_gaussian_sigma_px=2.4,
+            ism_reassignment_factor=0.5,
+        )
+        settings.update(overrides)
+        params = _params(nx_s, ny_s, step_px, 12.0, **settings)
+        return MonalisaReconstructor().process(data_obj, params)
+
+    def test_ism_reconstructs_the_specimen_on_a_diamond(self):
+        lattice, nx_s, ny_s, step_px = _diamond_setup()
+        frames = _simulate_ism_acquisition(
+            lattice, nx_s, ny_s, step_px, (160, 160), alpha_true=0.5
+        )
+        result = self._run(frames, nx_s, ny_s, step_px)
+
+        assert result.recon_diagnostics["pattern_geometry"] == "ism"
+        assert result.recon_diagnostics["ism_reassignment_factor"] == 0.5
+        # The raster spans the full (alpha = 1) footprint reach so factor
+        # sweeps align; at alpha = 0.5 its border rim is honestly NaN.
+        assert result.recon_diagnostics["coverage"] > 0.9
+        assert result.spots is None
+        assert _affine_accuracy(result) < 0.08
+
+    def test_matched_alpha_beats_confocal_binning(self):
+        """Reassigning with the generator's true factor must be sharper than
+        alpha = 0 (pure open-pinhole binning) on the same frames."""
+        lattice, nx_s, ny_s, step_px = _diamond_setup()
+        frames = _simulate_ism_acquisition(
+            lattice, nx_s, ny_s, step_px, (160, 160), alpha_true=0.5
+        )
+        matched = self._run(frames, nx_s, ny_s, step_px)
+        binned = self._run(
+            frames, nx_s, ny_s, step_px, ism_reassignment_factor=0.0
+        )
+        assert _affine_accuracy(matched) < _affine_accuracy(binned)
+
+    def test_ism_on_rectangular_grid(self):
+        lattice = Lattice.rectangular(11.0, 11.0, 5.3, 4.7)
+        nx_s = ny_s = 8
+        step_px = (11.0 / nx_s, 11.0 / ny_s)
+        frames = _simulate_ism_acquisition(
+            lattice, nx_s, ny_s, step_px, (160, 160), alpha_true=0.5
+        )
+        result = self._run(frames, nx_s, ny_s, step_px)
+        assert _affine_accuracy(result) < 0.08
+
+    def test_ism_factor_sweep(self):
+        lattice, nx_s, ny_s, step_px = _diamond_setup()
+        frames = _simulate_ism_acquisition(
+            lattice, nx_s, ny_s, step_px, (160, 160)
+        )
+        result = self._run(
+            frames, nx_s, ny_s, step_px,
+            sweep_enabled=True,
+            sweep_parameter="ISM reassignment factor",
+            sweep_values_text="0.3, 0.5",
+        )
+        assert isinstance(result, MonalisaSweepResult)
+        assert result.data.shape[0] == 2
+        assert result.sweep_parameter_label == "ISM reassignment factor"
+
+    def test_ism_sweep_parameter_rejected_for_fast_gauss(self):
+        lattice, nx_s, ny_s, step_px = _diamond_setup()
+        frames = _simulate_acquisition(lattice, nx_s, ny_s, step_px, (160, 160))
+        data_obj = InMemoryStackWrapper(
+            name="wrong-sweep", dataset_name="det", data=frames, attrs={}
+        )
+        params = _params(
+            nx_s, ny_s, step_px, 12.0,
+            sweep_enabled=True,
+            sweep_parameter="ISM reassignment factor",
+            sweep_values_text="0.3, 0.5",
+        )
+        with pytest.raises(ValueError, match="only applies"):
+            MonalisaReconstructor().process(data_obj, params)
+
+    def test_invalid_factor_rejected(self):
+        lattice, nx_s, ny_s, step_px = _diamond_setup()
+        frames = _simulate_ism_acquisition(
+            lattice, nx_s, ny_s, step_px, (160, 160)
+        )
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            self._run(frames, nx_s, ny_s, step_px, ism_reassignment_factor=1.5)
+
+
 class TestSpotCloudResult:
     def test_save_writes_csv_next_to_tiff(self, tmp_path):
         lattice, nx_s, ny_s, step_px = _diamond_setup()

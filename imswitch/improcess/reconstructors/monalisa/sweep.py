@@ -23,6 +23,10 @@ SWEEPABLE_PARAMETERS = {
         "fast_gauss_gaussian_sigma_px",
         "Gaussian sigma (px)",
     ),
+    "ism_reassignment_factor": (
+        "ism_reassignment_factor",
+        "ISM reassignment factor",
+    ),
 }
 
 
@@ -38,6 +42,8 @@ def resolve_sweep_parameter(label: object) -> str:
         return text
     if "pinhole" in text:
         return "pinhole_radius_sigma"
+    if "reassign" in text or "ism" in text:
+        return "ism_reassignment_factor"
     if "sigma" in text:
         return "gaussian_sigma_px"
     raise ValueError(
