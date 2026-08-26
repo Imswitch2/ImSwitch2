@@ -56,12 +56,33 @@ class MoNaLISAController(ImProcessWidgetController):
         # (row_offset, col_offset, row_period, col_period) — the localizer
         # only scans ~+-20% around its guess.
         current = self._widget.getPatternParams()
-        pattern = self._patternFinder.findPattern(
-            meanData, xp_guess=current[3], yp_guess=current[2]
+        try:
+            pattern, lattice = self._patternFinder.findPatternOrLattice(
+                meanData, xp_guess=current[3], yp_guess=current[2]
+            )
+        except ValueError as exc:
+            self._logger.warning(f'Find pattern found nothing: {exc}')
+            return
+
+        if pattern is not None:
+            self._logger.debug(f'Pattern found as: {pattern}')
+            self.setPatternParams(pattern)
+            self.updatePattern()
+            return
+
+        # Non-rectangular lattice: the four rectangular Pattern fields cannot
+        # express it, so leave them untouched and show the detected foci on
+        # the overlay instead, so the detection can be judged by eye.
+        foci_x, foci_y = lattice.points_in_frame(*meanData.shape)
+        self._commChannel.sigPatternPointsUpdated.emit(foci_x, foci_y)
+        self._logger.info(
+            f'Detected a non-rectangular illumination lattice '
+            f'({lattice.describe()}). The rectangular Pattern fields do not '
+            'apply and were left unchanged; the pattern overlay now shows '
+            'the detected foci. Fast Gauss reconstruction with Pattern '
+            "geometry 'Auto' or 'General lattice' detects this pattern "
+            'automatically — no pattern fields needed.'
         )
-        self._logger.debug(f'Pattern found as: {self._pattern}')
-        self.setPatternParams(pattern)
-        self.updatePattern()
 
     def togglePattern(self, enabled):
         self._logger.debug('Toggling pattern')

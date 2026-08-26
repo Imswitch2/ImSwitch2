@@ -4,7 +4,54 @@ import numpy as np
 import pytest
 from scipy.signal import find_peaks
 
+from imswitch.improcess.reconstructors.monalisa.lattice import Lattice
 from imswitch.improcess.reconstructors.monalisa.pattern_finder import PatternFinder
+
+
+def _render_foci(shape, lattice, sigma=1.8, amp=100.0):
+    rows, cols = shape
+    ys, xs = np.mgrid[0:rows, 0:cols].astype(float)
+    img = np.zeros(shape)
+    fx, fy = lattice.points_in_frame(rows, cols, margin=3 * sigma)
+    for cx, cy in zip(fx, fy):
+        img += amp * np.exp(-(((xs - cx) ** 2) + ((ys - cy) ** 2)) / (2 * sigma**2))
+    return img
+
+
+class TestFindPatternOrLattice:
+    def test_rectangular_grid_returns_pattern(self):
+        truth = Lattice.rectangular(11.05, 11.05, 5.37, 4.81)
+        image = _render_foci((220, 220), truth)
+        pattern, lattice = PatternFinder().findPatternOrLattice(
+            image, xp_guess=11.0, yp_guess=11.0
+        )
+        assert pattern is not None
+        row_offset, col_offset, row_period, col_period = pattern
+        assert row_period == pytest.approx(11.05, abs=0.1)
+        assert col_period == pytest.approx(11.05, abs=0.1)
+        assert lattice is not None
+
+    def test_diamond_returns_lattice_instead_of_raising(self):
+        """The Find pattern regression: a 45-degree rotated square must come
+        back as a lattice object, not crash the UI with a ValueError."""
+        half = 12.0 / np.sqrt(2)
+        truth = Lattice(a1=(half, half), a2=(-half, half), offset=(3.3, 5.1))
+        image = _render_foci((220, 220), truth)
+        pattern, lattice = PatternFinder().findPatternOrLattice(
+            image, xp_guess=11.1, yp_guess=11.1
+        )
+        assert pattern is None
+        assert lattice is not None
+        assert lattice.axis_tilt_deg() == pytest.approx(45.0, abs=0.5)
+        assert lattice.nearest_spacing() == pytest.approx(12.0, abs=0.15)
+
+    def test_featureless_data_raises_value_error(self):
+        """Flat data has no spectral peak anywhere: detection and the 1D
+        refinement both fail, and the error must propagate (readably) rather
+        than fabricating a lattice. (Pure noise is different: the legacy 1D
+        fallback has always returned a best-effort pattern for it.)"""
+        with pytest.raises(ValueError):
+            PatternFinder().findPatternOrLattice(np.zeros((128, 128)))
 
 
 class TestPatternFinder:

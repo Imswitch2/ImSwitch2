@@ -23,10 +23,12 @@ class DataFrameController(ImProcessWidgetController):
         self._patternGrid = []
         self._patternGridMade = False
         self._patternVisible = False
+        self._explicitPatternPoints = None
         self._displayedImage = None
 
         self._commChannel.sigCurrentDataChanged.connect(self.currentDataChanged)
         self._commChannel.sigPatternUpdated.connect(self.patternUpdated)
+        self._commChannel.sigPatternPointsUpdated.connect(self.patternPointsUpdated)
         self._commChannel.sigPatternVisibilityChanged.connect(self.patternVisibilityChanged)
         self._commChannel.sigDetectionPreviewUpdated.connect(self.detectionPreviewUpdated)
         self._commChannel.sigDetectionPreviewVisibilityChanged.connect(self.detectionPreviewVisibilityChanged)
@@ -39,6 +41,16 @@ class DataFrameController(ImProcessWidgetController):
 
     def patternUpdated(self, pattern):
         self._pattern = pattern
+        # Widget edits describe a rectangular grid again — drop any explicit
+        # non-rectangular points Find pattern put on the overlay.
+        self._explicitPatternPoints = None
+        self._patternGridMade = False
+        if self._patternVisible:
+            self.makePatternGrid()
+
+    def patternPointsUpdated(self, x, y):
+        """Show explicit focus positions (non-rectangular detected lattices)."""
+        self._explicitPatternPoints = (np.asarray(x), np.asarray(y))
         self._patternGridMade = False
         if self._patternVisible:
             self.makePatternGrid()
@@ -135,6 +147,13 @@ class DataFrameController(ImProcessWidgetController):
         in rows."""
         data = self._currentDataArray()
         if data is None:
+            return
+        if self._explicitPatternPoints is not None:
+            x, y = self._explicitPatternPoints
+            self._patternGrid = [x, y]
+            self._widget.setPatternGridData(x=x, y=y)
+            self._patternGridMade = True
+            self._logger.debug('Showing detected lattice foci as pattern overlay')
             return
         shape = data.shape
         # The grid lives on the displayed plane, which is not axes 1/2 once the

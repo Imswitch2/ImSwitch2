@@ -118,15 +118,27 @@ class MonalisaReconstructor(StreamingReconstructor):
         # Find pattern, seeding the period search with the widget's current
         # values — the localizer only scans ~+-20% around its guess.
         current = param_widget.get_values()
-        row_offset, col_offset, row_period, col_period = self._pattern_finder.find(
+        pattern, lattice = self._pattern_finder.findPatternOrLattice(
             test_frame,
             xp_guess=current.get('col_period'),
             yp_guess=current.get('row_period'),
         )
-        
+        if pattern is None:
+            # Non-rectangular lattice: the rectangular widget fields cannot
+            # express it — leave them untouched. The general-lattice
+            # reconstruction path detects the pattern itself.
+            self._logger.info(
+                f'Detected a non-rectangular illumination lattice '
+                f'({lattice.describe()}); the rectangular pattern fields were '
+                "left unchanged. Pattern geometry 'Auto' or 'General lattice' "
+                'reconstructs it without them.'
+            )
+            return
+        row_offset, col_offset, row_period, col_period = pattern
+
         # Update widget
         param_widget.set_pattern_params(row_offset, col_offset, row_period, col_period)
-        
+
         self._logger.info(f'Pattern found: row_offset={row_offset:.2f}, col_offset={col_offset:.2f}, '
                          f'row_period={row_period:.2f}, col_period={col_period:.2f}')
     

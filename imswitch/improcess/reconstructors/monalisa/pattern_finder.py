@@ -1,18 +1,12 @@
 import numpy as np
 
-from .localizer import robust_localize
+from .lattice import detect_lattice
+from .localizer import _summed_image, detection_band, robust_localize
 
 
 class PatternFinder:
-    def findPattern(self, image, xp_guess=None, yp_guess=None):
-        """Find pattern as [row_offset, col_offset, row_period, col_period].
-
-        Uses the guess-free 2D lattice detection to seed the precise 1D
-        refinement, so the true period does not need to be near any guess.
-        ``xp_guess``/``yp_guess`` (in px; x == column axis, y == row axis)
-        only serve as fallback seeds when the 2D detection finds no usable
-        spectral peaks.
-        """
+    @staticmethod
+    def _guess_kwargs(xp_guess, yp_guess):
         kwargs = {}
         for key, guess in (("xp_guess", xp_guess), ("yp_guess", yp_guess)):
             try:
@@ -20,8 +14,50 @@ class PatternFinder:
                     kwargs[key] = float(guess)
             except (TypeError, ValueError):
                 pass
-        loc = robust_localize(image, **kwargs)
+        return kwargs
+
+    def findPattern(self, image, xp_guess=None, yp_guess=None):
+        """Find pattern as [row_offset, col_offset, row_period, col_period].
+
+        Uses the guess-free 2D lattice detection to seed the precise 1D
+        refinement, so the true period does not need to be near any guess.
+        ``xp_guess``/``yp_guess`` (in px; x == column axis, y == row axis)
+        only serve as fallback seeds when the 2D detection finds no usable
+        spectral peaks. Raises ValueError for non-rectangular patterns —
+        callers that can handle those should use
+        :meth:`findPatternOrLattice`.
+        """
+        loc = robust_localize(image, **self._guess_kwargs(xp_guess, yp_guess))
         return [loc.yo, loc.xo, loc.yp, loc.xp]
+
+    def findPatternOrLattice(self, image, xp_guess=None, yp_guess=None):
+        """Find the pattern, whatever its geometry.
+
+        Returns ``(pattern, lattice)``: for an axis-aligned rectangular grid,
+        ``pattern`` is the ``[row_offset, col_offset, row_period, col_period]``
+        list (and ``lattice`` its detected basis, when available); for any
+        other Bravais lattice — rotated square, hexagonal — ``pattern`` is
+        None and ``lattice`` carries the detected geometry, which the
+        rectangular widget fields cannot express.
+
+        Raises:
+            ValueError: When no periodic pattern is found at all.
+        """
+        kwargs = self._guess_kwargs(xp_guess, yp_guess)
+        try:
+            loc = robust_localize(image, **kwargs)
+            return [loc.yo, loc.xo, loc.yp, loc.xp], loc.lattice
+        except ValueError:
+            # Either no pattern at all, or a non-rectangular one. Detection
+            # distinguishes the two: it raises its own descriptive error for
+            # patternless data and returns the lattice otherwise.
+            band = detection_band(kwargs.get("xp_guess"), kwargs.get("yp_guess"))
+            lattice = detect_lattice(_summed_image(image), **band)
+            if lattice.is_axis_aligned_rectangular(tol=0.05):
+                # Detection says rectangular, yet the full localization
+                # failed — surface that as the error it is.
+                raise
+            return None, lattice
 
     def find(self, image, xp_guess=None, yp_guess=None):
         """Compatibility alias for the plugin-style reconstructor API."""

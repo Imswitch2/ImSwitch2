@@ -17,6 +17,15 @@ class CommunicationChannel(SignalInterface):
 
     sigPatternUpdated = Signal(object)  # (pattern)
 
+    sigPatternPointsUpdated = Signal(object, object)  # (x, y) explicit foci
+    """Explicit pattern-overlay points for non-rectangular lattices.
+
+    ``sigPatternUpdated`` carries the four rectangular-grid parameters; a
+    detected diamond/hexagonal lattice cannot be expressed that way, so
+    Find pattern emits the enumerated focus positions directly instead. A
+    subsequent ``sigPatternUpdated`` (widget edit) returns the overlay to
+    the rectangular grid."""
+
     sigPatternVisibilityChanged = Signal(bool)  # (visible)
 
     sigDetectionPreviewUpdated = Signal(object, object)  # (x, y) scatter arrays
