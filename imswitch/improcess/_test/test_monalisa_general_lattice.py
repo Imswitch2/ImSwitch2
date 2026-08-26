@@ -11,7 +11,6 @@ from imswitch.improcess.reconstructors.monalisa.lattice_recon import (
     choose_orientation,
     sample_positions,
     scan_offsets_px,
-    solve_per_focus_offsets,
 )
 from imswitch.improcess.reconstructors.monalisa.result import (
     MonalisaSpotCloud,
@@ -39,23 +38,16 @@ def _simulate_acquisition(
     shape: tuple[int, int],
     orientation=("x", 1, 1),
     background: float = 20.0,
-    focus_offset_fn=None,
 ):
     """Render a stack: static foci whose brightness follows the sample.
 
     The sample-moves model the pipeline assumes: focus f in frame k reports
     the specimen at ``focus_position + scan_offset(k)`` while the focus
-    itself stays put in camera space. ``focus_offset_fn(x, y)`` optionally
-    adds a per-focus amplitude offset (illumination inhomogeneity).
+    itself stays put in camera space.
     """
     rows, cols = shape
     margin = 4 * FOCUS_SIGMA
     foci_x, foci_y = lattice.points_in_frame(rows, cols, margin=margin)
-    focus_offsets = (
-        np.zeros(foci_x.size)
-        if focus_offset_fn is None
-        else np.asarray(focus_offset_fn(foci_x, foci_y), dtype=float)
-    )
 
     patches = []
     for cx, cy in zip(foci_x, foci_y):
@@ -75,10 +67,7 @@ def _simulate_acquisition(
     offsets = scan_offsets_px(nx_s, ny_s, step_px[0], step_px[1], orientation)
     frames = np.full((nx_s * ny_s, rows, cols), background, dtype=np.float64)
     for index, offset in enumerate(offsets):
-        amplitudes = (
-            _sample_field(foci_x + offset[0], foci_y + offset[1])
-            + focus_offsets
-        )
+        amplitudes = _sample_field(foci_x + offset[0], foci_y + offset[1])
         for amplitude, patch in zip(amplitudes, patches):
             if patch is not None:
                 window, gauss = patch
@@ -284,87 +273,6 @@ class TestGeneralLatticeReconstruction:
             MonalisaReconstructor().process(data_obj, params)
 
 
-class TestPerFocusFlatField:
-    @staticmethod
-    def _artifact_offsets(fx, fy):
-        """Localized per-focus offsets, like the bright-region artifact:
-        a cluster of clearly large offsets with random sign (small offsets
-        are deliberately left to the shrinkage threshold)."""
-        rng = np.random.default_rng(9)
-        offsets = np.zeros(fx.size)
-        cluster = (fx > 90) & (fx < 130) & (fy > 60) & (fy < 110)
-        count = int(cluster.sum())
-        offsets[cluster] = (
-            rng.uniform(25.0, 60.0, count) * rng.choice([-1.0, 1.0], count)
-        )
-        return offsets
-
-    def test_solver_removes_injected_offsets(self):
-        """Pure-numerics check: samples on tiles, smooth field + per-focus
-        spikes; the solved offsets must cancel the spikes without touching
-        the smooth field."""
-        lattice, nx_s, ny_s, step_px = _diamond_setup()
-        foci_x, foci_y = lattice.points_in_frame(160, 160)
-        foci_xy = np.column_stack([foci_x, foci_y])
-        offsets = scan_offsets_px(nx_s, ny_s, step_px[0], step_px[1], ("x", 1, 1))
-        positions = sample_positions(foci_xy, offsets)
-        focus_indices = np.tile(np.arange(foci_xy.shape[0]), offsets.shape[0])
-
-        injected = self._artifact_offsets(foci_x, foci_y)
-        values = (
-            _sample_field(positions[:, 0], positions[:, 1])
-            + injected[focus_indices]
-        )
-
-        solved = solve_per_focus_offsets(
-            positions, values[np.newaxis, :], focus_indices, foci_xy,
-            lattice.nearest_spacing(), step_px,
-        )[0]
-        corrected = values - solved[focus_indices]
-        truth = _sample_field(positions[:, 0], positions[:, 1])
-
-        rms_before = float(np.sqrt(np.mean((values - truth) ** 2)))
-        rms_after = float(np.sqrt(np.mean((corrected - truth) ** 2)))
-        assert rms_after < rms_before / 3
-        spiked = np.abs(injected) > 5
-        assert np.corrcoef(solved[spiked], injected[spiked])[0, 1] > 0.9
-
-    def test_flat_field_option_improves_reconstruction(self):
-        lattice, nx_s, ny_s, step_px = _diamond_setup()
-        frames = _simulate_acquisition(
-            lattice, nx_s, ny_s, step_px, (160, 160),
-            focus_offset_fn=self._artifact_offsets,
-        )
-        data_obj = InMemoryStackWrapper(
-            name="flatfield", dataset_name="det", data=frames, attrs={}
-        )
-        base_params = _params(nx_s, ny_s, step_px, 12.0)
-        plain = MonalisaReconstructor().process(data_obj, base_params)
-        corrected = MonalisaReconstructor().process(
-            data_obj, dict(base_params, fast_gauss_flat_field=True)
-        )
-
-        assert plain.recon_diagnostics["flat_field"] is None
-        stats = corrected.recon_diagnostics["flat_field"]
-        assert stats is not None and stats["offset_max"] > 10
-
-        error_plain = _reconstruction_accuracy(plain)
-        error_corrected = _reconstruction_accuracy(corrected)
-        assert error_corrected < error_plain / 2
-        # Some residual stays: the offset foci also perturb their neighbors'
-        # extracted amplitudes (footprint crosstalk), which no per-focus
-        # offset can undo post hoc.
-        assert error_corrected < 0.12
-
-    def test_solver_handles_degenerate_input(self):
-        positions = np.array([[1.0, 1.0], [1.4, 1.0]])
-        offsets = solve_per_focus_offsets(
-            positions, np.array([[5.0, 6.0]]), np.array([0, 0]),
-            np.array([[1.2, 1.0]]), 10.0, (0.5, 0.5),
-        )
-        np.testing.assert_array_equal(offsets, 0.0)
-
-
 class TestSpotCloudResult:
     def test_save_writes_csv_next_to_tiff(self, tmp_path):
         lattice, nx_s, ny_s, step_px = _diamond_setup()
@@ -383,19 +291,6 @@ class TestSpotCloudResult:
         lines = csv_path.read_text().splitlines()
         assert lines[0] == "timepoint,frame,focus,x_px,y_px,x_nm,y_nm,intensity"
         assert len(lines) - 1 == result.spots.num_spots
-
-    def test_table_records_expose_the_cloud(self):
-        spots = MonalisaSpotCloud(
-            positions_px=np.array([[1.5, 2.5], [3.0, 4.0]]),
-            intensities=np.array([[10.0, 20.0]]),
-            frame_indices=np.array([0, 0]),
-            focus_indices=np.array([0, 1]),
-            pixel_size_nm=100.0,
-        )
-        records = list(spots.iter_records())
-        assert len(records) == 2
-        assert records[0]["x_nm"] == pytest.approx(150.0)
-        assert records[1]["intensity"] == pytest.approx(20.0)
 
     def test_shape_validation(self):
         with pytest.raises(ValueError, match="Inconsistent"):

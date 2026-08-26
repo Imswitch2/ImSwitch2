@@ -19,7 +19,6 @@ from .lattice_recon import (
     choose_orientation,
     sample_positions,
     scan_offsets_px,
-    solve_per_focus_offsets,
 )
 from .live_session import MonalisaLiveSession
 from .localizer import detection_band
@@ -544,9 +543,7 @@ class MonalisaReconstructor(StreamingReconstructor):
         bilinear splatting with weight normalization. The scan orientation is
         resolved by total variation exactly as in the rectangular path;
         output pixels the scan never covered are NaN. The pre-gridding spot
-        cloud is retained on the result (with per-focus flat-fielding already
-        applied when that option is on — the cloud always holds the values
-        the image was gridded from).
+        cloud is retained on the result.
         """
         if geometry['n_linesteps'] != 1:
             raise ValueError(
@@ -624,29 +621,6 @@ class MonalisaReconstructor(StreamingReconstructor):
         frame_indices = np.repeat(np.arange(frames_per_stack), foci_xy.shape[0])
         focus_indices = np.tile(np.arange(foci_xy.shape[0]), frames_per_stack)
 
-        flat_field_stats = None
-        if params.get('fast_gauss_flat_field'):
-            focus_offsets = solve_per_focus_offsets(
-                positions,
-                amplitudes.reshape(num_timepoints, -1),
-                focus_indices,
-                foci_xy,
-                lattice.nearest_spacing(),
-                (step_x_px, step_y_px),
-            )
-            amplitudes = amplitudes - focus_offsets[:, np.newaxis, :]
-            flat_field_stats = {
-                'offset_mad': float(np.median(np.abs(focus_offsets))),
-                'offset_min': float(focus_offsets.min()),
-                'offset_max': float(focus_offsets.max()),
-            }
-            self._logger.info(
-                'Per-focus flat-field: offset MAD '
-                f'{flat_field_stats["offset_mad"]:.2f}, range '
-                f'[{flat_field_stats["offset_min"]:.1f}, '
-                f'{flat_field_stats["offset_max"]:.1f}]'
-            )
-
         first = assemble_image(
             positions, amplitudes[0].reshape(-1), pitch=(step_x_px, step_y_px)
         )
@@ -703,7 +677,6 @@ class MonalisaReconstructor(StreamingReconstructor):
                 'output_origin_px': first.origin_px,
                 'coverage': first.coverage,
                 'scan_cell_ratio': scan_cell_ratio,
-                'flat_field': flat_field_stats,
             },
         )
         self._logger.info(

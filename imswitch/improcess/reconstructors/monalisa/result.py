@@ -1,9 +1,7 @@
 """MoNaLISA-specific processing result."""
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
 
 import numpy as np
 import tifffile as tiff
@@ -59,31 +57,6 @@ class MonalisaSpotCloud:
     def num_timepoints(self) -> int:
         return int(self.intensities.shape[0])
 
-    def table_columns(self) -> list[str]:
-        return [
-            'timepoint', 'frame', 'focus',
-            'x_px', 'y_px', 'x_nm', 'y_nm', 'intensity',
-        ]
-
-    def iter_records(self) -> Iterator[dict[str, Any]]:
-        """One dict per (timepoint, spot) row — lazily, the table can be large."""
-        scale = float(self.pixel_size_nm)
-        for timepoint in range(self.num_timepoints):
-            values = self.intensities[timepoint]
-            for index in range(self.num_spots):
-                x_px = float(self.positions_px[index, 0])
-                y_px = float(self.positions_px[index, 1])
-                yield {
-                    'timepoint': timepoint,
-                    'frame': int(self.frame_indices[index]),
-                    'focus': int(self.focus_indices[index]),
-                    'x_px': x_px,
-                    'y_px': y_px,
-                    'x_nm': x_px * scale,
-                    'y_nm': y_px * scale,
-                    'intensity': float(values[index]),
-                }
-
     def save_csv(self, path: Path) -> None:
         """Write the full table as CSV (one row per timepoint and spot)."""
         path = Path(path)
@@ -100,7 +73,7 @@ class MonalisaSpotCloud:
             x_px, y_px, x_px * scale, y_px * scale,
             self.intensities.reshape(-1),
         ])
-        header = ','.join(self.table_columns())
+        header = 'timepoint,frame,focus,x_px,y_px,x_nm,y_nm,intensity'
         np.savetxt(
             str(path), table, delimiter=',', header=header, comments='',
             fmt=['%d', '%d', '%d', '%.4f', '%.4f', '%.2f', '%.2f', '%.6g'],
@@ -170,8 +143,7 @@ class MonalisaProcessingResult(ProcessingResult):
                 passes its widget-text names instead.
             spots: Optional :class:`MonalisaSpotCloud` — the pre-gridding
                 per-spot positions and intensities of the general-lattice
-                path. Saved as a ``*_spots.csv`` next to the TIFF and exposed
-                through :meth:`table_columns`/:meth:`table_records`.
+                path. Saved as a ``*_spots.csv`` next to the TIFF.
             recon_diagnostics: Optional free-form dict describing how the
                 reconstruction was assembled (detected lattice, chosen scan
                 orientation, output origin, coverage, ...).
@@ -378,18 +350,6 @@ class MonalisaProcessingResult(ProcessingResult):
         
         return layers
     
-    def table_columns(self) -> list[str]:
-        """Spot-cloud columns when the general-lattice path produced spots."""
-        if self.spots is None:
-            return super().table_columns()
-        return self.spots.table_columns()
-
-    def table_records(self) -> list[dict[str, Any]]:
-        """Spot-cloud rows for explicit export (can be large; not auto-shown)."""
-        if self.spots is None:
-            return super().table_records()
-        return list(self.spots.iter_records())
-
     def save(self, path: Path, fmt: str = "tiff") -> None:
         """
         Save MoNaLISA reconstruction as ImageJ-compatible 6D TIFF.
@@ -428,7 +388,6 @@ class MonalisaProcessingResult(ProcessingResult):
         step_sizes = self.scan_params['step_sizes']
         vxsizec = int(float(step_sizes[dims.index(self.axis_label_map['r_l_text'])]))
         vxsizer = int(float(step_sizes[dims.index(self.axis_label_map['u_d_text'])]))
-        vxsizez = int(float(step_sizes[dims.index(self.axis_label_map['b_f_text'])]))
 
         # ImageJ hyperstack dimensions. The reconstruction is
         # (Dataset, Base, T, Z, Y, X); ImageJ wants the canonical (T, Z, C, Y, X)

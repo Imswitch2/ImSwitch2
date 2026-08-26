@@ -91,15 +91,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                          "focus' subpixel position. Exact pixel fits the "
                          'true integer pixels with per-focus weights: '
                          'unbiased and slightly faster.')},
-                {'name': 'Per-focus flat-field', 'type': 'bool',
-                 'value': False,
-                 'tip': ('General-lattice path only: remove per-focus '
-                         'amplitude offsets (illumination/background '
-                         'inhomogeneity that tiles the reconstruction with '
-                         'lattice-cell blocks). Offsets are solved from '
-                         'boundary mismatches between adjacent focus tiles '
-                         'and high-passed over the lattice, so real '
-                         'specimen structure is not flattened.')},
                 {'name': 'Parameter sweep', 'type': 'group', 'children': [
                     {'name': 'Enable sweep', 'type': 'bool', 'value': False,
                      'tip': ('Advanced: reconstruct once per sweep value and '
@@ -205,8 +196,6 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 'Pinhole radius').value(),
             'fast_gauss_sampling_mode': fast_gauss_opts.param(
                 'Sampling').value(),
-            'fast_gauss_flat_field': fast_gauss_opts.param(
-                'Per-focus flat-field').value(),
             'sweep_enabled': fast_gauss_opts.param('Parameter sweep').param(
                 'Enable sweep').value(),
             'sweep_parameter': fast_gauss_opts.param('Parameter sweep').param(

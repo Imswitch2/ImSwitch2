@@ -922,29 +922,10 @@ reconstruction remains rectangular.
 
 The general path also keeps the **pre-gridding result**: every sample's
 position and extracted intensity (the spot cloud, before any interpolation)
-is retained on the result, written as ``<name>_spots.csv`` next to the saved
-TIFF (columns ``timepoint, frame, focus, x_px, y_px, x_nm, y_nm,
-intensity``), and exposed through the result's table interface for explicit
-export — so custom gridding or artifact analysis can start from the raw
-localized samples. When ``Per-focus flat-field`` is on, the cloud holds the
-corrected values the image was gridded from.
-
-``Fast Gauss options -> Per-focus flat-field`` (off by default, general
-path only) removes per-focus amplitude offsets — illumination or local
-background inhomogeneity that otherwise tiles the reconstruction with
-lattice-cell-sized blocks, typically around very bright structures. It
-exploits the tiling geometry rather than assuming anything about the
-specimen: adjacent focus tiles touch, and their boundary samples sit one
-scan step apart, i.e. at nearly the same specimen position, so the median
-intensity difference over those near-coincident pairs measures the offset
-*difference* of the two foci directly. The offsets are solved over the
-focus-adjacency graph by weighted least squares, high-passed over the
-lattice (the smooth component of the solved field is indistinguishable from
-real specimen content and is left alone), and soft-thresholded at a few MADs
-so foci without an artifact are corrected by exactly zero. A per-focus mean
-normalization would instead flatten real cell-scale structure — a focus
-whose cell contains a bright filament knot *should* be brighter — which is
-why the boundary-mismatch formulation is used.
+is retained on the result and written as ``<name>_spots.csv`` next to the
+saved TIFF (columns ``timepoint, frame, focus, x_px, y_px, x_nm, y_nm,
+intensity``) — so custom gridding or artifact analysis can start from the
+raw localized samples.
 
 The fast-Gauss offline mode intentionally has the same geometry scope as the
 live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
