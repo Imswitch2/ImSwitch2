@@ -1,0 +1,24 @@
+name: slmcore
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - pip
+
+  # slmcore core
+  - numpy
+  - scipy
+  - h5py
+  - pillow
+
+  # Qt standalone host
+  - qtpy
+  - pyqtgraph
+  - pyqt=5
+  - matplotlib-base
+  - qdarkstyle
+
+  # tests
+  - pytest
