@@ -109,6 +109,14 @@ class Reconstructor(ABC):
         """
         ...
 
+    def execution_policy_for(self, params: dict) -> str:
+        """Resolve the execution policy for one parameter set.
+
+        Reconstructors whose cost depends on the selected method can override
+        this without forcing every mode onto the worker thread.
+        """
+        return self.execution_policy
+
     def estimate_resources(
         self, data_obj: DataObj, params: dict
     ) -> "ResourceEstimate | None":

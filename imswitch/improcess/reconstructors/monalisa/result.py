@@ -386,8 +386,13 @@ class MonalisaProcessingResult(ProcessingResult):
         # and legacy controller-produced ("Right/Left") scan params save.
         dims = self.scan_params['dimensions']
         step_sizes = self.scan_params['step_sizes']
-        vxsizec = int(float(step_sizes[dims.index(self.axis_label_map['r_l_text'])]))
-        vxsizer = int(float(step_sizes[dims.index(self.axis_label_map['u_d_text'])]))
+        if self.output_pixel_size_nm is not None:
+            vxsizer, vxsizec = (float(v) for v in self.output_pixel_size_nm)
+        else:
+            vxsizec = float(step_sizes[dims.index(self.axis_label_map['r_l_text'])])
+            vxsizer = float(step_sizes[dims.index(self.axis_label_map['u_d_text'])])
+        if vxsizec <= 0 or vxsizer <= 0:
+            raise ValueError('Reconstructed pixel size must be positive for TIFF saving')
 
         # ImageJ hyperstack dimensions. The reconstruction is
         # (Dataset, Base, T, Z, Y, X); ImageJ wants the canonical (T, Z, C, Y, X)

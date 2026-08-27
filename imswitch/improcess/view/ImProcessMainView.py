@@ -1850,14 +1850,15 @@ class ReconParTree(ParameterTree):
             {'name': 'Reconstruction method', 'type': 'list',
              'value': 'Fast Gauss MoNaLISA',
              'values': ['Fast Gauss MoNaLISA', 'MoNaLISA',
-                        'Enhanced confocal (ISM)'],
+                        'Enhanced confocal (ISM)', 'ISM reassignment'],
              'tip': (
                  'Fast Gauss MoNaLISA (default) uses the low-latency Gaussian '
                  'reassignment path that live reconstruction always uses. '
                  'MoNaLISA runs the full post-acquisition SignalExtractor '
-                 'path. Enhanced confocal (ISM) skips fitting entirely and '
-                 'pixel-reassigns every footprint pixel (image scanning '
-                 'microscopy); see ISM options.'
+                 'path. Enhanced confocal (ISM) is the pre-existing '
+                 'experimental pixel-reassignment path. ISM reassignment '
+                 'is the separate xrecon implementation with CPU and GPU '
+                 'backends; see ISM reassignment options.'
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [
@@ -1916,7 +1917,8 @@ class ReconParTree(ParameterTree):
                      'tip': ('Advanced: reconstruct once per sweep value and '
                              'stack the results along a leading Sweep axis — '
                              'slide through it in the viewer to find the best '
-                             'setting. Offline Fast Gauss and ISM only.')},
+                             'setting. Offline Fast Gauss and the pre-existing Enhanced '
+                             'confocal (ISM) method only.')},
                     {'name': 'Sweep parameter', 'type': 'list',
                      'value': 'Pinhole radius (×σ)',
                      'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)',
@@ -1951,6 +1953,20 @@ class ReconParTree(ParameterTree):
                          "combined with ISM's photon use and sharpening. "
                          'None (raw) keeps the classic enhanced-confocal '
                          'sum including background.')}]},
+            {'name': 'ISM reassignment options', 'type': 'group', 'children': [
+                {'name': 'Oversampling', 'type': 'float', 'value': 2.0,
+                 'limits': (1.0, 8.0),
+                 'tip': ('Sampling factor used by the xrecon ISM reassignment '
+                         'kernel on either CPU or GPU.')},
+                {'name': 'ISM shift', 'type': 'float', 'value': 0.5,
+                 'limits': (-4.0, 4.0),
+                 'tip': ('Fourier pixel-reassignment fraction; 0.5 is the '
+                         'standard matched-PSF value.')},
+                {'name': 'Subtract patch mean', 'type': 'bool', 'value': True},
+                {'name': 'Frame batch', 'type': 'int', 'value': 0,
+                 'limits': (0, 100000),
+                 'tip': ('0 processes all frames of one scan together. Lower '
+                         'values reduce temporary CPU/GPU memory use.')} ]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -2001,6 +2017,16 @@ class ReconParTree(ParameterTree):
                 'Reassignment factor').value(),
             'ism_background': self.p.param('ISM options').param(
                 'Background').value(),
+            'ism_reassign_oversampling': self.p.param('ISM reassignment options').param(
+                'Oversampling').value(),
+            'ism_reassign_shift': self.p.param('ISM reassignment options').param(
+                'ISM shift').value(),
+            'ism_reassign_remove_mean_of_patch': self.p.param('ISM reassignment options').param(
+                'Subtract patch mean').value(),
+            'ism_reassign_frame_batch_size': (
+                int(self.p.param('ISM reassignment options').param('Frame batch').value())
+                or None
+            ),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
         }
 

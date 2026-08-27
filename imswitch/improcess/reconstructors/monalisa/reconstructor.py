@@ -1,6 +1,7 @@
 """MoNaLISA SIM reconstructor plugin."""
 
 import copy
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -9,9 +10,12 @@ from qtpy import QtWidgets
 from imswitch.imcommon.model import initLogger
 from imswitch.improcess.reconstructors.base import StreamInit, StreamingReconstructor
 from .gauss_processor import (
+    DEFAULT_FOOTPRINT_NUM_RECTS,
     _build_footprint,
     build_exact_sampling,
     extract_lattice_amplitudes,
+    make_gauss_processor,
+    normalize_sampling_mode,
     validate_gaussian_fit_options,
 )
 from .lattice import Lattice, detect_lattice
@@ -29,6 +33,7 @@ from .orientation import auto_detect_scan_orientation
 from .params_widget import MonalisaParamsWidget
 from .pattern_finder import PatternFinder
 from .result import MonalisaProcessingResult, MonalisaSpotCloud, MonalisaSweepResult
+from .scan_geometry import get_1d_indices, get_orientation
 from .signal_extractor import SignalExtractor
 from .sweep import SWEEPABLE_PARAMETERS, parse_sweep_values, resolve_sweep_parameter
 
@@ -103,6 +108,12 @@ class MonalisaReconstructor(StreamingReconstructor):
         # during the transition phase
         return None
     
+    def execution_policy_for(self, params: dict) -> str:
+        """Run the integrated ISM mode on the reconstruction worker."""
+        if params.get('reconstruction_method') == 'ISM reassignment':
+            return 'worker'
+        return super().execution_policy_for(params)
+
     def find_pattern(self, data: np.ndarray, param_widget: QtWidgets.QWidget) -> None:
         """
         Automatically detect the illumination pattern in the data and update widget params.
@@ -203,6 +214,16 @@ class MonalisaReconstructor(StreamingReconstructor):
             raise ValueError(f'Expected 3D data (frames, rows, cols), got shape {data.shape}')
 
         method = params.get('reconstruction_method')
+        if method == 'ISM reassignment':
+            if params.get('sweep_enabled'):
+                raise ValueError(
+                    'Parameter sweep is not supported for ISM reassignment '
+                    '(GPU); disable the sweep before reconstructing'
+                )
+            return self._process_ism_reassign(
+                data_obj.name, data, params, scan_params, data_attrs, context=context
+            )
+
         runner = {
             'Fast Gauss MoNaLISA': self._process_fast_gauss_offline,
             'Enhanced confocal (ISM)': self._process_ism_offline,
@@ -701,6 +722,418 @@ class MonalisaReconstructor(StreamingReconstructor):
         )
         footprint = _build_footprint(num_rects, pinhole_radius_px)
         return footprint, gaussian_sigma_px, fit_background
+
+    def _process_ism_reassign(
+        self,
+        name: str,
+        data: np.ndarray,
+        params: dict,
+        scan_params: dict,
+        data_attrs: dict | None = None,
+        *,
+        context=None,
+    ) -> MonalisaProcessingResult:
+        """Run the validated xrecon ISM backend in MoNaLISA orchestration.
+
+        This deliberately does not share implementation with the pre-existing
+        ``Enhanced confocal (ISM)`` method below. MoNaLISA owns acquisition
+        geometry, pattern parameters, automatic scan orientation and timepoint
+        splitting; the shared kernel reconstructs one square XY scan at a time
+        using either the NumPy/SciPy CPU backend or the CuPy GPU backend.
+        """
+        device = str(params.get('device', 'GPU')).strip().upper()
+        if device not in ('CPU', 'GPU'):
+            raise ValueError(
+                f"ISM reassignment requires CPU/GPU to be CPU or GPU, got {device!r}"
+            )
+
+        geometry = self._resolve_fast_gauss_geometry(data, scan_params, data_attrs)
+        if geometry['n_linesteps'] != 1:
+            raise ValueError(
+                'ISM reassignment currently supports a single line step '
+                f'(got n_linesteps={geometry["n_linesteps"]})'
+            )
+        if geometry['nx_s'] != geometry['ny_s']:
+            raise ValueError(
+                'ISM reassignment currently requires a square XY scan; '
+                f'got {geometry["nx_s"]} x {geometry["ny_s"]} steps'
+            )
+        if data.shape[1] != data.shape[2]:
+            raise ValueError(
+                'ISM reassignment currently requires square camera frames; '
+                f'got {data.shape[1:]}'
+            )
+
+        pixel_size_nm = self._require_pixel_size_nm(params)
+        row_period = float(params.get('row_period') or 0.0)
+        col_period = float(params.get('col_period') or 0.0)
+        if row_period <= 0 or col_period <= 0:
+            raise ValueError('ISM reassignment requires positive pattern periods')
+        pattern = (
+            float(np.mod(float(params.get('row_offset') or 0.0), row_period)),
+            float(np.mod(float(params.get('col_offset') or 0.0), col_period)),
+            row_period,
+            col_period,
+        )
+
+        # Keep CuPy optional: the shared dispatcher imports/uses it only when
+        # the GPU backend is selected. The standalone GPU reference remains
+        # independent from this MoNaLISA orchestration adapter.
+        from ..ism_reassign.kernel import patternfinder_to_xrecon, reconstruct_ism
+
+        period, phase = patternfinder_to_xrecon(pattern)
+        working_data = (
+            self._apply_bleaching_correction(data)
+            if params.get('bleaching_correction', False)
+            else data
+        )
+
+        frames_per_stack = int(geometry['frames_per_stack'])
+        num_timepoints = int(geometry['num_timepoints'])
+        if frames_per_stack != geometry['nx_s'] * geometry['ny_s']:
+            raise ValueError(
+                'ISM reassignment expected exactly one frame per XY scan '
+                f'position, got {frames_per_stack} frames for '
+                f'{geometry["nx_s"]} x {geometry["ny_s"]} steps'
+            )
+        if data.shape[0] != frames_per_stack * num_timepoints:
+            raise ValueError(
+                'ISM reassignment frame count does not match resolved '
+                f'scan geometry: {data.shape[0]} vs '
+                f'{frames_per_stack} x {num_timepoints}'
+            )
+
+        first_stack = working_data[:frames_per_stack]
+        if context is not None:
+            context.report('align', 0, 1, 'Auto-detecting MoNaLISA scan orientation')
+            context.check_cancelled()
+        (
+            scanning_orientation,
+            resolved_scan_params,
+            orientation_label,
+            orientation_score,
+        ) = self._resolve_ism_scan_orientation(
+            first_stack, params, geometry, scan_params
+        )
+        if context is not None:
+            context.report('align', 1, 1, f'Scan orientation: {scanning_orientation}')
+            context.report('allocate', 1, 1, f'Preparing {device} ISM reconstruction')
+            context.check_cancelled()
+
+        started_total = time.perf_counter()
+        images = []
+        backend_seconds = []
+        output_geometry = None
+        for time_index in range(num_timepoints):
+            if context is not None:
+                context.check_cancelled()
+            start = time_index * frames_per_stack
+            stop = start + frames_per_stack
+            started = time.perf_counter()
+            image, current_geometry = reconstruct_ism(
+                working_data[start:stop],
+                device=device,
+                pattern_period=period,
+                pattern_phase=phase,
+                scanning_orientation=scanning_orientation,
+                psf_fwhm_nm=float(params.get('psf_fwhm_nm', 200.0)),
+                pixel_size_nm=pixel_size_nm,
+                oversampling=float(params.get('ism_reassign_oversampling', 2.0)),
+                ism_shift=float(params.get('ism_reassign_shift', 0.5)),
+                remove_mean_of_patch=bool(
+                    params.get('ism_reassign_remove_mean_of_patch', True)
+                ),
+                frame_batch_size=params.get('ism_reassign_frame_batch_size'),
+                check_cancelled=(
+                    context.check_cancelled if context is not None else None
+                ),
+            )
+            backend_seconds.append(time.perf_counter() - started)
+            image = np.asarray(image, dtype=np.float32)
+            if output_geometry is None:
+                output_geometry = current_geometry
+            else:
+                if image.shape != images[0].shape:
+                    raise ValueError(
+                        'ISM reassignment returned inconsistent output shapes across '
+                        f'timepoints: {image.shape} vs {images[0].shape}'
+                    )
+                if not np.isclose(
+                    float(current_geometry.output_pixel_size_nm),
+                    float(output_geometry.output_pixel_size_nm),
+                ):
+                    raise ValueError(
+                        'ISM reassignment returned inconsistent output pixel sizes '
+                        'across timepoints'
+                    )
+            images.append(image)
+            if context is not None:
+                context.report(
+                    'assemble',
+                    time_index + 1,
+                    num_timepoints,
+                    f'ISM {device} timepoint {time_index + 1}/{num_timepoints}',
+                )
+
+        if output_geometry is None:
+            raise ValueError('ISM reassignment produced no timepoints')
+
+        stacked = np.stack(images, axis=0)
+        data_6d = stacked[np.newaxis, np.newaxis, :, np.newaxis, :, :]
+        finite = stacked[np.isfinite(stacked)]
+        display_levels = None
+        if finite.size:
+            display_levels = (
+                float(np.percentile(finite, 1)),
+                float(np.percentile(finite, 99.9)),
+            )
+
+        output_pixel_size_nm = float(output_geometry.output_pixel_size_nm)
+        expected_step_x_px = float(period[0]) / geometry['nx_s']
+        expected_step_y_px = float(period[1]) / geometry['ny_s']
+        actual_step_x_px = float(geometry['step_x_nm']) / pixel_size_nm
+        actual_step_y_px = float(geometry['step_y_nm']) / pixel_size_nm
+        total_seconds = time.perf_counter() - started_total
+
+        result = MonalisaProcessingResult(
+            name=name,
+            data=data_6d,
+            scan_params=resolved_scan_params,
+            display_levels=display_levels,
+            output_pixel_size_nm=(output_pixel_size_nm, output_pixel_size_nm),
+            axis_label_map=self._axis_labels,
+            recon_diagnostics={
+                'method': 'ISM reassignment',
+                'patternfinder_pattern': tuple(float(v) for v in pattern),
+                'xrecon_period_xy': tuple(float(v) for v in period),
+                'xrecon_phase_xy': tuple(float(v) for v in phase),
+                'scanning_orientation': scanning_orientation,
+                'scan_orientation_label': orientation_label,
+                'scan_orientation_tv_score': float(orientation_score),
+                'camera_pixel_size_nm': pixel_size_nm,
+                'psf_fwhm_nm': float(params.get('psf_fwhm_nm', 200.0)),
+                'oversampling': float(params.get('ism_reassign_oversampling', 2.0)),
+                'ism_shift': float(params.get('ism_reassign_shift', 0.5)),
+                'remove_mean_of_patch': bool(
+                    params.get('ism_reassign_remove_mean_of_patch', True)
+                ),
+                'frame_batch_size': params.get('ism_reassign_frame_batch_size'),
+                'num_timepoints': num_timepoints,
+                'output_pixel_size_nm': output_pixel_size_nm,
+                'backend': device,
+                'seconds_per_timepoint': tuple(float(v) for v in backend_seconds),
+                'reconstruction_seconds': float(sum(backend_seconds)),
+                'total_reconstruction_seconds': float(total_seconds),
+                'actual_scan_step_px_xy': (actual_step_x_px, actual_step_y_px),
+                'pattern_subdivision_step_px_xy': (
+                    expected_step_x_px,
+                    expected_step_y_px,
+                ),
+            },
+        )
+        if context is not None:
+            context.report(
+                'finalize', 1, 1,
+                f'ISM {device} complete: {num_timepoints} timepoint(s) in {total_seconds:.3f} s',
+            )
+        self._logger.info(
+            f'ISM {device} reconstruction complete: shape {result.data.shape}, '
+            f'{num_timepoints} timepoint(s), {total_seconds:.3f} s'
+        )
+        return result
+
+    def _resolve_ism_scan_orientation(
+        self,
+        first_stack: np.ndarray,
+        params: dict,
+        geometry: dict,
+        source_scan_params: dict,
+    ) -> tuple[str, dict, str, float]:
+        """Resolve scan orientation using the rectangular Fast-Gauss detector.
+
+        This intentionally mirrors the detector used by
+        :class:`MonalisaLiveSession`: use the same rectangular localization,
+        the same Gaussian footprint/sampling options and ``get_orientation``
+        scoring. Fast Gauss describes the placement direction in its
+        reconstructed grid, whereas xrecon flips both scan axes during
+        microlens reassignment. Therefore both detected signs are inverted
+        when producing xrecon's ``X+Y-``-style orientation string.
+
+        The scan dialog only supplies the raster-vs-bidirectional flag. Axis
+        order and signs are always detected from the first timepoint.
+        """
+        session_params = self._fast_gauss_session_params(params)
+        session = self.make_session()
+        loc = session._resolve_localization(first_stack, session_params)
+
+        num_rects = session_params.get(
+            'fast_gauss_footprint_num_rects',
+            session_params.get('num_rects', DEFAULT_FOOTPRINT_NUM_RECTS),
+        )
+        gaussian_sigma_px = session._resolve_gaussian_sigma_px(session_params)
+        pinhole_radius_px = session._resolve_pinhole_radius_px(
+            session_params, gaussian_sigma_px
+        )
+        fit_background = session._resolve_fit_background(session_params)
+        sampling_mode = normalize_sampling_mode(
+            session_params.get('fast_gauss_sampling_mode')
+        )
+
+        # Use the same Gaussian sampling model as rectangular Fast Gauss. The
+        # orientation pass itself stays on CPU; it is small compared with the
+        # GPU ISM reconstruction and CPU/GPU processors implement the same
+        # sampling geometry.
+        processor = make_gauss_processor(
+            loc.xp,
+            loc.xo,
+            loc.yp,
+            loc.yo,
+            loc.nx_c,
+            loc.ny_c,
+            int(geometry['nx_s']),
+            int(geometry['ny_s']),
+            loc.num_rows,
+            loc.num_cols,
+            num_rects=num_rects,
+            gaussian_sigma_px=gaussian_sigma_px,
+            pinhole_radius_px=pinhole_radius_px,
+            fit_background=fit_background,
+            sampling_mode=sampling_mode,
+            use_gpu=False,
+        )
+        proc_pixels = processor.process_chunk(first_stack)
+        fast_gauss_orientation = get_orientation(
+            loc.nx_c,
+            loc.ny_c,
+            int(geometry['nx_s']),
+            int(geometry['ny_s']),
+            proc_pixels,
+        )
+
+        resolved_scan_params = copy.deepcopy(geometry['scan_params'])
+        self._apply_fast_gauss_orientation_to_scan_params(
+            resolved_scan_params, fast_gauss_orientation
+        )
+        resolved_scan_params['unidirectional'] = bool(
+            source_scan_params.get('unidirectional', True)
+        )
+        scanning_orientation = self._fast_gauss_orientation_to_xrecon(
+            fast_gauss_orientation,
+            bidirectional=not bool(source_scan_params.get('unidirectional', True)),
+        )
+
+        # Keep the same TV score in diagnostics that Fast Gauss minimized.
+        frame_inds = get_1d_indices(
+            loc.nx_c,
+            loc.ny_c,
+            int(geometry['nx_s']),
+            int(geometry['ny_s']),
+            fast_gauss_orientation,
+        )
+        rec_y = int(loc.ny_c) * int(geometry['ny_s'])
+        rec_x = int(loc.nx_c) * int(geometry['nx_s'])
+        rec_img = np.zeros(rec_y * rec_x, dtype=np.float32)
+        rec_img[frame_inds.flatten()] = proc_pixels.flatten()
+        rec_img = rec_img.reshape(rec_y, rec_x)
+        score = float(
+            np.abs(np.diff(rec_img, axis=1), dtype=float).sum()
+            + np.abs(np.diff(rec_img, axis=0), dtype=float).sum()
+        )
+
+        label = f'Fast Gauss {fast_gauss_orientation}'
+        return scanning_orientation, resolved_scan_params, label, score
+
+    def _fast_gauss_orientation_to_xrecon(
+        self, orientation: str, *, bidirectional: bool
+    ) -> str:
+        """Convert Fast-Gauss placement orientation to xrecon scan syntax.
+
+        xrecon flips both scan axes inside microlens reassignment, so its raw
+        scan-direction signs are the inverse of Fast Gauss's reconstructed-grid
+        placement signs. Axis order is unchanged.
+        """
+        if (
+            not isinstance(orientation, str)
+            or len(orientation) != 4
+            or orientation[0] not in '+-'
+            or orientation[1] not in 'xy'
+            or orientation[2] not in '+-'
+            or orientation[3] not in 'xy'
+            or orientation[1] == orientation[3]
+        ):
+            raise ValueError(
+                f'Invalid Fast Gauss scan orientation {orientation!r}'
+            )
+
+        inverted_sign = {'+': '-', '-': '+'}
+        axis = {'x': 'X', 'y': 'Y'}
+        result = (
+            f'{axis[orientation[1]]}{inverted_sign[orientation[0]]}'
+            f'{axis[orientation[3]]}{inverted_sign[orientation[2]]}'
+        )
+        if bidirectional:
+            result += 'b'
+        return result
+
+    def _apply_fast_gauss_orientation_to_scan_params(
+        self, scan_params: dict, orientation: str
+    ) -> None:
+        """Write a Fast-Gauss ``+x-y`` orientation into MoNaLISA scan params."""
+        if (
+            not isinstance(orientation, str)
+            or len(orientation) != 4
+            or orientation[0] not in '+-'
+            or orientation[1] not in 'xy'
+            or orientation[2] not in '+-'
+            or orientation[3] not in 'xy'
+            or orientation[1] == orientation[3]
+        ):
+            raise ValueError(
+                f'Invalid Fast Gauss scan orientation {orientation!r}'
+            )
+
+        axis_map = {
+            'x': self._axis_labels['r_l_text'],
+            'y': self._axis_labels['u_d_text'],
+        }
+        sign_map = {
+            '+': self._axis_labels['p_text'],
+            '-': self._axis_labels['n_text'],
+        }
+        scan_params['dimensions'][:2] = [
+            axis_map[orientation[1]],
+            axis_map[orientation[3]],
+        ]
+        scan_params['directions'][:2] = [
+            sign_map[orientation[0]],
+            sign_map[orientation[2]],
+        ]
+
+    def _scan_params_to_xrecon_orientation(self, scan_params: dict) -> str:
+        """Translate resolved MoNaLISA X/Y scan semantics to xrecon syntax."""
+        axis_map = {
+            self._axis_labels['r_l_text']: 'X',
+            self._axis_labels['u_d_text']: 'Y',
+        }
+        sign_map = {
+            self._axis_labels['p_text']: '+',
+            self._axis_labels['n_text']: '-',
+        }
+        try:
+            first_axis = axis_map[scan_params['dimensions'][0]]
+            second_axis = axis_map[scan_params['dimensions'][1]]
+            first_sign = sign_map[scan_params['directions'][0]]
+            second_sign = sign_map[scan_params['directions'][1]]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError(
+                'Resolved MoNaLISA scan parameters do not describe an X/Y scan'
+            ) from exc
+        if first_axis == second_axis:
+            raise ValueError('Resolved scan axes must contain X and Y exactly once')
+        orientation = f'{first_axis}{first_sign}{second_axis}{second_sign}'
+        if not bool(scan_params.get('unidirectional', True)):
+            orientation += 'b'
+        return orientation
 
     def _process_ism_offline(
         self,

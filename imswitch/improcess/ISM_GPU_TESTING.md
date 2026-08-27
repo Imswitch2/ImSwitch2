@@ -1,63 +1,100 @@
-# GPU ISM reassignment test path
+# ISM reassignment integration test path
 
-This branch adds an isolated **ISM reassignment (GPU)** reconstructor. It does
-not use the experimental `Enhanced confocal (ISM)` code inside the MoNaLISA
-reconstructor.
+The validated xrecon-style ISM reassignment backend is currently available
+through two paths during the integration phase:
 
-## Enable the plugin
+- **MoNaLISA → ISM reassignment**: the preferred integrated path. It reuses the
+  MoNaLISA pattern parameters, scan metadata, automatic scan-orientation
+  detection, timepoint handling, result display, and saving. The existing
+  **CPU/GPU** selector chooses the reconstruction backend.
+- **ISM reassignment (GPU)** as a standalone reconstructor: retained temporarily
+  as an A/B reference for the previously validated CuPy implementation.
 
-If your setup JSON has an explicit `processing.reconstructors` list, add:
+The pre-existing **Enhanced confocal (ISM)** MoNaLISA method is unrelated and
+has intentionally not been changed.
 
-```json
-"ism-reassign"
-```
+The ISM mode always auto-detects the scan orientation from the first timepoint.
+It uses the same rectangular Fast Gauss orientation detector and converts the
+detected orientation to the xrecon scan convention used by the ISM backend.
 
-For example:
+The Fast Gauss and xrecon sign conventions are not identical. The conversion is
+handled internally by the integrated path; users do not need to set the xrecon
+orientation manually.
 
-```json
-"processing": {
-  "reconstructors": ["view-only", "monalisa", "ism-reassign"]
-}
-```
+The **Unidirectional scan** value from the scanning parameters is still used to
+distinguish ordinary raster scanning from bidirectional/snake acquisition.
 
-CuPy must be available in the ImSwitch environment. The existing ImProcess GPU
-paths use the same dependency. For a CUDA 12 pip environment this is typically:
+For acquisitions with multiple timepoints, the orientation is detected once
+from the first timepoint and reused for all remaining timepoints.
+
+Multiple timepoints are reconstructed independently and returned as a standard
+`MonalisaProcessingResult`, so the T axis appears as a normal Napari slider.
+
+The reconstruction runs on ImProcess's worker thread. Each timepoint is passed
+to the shared ISM reconstruction backend as one `(M*M, Y, X)` stack.
+
+## CPU and GPU backends
+
+The integrated **ISM reassignment** method supports both backends:
+
+- **GPU** uses CuPy.
+- **CPU** uses NumPy/SciPy.
+
+Both paths use the same reconstruction algorithm and shared implementation.
+The CPU backend is primarily useful as a fallback and as a numerical reference;
+it is expected to be slower than the GPU backend.
+
+The standalone **ISM reassignment (GPU)** reconstructor remains GPU-only so it
+continues to provide a stable reference against the originally validated CuPy
+path.
+
+CuPy must be available only when the GPU backend is selected. For a CUDA 12 pip
+environment this is typically:
 
 ```bash
 pip install cupy-cuda12x
 ```
 
-Use the CuPy build matching the CUDA/driver setup of the machine.
+Use the CuPy build matching the machine's CUDA/driver setup.
 
-## Test workflow
+## ISM reassignment options
 
-1. Open the raw ISM acquisition in ImProcess.
-2. Select **ISM reassignment (GPU)** in the reconstructor picker.
-3. Set **Pixel size** and, if needed, the initial Row/Col period guesses.
-4. Click **Pattern → Find pattern**.
-5. Check the detected lattice on the raw mean image. `Show pattern` is enabled
-   automatically after a successful localization.
-6. Set the scan orientation. The current default is `X+Y-`; enable
-   `Bidirectional scan` if every second fast-scan row must be reversed.
-7. Click **Reconstruct current**.
+- **Oversampling**: xrecon microlens-grid oversampling; default 2.
+- **ISM shift**: Fourier reassignment fraction; default 0.5.
+- **Subtract patch mean**: preserve the validated per-patch mean subtraction.
+- **Frame batch**: 0 processes all frames of one scan together. Reduce it if
+  temporary memory becomes limiting, particularly on GPU.
 
-The reconstruction is dispatched through ImProcess's worker thread. The heavy
-path uploads the raw stack once, performs linear microlens centering,
-reassignment, mean subtraction, FFT shift and Gaussian+constant fitting on the
-GPU, then copies only the final 2-D reconstruction back to NumPy.
+## Current intentional limitations of the integrated path
 
-## Current intentional limitations
-
-- one 3-D acquisition with shape `(M*M, Y, X)`;
-- square scan (`M*M` frames);
+- square XY scan;
+- one Z slice;
+- one line-step condition;
 - square camera frames;
-- axis-aligned rectangular illumination lattice;
-- GPU/CuPy only;
-- linear microlens centering and fused FFT reassignment only.
+- axis-aligned rectangular illumination pattern;
+- multiple timepoints are supported.
 
-`GPU frame batch = 0` is the fastest path and processes all scan frames in one
-batch. Reduce it only if a large acquisition runs out of temporary GPU memory.
+## A/B validation
 
-The output metadata records the PatternFinder parameters, converted xrecon
-period/phase, reconstruction settings, output pixel size and measured GPU
-reconstruction time.
+Until the integrated path has been sufficiently validated on real acquisitions,
+keep the standalone `ism-reassign` reconstructor enabled.
+
+For a one-timepoint dataset, compare the standalone
+**ISM reassignment (GPU)** output with **MoNaLISA → ISM reassignment** using the
+same:
+
+- pattern parameters;
+- pixel size;
+- PSF FWHM;
+- oversampling;
+- ISM shift;
+- mean-subtraction setting.
+
+When comparing against the standalone reconstructor, use the standalone xrecon
+scan orientation known to be correct for the acquisition. The integrated path
+detects the Fast Gauss orientation automatically and converts it internally to
+the corresponding xrecon convention.
+
+For CPU/GPU parity checks within the integrated path, use identical
+reconstruction parameters. Small floating-point differences are expected, but
+the reconstructed images should otherwise agree numerically.

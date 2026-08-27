@@ -1,11 +1,13 @@
-"""GPU ISM reassignment kernel extracted from monalisa-xrecon.
+"""CPU/GPU ISM reassignment kernel extracted from monalisa-xrecon.
 
 This module intentionally contains only the computational path used by
 ``recon_reassign_ism``: linear microlens centering, optional per-patch mean
 subtraction, Fourier-domain ISM shift, and Gaussian+constant least-squares fit.
 
-The implementation is adapted for CuPy so the heavy reconstruction remains on
-one CUDA device from the initial upload until the final 2-D image is returned.
+NumPy/SciPy and CuPy share the same array-level implementation. The GPU entry
+point keeps the heavy reconstruction on one CUDA device until the final 2-D
+image is returned; the CPU entry point provides a dependency-light numerical
+reference and fallback.
 """
 
 from __future__ import annotations
@@ -206,7 +208,7 @@ def _center_ulenses_and_reassign(
     frame_batch_size: int | None = None,
     check_cancelled: Callable[[], None] | None = None,
 ):
-    """Batched separable linear interpolation entirely on the GPU."""
+    """Batched separable linear interpolation on the selected array backend."""
     data = cp.asarray(data, dtype=cp.float32)
     m = geometry.scan_steps
     n = geometry.camera_pixels
@@ -254,6 +256,130 @@ def _center_ulenses_and_reassign(
     )
 
 
+def _reconstruct_ism_backend(
+    raw_data,
+    *,
+    pattern_period: Sequence[float],
+    pattern_phase: Sequence[float],
+    scanning_orientation: str,
+    psf_fwhm_nm: float,
+    pixel_size_nm: float,
+    oversampling: float,
+    ism_shift: float,
+    remove_mean_of_patch: bool,
+    frame_batch_size: int | None,
+    check_cancelled: Callable[[], None] | None,
+    xp,
+    fft_module,
+):
+    """Run the shared ISM algorithm on a NumPy- or CuPy-like backend."""
+    m, n = validate_raw_stack(raw_data)
+    period = np.asarray(pattern_period, dtype=np.float64)
+    phase = np.asarray(pattern_phase, dtype=np.float64)
+    if period.shape != (2,) or phase.shape != (2,):
+        raise ValueError("pattern_period and pattern_phase must each contain x and y")
+    if not np.isfinite(period).all() or np.any(period <= 0) or not np.isfinite(phase).all():
+        raise ValueError("pattern period/phase must be finite and periods must be positive")
+    if psf_fwhm_nm <= 0:
+        raise ValueError("PSF FWHM must be positive")
+
+    geometry = _compute_geometry(m, n, period, float(oversampling), float(pixel_size_nm))
+    data = _reshape_and_fix_scanning(raw_data, scanning_orientation, xp)
+    reassigned = _center_ulenses_and_reassign(
+        data,
+        period,
+        phase,
+        geometry,
+        xp,
+        frame_batch_size=frame_batch_size,
+        check_cancelled=check_cancelled,
+    )
+
+    if check_cancelled is not None:
+        check_cancelled()
+    if remove_mean_of_patch:
+        reassigned -= xp.mean(reassigned, axis=(0, 1))
+
+    sigma_px = float(psf_fwhm_nm) / (2.355 * geometry.output_pixel_size_nm)
+    weights = xp.asarray(
+        _least_square_signal_weights(geometry.pixels_per_ulens, sigma_px),
+        dtype=xp.float32,
+    )
+
+    if float(ism_shift) == 0.0:
+        image = xp.einsum("ij,ijnm->nm", weights, reassigned).astype(
+            xp.float32, copy=False
+        )
+    else:
+        p = geometry.pixels_per_ulens
+        out_n = geometry.output_pixels
+        delta = xp.asarray(
+            (
+                ((np.arange(p) + 1) - 0.5 - p / 2)
+                * float(ism_shift)
+                * geometry.scanning_step_px
+            ).astype(WORKING_FLOAT_DTYPE)
+        )
+        freq_y = xp.asarray(fft_module.fftfreq(out_n), dtype=xp.float32)
+        freq_x = xp.asarray(fft_module.rfftfreq(out_n), dtype=xp.float32)
+        phase_y = xp.exp(
+            (-2j * xp.pi) * delta[:, None] * freq_y[None, :]
+        ).astype(xp.complex64)
+        phase_x = xp.exp(
+            (-2j * xp.pi) * delta[:, None] * freq_x[None, :]
+        ).astype(xp.complex64)
+
+        # Fused Fourier shift + Gaussian fit. Keeping the spectrum in-place
+        # avoids a full additional P*P*N*N complex phase/product volume.
+        spectrum = fft_module.rfft2(reassigned, axes=(-2, -1))
+        spectrum *= phase_y[:, None, :, None]
+        spectrum *= phase_x[None, :, None, :]
+        spectrum *= weights[:, :, None, None]
+        image_spectrum = xp.sum(spectrum, axis=(0, 1))
+        image = fft_module.irfft2(
+            image_spectrum, s=(out_n, out_n), axes=(-2, -1)
+        ).astype(xp.float32, copy=False)
+
+    if check_cancelled is not None:
+        check_cancelled()
+    return image, geometry
+
+
+def reconstruct_ism_cpu(
+    raw_data,
+    *,
+    pattern_period: Sequence[float],
+    pattern_phase: Sequence[float],
+    scanning_orientation: str = "X+Y-",
+    psf_fwhm_nm: float = 200.0,
+    pixel_size_nm: float = 100.0,
+    oversampling: float = 2.0,
+    ism_shift: float = 0.5,
+    remove_mean_of_patch: bool = True,
+    frame_batch_size: int | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+):
+    """Run the validated ISM reassignment algorithm on CPU with NumPy/SciPy."""
+    from scipy import fft
+
+    image, geometry = _reconstruct_ism_backend(
+        raw_data,
+        pattern_period=pattern_period,
+        pattern_phase=pattern_phase,
+        scanning_orientation=scanning_orientation,
+        psf_fwhm_nm=psf_fwhm_nm,
+        pixel_size_nm=pixel_size_nm,
+        oversampling=oversampling,
+        ism_shift=ism_shift,
+        remove_mean_of_patch=remove_mean_of_patch,
+        frame_batch_size=frame_batch_size,
+        check_cancelled=check_cancelled,
+        xp=np,
+        fft_module=fft,
+    )
+    return np.asarray(image, dtype=WORKING_FLOAT_DTYPE), geometry
+
+
 def reconstruct_ism_gpu(
     raw_data,
     *,
@@ -268,88 +394,72 @@ def reconstruct_ism_gpu(
     frame_batch_size: int | None = None,
     check_cancelled: Callable[[], None] | None = None,
 ):
-    """Run the extracted ISM reassignment entirely on an NVIDIA GPU."""
+    """Run the validated ISM reassignment algorithm on an NVIDIA GPU."""
     cp = _import_cupy()
     if cp.cuda.runtime.getDeviceCount() < 1:
         raise RuntimeError("CuPy is installed, but no CUDA device is visible")
 
-    m, n = validate_raw_stack(raw_data)
-    period = np.asarray(pattern_period, dtype=np.float64)
-    phase = np.asarray(pattern_phase, dtype=np.float64)
-    if period.shape != (2,) or phase.shape != (2,):
-        raise ValueError("pattern_period and pattern_phase must each contain x and y")
-    if not np.isfinite(period).all() or np.any(period <= 0) or not np.isfinite(phase).all():
-        raise ValueError("pattern period/phase must be finite and periods must be positive")
-    if psf_fwhm_nm <= 0:
-        raise ValueError("PSF FWHM must be positive")
+    image, geometry = _reconstruct_ism_backend(
+        raw_data,
+        pattern_period=pattern_period,
+        pattern_phase=pattern_phase,
+        scanning_orientation=scanning_orientation,
+        psf_fwhm_nm=psf_fwhm_nm,
+        pixel_size_nm=pixel_size_nm,
+        oversampling=oversampling,
+        ism_shift=ism_shift,
+        remove_mean_of_patch=remove_mean_of_patch,
+        frame_batch_size=frame_batch_size,
+        check_cancelled=check_cancelled,
+        xp=cp,
+        fft_module=cp.fft,
+    )
+    cp.cuda.get_current_stream().synchronize()
+    return cp.asnumpy(image), geometry
 
-    geometry = _compute_geometry(m, n, period, float(oversampling), float(pixel_size_nm))
-    data = _reshape_and_fix_scanning(raw_data, scanning_orientation, cp)
-    reassigned = _center_ulenses_and_reassign(
-        data,
-        period,
-        phase,
-        geometry,
-        cp,
+
+def reconstruct_ism(
+    raw_data,
+    *,
+    device: str = "GPU",
+    pattern_period: Sequence[float],
+    pattern_phase: Sequence[float],
+    scanning_orientation: str = "X+Y-",
+    psf_fwhm_nm: float = 200.0,
+    pixel_size_nm: float = 100.0,
+    oversampling: float = 2.0,
+    ism_shift: float = 0.5,
+    remove_mean_of_patch: bool = True,
+    frame_batch_size: int | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+):
+    """Dispatch ISM reassignment to the selected CPU/GPU backend."""
+    kwargs = dict(
+        pattern_period=pattern_period,
+        pattern_phase=pattern_phase,
+        scanning_orientation=scanning_orientation,
+        psf_fwhm_nm=psf_fwhm_nm,
+        pixel_size_nm=pixel_size_nm,
+        oversampling=oversampling,
+        ism_shift=ism_shift,
+        remove_mean_of_patch=remove_mean_of_patch,
         frame_batch_size=frame_batch_size,
         check_cancelled=check_cancelled,
     )
-
-    if check_cancelled is not None:
-        check_cancelled()
-    if remove_mean_of_patch:
-        reassigned -= cp.mean(reassigned, axis=(0, 1))
-
-    sigma_px = float(psf_fwhm_nm) / (2.355 * geometry.output_pixel_size_nm)
-    weights = cp.asarray(
-        _least_square_signal_weights(geometry.pixels_per_ulens, sigma_px),
-        dtype=cp.float32,
-    )
-
-    if float(ism_shift) == 0.0:
-        image = cp.einsum("ij,ijnm->nm", weights, reassigned).astype(
-            cp.float32, copy=False
-        )
-    else:
-        p = geometry.pixels_per_ulens
-        out_n = geometry.output_pixels
-        delta = cp.asarray(
-            (
-                ((np.arange(p) + 1) - 0.5 - p / 2)
-                * float(ism_shift)
-                * geometry.scanning_step_px
-            ).astype(WORKING_FLOAT_DTYPE)
-        )
-        freq_y = cp.fft.fftfreq(out_n).astype(cp.float32)
-        freq_x = cp.fft.rfftfreq(out_n).astype(cp.float32)
-        phase_y = cp.exp(
-            (-2j * cp.pi) * delta[:, None] * freq_y[None, :]
-        ).astype(cp.complex64)
-        phase_x = cp.exp(
-            (-2j * cp.pi) * delta[:, None] * freq_x[None, :]
-        ).astype(cp.complex64)
-
-        # Fused Fourier shift + Gaussian fit.  Keeping the spectrum in-place
-        # avoids a full additional P*P*N*N complex phase/product volume.
-        spectrum = cp.fft.rfft2(reassigned, axes=(-2, -1))
-        spectrum *= phase_y[:, None, :, None]
-        spectrum *= phase_x[None, :, None, :]
-        spectrum *= weights[:, :, None, None]
-        image_spectrum = cp.sum(spectrum, axis=(0, 1))
-        image = cp.fft.irfft2(
-            image_spectrum, s=(out_n, out_n), axes=(-2, -1)
-        ).astype(cp.float32, copy=False)
-
-    if check_cancelled is not None:
-        check_cancelled()
-    cp.cuda.get_current_stream().synchronize()
-    return cp.asnumpy(image), geometry
+    normalized = str(device).strip().lower()
+    if normalized == "gpu":
+        return reconstruct_ism_gpu(raw_data, **kwargs)
+    if normalized == "cpu":
+        return reconstruct_ism_cpu(raw_data, **kwargs)
+    raise ValueError(f"ISM reassignment device must be 'CPU' or 'GPU', got {device!r}")
 
 
 __all__ = [
     "IsmGeometry",
     "gpu_available",
     "patternfinder_to_xrecon",
+    "reconstruct_ism",
+    "reconstruct_ism_cpu",
     "reconstruct_ism_gpu",
     "validate_raw_stack",
 ]

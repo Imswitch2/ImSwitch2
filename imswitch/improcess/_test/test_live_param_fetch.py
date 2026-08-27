@@ -105,6 +105,26 @@ def test_monalisa_fast_gauss_selector_uses_plugin_path():
     controller._main.monalisaController.runLegacyReconstruct.assert_not_called()
 
 
+def test_monalisa_ism_selector_uses_plugin_path():
+    controller = ReconstructorManagerController.__new__(ReconstructorManagerController)
+    controller._logger = MagicMock()
+    controller._widget = MagicMock()
+    controller._widget.getReconstructionParams.return_value = {
+        "reconstruction_method": "ISM reassignment",
+    }
+    controller._main = SimpleNamespace(
+        _activeReconstructor=SimpleNamespace(id="monalisa"),
+        monalisaController=MagicMock(),
+    )
+    controller._reconstruct_with_plugin = MagicMock()
+    data_objs = [object()]
+
+    controller.reconstruct(data_objs, consolidate=False)
+
+    controller._reconstruct_with_plugin.assert_called_once_with(data_objs, False)
+    controller._main.monalisaController.runLegacyReconstruct.assert_not_called()
+
+
 def test_monalisa_plugin_path_injects_scan_params():
     result = SimpleNamespace(name="fast-result", output_pixel_size_nm=None)
     reconstructor = SimpleNamespace(

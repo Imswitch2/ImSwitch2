@@ -33,14 +33,15 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
             {'name': 'Reconstruction method', 'type': 'list',
              'value': 'Fast Gauss MoNaLISA',
              'values': ['Fast Gauss MoNaLISA', 'MoNaLISA',
-                        'Enhanced confocal (ISM)'],
+                        'Enhanced confocal (ISM)', 'ISM reassignment'],
              'tip': (
                  'Fast Gauss MoNaLISA (default) uses the low-latency Gaussian '
                  'reassignment path that live reconstruction always uses. '
                  'MoNaLISA runs the full post-acquisition SignalExtractor '
-                 'path. Enhanced confocal (ISM) skips fitting entirely and '
-                 'pixel-reassigns every footprint pixel (image scanning '
-                 'microscopy); see ISM options.'
+                 'path. Enhanced confocal (ISM) is the pre-existing '
+                 'experimental pixel-reassignment path. ISM reassignment '
+                 'is the separate xrecon implementation with CPU and GPU '
+                 'backends; see ISM reassignment options.'
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [
@@ -100,7 +101,8 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                      'tip': ('Advanced: reconstruct once per sweep value and '
                              'stack the results along a leading Sweep axis — '
                              'slide through it in the viewer to find the best '
-                             'setting. Offline Fast Gauss and ISM only.')},
+                             'setting. Offline Fast Gauss and the pre-existing Enhanced '
+                             'confocal (ISM) method only.')},
                     {'name': 'Sweep parameter', 'type': 'list',
                      'value': 'Pinhole radius (×σ)',
                      'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)',
@@ -135,12 +137,24 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                          "combined with ISM's photon use and sharpening. "
                          'None (raw) keeps the classic enhanced-confocal '
                          'sum including background.')}]},
+            {'name': 'ISM reassignment options', 'type': 'group', 'children': [
+                {'name': 'Oversampling', 'type': 'float', 'value': 2.0,
+                 'limits': (1.0, 8.0)},
+                {'name': 'ISM shift', 'type': 'float', 'value': 0.5,
+                 'limits': (-4.0, 4.0),
+                 'tip': ('Fourier pixel-reassignment fraction; 0.5 is the '
+                         'standard matched-PSF value.')},
+                {'name': 'Subtract patch mean', 'type': 'bool', 'value': True},
+                {'name': 'Frame batch', 'type': 'int', 'value': 0,
+                 'limits': (0, 100000),
+                 'tip': ('0 processes all frames of one scan together. Lower '
+                         'values reduce temporary CPU/GPU memory use.')} ]},
             {'name': 'Bleaching correction', 'type': 'bool', 'value': False},
             {'name': 'Auto-detect scan orientation', 'type': 'bool', 'value': True,
              'tip': (
-                 'Override the scan-params dialog by picking the fast/slow axis '
-                 'and pos/neg direction that minimize total variation of the '
-                 'reconstructed image — ported from Mini_Recon.'
+                 'Classic MoNaLISA: override the scan-params dialog by picking '
+                 'the fast/slow axis and pos/neg direction that minimize total '
+                 'variation. ISM reassignment always auto-detects.'
              )},
         ]
         
@@ -176,7 +190,7 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
         Returns:
             Dict with keys:
                 - pixel_size_nm: float
-                - reconstruction_method: str ('MoNaLISA' or 'Fast Gauss MoNaLISA')
+                - reconstruction_method: str
                 - device: str ('CPU' or 'GPU')
                 - row_offset: float
                 - col_offset: float
@@ -194,6 +208,10 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 - sweep_enabled: bool
                 - sweep_parameter: str (UI label of the swept parameter)
                 - sweep_values_text: str (unparsed sweep-values field)
+                - ism_reassign_oversampling: float
+                - ism_reassign_shift: float
+                - ism_reassign_remove_mean_of_patch: bool
+                - ism_reassign_frame_batch_size: int | None
                 - bleaching_correction: bool
         """
         pattern_pars = self.p.param('Pattern')
@@ -234,6 +252,16 @@ class MonalisaParamsWidget(QtWidgets.QWidget):
                 'Reassignment factor').value(),
             'ism_background': self.p.param('ISM options').param(
                 'Background').value(),
+            'ism_reassign_oversampling': self.p.param('ISM reassignment options').param(
+                'Oversampling').value(),
+            'ism_reassign_shift': self.p.param('ISM reassignment options').param(
+                'ISM shift').value(),
+            'ism_reassign_remove_mean_of_patch': self.p.param('ISM reassignment options').param(
+                'Subtract patch mean').value(),
+            'ism_reassign_frame_batch_size': (
+                int(self.p.param('ISM reassignment options').param('Frame batch').value())
+                or None
+            ),
             'bleaching_correction': self.p.param('Bleaching correction').value(),
             'auto_scan_orientation': self.p.param('Auto-detect scan orientation').value(),
         }

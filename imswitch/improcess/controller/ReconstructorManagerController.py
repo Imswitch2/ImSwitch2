@@ -403,7 +403,10 @@ class ReconstructorManagerController(ImProcessWidgetController):
             self._reconstruct_with_plugin(dataObjs, consolidate)
             return
         params = self._widget.getReconstructionParams()
-        if params.get('reconstruction_method') == 'Fast Gauss MoNaLISA':
+        if params.get('reconstruction_method') in (
+            'Fast Gauss MoNaLISA',
+            'ISM reassignment',
+        ):
             self._reconstruct_with_plugin(dataObjs, consolidate)
             return
 
@@ -413,6 +416,9 @@ class ReconstructorManagerController(ImProcessWidgetController):
     def _reconstruct_with_plugin(self, dataObjs, consolidate):
         reconstructor = self._main._activeReconstructor
         if reconstructor is None:
+            return
+        dataObjs = list(dataObjs)
+        if not dataObjs:
             return
         if consolidate and not getattr(reconstructor, 'supports_consolidation', False):
             # The UI disables the consolidate action for these plugins; this
@@ -424,9 +430,16 @@ class ReconstructorManagerController(ImProcessWidgetController):
             )
             consolidate = False
 
-        if getattr(reconstructor, 'execution_policy', 'inline') == 'worker':
+        policy_params = self._params_for_data_obj(reconstructor)
+        policy_resolver = getattr(reconstructor, 'execution_policy_for', None)
+        policy = (
+            policy_resolver(policy_params)
+            if callable(policy_resolver)
+            else getattr(reconstructor, 'execution_policy', 'inline')
+        )
+        if policy == 'worker':
             self._start_worker_reconstruction(
-                reconstructor, list(dataObjs), consolidate
+                reconstructor, dataObjs, consolidate
             )
             return
 
