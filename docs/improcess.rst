@@ -870,21 +870,17 @@ per-focus weights evaluated at the real offsets: no interpolation bias, edge
 foci fit only the pixels that exist, and extraction is slightly faster.
 Rig output is byte-identical until the mode is switched.
 
-``Fast Gauss options -> Parameter sweep`` is an optional advanced mode for
-offline fast-Gauss reconstruction: instead of one reconstruction, the run is
-repeated once per value of the chosen parameter (``Pinhole radius (×σ)`` or
-``Gaussian sigma (px)``) and the results are stacked along a leading Sweep
-axis, which the viewer exposes as a slider — slide through the stack to find
-the best setting empirically. Values are entered as a comma-separated list or
-an inclusive ``start:step:stop`` range. The pinhole optimum is a genuine
-data-dependent tradeoff (smaller buys sectioning and resolution at the price
-of noise; beyond ~2–2.5 sigma at the standard period-to-sigma ratio,
-neighbor-focus crosstalk bleeds in), which is exactly what the sweep makes
-visible. Sweeping the pinhole radius forces ``Circular pinhole`` footprint
-mode. Saving a sweep with a single timepoint writes one ImageJ hyperstack
-with the sweep on the T axis and each plane labeled by its value; with
-multiple timepoints, one file per value is written. Sweep results cannot be
-consolidated across datasets.
+The top-level ``Parameter sweep`` group (see *Method-dependent options and
+the parameter sweep* below) serves the fast-Gauss method with its two
+sweepable parameters, ``Pinhole radius (×σ)`` and ``Gaussian sigma (px)``.
+The pinhole optimum is a genuine data-dependent tradeoff (smaller buys
+sectioning and resolution at the price of noise; beyond ~2–2.5 sigma at the
+standard period-to-sigma ratio, neighbor-focus crosstalk bleeds in), which
+is exactly what the sweep makes visible. Sweeping the pinhole radius forces
+``Circular pinhole`` footprint mode. Saving a sweep with a single timepoint
+writes one ImageJ hyperstack with the sweep on the T axis and each plane
+labeled by its value; with multiple timepoints, one file per value is
+written. Sweep results cannot be consolidated across datasets.
 
 Pattern localization no longer needs a good period guess: a 2D spectral
 detection first recovers the illumination lattice (period, offset and any
@@ -932,44 +928,54 @@ live path: a 2D Right-Left / Up-Down scan, one Z slice, and optional
 timepoints. Use the default ``MoNaLISA`` method for the full coefficient-based
 pipeline.
 
-Enhanced confocal (ISM)
-=======================
+ISM reassignment
+================
 
 The third ``Reconstruction method`` treats a MoNaLISA scan as what it also
-is: a massively parallel image-scanning-microscopy measurement. Each focus's
-emission spot is *imaged* rather than integrated, and the camera pixel at
-offset ``d`` from a focus predominantly sees the specimen at ``factor × d``
-beside the excitation spot, where the ideal factor is
-``σ_exc² / (σ_exc² + σ_det²)`` — 0.5 for equal-width PSFs, slightly less
-with a Stokes-shifted detection PSF. Instead of fitting anything, every
-footprint pixel's raw value is deposited at
-``focus + scan offset + factor × (pixel − focus)`` and gridded: open-pinhole
-photon collection with up to √2 resolution gain over the confocal
-equivalent. ``ISM options → Reassignment factor`` is the single parameter
-(0 degenerates to a binned open-pinhole confocal), and it can be swept like
-the fast-Gauss parameters to find the sharpest setting empirically. The
-footprint/pinhole options are shared with Fast Gauss, and the method works
-identically for rectangular and non-rectangular lattices (the reassigned
-positions never form a square raster anyway; the pattern is detected
-automatically, falling back to the widget's rectangular fields).
+is: a massively parallel image-scanning-microscopy measurement. It runs the
+validated xrecon ISM backend inside the MoNaLISA orchestration: MoNaLISA
+supplies the pattern parameters, resolved scan geometry, automatic scan
+orientation and timepoint splitting, while the shared kernel re-centers the
+camera onto per-focus patches, Fourier-shifts every detector-pixel sub-image
+by ``shift x offset`` (subpixel-exact pixel reassignment), and combines them
+with a Gaussian+constant least-squares weighting. The output raster is
+oversampled (pixel pitch = pattern period / patch size), and the whole
+reconstruction runs on the worker thread with progress and cancellation.
 
-One geometric difference from co-scanned detector-array ISM is handled
-internally: the parallel scan covers each specimen point once, so an output
-point only receives a partial, position-dependent subset of detector
-offsets, and a plain sum or mean would imprint a tile-scale collection
-ripple. Each pixel is therefore treated as measuring the specimen with gain
-``g = envelope(d)`` and combined inverse-variance weighted
-(``Σ g·value / Σ g²``), which makes the signal gain exactly uniform.
+``ISM reassignment options`` carries the method's parameters: ``ISM shift``
+(the reassignment fraction; 0.5 is the matched-PSF value), ``Oversampling``,
+``Subtract patch mean`` and ``Frame batch`` (bounds temporary CPU/GPU
+memory). The existing **CPU/GPU** selector chooses the backend — GPU needs
+CuPy, CPU is the dependency-light NumPy/SciPy reference. The method
+currently requires a square XY scan with square camera frames, a single line
+step, and a rectangular illumination pattern. See
+``imswitch/improcess/ISM_GPU_TESTING.md`` for the integration notes.
 
-``ISM options → Background`` selects how background is handled.
-``Per-focus constant`` (the default) is the hybrid with the fast-Gauss fit:
-the constant-background term of the same per-focus Gaussian+constant least
-squares the fitted path solves is subtracted from each focus's footprint
-pixels *before* reassignment — the fitted path's haze removal combined with
-ISM's photon use and sharpening, and still with no per-focus amplitude to
-destabilize near very bright structures. ``None (raw)`` keeps the classic
-enhanced-confocal sum, where background is not modeled and a constant
-camera offset becomes a smooth tile-scale offset pattern.
+An earlier in-tree scatter-based ISM prototype ("Enhanced confocal (ISM)")
+was removed in favor of this backend; its per-focus-background hybrid idea
+survives in the kernel's Gaussian+constant weighting and patch-mean
+subtraction.
+
+Method-dependent options and the parameter sweep
+================================================
+
+The parameter widget shows only the groups the selected method actually
+reads: ``Fast Gauss options`` for Fast Gauss, ``ISM reassignment options``
+for ISM reassignment, the ``Auto-detect scan orientation`` toggle for the
+classic method (the others always auto-detect), and the ``BG modelling``
+choice is hidden for ISM reassignment, which does not use the fast-Gauss
+background fit. Hidden groups keep their values, so switching methods back
+and forth never loses settings.
+
+``Parameter sweep`` is a top-level group serving every sweep-capable method:
+enable it and the reconstruction runs once per value of the chosen
+parameter, stacking the results along a leading Sweep axis the viewer shows
+as a slider. The ``Sweep parameter`` choices follow the selected method —
+pinhole radius and fit sigma for Fast Gauss; ISM shift, oversampling and PSF
+FWHM for ISM reassignment — offering only parameters the method actually
+consumes, so a sweep can never produce a stack of identical
+reconstructions. Values are a comma-separated list or an inclusive
+``start:step:stop`` range.
 
 Pass-through reconstructors
 ===========================

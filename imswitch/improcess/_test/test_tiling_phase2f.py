@@ -17,8 +17,11 @@ from imswitch.improcess.reconstructors.view_only import ViewOnlyReconstructor
 
 
 def test_non_tiling_reconstructors_keep_image_only_inline_defaults():
+    # The standalone GPU ISM reference deliberately runs on the worker
+    # thread, like tiling; every other reconstructor stays inline.
+    worker_plugins = {"tiling-mosaic", "ism-reassign"}
     for plugin_id, plugin_class in _AVAILABLE_RECONSTRUCTOR_CLASSES.items():
-        if plugin_id == "tiling-mosaic":
+        if plugin_id in worker_plugins:
             continue
         assert plugin_class.accepted_source_kinds == ("image",)
         assert plugin_class.execution_policy == "inline"

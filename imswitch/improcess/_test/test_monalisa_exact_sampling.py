@@ -88,35 +88,6 @@ class TestExactWeights:
         assert np.isfinite(amplitude[0])
         assert amplitude[0] == pytest.approx(200.0, rel=0.05)
 
-    def test_background_term_weights_recover_the_constant(self):
-        """term='background' extracts the constant of the Gaussian+constant
-        model exactly on noiseless model data (the ISM hybrid's estimator)."""
-        sigma = 2.0
-        centers_x = np.array([30.37])
-        centers_y = np.array([25.81])
-        footprint = get_pinhole_footprint(1.5 * sigma)
-        rows, cols, weights = build_exact_sampling(
-            centers_x, centers_y, footprint, sigma, True, 60, 60,
-            term="background",
-        )
-        frame = _render_frame(60, 60, centers_x, centers_y, [200.0], sigma, 37.5)
-        background = (frame[rows, cols] * weights).sum(axis=-1)
-        assert background[0] == pytest.approx(37.5, abs=1e-9)
-
-    def test_background_term_requires_background_fit(self):
-        sigma = 2.0
-        footprint = get_pinhole_footprint(1.5 * sigma)
-        with pytest.raises(ValueError, match="fit_background"):
-            build_exact_sampling(
-                np.array([30.0]), np.array([25.0]), footprint, sigma,
-                False, 60, 60, term="background",
-            )
-        with pytest.raises(ValueError, match="term"):
-            build_exact_sampling(
-                np.array([30.0]), np.array([25.0]), footprint, sigma,
-                True, 60, 60, term="slope",
-            )
-
     def test_focus_fully_outside_frame_gets_zero_weights(self):
         sigma = 2.0
         rows, cols, weights = build_exact_sampling(

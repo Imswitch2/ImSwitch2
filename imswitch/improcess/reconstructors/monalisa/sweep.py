@@ -1,9 +1,9 @@
-"""Parameter-sweep support for the fast-Gauss MoNaLISA reconstruction.
+"""Parameter-sweep support for the MoNaLISA-family reconstruction methods.
 
-An advanced, optional mode: instead of one reconstruction, the offline
-fast-Gauss path runs once per value of a chosen parameter (e.g. the
-detection-pinhole radius) and stacks the results along a leading Sweep axis,
-so the best setting can be found by sliding through the stack.
+An advanced, optional mode: instead of one reconstruction, the selected
+offline method runs once per value of a chosen parameter and the results are
+stacked along a leading Sweep axis, so the best setting can be found by
+sliding through the stack.
 """
 
 import math
@@ -11,44 +11,59 @@ import re
 
 MAX_SWEEP_VALUES = 64
 
-#: Canonical sweepable parameters: key -> (params-dict key, UI label).
-#: ``pinhole_radius_sigma`` also forces the circular-pinhole footprint mode,
-#: since sweeping a radius the shell footprint would ignore is meaningless.
-SWEEPABLE_PARAMETERS = {
-    "pinhole_radius_sigma": (
-        "fast_gauss_pinhole_radius_sigma",
-        "Pinhole radius (×σ)",
-    ),
-    "gaussian_sigma_px": (
-        "fast_gauss_gaussian_sigma_px",
-        "Gaussian sigma (px)",
-    ),
-    "ism_reassignment_factor": (
-        "ism_reassignment_factor",
-        "ISM reassignment factor",
-    ),
+#: Sweepable numeric parameters per reconstruction method:
+#: ``{method: {UI label: params-dict key}}``. Only parameters the method
+#: actually consumes are offered — sweeping one it ignores would produce a
+#: stack of identical reconstructions. (The fast-Gauss PSF FWHM is absent for
+#: that reason: the widget always sends an explicit Gaussian sigma, which
+#: takes precedence over the PSF-derived value.) Methods not listed here do
+#: not support sweeping.
+METHOD_SWEEPABLE_PARAMETERS = {
+    "Fast Gauss MoNaLISA": {
+        "Pinhole radius (×σ)": "fast_gauss_pinhole_radius_sigma",
+        "Gaussian sigma (px)": "fast_gauss_gaussian_sigma_px",
+    },
+    "ISM reassignment": {
+        "ISM shift": "ism_reassign_shift",
+        "Oversampling": "ism_reassign_oversampling",
+        "PSF FWHM (nm)": "psf_fwhm_nm",
+    },
 }
 
 
-def resolve_sweep_parameter(label: object) -> str:
-    """Map a UI label (or canonical key) onto a canonical sweep parameter."""
-    text = str(label or "").strip().lower()
+def sweepable_parameters(method: object) -> dict[str, str]:
+    """UI-label → params-key map of the method's sweepable parameters."""
+    return dict(METHOD_SWEEPABLE_PARAMETERS.get(str(method or ""), {}))
+
+
+def resolve_sweep_parameter(method: object, label: object) -> tuple[str, str]:
+    """Resolve a sweep-parameter label for one method.
+
+    Returns ``(params_key, ui_label)``. Matching is exact on the label first,
+    then case-insensitive on label or key substrings, so values persisted
+    from a widget and programmatic keys both resolve.
+    """
+    available = sweepable_parameters(method)
+    if not available:
+        raise ValueError(
+            f'Parameter sweep is not supported for the '
+            f'{str(method or "selected")!r} method'
+        )
+    text = str(label or "").strip()
     if not text:
         raise ValueError(
             "No sweep parameter selected; choose one of: "
-            + ", ".join(ui for _, ui in SWEEPABLE_PARAMETERS.values())
+            + ", ".join(available)
         )
-    if text in SWEEPABLE_PARAMETERS:
-        return text
-    if "pinhole" in text:
-        return "pinhole_radius_sigma"
-    if "reassign" in text or "ism" in text:
-        return "ism_reassignment_factor"
-    if "sigma" in text:
-        return "gaussian_sigma_px"
+    if text in available:
+        return available[text], text
+    lowered = text.lower()
+    for ui_label, key in available.items():
+        if lowered in ui_label.lower() or lowered in key.lower():
+            return key, ui_label
     raise ValueError(
-        f"Unknown sweep parameter {label!r}; choose one of: "
-        + ", ".join(ui for _, ui in SWEEPABLE_PARAMETERS.values())
+        f"Unknown sweep parameter {label!r} for {method!r}; choose one of: "
+        + ", ".join(available)
     )
 
 

@@ -13,6 +13,7 @@ from imswitch.improcess.reconstructors.monalisa.result import (
 from imswitch.improcess.reconstructors.monalisa.sweep import (
     parse_sweep_values,
     resolve_sweep_parameter,
+    sweepable_parameters,
 )
 
 
@@ -96,12 +97,42 @@ class TestParseSweepValues:
         with pytest.raises(ValueError, match="maximum"):
             parse_sweep_values("0.001:0.001:10")
 
-    def test_resolve_parameter_labels(self):
-        assert resolve_sweep_parameter("Pinhole radius (×σ)") == "pinhole_radius_sigma"
-        assert resolve_sweep_parameter("Gaussian sigma (px)") == "gaussian_sigma_px"
-        assert resolve_sweep_parameter("pinhole_radius_sigma") == "pinhole_radius_sigma"
+    def test_resolve_parameter_labels_per_method(self):
+        assert resolve_sweep_parameter(
+            "Fast Gauss MoNaLISA", "Pinhole radius (×σ)"
+        ) == ("fast_gauss_pinhole_radius_sigma", "Pinhole radius (×σ)")
+        assert resolve_sweep_parameter(
+            "Fast Gauss MoNaLISA", "gaussian sigma"
+        ) == ("fast_gauss_gaussian_sigma_px", "Gaussian sigma (px)")
+        assert resolve_sweep_parameter(
+            "ISM reassignment", "ISM shift"
+        ) == ("ism_reassign_shift", "ISM shift")
+        assert resolve_sweep_parameter(
+            "ISM reassignment", "oversampling"
+        ) == ("ism_reassign_oversampling", "Oversampling")
+
+    def test_resolve_rejects_foreign_or_unknown_parameters(self):
+        # A parameter belonging to another method must not resolve.
         with pytest.raises(ValueError, match="choose one of"):
-            resolve_sweep_parameter("magnification")
+            resolve_sweep_parameter("Fast Gauss MoNaLISA", "ISM shift")
+        with pytest.raises(ValueError, match="choose one of"):
+            resolve_sweep_parameter("ISM reassignment", "Pinhole radius (×σ)")
+        with pytest.raises(ValueError, match="choose one of"):
+            resolve_sweep_parameter("Fast Gauss MoNaLISA", "magnification")
+        # Methods without sweep support say so.
+        with pytest.raises(ValueError, match="not supported"):
+            resolve_sweep_parameter("MoNaLISA", "Pinhole radius (×σ)")
+
+    def test_sweepable_parameters_registry(self):
+        assert sweepable_parameters("Fast Gauss MoNaLISA") == {
+            "Pinhole radius (×σ)": "fast_gauss_pinhole_radius_sigma",
+            "Gaussian sigma (px)": "fast_gauss_gaussian_sigma_px",
+        }
+        assert set(sweepable_parameters("ISM reassignment")) == {
+            "ISM shift", "Oversampling", "PSF FWHM (nm)",
+        }
+        assert sweepable_parameters("MoNaLISA") == {}
+        assert sweepable_parameters(None) == {}
 
 
 class TestSweepProcessing:
@@ -160,6 +191,30 @@ class TestSweepProcessing:
         )
         single = MonalisaReconstructor().process(data_obj, single_params)
         np.testing.assert_allclose(sweep.data[1], single.data)
+
+    def test_ism_shift_sweep_runs_through_the_xrecon_cpu_backend(self, foci_stack):
+        """The generalized sweep drives the integrated ISM reassignment
+        method too: one reconstruction per ISM-shift value."""
+        stack, nx_s, ny_s, pattern = foci_stack
+        data_obj = InMemoryStackWrapper(
+            name="ism-shift-sweep", dataset_name="det", data=stack, attrs={}
+        )
+        params = _sweep_params(
+            nx_s,
+            ny_s,
+            pattern,
+            reconstruction_method="ISM reassignment",
+            device="CPU",
+            pixel_size_nm=100.0,
+            psf_fwhm_nm=200.0,
+            sweep_parameter="ISM shift",
+            sweep_values_text="0.25, 0.5",
+        )
+        result = MonalisaReconstructor().process(data_obj, params)
+        assert isinstance(result, MonalisaSweepResult)
+        assert result.data.shape[0] == 2
+        assert result.sweep_parameter_label == "ISM shift"
+        assert not np.allclose(result.data[0], result.data[1])
 
     def test_sweep_with_classic_method_raises(self, foci_stack):
         stack, nx_s, ny_s, pattern = foci_stack

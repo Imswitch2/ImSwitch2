@@ -10,8 +10,8 @@ through two paths during the integration phase:
 - **ISM reassignment (GPU)** as a standalone reconstructor: retained temporarily
   as an A/B reference for the previously validated CuPy implementation.
 
-The pre-existing **Enhanced confocal (ISM)** MoNaLISA method is unrelated and
-has intentionally not been changed.
+The earlier in-tree scatter-based **Enhanced confocal (ISM)** MoNaLISA method
+has been removed in favor of this backend.
 
 The ISM mode always auto-detects the scan orientation from the first timepoint.
 It uses the same rectangular Fast Gauss orientation detector and converts the

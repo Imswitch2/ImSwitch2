@@ -16,6 +16,9 @@ from imswitch.improcess.reconstructors.monalisa.gauss_processor import (
     DEFAULT_GAUSSIAN_SIGMA_PX,
     DEFAULT_PINHOLE_RADIUS_SIGMA,
 )
+from imswitch.improcess.reconstructors.monalisa.params_widget import (
+    apply_method_dependent_options,
+)
 from .DataFrame import DataFrame
 from .ColocalizationWidget import ColocalizationWidget
 from .MultiDataFrame import MultiDataFrame
@@ -1849,16 +1852,14 @@ class ReconParTree(ParameterTree):
             {'name': 'Pixel size', 'type': 'float', 'value': 77, 'suffix': 'nm'},
             {'name': 'Reconstruction method', 'type': 'list',
              'value': 'Fast Gauss MoNaLISA',
-             'values': ['Fast Gauss MoNaLISA', 'MoNaLISA',
-                        'Enhanced confocal (ISM)', 'ISM reassignment'],
+             'values': ['Fast Gauss MoNaLISA', 'MoNaLISA', 'ISM reassignment'],
              'tip': (
                  'Fast Gauss MoNaLISA (default) uses the low-latency Gaussian '
                  'reassignment path that live reconstruction always uses. '
                  'MoNaLISA runs the full post-acquisition SignalExtractor '
-                 'path. Enhanced confocal (ISM) is the pre-existing '
-                 'experimental pixel-reassignment path. ISM reassignment '
-                 'is the separate xrecon implementation with CPU and GPU '
-                 'backends; see ISM reassignment options.'
+                 'path. ISM reassignment is the validated xrecon '
+                 'image-scanning implementation with CPU and GPU backends; '
+                 'see ISM reassignment options.'
              )},
             {'name': 'CPU/GPU', 'type': 'list', 'values': ['GPU', 'CPU']},
             {'name': 'Pattern', 'type': 'group', 'children': [
@@ -1912,47 +1913,7 @@ class ReconParTree(ParameterTree):
                          "focus' subpixel position. Exact pixel fits the "
                          'true integer pixels with per-focus weights: '
                          'unbiased and slightly faster.')},
-                {'name': 'Parameter sweep', 'type': 'group', 'children': [
-                    {'name': 'Enable sweep', 'type': 'bool', 'value': False,
-                     'tip': ('Advanced: reconstruct once per sweep value and '
-                             'stack the results along a leading Sweep axis — '
-                             'slide through it in the viewer to find the best '
-                             'setting. Offline Fast Gauss and the pre-existing Enhanced '
-                             'confocal (ISM) method only.')},
-                    {'name': 'Sweep parameter', 'type': 'list',
-                     'value': 'Pinhole radius (×σ)',
-                     'values': ['Pinhole radius (×σ)', 'Gaussian sigma (px)',
-                                'ISM reassignment factor'],
-                     'tip': ('Which parameter to sweep. Sweeping the pinhole '
-                             'radius forces Circular pinhole footprint mode; '
-                             'the ISM factor applies to the Enhanced '
-                             'confocal method only.')},
-                    {'name': 'Sweep values', 'type': 'str',
-                     'value': '0.75, 1.0, 1.25, 1.5, 2.0, 2.5',
-                     'tip': ('Comma-separated values, or an inclusive range '
-                             'start:step:stop (e.g. 0.5:0.25:2.5).')}]}]},
-            {'name': 'ISM options', 'type': 'group', 'children': [
-                {'name': 'Reassignment factor', 'type': 'float', 'value': 0.5,
-                 'limits': (0.0, 1.0),
-                 'tip': ('Enhanced confocal (ISM): each footprint pixel at '
-                         'offset d from a focus is deposited at focus + '
-                         'factor x d. The ideal value is '
-                         'sigma_exc^2/(sigma_exc^2 + sigma_det^2) — 0.5 for '
-                         'equal excitation/detection PSF widths, slightly '
-                         'less with a Stokes-shifted detection PSF; 0 '
-                         'degenerates to a binned open-pinhole confocal. '
-                         'Sweep it to find the sharpest setting. The '
-                         'footprint/pinhole options above are shared with '
-                         'Fast Gauss.')},
-                {'name': 'Background', 'type': 'list',
-                 'value': 'Per-focus constant',
-                 'values': ['Per-focus constant', 'None (raw)'],
-                 'tip': ('Per-focus constant (default) subtracts each '
-                         "focus's fitted constant background before "
-                         'reassignment — the fast-Gauss haze removal '
-                         "combined with ISM's photon use and sharpening. "
-                         'None (raw) keeps the classic enhanced-confocal '
-                         'sum including background.')}]},
+                ]},
             {'name': 'ISM reassignment options', 'type': 'group', 'children': [
                 {'name': 'Oversampling', 'type': 'float', 'value': 2.0,
                  'limits': (1.0, 8.0),
@@ -1967,6 +1928,23 @@ class ReconParTree(ParameterTree):
                  'limits': (0, 100000),
                  'tip': ('0 processes all frames of one scan together. Lower '
                          'values reduce temporary CPU/GPU memory use.')} ]},
+            {'name': 'Parameter sweep', 'type': 'group', 'children': [
+                {'name': 'Enable sweep', 'type': 'bool', 'value': False,
+                 'tip': ('Advanced: reconstruct once per sweep value and '
+                         'stack the results along a leading Sweep axis — '
+                         'slide through it in the viewer to find the best '
+                         'setting.')},
+                {'name': 'Sweep parameter', 'type': 'list',
+                 'value': 'Pinhole radius (×σ)',
+                 'values': ['Pinhole radius (×σ)'],
+                 'tip': ('Which parameter to sweep; the choices follow the '
+                         'selected reconstruction method. Sweeping the '
+                         'pinhole radius forces Circular pinhole footprint '
+                         'mode.')},
+                {'name': 'Sweep values', 'type': 'str',
+                 'value': '0.75, 1.0, 1.25, 1.5, 2.0, 2.5',
+                 'tip': ('Comma-separated values, or an inclusive range '
+                         'start:step:stop (e.g. 0.5:0.25:2.5).')}]},
             {'name': 'Scanning parameters', 'type': 'action'},
             {'name': 'Show pattern', 'type': 'bool'},
             {'name': 'Bleaching correction', 'type': 'bool'},
@@ -1976,6 +1954,14 @@ class ReconParTree(ParameterTree):
         self.p = Parameter.create(name='params', type='group', children=params)
         self.setParameters(self.p, showTop=False)
         self._writable = True
+
+        # Show only the groups the selected method actually reads (shared
+        # logic with the plugin-style params widget).
+        method_param = self.p.param('Reconstruction method')
+        method_param.sigValueChanged.connect(
+            lambda _param, value: apply_method_dependent_options(self.p, value)
+        )
+        apply_method_dependent_options(self.p, method_param.value())
 
     def get_values(self) -> dict:
         """Return MoNaLISA reconstruction parameters from the legacy tree."""
@@ -2007,16 +1993,12 @@ class ReconParTree(ParameterTree):
                 'Pinhole radius').value(),
             'fast_gauss_sampling_mode': fast_gauss_opts.param(
                 'Sampling').value(),
-            'sweep_enabled': fast_gauss_opts.param('Parameter sweep').param(
+            'sweep_enabled': self.p.param('Parameter sweep').param(
                 'Enable sweep').value(),
-            'sweep_parameter': fast_gauss_opts.param('Parameter sweep').param(
+            'sweep_parameter': self.p.param('Parameter sweep').param(
                 'Sweep parameter').value(),
-            'sweep_values_text': fast_gauss_opts.param('Parameter sweep').param(
+            'sweep_values_text': self.p.param('Parameter sweep').param(
                 'Sweep values').value(),
-            'ism_reassignment_factor': self.p.param('ISM options').param(
-                'Reassignment factor').value(),
-            'ism_background': self.p.param('ISM options').param(
-                'Background').value(),
             'ism_reassign_oversampling': self.p.param('ISM reassignment options').param(
                 'Oversampling').value(),
             'ism_reassign_shift': self.p.param('ISM reassignment options').param(
