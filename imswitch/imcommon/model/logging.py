@@ -14,6 +14,11 @@ LEVEL_STYLES = {
 
 baseLogger = logging.getLogger('imswitch')
 
+# Third-party loggers
+_externalLoggers = {
+    'slmcore': logging.getLogger('slmcore'),
+}
+
 # Default to INFO. Pass `--debug` on the imswitch CLI (or set the env var
 # `IMSWITCH_LOG_LEVEL=DEBUG`) to see debug-level messages from every manager.
 import os as _os
@@ -22,11 +27,37 @@ coloredlogs.install(level=_default_level, logger=baseLogger, level_styles=LEVEL_
                     fmt='%(asctime)s %(levelname)s %(message)s')
 
 
+def _configureLoggers(level):
+    coloredlogs.install(
+        level=level,
+        logger=baseLogger,
+        level_styles=LEVEL_STYLES,
+        fmt='%(asctime)s %(levelname)s %(message)s',
+    )
+
+    for logger in _externalLoggers.values():
+        coloredlogs.install(
+            level=level,
+            logger=logger,
+            level_styles=LEVEL_STYLES,
+            fmt='%(asctime)s %(levelname)s [%(name)s] %(message)s',
+        )
+
+        # thirdparty descendants propagate to their own logger.
+        # Stop there so they do not additionally reach the root logger
+        # and get printed twice.
+        logger.propagate = False
+
+
+_configureLoggers(_default_level)
+
+
 def setLogLevel(level):
     """Override the imswitch logger level at runtime.
 
     ``level`` may be a string (``'DEBUG'``, ``'INFO'``, ...) or an int.
     """
+    _configureLoggers(level)
     coloredlogs.install(level=level, logger=baseLogger, level_styles=LEVEL_STYLES,
                         fmt='%(asctime)s %(levelname)s %(message)s')
 
