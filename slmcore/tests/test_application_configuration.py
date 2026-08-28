@@ -13,8 +13,8 @@ from slmcore import (
     SLMRuntimeFactory,
     SLMSession,
     SLMSessionCallbacks,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
+    SLMDefinition,
     SLMWorkspace,
 )
 from slmcore.core.engine.section import SectionSplitLayout,create_split_section_geometries
@@ -22,10 +22,10 @@ from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 
 
 def _setup():
-    return SLMSetup(
+    return SLMDefinition(
         identity=SLMIdentity("slm","SER123"),
         geometry=SLMGeometry(width=24,height=12,pixel_size_um=1.0),
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=SectionSplitLayout(n_sections=2,axis="x"),
             customizable=True,
         ),
@@ -37,7 +37,7 @@ def _session(tmp_path,*,callbacks=None):
     workspace = SLMWorkspace(tmp_path)
     store = workspace.config_store(setup.identity,DEFAULT_REGISTRIES)
     factory = SLMRuntimeFactory(
-        setup=setup,
+        definition=setup,
         registries=DEFAULT_REGISTRIES,
         correction_provider=workspace.correction_store(setup.identity),
     )

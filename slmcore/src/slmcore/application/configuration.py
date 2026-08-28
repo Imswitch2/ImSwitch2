@@ -156,7 +156,7 @@ class SLMConfigurationService:
         config,warnings = self.store.load(path)
         self.runtime_factory.validate_config(config)
         current_signature = _runtime_layout_signature(runtime)
-        config_signature = self.runtime_factory.setup.validate_layout(
+        config_signature = self.runtime_factory.definition.validate_layout(
             config.geometry,
             {key:section.geometry for key,section in config.sections.items()},
         )

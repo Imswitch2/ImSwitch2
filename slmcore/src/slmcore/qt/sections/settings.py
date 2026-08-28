@@ -249,8 +249,8 @@ class SLMSectionsSettingsDialog(QtWidgets.QDialog):
 
         if not self._layout_customizable:
             note = QtWidgets.QLabel(
-                "Section layout is fixed by the setup. Change the SLM setup "
-                "options to edit it."
+                "Section layout is fixed by the SLM definition. Change the "
+                "definition options to edit it."
             )
             note.setWordWrap(True)
             layout.addWidget(note)

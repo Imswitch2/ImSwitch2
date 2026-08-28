@@ -3,11 +3,11 @@ import json
 import pytest
 
 from slmcore import (
+    SLMDefinition,
     SLMGeometry,
-    SLMHardwareSetup,
+    SLMHardwareConfig,
     SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
     SLMStartupPreferences,
     SectionSplitLayout,
     load_slm_setup_file,
@@ -15,18 +15,21 @@ from slmcore import (
 )
 
 
-def _setup():
-    return SLMSetup(
+def _definition():
+    return SLMDefinition(
         identity=SLMIdentity("pupil_slm","SER-001","Pupil SLM"),
         geometry=SLMGeometry(width=10,height=6,pixel_size_um=8.0),
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=SectionSplitLayout(n_sections=2,axis="x"),
             customizable=True,
         ),
-        hardware=SLMHardwareSetup(
-            driver="example",
-            options={"device_index":0},
-        ),
+    )
+
+
+def _hardware():
+    return SLMHardwareConfig(
+        driver="example",
+        options={"device_index":0},
     )
 
 
@@ -41,29 +44,37 @@ def test_display_name_is_non_identifying():
     assert SLMIdentity("slm","SER","First") == SLMIdentity("slm","SER","Renamed")
 
 
-def test_setup_derives_section_geometry_from_canonical_layout():
-    setup = _setup()
-    assert tuple(setup.section_geometries) == ("sec_0","sec_1")
-    assert setup.section_geometries["sec_0"].width == 5
-    assert setup.section_geometries["sec_1"].x == 5
-    assert setup.section_count == 2
+def test_definition_derives_section_geometry_from_canonical_layout():
+    definition = _definition()
+    assert tuple(definition.section_geometries) == ("sec_0","sec_1")
+    assert definition.section_geometries["sec_0"].width == 5
+    assert definition.section_geometries["sec_1"].x == 5
+    assert definition.section_count == 2
 
 
-def test_setup_roundtrips_through_dict():
-    setup = _setup()
-    restored = SLMSetup.from_dict(setup.to_dict())
-    assert restored == setup
+def test_definition_roundtrips_through_dict_without_hardware():
+    definition = _definition()
+    restored = SLMDefinition.from_dict(definition.to_dict())
+    assert restored == definition
     assert restored.identity.display_name == "Pupil SLM"
-    assert dict(restored.hardware.options) == {"device_index":0}
-    assert restored.section_geometries == setup.section_geometries
+    assert restored.section_geometries == definition.section_geometries
+    assert "hardware" not in definition.to_dict()
 
 
-def test_setup_from_dict_allows_host_key_override():
-    data = _setup().to_dict()
+def test_definition_from_dict_allows_host_key_override():
+    data = _definition().to_dict()
     data["identity"].pop("key")
-    restored = SLMSetup.from_dict(data,key="imswitch_key")
+    restored = SLMDefinition.from_dict(data,key="imswitch_key")
     assert restored.identity.key == "imswitch_key"
     assert restored.identity.serial_number == "SER-001"
+
+
+def test_hardware_config_roundtrips_independently():
+    hardware = _hardware()
+    restored = SLMHardwareConfig.from_dict(hardware.to_dict())
+    assert restored == hardware
+    assert dict(restored.options) == {"device_index":0}
+    assert SLMHardwareConfig.from_dict(None) is None
 
 
 def test_startup_preferences_roundtrip():
@@ -77,10 +88,12 @@ def test_startup_preferences_roundtrip():
 
 def test_canonical_setup_file_load_and_preference_update(tmp_path):
     path = tmp_path / "slm.json"
-    setup = _setup()
+    definition = _definition()
+    hardware = _hardware()
     path.write_text(json.dumps({
         "schema_version":1,
-        "setup":setup.to_dict(),
+        "definition":definition.to_dict(),
+        "hardware":hardware.to_dict(),
         "startup_preferences":{
             "startup_config":None,
             "default_planes":{},
@@ -89,8 +102,9 @@ def test_canonical_setup_file_load_and_preference_update(tmp_path):
         "host_note":"preserved",
     }),encoding="utf-8")
 
-    restored,preferences = load_slm_setup_file(path)
-    assert restored == setup
+    restored_definition,restored_hardware,preferences = load_slm_setup_file(path)
+    assert restored_definition == definition
+    assert restored_hardware == hardware
     assert preferences == SLMStartupPreferences()
 
     changed = SLMStartupPreferences(
@@ -100,5 +114,7 @@ def test_canonical_setup_file_load_and_preference_update(tmp_path):
     )
     save_slm_startup_preferences(path,changed)
     data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["definition"] == definition.to_dict()
+    assert data["hardware"] == hardware.to_dict()
     assert data["startup_preferences"] == changed.to_dict()
     assert data["host_note"] == "preserved"

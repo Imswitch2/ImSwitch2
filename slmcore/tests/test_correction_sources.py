@@ -16,8 +16,8 @@ from slmcore import (
     SLMRuntime,
     SLMRuntimeFactory,
     SLMSectionConfig,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
+    SLMDefinition,
     SLMSession,
 )
 from slmcore.core.engine.section import SectionSplitLayout,split_slm_geometry
@@ -49,10 +49,10 @@ class FakeCorrectionProvider:
 
 
 def _setup():
-    return SLMSetup(
+    return SLMDefinition(
         identity=SLMIdentity("slm","SER123"),
         geometry=SLMGeometry(width=12,height=8,pixel_size_um=1.0),
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=SectionSplitLayout(n_sections=1,axis="x"),
             customizable=True,
         ),
@@ -73,7 +73,7 @@ def _runtime(provider):
 def _service(tmp_path,provider):
     setup = _setup()
     factory = SLMRuntimeFactory(
-        setup=setup,
+        definition=setup,
         registries=DEFAULT_REGISTRIES,
         correction_provider=provider,
     )

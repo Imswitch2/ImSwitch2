@@ -52,8 +52,8 @@ from slmcore import (
     SectionSplitLayout,
     SLMGeometry,
     SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
+    SLMDefinition,
     SLMWorkspace,
 )
 from slmcore.host import MockSLMDeviceProvider, SLMHostServices
@@ -61,7 +61,7 @@ from slmcore.qt import SLMQtSessionFactory
 
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-setup = SLMSetup(
+definition = SLMDefinition(
     identity=SLMIdentity(
         key="slm",
         serial_number="example-serial",
@@ -72,7 +72,7 @@ setup = SLMSetup(
         height=1080,
         pixel_size_um=8.0,
     ),
-    sections=SLMSectionsSetup(
+    sections=SLMSectionsDefinition(
         layout=SectionSplitLayout(n_sections=1),
     ),
 )
@@ -81,7 +81,7 @@ workspace = SLMWorkspace("slm_data")
 factory = SLMQtSessionFactory(workspace=workspace)
 
 session, panel = factory.create(
-    setup=setup,
+    definition=definition,
     host_services=SLMHostServices(
         device=MockSLMDeviceProvider(),
     ),
@@ -124,7 +124,7 @@ ImSwitch owns and resolves the integrated application environment, so `--no-deps
 ImSwitch then imports `slmcore` normally:
 
 ```python
-from slmcore import SLMSetup, SLMWorkspace
+from slmcore import SLMDefinition, SLMWorkspace
 from slmcore.qt import SLMQtSessionFactory
 ```
 
@@ -138,7 +138,7 @@ Changes made to the local `slmcore` sources are therefore immediately available 
 
 On the ImSwitch side, only the host-specific adapter remains responsible for concerns such as:
 
-- translating ImSwitch setup information into `SLMSetup`;
+- translating ImSwitch setup information into `SLMDefinition`;
 - providing the application workspace root;
 - connecting SLM hardware callbacks;
 - providing detector/measurement callbacks;
@@ -155,7 +155,7 @@ src/slmcore/
 ├── core/          # SLM state, models and scientific computation
 ├── application/   # toolkit-independent workflows and session orchestration
 ├── workspace/     # persisted runtime resources
-├── setup/         # canonical installed-SLM description
+├── setup/         # SLM definition/startup-file models and JSON I/O
 ├── host/          # capabilities supplied by an embedding host
 └── qt/            # Qt presentation and adapters
 ```
@@ -237,9 +237,9 @@ corrections. Fast Config bypasses this decision because the persisted
 `final_eightbit` frame is authoritative; leaving Fast Config strictly rebuilds
 the selected config and resolves any mismatch then.
 
-### Setup, host and Qt
+### Definition, host and Qt
 
-`setup/` owns the canonical installed-SLM contract and startup preferences.
+`setup/` contains the portable SLM definition, optional hardware-binding model, startup preferences, and setup-file I/O.
 `host/` defines optional external capabilities such as device and measurement
 providers. `qt/` contains presentation, dialogs, views and Qt-specific adapters.
 No Qt imports exist below the Qt package.
@@ -268,18 +268,20 @@ different dispatcher without changing application semantics.
 
 ### Canonical setup and workspace layout
 
-`SLMSetup` stores logical/physical identity, human-readable display name, SLM
-geometry, declared section layout and optional hardware information. Section
-geometries are derived by `slmcore`, not by the embedding host.
+`SLMDefinition` stores the portable SLM description only: logical/physical
+identity, human-readable display name, geometry and declared section layout.
+Section geometries are derived by `slmcore`, not by the embedding host. Hardware
+binding is deliberately separate in optional `SLMHardwareConfig`.
 
 `SLMIdentity.serial_number` is mandatory and is the stable physical namespace
 for persistent workspace resources. `key` is the logical runtime identifier;
 `display_name` is presentation-only.
 
 `SLMStartupPreferences` stores startup config, default active plane per section,
-and section display mode. A standalone setup JSON may contain both `setup` and
-`startup_preferences`; embedding hosts may persist the same models inside their
-own setup format.
+and section display mode. A standalone setup JSON contains required `definition`, optional `hardware`, and
+`startup_preferences` siblings. Embedding hosts may persist the same concepts
+inside their own setup format and may use a host-owned hardware mechanism instead
+of `SLMHardwareConfig`.
 
 `SLMWorkspace(root)` uses:
 

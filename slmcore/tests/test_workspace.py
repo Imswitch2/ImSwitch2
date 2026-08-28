@@ -2,18 +2,18 @@ from slmcore import (
     DEFAULT_REGISTRIES,
     SLMGeometry,
     SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
+    SLMDefinition,
     SLMWorkspace,
     SectionSplitLayout,
 )
 
 
 def _setup(*,key="slm",serial="SER123"):
-    return SLMSetup(
+    return SLMDefinition(
         identity=SLMIdentity(key,serial),
         geometry=SLMGeometry(width=16,height=8,pixel_size_um=1.0),
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=SectionSplitLayout(n_sections=1),
         ),
     )

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any,Mapping
+from typing import Mapping
 
-from .model import SLMSetup
+from .model import SLMDefinition,SLMHardwareConfig
 from .preferences import SLMStartupPreferences
 
 
@@ -15,8 +15,12 @@ def load_slm_setup_file(
     path: str | Path,
     *,
     key: str | None=None,
-) -> tuple[SLMSetup,SLMStartupPreferences]:
-    """Load one canonical slmcore JSON setup file."""
+) -> tuple[SLMDefinition,SLMHardwareConfig | None,SLMStartupPreferences]:
+    """Load one canonical slmcore JSON setup file.
+
+    The file groups three deliberately separate concerns: the required portable
+    SLM definition, an optional hardware binding, and startup preferences.
+    """
     source = Path(path).expanduser()
     try:
         with source.open("r",encoding="utf-8") as handle:
@@ -28,12 +32,14 @@ def load_slm_setup_file(
     version = data.get("schema_version",SLM_SETUP_FILE_SCHEMA_VERSION)
     if version != SLM_SETUP_FILE_SCHEMA_VERSION:
         raise ValueError(f"Unsupported SLM setup file schema version: {version!r}")
-    setup_data = data.get("setup")
-    if not isinstance(setup_data,Mapping):
-        raise ValueError("SLM setup file must contain a 'setup' object")
+    definition_data = data.get("definition")
+    if not isinstance(definition_data,Mapping):
+        raise ValueError("SLM setup file must contain a 'definition' object")
+    hardware_data = data.get("hardware")
     preferences_data = data.get("startup_preferences",{})
     return (
-        SLMSetup.from_dict(setup_data,key=key),
+        SLMDefinition.from_dict(definition_data,key=key),
+        SLMHardwareConfig.from_dict(hardware_data),
         SLMStartupPreferences.from_dict(preferences_data),
     )
 
@@ -53,8 +59,8 @@ def save_slm_startup_preferences(
         raise RuntimeError(f"Could not read SLM setup file: {destination}") from error
     if not isinstance(data,dict):
         raise ValueError("SLM setup file root must be a JSON object")
-    if not isinstance(data.get("setup"),Mapping):
-        raise ValueError("SLM setup file must contain a 'setup' object")
+    if not isinstance(data.get("definition"),Mapping):
+        raise ValueError("SLM setup file must contain a 'definition' object")
     version = data.get("schema_version",SLM_SETUP_FILE_SCHEMA_VERSION)
     if version != SLM_SETUP_FILE_SCHEMA_VERSION:
         raise ValueError(f"Unsupported SLM setup file schema version: {version!r}")

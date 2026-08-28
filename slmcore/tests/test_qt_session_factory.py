@@ -6,8 +6,8 @@ from slmcore import (
     DEFAULT_REGISTRIES,
     SLMGeometry,
     SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
+    SLMDefinition,
     SLMStartupPreferences,
     SLMWorkspace,
 )
@@ -30,10 +30,10 @@ def _app():
 
 
 def _setup():
-    return SLMSetup(
+    return SLMDefinition(
         identity=SLMIdentity("slm","SER123","Test SLM"),
         geometry=SLMGeometry(width=24,height=12,pixel_size_um=1.0),
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=SectionSplitLayout(n_sections=2,axis="x"),
             customizable=True,
         ),
@@ -42,7 +42,7 @@ def _setup():
 
 def _runtime(setup,correction_provider=None):
     return SLMRuntimeFactory(
-        setup=setup,
+        definition=setup,
         registries=DEFAULT_REGISTRIES,
         correction_provider=correction_provider,
     ).create_default()
@@ -56,7 +56,8 @@ def _write_setup_file(path,setup,preferences=None):
     preferences = preferences or SLMStartupPreferences()
     path.write_text(json.dumps({
         "schema_version":1,
-        "setup":setup.to_dict(),
+        "definition":setup.to_dict(),
+        "hardware":None,
         "startup_preferences":preferences.to_dict(),
     }),encoding="utf-8")
 
@@ -68,7 +69,7 @@ def test_session_factory_constructs_default_session_and_panel():
     setup = _setup()
     factory = SLMQtSessionFactory()
     session,panel = factory.create(
-        setup=setup,
+        definition=setup,
         on_startup_preferences_changed=_discard,
     )
     try:
@@ -100,7 +101,7 @@ def test_session_factory_uses_startup_preferences(tmp_path):
 
     factory = SLMQtSessionFactory(workspace=workspace)
     session,panel = factory.create(
-        setup=setup,
+        definition=setup,
         startup_preferences=preferences,
         on_startup_preferences_changed=_discard,
     )
@@ -124,7 +125,7 @@ def test_factory_automatically_persists_preferences_to_setup_file(tmp_path):
     _write_setup_file(path,setup)
     workspace = SLMWorkspace(tmp_path / "workspace")
     session,panel = SLMQtSessionFactory(workspace=workspace).create(
-        setup=setup,
+        definition=setup,
         startup_preferences=SLMStartupPreferences(),
         setup_file=path,
     )
@@ -142,7 +143,7 @@ def test_factory_requires_persistence_path_or_host_callback():
     from slmcore.qt import SLMQtSessionFactory
 
     with pytest.raises(ValueError,match="setup_file"):
-        SLMQtSessionFactory().create(setup=_setup())
+        SLMQtSessionFactory().create(definition=_setup())
 
 
 def test_session_factory_surfaces_startup_warning_without_workspace():
@@ -151,7 +152,7 @@ def test_session_factory_surfaces_startup_warning_without_workspace():
 
     setup = _setup()
     session,panel = SLMQtSessionFactory().create(
-        setup=setup,
+        definition=setup,
         startup_preferences=SLMStartupPreferences(startup_config="missing.h5"),
         on_startup_preferences_changed=_discard,
     )
@@ -173,7 +174,7 @@ def test_session_factory_does_not_initialize_device():
         upload_frame=lambda frame:uploads.append(frame.copy()),
     )
     session,panel = SLMQtSessionFactory().create(
-        setup=_setup(),
+        definition=_setup(),
         host_services=SLMHostServices(device=device),
         on_startup_preferences_changed=_discard,
     )
@@ -208,7 +209,7 @@ def test_session_factory_cleans_panel_when_session_construction_fails(monkeypatc
     factory = factory_module.SLMQtSessionFactory()
     with pytest.raises(RuntimeError,match="session construction failed"):
         factory.create(
-            setup=_setup(),
+            definition=_setup(),
             on_startup_preferences_changed=_discard,
         )
     assert deleted == [True]
@@ -222,7 +223,7 @@ def test_session_factory_accepts_custom_registries():
     registries = SLMRegistries()
     factory = SLMQtSessionFactory(registries=registries)
     session,panel = factory.create(
-        setup=_setup(),
+        definition=_setup(),
         on_startup_preferences_changed=_discard,
     )
     try:

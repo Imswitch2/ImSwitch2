@@ -6,7 +6,7 @@ from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from slmcore import SLMSetup,SLMStartupPreferences,SLMWorkspace
+from slmcore import SLMDefinition,SLMStartupPreferences,SLMWorkspace
 from slmcore.host import SLMDeviceProvider,SLMHostServices
 from slmcore.core.measurement import create_image_measurement
 from slmcore.qt import (
@@ -279,16 +279,16 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         if slm_key in self._slm_display_names:
             raise KeyError(f"SLM key {slm_key!r} is already initialized")
 
-        setup,startup_preferences = self._read_slm_configuration(
+        definition,startup_preferences = self._read_slm_configuration(
             slm_key,slm_info,
         )
-        display_name = setup.identity.display_name or slm_key
+        display_name = definition.identity.display_name or slm_key
         host_services = self._create_host_services(
             slm_key=slm_key,
             slm_manager=slm_manager,
         )
         qt_session,panel = self._slm_qt_factory.create(
-            setup=setup,
+            definition=definition,
             startup_preferences=startup_preferences,
             on_startup_preferences_changed=(
                 lambda preferences,key=slm_key,info=slm_info:
@@ -370,18 +370,21 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
     @staticmethod
     def _read_slm_configuration(
         slm_key: str,slm_info: Any,
-    ) -> tuple[SLMSetup,SLMStartupPreferences]:
-        setup_data = getattr(slm_info,"setup",None)
-        if not isinstance(setup_data,Mapping) or not setup_data:
+    ) -> tuple[SLMDefinition,SLMStartupPreferences]:
+        definition_data = getattr(slm_info, "definition", None)
+        if not isinstance(definition_data, Mapping) or not definition_data:
             raise ValueError(
-                f"SLM {slm_key!r} must define a canonical slmcore 'setup' "
+                f"SLM {slm_key!r} must define a canonical 'definition' "
                 f"mapping with identity, geometry, and sections"
             )
-        setup = SLMSetup.from_dict(setup_data,key=slm_key)
+
+        definition = SLMDefinition.from_dict(definition_data, key=slm_key)
+
         preferences = SLMStartupPreferences.from_dict(
-            getattr(slm_info,"startup_preferences",None) or {}
+            getattr(slm_info, "startup_preferences", None) or {}
         )
-        return setup,preferences
+
+        return definition, preferences
 
     def _install_session_signals(
         self,slm_key: str,qt_session: SLMQtSession,
