@@ -34,7 +34,9 @@ class QtMeasurementRequest:
 
 
 class QtMeasurementDispatcher(QtCore.QObject):
-    """Run host measurement requests and deliver callbacks on the Qt thread.
+    """Qt implementation of the application measurement-dispatch contract.
+
+    Run host measurement requests and deliver callbacks on the Qt thread.
 
     A host camera may finish on a worker thread and call ``on_result`` or
     ``on_error`` there.  Those callbacks must not directly update Qt widgets.

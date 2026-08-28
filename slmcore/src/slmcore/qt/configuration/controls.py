@@ -9,7 +9,7 @@ from ..widgets.uitools import BetterPushButton
 
 
 class ConfigControls(QtWidgets.QWidget):
-    """Reusable compact selector/actions for complete SLM configs."""
+    """Reusable config selector/actions reflecting application-owned state."""
 
     sigLoadRequested = QtCore.Signal(str)
     sigSaveAsRequested = QtCore.Signal()

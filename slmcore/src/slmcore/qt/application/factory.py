@@ -7,6 +7,7 @@ from typing import Callable
 from qtpy import QtWidgets
 
 from ...application.runtime_factory import SLMRuntimeFactory
+from ...application.session import SLMSession
 from ...cgh.execution.executor import CGHExecutor
 from ...engine.registry import DEFAULT_REGISTRIES,SLMRegistries
 from ...host.services import SLMHostServices
@@ -23,12 +24,13 @@ from ..panel.policy import (
 )
 from ..sections.display import SectionsDisplayMode
 from ..sections.policy import DEFAULT_RENDER_POLICY,RenderPolicy
+from .cgh_executor import QtCGHExecutor
 from .interaction import (
     DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     RuntimeViewInteractionSettings,
 )
 from .session import SLMQtSession
-from .startup_preferences import _StartupPreferencesState
+from ...application.startup_preferences import StartupPreferencesState
 
 
 class SLMQtSessionFactory:
@@ -89,7 +91,7 @@ class SLMQtSessionFactory:
             setup_file=setup_file,
             callback=on_startup_preferences_changed,
         )
-        preference_state = _StartupPreferencesState(
+        preference_state = StartupPreferencesState(
             preferences,preference_callback,
         )
         services = host_services or SLMHostServices()
@@ -121,6 +123,7 @@ class SLMQtSessionFactory:
 
         panel = None
         session = None
+        application_session = None
         try:
             panel = SLMPanel(
                 section_snapshots=startup.runtime.get_section_snapshots(),
@@ -131,22 +134,35 @@ class SLMQtSessionFactory:
                 layout_policy=layout_policy,
                 parent=parent,
             )
-            session = SLMQtSession(
+            application_executor = cgh_executor
+            owns_executor = False
+            if application_executor is None:
+                application_executor = QtCGHExecutor(
+                    parent=panel if isinstance(panel,QtWidgets.QWidget) else None,
+                )
+                owns_executor = True
+            application_session = SLMSession(
                 runtime=startup.runtime,
-                panel=panel,
                 host_services=services,
-                startup_preferences=preference_state,
-                interaction_settings=interaction_settings,
-                cgh_executor=cgh_executor,
+                cgh_executor=application_executor,
                 auto_upload_frame=auto_upload_frame,
-                display_name=display_name,
-                calibration_store=calibration_store,
-                apply_startup_calibration_defaults=(startup.config_path is None),
+                owns_cgh_executor=owns_executor,
                 runtime_factory=runtime_factory,
                 config_repository=config_repository,
                 current_config_path=startup.config_path,
+                calibration_store=calibration_store,
+                startup_preferences=preference_state,
+                display_name=display_name,
+                apply_startup_calibration_defaults=False,
+            )
+            session = SLMQtSession(
+                application_session=application_session,
+                panel=panel,
+                interaction_settings=interaction_settings,
                 parent=panel,
             )
+            if startup.config_path is None:
+                application_session.calibration.apply_startup_defaults()
             if startup.warnings:
                 panel.set_status("; ".join(startup.warnings),error=True)
             return session,panel
@@ -154,6 +170,11 @@ class SLMQtSessionFactory:
             if session is not None:
                 try:
                     session.dispose()
+                except Exception:
+                    pass
+            elif application_session is not None:
+                try:
+                    application_session.dispose()
                 except Exception:
                     pass
             if panel is not None:
@@ -179,7 +200,7 @@ class SLMQtSessionFactory:
         return partial(save_slm_startup_preferences,path)
 
     @staticmethod
-    def _display_mode(preferences: _StartupPreferencesState) -> SectionsDisplayMode:
+    def _display_mode(preferences: StartupPreferencesState) -> SectionsDisplayMode:
         value = preferences.section_display_mode()
         try:
             return SectionsDisplayMode.normalize(value)

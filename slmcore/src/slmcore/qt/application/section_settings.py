@@ -5,12 +5,8 @@ from typing import Mapping
 
 from qtpy import QtCore
 
-from ...setup import SLMSetup
-from ...application.runtime_factory import SLMRuntimeFactory
-from ...calibration.geometry import calibration_geometry_mismatches
-from ...engine.section.geometry import (
-    SectionSplitLayout,create_split_section_geometries,split_layout_signature,
-)
+from ...application.configuration import CalibrationMismatchPolicy
+from ...engine.section.geometry import SectionSplitLayout
 from ...engine.section.presentation import SectionPresentation
 from ...engine.state.topology import GroupTopology
 from ..calibration.geometry_dialogs import (
@@ -29,17 +25,11 @@ class SectionSettingsManager(QtCore.QObject):
         controller,
         *,
         section_host,
-        setup: SLMSetup | None,
-        runtime_factory: SLMRuntimeFactory | None,
-        startup_preferences=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
         self.section_host = section_host
-        self.setup = setup
-        self.runtime_factory = runtime_factory
-        self.startup_preferences = startup_preferences
         self._disposed = False
         self._connect()
 
@@ -70,9 +60,7 @@ class SectionSettingsManager(QtCore.QObject):
         changes = SLMSectionsSettingsDialog.get_changes(
             section_snapshots=collection.get_section_snapshots(),
             section_titles=self.section_host.section_titles(),
-            section_layout_customizable=bool(
-                self.setup is not None and self.setup.sections.customizable
-            ),
+            section_layout_customizable=self.controller.section_layout_available,
             display_mode=self.section_host.display_mode,
             interaction_settings=self.controller.interaction_settings,
             title="%s settings" % self.controller.display_name,
@@ -104,9 +92,10 @@ class SectionSettingsManager(QtCore.QObject):
     def _apply_display_mode(self,display_mode) -> None:
         mode = SectionsDisplayMode.normalize(display_mode)
         self.section_host.set_display_mode(mode)
-        if self.startup_preferences is not None:
+        preferences = self.controller.startup_preferences
+        if preferences is not None:
             try:
-                self.startup_preferences.set_section_display_mode(mode.value)
+                preferences.set_section_display_mode(mode.value)
             except Exception as error:
                 self.controller._emit_exception("SLM section view setting failed",error)
 
@@ -124,13 +113,12 @@ class SectionSettingsManager(QtCore.QObject):
     ) -> None:
         if not self.controller.editor_writes_allowed:
             return
-        runtime = self.controller.runtime
         self.controller.cancel_cgh(section_key)
         try:
             self.controller.flush_section(section_key,propagate=True)
-            transition = runtime.apply_section_topology(section_key,topologies)
-            if transition is not None:
-                self.controller.apply_transition(section_key,transition)
+            self.controller.apply_section_topology(
+                section_key,topologies,
+            )
         except Exception as error:
             self.controller._restore_section(section_key)
             self.controller._emit_exception("SLM section settings failed",error)
@@ -150,9 +138,10 @@ class SectionSettingsManager(QtCore.QObject):
     ) -> None:
         if not self.controller.editor_writes_allowed:
             return
-        runtime = self.controller.runtime
         try:
-            snapshot = runtime.set_section_presentation(section_key,presentation)
+            snapshot = self.controller.set_section_presentation(
+                section_key,presentation,
+            )
             if snapshot is None:
                 return
             self.controller.section_collection.apply_section_presentation(
@@ -176,42 +165,16 @@ class SectionSettingsManager(QtCore.QObject):
     ) -> None:
         if not self.controller.editor_writes_allowed:
             return
-        setup = self.setup
-        factory = self.runtime_factory
-        runtime = self.controller.runtime
         try:
-            if setup is None or factory is None:
-                raise RuntimeError("Section layout editing is not configured")
-            if not setup.sections.customizable:
-                raise ValueError("This setup does not allow section layout editing.")
-            if not isinstance(layout,SectionSplitLayout):
-                raise TypeError("layout must be a SectionSplitLayout")
-            if layout.n_sections != setup.section_count:
-                raise ValueError("Changing section count is not supported")
-            section_geometries = create_split_section_geometries(
-                runtime.geometry,layout,
-            )
-            setup.validate_layout(runtime.geometry,section_geometries)
-            current_signature = split_layout_signature(
-                runtime.geometry,
-                {key:runtime.get_section_geometry(key) for key in runtime.section_keys},
-            )
-            requested_signature = split_layout_signature(
-                runtime.geometry,section_geometries,
-            )
-            if requested_signature == current_signature:
+            prepared = self.controller.prepare_section_layout_change(layout)
+            if not prepared.changed:
                 return
         except Exception as error:
             self.controller._emit_exception("SLM section layout failed",error)
             return
 
-        mismatches = calibration_geometry_mismatches(
-            (
-                key,section_geometries[key],runtime.get_section_calibration_copy(key)
-            )
-            for key in runtime.section_keys
-        )
-        clear_sections = ()
+        policy = None
+        mismatches = prepared.calibration_mismatches
         if mismatches:
             decision = calibration_mismatch_decision(
                 self.section_host,
@@ -226,25 +189,29 @@ class SectionSettingsManager(QtCore.QObject):
             )
             if decision is CalibrationMismatchDecision.CANCEL:
                 return
-            if decision is CalibrationMismatchDecision.CLEAR:
-                clear_sections = tuple(item.section_key for item in mismatches)
-        elif not confirm_destructive_change(
-            self.section_host,
-            "Apply SLM section layout",
-            "Changing the section layout will clear pending CGH work, measurements, "
-            "localization feedback, and current CGH results. Continue?",
-        ):
-            return
+            policy = (
+                CalibrationMismatchPolicy.CLEAR
+                if decision is CalibrationMismatchDecision.CLEAR
+                else CalibrationMismatchPolicy.KEEP
+            )
+        else:
+            if not confirm_destructive_change(
+                self.section_host,
+                "Apply SLM section layout",
+                "Changing the section layout will clear pending CGH work, measurements, "
+                "localization feedback, and current CGH results. Continue?",
+            ):
+                return
+            policy = CalibrationMismatchPolicy.KEEP
 
         try:
-            replacement = factory.create_layout_replacement(
-                runtime,section_geometries,
-                clear_calibration_sections=clear_sections,
+            changed = self.controller.apply_prepared_section_layout_change(
+                prepared,
+                calibration_mismatch_policy=policy,
                 topologies_by_section=topologies_by_section,
                 presentations=presentations,
             )
-            self.controller.replace_runtime(replacement)
-            if self.controller.last_upload_error is None:
+            if changed and self.controller.last_upload_error is None:
                 self.controller.sigStatusChanged.emit(
                     "Section layout updated.",False,
                 )

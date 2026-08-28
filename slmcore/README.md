@@ -195,11 +195,73 @@ Registration declarations stay beside the implementations they describe. The sta
 - `setup/`: canonical installed-SLM setup and startup-preference models plus JSON helpers.
 - `workspace/`: standard config/calibration/correction resource layout rooted at one application data directory.
 - `config/`: configuration models, serialization, migration, and repositories.
-- `application/`: runtime construction from a canonical `SLMSetup`.
+- `application/`: toolkit-independent session, configuration/control-mode,
+  section-layout, feedback and calibration orchestration, startup-preference
+  state, and runtime construction from a canonical `SLMSetup`.
 - `host/`: optional host capability contracts and callbacks.
 - `qt/`: reusable Qt panels, sessions, views, and interaction controllers.
 
 The root `slmcore` package remains the convenient public facade for commonly used types. Internal architectural modules use the `slmcore.engine.*` paths.
+
+### Application session boundary
+
+`SLMSession` is the toolkit-independent application controller for one
+`SLMRuntime`. It owns generic CGH execution/commit lifecycle, device
+connect/disconnect, frame publication, automatic upload policy, configuration
+identity/lifecycle, editor-vs-Fast-Config control mode, section-layout
+planning/commit, measurement/feedback orchestration including the automatic
+intensity-feedback state machine, and plane/calibration workflows through
+`SLMCalibrationService`. It can be used without importing Qt.
+
+Configuration loading is deliberately two-phase: `prepare_config_load()` reads
+and validates a config without changing application state, then
+`apply_config_load()` commits it with an explicit calibration mismatch policy.
+The headless default is `CalibrationMismatchPolicy.REJECT`; interactive Qt may
+translate user decisions into `KEEP` or `CLEAR`. Normal editor loads preserve
+partial recovery (`require_complete=False`), while Fast Config internal restores
+are intentionally strict (`require_complete=True`). `current_config_path`
+describes the config represented by the editable runtime; `fast_config_path`
+describes the compiled config currently displayed while the runtime is frozen.
+
+Presentation layers sit above that application session:
+
+```text
+SLMRuntime / domain
+        ↑
+   SLMSession
+        ↑
+  SLMQtSession
+        ↑
+ Qt panel/views
+```
+
+`SLMQtSessionFactory` is the normal composition root for Qt applications. It
+constructs the toolkit-independent `SLMSession` first and injects it into
+`SLMQtSession`. `SLMQtSession` does not independently construct or own a second
+application/runtime stack.
+
+In normal Qt-session operation, runtime mutations are routed through
+`SLMSession`; Qt components are responsible for collecting user decisions and
+synchronizing presentation with committed application state.
+
+`SLMQtSession` preserves the Qt-facing API while adapting `SLMSession` events
+to retained views, signals, dialogs and Qt-specific workflow helpers. Runtime
+commits are authoritative: a presentation synchronization failure is reported
+but does not undo an already committed application transition.
+
+Feedback acquisition depends on the host-neutral `MeasurementDispatcher`
+protocol. Qt supplies `QtMeasurementDispatcher`, which queues provider
+completion onto the GUI thread; a headless host may provide a different
+dispatcher without changing feedback semantics. Feedback runtime mutations and
+automatic-loop state therefore remain in the application layer, while dialogs,
+plots, confirmation prompts and measurement windows remain presentation concerns.
+
+Calibration uses the same dispatcher contract. Plane catalog reconciliation,
+active-plane state, startup default calibration, geometry compatibility checks,
+live-acquisition eligibility, target-localization state/fitting and calibration
+persistence are application-owned. Interactive geometry mismatch decisions,
+file pickers and calibration dialogs remain in Qt. Target-calibration transient
+state is application state and may therefore also be driven by a headless host.
 
 ### Canonical setup and workspace
 

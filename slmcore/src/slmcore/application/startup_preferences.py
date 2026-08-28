@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any,Callable
 
-from ...setup import SLMStartupPreferences
+from ..setup import SLMStartupPreferences
 
 
-class _StartupPreferencesState:
+class StartupPreferencesState:
     """Session-local preference state with one persistence callback."""
 
     def __init__(

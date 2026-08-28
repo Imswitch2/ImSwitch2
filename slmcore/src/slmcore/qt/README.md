@@ -5,9 +5,10 @@
 
 The normal host entry point is `SLMQtSessionFactory`, which returns an
 `SLMQtSession` + `SLMPanel` pair. The panel owns the standard reusable Qt
-composition for one SLM, while the session owns runtime/workflow behavior and
-binds itself to that panel. Embedding applications provide physical capabilities
-and setup-level preferences rather than reimplementing SLM workflow.
+composition for one SLM. `SLMQtSession` adapts the toolkit-independent
+`SLMSession` application controller to Qt views, dialogs and thread-aware host
+integration. Embedding applications provide physical capabilities and
+setup-level preferences rather than reimplementing SLM workflow.
 
 ## Package structure
 
@@ -15,18 +16,18 @@ and setup-level preferences rather than reimplementing SLM workflow.
 qt/
 ├── application/
 │   ├── factory.py               # standard SLM Qt session/panel construction
-│   ├── session.py               # reusable per-SLM Qt workflow session
+│   ├── session.py               # Qt adapter around application.SLMSession
 │   ├── measurement_dispatcher.py # safe host-measurement callback delivery
 │   ├── runtime_binding.py       # retained-view/runtime edit binding
 │   ├── cgh_executor.py          # default threaded CGH executor
 │   ├── interaction.py           # interaction/debounce policy
 │   ├── section_settings.py      # topology/presentation/layout workflow
 │   ├── feedback/
-│   │   ├── coordinator.py       # manual measurement/feedback workflow + windows
-│   │   └── automatic.py         # automatic intensity-feedback sequencer
+│   │   ├── coordinator.py       # feedback windows/actions/confirmations adapter
+│   │   └── automatic.py         # compatibility import; sequencer is application-owned
 │   └── calibration/
-│       ├── manager.py           # plane + linear/target calibration workflow
-│       └── state.py             # target-calibration transient state
+│       ├── manager.py           # calibration dialogs/actions presentation adapter
+│       └── state.py             # compatibility re-export of application state
 ├── panel/
 │   ├── panel.py                 # standard reusable one-SLM composition
 │   └── policy.py                # preview placement/container presentation policy
@@ -36,7 +37,7 @@ qt/
 ├── configuration/
 │   ├── controls.py              # reusable compact config selector/actions
 │   ├── dialogs.py               # generic config dialogs
-│   └── manager.py               # config workflow coordinator
+│   └── manager.py               # Qt config dialogs/controls coordinator
 ├── sections/                    # retained section views and settings
 ├── widgets/                     # parameter editors and small generic widgets
 ├── cgh/                         # CGH/session presentation and dialogs
@@ -69,7 +70,9 @@ A host normally:
 `SLMQtSessionFactory` owns default registry selection, workspace-backed config /
 correction / calibration resolution, startup preference semantics,
 `SLMRuntimeFactory` construction, and the generic startup/runtime/panel/session
-assembly. The factory does not initialize hardware, allowing an embedding host
+assembly. The factory now constructs `SLMSession` explicitly and injects it into
+`SLMQtSession`; the Qt session is therefore an adapter around an already-created
+application session rather than the owner of application construction. The factory does not initialize hardware, allowing an embedding host
 to complete its own registration/mount transaction before physical device side
 effects begin.
 
@@ -114,10 +117,12 @@ the standard panel displays its Connect/Disconnect control.
 `MockSLMDeviceProvider` provides an explicit in-memory simulation/test device;
 `device=None` means no output-device capability and is not interpreted as mock.
 
-The physical device implementation remains a host capability, while generic
-connection UI/lifecycle behavior belongs to `SLMQtSession`. A host may use
-the callback-backed provider for an existing device manager or later supply a
-provider subclass for a native slmcore device backend.
+The physical device implementation remains a host capability. Generic
+connect/disconnect and frame-upload lifecycle belongs to toolkit-independent
+`SLMSession`; `SLMQtSession` owns the connection control, status and mode-aware
+choice of which frame is currently active. A host may use the callback-backed
+provider for an existing device manager or later supply a provider subclass
+for a native slmcore device backend.
 
 A shared `SLMCalibrationStore` supplies the plane catalog and per-SLM/section
 calibration files. Multiple `SLMQtSession` instances may share one store, so
@@ -129,30 +134,46 @@ signals and acquisition transport remain host-specific; localization,
 measurement provenance, feedback adaptation and automatic-loop sequencing do
 not.
 
-`SLMQtSession` owns:
+The underlying `SLMSession` owns:
+
+- generic device connect/disconnect and frame upload;
+- preview-frame publication events and automatic/deferred upload policy;
+- CGH preparation, request IDs, cancellation/stale handling and runtime commit;
+- current config metadata/path and config repository operations;
+- side-effect-free config preparation plus authoritative config commit;
+- editor/Fast-Config mode, strict compiled-frame activation and `fast_config_path`;
+- measurement commit, localization, intensity/position feedback operations and
+  automatic intensity-feedback sequencing through `SLMFeedbackService`;
+- automatic-feedback availability/stop state and cancellation across runtime changes;
+- plane catalog reconciliation, active-plane/default-plane semantics, calibration
+  acquisition/localization/fitting/persistence through `SLMCalibrationService`;
+- application-owned transient target-calibration state and startup calibration defaults;
+- generic section patch/topology/presentation/calibration and CGH-session mutations
+  used by Qt adapters;
+- committed application events, with runtime/config/feedback/calibration state
+  remaining authoritative if a presentation observer fails.
+
+`SLMQtSession` owns the Qt/application adaptation around that core:
 
 - standard `SLMPanel` wiring and optional device connection workflow;
 - `SLMRuntimeViewBinding` and parameter-patch debounce;
 - reusable `CghAction` dispatch;
-- CGH preparation, request tracking, stale/cancel handling and result commit;
 - default asynchronous execution through `QtCGHExecutor`;
 - `CGHSessionWindow` lifetime and all `MeasurementsAction` dispatch;
-- measurement/localization/intensity/position feedback orchestration;
-- plane catalog presentation/selection and plane add/delete actions;
-- linear-phase and target-localization calibration orchestration;
-- calibration dialog lifetime, target-calibration candidates and persistence;
-- automatic intensity-feedback sequencing using the same operations as manual
-  feedback;
+- feedback file dialogs, destructive-operation confirmations, plots/status and
+  rendering of application-owned feedback state;
+- plane catalog presentation plus interactive plane add/delete/selection actions;
+- calibration dialog lifetime, file selection and target/localization rendering;
+- interactive calibration-geometry mismatch decisions translated into application policy;
 - CGH/feedback presentation synchronization;
 - section topology, presentation/title, display-mode and fixed-count layout
   workflows;
-- canonical runtime replacement, including retained collection/view rebuild;
-- reusable config listing/load/save/update/rename/duplicate/delete/inspection;
-- interactive calibration-geometry compatibility decisions for layout/config
-  changes;
-- one post-transition path for section view synchronization and frame
-  publication;
-- automatic physical frame upload when `auto_upload_frame=True`.
+- retained collection/view rebuild after an application-owned runtime replacement;
+- config selector/actions, file/update dialogs and config inspection presentation;
+- interactive calibration-geometry compatibility decisions translated into
+  application `KEEP` / `CLEAR` / `REJECT` policies;
+- Fast Config visibility/write-lock presentation after application mode changes;
+- section view synchronization after committed application transitions.
 
 `SLMRuntimeViewBinding` remains a low-level implementation primitive; normal
 hosts should not own or wire it directly.
@@ -168,9 +189,9 @@ executor.submit(job, on_result, on_error)
 ```
 
 The executor only runs detached `CGHJob` work. Request IDs, runtime generations,
-stale-result handling, commit semantics and UI synchronization remain inside
-`SLMQtSession`. Injected executors are externally owned and are not disposed
-by the session.
+stale-result handling and commit semantics live in `SLMSession`; Qt view
+synchronization remains in `SLMQtSession`. Injected executors are externally
+owned and are not disposed by the application session.
 
 ## Measurement provider
 
@@ -193,17 +214,25 @@ The returned request handle may expose `cancel()`. The same provider can serve
 manual feedback, automatic feedback and calibration workflows; those workflows
 must not each implement detector acquisition independently.
 
-Provider result/error callbacks may run on any host thread. `SLMQtSession`
-routes them through `QtMeasurementDispatcher`, which always queues completion
-through Qt before feedback or calibration callbacks run. This keeps widget
-updates on the Qt thread and gives immediate and asynchronous providers the same
-completion ordering.
+Provider result/error callbacks may run on any host thread. Both application
+feedback and calibration services depend only on the `MeasurementDispatcher`
+protocol. In the Qt composition, `QtMeasurementDispatcher` implements that
+protocol and always queues completion through Qt before application callbacks
+run. This keeps widget updates on the Qt thread without making either workflow
+depend on Qt.
 
 Image loading from disk is a reusable Qt workflow and therefore stays inside
 `slmcore.qt` rather than being a host capability.
 
 
 ## Calibration
+
+`SLMCalibrationService` owns the toolkit-independent calibration workflow:
+plane catalog reconciliation, active-plane/default-plane state, startup default
+application, live-acquisition eligibility/dispatch, target-reference and
+localization state, calibration fitting, persistence and rollback. The Qt
+`CalibrationManager` is a presentation adapter that owns dialogs, file picking,
+interactive confirmations and rendering only.
 
 Calibration uses the same `measurement_provider` as feedback. Live target
 calibration is bound to the detector declared by the selected plane; the user
@@ -225,7 +254,9 @@ the current section remains valid but is presented with a warning.
 Interactive layout/config changes that would retain geometry-mismatched
 calibrations ask the user to **Keep**, **Clear**, or **Cancel**. Selecting a
 stored plane calibration with a different geometry asks whether to use it
-anyway. A startup config receives no modal override: any internal
+anyway. Plane selection itself follows an application `prepare -> decide -> commit`
+flow: headless selection rejects a geometry mismatch by default, while Qt may
+explicitly pass `KEEP` after user confirmation. A startup config receives no modal override: any internal
 calibration/section geometry mismatch rejects the startup config and the host
 can surface the returned startup warning in its status UI.
 
@@ -238,7 +269,8 @@ factory.
 
 ## Automatic intensity feedback
 
-Automatic feedback is a sequencer over the normal manual operations:
+Automatic feedback is owned by toolkit-independent `SLMFeedbackService` and is a
+sequencer over the same application operations used by manual feedback:
 
 ```text
 fresh acquisition
@@ -254,11 +286,12 @@ The requested count means **new adapted/computed rounds**, regardless of the
 current round number. No extra measurement is acquired after the final
 requested CGH completes.
 
-Only one automatic loop may run per physical SLM. While it is active the SLM
-interaction surface and all CGH-session windows are locked; only the owning
-window's **Stop** action remains available. Stop cancels an in-flight
-measurement immediately. If CGH computation has already started, that
-computation is allowed to finish and commit before the loop stops.
+Only one automatic loop may run per physical SLM. `AutomaticFeedbackState` is
+application state observed by Qt. While active, the Qt adapter locks the SLM
+interaction surface and all CGH-session windows; only the owning window's **Stop**
+action remains available. Stop cancels an in-flight measurement immediately. If
+CGH computation has already started, that computation is allowed to finish and
+commit before the loop stops.
 
 Automatic feedback is intentionally unavailable when
 `auto_upload_frame=False`, when no upload capability is supplied, or when no
@@ -298,17 +331,34 @@ split, whether layout editing is allowed, and a fixed section count. slmcore
 derives the setup section geometries from that declaration. A customized current
 split belongs to the SLM config and is not written back into setup data.
 
-`SLMConfigRepository` is the non-Qt directory-bound persistence facade.
-`ConfigurationManager` coordinates `ConfigControls` and dialogs with the
-repository and `SLMQtSession`; serialization remains in `SLMConfigStore`.
-`SectionSettingsManager` owns topology, presentation/title, display mode and
-layout editing. Both route runtime replacement through
-`SLMQtSession.replace_runtime()` so hosts do not rebuild collections,
-reinstall bindings, or resynchronize reusable managers themselves.
+`SLMConfigRepository` remains the non-Qt directory-bound persistence facade,
+while `application.SLMConfigurationService` performs config preparation,
+validation, persistence operations and runtime restoration. `SLMSession` owns
+`current_config_path` and the authoritative commit. `QtConfigurationManager`
+only mirrors that state into `ConfigControls`, owns config dialogs/inspection,
+and translates interactive calibration decisions into application policies.
+
+Config loading follows `prepare -> decide -> commit`. A Qt synchronization
+failure after commit is reported but never rolls the runtime/config state back.
+Normal editor loading intentionally uses `require_complete=False`; Fast Config
+entry/exit restores intentionally use `require_complete=True`.
+`current_config_path` is the config represented by the editable runtime, while
+`fast_config_path` is the compiled config currently selected/displayed during
+Fast Config mode.
+
+`SectionSettingsManager` owns only the section-settings interaction: topology,
+presentation/title and display-mode UI plus Keep/Clear/Cancel decisions for
+layout changes. Section-layout validation and replacement planning are owned by
+the application layer, and all normal topology/presentation/layout mutations
+route through `SLMSession`. `SLMRuntimeViewBinding` similarly routes normal
+section patches and committed-target restore through the application session
+when used by `SLMQtSession`.
 
 Config identity and physical geometry remain strict. Section count remains
 fixed. Startup config loading is deterministic/non-interactive; interactive
-loads may explicitly accept or clear calibration geometry mismatches.
+loads may explicitly keep or clear calibration geometry mismatches. Headless
+loading rejects such mismatches unless a non-default policy is explicitly
+supplied.
 
 ## Current host boundary
 
@@ -325,3 +375,7 @@ Cross-SLM policies remain host-level. For example, ImSwitch deliberately
 propagates `RuntimeViewInteractionSettings` changes from one SLM session to
 its other SLM sessions rather than making an individual `SLMPanel` aware of
 other devices.
+
+### Boundary hardening
+
+`SLMQtSession` now requires an already constructed `SLMSession`; the Qt adapter no longer has a second application-construction path. Section-layout validation/replacement is application-owned, and normal Qt operation routes runtime mutations through `SLMSession`. The only direct `SLMRuntime.apply_section_patch` path retained in Qt is the intentional low-level fallback of `SLMRuntimeViewBinding` when no application session is supplied.

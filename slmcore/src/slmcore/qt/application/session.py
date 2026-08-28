@@ -1,31 +1,26 @@
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any,Callable,Mapping
 
 from qtpy import QtCore
 
-from ...application.runtime_factory import SLMRuntimeFactory
-from ...calibration.store import SLMCalibrationStore
+from ...application.session import SLMSession,SLMSessionCallbacks
+from ...application.configuration import (
+    CalibrationMismatchPolicy,ConfigLoadOutcome,PreparedConfigLoad,
+)
+from ...application.control_mode import SLMControlMode
 from ...config.loading import SLMConfigLoadReport
-from ...config.repository import SLMConfigRepository
 from ...cgh.propagation import simulate_propagation_fft
-from ...cgh.execution.executor import CGHExecutionHandle,CGHExecutor
-from ...cgh.execution.result import CGHResult
 from ...cgh.execution.status import CGHResultState
 from ...cgh.feedback.model import base_cgh_recompute_would_discard_feedback
-from ...host.device import DeviceConnectionResult
-from ...host.services import SLMHostServices
 from ...engine.runtime import SLMRuntime
+from ...host.services import SLMHostServices
 from ...engine.transition import SectionStateTransition
 from ..cgh.presenter import CGHPresenter
 from ..panel.panel import SLMPanel
 from ..sections.group_views import CghAction
 from .calibration.manager import CalibrationManager
-from .cgh_executor import QtCGHExecutor
-from .control_mode import SLMControlMode
 from .interaction import (
     DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     RuntimeViewInteractionSettings,
@@ -34,25 +29,14 @@ from .runtime_binding import SLMRuntimeViewBinding
 from .measurement_dispatcher import QtMeasurementDispatcher
 from .feedback.coordinator import FeedbackCoordinator
 from .section_settings import SectionSettingsManager
-from .startup_preferences import _StartupPreferencesState
-from ..configuration.manager import ConfigurationManager
-
-
-@dataclass
-class _ActiveCGHRequest:
-    request_id: int
-    generation: int
-    handle: CGHExecutionHandle | None = None
-    on_finished: Callable[[bool, Exception | None], None] | None = None
-
+from ..configuration.manager import QtConfigurationManager
 
 class SLMQtSession(QtCore.QObject):
     """Reusable Qt-side session for one :class:`SLMRuntime`.
 
-    It owns runtime/view edit binding, CGH execution lifecycle, reusable CGH
-    action dispatch, post-transition synchronization and optional automatic
-    hardware upload.  Embedding applications provide capabilities, not SLM
-    workflow callbacks.
+    It adapts the toolkit-independent :class:`SLMSession` to Qt views,
+    interaction policy, dialogs and thread-aware host integration. Embedding
+    applications provide capabilities, not SLM workflow callbacks.
     """
 
     sigFrameChanged = QtCore.Signal(object)
@@ -68,69 +52,66 @@ class SLMQtSession(QtCore.QObject):
     sigControlModeChanged = QtCore.Signal(object)
     sigControlModeAvailabilityChanged = QtCore.Signal(bool)
 
-    _sigExecutorResult = QtCore.Signal(str,int,object)
-    _sigExecutorError = QtCore.Signal(str,int,int,object)
-
     def __init__(
         self,
         *,
-        runtime: SLMRuntime,
+        application_session: SLMSession,
         panel: SLMPanel,
-        host_services: SLMHostServices | None=None,
-        startup_preferences: _StartupPreferencesState | None=None,
         interaction_settings: RuntimeViewInteractionSettings=(
             DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS
         ),
-        cgh_executor: CGHExecutor | None=None,
-        auto_upload_frame: bool=True,
-        display_name: str="",
-        calibration_store: SLMCalibrationStore | None=None,
-        apply_startup_calibration_defaults: bool=False,
-        runtime_factory: SLMRuntimeFactory | None=None,
-        config_repository: SLMConfigRepository | None=None,
-        current_config_path: str | None=None,
         cgh_presenter: CGHPresenter | None=None,
         parent: QtCore.QObject | None=None,
     ) -> None:
         super().__init__(parent)
-        if not isinstance(runtime,SLMRuntime):
-            raise TypeError("runtime must be an SLMRuntime")
+        if not isinstance(application_session,SLMSession):
+            raise TypeError("application_session must be an SLMSession")
         if not isinstance(panel,SLMPanel):
             raise TypeError("panel must be an SLMPanel")
 
-        self.runtime = runtime
+        self._application = application_session
+        runtime = application_session.runtime
         self.panel = panel
         self.section_collection = panel.section_collection
         self.section_host = panel.section_host
-        self.runtime_factory = runtime_factory
-        self.config_repository = config_repository
-        self._display_name = str(display_name or runtime.identity.key)
-        self.host_services = host_services or SLMHostServices()
-        self.startup_preferences = startup_preferences
-        self.auto_upload_frame = bool(auto_upload_frame)
+        self._display_name = str(application_session.display_name)
         self.presenter = cgh_presenter or CGHPresenter(
             display_name=self._display_name,
         )
         self._disposed = False
-        self._request_counter = 0
-        self._active_cgh_requests: dict[str, _ActiveCGHRequest] = {}
-        self._upload_defer_depth = 0
-        self._upload_pending = False
-        self._last_upload_error: Exception | None = None
         self._interaction_settings = interaction_settings
-        self._control_mode = SLMControlMode.EDITOR
-        self._fast_config_path: str | None = None
         self._control_mode_available = True
+        self._runtime_replacement_state = None
 
-        if cgh_executor is None:
-            self._cgh_executor: CGHExecutor = QtCGHExecutor(parent=self)
-            self._owns_cgh_executor = True
-        else:
-            self._cgh_executor = cgh_executor
-            self._owns_cgh_executor = False
+        callbacks = SLMSessionCallbacks(
+            on_frame_changed=self.sigFrameChanged.emit,
+            on_transition_committed=self._on_application_transition_committed,
+            on_section_refresh_requested=self.synchronize_section,
+            on_cgh_computing_changed=self._on_application_cgh_computing_changed,
+            on_warning=self.sigWarning.emit,
+            on_error=self.sigError.emit,
+            on_upload_failed=self.sigUploadFailed.emit,
+            on_upload_state_changed=self._on_application_upload_state_changed,
+            on_runtime_replaced=self._on_application_runtime_replaced,
+            on_config_committed=self._on_application_config_committed,
+            on_control_mode_changed=self._on_application_control_mode_changed,
+            on_fast_config_changed=self._on_application_fast_config_changed,
+            on_calibration_planes_changed=self._on_calibration_planes_changed,
+            on_calibration_state_changed=self._on_calibration_state_changed,
+            on_calibration_measurement_busy_changed=(
+                self._on_calibration_measurement_busy_changed
+            ),
+            on_calibration_measurement_error=self._on_calibration_measurement_error,
+            on_feedback_measurement_busy_changed=(
+                self._on_feedback_measurement_busy_changed
+            ),
+            on_feedback_measurement_error=self._on_feedback_measurement_error,
+            on_feedback_localization_error=self._on_feedback_localization_error,
+            on_automatic_feedback_changed=self._on_automatic_feedback_changed,
+            on_automatic_feedback_finished=self._on_automatic_feedback_finished,
+        )
 
-        self._sigExecutorResult.connect(self._on_executor_result)
-        self._sigExecutorError.connect(self._on_executor_error)
+        self._application.set_callbacks(callbacks)
 
         self._binding = self._create_binding(interaction_settings)
         self._connect_collection()
@@ -138,39 +119,21 @@ class SLMQtSession(QtCore.QObject):
             self.host_services.measurement_provider,
             parent=self,
         )
-        self._feedback = FeedbackCoordinator(
-            self,measurements=self._measurements,
-        )
+        self._application.set_measurement_dispatcher(self._measurements)
+        self._feedback = FeedbackCoordinator(self)
         self.sigAutomaticOperationChanged.connect(
             self._refresh_control_mode_availability,
         )
         self._calibration = CalibrationManager(
-            self,
-            measurements=self._measurements,
-            store=calibration_store,
-            preferences=self.startup_preferences,
-            display_name=self._display_name,
-            apply_startup_defaults=bool(apply_startup_calibration_defaults),
-            parent=self,
+            self,parent=self,
         )
         self._section_settings = SectionSettingsManager(
-            self,
-            section_host=self.section_host,
-            setup=(
-                None if runtime_factory is None
-                else runtime_factory.setup
-            ),
-            runtime_factory=runtime_factory,
-            startup_preferences=self.startup_preferences,
-            parent=self,
+            self,section_host=self.section_host,parent=self,
         )
-        self._configuration = ConfigurationManager(
+        self._configuration = QtConfigurationManager(
             self,
-            repository=config_repository,
             controls=self.panel.config_controls,
-            runtime_factory=runtime_factory,
             startup_preferences=self.startup_preferences,
-            current_config_path=current_config_path,
             parent=self,
         )
         self._connect_panel()
@@ -179,11 +142,47 @@ class SLMQtSession(QtCore.QObject):
 
     @property
     def last_upload_error(self) -> Exception | None:
-        return self._last_upload_error
+        return self._application.last_upload_error
+
+    @property
+    def runtime(self) -> SLMRuntime:
+        return self._application.runtime
+
+    @property
+    def host_services(self) -> SLMHostServices:
+        return self._application.host_services
+
+    @property
+    def feedback_service(self):
+        return self._application.feedback
+
+    @property
+    def calibration_service(self):
+        return self._application.calibration
+
+    @property
+    def auto_upload_frame(self) -> bool:
+        return self._application.auto_upload_frame
 
     @property
     def display_name(self) -> str:
         return self._display_name
+
+    @property
+    def config_repository(self):
+        return self._application.config_repository
+
+    @property
+    def runtime_factory(self):
+        return self._application.runtime_factory
+
+    @property
+    def startup_preferences(self):
+        return self._application.startup_preferences
+
+    @property
+    def section_layout_available(self) -> bool:
+        return self._application.section_layout_available
 
     @property
     def interaction_settings(self) -> RuntimeViewInteractionSettings:
@@ -191,23 +190,35 @@ class SLMQtSession(QtCore.QObject):
 
     @property
     def current_config_path(self) -> str | None:
-        return self._configuration.current_config_path
+        return self._application.current_config_path
+
+    @property
+    def current_config_metadata(self):
+        return self._application.current_config_metadata
+
+    @property
+    def configuration_available(self) -> bool:
+        return self._application.configuration_available
+
+    @property
+    def config_directory(self):
+        return self._application.config_directory
 
     @property
     def control_mode(self) -> SLMControlMode:
-        return self._control_mode
+        return self._application.control_mode
 
     @property
     def fast_config_path(self) -> str | None:
-        return self._fast_config_path
+        return self._application.fast_config_path
 
     @property
     def editor_writes_allowed(self) -> bool:
-        return self._control_mode is SLMControlMode.EDITOR
+        return self._application.editor_writes_allowed
 
     @property
     def is_cgh_busy(self) -> bool:
-        return bool(self._active_cgh_requests)
+        return self._application.is_cgh_busy
 
     @property
     def can_change_control_mode(self) -> bool:
@@ -217,10 +228,10 @@ class SLMQtSession(QtCore.QObject):
         )
 
     def set_control_mode(self,mode) -> bool:
-        """Switch this single-SLM session between editor and fast-config mode."""
+        """Switch between editor and strict compiled-config operation."""
         self._require_active()
         requested = SLMControlMode.normalize(mode)
-        if requested is self._control_mode:
+        if requested is self.control_mode:
             return True
         if self.is_cgh_busy:
             self.sigWarning.emit(
@@ -234,154 +245,58 @@ class SLMQtSession(QtCore.QObject):
                 "Stop automatic feedback before changing control mode.",
             )
             return False
+
+        prepared = None
+        path = None
         if requested is SLMControlMode.FAST_CONFIG:
-            return self._enter_fast_config()
-        return self._leave_fast_config()
+            path = self.current_config_path
+        elif self.fast_config_path and not _same_optional_path(
+            self.fast_config_path,self.current_config_path,
+        ):
+            path = self.fast_config_path
+
+        try:
+            policy = CalibrationMismatchPolicy.REJECT
+            if path:
+                if requested is SLMControlMode.FAST_CONFIG:
+                    # Preserve the existing guarantee: validate the compiled
+                    # output before discarding any pending editor draft.
+                    self._application.validate_compiled_config(path)
+                prepared = self.prepare_config_load(path)
+                resolved_policy = self._configuration.resolve_calibration_policy(
+                    prepared,"prompt",title="SLM control mode",
+                )
+                if resolved_policy is None:
+                    self._configuration.synchronize_current_config()
+                    return False
+                policy = resolved_policy
+                self.prepare_config_commit(
+                    layout_changed=prepared.layout_changed,
+                )
+            return self._application.set_control_mode(
+                requested,
+                calibration_mismatch_policy=policy,
+                prepared_config_load=prepared,
+            )
+        except Exception as error:
+            self._emit_exception("SLM control mode",error)
+            self._configuration.synchronize_current_config()
+            return False
 
     def activate_compiled_config(self,path: str) -> bool:
-        """Directly activate a saved final frame without touching the runtime."""
         self._require_active()
-        if self._control_mode is not SLMControlMode.FAST_CONFIG:
-            self.sigWarning.emit(
-                "Fast config activation",
-                "Compiled configs can only be activated in Fast Config mode.",
-            )
-            return False
         try:
-            resolved,frame = self._read_validated_compiled_frame(path)
-            self._publish_compiled_frame(frame)
-            self._fast_config_path = resolved
-            self.panel.config_controls.set_selected_path(resolved)
+            self._application.activate_compiled_config(path)
             self.sigStatusChanged.emit("",False)
             return True
         except Exception as error:
             self._emit_exception("Fast config activation failed",error)
-            self.panel.config_controls.set_selected_path(
-                self._fast_config_path
-            )
+            self.panel.config_controls.set_selected_path(self.fast_config_path)
             return False
-
-    def _enter_fast_config(self) -> bool:
-        if self.config_repository is None:
-            self.sigWarning.emit(
-                "Fast config unavailable",
-                "Configuration storage is not configured.",
-            )
-            return False
-
-        path = self.current_config_path
-        if path:
-            # Validate the exact compiled output before discarding any unsaved
-            # editor state. The authoritative mode remains EDITOR throughout
-            # the subsequent strict synchronous restore.
-            try:
-                resolved,frame = self._read_validated_compiled_frame(path)
-            except Exception as error:
-                self._emit_exception("Fast config activation failed",error)
-                return False
-            if not self._configuration.load(
-                resolved,
-                confirm_layout_change=False,
-                show_error=True,
-                require_complete=True,
-            ):
-                return False
-            try:
-                self._publish_compiled_frame(frame)
-            except Exception as error:
-                self._emit_exception("Fast config activation failed",error)
-                return False
-            fast_path = resolved
-        else:
-            # Config-less fast mode is valid when a repository exists; the
-            # currently displayed hardware frame is left untouched until the
-            # user selects a compiled config.
-            fast_path = None
-
-        self._commit_control_mode(
-            SLMControlMode.FAST_CONFIG,fast_config_path=fast_path,
-        )
-        return True
-
-    def _leave_fast_config(self) -> bool:
-        fast_path = self._fast_config_path
-        current_path = self.current_config_path
-
-        if fast_path and not _same_optional_path(fast_path,current_path):
-            # This private full load is the controlled exception to the fast
-            # write barrier: mode remains FAST_CONFIG so runtime-derived frame
-            # publication stays blocked until the restore completes.
-            if not self._configuration.load(
-                fast_path,
-                confirm_layout_change=False,
-                show_error=True,
-                require_complete=True,
-            ):
-                self.panel.config_controls.set_selected_path(fast_path)
-                return False
-
-        self._commit_control_mode(SLMControlMode.EDITOR)
-        # Editor mode owns hardware/preview again. Republish even when the path
-        # did not change because the saved compiled frame may differ from a
-        # runtime reconstruction.
-        self._publish_current_frame()
-        return True
-
-    def _commit_control_mode(
-        self,
-        mode: SLMControlMode,
-        *,
-        fast_config_path: str | None=None,
-    ) -> None:
-        self._control_mode = mode
-        if mode is SLMControlMode.FAST_CONFIG:
-            self._fast_config_path = fast_config_path
-            self._binding.set_writes_enabled(False,restore_pending=True)
-            self.panel.set_config_only_view(True)
-            if fast_config_path is None:
-                self.panel.clear_frame()
-            self.panel.config_controls.set_selected_path(fast_config_path)
-        else:
-            self._fast_config_path = None
-            self._binding.set_writes_enabled(True)
-            self.panel.set_config_only_view(False)
-            self.panel.config_controls.clear_selected_path_override()
-            self._calibration.control_mode_changed()
-        self._feedback.refresh_automatic_availability()
-        self.sigControlModeChanged.emit(mode)
-
-    def _read_validated_compiled_frame(self,path: str):
-        repository = self.config_repository
-        if repository is None:
-            raise RuntimeError("Configuration storage is not configured")
-        resolved = str(repository.resolve(path))
-        compiled = repository.read_compiled_frame(resolved)
-        if compiled.identity != self.runtime.identity:
-            raise ValueError(
-                "Compiled config identity does not match this SLM"
-            )
-        expected = self.runtime.geometry
-        if compiled.geometry != expected:
-            raise ValueError(
-                "Compiled config geometry %s does not match SLM geometry %s"
-                % (compiled.geometry,expected)
-            )
-        return resolved,compiled.final_eightbit
-
-    def _publish_compiled_frame(self,frame) -> None:
-        """The sole hardware/preview publication path in FAST_CONFIG."""
-        try:
-            self.host_services.upload(frame)
-            self._last_upload_error = None
-        except Exception as error:
-            self._last_upload_error = error
-            self.sigUploadFailed.emit(error)
-            raise
-        self.sigFrameChanged.emit(frame)
 
     @QtCore.Slot(str)
     def _on_config_load_requested(self,path: str) -> None:
-        if self._control_mode is SLMControlMode.FAST_CONFIG:
+        if self.control_mode is SLMControlMode.FAST_CONFIG:
             self.activate_compiled_config(path)
             return
         self._configuration.load(path)
@@ -436,8 +351,9 @@ class SLMQtSession(QtCore.QObject):
         if device.requires_explicit_connection:
             return self.connect_device(show_error=show_error)
         self.panel.set_connection_state(True)
+        result = self._application.initialize_device(upload_current_frame=False)
         self._publish_active_device_frame()
-        return DeviceConnectionResult(connected=True)
+        return result
 
     def connect_device(self,*,show_error: bool=True):
         self._require_active()
@@ -446,7 +362,7 @@ class SLMQtSession(QtCore.QObject):
             raise RuntimeError("No SLM device provider is configured")
         self.panel.set_connection_busy(True)
         try:
-            result = device.connect()
+            result = self._application.connect_device(upload_current_frame=False)
             self.panel.set_connection_state(result.connected)
             if result.connected:
                 self._publish_active_device_frame()
@@ -471,7 +387,7 @@ class SLMQtSession(QtCore.QObject):
             raise RuntimeError("No SLM device provider is configured")
         self.panel.set_connection_busy(True)
         try:
-            result = device.disconnect()
+            result = self._application.disconnect_device()
             self.panel.set_connection_state(result.connected)
             if result.connected and show_error:
                 self.sigError.emit(
@@ -497,7 +413,7 @@ class SLMQtSession(QtCore.QObject):
             self.disconnect_device(show_error=True)
 
     def _on_panel_upload_failed(self,_error: Any) -> None:
-        if self._control_mode is SLMControlMode.FAST_CONFIG:
+        if self.control_mode is SLMControlMode.FAST_CONFIG:
             message = (
                 "Fast config upload failed; hardware may still display the "
                 "previous compiled frame."
@@ -510,10 +426,10 @@ class SLMQtSession(QtCore.QObject):
         self.panel.set_status(message,error=True)
 
     def _publish_active_device_frame(self) -> bool:
-        if self._control_mode is SLMControlMode.FAST_CONFIG:
-            if not self._fast_config_path:
+        if self.control_mode is SLMControlMode.FAST_CONFIG:
+            if not self.fast_config_path:
                 return True
-            return self.activate_compiled_config(self._fast_config_path)
+            return self.activate_compiled_config(self.fast_config_path)
         return self.upload_current_frame()
 
     def _create_binding(
@@ -521,6 +437,7 @@ class SLMQtSession(QtCore.QObject):
     ) -> SLMRuntimeViewBinding:
         binding = SLMRuntimeViewBinding(
             runtime=self.runtime,
+            application_session=self._application,
             section_collection=self.section_collection,
             interaction_settings=settings,
             parent=self,
@@ -551,12 +468,7 @@ class SLMQtSession(QtCore.QObject):
         self._binding.set_interaction_settings(settings)
 
     def set_auto_upload_frame(self,enabled: bool) -> None:
-        enabled = bool(enabled)
-        if self._feedback.automatic_operation_active and not enabled:
-            raise RuntimeError(
-                "Cannot disable automatic frame upload during automatic feedback"
-            )
-        self.auto_upload_frame = enabled
+        self._application.set_auto_upload_frame(bool(enabled))
         self._feedback.refresh_automatic_availability()
         self._calibration.refresh_live_acquisition_all()
 
@@ -579,29 +491,14 @@ class SLMQtSession(QtCore.QObject):
         return self._binding.cancel_all(restore=restore)
 
     def is_cgh_computing(self,section_key: str) -> bool:
-        return section_key in self._active_cgh_requests
+        return self._application.is_cgh_computing(section_key)
 
     def cancel_cgh(self,section_key: str) -> bool:
         self._require_active()
-        active = self._active_cgh_requests.pop(section_key,None)
-        if active is None:
-            return False
-        cancel = getattr(active.handle,"cancel",None)
-        if callable(cancel):
-            cancel()
-        try:
-            self.runtime.invalidate_section_cgh_compute(section_key)
-        except Exception as error:
-            self._emit_exception("Invalidating CGH computation failed",error)
-        self._set_cgh_computing(section_key,False)
-        self.synchronize_section(section_key)
-        if active.on_finished is not None:
-            active.on_finished(False,RuntimeError("CGH computation cancelled"))
-        return True
+        return self._application.cancel_cgh(section_key)
 
     def cancel_all_cgh(self) -> None:
-        for section_key in tuple(self._active_cgh_requests):
-            self.cancel_cgh(section_key)
+        self._application.cancel_all_cgh()
 
     def compute_base_cgh(
         self,section_key: str,*,confirm_feedback_loss: bool=True,
@@ -621,12 +518,12 @@ class SLMQtSession(QtCore.QObject):
             )
         ):
             return
-
-        self._start_cgh_compute(
-            section_key,
-            lambda:self.runtime.prepare_section_base_cgh(section_key),
-            preparation_title="CGH preparation failed",
-        )
+        try:
+            self.flush_section(section_key,propagate=True)
+        except Exception as error:
+            self._emit_exception("CGH preparation failed",error)
+            return
+        self._application.compute_base_cgh(section_key)
 
     def compute_adapted_cgh(
         self,
@@ -646,11 +543,15 @@ class SLMQtSession(QtCore.QObject):
             if on_finished is not None:
                 on_finished(False,RuntimeError(message))
             return False
-        return self._start_cgh_compute(
-            section_key,
-            lambda:self.runtime.prepare_section_adapted_cgh(section_key),
-            preparation_title="Adapted CGH preparation failed",
-            on_finished=on_finished,
+        try:
+            self.flush_section(section_key,propagate=True)
+        except Exception as error:
+            self._emit_exception("Adapted CGH preparation failed",error)
+            if on_finished is not None:
+                on_finished(False,error)
+            return False
+        return self._application.compute_adapted_cgh(
+            section_key,on_finished=on_finished,
         )
 
     def restore_current_cgh_target(self,section_key: str) -> None:
@@ -684,14 +585,9 @@ class SLMQtSession(QtCore.QObject):
         ):
             return
 
-        self.cancel_cgh(section_key)
         try:
             self.flush_section(section_key,propagate=True)
-            transition = self.runtime.clear_section_cgh_session(section_key)
-            if transition is not None:
-                self.apply_transition(section_key,transition)
-            else:
-                self.synchronize_section(section_key)
+            self._application.clear_section_cgh_session(section_key)
         except Exception as error:
             self._restore_section(section_key)
             self._emit_exception("Clearing CGH session failed",error)
@@ -748,7 +644,7 @@ class SLMQtSession(QtCore.QObject):
     ) -> None:
         if not self.editor_writes_allowed:
             return
-        if self._feedback.automatic_operation_active:
+        if self.automatic_operation_active:
             return
         try:
             cgh_action = CghAction(str(action))
@@ -776,151 +672,20 @@ class SLMQtSession(QtCore.QObject):
         elif cgh_action is CghAction.OPEN_MEASUREMENTS_CORRECTIONS:
             self._feedback.open_window(section_key)
 
-    def _start_cgh_compute(
-        self,
-        section_key: str,
-        prepare_job: Callable[[],Any],
-        *,
-        preparation_title: str,
-        on_finished: Callable[[bool, Exception | None], None] | None=None,
-    ) -> bool:
-        if not self.editor_writes_allowed:
-            if on_finished is not None:
-                on_finished(False,RuntimeError("CGH computation is unavailable in Fast Config mode"))
-            return False
-        if self.is_cgh_computing(section_key):
-            if on_finished is not None:
-                on_finished(False,RuntimeError("CGH computation is already running"))
-            return False
-        try:
-            self.flush_section(section_key,propagate=True)
-            job = prepare_job()
-        except Exception as error:
-            self._emit_exception(preparation_title,error)
-            if on_finished is not None:
-                on_finished(False,None)
-            return False
-
-        self._request_counter += 1
-        request_id = self._request_counter
-        active = _ActiveCGHRequest(
-            request_id=request_id,
-            generation=int(job.generation),
-            on_finished=on_finished,
-        )
-        self._active_cgh_requests[section_key] = active
-        self._set_cgh_computing(section_key,True)
-
-        try:
-            handle = self._cgh_executor.submit(
-                job,
-                lambda result,key=section_key,rid=request_id:
-                    self._sigExecutorResult.emit(key,rid,result),
-                lambda error,key=section_key,rid=request_id,g=int(job.generation):
-                    self._sigExecutorError.emit(key,rid,g,error),
-            )
-            current = self._active_cgh_requests.get(section_key)
-            if current is not None and current.request_id == request_id:
-                current.handle = handle
-            elif handle is not None:
-                cancel = getattr(handle,"cancel",None)
-                if callable(cancel):
-                    cancel()
-        except Exception as error:
-            self._finish_cgh_request(section_key,request_id)
-            self._emit_exception("CGH computation failed",error)
-            if on_finished is not None:
-                on_finished(False,None)
-            return False
-        return True
-
-    @QtCore.Slot(str,int,object)
-    def _on_executor_result(
-        self,section_key: str,request_id: int,result: CGHResult,
+    def _on_application_transition_committed(
+        self,section_key: str,transition: SectionStateTransition,
     ) -> None:
-        active = self._active_cgh_requests.get(section_key)
-        if active is None or active.request_id != int(request_id):
-            return
-        callback = active.on_finished
-        if not self.editor_writes_allowed:
-            self._finish_cgh_request(section_key,request_id)
-            if callback is not None:
-                callback(
-                    False,
-                    RuntimeError("CGH result ignored in Fast Config mode"),
-                )
-            return
-        success = False
-        completion_error: Exception | None = None
+        """Render an already committed application transition in Qt."""
         try:
-            transition = self.runtime.commit_section_cgh(section_key,result)
-            if transition is None:
-                completion_error = RuntimeError(
-                    "CGH result was superseded before it could be committed"
-                )
-                self.synchronize_section(section_key)
-            else:
-                success = self.apply_transition(section_key,transition)
-                if not success:
-                    # Transition/UI/upload failures are already reported by the
-                    # session. Preserve the upload exception only so an
-                    # automatic runner can identify the hardware failure.
-                    completion_error = self._last_upload_error
-            if result.warnings:
-                self.sigWarning.emit(
-                    "CGH computation warning","\n".join(result.warnings),
-                )
-        except Exception as error:
-            completion_error = error
-            self._restore_section(section_key)
-            self._emit_exception("CGH result synchronization failed",error)
-        finally:
-            self._finish_cgh_request(section_key,request_id)
-        if callback is not None:
-            callback(bool(success),completion_error)
-
-    @QtCore.Slot(str,int,int,object)
-    def _on_executor_error(
-        self,
-        section_key: str,
-        request_id: int,
-        generation: int,
-        error: Exception,
-    ) -> None:
-        active = self._active_cgh_requests.get(section_key)
-        if active is None or active.request_id != int(request_id):
-            return
-        callback = active.on_finished
-        if not self.editor_writes_allowed:
-            self._finish_cgh_request(section_key,request_id)
-            if callback is not None:
-                callback(
-                    False,
-                    RuntimeError("CGH failure ignored in Fast Config mode"),
-                )
-            return
-        try:
-            self.runtime.mark_section_cgh_compute_failed(
-                section_key,int(generation),str(error),
-            )
+            self.section_collection.apply_section_transition(section_key,transition)
             self.synchronize_section(section_key)
-        except Exception as sync_error:
-            self._emit_exception(
-                "CGH failure-state synchronization failed",sync_error,
-            )
-        self._finish_cgh_request(section_key,request_id)
-        self._emit_exception("CGH computation failed",error)
-        if callback is not None:
-            callback(False,None)
+        except Exception:
+            self._restore_section(section_key)
+            raise
 
-    def _finish_cgh_request(self,section_key: str,request_id: int) -> None:
-        active = self._active_cgh_requests.get(section_key)
-        if active is None or active.request_id != int(request_id):
-            return
-        self._active_cgh_requests.pop(section_key,None)
-        self._set_cgh_computing(section_key,False)
-
-    def _set_cgh_computing(self,section_key: str,computing: bool) -> None:
+    def _on_application_cgh_computing_changed(
+        self,section_key: str,computing: bool,
+    ) -> None:
         self.section_collection.set_cgh_computing(section_key,bool(computing))
         if hasattr(self,"_feedback"):
             self._feedback.set_cgh_computing(section_key,bool(computing))
@@ -929,11 +694,145 @@ class SLMQtSession(QtCore.QObject):
         self.sigCghComputingChanged.emit(section_key,bool(computing))
         self._refresh_control_mode_availability()
 
+    def _on_application_upload_state_changed(
+        self,_success: bool,_error: Exception | None,
+    ) -> None:
+        if hasattr(self,"_calibration"):
+            self._calibration.refresh_live_acquisition_all()
+
+    def _on_application_runtime_replaced(self,runtime: SLMRuntime) -> None:
+        """Rebuild Qt presentation after the application runtime is committed."""
+        settings = self._binding.interaction_settings
+        old_binding = self._binding
+        old_binding.cancel_all(restore=False)
+        old_binding.dispose(restore=False)
+        self._disconnect_collection()
+
+        replacement = self.panel.replace_sections(
+            runtime.get_section_snapshots(),
+        )
+        self.section_collection = replacement
+        self._binding = self._create_binding(settings)
+        if not self.editor_writes_allowed:
+            self._binding.set_writes_enabled(False,restore_pending=False)
+        self._connect_collection()
+        self._feedback.runtime_replaced()
+        self._calibration.runtime_replaced()
+        self._section_settings.runtime_replaced()
+        old_binding.deleteLater()
+        self.synchronize_all_sections()
+
+    def _on_application_config_committed(
+        self,outcome: ConfigLoadOutcome,
+    ) -> None:
+        """Render an already committed config result; never roll runtime back."""
+        ui_failures = {}
+        report = outcome.report
+        if report is not None:
+            ui_failures = self.apply_config_report(
+                report,
+                failed_section_snapshots=outcome.failed_section_snapshots,
+            )
+            self.synchronize_all_sections()
+
+        if hasattr(self,"_configuration"):
+            self._configuration.synchronize_current_config()
+
+        messages = [_warning_text(item) for item in outcome.warnings]
+        if report is not None:
+            messages.extend(_warning_text(item) for item in report.warnings)
+            messages.extend(
+                "%s: config restore failed: %s" % (key,error)
+                for key,error in report.failed_sections.items()
+            )
+        messages.extend(
+            "%s: UI synchronization failed: %s" % (key,error)
+            for key,error in ui_failures.items()
+        )
+        self.sigStatusChanged.emit("; ".join(messages),bool(messages))
+
+    def _on_application_control_mode_changed(
+        self,mode: SLMControlMode,fast_config_path: str | None,
+    ) -> None:
+        """Apply Qt-only visibility/write policy for application control mode."""
+        if mode is SLMControlMode.FAST_CONFIG:
+            self._binding.set_writes_enabled(False,restore_pending=True)
+            self.panel.set_config_only_view(True)
+            if fast_config_path is None:
+                self.panel.clear_frame()
+            self.panel.config_controls.set_selected_path(fast_config_path)
+        else:
+            self._binding.set_writes_enabled(True)
+            self.panel.set_config_only_view(False)
+            self.panel.config_controls.clear_selected_path_override()
+            if hasattr(self,"_calibration"):
+                self._calibration.control_mode_changed()
+        if hasattr(self,"_feedback"):
+            self._feedback.refresh_automatic_availability()
+        self.sigControlModeChanged.emit(mode)
+
+    def _on_application_fast_config_changed(self,path: str | None) -> None:
+        if self.control_mode is SLMControlMode.FAST_CONFIG:
+            self.panel.config_controls.set_selected_path(path)
+
+    def _on_calibration_planes_changed(self) -> None:
+        if hasattr(self,"_calibration"):
+            self._calibration.refresh_planes()
+
+    def _on_calibration_state_changed(self,section_key: str) -> None:
+        if hasattr(self,"_calibration"):
+            self._calibration.render_target_state(section_key)
+
+    def _on_calibration_measurement_busy_changed(
+        self,section_key: str,busy: bool,message: str,
+    ) -> None:
+        if hasattr(self,"_calibration"):
+            self._calibration.on_measurement_busy_changed(
+                section_key,busy,message,
+            )
+
+    def _on_calibration_measurement_error(
+        self,section_key: str,error: Exception,
+    ) -> None:
+        if hasattr(self,"_calibration"):
+            self._calibration.on_measurement_error(section_key,error)
+
+    def _on_feedback_measurement_busy_changed(
+        self,section_key: str,busy: bool,message: str,
+    ) -> None:
+        if hasattr(self,"_feedback"):
+            self._feedback.on_measurement_busy_changed(
+                section_key,busy,message,
+            )
+
+    def _on_feedback_measurement_error(
+        self,section_key: str,error: Exception,
+    ) -> None:
+        if hasattr(self,"_feedback"):
+            self._feedback.on_measurement_error(section_key,error)
+
+    def _on_feedback_localization_error(
+        self,section_key: str,error: Exception,
+    ) -> None:
+        if hasattr(self,"_feedback"):
+            self._feedback.on_localization_error(section_key,error)
+
+    def _on_automatic_feedback_changed(self,state) -> None:
+        if hasattr(self,"_feedback"):
+            self._feedback.on_automatic_state_changed(state)
+        self._refresh_control_mode_availability()
+
+    def _on_automatic_feedback_finished(
+        self,section_key: str,message: str,
+    ) -> None:
+        if hasattr(self,"_feedback"):
+            self._feedback.on_automatic_finished(section_key,message)
+
     @QtCore.Slot(str)
     def _on_auto_compute_requested(self,section_key: str) -> None:
         if not self.editor_writes_allowed:
             return
-        if self._feedback.automatic_operation_active:
+        if self.automatic_operation_active:
             return
         if self.is_cgh_computing(section_key):
             return
@@ -943,11 +842,12 @@ class SLMQtSession(QtCore.QObject):
         status = self.runtime.get_section_feedback_status(section_key)
         if base_cgh_recompute_would_discard_feedback(status):
             return
-        self._start_cgh_compute(
-            section_key,
-            lambda:self.runtime.prepare_section_base_cgh(section_key),
-            preparation_title="Automatic CGH preparation failed",
-        )
+        try:
+            self.flush_section(section_key,propagate=True)
+        except Exception as error:
+            self._emit_exception("Automatic CGH preparation failed",error)
+            return
+        self._application.compute_base_cgh(section_key)
 
     @QtCore.Slot(str,object)
     def _on_patch_applied(self,section_key: str,update: Any) -> None:
@@ -968,23 +868,22 @@ class SLMQtSession(QtCore.QObject):
     def apply_transition(
         self,section_key: str,transition: SectionStateTransition,
     ) -> bool:
-        """Apply a committed runtime transition through one synchronization path."""
+        """Render a committed transition and publish its frame if needed.
+
+        The runtime transition is already authoritative. A Qt presentation
+        failure is reported and the section is restored from the committed
+        runtime snapshot, but it does not invalidate the application change.
+        """
         if not self.editor_writes_allowed:
             return False
         if transition is None:
             return False
         try:
-            self.section_collection.apply_section_transition(
-                section_key,transition,
-            )
+            self._on_application_transition_committed(section_key,transition)
         except Exception as error:
-            self._restore_section(section_key)
             self._emit_exception("SLM section UI synchronization failed",error)
-            return False
-
-        self.synchronize_section(section_key)
         if bool(transition.frame_changed):
-            return self._publish_current_frame()
+            return self._application.publish_current_frame()
         return True
 
     def synchronize_section(self,section_key: str) -> None:
@@ -1051,16 +950,15 @@ class SLMQtSession(QtCore.QObject):
         self._require_active()
         if not self.editor_writes_allowed:
             return False
-        return self._upload_frame_now()
+        return self._application.upload_current_frame()
 
     def publish_current_frame(self) -> None:
         """Publish preview state and apply the configured auto-upload policy."""
         self._require_active()
         if not self.editor_writes_allowed:
             return
-        self._publish_current_frame()
+        self._application.publish_current_frame()
 
-    @contextmanager
     def defer_frame_upload(self):
         """Coalesce automatic hardware uploads across a transition batch.
 
@@ -1072,62 +970,29 @@ class SLMQtSession(QtCore.QObject):
         """
         self._require_active()
         self._require_editor_mode()
-        if self._feedback.automatic_operation_active:
+        if self.automatic_operation_active:
             raise RuntimeError(
                 "Cannot defer frame upload during automatic feedback"
             )
-        self._upload_defer_depth += 1
-        try:
-            yield self
-        finally:
-            self._upload_defer_depth -= 1
-            if self._upload_defer_depth == 0 and self._upload_pending:
-                self._upload_pending = False
-                if self.auto_upload_frame:
-                    self._upload_frame_now()
+        return self._application.defer_frame_upload()
 
     def _publish_current_frame(self) -> bool:
         if not self.editor_writes_allowed:
             return False
-        frame = self.runtime.artifacts.eightbit
-        self.sigFrameChanged.emit(frame)
-        if not self.auto_upload_frame:
-            return True
-        if self._upload_defer_depth > 0:
-            self._upload_pending = True
-            return True
-        return self._upload_frame_now()
+        return self._application.publish_current_frame()
 
     def _upload_frame_now(self) -> bool:
         if not self.editor_writes_allowed:
             return False
-        try:
-            self.host_services.upload(self.runtime.artifacts.eightbit)
-            self._last_upload_error = None
-            if hasattr(self,"_calibration"):
-                self._calibration.refresh_live_acquisition_all()
-            return True
-        except Exception as error:
-            self._last_upload_error = error
-            if hasattr(self,"_calibration"):
-                self._calibration.refresh_live_acquisition_all()
-            self.sigUploadFailed.emit(error)
-            self._emit_exception("SLM frame upload failed",error)
-            return False
+        return self._application.upload_current_frame()
 
     @property
     def can_run_automatic_feedback(self) -> bool:
-        return bool(
-            self.editor_writes_allowed
-            and self.auto_upload_frame
-            and self.host_services.can_upload_frame
-            and self._measurements.available
-            and self._upload_defer_depth == 0
-        )
+        return self._application.can_run_automatic_feedback
 
     @property
     def automatic_operation_active(self) -> bool:
-        return self._feedback.automatic_operation_active
+        return self._application.automatic_operation_active
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
@@ -1149,46 +1014,13 @@ class SLMQtSession(QtCore.QObject):
             return
         self._feedback.open_window(section_key)
 
-    def replace_runtime(self,runtime: SLMRuntime) -> None:
-        """Replace runtime and retained section views through one canonical path."""
-        self._require_active()
-        if not isinstance(runtime,SLMRuntime):
-            raise TypeError("runtime must be an SLMRuntime")
-
-        settings = self._binding.interaction_settings
+    def _prepare_runtime_replacement(self) -> None:
+        """Prepare Qt-owned transient workflows before a core runtime swap."""
         self._feedback.prepare_runtime_replacement()
         self._calibration.prepare_runtime_replacement()
         self._section_settings.prepare_runtime_replacement()
         self.cancel_all_cgh()
-        old_binding = self._binding
-        old_binding.cancel_all(restore=True)
-        old_binding.dispose(restore=False)
-        self._disconnect_collection()
-
-        replacement = self.panel.replace_sections(
-            runtime.get_section_snapshots(),
-        )
-
-        self.runtime = runtime
-        self.section_collection = replacement
-        self._binding = self._create_binding(settings)
-        if not self.editor_writes_allowed:
-            self._binding.set_writes_enabled(False,restore_pending=False)
-        self._connect_collection()
-        self._feedback.runtime_replaced()
-        self._calibration.runtime_replaced()
-        self._section_settings.runtime_replaced()
-        old_binding.deleteLater()
-        self.synchronize_all_sections()
-        self._publish_current_frame()
-
-
-    def runtime_layout_signature(self):
-        from ...engine.section import split_layout_signature
-        return split_layout_signature(
-            self.runtime.geometry,
-            {key:self.runtime.get_section_geometry(key) for key in self.runtime.section_keys},
-        )
+        self._binding.cancel_all(restore=True)
 
     def apply_config_report(
         self,report: SLMConfigLoadReport,*,failed_section_snapshots=None,
@@ -1201,6 +1033,57 @@ class SLMQtSession(QtCore.QObject):
                 section_key,getattr(snapshot.presentation,"title",None),
             )
         return failures
+
+    def prepare_config_load(self,path: str) -> PreparedConfigLoad:
+        return self._application.prepare_config_load(path)
+
+    def prepare_config_commit(self,*,layout_changed: bool) -> None:
+        """Prepare only Qt-owned transient state before an application commit."""
+        self._require_active()
+        if layout_changed:
+            self._prepare_runtime_replacement()
+        else:
+            self.prepare_runtime_state_change()
+            self.cancel_pending_edits(restore=True)
+
+    def apply_prepared_config_load(
+        self,
+        prepared: PreparedConfigLoad,
+        *,
+        calibration_mismatch_policy=CalibrationMismatchPolicy.REJECT,
+        require_complete: bool=False,
+    ) -> ConfigLoadOutcome:
+        return self._application.apply_config_load(
+            prepared,
+            calibration_mismatch_policy=calibration_mismatch_policy,
+            require_complete=bool(require_complete),
+        )
+
+    def list_configs(self):
+        return self._application.list_configs()
+
+    def save_application_config(
+        self,name: str,info: str="",*,overwrite: bool=False,
+    ):
+        return self._application.save_config(name,info,overwrite=overwrite)
+
+    def compare_config(self,path: str):
+        return self._application.compare_config(path)
+
+    def read_config_metadata(self,path: str):
+        return self._application.read_config_metadata(path)
+
+    def inspect_config(self,path: str):
+        return self._application.inspect_config(path)
+
+    def rename_config(self,path: str,new_name: str,*,overwrite: bool=False):
+        return self._application.rename_config(path,new_name,overwrite=overwrite)
+
+    def duplicate_config(self,path: str,new_name: str,*,overwrite: bool=False):
+        return self._application.duplicate_config(path,new_name,overwrite=overwrite)
+
+    def delete_config(self,path: str) -> None:
+        self._application.delete_config(path)
 
     def load_config(self,path: str,**kwargs) -> bool:
         self._require_active()
@@ -1216,7 +1099,6 @@ class SLMQtSession(QtCore.QObject):
         self._require_active()
         self._require_editor_mode()
         return self._configuration.save(name,info,overwrite=overwrite)
-
 
     def prepare_runtime_state_change(self) -> None:
         """Cancel transient reusable workflows before an in-place runtime reload."""
@@ -1278,10 +1160,7 @@ class SLMQtSession(QtCore.QObject):
         self.cancel_all_cgh()
         self._binding.dispose(restore=False)
         self._disconnect_collection()
-        if self._owns_cgh_executor:
-            dispose = getattr(self._cgh_executor,"dispose",None)
-            if callable(dispose):
-                dispose()
+        self._application.dispose()
         self._disposed = True
 
     def __del__(self) -> None:
@@ -1289,6 +1168,12 @@ class SLMQtSession(QtCore.QObject):
             self.dispose()
         except Exception:
             pass
+
+def _warning_text(warning) -> str:
+    path = ".".join(getattr(warning,"path",()) or ())
+    message = str(getattr(warning,"message",warning))
+    return "%s: %s" % (path,message) if path else message
+
 
 def _same_optional_path(first: str | None,second: str | None) -> bool:
     if not first or not second:

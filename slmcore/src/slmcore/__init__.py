@@ -18,7 +18,28 @@ from .engine.registry import (
 
 _load_default_registrations()
 
-from .application import SLMRuntimeFactory,StartupRuntime
+from .application import (
+    AutomaticFeedbackState,
+    CalibrationAcquisitionAvailability,
+    CalibrationMismatchPolicy,
+    PreparedPlaneSelection,
+    PreparedSectionLayoutChange,
+    FeedbackParameterUpdateResult,
+    MeasurementDispatcher,
+    SLMFeedbackService,
+    SLMCalibrationService,
+    TargetCalibrationState,
+    ConfigLoadOutcome,
+    PreparedConfigLoad,
+    SLMConfigurationService,
+    SLMControlMode,
+    SLMRuntimeFactory,
+    SLMSectionLayoutService,
+    SLMSession,
+    SLMSessionCallbacks,
+    StartupPreferencesState,
+    StartupRuntime,
+)
 from .setup import (
     SLM_SETUP_FILE_SCHEMA_VERSION,
     SLMHardwareSetup,
@@ -70,7 +91,21 @@ from .corrections import SLMCorrectionStore
 from .measurement import ImageMeasurement
 
 __all__ = [
+    "AutomaticFeedbackState",
+    "CalibrationAcquisitionAvailability",
     "CorrectionInfo",
+    "FeedbackParameterUpdateResult",
+    "MeasurementDispatcher",
+    "SLMControlMode",
+    "SLMFeedbackService",
+    "SLMCalibrationService",
+    "TargetCalibrationState",
+    "SLMConfigurationService",
+    "PreparedConfigLoad",
+    "ConfigLoadOutcome",
+    "CalibrationMismatchPolicy",
+    "PreparedPlaneSelection",
+    "PreparedSectionLayoutChange",
     "DEFAULT_REGISTRIES",
     "GroupConfigDelta",
     "GroupStateDelta",
@@ -95,6 +130,10 @@ __all__ = [
     "SLMStartupPreferences",
     "SLMWorkspace",
     "SLMRuntimeFactory",
+    "SLMSectionLayoutService",
+    "SLMSession",
+    "SLMSessionCallbacks",
+    "StartupPreferencesState",
     "StartupRuntime",
     "SLMConfigRepository",
     "SLMArtifacts",
