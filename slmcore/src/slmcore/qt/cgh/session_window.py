@@ -7,16 +7,16 @@ from typing import Any,Mapping,Sequence
 
 from qtpy import QtCore,QtWidgets
 
-from ...cgh.execution.session_model import (
+from ...core.cgh.execution.session_model import (
     CGHSessionInspection,CGHWorkingRoundState,
 )
-from ...cgh.execution.status import CGHResultState,CGHStatus
-from ...cgh.feedback.model import (
+from ...core.cgh.execution.status import CGHResultState,CGHStatus
+from ...core.cgh.feedback.model import (
     FeedbackCapability,FeedbackChangeKind,FeedbackInspection,FeedbackStatus,
 )
-from ...cgh.feedback.parameters import INTENSITY_ANALYSIS_PARAMS
-from ...cgh.measurement_metrics import IntensityAnalysis
-from ...engine.parameters.spec import make_display_name
+from ...core.cgh.feedback.parameters import INTENSITY_ANALYSIS_PARAMS
+from ...core.cgh.measurement_metrics import IntensityAnalysis
+from ...core.engine.parameters.spec import make_display_name
 from ..widgets.fields import ParamForm
 from ..measurement.localization_view import MeasurementLocalizationView
 from .session_views import (

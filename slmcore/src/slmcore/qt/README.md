@@ -139,7 +139,7 @@ The underlying `SLMSession` owns:
 - generic device connect/disconnect and frame upload;
 - preview-frame publication events and automatic/deferred upload policy;
 - CGH preparation, request IDs, cancellation/stale handling and runtime commit;
-- current config metadata/path and config repository operations;
+- current config metadata/path and config-store-backed application operations;
 - side-effect-free config preparation plus authoritative config commit;
 - editor/Fast-Config mode, strict compiled-frame activation and `fast_config_path`;
 - measurement commit, localization, intensity/position feedback operations and
@@ -182,7 +182,7 @@ hosts should not own or wire it directly.
 
 CGH scheduling is injectable. `cgh_executor=None` creates an internally owned
 `QtCGHExecutor`. A host may instead provide any object implementing the generic
-`slmcore.cgh.execution.CGHExecutor` contract:
+`slmcore.core.cgh.execution.CGHExecutor` contract:
 
 ```python
 executor.submit(job, on_result, on_error)
@@ -331,17 +331,19 @@ split, whether layout editing is allowed, and a fixed section count. slmcore
 derives the setup section geometries from that declaration. A customized current
 split belongs to the SLM config and is not written back into setup data.
 
-`SLMConfigRepository` remains the non-Qt directory-bound persistence facade,
+`SLMConfigStore` is the non-Qt directory-bound persistence API in `slmcore.workspace`,
 while `application.SLMConfigurationService` performs config preparation,
 validation, persistence operations and runtime restoration. `SLMSession` owns
 `current_config_path` and the authoritative commit. `QtConfigurationManager`
 only mirrors that state into `ConfigControls`, owns config dialogs/inspection,
-and translates interactive calibration decisions into application policies.
+and translates interactive calibration/correction decisions into application policies.
 
 Config loading follows `prepare -> decide -> commit`. A Qt synchronization
 failure after commit is reported but never rolls the runtime/config state back.
-Normal editor loading intentionally uses `require_complete=False`; Fast Config
-entry/exit restores intentionally use `require_complete=True`.
+Normal editor loading intentionally uses `require_complete=False`. Fast Config
+uses the saved compiled frame directly on entry; leaving Fast Config strictly
+reconstructs the active config with `require_complete=True` and resolves any
+calibration/correction mismatch before returning to the editor.
 `current_config_path` is the config represented by the editable runtime, while
 `fast_config_path` is the compiled config currently selected/displayed during
 Fast Config mode.

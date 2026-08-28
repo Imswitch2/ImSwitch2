@@ -1,21 +1,21 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
-from slmcore.calibration import SLMSectionCalibration
-from slmcore.cgh.localization import (
+from slmcore.core.calibration import SLMSectionCalibration
+from slmcore.core.cgh.localization import (
     LOCALIZATION_PARAMS,
     localization_context,
     resolve_localization_guidance,
 )
-from slmcore.cgh.localization import (
+from slmcore.core.cgh.localization import (
     LatticeRegistrationOptions,
     SpotDetectionOptions,
     localize_lattice,
     make_lattice_model,
 )
-from slmcore.cgh.signature import CGHSignature
-from slmcore.cgh.targets.resolution import TargetResolution
-from slmcore.cgh.pattern_geometry import LatticeTargetGeometry
+from slmcore.core.cgh.signature import CGHSignature
+from slmcore.core.cgh.targets.resolution import TargetResolution
+from slmcore.core.cgh.pattern_geometry import LatticeTargetGeometry
 
 
 def _defaults():

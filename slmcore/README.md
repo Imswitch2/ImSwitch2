@@ -148,138 +148,140 @@ Runtime control, configuration handling, CGH, calibration, feedback, and reusabl
 
 ## Architecture
 
-`slmcore` is organized around a central state/runtime engine plus reusable SLM capabilities and integration layers.
-
-### Central engine
-
-The architectural backbone lives in `engine/`:
+`slmcore` is split into six top-level architectural areas:
 
 ```text
-ParamSpec / param_field
-        ↓
-     StateModel
-        ↓
-GroupStateModel / ItemState / ParameterSetState
-        ↓
-   SLMSectionState
-        ↑
-     Registries
-        ↓
- SLMSectionRuntime
-        ↓
-    SLMRuntime
+src/slmcore/
+├── core/          # SLM state, models and scientific computation
+├── application/   # toolkit-independent workflows and session orchestration
+├── workspace/     # persisted runtime resources
+├── setup/         # canonical installed-SLM description
+├── host/          # capabilities supplied by an embedding host
+└── qt/            # Qt presentation and adapters
 ```
 
-The main engine packages are:
+### Core
 
-- `engine/parameters/`: parameter specifications, links, units, and converters.
-- `engine/state/`: generic state models, groups, items, topology, and loading paths.
-- `engine/section/`: one SLM section's state, geometry, snapshots, artifacts, and runtime.
-- `engine/registry.py`: registration models/decorators and the explicit standard-registration composition point.
-- `engine/transition.py`: immutable descriptions of committed state changes.
-- `engine/runtime.py`: aggregate SLM runtime and composed artifacts.
-- `engine/device.py`: physical SLM identity and geometry.
+`core/` contains everything needed to represent and compute SLM state without Qt,
+filesystem ownership, or host-specific services:
 
-Registration declarations stay beside the implementations they describe. The standard registrations are assembled by `engine.registry.load_default_registrations()` from `patterns/`, `cgh/targets/`, and `cgh/computations/`.
+- `core/engine/`: parameter/state machinery, section and aggregate runtimes,
+  physical identity/geometry, transitions, registries, and the host-neutral
+  correction-provider contract.
+- `core/patterns/`: analytic patterns and aberrations.
+- `core/cgh/`: targets, CGH algorithms, localization, metrics, propagation and
+  feedback models.
+- `core/calibration/`: calibration geometry/model and localization-calibration
+  fitting.
+- `core/config/`: the portable complete-runtime snapshot model and config-load
+  report types. The first public config format is schema version 1.
+- `core/measurement/`: host-neutral measurement records.
 
-### Capabilities
+The core layer does not import `application`, `workspace`, `host`, or `qt`.
+Registration declarations stay beside the implementations they describe; the
+standard registrations are assembled explicitly by
+`core.engine.registry.load_default_registrations()`.
 
-- `patterns/`: analytic patterns and aberrations.
-- `cgh/`: targets, CGH algorithms, localization, metrics, and feedback.
-- `calibration/`: section/plane calibration models and storage.
-- `measurement/`: host-neutral image measurement records.
-- `corrections/`: device correction-pattern and 2π lookup/storage.
+### Application
 
-### Integration layers
+`application/` owns use cases rather than presentation. `SLMSession` is the
+toolkit-independent controller for one `SLMRuntime`: CGH execution/commit,
+device/frame lifecycle, configuration/control mode, section-layout changes,
+feedback, and calibration workflows. `SLMConfigurationService`,
+`SLMCalibrationService`, `SLMFeedbackService`, and `SLMSectionLayoutService`
+contain the corresponding application rules.
 
-- `setup/`: canonical installed-SLM setup and startup-preference models plus JSON helpers.
-- `workspace/`: standard config/calibration/correction resource layout rooted at one application data directory.
-- `config/`: configuration models, serialization, migration, and repositories.
-- `application/`: toolkit-independent session, configuration/control-mode,
-  section-layout, feedback and calibration orchestration, startup-preference
-  state, and runtime construction from a canonical `SLMSetup`.
-- `host/`: optional host capability contracts and callbacks.
-- `qt/`: reusable Qt panels, sessions, views, and interaction controllers.
+Configuration loading is deliberately `prepare -> decide -> commit`. Normal
+editor loads preserve partial recovery (`require_complete=False`); strict startup
+and Fast-Config-to-Editor reconstruction use `require_complete=True`.
+Calibration and correction mismatches are represented in the prepared load so
+interactive Qt code only gathers a decision while the application layer owns
+the mutation.
 
-The root `slmcore` package remains the convenient public facade for commonly used types. Internal architectural modules use the `slmcore.engine.*` paths.
+### Workspace
 
-### Application session boundary
-
-`SLMSession` is the toolkit-independent application controller for one
-`SLMRuntime`. It owns generic CGH execution/commit lifecycle, device
-connect/disconnect, frame publication, automatic upload policy, configuration
-identity/lifecycle, editor-vs-Fast-Config control mode, section-layout
-planning/commit, measurement/feedback orchestration including the automatic
-intensity-feedback state machine, and plane/calibration workflows through
-`SLMCalibrationService`. It can be used without importing Qt.
-
-Configuration loading is deliberately two-phase: `prepare_config_load()` reads
-and validates a config without changing application state, then
-`apply_config_load()` commits it with an explicit calibration mismatch policy.
-The headless default is `CalibrationMismatchPolicy.REJECT`; interactive Qt may
-translate user decisions into `KEEP` or `CLEAR`. Normal editor loads preserve
-partial recovery (`require_complete=False`), while Fast Config internal restores
-are intentionally strict (`require_complete=True`). `current_config_path`
-describes the config represented by the editable runtime; `fast_config_path`
-describes the compiled config currently displayed while the runtime is frozen.
-
-Presentation layers sit above that application session:
+`workspace/` owns persisted runtime resources:
 
 ```text
-SLMRuntime / domain
-        ↑
-   SLMSession
-        ↑
-  SLMQtSession
-        ↑
- Qt panel/views
+workspace/
+├── workspace.py
+├── config_store.py
+├── _hdf5.py
+├── calibration_store.py
+└── correction_store.py
 ```
 
-`SLMQtSessionFactory` is the normal composition root for Qt applications. It
-constructs the toolkit-independent `SLMSession` first and injects it into
-`SLMQtSession`. `SLMQtSession` does not independently construct or own a second
-application/runtime stack.
+`SLMWorkspace` defines the standard directory layout and creates stores
+namespaced by the physical `SLMIdentity.serial_number`. `SLMConfigStore` is the
+single directory-bound config persistence API; there is no separate repository
+layer. Calibration catalog/files and device correction resources are likewise
+workspace concerns rather than core concerns.
 
-In normal Qt-session operation, runtime mutations are routed through
-`SLMSession`; Qt components are responsible for collecting user decisions and
-synchronizing presentation with committed application state.
+### Correction reproducibility
 
-`SLMQtSession` preserves the Qt-facing API while adapting `SLMSession` events
-to retained views, signals, dialogs and Qt-specific workflow helpers. Runtime
-commits are authoritative: a presentation synchronization failure is reported
-but does not undo an already committed application transition.
+The runtime depends only on the core `CorrectionProvider` contract. The
+filesystem-backed `SLMCorrectionStore` is the standard workspace implementation.
+Each frame computation resolves a complete immutable correction snapshot once
+and stores that exact resolution with the section artifacts. Saving a config
+copies that snapshot; it does not re-query the filesystem. The snapshot includes
+the effective correction pattern and 2π value plus read-only provenance such as
+source directory, selected filenames and selected wavelengths.
 
-Feedback acquisition depends on the host-neutral `MeasurementDispatcher`
-protocol. Qt supplies `QtMeasurementDispatcher`, which queues provider
-completion onto the GUI thread; a headless host may provide a different
-dispatcher without changing feedback semantics. Feedback runtime mutations and
-automatic-loop state therefore remain in the application layer, while dialogs,
-plots, confirmation prompts and measurement windows remain presentation concerns.
+A saved correction snapshot is historical truth; the workspace provider is the
+current-environment truth. On an editor load, numerical differences in enabled
+corrections require an explicit `USE_SAVED`, `USE_CURRENT`, or cancel/reject
+decision. Provenance-path differences alone do not constitute a mismatch. A
+section loaded with `USE_SAVED` remains pinned while editing until wavelength or
+section geometry changes, which requires an explicit switch to current workspace
+corrections. Fast Config bypasses this decision because the persisted
+`final_eightbit` frame is authoritative; leaving Fast Config strictly rebuilds
+the selected config and resolves any mismatch then.
 
-Calibration uses the same dispatcher contract. Plane catalog reconciliation,
-active-plane state, startup default calibration, geometry compatibility checks,
-live-acquisition eligibility, target-localization state/fitting and calibration
-persistence are application-owned. Interactive geometry mismatch decisions,
-file pickers and calibration dialogs remain in Qt. Target-calibration transient
-state is application state and may therefore also be driven by a headless host.
+### Setup, host and Qt
 
-### Canonical setup and workspace
+`setup/` owns the canonical installed-SLM contract and startup preferences.
+`host/` defines optional external capabilities such as device and measurement
+providers. `qt/` contains presentation, dialogs, views and Qt-specific adapters.
+No Qt imports exist below the Qt package.
 
-`SLMSetup` is the public installed-SLM contract. It stores logical/physical identity, human-readable display name, geometry, declared section layout, and optional hardware information.
+The normal composition is:
 
-Section geometries are derived by `slmcore` rather than by the embedding host.
+```text
+core runtime/model
+       ↑
+ application session  ← workspace + host capabilities
+       ↑
+   SLMQtSession
+       ↑
+   Qt panel/views
+```
 
-`SLMIdentity.serial_number` is mandatory and is the stable physical namespace for persistent workspace resources. `key` remains the logical runtime identifier. `display_name` is presentation-only and does not participate in identity matching.
+`SLMQtSessionFactory` is the standard Qt composition root. It creates the
+workspace stores, runtime factory, application services/session, and finally the
+Qt adapter. `SLMQtSession` does not construct a second application/runtime
+stack. Runtime commits remain authoritative if presentation synchronization
+fails.
 
-`SLMStartupPreferences` stores persistent defaults applied when constructing a session:
+Feedback and calibration acquisition use the host-neutral `MeasurementDispatcher`
+contract. Qt supplies `QtMeasurementDispatcher`; a headless host can provide a
+different dispatcher without changing application semantics.
 
-- startup config;
-- default active plane per section;
-- section display mode.
+### Canonical setup and workspace layout
 
-A canonical standalone JSON file contains both `setup` and `startup_preferences`. Hosts with a larger setup format may embed the same two objects and use `to_dict()` / `from_dict()` directly.
+`SLMSetup` stores logical/physical identity, human-readable display name, SLM
+geometry, declared section layout and optional hardware information. Section
+geometries are derived by `slmcore`, not by the embedding host.
 
-`SLMWorkspace(root)` is the standard runtime-resource layout:
+`SLMIdentity.serial_number` is mandatory and is the stable physical namespace
+for persistent workspace resources. `key` is the logical runtime identifier;
+`display_name` is presentation-only.
+
+`SLMStartupPreferences` stores startup config, default active plane per section,
+and section display mode. A standalone setup JSON may contain both `setup` and
+`startup_preferences`; embedding hosts may persist the same models inside their
+own setup format.
+
+`SLMWorkspace(root)` uses:
 
 ```text
 <root>/
@@ -288,25 +290,21 @@ A canonical standalone JSON file contains both `setup` and `startup_preferences`
 └── calibrations/
 ```
 
-Normally the host supplies only `root`; `slmcore` owns the rest. Advanced hosts may override `configs_dir`, `corrections_dir`, and/or `calibrations_dir` when constructing the workspace.
+Hosts normally provide only the root. Optional directory overrides remain
+available for advanced integrations.
 
-Correction lookup uses the standard per-serial directory and `wavelength.json`. Missing correction data simply follows the normal correction-store fallback behavior.
+### Frame publication and interaction
 
-The normal Qt composition is therefore:
+Every accepted frame-changing transition follows the session publication path.
+With `auto_upload_frame=True` the configured `SLMDeviceProvider` receives the
+new frame automatically; hosts may disable automatic upload and publish
+explicitly instead. `defer_frame_upload()` coalesces physical uploads while
+keeping runtime/presentation state current.
 
-```python
-workspace = SLMWorkspace(data_dir)
-factory = SLMQtSessionFactory(workspace=workspace)
-
-session, panel = factory.create(
-    setup=setup,
-    startup_preferences=startup_preferences,
-    setup_file=setup_file,  # standard standalone JSON persistence
-    host_services=services,
-)
-```
-
-If the host owns a larger setup file, it omits `setup_file` and supplies `on_startup_preferences_changed`. In that case, `slmcore` owns startup-preference semantics while the host owns how its setup file is rewritten.
+`RuntimeViewInteractionSettings` is a Qt interaction policy, not part of
+`SLMConfig`. Normal Qt-session mutations route through `SLMSession`; Qt gathers
+user decisions and synchronizes presentation with already-committed application
+state.
 
 ## License
 

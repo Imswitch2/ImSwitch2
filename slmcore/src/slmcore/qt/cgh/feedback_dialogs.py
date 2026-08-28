@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 from qtpy import QtWidgets
 
-from ...cgh.feedback.model import FeedbackInspection
+from ...core.cgh.feedback.model import FeedbackInspection
 
 
 class FeedbackInspectionDialog(QtWidgets.QDialog):

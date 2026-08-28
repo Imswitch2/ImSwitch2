@@ -8,8 +8,8 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore,QtWidgets
 
-from ...engine.parameters.converters import METRIC_UNIT,SLM_UNIT
-from ...engine.registry import TargetPresentation,TargetPresentationFieldKind
+from ...core.engine.parameters.converters import METRIC_UNIT,SLM_UNIT
+from ...core.engine.registry import TargetPresentation,TargetPresentationFieldKind
 
 
 _MUTED_COLOR = "#888"

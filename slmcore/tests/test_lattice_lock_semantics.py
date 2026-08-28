@@ -4,19 +4,19 @@ import numpy as np
 import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.cgh.targets.lattice import (
+from slmcore.core.cgh.targets.lattice import (
     LatticeAxisIntent,
     LatticeDefinition,
     LatticeLockRequest,
     LatticeResolutionIntent,
     reconcile_lattice_params_with_intent,
 )
-from slmcore.cgh.targets.raster_lattice import (
+from slmcore.core.cgh.targets.raster_lattice import (
     RasterResolutionPolicy,
     RasterResolutionPriority,
     resolve_raster_lattice,
 )
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _runtime() -> SLMRuntime:
@@ -128,7 +128,7 @@ def test_explicit_batch_overrides_lock_for_transaction_without_replacing_it():
         "fov_x_px":180.0,"fov_y_px":180.0,
         "n_foci_x":41,"n_foci_y":31,
     }
-    from slmcore.cgh.targets.lattice import LatticeLockState
+    from slmcore.core.cgh.targets.lattice import LatticeLockState
 
     resolved,intent = reconcile_lattice_params_with_intent(
         params,{"period_x_px","n_foci_x"},

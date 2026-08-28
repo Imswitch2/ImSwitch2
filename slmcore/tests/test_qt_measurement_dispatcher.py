@@ -11,7 +11,7 @@ try:
 except Exception as error:
     pytest.skip(f"Qt bindings are unavailable: {error}",allow_module_level=True)
 
-from slmcore.measurement import ImageMeasurement
+from slmcore.core.measurement import ImageMeasurement
 from slmcore.qt.application.measurement_dispatcher import QtMeasurementDispatcher
 
 

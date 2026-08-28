@@ -6,15 +6,15 @@ from typing import Any,Mapping
 
 from qtpy import QtCore,QtWidgets
 
-from ...config.loading import SectionConfigLoadResult
-from ...calibration.geometry import calibration_geometry_matches
-from ...engine.parameters.converters import METRIC_UNIT,SLM_UNIT
-from ...engine.section.presentation import SectionPresentation
-from ...engine.section.snapshot import SectionGroupSnapshot,SLMSectionSnapshot
-from ...engine.section.update import SectionUpdate
-from ...engine.state.base import ParamPath
-from ...engine.state.groups import DynamicGroupState
-from ...engine.transition import SectionStateTransition
+from ...core.config.loading import SectionConfigLoadResult
+from ...core.calibration.geometry import calibration_geometry_matches
+from ...core.engine.parameters.converters import METRIC_UNIT,SLM_UNIT
+from ...core.engine.section.presentation import SectionPresentation
+from ...core.engine.section.snapshot import SectionGroupSnapshot,SLMSectionSnapshot
+from ...core.engine.section.update import SectionUpdate
+from ...core.engine.state.base import ParamPath
+from ...core.engine.state.groups import DynamicGroupState
+from ...core.engine.transition import SectionStateTransition
 from .group_factory import DEFAULT_GROUP_VIEW_FACTORY,GroupViewFactory
 from .group_views import BaseGroupView,CghGroupView,GroupPresentationState
 from .policy import DEFAULT_RENDER_POLICY,RenderPolicy

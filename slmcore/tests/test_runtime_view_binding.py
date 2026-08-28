@@ -3,7 +3,7 @@ import time
 import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _app():
@@ -356,7 +356,7 @@ def _cgh_group(collection,section_key="sec_0"):
 
 
 def _select_target(collection,target="multi_foci",section_key="sec_0"):
-    from slmcore.engine.section import CGHState
+    from slmcore.core.engine.section import CGHState
 
     field = _cgh_group(collection,section_key).binding.fields[
         CGHState.selected_target_path()
@@ -368,7 +368,7 @@ def _select_target(collection,target="multi_foci",section_key="sec_0"):
 def test_programmatic_target_selector_update_synchronizes_cgh_pages():
     _app()
     from slmcore.qt.sections.collection import SectionsCollectionView
-    from slmcore.engine.section import CGHState
+    from slmcore.core.engine.section import CGHState
 
     runtime = _runtime(n_sections=1)
     collection = SectionsCollectionView(
@@ -945,7 +945,7 @@ def test_feedback_state_disables_and_suppresses_auto_compute(monkeypatch):
 def test_restore_current_target_cancels_pending_draft_and_restores_stale_target():
     _app()
     import numpy as np
-    from slmcore.cgh import CGHResult,CGHResultState
+    from slmcore.core.cgh import CGHResult,CGHResultState
     from slmcore.qt.application.runtime_binding import SLMRuntimeViewBinding
     from slmcore.qt.sections.collection import SectionsCollectionView
 

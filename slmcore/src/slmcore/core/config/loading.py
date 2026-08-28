@@ -10,9 +10,6 @@ from ..engine.transition import GroupStateDelta,SectionStateTransition
 if TYPE_CHECKING:
     from ..engine.section.snapshot import SLMSectionSnapshot
 
-# Compatibility alias. New code should use GroupStateDelta.
-GroupConfigDelta = GroupStateDelta
-
 
 @dataclass(frozen=True)
 class SectionConfigLoadResult:

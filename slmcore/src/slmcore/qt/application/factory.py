@@ -6,10 +6,11 @@ from typing import Callable
 
 from qtpy import QtWidgets
 
+from ...application.configuration import SLMConfigurationService,StartupRuntime
 from ...application.runtime_factory import SLMRuntimeFactory
 from ...application.session import SLMSession
-from ...cgh.execution.executor import CGHExecutor
-from ...engine.registry import DEFAULT_REGISTRIES,SLMRegistries
+from ...core.cgh.execution.executor import CGHExecutor
+from ...core.engine.registry import DEFAULT_REGISTRIES,SLMRegistries
 from ...host.services import SLMHostServices
 from ...setup import (
     SLMSetup,
@@ -99,12 +100,12 @@ class SLMQtSessionFactory:
             raise TypeError("host_services must be an SLMHostServices or None")
 
         workspace = self.workspace
-        config_repository = (
+        config_store = (
             None if workspace is None
-            else workspace.config_repository(setup,self.registries)
+            else workspace.config_store(setup.identity,self.registries)
         )
         correction_store = (
-            None if workspace is None else workspace.correction_store(setup)
+            None if workspace is None else workspace.correction_store(setup.identity)
         )
         calibration_store = (
             None if workspace is None else workspace.calibration_store
@@ -112,12 +113,27 @@ class SLMQtSessionFactory:
         runtime_factory = SLMRuntimeFactory(
             setup=setup,
             registries=self.registries,
-            correction_store=correction_store,
-            config_repository=config_repository,
+            correction_provider=correction_store,
         )
-        startup = runtime_factory.create_startup(
-            preference_state.startup_config()
+        configuration_service = (
+            None if config_store is None else SLMConfigurationService(
+                store=config_store,runtime_factory=runtime_factory,
+            )
         )
+        startup_name = preference_state.startup_config()
+        if configuration_service is not None:
+            startup = configuration_service.create_startup(startup_name)
+        elif startup_name:
+            startup = StartupRuntime(
+                runtime=runtime_factory.create_default(),
+                config_path=None,
+                warnings=(
+                    "Startup config was requested but configuration storage "
+                    "is not configured.",
+                ),
+            )
+        else:
+            startup = StartupRuntime(runtime_factory.create_default(),None)
         display_mode = self._display_mode(preference_state)
         display_name = setup.identity.display_name or setup.identity.key
 
@@ -148,7 +164,7 @@ class SLMQtSessionFactory:
                 auto_upload_frame=auto_upload_frame,
                 owns_cgh_executor=owns_executor,
                 runtime_factory=runtime_factory,
-                config_repository=config_repository,
+                configuration_service=configuration_service,
                 current_config_path=startup.config_path,
                 calibration_store=calibration_store,
                 startup_preferences=preference_state,

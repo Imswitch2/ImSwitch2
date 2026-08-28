@@ -4,8 +4,8 @@ from dataclasses import dataclass,field
 from types import MappingProxyType
 from typing import Any,Mapping
 
-from ..engine.device import SLMGeometry,SLMIdentity
-from ..engine.section.geometry import (
+from ..core.engine.device import SLMGeometry,SLMIdentity
+from ..core.engine.section.geometry import (
     SectionGeometry,
     SectionSplitLayout,
     create_split_section_geometries,

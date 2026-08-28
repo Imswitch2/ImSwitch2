@@ -4,8 +4,8 @@ from slmcore import (
     DEFAULT_REGISTRIES,ImageMeasurement,SLMGeometry,SLMIdentity,SLMRuntime,
     SLMSession,SLMSessionCallbacks,
 )
-from slmcore.cgh import CGHResult
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.cgh import CGHResult
+from slmcore.core.engine.section import split_slm_geometry
 from slmcore.host import SLMDeviceProvider,SLMHostServices
 
 

@@ -1,12 +1,11 @@
-from types import SimpleNamespace
-
 import pytest
 
-from slmcore.calibration import (
-    SLMCalibrationStore,SLMSectionCalibration,section_geometry_to_dict,
+from slmcore.core.calibration import (
+    SLMSectionCalibration,section_geometry_to_dict,
 )
-from slmcore.engine.section import SectionGeometry
-from slmcore import SLMStartupPreferences
+from slmcore.workspace import SLMCalibrationStore
+from slmcore.core.engine.section import SectionGeometry
+from slmcore import SLMIdentity,SLMStartupPreferences
 
 
 def test_calibration_store_owns_plane_catalog_and_section_files(tmp_path):
@@ -24,10 +23,10 @@ def test_calibration_store_owns_plane_catalog_and_section_files(tmp_path):
     assert store.plane_names == ("Sample plane",)
     assert store.plane_definition(plane)["detector_name"] == "Camera"
 
-    identity = SimpleNamespace(key="slm",serial_number="SN123")
+    identity = SLMIdentity("slm","SN123",display_name="SLM")
     geometry = SectionGeometry("sec_0",0,0,64,32)
     saved = store.save_calibration(
-        identity,"SLM", "sec_0",plane,
+        identity,"sec_0",plane,
         SLMSectionCalibration(
             kx_per_um=0.01,ky_per_um=0.02,
             section_geometry=section_geometry_to_dict(geometry),

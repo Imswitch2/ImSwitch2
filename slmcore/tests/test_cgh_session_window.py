@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.cgh import CGHResult
-from slmcore.cgh.computations import CGHIterationMetrics
-from slmcore.cgh.localization import LocalizationResult
-from slmcore.measurement import ImageMeasurement
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.cgh import CGHResult
+from slmcore.core.cgh.computations import CGHIterationMetrics
+from slmcore.core.cgh.localization import LocalizationResult
+from slmcore.core.measurement import ImageMeasurement
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _runtime():
@@ -240,7 +240,7 @@ def test_cgh_group_collapsed_summary_uses_applied_not_selected_target():
     _commit_job(runtime,section_key)
     _app,_QtWidgets,_CGHSessionWindow = _qapp_and_window_class()
     from slmcore.qt.sections.view import SectionView
-    from slmcore.engine.registry import TargetPresentation
+    from slmcore.core.engine.registry import TargetPresentation
 
     view = SectionView(
         section_key=section_key,

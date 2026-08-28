@@ -10,8 +10,8 @@ from slmcore import (
     SLMIdentity,
     SLMRuntime,
 )
-from slmcore.calibration import SLMSectionCalibration
-from slmcore.engine.parameters import (
+from slmcore.core.calibration import SLMSectionCalibration
+from slmcore.core.engine.parameters import (
     EditorKind,
     FourierDisplacementConverter,
     METRIC_UNIT,
@@ -19,7 +19,7 @@ from slmcore.engine.parameters import (
     PeriodDisplacementConverter,
     SLM_UNIT,
 )
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _runtime() -> SLMRuntime:
@@ -179,7 +179,7 @@ def test_section_presentation_roundtrips_and_old_configs_default_visible():
     ].presentation.show_calibration_interface
 
 
-def test_section_presentation_title_roundtrips_and_legacy_tab_names_migrate():
+def test_section_presentation_title_roundtrips():
     runtime = _runtime()
     section_key = "sec_0"
     runtime.set_section_presentation(
@@ -199,21 +199,6 @@ def test_section_presentation_title_roundtrips_and_legacy_tab_names_migrate():
 
     assert warnings == ()
     assert loaded.sections[section_key].presentation.title == "Full SLM"
-
-    legacy_data = config.to_dict()
-    del legacy_data["sections"][section_key]["presentation"]["title"]
-    legacy_data["tab_names"] = {section_key:"Migrated title"}
-
-    from slmcore.config import migrate_slm_config_dict
-
-    migrated = migrate_slm_config_dict(legacy_data)
-    loaded_legacy,warnings = SLMConfig.from_dict(migrated,DEFAULT_REGISTRIES)
-
-    assert warnings == ()
-    assert loaded_legacy.sections[
-        section_key
-    ].presentation.title == "Migrated title"
-
 
 def test_config_load_applies_presentation_with_existing_revision_semantics():
     source = _runtime()

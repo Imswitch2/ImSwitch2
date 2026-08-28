@@ -7,7 +7,7 @@ from PIL import Image
 from qtpy import QtCore,QtWidgets
 
 from ....application.feedback import AutomaticFeedbackState
-from ....measurement import ImageMeasurement,create_image_measurement
+from ....core.measurement import ImageMeasurement,create_image_measurement
 from ...cgh.session_window import CGHSessionWindow,MeasurementsAction
 
 

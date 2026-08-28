@@ -8,9 +8,9 @@ from slmcore import (
     SLMStartupPreferences,
 )
 from slmcore.application.startup_preferences import StartupPreferencesState
-from slmcore.calibration import section_geometry_to_dict
-from slmcore.cgh import CGHResult
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.calibration import section_geometry_to_dict
+from slmcore.core.cgh import CGHResult
+from slmcore.core.engine.section import split_slm_geometry
 from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 
 
@@ -57,7 +57,7 @@ def _plane(store):
 def _save_calibration(store,runtime,plane,*,geometry=None):
     geometry = runtime.get_section_geometry("sec_0") if geometry is None else geometry
     return store.save_calibration(
-        runtime.identity,"SLM","sec_0",plane,
+        runtime.identity,"sec_0",plane,
         SLMSectionCalibration(
             kx_per_um=0.01,
             ky_per_um=0.02,

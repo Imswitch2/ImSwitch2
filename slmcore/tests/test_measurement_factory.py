@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from slmcore.measurement import create_image_measurement
+from slmcore.core.measurement import create_image_measurement
 
 
 def test_create_image_measurement_normalizes_rgb_to_2d_float():

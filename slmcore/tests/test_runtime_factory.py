@@ -3,10 +3,10 @@ import pytest
 from slmcore import (
     DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMSectionsSetup,SLMSetup,
 )
-from slmcore.application import SLMRuntimeFactory
-from slmcore.calibration import SLMSectionCalibration,attach_calibration_geometry
-from slmcore.config import SLMConfigRepository
-from slmcore.engine.section import SectionSplitLayout,create_split_section_geometries
+from slmcore.application import SLMConfigurationService,SLMRuntimeFactory
+from slmcore.core.calibration import SLMSectionCalibration,attach_calibration_geometry
+from slmcore.workspace import SLMConfigStore
+from slmcore.core.engine.section import SectionSplitLayout,create_split_section_geometries
 
 
 def _factory(tmp_path=None):
@@ -20,15 +20,19 @@ def _factory(tmp_path=None):
             customizable=True,
         ),
     )
-    repository = (
+    store = (
         None if tmp_path is None
-        else SLMConfigRepository(tmp_path,DEFAULT_REGISTRIES)
+        else SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
     )
-    return SLMRuntimeFactory(
+    factory = SLMRuntimeFactory(
         setup=setup,
         registries=DEFAULT_REGISTRIES,
-        config_repository=repository,
-    ),repository
+    )
+    service = (
+        None if store is None
+        else SLMConfigurationService(store=store,runtime_factory=factory)
+    )
+    return factory,service
 
 
 def _calibration(geometry):
@@ -81,7 +85,7 @@ def test_runtime_factory_keeps_section_count_fixed():
 
 
 def test_startup_rejects_calibration_geometry_mismatch_without_prompt(tmp_path):
-    factory,repository = _factory(tmp_path)
+    factory,service = _factory(tmp_path)
     runtime = factory.create_default()
     geometry = runtime.get_section_geometry("sec_0")
     runtime.set_section_calibration("sec_0",_calibration(geometry))
@@ -94,9 +98,9 @@ def test_startup_rejects_calibration_geometry_mismatch_without_prompt(tmp_path):
         "key":"sec_0","x":0,"y":0,"width":30,"height":32,
     }
     config.sections["sec_0"] = clone
-    repository.save("bad.h5",config,"mismatch",overwrite=False)
+    service.store.save("bad.h5",config,"mismatch",overwrite=False)
 
-    startup = factory.create_startup("bad.h5")
+    startup = service.create_startup("bad.h5")
     assert startup.config_path is None
     assert startup.warnings
     assert "calibration geometry" in startup.warnings[0].lower()
@@ -104,14 +108,14 @@ def test_startup_rejects_calibration_geometry_mismatch_without_prompt(tmp_path):
 
 
 def test_startup_loads_matching_calibration_config(tmp_path):
-    factory,repository = _factory(tmp_path)
+    factory,service = _factory(tmp_path)
     runtime = factory.create_default()
     geometry = runtime.get_section_geometry("sec_0")
     runtime.set_section_calibration("sec_0",_calibration(geometry))
-    repository.save("good.h5",runtime.create_config(),"matching",overwrite=False)
+    service.store.save("good.h5",runtime.create_config(),"matching",overwrite=False)
 
-    startup = factory.create_startup("good.h5")
-    assert startup.config_path == str(repository.resolve("good.h5"))
+    startup = service.create_startup("good.h5")
+    assert startup.config_path == str(service.store.resolve("good.h5"))
     loaded = startup.runtime.get_section_calibration_copy("sec_0")
     assert loaded is not None and loaded.is_valid()
     assert loaded.section_geometry == _calibration(geometry).section_geometry

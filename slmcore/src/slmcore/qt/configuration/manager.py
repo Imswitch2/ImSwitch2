@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 
-from qtpy import QtCore,QtGui
+from qtpy import QtCore,QtGui,QtWidgets
 
 from ...application.configuration import (
-    CalibrationMismatchPolicy,PreparedConfigLoad,
+    CalibrationMismatchPolicy,CorrectionMismatchPolicy,PreparedConfigLoad,
 )
-from ...config.store import SLMConfigMetadata
+from ...workspace.config_store import SLMConfigMetadata
 from ..calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,
     confirm_destructive_change,
@@ -127,12 +127,58 @@ class QtConfigurationManager(QtCore.QObject):
             return CalibrationMismatchPolicy.CLEAR
         return CalibrationMismatchPolicy.KEEP
 
+    def resolve_correction_policy(
+        self,
+        prepared: PreparedConfigLoad,
+        requested="prompt",
+        *,
+        title: str="Load SLM config",
+    ) -> CorrectionMismatchPolicy | None:
+        mismatches = prepared.correction_mismatches
+        if not mismatches:
+            return CorrectionMismatchPolicy.REJECT
+        policy_text = str(requested or "prompt").strip().lower()
+        if policy_text != "prompt":
+            return CorrectionMismatchPolicy.normalize(policy_text)
+        if self.controls is None:
+            return CorrectionMismatchPolicy.REJECT
+
+        lines = [
+            "Saved corrections differ from the corrections available in the "
+            "current workspace.",
+            "",
+        ]
+        for mismatch in mismatches:
+            lines.append("• " + mismatch.summary())
+        lines.extend((
+            "",
+            "Use saved keeps the historical correction snapshot pinned while editing. "
+            "Use current reconstructs with the corrections available now.",
+        ))
+        box = QtWidgets.QMessageBox(self.controls)
+        box.setWindowTitle(title)
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText("\n".join(lines))
+        saved_button = box.addButton("Use saved",QtWidgets.QMessageBox.AcceptRole)
+        current_button = box.addButton("Use current",QtWidgets.QMessageBox.ActionRole)
+        cancel_button = box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is saved_button:
+            return CorrectionMismatchPolicy.USE_SAVED
+        if clicked is current_button:
+            return CorrectionMismatchPolicy.USE_CURRENT
+        if clicked is cancel_button:
+            return None
+        return None
+
     def load(
         self,
         path: str,
         *,
         confirm_layout_change: bool=True,
         calibration_mismatch_policy: str="prompt",
+        correction_mismatch_policy: str="prompt",
         show_error: bool=True,
         require_complete: bool=False,
     ) -> bool:
@@ -151,6 +197,12 @@ class QtConfigurationManager(QtCore.QObject):
                 prepared,calibration_mismatch_policy,
             )
             if policy is None:
+                self._restore_current_selection()
+                return False
+            correction_policy = self.resolve_correction_policy(
+                prepared,correction_mismatch_policy,
+            )
+            if correction_policy is None:
                 self._restore_current_selection()
                 return False
             if (
@@ -173,6 +225,7 @@ class QtConfigurationManager(QtCore.QObject):
             self.controller.apply_prepared_config_load(
                 prepared,
                 calibration_mismatch_policy=policy,
+                correction_mismatch_policy=correction_policy,
                 require_complete=bool(require_complete),
             )
             self.synchronize_current_config()

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 def _localization_defaults():
     try:
-        from slmcore.cgh.localization import LOCALIZATION_PARAMS
+        from slmcore.core.cgh.localization import LOCALIZATION_PARAMS
     except Exception as error:
         pytest.skip(f"Localization parameter dependencies are unavailable: {error}")
     return {
@@ -104,7 +104,7 @@ def test_calibration_dialog_target_mode_uses_reusable_measurement_view():
             parameters=_localization_defaults(),
             status="Ready",
         )
-        from slmcore.measurement import ImageMeasurement
+        from slmcore.core.measurement import ImageMeasurement
         dialog.set_target_measurement(
             ImageMeasurement(np.zeros((8,8)),source="test"),
             parameters=_localization_defaults(),
@@ -134,7 +134,7 @@ def test_calibration_dialog_target_candidate_enables_set_calibration():
         plane_name="Plane A",
         localization_parameters=_localization_defaults(),
     )
-    from slmcore.calibration import SLMSectionCalibration
+    from slmcore.core.calibration import SLMSectionCalibration
 
     candidate = SimpleNamespace(
         calibration=SLMSectionCalibration(kx_per_um=0.01,ky_per_um=0.02),

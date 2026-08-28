@@ -6,17 +6,17 @@ import numpy as np
 import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.cgh import (
+from slmcore.core.cgh import (
     FeedbackChangeKind,
     CGHResult,
     CGHResultState,
     CGHSignature,
     CGHWorkingRoundState,
 )
-from slmcore.cgh.execution import CGHPreparedPurpose
-from slmcore.cgh.localization import LocalizationResult
-from slmcore.measurement import ImageMeasurement
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.cgh.execution import CGHPreparedPurpose
+from slmcore.core.cgh.localization import LocalizationResult
+from slmcore.core.measurement import ImageMeasurement
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _runtime() -> tuple[SLMRuntime,str]:

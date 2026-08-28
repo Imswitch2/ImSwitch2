@@ -22,9 +22,9 @@ from ..config import (
     SLMSectionConfig,
     SectionConfigLoadResult,
 )
-from ..corrections import SLMCorrectionStore
 from ..measurement import ImageMeasurement
 from .registry import SLMRegistries
+from .corrections import CorrectionProvider,ResolvedCorrections
 from .section import (
     SectionGeometry,
     SectionPresentation,
@@ -67,12 +67,12 @@ class SLMRuntime:
         geometry: SLMGeometry,
         section_geometries: Mapping[str,SectionGeometry],
         registries: SLMRegistries,
-        correction_store: SLMCorrectionStore | None=None,
+        correction_provider: CorrectionProvider | None=None,
     ) -> None:
         self.identity = identity
         self.geometry = geometry
         self.registries = registries
-        self.correction_store = correction_store
+        self.correction_provider = correction_provider
 
         self._revision = 0
         self._sections = self._create_sections(section_geometries)
@@ -86,7 +86,8 @@ class SLMRuntime:
         config: SLMConfig,
         *,
         registries: SLMRegistries,
-        correction_store: SLMCorrectionStore | None=None,
+        correction_provider: CorrectionProvider | None=None,
+        saved_correction_sections=(),
     ) -> "SLMRuntime":
         """Construct directly from config without computing default sections first."""
         if config.schema_version != SLM_CONFIG_SCHEMA_VERSION:
@@ -98,16 +99,18 @@ class SLMRuntime:
         runtime.identity = config.identity
         runtime.geometry = config.geometry
         runtime.registries = registries
-        runtime.correction_store = correction_store
+        runtime.correction_provider = correction_provider
         runtime._revision = 1
         runtime._sections = {}
+        saved_sections = set(saved_correction_sections or ())
         for key,section in config.sections.items():
             try:
                 runtime._sections[key] = SLMSectionRuntime.from_config(
                     section,
                     pixel_size_um=config.geometry.pixel_size_um,
                     registries=registries,
-                    correction_store=correction_store,
+                    correction_provider=correction_provider,
+                    correction_source=("saved" if key in saved_sections else "workspace"),
                     revision=1,
                 )
             except Exception as error:
@@ -145,11 +148,13 @@ class SLMRuntime:
         require_identity_match: bool=True,
         calibration_policy: str="config",
         require_complete: bool=False,
+        saved_correction_sections=(),
     ) -> SLMConfigLoadReport:
         self._validate_full_config(config,require_identity_match)
 
         candidates = {}
         prepared_results = {}
+        saved_sections = set(saved_correction_sections or ())
         failures = {}
         warnings = []
 
@@ -160,6 +165,9 @@ class SLMRuntime:
                 candidate,prepared = current.prepare_config_load(
                     section_config,
                     calibration_policy=calibration_policy,
+                    correction_source=(
+                        "saved" if key in saved_sections else "workspace"
+                    ),
                 )
                 candidates[key] = candidate
                 prepared_results[key] = prepared
@@ -207,10 +215,13 @@ class SLMRuntime:
         config: SLMSectionConfig,
         *,
         calibration_policy: str="config",
+        correction_source: str="workspace",
     ) -> SectionConfigLoadResult:
         current = self._get_section(key)
         candidate,prepared = current.prepare_config_load(
-            config,calibration_policy=calibration_policy,
+            config,
+            calibration_policy=calibration_policy,
+            correction_source=correction_source,
         )
 
         transitions = self._commit_prepared_section_transitions(
@@ -275,6 +286,28 @@ class SLMRuntime:
     def get_section_geometry(self,key: str) -> SectionGeometry:
         """Return the immutable geometry of one section."""
         return self._get_section(key).geometry
+
+    def section_uses_saved_corrections(self,key: str) -> bool:
+        return self._get_section(key).uses_saved_corrections
+
+    @property
+    def saved_correction_sections(self) -> tuple[str,...]:
+        return tuple(
+            key for key,section in self._sections.items()
+            if section.uses_saved_corrections
+        )
+
+    def resolve_workspace_corrections(
+        self,key: str,*,state: SLMSectionState | None=None,geometry: SectionGeometry | None=None,
+    ) -> ResolvedCorrections:
+        section = self._get_section(key)
+        state = section.state if state is None else state
+        geometry = section.geometry if geometry is None else geometry
+        wavelength_nm = int(state.optics.wavelength_nm)
+        provider = self.correction_provider
+        if provider is None:
+            return ResolvedCorrections.defaults(wavelength_nm,geometry)
+        return provider.resolve(wavelength_nm,geometry)
 
     def iter_section_parameters(self,key: str):
         """Iterate over the parameter definitions and values of one section."""
@@ -390,9 +423,12 @@ class SLMRuntime:
         changes: Mapping[ParamPath,Any],
         *,
         lattice_lock_request: LatticeLockRequest | None=None,
+        use_workspace_corrections: bool=False,
     ) -> SectionUpdate | None:
         current = self._get_section(key)
         candidate = current.clone()
+        if use_workspace_corrections:
+            candidate.use_workspace_corrections()
 
         update = candidate.apply_patch(
             changes,lattice_lock_request=lattice_lock_request,
@@ -678,7 +714,7 @@ class SLMRuntime:
                 pixel_size_um=self.geometry.pixel_size_um,
                 state=state,
                 registries=self.registries,
-                correction_store=self.correction_store,
+                correction_provider=self.correction_provider,
             )
             sections[key] = section
 

@@ -6,9 +6,9 @@ from typing import Callable
 
 from qtpy import QtCore
 
-from ...cgh.execution.executor import CGHExecutionHandle,CGHExecutor
-from ...cgh.execution.job import CGHJob
-from ...cgh.execution.result import CGHResult
+from ...core.cgh.execution.executor import CGHExecutionHandle,CGHExecutor
+from ...core.cgh.execution.job import CGHJob
+from ...core.cgh.execution.result import CGHResult
 
 
 class CGHExecutorError(RuntimeError):

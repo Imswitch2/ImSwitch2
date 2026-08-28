@@ -8,8 +8,8 @@ from qtpy import QtCore,QtWidgets
 
 from ....application.calibration import TargetCalibrationState
 from ....application.configuration import CalibrationMismatchPolicy
-from ....cgh.localization.parameters import LOCALIZATION_PARAMS
-from ....measurement import create_image_measurement
+from ....core.cgh.localization.parameters import LOCALIZATION_PARAMS
+from ....core.measurement import create_image_measurement
 from ...calibration.dialog import CalibrationDialog,TARGET_LOCALIZATION_METHOD
 from ...calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,

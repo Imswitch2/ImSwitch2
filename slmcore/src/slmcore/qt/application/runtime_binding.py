@@ -8,15 +8,17 @@ coalescing without visual locking or an edit-order scheduler.
 from __future__ import annotations
 
 from dataclasses import dataclass,replace
-from typing import Any,Mapping
+from typing import Any,Callable,Mapping
 
 from qtpy import QtCore
 
-from ...cgh.feedback.model import base_cgh_recompute_would_discard_feedback
-from ...cgh.targets.lattice import LatticeLockRequest
-from ...engine.section.update import SectionUpdate
-from ...engine.runtime import SLMRuntime
-from ...engine.state.base import ParamPath
+from ...core.cgh.feedback.model import base_cgh_recompute_would_discard_feedback
+from ...core.cgh.targets.lattice import LatticeLockRequest
+from ...core.engine.section.update import SectionUpdate
+from ...core.engine.runtime import SLMRuntime
+from ...core.engine.corrections import CorrectionSourceInvalidatedError
+from ...application.configuration import CorrectionMismatchPolicy
+from ...core.engine.state.base import ParamPath
 from .interaction import (
     DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     ParameterEditKind,
@@ -57,6 +59,9 @@ class SLMRuntimeViewBinding(QtCore.QObject):
         application_session=None,
         interaction_settings: RuntimeViewInteractionSettings | None=None,
         debounce_ms: int | None=None,
+        correction_source_switch_confirm: (
+            Callable[[str,Exception],bool] | None
+        )=None,
         parent: QtCore.QObject | None=None,
     ) -> None:
         super().__init__(parent)
@@ -88,6 +93,7 @@ class SLMRuntimeViewBinding(QtCore.QObject):
         self.application_session = application_session
         self.section_collection = section_collection
         self.interaction_settings = settings
+        self._correction_source_switch_confirm = correction_source_switch_confirm
         self._pending_patches: dict[tuple[str, ParameterEditKind], _PendingPatch] = {}
         self._timers: dict[tuple[str, ParameterEditKind], QtCore.QTimer] = {}
         self._disposed = False
@@ -516,10 +522,22 @@ class SLMRuntimeViewBinding(QtCore.QObject):
                     lattice_lock_request=lattice_lock_request,
                 )
             else:
-                update = target.apply_section_patch(
-                    section_key,changes,
-                    lattice_lock_request=lattice_lock_request,
-                )
+                try:
+                    update = target.apply_section_patch(
+                        section_key,changes,
+                        lattice_lock_request=lattice_lock_request,
+                    )
+                except CorrectionSourceInvalidatedError as error:
+                    confirm = self._correction_source_switch_confirm
+                    if confirm is None or not confirm(section_key,error):
+                        raise
+                    update = target.apply_section_patch(
+                        section_key,changes,
+                        lattice_lock_request=lattice_lock_request,
+                        correction_mismatch_policy=(
+                            CorrectionMismatchPolicy.USE_CURRENT
+                        ),
+                    )
             if update is None:
                 self._restore_target_lock_presentation(section_key)
                 return None

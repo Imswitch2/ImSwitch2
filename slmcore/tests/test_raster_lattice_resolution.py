@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from slmcore.cgh.targets.lattice import LatticeDefinition
-from slmcore.cgh.targets.raster_lattice import (
+from slmcore.core.cgh.targets.lattice import LatticeDefinition
+from slmcore.core.cgh.targets.raster_lattice import (
     RasterResolutionPolicy,
     RasterResolutionPriority,
     materialize_exact_raster_lattice,

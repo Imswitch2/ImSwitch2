@@ -4,6 +4,7 @@ import pytest
 from slmcore import (
     DEFAULT_REGISTRIES,
     SectionSplitLayout,
+    ResolvedCorrections,
     SLMConfig,
     SLMGeometry,
     SLMIdentity,
@@ -15,7 +16,7 @@ from slmcore import (
     split_layout_signature,
     validate_config_section_layout,
 )
-from slmcore.cgh import CGHResult
+from slmcore.core.cgh import CGHResult
 
 
 def _geometry():
@@ -31,6 +32,7 @@ def _config(geometry,sections):
             key:SLMSectionConfig(
                 geometry=section,
                 state=SLMSectionState.create(DEFAULT_REGISTRIES),
+                correction_snapshot=ResolvedCorrections.defaults(488,section),
             )
             for key,section in sections.items()
         },

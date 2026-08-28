@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable,Mapping,Protocol,Sequence,Any
 
-from ..measurement import ImageMeasurement
+from ..core.measurement import ImageMeasurement
 
 
 class MeasurementRequestHandle(Protocol):

@@ -8,18 +8,18 @@ from typing import Any,Callable,Mapping
 
 from qtpy import QtCore,QtWidgets
 
-from ...engine.section.components import CGHState
-from ...engine.section.snapshot import SectionGroupSnapshot
-from ...cgh.targets.lattice import LatticeLockState
-from ...cgh.feedback.model import (
+from ...core.engine.section.components import CGHState
+from ...core.engine.section.snapshot import SectionGroupSnapshot
+from ...core.cgh.targets.lattice import LatticeLockState
+from ...core.cgh.feedback.model import (
     FeedbackCapability,FeedbackStatus,
     base_cgh_recompute_would_discard_feedback,
 )
-from ...engine.parameters.converters import SLM_UNIT
-from ...engine.parameters.spec import ParamRole,ParamSpec,make_display_name
-from ...engine.state.base import ParamPath,StateModel
-from ...engine.state.groups import DynamicGroupState
-from ...engine.state.items import CGHTargetState,ItemState
+from ...core.engine.parameters.converters import SLM_UNIT
+from ...core.engine.parameters.spec import ParamRole,ParamSpec,make_display_name
+from ...core.engine.state.base import ParamPath,StateModel
+from ...core.engine.state.groups import DynamicGroupState
+from ...core.engine.state.items import CGHTargetState,ItemState
 from ..widgets.binding import ParameterBinding
 from ..cgh.session_views import format_target_summary
 from ..widgets.fields import ParamForm

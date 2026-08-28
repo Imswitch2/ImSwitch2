@@ -17,6 +17,40 @@ def test_non_qt_package_does_not_import_qt():
     assert offenders == []
 
 
+
+def test_core_package_has_no_upward_architecture_imports():
+    root = _package_root()
+    core = root / "core"
+    forbidden = (
+        "slmcore.application",
+        "slmcore.workspace",
+        "slmcore.host",
+        "slmcore.qt",
+        "from ...application",
+        "from ...workspace",
+        "from ...host",
+        "from ...qt",
+        "from ..application",
+        "from ..workspace",
+        "from ..host",
+        "from ..qt",
+    )
+    offenders = []
+    for path in core.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                offenders.append((str(path.relative_to(root)),token))
+    assert offenders == []
+
+
+def test_removed_pre_release_package_boundaries_do_not_exist():
+    root = _package_root()
+    for name in (
+        "engine","config","calibration","corrections","cgh","measurement","patterns",
+    ):
+        assert not (root / name).exists()
+
 def test_normal_qt_application_mutations_route_through_application_session():
     root = _package_root() / "qt"
     forbidden = (

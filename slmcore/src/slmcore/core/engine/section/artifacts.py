@@ -3,6 +3,8 @@ from typing import Mapping
 
 import numpy as np
 
+from ..corrections import ResolvedCorrections
+
 
 _ARRAY_DTYPES = (
     ("analytic",np.complex128),
@@ -22,6 +24,7 @@ class SectionArtifacts:
     combined: np.ndarray
     phase: np.ndarray
     eightbit: np.ndarray
+    resolved_corrections: ResolvedCorrections
     source_revision: int
 
     def __post_init__(self) -> None:
@@ -31,6 +34,8 @@ class SectionArtifacts:
             value.setflags(write=False)
             object.__setattr__(self,name,value)
 
+        if not isinstance(self.resolved_corrections,ResolvedCorrections):
+            raise TypeError("resolved_corrections must be ResolvedCorrections")
         object.__setattr__(self,"source_revision",int(self.source_revision))
 
     @classmethod
@@ -43,6 +48,7 @@ class SectionArtifacts:
         combined: np.ndarray,
         phase: np.ndarray,
         eightbit: np.ndarray,
+        resolved_corrections: ResolvedCorrections,
         source_revision: int,
     ) -> "SectionArtifacts":
         """Build artifacts from internally owned or already immutable arrays.
@@ -58,12 +64,15 @@ class SectionArtifacts:
             "phase":phase,
             "eightbit":eightbit,
         }
-        return cls._from_trusted_arrays(values,source_revision)
+        return cls._from_trusted_arrays(
+            values,resolved_corrections,source_revision,
+        )
 
     @classmethod
     def _from_trusted_arrays(
         cls,
         values: Mapping[str,np.ndarray],
+        resolved_corrections: ResolvedCorrections,
         source_revision: int,
     ) -> "SectionArtifacts":
         instance = object.__new__(cls)
@@ -73,6 +82,7 @@ class SectionArtifacts:
             value.setflags(write=False)
             object.__setattr__(instance,name,value)
 
+        object.__setattr__(instance,"resolved_corrections",resolved_corrections)
         object.__setattr__(instance,"source_revision",int(source_revision))
         return instance
 
@@ -80,5 +90,5 @@ class SectionArtifacts:
         """Return a revision wrapper reusing every immutable array."""
         return type(self)._from_trusted_arrays(
             {name:getattr(self,name) for name,_dtype in _ARRAY_DTYPES},
-            source_revision,
+            self.resolved_corrections,source_revision,
         )

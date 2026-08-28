@@ -1,7 +1,7 @@
 import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _app():

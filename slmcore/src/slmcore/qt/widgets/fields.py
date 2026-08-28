@@ -1,4 +1,4 @@
-"""Qt parameter editors driven directly by :mod:`slmcore.engine.parameters`."""
+"""Qt parameter editors driven directly by :mod:`slmcore.core.engine.parameters`."""
 
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ from typing import (
 
 from qtpy import QtCore,QtWidgets
 
-from ...engine.parameters.spec import ParamDisplayLevel,ParamSpec
+from ...core.engine.parameters.spec import ParamDisplayLevel,ParamSpec
 from ..application.interaction import ParameterCommitMode
 
 
 class ParamField(QtWidgets.QWidget):
-    """Editor for one keyed :class:`~slmcore.engine.parameters.ParamSpec`.
+    """Editor for one keyed :class:`~slmcore.core.engine.parameters.ParamSpec`.
 
     The stored value is always canonical. Unit mode changes only display and
     editor interpretation.

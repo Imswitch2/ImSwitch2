@@ -3,21 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass,field
 from typing import Any,Callable,Mapping
 
-from ..calibration.geometry import (
+from ..core.calibration.geometry import (
     CalibrationGeometryMismatch,attach_calibration_geometry,
     calibration_geometry_mismatches,
 )
-from ..calibration.slm_section_calibration import SLMSectionCalibration
-from ..calibration.store import SLMCalibrationStore
-from ..calibration.target_localization_calibration import (
+from ..core.calibration.slm_section_calibration import SLMSectionCalibration
+from ..workspace.calibration_store import SLMCalibrationStore
+from ..core.calibration.target_localization_calibration import (
     TargetLocalizationCalibrationCandidate,fit_target_localization_calibration,
 )
-from ..cgh.execution.status import CGHResultState
-from ..cgh.localization.parameters import LOCALIZATION_PARAMS
-from ..cgh.localization.policy import suggest_localization_sources
-from ..cgh.localization.reference import TargetLocalizationReference
-from ..cgh.localization.workflow import localize_measurement
-from ..measurement import ImageMeasurement
+from ..core.cgh.execution.status import CGHResultState
+from ..core.cgh.localization.parameters import LOCALIZATION_PARAMS
+from ..core.cgh.localization.policy import suggest_localization_sources
+from ..core.cgh.localization.reference import TargetLocalizationReference
+from ..core.cgh.localization.workflow import localize_measurement
+from ..core.measurement import ImageMeasurement
 from .configuration import CalibrationMismatchPolicy
 from .feedback import MeasurementDispatcher,MeasurementRequest
 
@@ -579,7 +579,7 @@ class SLMCalibrationService:
             )
             self.session.set_section_calibration(section_key,value)
             value = store.save_calibration(
-                runtime.identity,self.display_name,section_key,plane_name,value,
+                runtime.identity,section_key,plane_name,value,
             )
             if self.preferences is not None:
                 self.preferences.set_default_plane(section_key,plane_name)

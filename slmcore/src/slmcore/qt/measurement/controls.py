@@ -6,7 +6,7 @@ from typing import Sequence
 
 from qtpy import QtCore,QtWidgets
 
-from ...measurement import ImageMeasurement
+from ...core.measurement import ImageMeasurement
 from ..widgets.uitools import ElidedLabel
 
 
@@ -20,7 +20,7 @@ class MeasurementControls(QtWidgets.QWidget):
 
     The widget only exposes user intent. A host application provides detector
     names, handles :attr:`sigAcquireRequested` / :attr:`sigLoadRequested`, and
-    returns the resulting :class:`~slmcore.measurement.ImageMeasurement` to the
+    returns the resulting :class:`~slmcore.core.measurement.ImageMeasurement` to the
     containing workflow.
     """
 

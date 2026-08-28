@@ -4,16 +4,16 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any,Mapping
 
-from ..calibration.geometry import (
+from ..core.calibration.geometry import (
     CalibrationGeometryMismatch,
     calibration_geometry_mismatches,
 )
-from ..engine.runtime import SLMRuntime
-from ..engine.section.geometry import (
+from ..core.engine.runtime import SLMRuntime
+from ..core.engine.section.geometry import (
     SectionGeometry,SectionSplitLayout,create_split_section_geometries,
     split_layout_signature,
 )
-from .configuration import CalibrationMismatchPolicy
+from .configuration import CalibrationMismatchPolicy,CorrectionMismatchPolicy
 from .runtime_factory import SLMRuntimeFactory
 
 
@@ -24,6 +24,7 @@ class PreparedSectionLayoutChange:
     layout: SectionSplitLayout
     section_geometries: Mapping[str,SectionGeometry]
     calibration_mismatches: tuple[CalibrationGeometryMismatch,...]
+    saved_correction_sections: tuple[str,...]
     runtime_layout_signature: Any
     requested_layout_signature: Any
 
@@ -33,6 +34,9 @@ class PreparedSectionLayoutChange:
         )
         object.__setattr__(
             self,"calibration_mismatches",tuple(self.calibration_mismatches),
+        )
+        object.__setattr__(
+            self,"saved_correction_sections",tuple(self.saved_correction_sections),
         )
 
     @property
@@ -84,10 +88,15 @@ class SLMSectionLayoutService:
                 )
                 for key in runtime.section_keys
             )
+        saved_correction_sections = tuple(
+            key for key in runtime.saved_correction_sections
+            if runtime.get_section_geometry(key) != section_geometries[key]
+        )
         return PreparedSectionLayoutChange(
             layout=layout,
             section_geometries=section_geometries,
             calibration_mismatches=mismatches,
+            saved_correction_sections=saved_correction_sections,
             runtime_layout_signature=current_signature,
             requested_layout_signature=requested_signature,
         )
@@ -99,6 +108,9 @@ class SLMSectionLayoutService:
         *,
         calibration_mismatch_policy: CalibrationMismatchPolicy | str=(
             CalibrationMismatchPolicy.REJECT
+        ),
+        correction_mismatch_policy: CorrectionMismatchPolicy | str=(
+            CorrectionMismatchPolicy.REJECT
         ),
         topologies_by_section: Mapping[str,Any] | None=None,
         presentations: Mapping[str,Any] | None=None,
@@ -129,6 +141,17 @@ class SLMSectionLayoutService:
             tuple(item.section_key for item in mismatches)
             if policy is CalibrationMismatchPolicy.CLEAR else ()
         )
+        correction_policy = CorrectionMismatchPolicy.normalize(
+            correction_mismatch_policy,
+        )
+        if (
+            prepared.saved_correction_sections
+            and correction_policy is not CorrectionMismatchPolicy.USE_CURRENT
+        ):
+            raise ValueError(
+                "Changing section geometry invalidates saved correction snapshots; "
+                "switch to current workspace corrections or cancel the layout change."
+            )
         return self.runtime_factory.create_layout_replacement(
             runtime,prepared.section_geometries,
             clear_calibration_sections=clear_sections,

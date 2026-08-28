@@ -3,7 +3,7 @@
 This module describes the lattice *being registered*: canonical finite lattice
 indices, the logical :class:`LatticeModel`, and lightweight inference of finite
 lattice shape/orientation from unordered detections.  Numerical affine search,
-matching and refinement live in :mod:`slmcore.cgh.localization.registration`.
+matching and refinement live in :mod:`slmcore.core.cgh.localization.registration`.
 """
 
 from __future__ import annotations
