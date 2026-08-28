@@ -45,8 +45,8 @@ class DemoHost:
 
     def initialize(self) -> None:
         """Construct, mount and initialize every demo SLM."""
-        for setup_file,definition,preferences in load_demo_setups(self.data_dir):
-            self._initialize_slm(setup_file,definition,preferences)
+        for definition, preferences in load_demo_setups():
+            self._initialize_slm(definition, preferences)
         self.window.set_control_mode(self.group.control_mode)
         self.window.set_control_mode_change_enabled(
             self.group.can_change_control_mode,
@@ -72,7 +72,6 @@ class DemoHost:
 
     def _initialize_slm(
         self,
-        setup_file: Path,
         definition: SLMDefinition,
         preferences: SLMStartupPreferences,
     ) -> None:
@@ -84,8 +83,7 @@ class DemoHost:
         device = MockSLMDeviceProvider(requires_explicit_connection=True)
         session,panel = self.factory.create(
             definition=definition,
-            startup_preferences=preferences,
-            setup_file=setup_file,
+            on_startup_preferences_changed=lambda preferences: None,
             host_services=SLMHostServices(device=device),
             auto_upload_frame=True,
             layout_policy=SLMPanelLayoutPolicy(
