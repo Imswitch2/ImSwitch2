@@ -17,6 +17,10 @@ dependencies = [
     "scipy>=1.7",
     "h5py>=3.0",
     "Pillow>=9.0",
+]
+
+[project.optional-dependencies]
+qt = [
     "qtpy>=2.0",
     "PyQt5>=5.15",
     "pyqtgraph>=0.12",
@@ -24,10 +28,9 @@ dependencies = [
     "QDarkStyle>=3.0",
 ]
 
-
-[project.optional-dependencies]
 test = [
     "pytest>=7",
+    "pytest-timeout>=2",
 ]
 
 
