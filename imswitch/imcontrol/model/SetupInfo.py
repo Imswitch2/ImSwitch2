@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, TypedDict, Literal
 
 from dataclasses_json import dataclass_json, Undefined, CatchAll, config
 
@@ -172,24 +172,83 @@ class SLMInfo:
     (e.g. simulated SLMs). """
 
 
+# -------------------- #
+# slms info typed dict #
+# -------------------- #
+
+class SLMIdentity(TypedDict, total=False):
+    """Authoring shape for setup.identity."""
+
+    key: str
+    serial_number: str
+    display_name: Optional[str]
+
+
+class SLMGeometry(TypedDict):
+    """Authoring shape for setup.geometry."""
+
+    width: int
+    height: int
+    pixel_size_um: float
+
+
+class SLMSectionLayout(TypedDict, total=False):
+    """Authoring shape for setup.sections.layout."""
+
+    n_sections: int
+    axis: Literal["x", "y"]
+    mode: Literal["even", "manual"]
+    sizes: Optional[List[int]]
+    key_prefix: str
+
+
+class SLMSections(TypedDict, total=False):
+    """Authoring shape for setup.sections."""
+
+    layout: SLMSectionLayout
+    customizable: bool
+
+
+class SLMHardware(TypedDict, total=False):
+    """Optional native slmcore hardware binding."""
+
+    driver: str
+    options: Dict[str, Any]
+
+
+class SLMDefinition(TypedDict, total=False):
+    """Portable definition of one physical SLM."""
+
+    identity: SLMIdentity
+    geometry: SLMGeometry
+    sections: SLMSections
+    hardware: Optional[SLMHardware]
+
+
+class SLMPreferences(TypedDict, total=False):
+    """Persistent slmcore startup/session preferences."""
+
+    startup_config: Optional[str]
+    default_planes: Dict[str, str]
+    section_display_mode: str
 
 
 @dataclass_json(undefined=Undefined.EXCLUDE)
 @dataclass(frozen=True, kw_only=True)
 class SLMsInfo(DeviceInfo):
-    definition: Dict[str, Any] = field(default_factory=dict)
-    """ Canonical slmcore definition mapping for one physical SLM.
+    definition: SLMDefinition = field(default_factory=dict)
+    """ Canonical definition of one physical SLM.
 
-    New multiple-SLM configurations should define identity, geometry, sections,
-    and future native hardware binding here. Geometry values are exposed through
-    the compatibility properties below. """
+    Describes its identity, physical geometry, section layout and optional
+    native hardware binding. Runtime validation is owned by slmcore.
+    """
 
-    startup_preferences: Dict[str, Any] = field(default_factory=dict)
-    """ slmcore startup preferences for UI/session startup.
+    startup_preferences: SLMPreferences = field(default_factory=dict)
+    """ Persistent slmcore startup preferences.
 
-    This is the startup-config owner for the new multiple-SLM controller. Setup
-    mode applies may explicitly push a saved config to hardware; startup restore
-    does not rewrite this mapping. """
+    Controls session startup behavior such as the startup config, default
+    section planes and section display mode.
+    """
 
     legacySerialNumber: Optional[str] = field(
         default=None,
@@ -322,6 +381,7 @@ class SLMsInfo(DeviceInfo):
                 return None
             value = value.get(key)
         return value
+
 
 @dataclass(frozen=True)
 class FocusLockInfo:
