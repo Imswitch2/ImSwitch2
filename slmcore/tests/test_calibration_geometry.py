@@ -1,5 +1,5 @@
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.calibration import (
+from slmcore.core.calibration import (
     SLMSectionCalibration,
     attach_calibration_geometry,
     calibration_geometry_matches,
@@ -7,7 +7,7 @@ from slmcore.calibration import (
     config_calibration_geometry_mismatches,
     section_geometry_to_dict,
 )
-from slmcore.engine.section import SectionGeometry,split_slm_geometry
+from slmcore.core.engine.section import SectionGeometry,split_slm_geometry
 
 
 def _calibration(geometry):

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from slmcore.cgh.targets.lattice import rasterize_spots
-from slmcore.cgh.targets.multi_foci import MultiFociTarget
-from slmcore.cgh.targets.multi_foci_vector import MultiFociVectorTarget
-from slmcore.cgh.execution import session as session_module
-from slmcore.engine.section.context import SectionContext
-from slmcore.engine.section.geometry import SectionGeometry
+from slmcore.core.cgh.targets.lattice import rasterize_spots
+from slmcore.core.cgh.targets.multi_foci import MultiFociTarget
+from slmcore.core.cgh.targets.multi_foci_vector import MultiFociVectorTarget
+from slmcore.core.cgh.execution import session as session_module
+from slmcore.core.engine.section.context import SectionContext
+from slmcore.core.engine.section.geometry import SectionGeometry
 
 
 def _context():

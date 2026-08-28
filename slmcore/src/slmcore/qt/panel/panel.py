@@ -6,7 +6,7 @@ from typing import Any,Mapping
 import numpy as np
 from qtpy import QtCore,QtWidgets
 
-from ...engine.section.snapshot import SLMSectionSnapshot
+from ...core.engine.section.snapshot import SLMSectionSnapshot
 from ..configuration.controls import ConfigControls
 from ..preview.panel import SLMPreviewPanel
 from ..preview.view import SLMPreviewView

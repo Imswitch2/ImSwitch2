@@ -5,10 +5,12 @@ from typing import Mapping
 
 from qtpy import QtCore
 
-from ...application.configuration import CalibrationMismatchPolicy
-from ...engine.section.geometry import SectionSplitLayout
-from ...engine.section.presentation import SectionPresentation
-from ...engine.state.topology import GroupTopology
+from ...application.configuration import (
+    CalibrationMismatchPolicy,CorrectionMismatchPolicy,
+)
+from ...core.engine.section.geometry import SectionSplitLayout
+from ...core.engine.section.presentation import SectionPresentation
+from ...core.engine.state.topology import GroupTopology
 from ..calibration.geometry_dialogs import (
     CalibrationMismatchDecision,calibration_mismatch_decision,
     confirm_destructive_change,
@@ -204,10 +206,24 @@ class SectionSettingsManager(QtCore.QObject):
                 return
             policy = CalibrationMismatchPolicy.KEEP
 
+        correction_policy = CorrectionMismatchPolicy.REJECT
+        if prepared.saved_correction_sections:
+            names = ", ".join(prepared.saved_correction_sections)
+            if not confirm_destructive_change(
+                self.section_host,
+                "Switch correction source",
+                "The new section geometry is incompatible with saved correction "
+                f"snapshots for: {names}. Continuing will switch those sections "
+                "to the current workspace corrections. Continue?",
+            ):
+                return
+            correction_policy = CorrectionMismatchPolicy.USE_CURRENT
+
         try:
             changed = self.controller.apply_prepared_section_layout_change(
                 prepared,
                 calibration_mismatch_policy=policy,
+                correction_mismatch_policy=correction_policy,
                 topologies_by_section=topologies_by_section,
                 presentations=presentations,
             )

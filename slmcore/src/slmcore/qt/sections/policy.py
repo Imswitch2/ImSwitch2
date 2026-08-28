@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-from ...engine.parameters.spec import ParamDisplayLevel,ParamSpec
+from ...core.engine.parameters.spec import ParamDisplayLevel,ParamSpec
 
 
 @dataclass(frozen=True)

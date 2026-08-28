@@ -4,6 +4,7 @@ import pytest
 from slmcore import (
     DEFAULT_REGISTRIES,
     CalibrationMismatchPolicy,
+    SLMConfigurationService,
     SLM_CONFIG_SCHEMA_VERSION,
     SLMConfig,
     SLMControlMode,
@@ -16,7 +17,7 @@ from slmcore import (
     SLMSetup,
     SLMWorkspace,
 )
-from slmcore.engine.section import SectionSplitLayout,create_split_section_geometries
+from slmcore.core.engine.section import SectionSplitLayout,create_split_section_geometries
 from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 
 
@@ -34,21 +35,22 @@ def _setup():
 def _session(tmp_path,*,callbacks=None):
     setup = _setup()
     workspace = SLMWorkspace(tmp_path)
-    repository = workspace.config_repository(setup,DEFAULT_REGISTRIES)
+    store = workspace.config_store(setup.identity,DEFAULT_REGISTRIES)
     factory = SLMRuntimeFactory(
         setup=setup,
         registries=DEFAULT_REGISTRIES,
-        config_repository=repository,
+        correction_provider=workspace.correction_store(setup.identity),
     )
+    configuration = SLMConfigurationService(store=store,runtime_factory=factory)
     device = MockSLMDeviceProvider()
     session = SLMSession(
         runtime=factory.create_default(),
         host_services=SLMHostServices(device=device),
         runtime_factory=factory,
-        config_repository=repository,
+        configuration_service=configuration,
         callbacks=callbacks,
     )
-    return session,repository,factory,device
+    return session,store,factory,device
 
 
 def _save_config(session,repository,name,value,*,config=None):
@@ -69,9 +71,12 @@ def test_normal_load_preserves_partial_recovery_policy(tmp_path,monkeypatch):
     calls = []
     original = session.runtime.load_config
 
-    def wrapped(config,*,require_complete=False):
+    def wrapped(config,*,require_complete=False,saved_correction_sections=()):
         calls.append(bool(require_complete))
-        return original(config,require_complete=require_complete)
+        return original(
+            config,require_complete=require_complete,
+            saved_correction_sections=saved_correction_sections,
+        )
 
     monkeypatch.setattr(session.runtime,"load_config",wrapped)
     outcome = session.load_config(
@@ -97,7 +102,7 @@ def test_fast_config_restore_is_always_strict(tmp_path,monkeypatch):
 
     monkeypatch.setattr(session._configuration,"commit_load",wrapped)
     assert session.set_control_mode(SLMControlMode.FAST_CONFIG)
-    assert calls == [True]
+    assert calls == []
     assert session.fast_config_path == str(path)
     np.testing.assert_array_equal(
         device.last_frame,np.full(session.runtime.geometry.shape,71,dtype=np.uint8),

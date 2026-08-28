@@ -6,10 +6,10 @@ from typing import Mapping
 
 from qtpy import QtCore
 
-from ...config.loading import SLMConfigLoadReport
-from ...engine.section.snapshot import SLMSectionSnapshot
-from ...engine.section.update import SectionUpdate
-from ...engine.transition import SectionStateTransition
+from ...core.config.loading import SLMConfigLoadReport
+from ...core.engine.section.snapshot import SLMSectionSnapshot
+from ...core.engine.section.update import SectionUpdate
+from ...core.engine.transition import SectionStateTransition
 from .group_factory import DEFAULT_GROUP_VIEW_FACTORY,GroupViewFactory
 from .policy import DEFAULT_RENDER_POLICY,RenderPolicy
 from .view import SectionView

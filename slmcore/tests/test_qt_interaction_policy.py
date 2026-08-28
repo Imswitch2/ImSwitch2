@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from slmcore.cgh.feedback import base_cgh_recompute_would_discard_feedback
+from slmcore.core.cgh.feedback import base_cgh_recompute_would_discard_feedback
 
 
 def test_qt_interaction_classifies_only_cgh_target_edits():
@@ -29,7 +29,7 @@ def test_qt_interaction_classifies_only_cgh_target_edits():
 
 def test_feedback_loss_predicate_matches_base_cgh_replacement_semantics():
     from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-    from slmcore.engine.section import split_slm_geometry
+    from slmcore.core.engine.section import split_slm_geometry
 
     geometry = SLMGeometry(width=12,height=6,pixel_size_um=1.0)
     runtime = SLMRuntime(

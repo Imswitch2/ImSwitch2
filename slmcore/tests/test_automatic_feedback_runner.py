@@ -1,7 +1,7 @@
 from slmcore.application.feedback import (
     AutomaticFeedbackRunner,SLMFeedbackCallbacks,
 )
-from slmcore.cgh import CGHResultState
+from slmcore.core.cgh import CGHResultState
 
 
 class _CghStatus:

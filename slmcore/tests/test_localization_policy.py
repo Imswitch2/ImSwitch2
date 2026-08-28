@@ -1,7 +1,7 @@
 import numpy as np
 
-from slmcore.cgh.localization import suggest_localization_sources
-from slmcore.measurement import ImageMeasurement
+from slmcore.core.cgh.localization import suggest_localization_sources
+from slmcore.core.measurement import ImageMeasurement
 
 
 def _measurement(source):

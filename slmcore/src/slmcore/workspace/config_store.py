@@ -14,12 +14,11 @@ from typing import Any,Mapping,Sequence
 import h5py
 import numpy as np
 
-from ..engine.registry import SLMRegistries
-from ..engine.state import ConfigWarning
-from ..engine.device import SLMGeometry,SLMIdentity
-from .hdf5 import read_value,write_value
-from .migration import migrate_slm_config_dict
-from .model import SLM_CONFIG_SCHEMA_VERSION,SLMCompiledFrame,SLMConfig
+from ..core.engine.registry import SLMRegistries
+from ..core.engine.state import ConfigWarning
+from ..core.engine.device import SLMGeometry,SLMIdentity
+from ._hdf5 import read_value,write_value
+from ..core.config.model import SLM_CONFIG_SCHEMA_VERSION,SLMCompiledFrame,SLMConfig
 
 
 PathLike = str | os.PathLike
@@ -60,7 +59,7 @@ class SLMConfigInspection:
     warnings: tuple[ConfigWarning, ...] = ()
 
 
-class SLMConfigStore:
+class _ConfigFileStore:
     """Save, load, inspect and manage complete SLM configurations."""
 
     def save(
@@ -122,8 +121,7 @@ class SLMConfigStore:
         self._validate_load_path(path)
 
         raw = self._read_config_dict(path)
-        migrated = migrate_slm_config_dict(raw)
-        return SLMConfig.from_dict(migrated,registries)
+        return SLMConfig.from_dict(raw,registries)
 
     def read_metadata(self,path: PathLike) -> SLMConfigMetadata:
         """Read envelope and identity metadata without loading large arrays."""
@@ -613,3 +611,64 @@ __all__ = [
     "SLMConfigMetadata",
     "SLMConfigStore",
 ]
+
+
+class SLMConfigStore:
+    """Directory-bound persistence store for complete SLM configurations."""
+
+    def __init__(self,directory: PathLike,registries: SLMRegistries) -> None:
+        self.directory = Path(directory).expanduser()
+        self.directory.mkdir(parents=True,exist_ok=True)
+        self.registries = registries
+        self._files = _ConfigFileStore()
+
+    def resolve(self,path_or_name: Any) -> Path:
+        path = Path(path_or_name).expanduser()
+        if not path.is_absolute():
+            path = self.directory / path
+        return path
+
+    def destination(self,name: str) -> Path:
+        filename = os.path.basename(str(name or "").strip())
+        if not filename:
+            raise ValueError("Config name cannot be empty")
+        if Path(filename).suffix.lower() not in _SUPPORTED_EXTENSIONS:
+            filename += ".h5"
+        return self.directory / filename
+
+    def list(self) -> tuple[SLMConfigMetadata,...]:
+        return self._files.list_configs(self.directory)
+
+    def load(self,path_or_name):
+        return self._files.load(self.resolve(path_or_name),self.registries)
+
+    def read_metadata(self,path_or_name) -> SLMConfigMetadata:
+        return self._files.read_metadata(self.resolve(path_or_name))
+
+    def read_compiled_frame(self,path_or_name) -> SLMCompiledFrame:
+        return self._files.read_compiled_frame(self.resolve(path_or_name))
+
+    def inspect(self,path_or_name) -> SLMConfigInspection:
+        return self._files.inspect(self.resolve(path_or_name),self.registries)
+
+    def compare(self,path_or_name,config: SLMConfig):
+        return self._files.compare(self.resolve(path_or_name),config,self.registries)
+
+    def save(self,name_or_path,config: SLMConfig,info: str="",*,overwrite: bool=False):
+        path = self.resolve(name_or_path)
+        if path.parent == self.directory and not path.suffix:
+            path = self.destination(path.name)
+        return self._files.save(path,config,info,overwrite=overwrite)
+
+    def rename(self,source,new_name: str,*,overwrite: bool=False):
+        return self._files.rename(
+            self.resolve(source),self.destination(new_name),overwrite=overwrite,
+        )
+
+    def duplicate(self,source,new_name: str,*,overwrite: bool=False):
+        return self._files.duplicate(
+            self.resolve(source),self.destination(new_name),overwrite=overwrite,
+        )
+
+    def delete(self,path_or_name) -> None:
+        self._files.delete(self.resolve(path_or_name))

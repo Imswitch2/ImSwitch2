@@ -11,7 +11,7 @@ from slmcore import (
     SLMSession,
 )
 from slmcore.application import SLMRuntimeFactory
-from slmcore.calibration import SLMSectionCalibration,attach_calibration_geometry
+from slmcore.core.calibration import SLMSectionCalibration,attach_calibration_geometry
 
 
 def _factory():

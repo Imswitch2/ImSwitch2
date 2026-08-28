@@ -13,14 +13,16 @@ from .snapshot import SLMSectionSnapshot
 from .update import SectionUpdate
 
 from ...calibration import SLMSectionCalibration
-from ...config import CorrectionInfo,SLMSectionConfig,SectionConfigLoadResult
+from ...config import SLMSectionConfig,SectionConfigLoadResult
 from ..registry import SLMRegistries
 from ..state import (
     ConfigWarning,DynamicGroupState,GroupTopology,ParamPath,
 )
 from ..transition import GroupStateDelta,SectionStateTransition
+from ..corrections import (
+    CorrectionProvider,CorrectionSourceInvalidatedError,ResolvedCorrections,
+)
 from ...measurement import ImageMeasurement
-from ...corrections import SLMCorrectionStore
 
 from ...cgh import (
     CGHJob,
@@ -98,7 +100,7 @@ class SLMSectionRuntime:
         pixel_size_um: float,
         state: SLMSectionState,
         registries: SLMRegistries,
-        correction_store: SLMCorrectionStore | None=None,
+        correction_provider: CorrectionProvider | None=None,
         calibration: SLMSectionCalibration | None=None,
         presentation: SectionPresentation | None=None,
     ) -> None:
@@ -106,7 +108,8 @@ class SLMSectionRuntime:
         self.pixel_size_um = pixel_size_um
         self.state = state
         self.registries = registries
-        self.correction_store = correction_store
+        self.correction_provider = correction_provider
+        self._saved_correction_override: ResolvedCorrections | None = None
         self.calibration = calibration
         self.presentation = (
             SectionPresentation()
@@ -123,7 +126,8 @@ class SLMSectionRuntime:
         *,
         pixel_size_um: float,
         registries: SLMRegistries,
-        correction_store: SLMCorrectionStore | None=None,
+        correction_provider: CorrectionProvider | None=None,
+        correction_source: str="workspace",
         revision: int=1,
     ) -> "SLMSectionRuntime":
         """Construct one section directly from a persisted snapshot."""
@@ -141,7 +145,11 @@ class SLMSectionRuntime:
         runtime.pixel_size_um = float(pixel_size_um)
         runtime.state = state
         runtime.registries = registries
-        runtime.correction_store = correction_store
+        runtime.correction_provider = correction_provider
+        runtime._saved_correction_override = (
+            config.correction_snapshot
+            if str(correction_source).strip().lower() == "saved" else None
+        )
         runtime.calibration = (
             None if config.calibration is None else config.calibration.copy()
         )
@@ -236,10 +244,13 @@ class SLMSectionRuntime:
         self,
         config: SLMSectionConfig,
         calibration_policy: str="config",
+        correction_source: str="workspace",
     ) -> SectionConfigLoadResult:
         """Transactionally replace this runtime from a complete section config."""
         candidate,prepared = self.prepare_config_load(
-            config,calibration_policy=calibration_policy,
+            config,
+            calibration_policy=calibration_policy,
+            correction_source=correction_source,
         )
         self._adopt(candidate)
         return SectionConfigLoadResult(
@@ -265,6 +276,7 @@ class SLMSectionRuntime:
         config: SLMSectionConfig,
         *,
         calibration_policy: str="config",
+        correction_source: str="workspace",
     ) -> tuple['SLMSectionRuntime', _PreparedSectionConfigLoad]:
         """Prepare a detached config candidate without committing it."""
         if config.geometry.shape != self.geometry.shape:
@@ -302,6 +314,12 @@ class SLMSectionRuntime:
         candidate.state = candidate_state
         candidate.calibration = calibration
         candidate.presentation = config.presentation.copy()
+        source = str(correction_source or "workspace").strip().lower()
+        if source not in ("workspace","saved"):
+            raise ValueError("correction_source must be 'workspace' or 'saved'")
+        candidate._saved_correction_override = (
+            config.correction_snapshot if source == "saved" else None
+        )
         candidate._revision = self._revision + 1
         candidate._artifacts = self._artifacts
 
@@ -411,22 +429,12 @@ class SLMSectionRuntime:
         if self.calibration is not None:
             calibration = self.calibration.copy()
 
-        directory = None
-        if self.correction_store is not None:
-            directory = str(self.correction_store.directory)
-
-        two_pi_value=self._effective_two_pi_value(state=self.state)
-        correction_pattern=self._effective_correction_pattern(
-            state=self.state,geometry=self.geometry
-        )
-
-        correction_info = CorrectionInfo(directory,two_pi_value,correction_pattern)
         config = SLMSectionConfig(
             geometry=self.geometry,
             state=self.state.clone(),
+            correction_snapshot=self.artifacts.resolved_corrections,
             calibration=calibration,
-            cgh_session = self._cgh_session.session_snapshot,
-            correction_info=correction_info,
+            cgh_session=self._cgh_session.session_snapshot,
             presentation=self.presentation.copy(),
         )
         return config.clone(self.registries)
@@ -1003,6 +1011,7 @@ class SLMSectionRuntime:
         self.state=candidate.state
         self._revision=candidate._revision
         self.calibration=candidate.calibration
+        self._saved_correction_override=candidate._saved_correction_override
         self._artifacts=candidate.artifacts
         self._cgh_session=candidate._cgh_session
 
@@ -1047,10 +1056,7 @@ class SLMSectionRuntime:
                 != self._aberration_inputs(candidate.state)
             ),
             cgh_pattern_changed=cgh_pattern_changed,
-            corrections_changed=(
-                self._correction_inputs(self.state)
-                != self._correction_inputs(candidate.state)
-            ),
+            corrections_changed=not self._effective_corrections_equal(candidate),
         )
 
         candidate._artifacts = candidate._build_transition_artifacts(plan)
@@ -1110,7 +1116,7 @@ class SLMSectionRuntime:
             and not plan.aberrations_changed
             and not plan.cgh_pattern_changed
         ):
-            eightbit = self._phase_to_eightbit_from_phase(
+            eightbit,resolved_corrections = self._phase_to_eightbit_from_phase(
                 current.phase,context,self.state,
             )
             return SectionArtifacts.from_owned(
@@ -1120,6 +1126,7 @@ class SLMSectionRuntime:
                 combined=current.combined,
                 phase=current.phase,
                 eightbit=eightbit,
+                resolved_corrections=resolved_corrections,
                 source_revision=revision,
             )
 
@@ -1141,7 +1148,7 @@ class SLMSectionRuntime:
 
         combined = analytic*aberrations*cgh
         combined = self._apply_pupil(combined,context)
-        phase,eightbit = self._phase_to_eightbit(
+        phase,eightbit,resolved_corrections = self._phase_to_eightbit(
             combined,context,self.state,
         )
 
@@ -1152,6 +1159,7 @@ class SLMSectionRuntime:
             combined=combined,
             phase=phase,
             eightbit=eightbit,
+            resolved_corrections=resolved_corrections,
             source_revision=revision,
         )
 
@@ -1221,19 +1229,29 @@ class SLMSectionRuntime:
             for key,item in group.items.items()
         ) or None
 
-    def _correction_inputs(self,state: SLMSectionState):
-        if self.correction_store is None:
-            return None
-        corrections = state.corrections
-        if not corrections.active or not (
-            corrections.apply_correction_pattern
-            or corrections.apply_twopi_value
-        ):
-            return None
-        return (
-            corrections.apply_correction_pattern,
-            corrections.apply_twopi_value,
+    def _effective_corrections_equal(
+        self,candidate: "SLMSectionRuntime",
+    ) -> bool:
+        first = self._resolve_corrections(self.state,self.geometry)
+        second = candidate._resolve_corrections(candidate.state,candidate.geometry)
+        first_state = self.state.corrections
+        second_state = candidate.state.corrections
+        first_pattern = bool(
+            first_state.active and first_state.apply_correction_pattern
         )
+        second_pattern = bool(
+            second_state.active and second_state.apply_correction_pattern
+        )
+        first_twopi = bool(first_state.active and first_state.apply_twopi_value)
+        second_twopi = bool(second_state.active and second_state.apply_twopi_value)
+        if (first_pattern,first_twopi) != (second_pattern,second_twopi):
+            return False
+        return first.numerically_equal(
+            second,
+            compare_pattern=first_pattern,
+            compare_twopi=first_twopi,
+        )
+
 
 
     def _commit_cgh_artifacts(
@@ -1422,7 +1440,9 @@ class SLMSectionRuntime:
         combined = analytic*aberrations*cgh
         combined = self._apply_pupil(combined,context)
 
-        phase,eightbit = self._phase_to_eightbit(combined,context,state)
+        phase,eightbit,resolved_corrections = self._phase_to_eightbit(
+            combined,context,state,
+        )
 
         return SectionArtifacts.from_owned(
             analytic=analytic,
@@ -1431,6 +1451,7 @@ class SLMSectionRuntime:
             combined=combined,
             phase=phase,
             eightbit=eightbit,
+            resolved_corrections=resolved_corrections,
             source_revision=revision,
         )
     def _compute_cgh_changed_artifacts(
@@ -1450,7 +1471,7 @@ class SLMSectionRuntime:
         combined = current.analytic * current.aberrations * cgh
         combined = self._apply_pupil(combined,context)
 
-        phase,eightbit = self._phase_to_eightbit(
+        phase,eightbit,resolved_corrections = self._phase_to_eightbit(
             combined,context,self.state,
         )
 
@@ -1461,6 +1482,7 @@ class SLMSectionRuntime:
             combined=combined,
             phase=phase,
             eightbit=eightbit,
+            resolved_corrections=resolved_corrections,
             source_revision=revision,
         )
 
@@ -1532,78 +1554,80 @@ class SLMSectionRuntime:
         combined: np.ndarray,
         context: SectionContext,
         state: SLMSectionState,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Convert a complex section field to phase and 8-bit gray values.
-
-        Phase is normalized to the interval ``[0,2π)``. The configured
-        two-pi value determines the gray-level phase period. An optional
-        correction pattern is then added in the same gray-value scale.
-        """
+    ) -> tuple[np.ndarray,np.ndarray,ResolvedCorrections]:
+        """Convert a complex section field to phase and 8-bit gray values."""
         combined = self._validate_phase_field("combined",combined,context)
-
         phase = np.mod(np.angle(combined),2 * np.pi)
-        eightbit = self._phase_to_eightbit_from_phase(
+        eightbit,resolved = self._phase_to_eightbit_from_phase(
             phase,context,state,
         )
-        return phase,eightbit
+        return phase,eightbit,resolved
 
     def _phase_to_eightbit_from_phase(
         self,
         phase: np.ndarray,
         context: SectionContext,
         state: SLMSectionState,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray,ResolvedCorrections]:
         phase = np.asarray(phase,dtype=np.float64)
         if phase.shape != context.shape:
             raise ValueError(
                 f"Phase has shape {phase.shape}; expected {context.shape}"
             )
 
-        two_pi_value = self._effective_two_pi_value(state)
-        correction_pattern = self._effective_correction_pattern(state,context.geometry)
+        resolved = self._resolve_corrections(state,context.geometry)
+        corrections = state.corrections
+        two_pi_value = (
+            resolved.two_pi_value
+            if corrections.active and corrections.apply_twopi_value
+            else 255
+        )
+        correction_pattern = (
+            resolved.correction_pattern
+            if corrections.active and corrections.apply_correction_pattern
+            else None
+        )
 
         gray = phase * two_pi_value / (2 * np.pi)
-
         if correction_pattern is not None:
             correction = (
                 np.asarray(correction_pattern,dtype=np.float64)
                 * two_pi_value / 255.0
             )
-            gray = np.mod(gray + correction,255) #NOTE: should we do %2pivalue instead?
+            gray = np.mod(gray + correction,255)
 
-        eightbit = np.floor(gray).astype(np.uint8)
-        return eightbit
+        return np.floor(gray).astype(np.uint8),resolved
 
+    def _resolve_corrections(
+        self,state: SLMSectionState,geometry: SectionGeometry,
+    ) -> ResolvedCorrections:
+        wavelength_nm = int(state.optics.wavelength_nm)
+        saved = self._saved_correction_override
+        if saved is not None:
+            if saved.geometry != geometry or saved.wavelength_nm != wavelength_nm:
+                raise CorrectionSourceInvalidatedError(
+                    "Saved corrections are pinned to %snm and geometry %s; "
+                    "switch to current workspace corrections before changing "
+                    "wavelength or section geometry."
+                    % (saved.wavelength_nm,saved.geometry)
+                )
+            return saved
+        provider = self.correction_provider
+        if provider is None:
+            return ResolvedCorrections.defaults(wavelength_nm,geometry)
+        resolved = provider.resolve(wavelength_nm,geometry)
+        if not isinstance(resolved,ResolvedCorrections):
+            raise TypeError("CorrectionProvider.resolve() must return ResolvedCorrections")
+        return resolved
 
-    def _effective_two_pi_value(self,state: SLMSectionState)-> int:
-        store=self.correction_store
-        if store is None:
-            return 255
+    @property
+    def uses_saved_corrections(self) -> bool:
+        return self._saved_correction_override is not None
 
-        corrections = state.corrections
-        wl = state.optics.wavelength_nm
-        if corrections.active and corrections.apply_twopi_value:
-            return store.get_twopi_value(wl)
+    def use_workspace_corrections(self) -> None:
+        """Switch this detached/candidate section to the current provider."""
+        self._saved_correction_override = None
 
-        return 255
-
-
-    def _effective_correction_pattern(
-            self,
-            state:SLMSectionState,
-            geometry: SectionGeometry
-    ) -> np.ndarray | None:
-
-        store = self.correction_store
-        if store is None:
-            return None
-
-        corrections = state.corrections
-        wl = state.optics.wavelength_nm
-        if corrections.active and corrections.apply_correction_pattern:
-            return store.get_pattern(wl, geometry)
-
-        return None
 
 
     @staticmethod

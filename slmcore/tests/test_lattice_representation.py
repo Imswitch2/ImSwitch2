@@ -1,14 +1,14 @@
 import numpy as np
 
-from slmcore.cgh.lattice_geometry import LatticeRepresentation
-from slmcore.cgh.localization import (
+from slmcore.core.cgh.lattice_geometry import LatticeRepresentation
+from slmcore.core.cgh.localization import (
     infer_lattice_shape,
     localize_lattice,
     make_lattice_model,
     register_lattice,
 )
-from slmcore.cgh.localization.model import DetectedSpots,LatticeRegistrationOptions
-from slmcore.cgh.targets.lattice import LatticeDefinition
+from slmcore.core.cgh.localization.model import DetectedSpots,LatticeRegistrationOptions
+from slmcore.core.cgh.targets.lattice import LatticeDefinition
 
 
 def _indices(nx,ny):

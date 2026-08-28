@@ -22,22 +22,22 @@ def _setup(*,key="slm",serial="SER123"):
 def test_workspace_namespaces_persistent_resources_by_serial(tmp_path):
     workspace = SLMWorkspace(tmp_path)
     setup = _setup(key="renamable_key",serial="PHYSICAL-001")
-    repository = workspace.config_repository(setup,DEFAULT_REGISTRIES)
+    store = workspace.config_store(setup.identity,DEFAULT_REGISTRIES)
 
-    assert repository.directory == tmp_path / "configs" / "PHYSICAL-001"
-    assert repository.directory.is_dir()
-    assert "renamable_key" not in str(repository.directory)
+    assert store.directory == tmp_path / "configs" / "PHYSICAL-001"
+    assert store.directory.is_dir()
+    assert "renamable_key" not in str(store.directory)
 
 
 def test_workspace_owns_standard_resource_layout(tmp_path):
     workspace = SLMWorkspace(tmp_path)
     setup = _setup(serial="SER123")
 
-    assert workspace.config_directory(setup) == tmp_path / "configs" / "SER123"
-    assert workspace.correction_directory(setup) == tmp_path / "corrections" / "SER123"
+    assert workspace.config_directory(setup.identity) == tmp_path / "configs" / "SER123"
+    assert workspace.correction_directory(setup.identity) == tmp_path / "corrections" / "SER123"
     assert workspace.calibrations_root == tmp_path / "calibrations"
 
-    store = workspace.correction_store(setup)
+    store = workspace.correction_store(setup.identity)
     assert store.directory == tmp_path / "corrections" / "SER123"
     assert store.directory.is_dir()
     assert store.wavelength_table_file == "wavelength.json"
@@ -53,10 +53,10 @@ def test_workspace_supports_explicit_directory_overrides(tmp_path):
     )
     setup = _setup(serial="SER123")
 
-    assert workspace.config_directory(setup) == (
+    assert workspace.config_directory(setup.identity) == (
         tmp_path / "workspace" / "custom-configs" / "SER123"
     )
-    assert workspace.correction_directory(setup) == external / "SER123"
+    assert workspace.correction_directory(setup.identity) == external / "SER123"
     assert workspace.calibrations_root == (
         tmp_path / "workspace" / "custom-calibrations"
     )

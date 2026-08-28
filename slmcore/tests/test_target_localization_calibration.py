@@ -6,7 +6,7 @@ import pytest
 
 def _calibration_api():
     try:
-        from slmcore.calibration import (
+        from slmcore.core.calibration import (
             TargetLocalizationCalibrationCandidate,
             fit_target_localization_calibration,
         )

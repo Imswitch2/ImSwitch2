@@ -6,8 +6,8 @@ from slmcore import (
     TargetPresentationField,
     TargetPresentationFieldKind,
 )
-from slmcore.engine.parameters import EditorKind,METRIC_UNIT,ParamSpec,SLM_UNIT
-from slmcore.engine.registry import TargetRegistration
+from slmcore.core.engine.parameters import EditorKind,METRIC_UNIT,ParamSpec,SLM_UNIT
+from slmcore.core.engine.registry import TargetRegistration
 
 
 def _summary_values(registration,params):

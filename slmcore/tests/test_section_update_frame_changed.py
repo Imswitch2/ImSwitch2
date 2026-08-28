@@ -1,9 +1,9 @@
 import numpy as np
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.cgh import CGHResult
-from slmcore.cgh.execution.status import CGHResultState
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.cgh import CGHResult
+from slmcore.core.cgh.execution.status import CGHResultState
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _runtime() -> SLMRuntime:

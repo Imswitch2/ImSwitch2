@@ -3,20 +3,21 @@ from __future__ import annotations
 import os
 from typing import Any,Callable,Mapping
 
-from qtpy import QtCore
+from qtpy import QtCore,QtWidgets
 
 from ...application.session import SLMSession,SLMSessionCallbacks
 from ...application.configuration import (
-    CalibrationMismatchPolicy,ConfigLoadOutcome,PreparedConfigLoad,
+    CalibrationMismatchPolicy,ConfigLoadOutcome,CorrectionMismatchPolicy,
+    PreparedConfigLoad,
 )
 from ...application.control_mode import SLMControlMode
-from ...config.loading import SLMConfigLoadReport
-from ...cgh.propagation import simulate_propagation_fft
-from ...cgh.execution.status import CGHResultState
-from ...cgh.feedback.model import base_cgh_recompute_would_discard_feedback
-from ...engine.runtime import SLMRuntime
+from ...core.config.loading import SLMConfigLoadReport
+from ...core.cgh.propagation import simulate_propagation_fft
+from ...core.cgh.execution.status import CGHResultState
+from ...core.cgh.feedback.model import base_cgh_recompute_would_discard_feedback
+from ...core.engine.runtime import SLMRuntime
 from ...host.services import SLMHostServices
-from ...engine.transition import SectionStateTransition
+from ...core.engine.transition import SectionStateTransition
 from ..cgh.presenter import CGHPresenter
 from ..panel.panel import SLMPanel
 from ..sections.group_views import CghAction
@@ -169,14 +170,6 @@ class SLMQtSession(QtCore.QObject):
         return self._display_name
 
     @property
-    def config_repository(self):
-        return self._application.config_repository
-
-    @property
-    def runtime_factory(self):
-        return self._application.runtime_factory
-
-    @property
     def startup_preferences(self):
         return self._application.startup_preferences
 
@@ -203,6 +196,9 @@ class SLMQtSession(QtCore.QObject):
     @property
     def config_directory(self):
         return self._application.config_directory
+
+    def resolve_config_path(self,path_or_name) -> str:
+        return self._application.resolve_config_path(path_or_name)
 
     @property
     def control_mode(self) -> SLMControlMode:
@@ -247,35 +243,41 @@ class SLMQtSession(QtCore.QObject):
             return False
 
         prepared = None
-        path = None
-        if requested is SLMControlMode.FAST_CONFIG:
-            path = self.current_config_path
-        elif self.fast_config_path and not _same_optional_path(
-            self.fast_config_path,self.current_config_path,
-        ):
-            path = self.fast_config_path
-
+        calibration_policy = CalibrationMismatchPolicy.REJECT
+        correction_policy = CorrectionMismatchPolicy.REJECT
         try:
-            policy = CalibrationMismatchPolicy.REJECT
-            if path:
-                if requested is SLMControlMode.FAST_CONFIG:
-                    # Preserve the existing guarantee: validate the compiled
-                    # output before discarding any pending editor draft.
+            if requested is SLMControlMode.FAST_CONFIG:
+                path = self.current_config_path
+                if path:
+                    # Validate the exact compiled output before switching modes.
                     self._application.validate_compiled_config(path)
-                prepared = self.prepare_config_load(path)
-                resolved_policy = self._configuration.resolve_calibration_policy(
-                    prepared,"prompt",title="SLM control mode",
-                )
-                if resolved_policy is None:
-                    self._configuration.synchronize_current_config()
-                    return False
-                policy = resolved_policy
-                self.prepare_config_commit(
-                    layout_changed=prepared.layout_changed,
-                )
+            else:
+                path = self.fast_config_path
+                if path:
+                    # Fast -> Editor always reconstructs the active compiled config,
+                    # even when it is the same path that was selected before Fast.
+                    prepared = self.prepare_config_load(path)
+                    resolved = self._configuration.resolve_calibration_policy(
+                        prepared,"prompt",title="SLM control mode",
+                    )
+                    if resolved is None:
+                        self._configuration.synchronize_current_config()
+                        return False
+                    calibration_policy = resolved
+                    resolved_corrections = self._configuration.resolve_correction_policy(
+                        prepared,"prompt",title="SLM control mode",
+                    )
+                    if resolved_corrections is None:
+                        self._configuration.synchronize_current_config()
+                        return False
+                    correction_policy = resolved_corrections
+                    self.prepare_config_commit(
+                        layout_changed=prepared.layout_changed,
+                    )
             return self._application.set_control_mode(
                 requested,
-                calibration_mismatch_policy=policy,
+                calibration_mismatch_policy=calibration_policy,
+                correction_mismatch_policy=correction_policy,
                 prepared_config_load=prepared,
             )
         except Exception as error:
@@ -440,12 +442,30 @@ class SLMQtSession(QtCore.QObject):
             application_session=self._application,
             section_collection=self.section_collection,
             interaction_settings=settings,
+            correction_source_switch_confirm=(
+                self._confirm_switch_to_current_corrections
+            ),
             parent=self,
         )
         binding.sigPatchApplied.connect(self._on_patch_applied)
         binding.sigPatchFailed.connect(self._on_patch_failed)
         binding.sigAutoComputeRequested.connect(self._on_auto_compute_requested)
         return binding
+
+    def _confirm_switch_to_current_corrections(
+        self,section_key: str,error: Exception,
+    ) -> bool:
+        parent = self.section_collection.section_view(section_key)
+        result = QtWidgets.QMessageBox.question(
+            parent,
+            "Switch correction source",
+            "This section is using the saved correction snapshot. The requested "
+            "edit is incompatible with that snapshot and requires the current "
+            "workspace corrections.\n\nSwitch to current corrections and apply the edit?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        return result == QtWidgets.QMessageBox.Yes
 
     def _connect_collection(self) -> None:
         self.section_collection.sigCghActionRequested.connect(
@@ -1034,6 +1054,26 @@ class SLMQtSession(QtCore.QObject):
             )
         return failures
 
+    def prepare_section_layout_change(self,layout):
+        return self._application.prepare_section_layout_change(layout)
+
+    def apply_prepared_section_layout_change(
+        self,
+        prepared,
+        *,
+        calibration_mismatch_policy=CalibrationMismatchPolicy.REJECT,
+        correction_mismatch_policy=CorrectionMismatchPolicy.REJECT,
+        topologies_by_section=None,
+        presentations=None,
+    ) -> bool:
+        return self._application.apply_section_layout_change(
+            prepared,
+            calibration_mismatch_policy=calibration_mismatch_policy,
+            correction_mismatch_policy=correction_mismatch_policy,
+            topologies_by_section=topologies_by_section,
+            presentations=presentations,
+        )
+
     def prepare_config_load(self,path: str) -> PreparedConfigLoad:
         return self._application.prepare_config_load(path)
 
@@ -1051,11 +1091,13 @@ class SLMQtSession(QtCore.QObject):
         prepared: PreparedConfigLoad,
         *,
         calibration_mismatch_policy=CalibrationMismatchPolicy.REJECT,
+        correction_mismatch_policy=CorrectionMismatchPolicy.REJECT,
         require_complete: bool=False,
     ) -> ConfigLoadOutcome:
         return self._application.apply_config_load(
             prepared,
             calibration_mismatch_policy=calibration_mismatch_policy,
+            correction_mismatch_policy=correction_mismatch_policy,
             require_complete=bool(require_complete),
         )
 

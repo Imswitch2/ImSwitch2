@@ -7,13 +7,13 @@ from typing import Mapping
 
 from qtpy import QtCore,QtGui,QtWidgets
 
-from ...engine.section.geometry import (
+from ...core.engine.section.geometry import (
     SectionSplitLayout,create_split_section_geometries,split_layout_signature,
 )
-from ...engine.section.presentation import SectionPresentation
-from ...engine.section.snapshot import SLMSectionSnapshot
-from ...engine.device import SLMGeometry
-from ...engine.state.topology import GroupTopology
+from ...core.engine.section.presentation import SectionPresentation
+from ...core.engine.section.snapshot import SLMSectionSnapshot
+from ...core.engine.device import SLMGeometry
+from ...core.engine.state.topology import GroupTopology
 from ..application.interaction import RuntimeViewInteractionSettings
 from .display import SectionsDisplayMode
 from .topology import SectionTopologyEditor

@@ -1,8 +1,8 @@
 import numpy as np
 
 from slmcore import ImageMeasurement
-from slmcore.cgh.feedback import FeedbackMeasurement,RoundEvaluation
-from slmcore.cgh.localization import LocalizationResult
+from slmcore.core.cgh.feedback import FeedbackMeasurement,RoundEvaluation
+from slmcore.core.cgh.localization import LocalizationResult
 
 
 def test_feedback_measurement_uses_generic_measurement_and_localization_types():

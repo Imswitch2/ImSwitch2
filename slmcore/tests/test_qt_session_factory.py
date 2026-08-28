@@ -13,7 +13,7 @@ from slmcore import (
 )
 from slmcore.application import SLMRuntimeFactory
 from slmcore.host import SLMDeviceProvider,SLMHostServices
-from slmcore.engine.section import SectionSplitLayout
+from slmcore.core.engine.section import SectionSplitLayout
 
 
 def _app():
@@ -40,11 +40,11 @@ def _setup():
     )
 
 
-def _runtime(setup,repository=None):
+def _runtime(setup,correction_provider=None):
     return SLMRuntimeFactory(
         setup=setup,
         registries=DEFAULT_REGISTRIES,
-        config_repository=repository,
+        correction_provider=correction_provider,
     ).create_default()
 
 
@@ -75,9 +75,8 @@ def test_session_factory_constructs_default_session_and_panel():
         assert isinstance(session,SLMQtSession)
         assert isinstance(panel,SLMPanel)
         assert session.panel is panel
-        assert session.runtime_factory.setup is setup
-        assert session.runtime_factory.registries is DEFAULT_REGISTRIES
-        assert session.config_repository is None
+        assert session.runtime.identity == setup.identity
+        assert not session.configuration_available
         assert session.current_config_path is None
         assert session.display_name == "Test SLM"
     finally:
@@ -91,9 +90,9 @@ def test_session_factory_uses_startup_preferences(tmp_path):
 
     setup = _setup()
     workspace = SLMWorkspace(tmp_path)
-    repository = workspace.config_repository(setup,DEFAULT_REGISTRIES)
-    runtime = _runtime(setup,repository)
-    repository.save("startup.h5",runtime.create_config(),"startup",overwrite=False)
+    store = workspace.config_store(setup.identity,DEFAULT_REGISTRIES)
+    runtime = _runtime(setup,workspace.correction_store(setup.identity))
+    store.save("startup.h5",runtime.create_config(),"startup",overwrite=False)
     preferences = SLMStartupPreferences(
         startup_config="startup.h5",
         section_display_mode="horizontal",
@@ -106,10 +105,10 @@ def test_session_factory_uses_startup_preferences(tmp_path):
         on_startup_preferences_changed=_discard,
     )
     try:
-        assert session.current_config_path == str(repository.resolve("startup.h5"))
-        assert session.config_repository is repository
-        assert session.config_repository.directory == tmp_path / "configs" / "SER123"
-        assert session.config_repository.registries is DEFAULT_REGISTRIES
+        assert session.current_config_path == str(store.resolve("startup.h5"))
+        assert session.configuration_available
+        assert session.config_directory == tmp_path / "configs" / "SER123"
+        assert session.resolve_config_path("startup.h5") == str(store.resolve("startup.h5"))
         assert panel.section_host.display_mode == SectionsDisplayMode.HORIZONTAL
     finally:
         session.dispose()
@@ -218,7 +217,7 @@ def test_session_factory_cleans_panel_when_session_construction_fails(monkeypatc
 def test_session_factory_accepts_custom_registries():
     _app()
     from slmcore.qt import SLMQtSessionFactory
-    from slmcore.engine.registry import SLMRegistries
+    from slmcore.core.engine.registry import SLMRegistries
 
     registries = SLMRegistries()
     factory = SLMQtSessionFactory(registries=registries)
@@ -227,7 +226,7 @@ def test_session_factory_accepts_custom_registries():
         on_startup_preferences_changed=_discard,
     )
     try:
-        assert session.runtime_factory.registries is registries
+        assert session.runtime.registries is registries
     finally:
         session.dispose()
         panel.deleteLater()

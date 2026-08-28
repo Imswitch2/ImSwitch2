@@ -3,7 +3,7 @@ import pytest
 
 def _localization_defaults():
     try:
-        from slmcore.cgh.localization import LOCALIZATION_PARAMS
+        from slmcore.core.cgh.localization import LOCALIZATION_PARAMS
     except Exception as error:
         pytest.skip(f"Localization parameter dependencies are unavailable: {error}")
     return {

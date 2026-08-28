@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
 
-from ...engine.section.components import CGHState
-from ...engine.state.base import ParamPath
-from ...engine.state.items import CGHTargetState
+from ...core.engine.section.components import CGHState
+from ...core.engine.state.base import ParamPath
+from ...core.engine.state.items import CGHTargetState
 
 
 class ParameterEditKind(str,Enum):

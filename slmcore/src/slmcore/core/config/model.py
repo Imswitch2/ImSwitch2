@@ -30,10 +30,11 @@ from ..engine.section.geometry import SectionGeometry
 from ..engine.section.model import SLMSectionState
 from ..engine.section.presentation import SectionPresentation
 from ..engine.device import SLMGeometry,SLMIdentity
+from ..engine.corrections import ResolvedCorrections
 from ..engine.state import ConfigPath,ConfigWarning
 
 
-SLM_CONFIG_SCHEMA_VERSION = 2
+SLM_CONFIG_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -60,53 +61,28 @@ class SLMCompiledFrame:
         object.__setattr__(self,"final_eightbit",frame)
 
 
-@dataclass(frozen=True)
-class CorrectionInfo:
-    directory: str | None = None
-    two_pi_value: int | None = None
-    correction_pattern: np.ndarray | None = None
-
-    def __post_init__(self) -> None:
-        pattern = self.correction_pattern
-        if pattern is None:
-            return
-        # we store a detached copy of correction pattern
-        pattern = np.array(pattern,copy=True)
-        pattern.setflags(write=False)
-        object.__setattr__(self,"correction_pattern",pattern)
-
-    def to_dict(self):
-        pattern = self.correction_pattern
-        if pattern is not None:
-            pattern = np.array(pattern,copy=True)
-        return {
-            "directory":self.directory,
-            "two_pi_value":self.two_pi_value,
-            "correction_pattern":pattern,
-        }
-
-    @classmethod
-    def from_dict(cls,data: Mapping[str, Any] | None) -> CorrectionInfo:
-        data = {} if data is None else data
-        value = data.get("two_pi_value")
-        pattern = data.get("correction_pattern")
-        return cls(
-            directory=data.get("directory"),
-            two_pi_value=None if value is None else int(value),
-            correction_pattern = pattern,
-        )
-
-
 @dataclass
 class SLMSectionConfig:
     geometry: SectionGeometry
     state: SLMSectionState
+    correction_snapshot: ResolvedCorrections
     calibration: SLMSectionCalibration | None = None
     cgh_session: CGHSessionSnapshot | None = None
-    correction_info: CorrectionInfo = field(default_factory=CorrectionInfo)
     presentation: SectionPresentation = field(
         default_factory=SectionPresentation,
     )
+
+    def __post_init__(self) -> None:
+        if self.correction_snapshot.geometry != self.geometry:
+            raise ValueError(
+                "Correction snapshot geometry does not match section geometry"
+            )
+        if int(self.correction_snapshot.wavelength_nm) != int(
+            self.state.optics.wavelength_nm
+        ):
+            raise ValueError(
+                "Correction snapshot wavelength does not match section optics"
+            )
 
     def to_dict(self):
         return {
@@ -118,7 +94,7 @@ class SLMSectionConfig:
                 else self.calibration.to_dict()
             ),
             "cgh_session":_cgh_session_snapshot_to_dict(self.cgh_session),
-            "correction_info":self.correction_info.to_dict(),
+            "correction_snapshot":self.correction_snapshot.to_dict(),
         }
 
     @classmethod
@@ -148,7 +124,7 @@ class SLMSectionConfig:
             cgh_session = _cgh_session_snapshot_from_dict(
                 data.get("cgh_session")
             ),
-            correction_info = CorrectionInfo.from_dict(data.get("correction_info"))
+            correction_snapshot=ResolvedCorrections.from_dict(data["correction_snapshot"]),
         )
 
         return config,warnings

@@ -8,7 +8,7 @@ from typing import Any,Callable,Mapping,Sequence
 from qtpy import QtCore
 
 from ...host.measurement import MeasurementProvider,MeasurementRequestHandle
-from ...measurement import ImageMeasurement
+from ...core.measurement import ImageMeasurement
 
 
 @dataclass

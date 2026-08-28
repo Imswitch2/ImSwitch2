@@ -6,7 +6,7 @@ from typing import Any,Mapping,Sequence
 
 from qtpy import QtCore,QtGui,QtWidgets
 
-from ...cgh.localization.parameters import LOCALIZATION_PARAMS
+from ...core.cgh.localization.parameters import LOCALIZATION_PARAMS
 from ..measurement.localization_view import MeasurementLocalizationView
 
 

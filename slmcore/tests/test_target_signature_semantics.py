@@ -3,12 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.cgh import CGHResult,CGHResultState,CGHSignature
-from slmcore.cgh.execution import CGHSpec
-from slmcore.cgh.targets.lattice import LatticeLockRequest
-from slmcore.engine.section import split_slm_geometry
-from slmcore.engine.section.context import SectionContext
-from slmcore.engine.section.geometry import SectionGeometry
+from slmcore.core.cgh import CGHResult,CGHResultState,CGHSignature
+from slmcore.core.cgh.execution import CGHSpec
+from slmcore.core.cgh.targets.lattice import LatticeLockRequest
+from slmcore.core.engine.section import split_slm_geometry
+from slmcore.core.engine.section.context import SectionContext
+from slmcore.core.engine.section.geometry import SectionGeometry
 
 
 def _runtime(size=256) -> tuple[SLMRuntime,str]:

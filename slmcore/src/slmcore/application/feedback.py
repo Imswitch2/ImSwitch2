@@ -11,10 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any,Callable,Mapping,Protocol,Sequence,TYPE_CHECKING
 
-from ..cgh.execution.status import CGHResultState
-from ..cgh.localization.policy import suggest_localization_sources
-from ..cgh.propagation import simulate_propagation_fft
-from ..measurement import ImageMeasurement
+from ..core.cgh.execution.status import CGHResultState
+from ..core.cgh.localization.policy import suggest_localization_sources
+from ..core.cgh.propagation import simulate_propagation_fft
+from ..core.measurement import ImageMeasurement
 
 if TYPE_CHECKING:
     from .session import SLMSession

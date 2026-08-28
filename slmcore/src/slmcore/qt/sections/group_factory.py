@@ -4,8 +4,8 @@ from __future__ import annotations
 
 
 
-from ...engine.section.components import AberrationsState,CGHState,PatternsState
-from ...engine.state.groups import GroupStateModel
+from ...core.engine.section.components import AberrationsState,CGHState,PatternsState
+from ...core.engine.state.groups import GroupStateModel
 from .group_views import (
     AberrationsGroupView,
     BaseGroupView,

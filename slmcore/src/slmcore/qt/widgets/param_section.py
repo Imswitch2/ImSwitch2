@@ -7,7 +7,7 @@ from typing import Any,Mapping,Sequence
 
 from qtpy import QtCore,QtWidgets
 
-from ...engine.parameters.spec import ParamSpec,make_display_name
+from ...core.engine.parameters.spec import ParamSpec,make_display_name
 from .fields import ParamField,ParamForm
 from .uitools import CollapsibleSection,ElidedLabel
 

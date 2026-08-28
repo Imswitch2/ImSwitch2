@@ -15,9 +15,9 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore,QtWidgets
 
-from ...cgh.localization.parameters import LOCALIZATION_PARAMS
-from ...measurement import ImageMeasurement
-from ...engine.parameters.spec import ParamSpec
+from ...core.cgh.localization.parameters import LOCALIZATION_PARAMS
+from ...core.measurement import ImageMeasurement
+from ...core.engine.parameters.spec import ParamSpec
 from ..widgets.fields import ParamForm
 from .controls import MeasurementControls
 

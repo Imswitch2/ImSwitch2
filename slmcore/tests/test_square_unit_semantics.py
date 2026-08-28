@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from slmcore.calibration import SLMSectionCalibration
-from slmcore.cgh.targets.multi_foci import MultiFociTarget
-from slmcore.cgh.targets.multi_foci_vector import MultiFociVectorTarget
-from slmcore.cgh.targets.raster_lattice import ResolvedRasterLattice
-from slmcore.engine.parameters import METRIC_UNIT,SLM_UNIT
-from slmcore.engine.section.context import SectionContext
-from slmcore.engine.section.geometry import SectionGeometry
-from slmcore.engine.state import ParameterSetState
+from slmcore.core.calibration import SLMSectionCalibration
+from slmcore.core.cgh.targets.multi_foci import MultiFociTarget
+from slmcore.core.cgh.targets.multi_foci_vector import MultiFociVectorTarget
+from slmcore.core.cgh.targets.raster_lattice import ResolvedRasterLattice
+from slmcore.core.engine.parameters import METRIC_UNIT,SLM_UNIT
+from slmcore.core.engine.section.context import SectionContext
+from slmcore.core.engine.section.geometry import SectionGeometry
+from slmcore.core.engine.state import ParameterSetState
 
 
 def _context():

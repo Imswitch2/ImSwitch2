@@ -5,7 +5,7 @@ from slmcore import (
     DEFAULT_REGISTRIES,SLM_CONFIG_SCHEMA_VERSION,SLMConfig,SLMGeometry,SLMIdentity,
     SLMSectionsSetup,SLMSetup,SLMWorkspace,
 )
-from slmcore.engine.section import SectionSplitLayout
+from slmcore.core.engine.section import SectionSplitLayout
 from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 
 
@@ -38,17 +38,20 @@ def _create_session(tmp_path,key="slm",serial="SER123"):
     from slmcore.qt import SLMQtSessionFactory
 
     device = MockSLMDeviceProvider()
+    setup = _setup(key,serial)
+    workspace = SLMWorkspace(tmp_path)
+    store = workspace.config_store(setup.identity,DEFAULT_REGISTRIES)
     session,panel = SLMQtSessionFactory(
-        workspace=SLMWorkspace(tmp_path),
+        workspace=workspace,
     ).create(
-        setup=_setup(key,serial),
+        setup=setup,
         host_services=SLMHostServices(device=device),
         on_startup_preferences_changed=lambda _preferences:None,
     )
-    return session,panel,device
+    return session,panel,device,store
 
 
-def _save_compiled(session,name,value,*,pixel_size_um=None,identity=None):
+def _save_compiled(session,store,name,value,*,pixel_size_um=None,identity=None):
     base = session.runtime.create_config()
     geometry = base.geometry
     if pixel_size_um is not None:
@@ -64,21 +67,19 @@ def _save_compiled(session,name,value,*,pixel_size_um=None,identity=None):
         sections=base.sections,
         final_eightbit=np.full(base.geometry.shape,value,dtype=np.uint8),
     )
-    return session.config_repository.save(
-        name,config,"compiled",overwrite=False,
-    ).path
+    return store.save(name,config,"compiled",overwrite=False).path
 
 
 def test_fast_switch_uploads_saved_frame_without_mutating_editor_runtime(tmp_path):
     _app()
     from slmcore.qt import SLMControlMode
 
-    session,panel,device = _create_session(tmp_path)
+    session,panel,device,store = _create_session(tmp_path)
     frames = []
     session.sigFrameChanged.connect(lambda frame:frames.append(np.array(frame,copy=True)))
     try:
-        path_a = _save_compiled(session,"a.h5",17)
-        path_b = _save_compiled(session,"b.h5",93)
+        path_a = _save_compiled(session,store,"a.h5",17)
+        path_b = _save_compiled(session,store,"b.h5",93)
         assert session.load_config(
             str(path_a),confirm_layout_change=False,
             calibration_mismatch_policy="reject",
@@ -144,14 +145,15 @@ def test_fast_activation_rejects_wrong_identity_without_changing_selection(tmp_p
     _app()
     from slmcore.qt import SLMControlMode
 
-    session,panel,_device = _create_session(tmp_path)
+    session,panel,_device,store = _create_session(tmp_path)
     errors = []
     session.sigError.disconnect(panel.show_error)
     session.sigError.connect(lambda title,error:errors.append((title,error)))
     try:
-        path_a = _save_compiled(session,"a.h5",17)
+        path_a = _save_compiled(session,store,"a.h5",17)
         wrong = _save_compiled(
-            session,"wrong.h5",44,identity=SLMIdentity("other","SER123"),
+            session,store,"wrong.h5",44,
+            identity=SLMIdentity("other","SER123"),
         )
         assert session.load_config(
             str(path_a),confirm_layout_change=False,
@@ -169,15 +171,16 @@ def test_fast_activation_rejects_wrong_geometry_without_changing_selection(tmp_p
     _app()
     from slmcore.qt import SLMControlMode
 
-    session,panel,_device = _create_session(tmp_path)
+    session,panel,_device,store = _create_session(tmp_path)
     errors = []
     session.sigError.disconnect(panel.show_error)
     session.sigError.connect(lambda title,error:errors.append((title,error)))
 
     try:
-        path_a = _save_compiled(session,"a.h5",17)
+        path_a = _save_compiled(session,store,"a.h5",17)
         wrong = _save_compiled(
             session,
+            store,
             "wrong_geometry.h5",
             44,
             pixel_size_um=7.5,
@@ -203,12 +206,12 @@ def test_session_group_is_optional_and_rolls_back_failed_mode_change(tmp_path,mo
     _app()
     from slmcore.qt import SLMControlMode,SLMQtSessionGroup
 
-    session_a,panel_a,_device_a = _create_session(tmp_path / "a","a","A")
-    session_b,panel_b,_device_b = _create_session(tmp_path / "b","b","B")
+    session_a,panel_a,_device_a,store_a = _create_session(tmp_path / "a","a","A")
+    session_b,panel_b,_device_b,store_b = _create_session(tmp_path / "b","b","B")
     group = SLMQtSessionGroup()
     try:
-        path_a = _save_compiled(session_a,"a.h5",11)
-        path_b = _save_compiled(session_b,"b.h5",22)
+        path_a = _save_compiled(session_a,store_a,"a.h5",11)
+        path_b = _save_compiled(session_b,store_b,"b.h5",22)
         assert session_a.load_config(str(path_a),confirm_layout_change=False)
         assert session_b.load_config(str(path_b),confirm_layout_change=False)
         group.add_session(session_a,key="a")
@@ -238,7 +241,7 @@ def test_configless_fast_entry_clears_preview_until_compiled_config_is_selected(
     _app()
     from slmcore.qt import SLMControlMode
 
-    session,panel,_device = _create_session(tmp_path)
+    session,panel,_device,store = _create_session(tmp_path)
     try:
         assert panel.preview_view.current_frame is not None
         assert session.current_config_path is None
@@ -249,7 +252,7 @@ def test_configless_fast_entry_clears_preview_until_compiled_config_is_selected(
         assert not panel.body_widget.isHidden()
         assert panel.sections_widget.isHidden()
 
-        path = _save_compiled(session,"selected.h5",71)
+        path = _save_compiled(session,store,"selected.h5",71)
         assert session.activate_compiled_config(str(path))
         np.testing.assert_array_equal(
             panel.preview_view.current_frame,

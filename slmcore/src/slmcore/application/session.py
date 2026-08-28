@@ -4,18 +4,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any,Callable,Mapping
 
-from ..cgh.execution.executor import CGHExecutionHandle,CGHExecutor
-from ..cgh.execution.result import CGHResult
-from ..engine.runtime import SLMRuntime
-from ..engine.section import SectionPresentation
-from ..engine.state import GroupTopology
-from ..engine.transition import SectionStateTransition
+from ..core.cgh.execution.executor import CGHExecutionHandle,CGHExecutor
+from ..core.cgh.execution.result import CGHResult
+from ..core.engine.runtime import SLMRuntime
+from ..core.engine.section import SectionPresentation
+from ..core.engine.state import GroupTopology
+from ..core.engine.transition import SectionStateTransition
 from ..host.device import DeviceConnectionResult
 from ..host.services import SLMHostServices
-from ..config.repository import SLMConfigRepository
 from .configuration import (
-    CalibrationMismatchPolicy,ConfigLoadOutcome,PreparedConfigLoad,
-    SLMConfigurationService,
+    CalibrationMismatchPolicy,ConfigLoadOutcome,CorrectionMismatchPolicy,
+    PreparedConfigLoad,SLMConfigurationService,
 )
 from .control_mode import SLMControlMode
 from .runtime_factory import SLMRuntimeFactory
@@ -90,7 +89,7 @@ class SLMSession:
         callbacks: SLMSessionCallbacks | None=None,
         owns_cgh_executor: bool=False,
         runtime_factory: SLMRuntimeFactory | None=None,
-        config_repository: SLMConfigRepository | None=None,
+        configuration_service: SLMConfigurationService | None=None,
         current_config_path: str | None=None,
         measurement_dispatcher: MeasurementDispatcher | None=None,
         calibration_store=None,
@@ -112,13 +111,7 @@ class SLMSession:
         self._owns_cgh_executor = bool(owns_cgh_executor)
         self._callbacks = callbacks or SLMSessionCallbacks()
         self.auto_upload_frame = bool(auto_upload_frame)
-        self._configuration = (
-            SLMConfigurationService(
-                repository=config_repository,runtime_factory=runtime_factory,
-            )
-            if config_repository is not None and runtime_factory is not None
-            else None
-        )
+        self._configuration = configuration_service
         self._current_config_metadata = None
         if current_config_path and self._configuration is not None:
             self._current_config_metadata = self._configuration.read_metadata(
@@ -170,24 +163,12 @@ class SLMSession:
         return self._configuration is not None
 
     @property
-    def config_repository(self):
-        """Configured repository exposed read-only for host/introspection use."""
-        service = self._configuration
-        return None if service is None else service.repository
-
-    @property
-    def runtime_factory(self):
-        """Configured runtime factory exposed read-only for host/introspection use."""
-        service = self._configuration
-        if service is not None:
-            return service.runtime_factory
-        layout_service = self._section_layout
-        return None if layout_service is None else layout_service.runtime_factory
-
-    @property
     def config_directory(self):
         service = self._require_configuration()
         return service.directory
+
+    def resolve_config_path(self,path_or_name) -> str:
+        return self._require_configuration().resolve(path_or_name)
 
     @property
     def current_config_metadata(self):
@@ -239,6 +220,9 @@ class SLMSession:
         calibration_mismatch_policy: CalibrationMismatchPolicy | str=(
             CalibrationMismatchPolicy.REJECT
         ),
+        correction_mismatch_policy: CorrectionMismatchPolicy | str=(
+            CorrectionMismatchPolicy.REJECT
+        ),
         require_complete: bool=False,
         allow_in_fast_mode: bool=False,
     ) -> ConfigLoadOutcome:
@@ -253,6 +237,7 @@ class SLMSession:
             self.runtime,
             prepared,
             calibration_mismatch_policy=calibration_mismatch_policy,
+            correction_mismatch_policy=correction_mismatch_policy,
             require_complete=bool(require_complete),
         )
         if commit.runtime_replaced:
@@ -282,12 +267,16 @@ class SLMSession:
         calibration_mismatch_policy: CalibrationMismatchPolicy | str=(
             CalibrationMismatchPolicy.REJECT
         ),
+        correction_mismatch_policy: CorrectionMismatchPolicy | str=(
+            CorrectionMismatchPolicy.REJECT
+        ),
         require_complete: bool=False,
     ) -> ConfigLoadOutcome:
         prepared = self.prepare_config_load(path)
         return self.apply_config_load(
             prepared,
             calibration_mismatch_policy=calibration_mismatch_policy,
+            correction_mismatch_policy=correction_mismatch_policy,
             require_complete=require_complete,
         )
 
@@ -348,6 +337,9 @@ class SLMSession:
         calibration_mismatch_policy: CalibrationMismatchPolicy | str=(
             CalibrationMismatchPolicy.REJECT
         ),
+        correction_mismatch_policy: CorrectionMismatchPolicy | str=(
+            CorrectionMismatchPolicy.REJECT
+        ),
         prepared_config_load: PreparedConfigLoad | None=None,
     ) -> bool:
         """Switch application ownership between editable runtime and compiled config."""
@@ -364,12 +356,10 @@ class SLMSession:
                 "Stop automatic feedback before changing control mode"
             )
         if requested is SLMControlMode.FAST_CONFIG:
-            return self._enter_fast_config(
-                calibration_mismatch_policy=calibration_mismatch_policy,
-                prepared_config_load=prepared_config_load,
-            )
+            return self._enter_fast_config()
         return self._leave_fast_config(
             calibration_mismatch_policy=calibration_mismatch_policy,
+            correction_mismatch_policy=correction_mismatch_policy,
             prepared_config_load=prepared_config_load,
         )
 
@@ -396,24 +386,11 @@ class SLMSession:
         self._notify("on_fast_config_changed",resolved)
         return resolved
 
-    def _enter_fast_config(
-        self,
-        *,
-        calibration_mismatch_policy: CalibrationMismatchPolicy | str,
-        prepared_config_load: PreparedConfigLoad | None=None,
-    ) -> bool:
+    def _enter_fast_config(self) -> bool:
         self._require_configuration()
         current = self.current_config_path
         if current:
             resolved,frame = self._read_validated_compiled_frame(current)
-            prepared = prepared_config_load or self.prepare_config_load(resolved)
-            if not _same_optional_path(prepared.path,resolved):
-                raise ValueError("Prepared config does not match current config path")
-            self.apply_config_load(
-                prepared,
-                calibration_mismatch_policy=calibration_mismatch_policy,
-                require_complete=True,
-            )
             if not self.upload_frame(frame,report_error=False):
                 error = self.last_upload_error
                 if error is not None:
@@ -433,17 +410,18 @@ class SLMSession:
         self,
         *,
         calibration_mismatch_policy: CalibrationMismatchPolicy | str,
+        correction_mismatch_policy: CorrectionMismatchPolicy | str,
         prepared_config_load: PreparedConfigLoad | None=None,
     ) -> bool:
         fast_path = self._fast_config_path
-        current_path = self.current_config_path
-        if fast_path and not _same_optional_path(fast_path,current_path):
+        if fast_path:
             prepared = prepared_config_load or self.prepare_config_load(fast_path)
             if not _same_optional_path(prepared.path,fast_path):
                 raise ValueError("Prepared config does not match active Fast Config path")
             self.apply_config_load(
                 prepared,
                 calibration_mismatch_policy=calibration_mismatch_policy,
+                correction_mismatch_policy=correction_mismatch_policy,
                 require_complete=True,
                 allow_in_fast_mode=True,
             )
@@ -456,7 +434,7 @@ class SLMSession:
 
     def _read_validated_compiled_frame(self,path: str):
         service = self._require_configuration()
-        resolved = str(service.repository.resolve(path))
+        resolved = service.resolve(path)
         compiled = service.read_compiled_frame(resolved)
         if compiled.identity != self.runtime.identity:
             raise ValueError("Compiled config identity does not match this SLM")
@@ -536,6 +514,9 @@ class SLMSession:
         calibration_mismatch_policy: CalibrationMismatchPolicy | str=(
             CalibrationMismatchPolicy.REJECT
         ),
+        correction_mismatch_policy: CorrectionMismatchPolicy | str=(
+            CorrectionMismatchPolicy.REJECT
+        ),
         topologies_by_section=None,
         presentations=None,
     ) -> bool:
@@ -549,6 +530,7 @@ class SLMSession:
         replacement = self._require_section_layout().create_replacement(
             self.runtime,prepared,
             calibration_mismatch_policy=calibration_mismatch_policy,
+            correction_mismatch_policy=correction_mismatch_policy,
             topologies_by_section=topologies_by_section,
             presentations=presentations,
         )
@@ -596,13 +578,26 @@ class SLMSession:
         return transition
 
     def apply_section_patch(
-        self,section_key: str,changes: Mapping[Any,Any],*,lattice_lock_request=None,
+        self,
+        section_key: str,
+        changes: Mapping[Any,Any],
+        *,
+        lattice_lock_request=None,
+        correction_mismatch_policy: CorrectionMismatchPolicy | str=(
+            CorrectionMismatchPolicy.REJECT
+        ),
     ):
         self._require_active()
         self._require_editor_mode()
         self._require_section(section_key)
+        policy = CorrectionMismatchPolicy.normalize(correction_mismatch_policy)
         return self.runtime.apply_section_patch(
-            section_key,changes,lattice_lock_request=lattice_lock_request,
+            section_key,
+            changes,
+            lattice_lock_request=lattice_lock_request,
+            use_workspace_corrections=(
+                policy is CorrectionMismatchPolicy.USE_CURRENT
+            ),
         )
 
     def apply_section_topology(

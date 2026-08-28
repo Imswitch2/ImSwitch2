@@ -6,10 +6,10 @@ from typing import Mapping
 
 from qtpy import QtWidgets
 
-from ...engine.parameters.spec import make_display_name
-from ...engine.section.snapshot import SLMSectionSnapshot
-from ...engine.state.groups import DynamicGroupState
-from ...engine.state.topology import GroupTopology
+from ...core.engine.parameters.spec import make_display_name
+from ...core.engine.section.snapshot import SLMSectionSnapshot
+from ...core.engine.state.groups import DynamicGroupState
+from ...core.engine.state.topology import GroupTopology
 
 
 class SectionTopologyEditor(QtWidgets.QWidget):

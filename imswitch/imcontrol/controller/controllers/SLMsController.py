@@ -8,7 +8,7 @@ from typing import Any
 
 from slmcore import SLMSetup,SLMStartupPreferences,SLMWorkspace
 from slmcore.host import SLMDeviceProvider,SLMHostServices
-from slmcore.measurement import create_image_measurement
+from slmcore.core.measurement import create_image_measurement
 from slmcore.qt import (
     DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     SLMControlMode,SLMQtSession,SLMQtSessionFactory,SLMQtSessionGroup,
@@ -184,6 +184,7 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
                     path,
                     confirm_layout_change=False,
                     calibration_mismatch_policy="reject",
+                    correction_mismatch_policy="reject",
                     show_error=False,
                 )
             )
@@ -236,9 +237,12 @@ class SLMsController(StatefulComponentMixin,ImConWidgetController):
         if config_path:
             candidates.append(Path(str(config_path)))
         if config_name:
-            repository = self._slm_qt_session(slm_key).config_repository
-            if repository is not None:
-                candidates.append(repository.resolve(config_name))
+            try:
+                candidates.append(
+                    Path(self._slm_qt_session(slm_key).resolve_config_path(config_name))
+                )
+            except Exception:
+                pass
         for candidate in candidates:
             if candidate.is_file():
                 return str(candidate)

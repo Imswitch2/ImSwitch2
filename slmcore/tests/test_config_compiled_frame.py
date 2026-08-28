@@ -3,8 +3,9 @@ import numpy as np
 import pytest
 
 from slmcore import DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMRuntime
-from slmcore.config import SLM_CONFIG_SCHEMA_VERSION,SLMConfigRepository
-from slmcore.engine.section import split_slm_geometry
+from slmcore.core.config import SLM_CONFIG_SCHEMA_VERSION
+from slmcore.workspace import SLMConfigStore
+from slmcore.core.engine.section import split_slm_geometry
 
 
 def _runtime():
@@ -17,17 +18,17 @@ def _runtime():
     )
 
 
-def test_repository_reads_compiled_frame_without_reconstructing_sections(tmp_path):
+def test_store_reads_compiled_frame_without_reconstructing_sections(tmp_path):
     runtime = _runtime()
-    repository = SLMConfigRepository(tmp_path,DEFAULT_REGISTRIES)
+    store = SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
     config = runtime.create_config()
     expected = np.arange(
         config.geometry.height * config.geometry.width,dtype=np.uint8,
     ).reshape(config.geometry.shape)
     config.final_eightbit = expected
-    repository.save("compiled.h5",config,"compiled",overwrite=False)
+    store.save("compiled.h5",config,"compiled",overwrite=False)
 
-    compiled = repository.read_compiled_frame("compiled.h5")
+    compiled = store.read_compiled_frame("compiled.h5")
 
     assert compiled.identity == runtime.identity
     assert compiled.geometry == runtime.geometry
@@ -38,9 +39,9 @@ def test_repository_reads_compiled_frame_without_reconstructing_sections(tmp_pat
 
 def test_compiled_frame_reader_requires_current_schema(tmp_path):
     runtime = _runtime()
-    repository = SLMConfigRepository(tmp_path,DEFAULT_REGISTRIES)
-    path = repository.resolve("compiled.h5")
-    repository.save(path,runtime.create_config(),"compiled",overwrite=False)
+    store = SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
+    path = store.resolve("compiled.h5")
+    store.save(path,runtime.create_config(),"compiled",overwrite=False)
 
     with h5py.File(str(path),"r+") as handle:
         group = handle["config"]
@@ -49,4 +50,4 @@ def test_compiled_frame_reader_requires_current_schema(tmp_path):
         group.attrs["schema_version"] = str(SLM_CONFIG_SCHEMA_VERSION - 1)
 
     with pytest.raises(ValueError,match="requires schema version"):
-        repository.read_compiled_frame(path)
+        store.read_compiled_frame(path)
