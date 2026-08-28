@@ -19,7 +19,8 @@ class SLMDeviceProvider:
     """Callback-backed physical SLM device capability.
 
     The provider describes *how* to connect, disconnect and upload a frame.
-    Higher-level lifecycle and UI behavior remain owned by ``SLMQtSession``.
+    Higher-level device/frame lifecycle is owned by ``SLMSession``; UI state
+    remains the responsibility of the presentation adapter.
     """
 
     def __init__(

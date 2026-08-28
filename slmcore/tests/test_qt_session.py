@@ -77,6 +77,7 @@ class _Executor:
 
 def _session(*,auto_upload_frame=True,executor=None):
     _app()
+    from slmcore import SLMSession
     from slmcore.qt import SLMPanel,SLMQtSession
 
     runtime = _runtime()
@@ -85,9 +86,8 @@ def _session(*,auto_upload_frame=True,executor=None):
         initial_frame=runtime.artifacts.eightbit,
     )
     uploads = []
-    session = SLMQtSession(
+    application = SLMSession(
         runtime=runtime,
-        panel=panel,
         host_services=SLMHostServices(
             device=SLMDeviceProvider(
                 upload_frame=lambda frame: uploads.append(
@@ -98,10 +98,13 @@ def _session(*,auto_upload_frame=True,executor=None):
         cgh_executor=executor,
         auto_upload_frame=auto_upload_frame,
     )
+    session = SLMQtSession(
+        application_session=application,panel=panel,
+    )
     return runtime,panel.section_collection,session,uploads
 
 
-def test_cgh_action_dispatch_and_lifecycle_stay_inside_qt_session():
+def test_cgh_action_dispatch_preserves_qt_behavior_over_application_session():
     app = _app()
     executor = _Executor()
     runtime,collection,session,uploads = _session(executor=executor)
@@ -211,6 +214,7 @@ def test_defer_frame_upload_coalesces_physical_upload_only():
 
 def test_panel_session_owns_standard_view_and_device_wiring():
     app = _app()
+    from slmcore import SLMSession
     from slmcore.qt import SLMPanel,SLMQtSession
 
     runtime = _runtime()
@@ -226,11 +230,13 @@ def test_panel_session_owns_standard_view_and_device_wiring():
         disconnect=lambda:(events.append("disconnect") or (True,"closed")),
         requires_explicit_connection=True,
     )
-    session = SLMQtSession(
+    application = SLMSession(
         runtime=runtime,
-        panel=panel,
         host_services=SLMHostServices(device=device),
         cgh_executor=_Executor(),
+    )
+    session = SLMQtSession(
+        application_session=application,panel=panel,
     )
 
     try:

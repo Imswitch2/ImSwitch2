@@ -6,7 +6,7 @@ than being re-exported here.
 """
 
 from .application.factory import SLMQtSessionFactory
-from .application.control_mode import SLMControlMode
+from ..application.control_mode import SLMControlMode
 from .application.interaction import (
     DEFAULT_RUNTIME_VIEW_INTERACTION_SETTINGS,
     RuntimeViewInteractionSettings,

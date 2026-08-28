@@ -1,13 +1,7 @@
-import pytest
-
-pytest.importorskip("qtpy")
-try:
-    from qtpy import QtCore  # noqa: F401
-except Exception as error:
-    pytest.skip(f"Qt bindings are unavailable: {error}",allow_module_level=True)
-
+from slmcore.application.feedback import (
+    AutomaticFeedbackRunner,SLMFeedbackCallbacks,
+)
 from slmcore.cgh import CGHResultState
-from slmcore.qt.application.feedback import AutomaticFeedbackRunner
 
 
 class _CghStatus:
@@ -19,16 +13,11 @@ class _Runtime:
         return _CghStatus()
 
 
-class _Controller:
-    can_run_automatic_feedback = True
-
+class _Session:
     def __init__(self):
         self.runtime = _Runtime()
         self.cgh_callback = None
-        self.cancelled_cgh = False
-
-    def flush_section(self,section_key,propagate=True):
-        return None
+        self.last_upload_error = None
 
     def is_cgh_computing(self,section_key):
         return False
@@ -38,16 +27,12 @@ class _Controller:
         return True
 
 
-class _Window:
-    class _MeasurementView:
-        def set_measurement_status(self,text):
-            pass
-    measurement_view = _MeasurementView()
+class _Service:
+    can_run_automatic_feedback = True
+    automatic_feedback_unavailable_reason = ""
 
-
-class _Coordinator:
     def __init__(self,*,reuse_fails=False):
-        self.controller = _Controller()
+        self.session = _Session()
         self.reuse_fails = reuse_fails
         self.acquisitions = []
         self.cancel_count = 0
@@ -55,19 +40,20 @@ class _Coordinator:
         self.reuse_count = 0
         self.localize_count = 0
         self.adapt_count = 0
-        self.states = []
         self.errors = []
         self.warnings = []
-        self._window = _Window()
+        self.states = []
+        self.finished = []
+        self._callbacks = SLMFeedbackCallbacks(
+            on_automatic_state_changed=self.states.append,
+            on_automatic_finished=lambda key,text:self.finished.append((key,text)),
+        )
 
     def _error(self,title,error):
         self.errors.append((title,error))
 
     def _warning(self,title,message):
         self.warnings.append((title,message))
-
-    def _set_automatic_operation(self,active,**kwargs):
-        self.states.append((active,kwargs))
 
     def feedback_measurement_metadata(self,section_key):
         return {}
@@ -97,36 +83,34 @@ class _Coordinator:
         self.adapt_count += 1
         return True,object()
 
-    def window(self,section_key):
-        return self._window
-
 
 def test_one_requested_round_does_not_acquire_an_extra_measurement():
-    coordinator = _Coordinator(reuse_fails=True)
-    runner = AutomaticFeedbackRunner(coordinator)
+    service = _Service(reuse_fails=True)
+    runner = AutomaticFeedbackRunner(service)
 
     assert runner.start(
         "sec_0",rounds=1,source="cam",reuse_previous_localization=True,
     )
-    assert len(coordinator.acquisitions) == 1
+    assert len(service.acquisitions) == 1
 
-    on_result,_ = coordinator.acquisitions[0]
+    on_result,_ = service.acquisitions[0]
     on_result(object())
-    assert coordinator.commit_count == 1
-    assert coordinator.reuse_count == 1
-    assert coordinator.localize_count == 1
-    assert coordinator.adapt_count == 1
+    assert service.commit_count == 1
+    assert service.reuse_count == 1
+    assert service.localize_count == 1
+    assert service.adapt_count == 1
 
-    coordinator.controller.cgh_callback(True,None)
+    service.session.cgh_callback(True,None)
 
     assert not runner.active
-    assert len(coordinator.acquisitions) == 1
-    assert coordinator.errors == []
+    assert len(service.acquisitions) == 1
+    assert service.errors == []
+    assert service.finished[-1][1] == "Automatic feedback completed (1 round(s))."
 
 
 def test_stop_during_acquisition_cancels_immediately():
-    coordinator = _Coordinator()
-    runner = AutomaticFeedbackRunner(coordinator)
+    service = _Service()
+    runner = AutomaticFeedbackRunner(service)
     runner.start(
         "sec_0",rounds=3,source="cam",reuse_previous_localization=False,
     )
@@ -134,22 +118,24 @@ def test_stop_during_acquisition_cancels_immediately():
     runner.stop()
 
     assert not runner.active
-    assert coordinator.cancel_count >= 1
+    assert service.cancel_count >= 1
+    assert service.finished[-1][1] == "Automatic feedback stopped."
 
 
 def test_stop_during_cgh_waits_for_that_cgh_then_stops():
-    coordinator = _Coordinator()
-    runner = AutomaticFeedbackRunner(coordinator)
+    service = _Service()
+    runner = AutomaticFeedbackRunner(service)
     runner.start(
         "sec_0",rounds=3,source="cam",reuse_previous_localization=False,
     )
-    coordinator.acquisitions[0][0](object())
+    service.acquisitions[0][0](object())
 
     runner.stop()
     assert runner.active
-    assert len(coordinator.acquisitions) == 1
+    assert runner.state.stop_requested
+    assert len(service.acquisitions) == 1
 
-    coordinator.controller.cgh_callback(True,None)
+    service.session.cgh_callback(True,None)
 
     assert not runner.active
-    assert len(coordinator.acquisitions) == 1
+    assert len(service.acquisitions) == 1

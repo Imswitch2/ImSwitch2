@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from qtpy import QtCore
 
-from .control_mode import SLMControlMode
+from ...application.control_mode import SLMControlMode
 from .session import SLMQtSession
 
 

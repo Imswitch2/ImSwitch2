@@ -53,8 +53,9 @@ class QtCGHExecutor(QtCore.QObject):
     """Default Qt-thread implementation of the generic :class:`CGHExecutor`.
 
     The executor owns only scheduling.  Runtime generation checks, stale-result
-    handling, commits and UI synchronization remain responsibilities of the
-    higher-level ``SLMQtSession``.
+    handling and commits remain responsibilities of the toolkit-independent
+    ``SLMSession``. Qt presentation synchronization remains in
+    ``SLMQtSession``.
     """
 
     def __init__(self,parent: QtCore.QObject | None=None) -> None:

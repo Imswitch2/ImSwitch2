@@ -14,7 +14,12 @@ class CGHExecutionHandle(Protocol):
 
 
 class CGHExecutor(Protocol):
-    """Minimal host-independent contract for detached CGH execution."""
+    """Minimal host-independent contract for detached CGH execution.
+
+    The executor controls the callback execution context. ``SLMSession`` is
+    toolkit-independent; presentation adapters are responsible for additional
+    thread marshalling when their executor does not already provide it.
+    """
 
     def submit(
         self,

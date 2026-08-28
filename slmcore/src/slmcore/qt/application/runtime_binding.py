@@ -54,6 +54,7 @@ class SLMRuntimeViewBinding(QtCore.QObject):
         *,
         runtime: SLMRuntime,
         section_collection: SectionsCollectionView,
+        application_session=None,
         interaction_settings: RuntimeViewInteractionSettings | None=None,
         debounce_ms: int | None=None,
         parent: QtCore.QObject | None=None,
@@ -84,6 +85,7 @@ class SLMRuntimeViewBinding(QtCore.QObject):
             )
 
         self.runtime = runtime
+        self.application_session = application_session
         self.section_collection = section_collection
         self.interaction_settings = settings
         self._pending_patches: dict[tuple[str, ParameterEditKind], _PendingPatch] = {}
@@ -249,7 +251,11 @@ class SLMRuntimeViewBinding(QtCore.QObject):
             section_key,ParameterEditKind.CGH_TARGET,restore_paths=False,
         )
         try:
-            update = self.runtime.restore_section_current_cgh_target(section_key)
+            target = self.application_session
+            if target is None:
+                update = self.runtime.restore_section_current_cgh_target(section_key)
+            else:
+                update = target.restore_section_current_cgh_target(section_key)
             if update is None:
                 self.section_collection.restore_section(
                     section_key,self.runtime.get_section_snapshot(section_key),
@@ -503,10 +509,17 @@ class SLMRuntimeViewBinding(QtCore.QObject):
     ) -> SectionUpdate | None:
         self._require_writes_enabled()
         try:
-            update = self.runtime.apply_section_patch(
-                section_key,changes,
-                lattice_lock_request=lattice_lock_request,
-            )
+            target = self.application_session
+            if target is None:
+                update = self.runtime.apply_section_patch(
+                    section_key,changes,
+                    lattice_lock_request=lattice_lock_request,
+                )
+            else:
+                update = target.apply_section_patch(
+                    section_key,changes,
+                    lattice_lock_request=lattice_lock_request,
+                )
             if update is None:
                 self._restore_target_lock_presentation(section_key)
                 return None

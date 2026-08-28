@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class SLMControlMode(str,Enum):
-    """Qt application control mode for one SLM session."""
+    """Application control mode for one SLM session."""
 
     EDITOR = "editor"
     FAST_CONFIG = "fast_config"
@@ -25,3 +25,6 @@ class SLMControlMode(str,Enum):
             return aliases[text]
         except KeyError as error:
             raise ValueError("Unknown SLM control mode %r" % value) from error
+
+
+__all__ = ["SLMControlMode"]

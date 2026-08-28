@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from qtpy import QtCore,QtWidgets
 
-from ..application.control_mode import SLMControlMode
+from ...application.control_mode import SLMControlMode
 
 
 class SLMControlModeSelector(QtWidgets.QWidget):
