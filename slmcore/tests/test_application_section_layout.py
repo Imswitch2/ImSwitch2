@@ -6,8 +6,8 @@ from slmcore import (
     SectionSplitLayout,
     SLMGeometry,
     SLMIdentity,
-    SLMSectionsSetup,
-    SLMSetup,
+    SLMSectionsDefinition,
+    SLMDefinition,
     SLMSession,
 )
 from slmcore.application import SLMRuntimeFactory
@@ -16,15 +16,15 @@ from slmcore.core.calibration import SLMSectionCalibration,attach_calibration_ge
 
 def _factory():
     geometry = SLMGeometry(width=64,height=32,pixel_size_um=1.0)
-    setup = SLMSetup(
+    setup = SLMDefinition(
         identity=SLMIdentity("slm","SER123"),
         geometry=geometry,
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=SectionSplitLayout(n_sections=2,axis="x"),
             customizable=True,
         ),
     )
-    return SLMRuntimeFactory(setup=setup,registries=DEFAULT_REGISTRIES)
+    return SLMRuntimeFactory(definition=setup,registries=DEFAULT_REGISTRIES)
 
 
 def _calibration(geometry):

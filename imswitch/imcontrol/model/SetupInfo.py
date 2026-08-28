@@ -177,8 +177,8 @@ class SLMInfo:
 @dataclass_json(undefined=Undefined.EXCLUDE)
 @dataclass(frozen=True, kw_only=True)
 class SLMsInfo(DeviceInfo):
-    setup: Dict[str, Any] = field(default_factory=dict)
-    """ Canonical slmcore setup mapping for one physical SLM.
+    definition: Dict[str, Any] = field(default_factory=dict)
+    """ Canonical slmcore definition mapping for one physical SLM.
 
     New multiple-SLM configurations should define identity, geometry, sections,
     and future native hardware binding here. Geometry values are exposed through
@@ -286,7 +286,7 @@ class SLMsInfo(DeviceInfo):
     @property
     def nSections(self) -> Optional[int]:
         """ Resolved SLM section count from ``setup.sections.layout.n_sections``. """
-        value = self._setupValue("sections", "layout", "n_sections")
+        value = self._definitionValue("sections", "layout", "n_sections")
         if value is None:
             value = self.legacyNSections
         return None if value is None else int(value)
@@ -294,7 +294,7 @@ class SLMsInfo(DeviceInfo):
     @property
     def serial_number(self) -> Optional[str]:
         """ Resolved SLM serial number from ``setup.identity.serial_number``. """
-        value = self._setupValue("identity", "serial_number")
+        value = self._definitionValue("identity", "serial_number")
         if value is None:
             value = self.legacySerialNumber
         return None if value is None else str(value)
@@ -305,7 +305,7 @@ class SLMsInfo(DeviceInfo):
         legacyValue: Any,
         publicName: str,
     ) -> Any:
-        value = self._setupValue("geometry", setupField)
+        value = self._definitionValue("geometry", setupField)
         if value is None:
             value = legacyValue
         if value is None:
@@ -315,8 +315,8 @@ class SLMsInfo(DeviceInfo):
             )
         return value
 
-    def _setupValue(self, *path: str) -> Any:
-        value: Any = self.setup
+    def _definitionValue(self, *path: str) -> Any:
+        value: Any = self.definition
         for key in path:
             if not isinstance(value, Mapping):
                 return None

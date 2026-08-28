@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "setup": {
+  "definition": {
     "identity": {
       "key": "demo_slm_1",
       "serial_number": "DEMO-001",
@@ -20,9 +20,9 @@
         "key_prefix": "sec_"
       },
       "customizable": false
-    },
-    "hardware": null
+    }
   },
+  "hardware": null,
   "startup_preferences": {
     "startup_config": null,
     "default_planes": {},

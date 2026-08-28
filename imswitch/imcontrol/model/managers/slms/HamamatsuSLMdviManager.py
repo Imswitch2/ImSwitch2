@@ -24,7 +24,7 @@ class HamamatsuSLMdviManager(SignalInterface):
         self.__logger.debug(self.slmInfo)
         self.pixel_size = slmInfo.pixelSize
 
-        self.preferredMonitor = slmInfo.monitorIdx
+        self.preferredMonitor = slmInfo.monitorIdx #TODO: decide: should it be defined in managerProperties instead?
 
         self.mockermode = False
         if slmInfo.managerProperties is not None:

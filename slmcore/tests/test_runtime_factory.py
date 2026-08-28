@@ -1,7 +1,7 @@
 import pytest
 
 from slmcore import (
-    DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMSectionsSetup,SLMSetup,
+    DEFAULT_REGISTRIES,SLMGeometry,SLMIdentity,SLMSectionsDefinition,SLMDefinition,
 )
 from slmcore.application import SLMConfigurationService,SLMRuntimeFactory
 from slmcore.core.calibration import SLMSectionCalibration,attach_calibration_geometry
@@ -12,10 +12,10 @@ from slmcore.core.engine.section import SectionSplitLayout,create_split_section_
 def _factory(tmp_path=None):
     geometry = SLMGeometry(width=64,height=32,pixel_size_um=1.0)
     setup_layout = SectionSplitLayout(n_sections=2,axis="x")
-    setup = SLMSetup(
+    setup = SLMDefinition(
         identity=SLMIdentity("slm","SER123"),
         geometry=geometry,
-        sections=SLMSectionsSetup(
+        sections=SLMSectionsDefinition(
             layout=setup_layout,
             customizable=True,
         ),
@@ -25,7 +25,7 @@ def _factory(tmp_path=None):
         else SLMConfigStore(tmp_path,DEFAULT_REGISTRIES)
     )
     factory = SLMRuntimeFactory(
-        setup=setup,
+        definition=setup,
         registries=DEFAULT_REGISTRIES,
     )
     service = (

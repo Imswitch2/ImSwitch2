@@ -8,7 +8,7 @@ The normal host entry point is `SLMQtSessionFactory`, which returns an
 composition for one SLM. `SLMQtSession` adapts the toolkit-independent
 `SLMSession` application controller to Qt views, dialogs and thread-aware host
 integration. Embedding applications provide physical capabilities and
-setup-level preferences rather than reimplementing SLM workflow.
+startup preferences rather than reimplementing SLM workflow.
 
 ## Package structure
 
@@ -56,7 +56,7 @@ rather than routing dependencies back through public package facades.
 
 A host normally:
 
-1. loads/adapts its canonical `SLMSetup` and `SLMStartupPreferences`;
+1. loads/adapts its canonical `SLMDefinition` and `SLMStartupPreferences`;
 2. creates one shared `SLMWorkspace` rooted at its SLM data directory;
 3. supplies physical capabilities through `SLMHostServices`;
 4. constructs one `SLMQtSessionFactory(workspace=...)` (optionally with custom registries);
@@ -260,8 +260,7 @@ explicitly pass `KEEP` after user confirmation. A startup config receives no mod
 calibration/section geometry mismatch rejects the startup config and the host
 can surface the returned startup warning in its status UI.
 
-The setup supplies the default active plane per section through
-`SLMStartupPreferences`. A successfully loaded startup config's calibration
+`SLMStartupPreferences` supplies the default active plane per section. A successfully loaded startup config's calibration
 remains authoritative; default-plane calibration is applied only when no
 startup config was restored. Preference changes are persisted either directly
 to a canonical setup JSON file or through the host callback supplied to the
@@ -326,10 +325,10 @@ feedback/session state.
 
 ## Configuration, layout and runtime replacement
 
-`SLMSetup.sections` defines setup-level physical layout constraints: the default
+`SLMDefinition.sections` defines definition-level physical layout constraints: the default
 split, whether layout editing is allowed, and a fixed section count. slmcore
-derives the setup section geometries from that declaration. A customized current
-split belongs to the SLM config and is not written back into setup data.
+derives the definition section geometries from that declaration. A customized current
+split belongs to the SLM config and is not written back into the SLM definition.
 
 `SLMConfigStore` is the non-Qt directory-bound persistence API in `slmcore.workspace`,
 while `application.SLMConfigurationService` performs config preparation,
@@ -364,7 +363,7 @@ supplied.
 
 ## Current host boundary
 
-The host owns only adaptation of its setup format into canonical `SLMSetup` /
+The host owns only adaptation of its setup format into canonical `SLMDefinition` /
 `SLMStartupPreferences`, workspace root selection, SetupMode integration, the
 outer multi-SLM shell, and the concrete callbacks/driver behind
 `SLMDeviceProvider`. `SLMWorkspace` supplies standard config/calibration/

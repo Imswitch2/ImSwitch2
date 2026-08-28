@@ -13,7 +13,7 @@ from ...core.cgh.execution.executor import CGHExecutor
 from ...core.engine.registry import DEFAULT_REGISTRIES,SLMRegistries
 from ...host.services import SLMHostServices
 from ...setup import (
-    SLMSetup,
+    SLMDefinition,
     SLMStartupPreferences,
     save_slm_startup_preferences,
 )
@@ -37,7 +37,7 @@ from ...application.startup_preferences import StartupPreferencesState
 class SLMQtSessionFactory:
     """Construct the standard reusable Qt session and panel for one SLM.
 
-    Normal hosts provide a canonical :class:`SLMSetup`, startup preferences and
+    Normal hosts provide a canonical :class:`SLMDefinition`, startup preferences and
     one :class:`SLMWorkspace`. The workspace owns config/correction/calibration
     locations. Hosts only provide physical/external capabilities and, when they
     own a larger setup file, an optional startup-preference persistence callback.
@@ -61,7 +61,7 @@ class SLMQtSessionFactory:
     def create(
         self,
         *,
-        setup: SLMSetup,
+        definition: SLMDefinition,
         startup_preferences: SLMStartupPreferences | None=None,
         setup_file: str | Path | None=None,
         on_startup_preferences_changed: (
@@ -77,8 +77,8 @@ class SLMQtSessionFactory:
         auto_upload_frame: bool=True,
         parent: QtWidgets.QWidget | None=None,
     ) -> tuple[SLMQtSession, SLMPanel]:
-        if not isinstance(setup,SLMSetup):
-            raise TypeError("setup must be an SLMSetup")
+        if not isinstance(definition,SLMDefinition):
+            raise TypeError("definition must be an SLMDefinition")
         preferences = (
             SLMStartupPreferences()
             if startup_preferences is None
@@ -102,16 +102,16 @@ class SLMQtSessionFactory:
         workspace = self.workspace
         config_store = (
             None if workspace is None
-            else workspace.config_store(setup.identity,self.registries)
+            else workspace.config_store(definition.identity,self.registries)
         )
         correction_store = (
-            None if workspace is None else workspace.correction_store(setup.identity)
+            None if workspace is None else workspace.correction_store(definition.identity)
         )
         calibration_store = (
             None if workspace is None else workspace.calibration_store
         )
         runtime_factory = SLMRuntimeFactory(
-            setup=setup,
+            definition=definition,
             registries=self.registries,
             correction_provider=correction_store,
         )
@@ -135,7 +135,7 @@ class SLMQtSessionFactory:
         else:
             startup = StartupRuntime(runtime_factory.create_default(),None)
         display_mode = self._display_mode(preference_state)
-        display_name = setup.identity.display_name or setup.identity.key
+        display_name = definition.identity.display_name or definition.identity.key
 
         panel = None
         session = None

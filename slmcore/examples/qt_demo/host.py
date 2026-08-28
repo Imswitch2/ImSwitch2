@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from slmcore import SLMSetup,SLMStartupPreferences,SLMWorkspace
+from slmcore import SLMDefinition,SLMStartupPreferences,SLMWorkspace
 from slmcore.host import MockSLMDeviceProvider,SLMHostServices
 from slmcore.qt import (
     PreviewContainer,
@@ -45,8 +45,8 @@ class DemoHost:
 
     def initialize(self) -> None:
         """Construct, mount and initialize every demo SLM."""
-        for setup_file,setup,preferences in load_demo_setups(self.data_dir):
-            self._initialize_slm(setup_file,setup,preferences)
+        for setup_file,definition,preferences in load_demo_setups(self.data_dir):
+            self._initialize_slm(setup_file,definition,preferences)
         self.window.set_control_mode(self.group.control_mode)
         self.window.set_control_mode_change_enabled(
             self.group.can_change_control_mode,
@@ -73,17 +73,17 @@ class DemoHost:
     def _initialize_slm(
         self,
         setup_file: Path,
-        setup: SLMSetup,
+        definition: SLMDefinition,
         preferences: SLMStartupPreferences,
     ) -> None:
-        slm_key = setup.identity.key
-        display_name = setup.identity.display_name or slm_key
+        slm_key = definition.identity.key
+        display_name = definition.identity.display_name or slm_key
         if slm_key in self.sessions:
             raise KeyError("SLM %r is already initialized" % slm_key)
 
         device = MockSLMDeviceProvider(requires_explicit_connection=True)
         session,panel = self.factory.create(
-            setup=setup,
+            definition=definition,
             startup_preferences=preferences,
             setup_file=setup_file,
             host_services=SLMHostServices(device=device),

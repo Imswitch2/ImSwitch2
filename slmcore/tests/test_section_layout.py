@@ -99,9 +99,9 @@ def test_split_layout_validator_rejects_gaps_and_wrong_count():
         split_layout_signature(geometry,sections,n_sections=3)
 
 
-def test_config_policy_enforces_physical_geometry_and_setup_layout():
+def test_config_policy_enforces_physical_geometry_and_definition_layout():
     geometry = _geometry()
-    setup_sections = create_split_section_geometries(
+    definition_sections = create_split_section_geometries(
         geometry,SectionSplitLayout(n_sections=2,axis="x",mode="even"),
     )
     y_sections = create_split_section_geometries(
@@ -112,17 +112,17 @@ def test_config_policy_enforces_physical_geometry_and_setup_layout():
         validate_config_section_layout(
             physical_geometry=geometry,
             config_geometry=SLMGeometry(width=11,height=6,pixel_size_um=1.0),
-            config_section_geometries=setup_sections,
-            setup_section_geometries=setup_sections,
+            config_section_geometries=definition_sections,
+            definition_section_geometries=definition_sections,
             section_layout_customizable=True,
         )
 
-    with pytest.raises(ValueError,match="setup-defined"):
+    with pytest.raises(ValueError,match="definition-defined"):
         validate_config_section_layout(
             physical_geometry=geometry,
             config_geometry=geometry,
             config_section_geometries=y_sections,
-            setup_section_geometries=setup_sections,
+            definition_section_geometries=definition_sections,
             section_layout_customizable=False,
         )
 
@@ -130,7 +130,7 @@ def test_config_policy_enforces_physical_geometry_and_setup_layout():
         physical_geometry=geometry,
         config_geometry=geometry,
         config_section_geometries=y_sections,
-        setup_section_geometries=setup_sections,
+        definition_section_geometries=definition_sections,
         section_layout_customizable=True,
     )
     assert signature.axis == "y"

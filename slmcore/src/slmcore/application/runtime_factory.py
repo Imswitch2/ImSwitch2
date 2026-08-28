@@ -8,41 +8,41 @@ from ..core.engine.corrections import CorrectionProvider,ResolvedCorrections
 from ..core.engine.registry import DEFAULT_REGISTRIES,SLMRegistries
 from ..core.engine.runtime import SLMRuntime
 from ..core.engine.section.geometry import SectionGeometry
-from ..setup import SLMSetup
+from ..setup import SLMDefinition
 
 
 class SLMRuntimeFactory:
-    """Construct and validate runtimes for one canonical SLM setup."""
+    """Construct and validate runtimes for one canonical SLM definition."""
 
     def __init__(
         self,
         *,
-        setup: SLMSetup,
+        definition: SLMDefinition,
         registries: SLMRegistries | None=None,
         correction_provider: CorrectionProvider | None=None,
     ) -> None:
-        if not isinstance(setup,SLMSetup):
-            raise TypeError("setup must be an SLMSetup")
+        if not isinstance(definition,SLMDefinition):
+            raise TypeError("definition must be an SLMDefinition")
         registries = DEFAULT_REGISTRIES if registries is None else registries
         if not isinstance(registries,SLMRegistries):
             raise TypeError("registries must be SLMRegistries or None")
-        self.setup = setup
+        self.definition = definition
         self.registries = registries
         self.correction_provider = correction_provider
 
     def create_default(self) -> SLMRuntime:
         return SLMRuntime(
-            identity=self.setup.identity,
-            geometry=self.setup.geometry,
-            section_geometries=self.setup.section_geometries,
+            identity=self.definition.identity,
+            geometry=self.definition.geometry,
+            section_geometries=self.definition.section_geometries,
             registries=self.registries,
             correction_provider=self.correction_provider,
         )
 
     def validate_config(self,config: SLMConfig):
-        if config.identity != self.setup.identity:
+        if config.identity != self.definition.identity:
             raise ValueError("SLM config identity does not match the physical SLM")
-        return self.setup.validate_layout(
+        return self.definition.validate_layout(
             config.geometry,
             {key:section.geometry for key,section in config.sections.items()},
         )
@@ -86,7 +86,7 @@ class SLMRuntimeFactory:
         topologies_by_section=None,
         presentations=None,
     ) -> SLMRuntime:
-        self.setup.validate_layout(runtime.geometry,section_geometries)
+        self.definition.validate_layout(runtime.geometry,section_geometries)
         clear = set(clear_calibration_sections or ())
         current_config = runtime.create_config()
         sections = {}

@@ -240,32 +240,32 @@ def validate_config_section_layout(
     physical_geometry: SLMGeometry,
     config_geometry: SLMGeometry,
     config_section_geometries: Mapping[str,SectionGeometry],
-    setup_section_geometries: Mapping[str,SectionGeometry],
+    definition_section_geometries: Mapping[str,SectionGeometry],
     section_layout_customizable: bool,
 ) -> SectionLayoutSignature:
-    """Validate setup-vs-config authority for one complete SLM config."""
+    """Validate definition-vs-config authority for one complete SLM config."""
 
     if config_geometry != physical_geometry:
         raise ValueError("SLM config geometry does not match the physical SLM")
 
-    setup_signature = validate_split_section_geometries(
-        physical_geometry,setup_section_geometries,
+    definition_signature = validate_split_section_geometries(
+        physical_geometry,definition_section_geometries,
     )
     config_signature = validate_split_section_geometries(
         physical_geometry,
         config_section_geometries,
-        n_sections=len(setup_section_geometries),
+        n_sections=len(definition_section_geometries),
     )
 
     if (
         not bool(section_layout_customizable)
-        and dict(config_section_geometries) != dict(setup_section_geometries)
+        and dict(config_section_geometries) != dict(definition_section_geometries)
     ):
         raise ValueError(
-            "SLM config section layout does not match the setup-defined layout"
+            "SLM config section layout does not match the definition-defined layout"
         )
 
-    del setup_signature
+    del definition_signature
     return config_signature
 
 

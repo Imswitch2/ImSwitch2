@@ -14,8 +14,8 @@ from ..core.engine.section.geometry import (
 
 
 @dataclass(frozen=True)
-class SLMSectionsSetup:
-    """Setup-level section layout and whether configs may change its geometry."""
+class SLMSectionsDefinition:
+    """Definition-level section layout and whether configs may change its geometry."""
 
     layout: SectionSplitLayout
     customizable: bool = False
@@ -43,7 +43,7 @@ class SLMSectionsSetup:
         }
 
     @classmethod
-    def from_dict(cls,data: Mapping[str,Any]) -> "SLMSectionsSetup":
+    def from_dict(cls,data: Mapping[str,Any]) -> "SLMSectionsDefinition":
         if not isinstance(data,Mapping):
             raise TypeError("sections must be a mapping")
         layout_data = data.get("layout",data)
@@ -63,8 +63,8 @@ class SLMSectionsSetup:
 
 
 @dataclass(frozen=True)
-class SLMHardwareSetup:
-    """Declarative hardware binding reserved for native slmcore drivers."""
+class SLMHardwareConfig:
+    """Optional declarative binding consumed by an external hardware layer."""
 
     driver: str
     options: Mapping[str,Any] = field(default_factory=dict)
@@ -80,24 +80,27 @@ class SLMHardwareSetup:
         return {"driver":self.driver,"options":dict(self.options)}
 
     @classmethod
-    def from_dict(cls,data: Mapping[str,Any] | None) -> "SLMHardwareSetup | None":
+    def from_dict(cls,data: Mapping[str,Any] | None) -> "SLMHardwareConfig | None":
         if data is None:
             return None
+        if not isinstance(data,Mapping):
+            raise TypeError("hardware must be a mapping or null")
         return cls(driver=str(data["driver"]),options=dict(data.get("options",{})))
 
 
 @dataclass(frozen=True)
-class SLMSetup:
-    """Canonical slmcore description of one installed physical SLM.
+class SLMDefinition:
+    """Canonical portable definition of one physical SLM.
 
-    Filesystem locations are deliberately excluded. Persistent resources are
-    resolved by :class:`SLMWorkspace` from the physical serial number.
+    The definition contains identity, geometry and section layout only. Hardware
+    binding and startup/session preferences are intentionally separate concerns.
+    Filesystem locations are also excluded; persistent resources are resolved by
+    :class:`SLMWorkspace` from the physical serial number.
     """
 
     identity: SLMIdentity
     geometry: SLMGeometry
-    sections: SLMSectionsSetup
-    hardware: SLMHardwareSetup | None = None
+    sections: SLMSectionsDefinition
     _section_geometries: Mapping[str,SectionGeometry] = field(
         init=False,repr=False,compare=False,
     )
@@ -107,10 +110,8 @@ class SLMSetup:
             raise TypeError("identity must be an SLMIdentity")
         if not isinstance(self.geometry,SLMGeometry):
             raise TypeError("geometry must be an SLMGeometry")
-        if not isinstance(self.sections,SLMSectionsSetup):
-            raise TypeError("sections must be an SLMSectionsSetup")
-        if self.hardware is not None and not isinstance(self.hardware,SLMHardwareSetup):
-            raise TypeError("hardware must be an SLMHardwareSetup or None")
+        if not isinstance(self.sections,SLMSectionsDefinition):
+            raise TypeError("sections must be an SLMSectionsDefinition")
         geometries = create_split_section_geometries(
             self.geometry,self.sections.layout,
         )
@@ -137,7 +138,7 @@ class SLMSetup:
             physical_geometry=self.geometry,
             config_geometry=config_geometry,
             config_section_geometries=section_geometries,
-            setup_section_geometries=self.section_geometries,
+            definition_section_geometries=self.section_geometries,
             section_layout_customizable=self.sections.customizable,
         )
 
@@ -146,21 +147,19 @@ class SLMSetup:
             "identity":self.identity.to_dict(),
             "geometry":self.geometry.to_dict(),
             "sections":self.sections.to_dict(),
-            "hardware":None if self.hardware is None else self.hardware.to_dict(),
         }
 
     @classmethod
     def from_dict(
         cls,data: Mapping[str,Any],*,key: str | None=None,
-    ) -> "SLMSetup":
+    ) -> "SLMDefinition":
         if not isinstance(data,Mapping):
-            raise TypeError("setup must be a mapping")
+            raise TypeError("definition must be a mapping")
         identity_data = data.get("identity")
         if not isinstance(identity_data,Mapping):
-            raise TypeError("setup.identity must be a mapping")
+            raise TypeError("definition.identity must be a mapping")
         return cls(
             identity=SLMIdentity.from_dict(identity_data,key=key),
             geometry=SLMGeometry.from_dict(data["geometry"]),
-            sections=SLMSectionsSetup.from_dict(data["sections"]),
-            hardware=SLMHardwareSetup.from_dict(data.get("hardware")),
+            sections=SLMSectionsDefinition.from_dict(data["sections"]),
         )

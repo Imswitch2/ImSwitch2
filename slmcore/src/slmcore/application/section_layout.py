@@ -54,7 +54,7 @@ class SLMSectionLayoutService:
 
     @property
     def customizable(self) -> bool:
-        return bool(self.runtime_factory.setup.sections.customizable)
+        return bool(self.runtime_factory.definition.sections.customizable)
 
     def prepare(
         self,runtime: SLMRuntime,layout: SectionSplitLayout,
@@ -62,17 +62,17 @@ class SLMSectionLayoutService:
         if not isinstance(runtime,SLMRuntime):
             raise TypeError("runtime must be an SLMRuntime")
         if not self.customizable:
-            raise ValueError("This setup does not allow section layout editing.")
+            raise ValueError("This SLM definition does not allow section layout editing.")
         if not isinstance(layout,SectionSplitLayout):
             raise TypeError("layout must be a SectionSplitLayout")
 
-        setup = self.runtime_factory.setup
-        if layout.n_sections != setup.section_count:
+        definition = self.runtime_factory.definition
+        if layout.n_sections != definition.section_count:
             raise ValueError("Changing section count is not supported")
         section_geometries = create_split_section_geometries(
             runtime.geometry,layout,
         )
-        requested_signature = setup.validate_layout(
+        requested_signature = definition.validate_layout(
             runtime.geometry,section_geometries,
         )
         current_signature = split_layout_signature(
