@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any,Mapping,Sequence
 
+import numpy as np
 from qtpy import QtCore,QtWidgets
 
 from .localization_workbench import LocalizationWorkbench
@@ -20,6 +21,7 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
     sigAcquireRequested = QtCore.Signal(str)
     sigLoadRequested = QtCore.Signal()
     sigRunRequested = QtCore.Signal(object)
+    sigInferMissingRequested = QtCore.Signal()
     sigAcceptRequested = QtCore.Signal()
     sigCandidateStateChanged = QtCore.Signal(bool)
 
@@ -31,6 +33,7 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
         detectors: Sequence[str]=(),
         current_detector: str | None=None,
         show_metrics: bool=False,
+        show_infer_missing: bool=False,
         show_accept: bool=False,
         parent: QtWidgets.QWidget | None=None,
     ) -> None:
@@ -62,13 +65,27 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
             lambda parameters:self.sigRunRequested.emit(parameters)
         )
         self._workbench.sigCandidateStateChanged.connect(
-            self.sigCandidateStateChanged.emit
+            self._on_candidate_state_changed
         )
 
         self._uniformity_label: QtWidgets.QLabel | None = None
         self._efficiency_label: QtWidgets.QLabel | None = None
         if show_metrics:
             self._workbench.add_result_widget(self._build_metrics_widget())
+
+        self._infer_missing_button: QtWidgets.QPushButton | None = None
+        if show_infer_missing:
+            self._infer_missing_button = QtWidgets.QPushButton("Infer Missing")
+            self._infer_missing_button.setMinimumHeight(23)
+            self._infer_missing_button.setMinimumWidth(130)
+            self._infer_missing_button.setToolTip(
+                "Use fitted lattice coordinates for target sites that were not detected."
+            )
+            self._infer_missing_button.clicked.connect(
+                lambda _checked=False:self.sigInferMissingRequested.emit()
+            )
+            self._infer_missing_button.setVisible(False)
+            self._workbench.add_action_widget(self._infer_missing_button)
 
         self._accept_button: QtWidgets.QPushButton | None = None
         if show_accept:
@@ -143,6 +160,7 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
         self._read_only = bool(read_only)
         self._workbench.set_read_only(self._read_only)
         self._refresh_accept_enabled()
+        self._refresh_infer_missing_button()
 
     def set_measurement_busy(self,busy: bool,text: str="") -> None:
         self._workbench.set_measurement_busy(busy,text)
@@ -212,6 +230,36 @@ class MeasurementLocalizationView(QtWidgets.QWidget):
     def set_accept_tooltip(self,text: str) -> None:
         if self._accept_button is not None:
             self._accept_button.setToolTip(str(text))
+
+    def _on_candidate_state_changed(self,current: bool) -> None:
+        self._refresh_infer_missing_button()
+        self.sigCandidateStateChanged.emit(bool(current))
+
+    def _refresh_infer_missing_button(self) -> None:
+        button = self._infer_missing_button
+        if button is None:
+            return
+        count = 0
+        if self.candidate_is_current and self.candidate is not None:
+            diagnostics = dict(getattr(self.candidate,"diagnostics",{}) or {})
+            total = int(getattr(self.candidate,"lattice_indices").shape[1])
+            matched_value = diagnostics.get("matched_mask")
+            matched = (
+                np.ones(total,dtype=bool)
+                if matched_value is None
+                else np.asarray(matched_value,dtype=bool)
+            )
+            inferred_value = diagnostics.get("inferred_mask")
+            inferred = (
+                np.zeros(total,dtype=bool)
+                if inferred_value is None
+                else np.asarray(inferred_value,dtype=bool)
+            )
+            if matched.shape == (total,) and inferred.shape == (total,):
+                count = int(np.count_nonzero(~(matched | inferred)))
+        button.setText("Infer Missing (%d)" % count if count else "Infer Missing")
+        button.setVisible(count > 0)
+        button.setEnabled(count > 0 and not self._read_only)
 
     def set_metrics(self,metrics: Any=None) -> None:
         if self._uniformity_label is None or self._efficiency_label is None:

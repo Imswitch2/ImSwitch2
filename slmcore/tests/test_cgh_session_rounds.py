@@ -1148,3 +1148,52 @@ def test_retained_target_phase_roundtrips_through_runtime_config():
     np.testing.assert_array_equal(
         restored_round.result.target_phase,result.target_phase,
     )
+
+
+def test_inferred_missing_spot_is_usable_for_intensity_but_not_position():
+    from slmcore.core.cgh.localization import infer_missing_localization
+
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    measurement,full = _attach_localized_measurement(runtime,section_key)
+    diagnostics = dict(full.diagnostics)
+    diagnostics.update({
+        "matched_mask":(True,False,True,True),
+        "matched_count":3,
+        "inferred_count":0,
+        "missing_count":1,
+    })
+    partial = replace(full,diagnostics=diagnostics)
+    params = dict(runtime.get_section_feedback_status(section_key).localization_params)
+    runtime.commit_section_feedback_localization(section_key,partial,params)
+
+    analysis = runtime.compute_section_feedback_intensity_analysis(
+        section_key,partial,
+    )
+    assert analysis.matched_count == 3
+    assert analysis.inferred_count == 0
+    assert analysis.used_count == 3
+    assert analysis.total_count == 4
+
+    with pytest.raises(RuntimeError,match="complete target localization"):
+        runtime.apply_section_position_correction(section_key)
+
+    inferred = infer_missing_localization(partial)
+    runtime.commit_section_feedback_localization(section_key,inferred,params)
+    analysis = runtime.compute_section_feedback_intensity_analysis(
+        section_key,inferred,
+    )
+    runtime.set_section_feedback_intensity_analysis(section_key,analysis)
+
+    assert analysis.matched_count == 3
+    assert analysis.inferred_count == 1
+    assert analysis.used_count == analysis.total_count == 4
+    assert analysis.spot_powers.shape == (4,)
+    status = runtime.get_section_feedback_status(section_key)
+    assert status.localization_matched_count == 3
+    assert status.localization_inferred_count == 1
+    assert status.localization_missing_count == 0
+
+    runtime.apply_section_intensity_feedback(section_key)
+    inspection = runtime.get_section_cgh_session_inspection(section_key)
+    assert inspection.working_round is not None

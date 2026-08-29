@@ -40,6 +40,7 @@ class IntensityAnalysis:
     normalized_std: float
     integration_preview: np.ndarray
     matched_count: int = 0
+    inferred_count: int = 0
     total_count: int = 0
 
     def __post_init__(self) -> None:
@@ -60,16 +61,25 @@ class IntensityAnalysis:
         )):
             raise ValueError("Intensity analysis metrics contain non-finite values")
         matched_count = int(self.matched_count)
+        inferred_count = int(self.inferred_count)
         total_count = int(self.total_count)
-        if matched_count != powers.size:
-            raise ValueError("matched_count must equal the number of spot powers")
-        if total_count < matched_count:
-            raise ValueError("total_count cannot be smaller than matched_count")
+        used_count = matched_count + inferred_count
+        if used_count != powers.size:
+            raise ValueError(
+                "matched_count + inferred_count must equal the number of spot powers"
+            )
+        if total_count < used_count:
+            raise ValueError("total_count cannot be smaller than the used spot count")
         object.__setattr__(self,"efficiency",efficiency)
         object.__setattr__(self,"uniformity",uniformity)
         object.__setattr__(self,"normalized_std",normalized_std)
         object.__setattr__(self,"matched_count",matched_count)
+        object.__setattr__(self,"inferred_count",inferred_count)
         object.__setattr__(self,"total_count",total_count)
+
+    @property
+    def used_count(self) -> int:
+        return int(self.matched_count + self.inferred_count)
 
     @property
     def values(self) -> Mapping[str,float]:
@@ -87,6 +97,7 @@ class MeasurementMetrics:
     geometry_type: str
     values: Mapping[str,float]
     matched_count: int = 0
+    inferred_count: int = 0
     total_count: int = 0
 
     def __post_init__(self) -> None:
@@ -96,6 +107,7 @@ class MeasurementMetrics:
         object.__setattr__(self,"geometry_type",str(self.geometry_type or "unknown"))
         object.__setattr__(self,"values",MappingProxyType(values))
         object.__setattr__(self,"matched_count",int(self.matched_count))
+        object.__setattr__(self,"inferred_count",int(self.inferred_count))
         object.__setattr__(self,"total_count",int(self.total_count))
 
     @classmethod
@@ -108,6 +120,7 @@ class MeasurementMetrics:
                 "normalized_std":analysis.normalized_std,
             },
             matched_count=analysis.matched_count,
+            inferred_count=analysis.inferred_count,
             total_count=analysis.total_count,
         )
 
@@ -151,18 +164,31 @@ def analyze_measurement_intensity(
         if matched_mask.shape != (total_count,):
             raise RuntimeError("Localization matched-mask shape is inconsistent")
 
-    positions = positions[:,matched_mask]
-    matched_count = int(positions.shape[1])
-    if matched_count <= 0:
-        raise RuntimeError("No localized lattice spots are available for metrics")
+    inferred = diagnostics.get("inferred_mask")
+    if inferred is None:
+        inferred_mask = np.zeros(total_count,dtype=bool)
+    else:
+        inferred_mask = np.asarray(inferred,dtype=bool)
+        if inferred_mask.shape != (total_count,):
+            raise RuntimeError("Localization inferred-mask shape is inconsistent")
+    if np.any(matched_mask & inferred_mask):
+        raise RuntimeError("Localization matched and inferred masks overlap")
+
+    usable_mask = matched_mask | inferred_mask
+    positions = positions[:,usable_mask]
+    matched_count = int(np.count_nonzero(matched_mask))
+    inferred_count = int(np.count_nonzero(inferred_mask))
+    used_count = int(positions.shape[1])
+    if used_count <= 0:
+        raise RuntimeError("No localized or inferred lattice spots are available for metrics")
 
     integration_size = int(parameters["integration_size_px"])
     if integration_size <= 0:
         raise ValueError("integration_size_px must be > 0")
 
     preview = np.array(image,dtype=np.float64,copy=True)
-    powers = np.empty(matched_count,dtype=np.float64)
-    for index in range(matched_count):
+    powers = np.empty(used_count,dtype=np.float64)
+    for index in range(used_count):
         powers[index] = _sum_around(
             image,
             positions[0,index],
@@ -193,6 +219,7 @@ def analyze_measurement_intensity(
         normalized_std=statistics.normalized_std,
         integration_preview=preview,
         matched_count=matched_count,
+        inferred_count=inferred_count,
         total_count=total_count,
     )
 

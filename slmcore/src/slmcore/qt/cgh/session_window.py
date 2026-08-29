@@ -42,6 +42,7 @@ class MeasurementsAction(str,Enum):
     ACQUIRE = "acquire"
     LOAD = "load"
     LOCALIZATION_RUN = "localization_run"
+    LOCALIZATION_INFER_MISSING = "localization_infer_missing"
     LOCALIZATION_ACCEPT = "localization_accept"
     LOCALIZATION_REUSE = "localization_reuse"
     FEEDBACK_PARAMETERS = "feedback_parameters"
@@ -263,6 +264,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             detectors=detectors,
             current_detector=current_detector,
             show_metrics=False,
+            show_infer_missing=True,
             show_accept=True,
             parent=panel,
         )
@@ -289,6 +291,9 @@ class CGHSessionWindow(QtWidgets.QDialog):
         )
         self.measurement_view.sigCandidateStateChanged.connect(
             self._on_candidate_state_changed,
+        )
+        self.measurement_view.sigInferMissingRequested.connect(
+            self._infer_missing_localization_candidate,
         )
         self.measurement_view.sigAcceptRequested.connect(
             self._accept_localization_candidate,
@@ -1302,11 +1307,20 @@ class CGHSessionWindow(QtWidgets.QDialog):
             position_text,position_color = "No correction",_MUTED_COLOR
         self.position_status_label.setText(position_text)
         self.position_status_label.setStyleSheet("color: %s;" % position_color)
+        position_localization_complete = bool(
+            localized
+            and status.localization_total_count > 0
+            and status.localization_matched_count == status.localization_total_count
+        )
         self.position_apply_button.setEnabled(
             position_available
-            and localized
+            and position_localization_complete
             and viewing_current
             and not self._cgh_computing
+        )
+        self.position_apply_button.setToolTip(
+            "Position correction requires every target spot to be genuinely localized."
+            if localized and not position_localization_complete else ""
         )
         self.position_toggle_button.setEnabled(
             position_available
@@ -1326,7 +1340,6 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         reuse_available = bool(
             intensity_available
-            and status.intensity_count > 0
             and viewing_current
             and status.previous_localization_available
             and not self._cgh_computing
@@ -1336,7 +1349,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
             "Reuse the previous accepted localization automatically after "
             "Acquire/Load."
             if reuse_available else
-            "Available from Round 1 when a previous accepted localization exists."
+            "Available when a previous accepted localization exists."
         )
 
         analysis_locked = bool(
@@ -1505,6 +1518,22 @@ class CGHSessionWindow(QtWidgets.QDialog):
         if not self._candidate_current and self.measurement_view.candidate is None:
             self._candidate_metrics = None
         self._refresh_localization_commit_controls()
+
+    def _infer_missing_localization_candidate(self,*_args: Any) -> None:
+        if (
+            not self._selected_is_interactive()
+            or not self.measurement_view.candidate_is_current
+        ):
+            return
+        self._emit(
+            MeasurementsAction.LOCALIZATION_INFER_MISSING,
+            {
+                "localization":self.measurement_view.candidate,
+                "parameters":dict(
+                    self.measurement_view.candidate_parameters or {}
+                ),
+            },
+        )
 
     def _accept_localization_candidate(self,*_args: Any) -> None:
         if (

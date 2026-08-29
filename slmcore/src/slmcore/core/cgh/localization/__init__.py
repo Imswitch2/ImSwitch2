@@ -10,6 +10,7 @@ from .guidance import (
     resolve_localization_guidance,
 )
 from .workflow import (
+    infer_missing_localization,
     localize_measurement,
     reuse_localization,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "localize_measurement",
     "localize_spots",
     "infer_lattice_shape",
+    "infer_missing_localization",
     "make_lattice_model",
     "rectangular_lattice_indices",
     "resolve_localization_guidance",

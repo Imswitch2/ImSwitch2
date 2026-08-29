@@ -498,8 +498,9 @@ class CGHSession:
         matched = int(diagnostics.get(
             "matched_count",total if localization is not None else 0,
         ))
+        inferred = int(diagnostics.get("inferred_count",0) or 0)
         missing = int(diagnostics.get(
-            "missing_count",max(0,total-matched),
+            "missing_count",max(0,total-matched-inferred),
         ))
         unmatched = int(diagnostics.get("unmatched_detection_count",0) or 0)
         rms = diagnostics.get("rms_residual_px")
@@ -544,6 +545,7 @@ class CGHSession:
                 self._localization_reference is not None
             ),
             localization_matched_count=matched,
+            localization_inferred_count=inferred,
             localization_total_count=total,
             localization_missing_count=missing,
             localization_unmatched_detection_count=unmatched,
@@ -941,9 +943,10 @@ class CGHSession:
         analysis = self._current_intensity_analysis
         if analysis is None:
             analysis = self.compute_feedback_intensity_analysis(state,context)
-        if analysis.matched_count != analysis.total_count:
+        if analysis.used_count != analysis.total_count:
             raise RuntimeError(
-                "Intensity feedback requires a complete localization before adaptation"
+                "Intensity feedback requires every target spot to be localized "
+                "or explicitly inferred before adaptation"
             )
         current = np.asarray(current_round.intensities,dtype=np.float64)
         measured = np.asarray(analysis.spot_powers,dtype=np.float64)

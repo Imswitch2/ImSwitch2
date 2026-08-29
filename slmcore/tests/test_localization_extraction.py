@@ -48,3 +48,48 @@ def test_round_evaluation_keeps_host_measurement_detector():
     assert isinstance(evaluation.measurement.acquisition,ImageMeasurement)
     assert evaluation.measurement.acquisition.detector == "camera_2"
     assert np.array_equal(evaluation.measurement.acquisition.image,measurement.image)
+
+
+def test_infer_missing_localization_preserves_match_provenance():
+    from slmcore.core.cgh.localization import infer_missing_localization
+
+    positions = np.array([
+        [5.0,15.0,5.0,15.0],
+        [5.0,5.0,15.0,15.0],
+    ])
+    measured = positions.copy()
+    measured[:,1] = [100.0,100.0]
+    localization = LocalizationResult(
+        target_type="multi_foci_vector",
+        target_params={},
+        parameters={},
+        lattice_indices=np.array([[0,1,0,1],[0,0,1,1]]),
+        crop_coord=(0,20,0,20),
+        cropped_image=np.zeros((20,20)),
+        expected_positions_px=positions,
+        measured_positions_px=measured,
+        period_x_px=10.0,
+        period_y_px=10.0,
+        offset_x_px=5.0,
+        offset_y_px=5.0,
+        diagnostics={
+            "matched_mask":(True,False,True,True),
+            "matched_count":3,
+            "missing_count":1,
+        },
+    )
+
+    inferred = infer_missing_localization(localization)
+
+    assert inferred is not localization
+    assert inferred.diagnostics["matched_mask"] == (True,False,True,True)
+    assert inferred.diagnostics["inferred_mask"] == (False,True,False,False)
+    assert inferred.diagnostics["matched_count"] == 3
+    assert inferred.diagnostics["inferred_count"] == 1
+    assert inferred.diagnostics["missing_count"] == 0
+    np.testing.assert_array_equal(
+        inferred.measured_positions_px[:,1],positions[:,1],
+    )
+    np.testing.assert_array_equal(
+        localization.measured_positions_px[:,1],[100.0,100.0],
+    )

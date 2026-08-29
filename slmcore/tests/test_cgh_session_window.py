@@ -539,7 +539,7 @@ def test_intensity_preview_toggle_and_reuse_policy_follow_round_state():
         assert image_combo.findData("Integration") >= 0
         assert image_combo.isEnabled()
         assert window.reuse_localization_checkbox.isChecked()
-        assert not window.reuse_localization_checkbox.isEnabled()
+        assert window.reuse_localization_checkbox.isEnabled()
 
         result_view.show_detected.setChecked(False)
         image_combo.setCurrentIndex(image_combo.findData("Integration"))
