@@ -47,6 +47,7 @@ class MeasurementsAction(str,Enum):
     LOCALIZATION_REUSE = "localization_reuse"
     FEEDBACK_PARAMETERS = "feedback_parameters"
     FEEDBACK_ORIENTATION = "feedback_orientation"
+    FEEDBACK_ORIENTATION_SAVE = "feedback_orientation_save"
     INTENSITY_APPLY = "intensity_apply"
     INTENSITY_RESET = "intensity_reset"
     POSITION_APPLY = "position_apply"
@@ -76,6 +77,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         detectors: Sequence[str]=(),
         current_detector: str | None=None,
         feedback_orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
+        feedback_orientation_context: Mapping[str,Any] | None=None,
         cgh_summary: Mapping[str, Any] | None=None,
         title: str="CGH Session",
         parent: QtWidgets.QWidget | None=None,
@@ -99,6 +101,12 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._cgh_status = cgh_status
         self._cgh_summary = dict(cgh_summary or {})
         self._feedback_orientation = FeedbackOrientation.normalize(feedback_orientation)
+        self._feedback_orientation_plane: str | None = None
+        self._feedback_orientation_plane_override = False
+        self._feedback_orientation_saved = FeedbackOrientation.IDENTITY
+        self._feedback_orientation_change_enabled = True
+        self._feedback_orientation_change_reason = ""
+        self._set_feedback_orientation_context_state(feedback_orientation_context)
         self._cgh_computing = False
         self._candidate_current = False
         self._candidate_metrics: IntensityAnalysis | None = None
@@ -165,7 +173,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
 
         self.set_session_state(
             status,inspection,session_inspection,cgh_status,
-            localization_context,cgh_summary,
+            localization_context,cgh_summary,feedback_orientation,
+            feedback_orientation_context,
         )
 
     def showEvent(self,event) -> None:
@@ -378,16 +387,22 @@ class CGHSessionWindow(QtWidgets.QDialog):
             ("Anti-transpose",FeedbackOrientation.ANTI_TRANSPOSE),
         ):
             self.feedback_orientation_combo.addItem(label,value.value)
-        self.feedback_orientation_combo.setToolTip(
-            "Map camera-localized lattice identities onto logical CGH target identities."
-        )
         self.feedback_orientation_combo.currentIndexChanged.connect(
             self._on_feedback_orientation_changed,
         )
         orientation_row.addWidget(self.feedback_orientation_combo)
+        self.feedback_orientation_scope_label = QtWidgets.QLabel()
+        orientation_row.addWidget(self.feedback_orientation_scope_label)
+        self.feedback_orientation_save_button = QtWidgets.QPushButton()
+        self.feedback_orientation_save_button.setFixedHeight(24)
+        self.feedback_orientation_save_button.clicked.connect(
+            self._on_feedback_orientation_save_requested,
+        )
+        orientation_row.addWidget(self.feedback_orientation_save_button)
         orientation_row.addStretch(1)
         layout.addLayout(orientation_row)
         self.set_feedback_orientation(self._feedback_orientation)
+        self._refresh_feedback_orientation_controls()
 
         self.feedback_tabs = QtWidgets.QTabWidget()
         self.feedback_tabs.addTab(self._build_intensity_tab(status),"Intensity")
@@ -611,27 +626,103 @@ class CGHSessionWindow(QtWidgets.QDialog):
     # Host-facing state updates
     # ------------------------------------------------------------------
 
+    def _set_feedback_orientation_context_state(
+        self,context: Mapping[str,Any] | None,
+    ) -> None:
+        values = dict(context or {})
+        plane = str(values.get("plane_name") or "").strip() or None
+        self._feedback_orientation_plane = plane
+        self._feedback_orientation_plane_override = bool(
+            values.get("plane_override",False)
+        )
+        self._feedback_orientation_saved = FeedbackOrientation.normalize(
+            values.get("saved_orientation","identity")
+        )
+        self._feedback_orientation_change_enabled = bool(
+            values.get("change_enabled",True)
+        )
+        self._feedback_orientation_change_reason = str(
+            values.get("change_reason") or ""
+        )
+
     def set_feedback_orientation(
         self,orientation: FeedbackOrientation | str,
     ) -> None:
         orientation = FeedbackOrientation.normalize(orientation)
         self._feedback_orientation = orientation
         combo = getattr(self,"feedback_orientation_combo",None)
-        if combo is None:
+        if combo is not None:
+            blocker = QtCore.QSignalBlocker(combo)
+            try:
+                index = combo.findData(orientation.value)
+                combo.setCurrentIndex(index if index >= 0 else 0)
+            finally:
+                del blocker
+        self._refresh_feedback_orientation_controls()
+
+    def set_feedback_orientation_context(
+        self,context: Mapping[str,Any] | None,
+    ) -> None:
+        self._set_feedback_orientation_context_state(context)
+        self._refresh_feedback_orientation_controls()
+
+    def _refresh_feedback_orientation_controls(self) -> None:
+        combo = getattr(self,"feedback_orientation_combo",None)
+        label = getattr(self,"feedback_orientation_scope_label",None)
+        save_button = getattr(self,"feedback_orientation_save_button",None)
+        if combo is None or label is None or save_button is None:
             return
-        blocker = QtCore.QSignalBlocker(combo)
-        try:
-            index = combo.findData(orientation.value)
-            combo.setCurrentIndex(index if index >= 0 else 0)
-        finally:
-            del blocker
+
+        plane = self._feedback_orientation_plane
+        if plane is None:
+            label.setText("Applied to: Section default")
+            save_button.setText("Set as default")
+        else:
+            suffix = "" if self._feedback_orientation_plane_override else " (using default)"
+            label.setText("Applied to: %s%s" % (plane,suffix))
+            save_button.setText("Save for plane")
+
+        base_tip = (
+            "Map camera-localized lattice identities onto logical CGH target "
+            "identities. Changes are temporary until explicitly saved."
+        )
+        change_allowed = bool(
+            self._feedback_orientation_change_enabled
+            and not self._cgh_computing
+            and self._selected_is_current_context()
+        )
+        combo.setEnabled(change_allowed)
+        if not self._feedback_orientation_change_enabled:
+            combo.setToolTip(self._feedback_orientation_change_reason or base_tip)
+        else:
+            combo.setToolTip(base_tip)
+
+        save_needed = (
+            self._feedback_orientation is not self._feedback_orientation_saved
+        )
+        save_button.setEnabled(
+            save_needed
+            and self._selected_is_current_context()
+            and not self._cgh_computing
+        )
+        save_button.setToolTip(
+            "Persist this orientation for the active plane."
+            if plane is not None
+            else "Persist this orientation as the section default."
+        )
 
     def _on_feedback_orientation_changed(self,_index: int) -> None:
         value = self.feedback_orientation_combo.currentData()
         orientation = FeedbackOrientation.normalize(value)
         self._feedback_orientation = orientation
+        self._refresh_feedback_orientation_controls()
         self._emit(MeasurementsAction.FEEDBACK_ORIENTATION,{
             "orientation":orientation.value,
+        })
+
+    def _on_feedback_orientation_save_requested(self) -> None:
+        self._emit(MeasurementsAction.FEEDBACK_ORIENTATION_SAVE,{
+            "orientation":self._feedback_orientation.value,
         })
 
     def configure_detectors(
@@ -648,6 +739,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         localization_context: Mapping[str, Any] | None=None,
         cgh_summary: Mapping[str, Any] | None=None,
         feedback_orientation: FeedbackOrientation | str | None=None,
+        feedback_orientation_context: Mapping[str,Any] | None=None,
     ) -> None:
         """Refresh from authoritative backend state while preserving round view."""
         follow_latest = (
@@ -663,6 +755,8 @@ class CGHSessionWindow(QtWidgets.QDialog):
         self._cgh_status = cgh_status
         if cgh_summary is not None:
             self._cgh_summary = dict(cgh_summary)
+        if feedback_orientation_context is not None:
+            self.set_feedback_orientation_context(feedback_orientation_context)
         if feedback_orientation is not None:
             self.set_feedback_orientation(feedback_orientation)
         self.measurement_view.set_context(localization_context)
@@ -1267,9 +1361,7 @@ class CGHSessionWindow(QtWidgets.QDialog):
         viewing_current = self._viewing_current_measurement()
         current_context = self._selected_is_current_context()
 
-        self.feedback_orientation_combo.setEnabled(
-            current_context and not self._cgh_computing
-        )
+        self._refresh_feedback_orientation_controls()
         self.feedback_tabs.setTabEnabled(0,True)
         self.feedback_tabs.setTabEnabled(1,position_available)
         if self.feedback_tabs.currentIndex() == 1 and not position_available:

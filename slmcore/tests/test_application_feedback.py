@@ -148,3 +148,120 @@ def test_automatic_feedback_capability_belongs_to_application_service():
     assert "auto_upload_frame=False" in (
         session.feedback.automatic_feedback_unavailable_reason
     )
+
+
+def test_feedback_orientation_is_transient_until_explicitly_saved_and_scoped_by_plane():
+    from slmcore.application.startup_preferences import StartupPreferencesState
+    from slmcore.setup import SLMStartupPreferences
+
+    runtime = _runtime()
+    saved = []
+    preferences = StartupPreferencesState(
+        SLMStartupPreferences(feedback_orientations={
+            "sec_0":{
+                "default":"identity",
+                "planes":{"sample":"flip_horizontal"},
+            },
+        }),
+        saved.append,
+    )
+    session = SLMSession(runtime=runtime,startup_preferences=preferences)
+    active_plane = {"value":None}
+    session.calibration.active_plane = lambda _section:active_plane["value"]
+
+    assert session.feedback.feedback_orientation("sec_0").value == "identity"
+    session.feedback.set_feedback_orientation("sec_0","flip_vertical")
+    assert session.feedback.feedback_orientation("sec_0").value == "flip_vertical"
+    assert saved == []
+
+    context = session.feedback.feedback_orientation_context("sec_0")
+    assert context.plane_name is None
+    assert context.save_needed
+    session.feedback.save_feedback_orientation("sec_0")
+    assert saved[-1].feedback_orientations["sec_0"].default == "flip_vertical"
+
+    active_plane["value"] = "sample"
+    session.feedback.refresh_feedback_orientation_contexts()
+    assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
+    context = session.feedback.feedback_orientation_context("sec_0")
+    assert context.plane_name == "sample"
+    assert context.plane_override
+    assert not context.save_needed
+
+    session.feedback.set_feedback_orientation("sec_0","rotate_180")
+    assert session.feedback.feedback_orientation("sec_0").value == "rotate_180"
+    assert saved[-1].feedback_orientations["sec_0"].planes["sample"] == "flip_horizontal"
+    session.feedback.save_feedback_orientation("sec_0")
+    assert saved[-1].feedback_orientations["sec_0"].planes["sample"] == "rotate_180"
+
+
+def test_feedback_orientation_unsaved_value_is_discarded_only_when_plane_changes():
+    from slmcore.application.startup_preferences import StartupPreferencesState
+    from slmcore.setup import SLMStartupPreferences
+
+    runtime = _runtime()
+    preferences = StartupPreferencesState(
+        SLMStartupPreferences(feedback_orientations={
+            "sec_0":{
+                "default":"identity",
+                "planes":{
+                    "sample":"flip_horizontal",
+                    "fourier":"rotate_180",
+                },
+            },
+        }),
+        lambda _value:None,
+    )
+    session = SLMSession(runtime=runtime,startup_preferences=preferences)
+    active_plane = {"value":"sample"}
+    session.calibration.active_plane = lambda _section:active_plane["value"]
+
+    assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
+    session.feedback.set_feedback_orientation("sec_0","flip_vertical")
+    session.feedback.refresh_feedback_orientation_contexts()
+    assert session.feedback.feedback_orientation("sec_0").value == "flip_vertical"
+
+    active_plane["value"] = "fourier"
+    session.feedback.refresh_feedback_orientation_contexts()
+    assert session.feedback.feedback_orientation("sec_0").value == "rotate_180"
+
+    active_plane["value"] = "sample"
+    session.feedback.refresh_feedback_orientation_contexts()
+    assert session.feedback.feedback_orientation("sec_0").value == "flip_horizontal"
+
+
+def test_feedback_orientation_change_locks_only_after_feedback_cgh_is_computed():
+    from types import SimpleNamespace
+    import pytest
+
+    runtime = _runtime()
+    session = SLMSession(runtime=runtime)
+
+    # Base CGH round 0 is still editable. This also covers an intensity
+    # "Adapt target" working round, because the last computed round remains 0.
+    session.feedback.set_feedback_orientation("sec_0","flip_horizontal")
+
+    original_status = runtime.get_section_cgh_status
+    runtime.get_section_cgh_status = lambda _section:SimpleNamespace(
+        current_round_index=1,
+        position_active=False,
+    )
+    try:
+        context = session.feedback.feedback_orientation_context("sec_0")
+        assert not context.change_allowed
+        with pytest.raises(RuntimeError,match="locked"):
+            session.feedback.set_feedback_orientation("sec_0","identity")
+    finally:
+        runtime.get_section_cgh_status = original_status
+
+    runtime.get_section_cgh_status = lambda _section:SimpleNamespace(
+        current_round_index=0,
+        position_active=True,
+    )
+    try:
+        context = session.feedback.feedback_orientation_context("sec_0")
+        assert not context.change_allowed
+        with pytest.raises(RuntimeError,match="locked"):
+            session.feedback.set_feedback_orientation("sec_0","identity")
+    finally:
+        runtime.get_section_cgh_status = original_status

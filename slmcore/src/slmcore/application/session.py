@@ -916,9 +916,16 @@ class SLMSession:
             self.calibration.session_state_changed()
         self._notify("on_automatic_feedback_changed",state)
 
+    def _on_calibration_planes_changed(self) -> None:
+        # A plane switch changes which saved feedback orientation applies.
+        # Preserve transient test values while the plane is unchanged, but
+        # discard them when the active plane context actually changes.
+        self.feedback.refresh_feedback_orientation_contexts()
+        self._notify("on_calibration_planes_changed")
+
     def _calibration_callbacks(self) -> SLMCalibrationCallbacks:
         return SLMCalibrationCallbacks(
-            on_planes_changed=lambda:self._notify("on_calibration_planes_changed"),
+            on_planes_changed=self._on_calibration_planes_changed,
             on_state_changed=lambda key:self._notify(
                 "on_calibration_state_changed",key,
             ),
