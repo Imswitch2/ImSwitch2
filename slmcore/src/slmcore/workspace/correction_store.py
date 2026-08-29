@@ -176,8 +176,20 @@ class SLMCorrectionStore(CorrectionProvider):
         name = str(self.wavelength_table_file or "").strip()
         if not name or name.lower() == "none":
             return None
-        path = self.directory/name
-        return path if path.is_file() else None
+
+        # Prefer the canonical current filename, while accepting the legacy one.
+        names = [name]
+        if name == "wavelength.json":
+            names.append("wavelength_table.json")
+        elif name == "wavelength_table.json":
+            names.append("wavelength.json")
+
+        for candidate in names:
+            path = self.directory / candidate
+            if path.is_file():
+                return path
+
+        return None
 
     def _load_twopi_values(self) -> dict[int,tuple[int,str]]:
         if self._twopi_values is not None:
@@ -187,9 +199,10 @@ class SLMCorrectionStore(CorrectionProvider):
         if path is None:
             if self.wavelength_table_file and str(self.wavelength_table_file).lower() != "none":
                 self._warn_once(
-                    ("missing_twopi_table",str(self.wavelength_table_file)),
-                    "2pi wavelength table not found: %s",
-                    self.directory/self.wavelength_table_file,
+                    ("missing_twopi_table", str(self.wavelength_table_file)),
+                    "2pi wavelength table not found in %s "
+                    "(tried wavelength.json and wavelength_table.json)",
+                    self.directory,
                 )
             return self._twopi_values
         with path.open("r",encoding="utf-8") as file:
