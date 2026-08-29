@@ -1057,6 +1057,16 @@ class SLMQtSession(QtCore.QObject):
     def prepare_section_layout_change(self,layout):
         return self._application.prepare_section_layout_change(layout)
 
+    def apply_section_topology(self, section_key, topologies):
+        return self._application.apply_section_topology(
+            section_key, topologies,
+        )
+
+    def set_section_presentation(self, section_key, presentation):
+        return self._application.set_section_presentation(
+            section_key, presentation,
+        )
+
     def apply_prepared_section_layout_change(
         self,
         prepared,
