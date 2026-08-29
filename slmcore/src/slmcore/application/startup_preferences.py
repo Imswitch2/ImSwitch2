@@ -55,6 +55,18 @@ class StartupPreferencesState:
         mode = str(normalized or "tabs").strip() or "tabs"
         self._commit(replace(self._value,section_display_mode=mode))
 
+
+    def feedback_orientation(self,section_key: str) -> str:
+        return self._value.feedback_orientations.get(str(section_key),"identity")
+
+    def set_feedback_orientation(self,section_key: str,value: Any) -> None:
+        from ..core.cgh.feedback import FeedbackOrientation
+        section = str(section_key)
+        orientation = FeedbackOrientation.normalize(value).value
+        orientations = dict(self._value.feedback_orientations)
+        orientations[section] = orientation
+        self._commit(replace(self._value,feedback_orientations=orientations))
+
     def _commit(self,new_value: SLMStartupPreferences) -> None:
         if new_value == self._value:
             return

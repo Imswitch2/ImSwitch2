@@ -85,7 +85,7 @@ def _attach_localized_measurement(
         runtime.get_section_feedback_status(section_key).localization_params
     )
     localization = LocalizationResult(
-        target_type="multi_foci_vector",
+        target_type=runtime._get_section(section_key).state.cgh.selected_target,
         target_params=dict(resolution.canonical_params),
         parameters=params,
         lattice_indices=resolution.lattice_indices,
@@ -1073,3 +1073,78 @@ def test_target_replacement_clears_position_reference_round():
     inspection = runtime.get_section_cgh_session_inspection(section_key)
     assert inspection.position_reference_round is None
     assert inspection.position_correction is None
+
+
+def _runtime_gs() -> tuple[SLMRuntime,str]:
+    runtime,section_key = _runtime()
+    runtime.apply_section_patch(
+        section_key,
+        {
+            ("cgh","selected_target"):"multi_foci",
+            ("cgh","multi_foci","params","n_foci_x"):2,
+            ("cgh","multi_foci","params","n_foci_y"):2,
+            ("cgh","multi_foci","params","resolution_priority"):"foci_count",
+            ("cgh","multi_foci","params","fov_x_px"):12.0,
+            ("cgh","multi_foci","params","fov_y_px"):12.0,
+            ("cgh","multi_foci","computation","params","n_iterations"):4,
+            ("cgh","multi_foci","computation","params","phase_fixing_value"):2,
+        },
+    )
+    return runtime,section_key
+
+
+def _run_and_commit_job(runtime: SLMRuntime,section_key: str):
+    job = runtime.prepare_section_cgh(section_key)
+    result = job.run()
+    assert runtime.commit_section_cgh(section_key,result) is not None
+    return job,result
+
+
+def test_intensity_adaptation_reuses_exact_source_target_phase():
+    runtime,section_key = _runtime_gs()
+    _base_job,base_result = _run_and_commit_job(runtime,section_key)
+    assert base_result.target_phase is not None
+    _attach_localized_measurement(runtime,section_key)
+    runtime.apply_section_intensity_feedback(section_key)
+
+    adapted_job = runtime.prepare_section_cgh(section_key)
+
+    np.testing.assert_array_equal(adapted_job.initial_field,base_result.pattern)
+    np.testing.assert_array_equal(
+        adapted_job.fixed_target_phase,base_result.target_phase,
+    )
+    assert adapted_job.spec.compute_params["phase_fixing_value"] == 2
+    adapted_result = adapted_job.run()
+    assert adapted_result.target_phase is not None
+    np.testing.assert_array_equal(
+        adapted_result.target_phase,base_result.target_phase,
+    )
+
+
+def test_position_feedback_does_not_reuse_previous_target_phase_or_field():
+    runtime,section_key = _runtime()
+    _commit_job(runtime,section_key)
+    _attach_localized_measurement(runtime,section_key)
+    runtime.apply_section_position_correction(section_key)
+
+    position_job = runtime.prepare_section_cgh(section_key)
+
+    assert position_job.initial_field is None
+    assert position_job.fixed_target_phase is None
+
+
+def test_retained_target_phase_roundtrips_through_runtime_config():
+    runtime,section_key = _runtime_gs()
+    _job,result = _run_and_commit_job(runtime,section_key)
+    assert result.target_phase is not None
+
+    restored = SLMRuntime.from_config(
+        runtime.create_config(),registries=DEFAULT_REGISTRIES,
+    )
+    restored_round = restored.get_section_cgh_session_inspection(
+        section_key
+    ).rounds[0]
+    assert restored_round.result is not None
+    np.testing.assert_array_equal(
+        restored_round.result.target_phase,result.target_phase,
+    )

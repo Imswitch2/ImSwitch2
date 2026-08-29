@@ -371,10 +371,10 @@ class SLMRuntime:
         ).get_base_target_localization_reference()
 
     def compute_section_feedback_intensity_analysis(
-        self,key: str,localization=None,
+        self,key: str,localization=None,*,orientation="identity",
     ):
         return self._get_section(key).compute_feedback_intensity_analysis(
-            localization,
+            localization,orientation=orientation,
         )
 
     def set_section_feedback_intensity_analysis(
@@ -383,10 +383,10 @@ class SLMRuntime:
         self._get_section(key).set_feedback_intensity_analysis(analysis)
 
     def compute_section_feedback_measurement_metrics(
-        self,key: str,localization=None,
+        self,key: str,localization=None,*,orientation="identity",
     ):
         return self._get_section(key).compute_feedback_measurement_metrics(
-            localization,
+            localization,orientation=orientation,
         )
 
     def set_section_feedback_measurement_metrics(self,key: str,metrics) -> None:
@@ -530,10 +530,11 @@ class SLMRuntime:
         self,key: str,
         *,
         reset_intensity: bool=False,
+        orientation="identity",
     ) -> SectionStateTransition | None:
         return self._apply_feedback_resolution_operation(
             key,"apply_position_correction",
-            reset_intensity=reset_intensity,
+            reset_intensity=reset_intensity,orientation=orientation,
         )
 
     def set_section_position_correction_active(

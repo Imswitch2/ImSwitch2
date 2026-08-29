@@ -36,6 +36,8 @@ def compute(
     resolution: TargetResolution,
     compute_params: Mapping[str,Any],
     initial_field: np.ndarray | None,
+    *,
+    fixed_target_phase: np.ndarray | None=None,
 ) -> CGHAlgorithmOutput:
     """Compute a raster CGH and fit its complex field to the SLM section."""
     if not isinstance(resolution,TargetResolution):
@@ -64,6 +66,7 @@ def compute(
         target_intensity=target_intensity,
         compute_params=params,
         initial_field=initial_internal,
+        fixed_target_phase=fixed_target_phase,
     )
     pattern,cropped = fit_array_centered(
         internal_output.pattern,resolution.section_shape,pad_mode="wrap"
@@ -86,6 +89,7 @@ def compute(
 
     return CGHAlgorithmOutput(
         pattern=pattern,
+        target_phase=internal_output.target_phase,
         metrics=internal_output.metrics,
         warnings=tuple(warnings),
         diagnostics=diagnostics,
@@ -96,6 +100,7 @@ def _run_gerchberg_saxton(
     target_intensity: np.ndarray,
     compute_params: Mapping[str,Any],
     initial_field: np.ndarray | None,
+    fixed_target_phase: np.ndarray | None=None,
 ) -> CGHAlgorithmOutput:
     """Run weighted or unweighted Gerchberg-Saxton on one intensity raster."""
     weighted_gs = bool(compute_params.get("weighted_gs",True))
@@ -128,6 +133,13 @@ def _run_gerchberg_saxton(
     weights = np.ones(target_shape,dtype=np.float64)
     metrics = []
     target_phase = None
+    if fixed_target_phase is not None:
+        target_phase = np.asarray(fixed_target_phase,dtype=np.float64)
+        if target_phase.shape != target_shape or not np.all(np.isfinite(target_phase)):
+            raise ValueError(
+                "fixed_target_phase must be a finite array matching the target shape"
+            )
+        target_phase = np.array(target_phase,copy=True)
     epsilon = 1e-12
 
     for iteration in range(n_iterations):
@@ -135,7 +147,9 @@ def _run_gerchberg_saxton(
         field_target = np.fft.fftshift(np.fft.fft2(field_slm))
         measured_intensity = np.abs(field_target)**2
 
-        if not phase_fixing or iteration < phase_fixing_value:
+        if fixed_target_phase is None and (
+            not phase_fixing or iteration < phase_fixing_value
+        ):
             target_phase = np.angle(field_target)
         if target_phase is None:
             raise RuntimeError("Target phase was not initialized")
@@ -180,6 +194,7 @@ def _run_gerchberg_saxton(
 
     return CGHAlgorithmOutput(
         pattern=np.exp(1j * phase_slm),
+        target_phase=target_phase,
         metrics=tuple(metrics),
         warnings=initialization_warnings,
         diagnostics={
@@ -187,6 +202,7 @@ def _run_gerchberg_saxton(
             "iterations": n_iterations,
             "phase_fixing": phase_fixing,
             "phase_fixing_value": phase_fixing_value,
+            "fixed_target_phase": fixed_target_phase is not None,
             "target_pixel_count": int(np.count_nonzero(target_support)),
             "initialization": (
                 "previous_field" if initial_field is not None

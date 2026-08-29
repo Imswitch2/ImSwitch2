@@ -31,6 +31,7 @@ from .execution import (
 from .signature import CGHSignature
 from .feedback import (
     FeedbackCapability,
+    FeedbackOrientation,
     FeedbackChangeKind,
     FeedbackInspection,
     FeedbackMeasurement,
@@ -95,6 +96,7 @@ __all__ = [
     "TargetDefinitionState",
     "FeedbackCapability",
     "FeedbackChangeKind",
+    "FeedbackOrientation",
     "FeedbackInspection",
     "FeedbackMeasurement",
     "FeedbackStatus",

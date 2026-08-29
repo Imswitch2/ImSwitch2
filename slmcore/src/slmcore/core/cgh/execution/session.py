@@ -15,9 +15,11 @@ from ..feedback import (
     FeedbackInspection,
     FeedbackMeasurement,
     FeedbackStatus,
+    FeedbackOrientation,
     IntensityAdaptation,
     PositionCorrection,
     RoundEvaluation,
+    orient_localization,
 )
 from ..feedback.analysis import analyze_position
 from ..feedback.parameters import POSITION_CORRECTION_PARAMS
@@ -236,6 +238,9 @@ class CGHSession:
             target,intensities,include_position=apply_position,
         )
         spec = self._build_spec(state,context,target_state,effective_signature)
+        initial_field,fixed_target_phase = self._compute_initialization_for(
+            spec,context,adaptation,
+        )
 
         self._generation += 1
         request = CGHPreparedRequest(
@@ -289,7 +294,8 @@ class CGHSession:
             target_name=str(target.name or spec.target_type),
             resolution=resolution,
             compute_func=compute_func,
-            initial_field=self._initial_field_for(spec,context),
+            initial_field=initial_field,
+            fixed_target_phase=fixed_target_phase,
             prepared_request=request,
         )
 
@@ -691,7 +697,12 @@ class CGHSession:
         return True
 
     def compute_feedback_intensity_analysis(
-        self,state: CGHState,context: SectionContext,localization=None,
+        self,
+        state: CGHState,
+        context: SectionContext,
+        localization=None,
+        *,
+        orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
     ) -> IntensityAnalysis:
         """Compute experimental spot powers/metrics from one localization."""
         self._require_any_feedback_capability(state)
@@ -702,6 +713,7 @@ class CGHSession:
             raise RuntimeError(
                 "Localize the measurement before calculating intensity metrics"
             )
+        result = orient_localization(result,orientation)
         return analyze_measurement_intensity(
             measurement.acquisition,
             result,
@@ -736,12 +748,17 @@ class CGHSession:
         )
 
     def compute_feedback_measurement_metrics(
-        self,state: CGHState,context: SectionContext,localization=None,
+        self,
+        state: CGHState,
+        context: SectionContext,
+        localization=None,
+        *,
+        orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
     ) -> MeasurementMetrics:
         """Compatibility view over the centralized experimental analysis."""
         return MeasurementMetrics.from_analysis(
             self.compute_feedback_intensity_analysis(
-                state,context,localization,
+                state,context,localization,orientation=orientation,
             )
         )
 
@@ -980,7 +997,9 @@ class CGHSession:
 
     def apply_position_correction(
         self,state: CGHState,context: SectionContext,
-        *,reset_intensity: bool=False,
+        *,
+        reset_intensity: bool=False,
+        orientation: FeedbackOrientation | str=FeedbackOrientation.IDENTITY,
     ):
         self._require_capability(state,FeedbackCapability.POSITION_CORRECTION)
         measurement = self._require_current_measurement()
@@ -995,14 +1014,22 @@ class CGHSession:
             )
 
         target = self._current_round_target(state,context)
+        oriented_localization = orient_localization(
+            measurement.localization,orientation,
+        )
+        oriented_measurement = FeedbackMeasurement(
+            acquisition=measurement.acquisition,
+            localization=oriented_localization,
+            metrics=measurement.metrics,
+        )
         analysis = analyze_position(
-            measurement,
+            oriented_measurement,
             ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
             calibration=context.calibration,
             parameters=self._position_params,
         )
         correction = PositionCorrection(
-            measurement=measurement,
+            measurement=oriented_measurement,
             analysis=analysis,
             lattice_indices=target.resolution.lattice_indices,
             ideal_positions_kxy=target.resolution.ideal_spot_positions_kxy,
@@ -1702,6 +1729,39 @@ class CGHSession:
             compute_params=ui_target_state.computation.params.values,
             feedback_target_signature=effective_signature,
         )
+
+    def _compute_initialization_for(
+        self,
+        spec: CGHSpec,
+        context: SectionContext,
+        adaptation: IntensityAdaptation | None,
+    ) -> tuple[np.ndarray | None,np.ndarray | None]:
+        if adaptation is None or spec.algorithm != "gerchberg_saxton":
+            return self._initial_field_for(spec,context),None
+
+        source = next((
+            round_ for round_ in self._rounds
+            if round_.index == adaptation.source_round_index
+        ),None)
+        if source is None:
+            raise RuntimeError(
+                "Intensity feedback source round is no longer available"
+            )
+        result = source.result
+        if result.spec.target_type != spec.target_type or result.spec.algorithm != spec.algorithm:
+            raise RuntimeError(
+                "Intensity feedback source CGH does not match the requested algorithm"
+            )
+        if result.pattern.shape != context.shape:
+            raise RuntimeError(
+                "Intensity feedback source CGH shape no longer matches the section"
+            )
+        if result.target_phase is None:
+            raise RuntimeError(
+                "Intensity feedback source CGH has no retained target phase; "
+                "recompute the source/base CGH once before adapting it."
+            )
+        return result.pattern,result.target_phase
 
     def _initial_field_for(
         self,spec: CGHSpec,context: SectionContext,
